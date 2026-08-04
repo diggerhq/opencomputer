@@ -157,13 +157,19 @@ export class VmSession extends DurableObject<WorkerEnv> {
   }
 }
 
+// locOpts turns DO_LOCATION_HINT into get() options. Non-empty → that
+// continental hint (wnam/enam/…). EMPTY/unset → no hint, which lets CF place
+// the DO in proximity to the colo of the request that first creates it. For a
+// VmSession that's the agent's /connect from its VM's region (westus2 → SEA,
+// eastus2 → IAD), giving tighter DO↔VM co-location than the coarse hint's pick
+// (wnam landed at LAX, ~25ms from westus2). Placement is sticky at creation, so
+// this only affects freshly-created DOs.
+function locOpts(env: { DO_LOCATION_HINT?: string }): { locationHint: DurableObjectLocationHint } | undefined {
+  return env.DO_LOCATION_HINT ? { locationHint: env.DO_LOCATION_HINT as DurableObjectLocationHint } : undefined;
+}
+
 function stubFor(env: WorkerEnv, sandboxId: string): DurableObjectStub {
-  // Placement hint is config, not code: the DO must sit in the same region as
-  // the VM it fronts (the persistent WS is the long-lived hop; the Worker→DO
-  // leg rides Cloudflare's backbone from any ingress colo). enam matches the
-  // original IAD/eastus2 proof; our dev VMs are westus2 → wnam.
-  const hint = (env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
-  return env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(sandboxId), { locationHint: hint });
+  return env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(sandboxId), locOpts(env));
 }
 
 async function requireApiAuth(request: Request, env: WorkerEnv): Promise<Response | null> {
@@ -211,8 +217,7 @@ export class VmRoster extends DurableObject<WorkerEnv> {
   // isLiveDiag returns liveness + a short diagnostic string (DEBUG).
   private async isLiveDiag(id: string): Promise<[boolean, string]> {
     try {
-      const hint = (this.env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
-      const stub = this.env.VM_SESSIONS.get(this.env.VM_SESSIONS.idFromName(id), { locationHint: hint });
+      const stub = this.env.VM_SESSIONS.get(this.env.VM_SESSIONS.idFromName(id), locOpts(this.env));
       const r = await stub.fetch("https://do/lease"); // VmSession /lease → {connected}
       const body = await r.text();
       if (!r.ok) return [false, `${id}:status=${r.status}`];
@@ -265,13 +270,39 @@ export class VmRoster extends DurableObject<WorkerEnv> {
       this.persist();
       return json({ id: leasedId });
     }
+    // Batch lease: hand out up to n live, unleased ids in one call. The edge
+    // Worker holds the returned batch in isolate memory and serves individual
+    // creates from it, so the per-create hot path is a local pop — 0 DO hops —
+    // and the roster (+ its liveness probe) is touched once per ~batch instead
+    // of once per create. The probe is amortised the same way. This is the POC
+    // analogue of the production PoolStock reserve.
+    if (url.pathname === "/lease-batch" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { n?: number };
+      const want = Math.max(1, Math.min(64, body.n ?? 16));
+      const out: string[] = [];
+      const dead: string[] = [];
+      for (const id of this.ids) {
+        if (out.length >= want) break;
+        if (this.leases.has(id)) continue;
+        if (await this.isLive(id)) {
+          this.leases.set(id, now);
+          out.push(id);
+        } else {
+          dead.push(id);
+        }
+      }
+      if (dead.length) this.ids = this.ids.filter((x) => !dead.includes(x));
+      this.persist();
+      return json({ ids: out });
+    }
     if (url.pathname === "/release" && request.method === "POST") {
-      const body = (await request.json()) as { id?: string };
-      if (body.id) {
-        this.leases.delete(body.id);
+      const body = (await request.json()) as { id?: string; ids?: string[] };
+      const ids = body.ids ?? (body.id ? [body.id] : []);
+      if (ids.length) {
+        for (const id of ids) this.leases.delete(id);
         this.persist();
       }
-      return json({ ok: true });
+      return json({ ok: true, released: ids.length });
     }
     if (url.pathname === "/known" && request.method === "POST") {
       const body = (await request.json()) as { id?: string };
@@ -285,9 +316,15 @@ export class VmRoster extends DurableObject<WorkerEnv> {
 }
 
 function rosterStub(env: WorkerEnv): DurableObjectStub {
-  const hint = (env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
-  return env.VM_ROSTER.get(env.VM_ROSTER.idFromName("roster"), { locationHint: hint });
+  return env.VM_ROSTER.get(env.VM_ROSTER.idFromName("roster"), locOpts(env));
 }
+
+// Isolate-local pre-leased batch. create() pops from here (0 DO hops); it's
+// refilled from the roster's /lease-batch when empty. Per-isolate, so isolates
+// hold disjoint batches (the roster hands out non-overlapping ids) — no
+// cross-isolate double-allocation. Survives for the isolate's lifetime.
+const LEASE_BATCH = 16;
+let leaseBatch: string[] = [];
 
 // No per-id addressability gate: the bench token is the auth, and the roster's
 // job is ALLOCATION (create leases, DELETE releases), not access control. An
@@ -346,18 +383,27 @@ export default {
     }
 
     if (url.pathname === "/api/sandboxes" && request.method === "POST") {
-      // Real allocation: lease a VM from the roster (one DO round trip — the
-      // cost the single-VM floor test omitted). Falls back to the static
-      // single-VM flow when no roster is seeded.
+      // Allocation on the hot path is an isolate-local pop from a pre-leased
+      // batch (leaseBatch), so create pays 0 DO round-trips in the common case.
+      // The batch is refilled from the roster (one DO call per ~16 creates),
+      // which is where the real lease + liveness check happen — amortised, off
+      // the per-create critical path. Falls back to the static single-VM id
+      // when the roster is empty/unseeded (the original floor-test flow).
       const startedAt = performance.now();
-      let vmId = env.POC_VM_ID;
-      const lease = await rosterStub(env).fetch("https://do/lease", { method: "POST" });
-      if (lease.ok) {
-        vmId = ((await lease.json()) as { id: string }).id;
-      } else if (lease.status === 409) {
+      let vmId = leaseBatch.pop();
+      if (!vmId) {
+        const r = await rosterStub(env).fetch("https://do/lease-batch", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ n: LEASE_BATCH }),
+        });
+        if (r.ok) leaseBatch = ((await r.json()) as { ids: string[] }).ids ?? [];
+        vmId = leaseBatch.pop();
+      }
+      if (!vmId) {
         const status = await (await rosterStub(env).fetch("https://do/status")).json<{ total: number }>();
         if (status.total > 0) return json({ error: "no VMs available" }, { status: 503 });
-        // total 0 → roster never seeded → static single-VM fallback
+        vmId = env.POC_VM_ID; // total 0 → roster never seeded → static fallback
       }
       return json({
         sandboxID: vmId,

@@ -91,6 +91,11 @@ type GRPCServer struct {
 	// Set via SetRegion at startup. Empty = "unknown".
 	region string
 
+	// doDialers owns the per-sandbox host→edge WebSocket dialers for the VM-DO
+	// exec data plane. nil (or a disabled registry) means every exec takes the
+	// tunnel path. Wired via SetVMDialer at startup. See dodialer.go.
+	doDialers *doDialerRegistry
+
 	// checkpointFetchSF collapses concurrent forks of the same checkpoint that
 	// all miss the local cache into a single S3 download+extract; the rest wait
 	// and reuse it. Keyed by checkpoint id. See ensureFullCheckpointCached.
@@ -108,6 +113,17 @@ func (s *GRPCServer) SetRegion(region string) { s.region = region }
 func (s *GRPCServer) SetAxiomConfig(ingestToken, dataset string) {
 	s.axiomIngestToken = ingestToken
 	s.axiomDataset = dataset
+}
+
+// SetVMDialer wires the VM-DO exec data plane. When edgeURL is non-empty, the
+// worker host dials a per-sandbox VmSession Durable Object on the edge and serves
+// exec over it (edge→DO→host→agent), bypassing the tunnel hop — but only for
+// boxes the CP hands a connect token (delivered per-sandbox on create/claim/wake;
+// the worker holds no signing secret). Empty edgeURL leaves the registry disabled
+// — every exec takes the tunnel path (also the edge's automatic fallback). Uses
+// the manager's one-shot Exec so DO- and tunnel-served execs are identical.
+func (s *GRPCServer) SetVMDialer(edgeURL string) {
+	s.doDialers = newDoDialerRegistry(edgeURL, s.manager.Exec)
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
@@ -263,6 +279,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			s.initSandboxDB(sb.ID, cfg.Template)
 			s.recordInitialScaleEvent(ctx, sb.ID, cfg)
 			s.configureLogshipForSandbox(ctx, sb.ID)
+			s.doDialers.start(sb.ID, req.VmdoConnectToken)
 			return &pb.CreateSandboxResponse{
 				SandboxId:     sb.ID,
 				Status:        string(sb.Status),
@@ -318,6 +335,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		s.initSandboxDB(sb.ID, cfg.Template)
 		s.recordInitialScaleEvent(ctx, sb.ID, cfg)
 		s.configureLogshipForSandbox(ctx, sb.ID)
+		s.doDialers.start(sb.ID, req.VmdoConnectToken)
 		return &pb.CreateSandboxResponse{
 			SandboxId:     sb.ID,
 			Status:        string(sb.Status),
@@ -398,6 +416,8 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 	s.recordInitialScaleEvent(ctx, sb.ID, cfg)
 
 	s.configureLogshipForSandbox(ctx, sb.ID)
+
+	s.doDialers.start(sb.ID, req.VmdoConnectToken)
 
 	return &pb.CreateSandboxResponse{
 		SandboxId:     sb.ID,
@@ -523,6 +543,10 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 	go s.recordInitialScaleEvent(context.Background(), sb.ID, cfg)
 	go s.configureLogshipForSandbox(context.Background(), sb.ID)
 
+	// Open the VM-DO exec channel now the box is customer-usable. no-op if the
+	// dialer is unconfigured; the box still execs fine over the tunnel.
+	s.doDialers.start(sb.ID, req.VmdoConnectToken)
+
 	log.Printf("grpc: claimed pool box %s (template=%s)", sb.ID, sb.Template)
 	return &pb.ClaimSandboxResponse{
 		SandboxId:     sb.ID,
@@ -532,6 +556,10 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 }
 
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
+	// Tear the VM-DO exec channel down first so an in-flight exec can't land on
+	// a box we're about to kill (it falls back to the tunnel, which 404s cleanly).
+	s.doDialers.stop(req.SandboxId)
+
 	// End billing scale event before destroying
 	if s.store != nil {
 		if err := s.store.EndScaleEvent(ctx, req.SandboxId); err != nil {
@@ -978,6 +1006,9 @@ func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSand
 		return nil, fmt.Errorf("hibernation not configured on this worker")
 	}
 
+	// Drop the VM-DO exec channel: the box is leaving RAM. Wake re-establishes it.
+	s.doDialers.stop(req.SandboxId)
+
 	// End billing scale event (sandbox going to sleep)
 	if s.store != nil {
 		if err := s.store.EndScaleEvent(ctx, req.SandboxId); err != nil {
@@ -1119,6 +1150,9 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 			}
 		}
 	}
+
+	// Re-open the VM-DO exec channel the hibernate teardown dropped.
+	s.doDialers.start(sb.ID, req.VmdoConnectToken)
 
 	return &pb.WakeSandboxResponse{
 		SandboxId: sb.ID,

@@ -33,7 +33,7 @@
   ],
   "vars": {
     "POC_VM_ID": "sb-ac0af601-w2",
-    "DO_LOCATION_HINT": "wnam"
+    "DO_LOCATION_HINT": ""
   },
   "observability": {
     "enabled": true,

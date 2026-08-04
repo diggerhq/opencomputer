@@ -47,6 +47,7 @@ type Server struct {
 	store              *db.Store                         // nil in combined/dev mode without PG
 	jwtIssuer          *auth.JWTIssuer                   // nil if JWT not configured
 	capTokenIssuer     *auth.JWTIssuer                   // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
+	sessionJWTSecret   string                            // raw shared edge↔CP HMAC secret; mints per-sandbox VM-DO connect tokens (see auth.MintVMDOConnectToken)
 	requireCapToken    bool                              // derived from PRO_BILLING_AUTHORITY=edge: reject direct API-key creates that bypass edge billing (split mode only)
 	cfAdminSecret      string                            // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
 	cfEventSecret      string                            // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
@@ -190,6 +191,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.jwtIssuer = opts.JWTIssuer
 		if opts.SessionJWTSecret != "" {
 			s.capTokenIssuer = auth.NewJWTIssuer(opts.SessionJWTSecret)
+			s.sessionJWTSecret = opts.SessionJWTSecret // raw key for VM-DO connect-token minting
 		}
 		s.requireCapToken = opts.RequireCapToken
 		s.cfAdminSecret = opts.CFAdminSecret

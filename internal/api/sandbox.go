@@ -691,12 +691,13 @@ func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.S
 	grpcCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	claimResp, err := client.ClaimSandbox(grpcCtx, &pb.ClaimSandboxRequest{
-		SandboxId:  box.SandboxID,
-		Timeout:    int32(cfg.Timeout),
-		Envs:       cfg.Envs,
-		SecretEnvs: cfg.SecretEnvs,
-		MemoryMb:   int32(cfg.MemoryMB),
-		CpuCount:   int32(cfg.CpuCount),
+		SandboxId:        box.SandboxID,
+		Timeout:          int32(cfg.Timeout),
+		Envs:             cfg.Envs,
+		SecretEnvs:       cfg.SecretEnvs,
+		MemoryMb:         int32(cfg.MemoryMB),
+		CpuCount:         int32(cfg.CpuCount),
+		VmdoConnectToken: auth.MintVMDOConnectToken(s.sessionJWTSecret, box.SandboxID),
 	})
 	if err != nil {
 		log.Printf("sandbox: ClaimSandbox %s failed (%v) — failing it + cold create", box.SandboxID, err)
@@ -935,6 +936,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		SecretAllowedHosts:   flattenSecretAllowedHosts(cfg.SecretAllowedHosts),
 		SecretEnvs:           cfg.SecretEnvs,
 		DiskMb:               int32(cfg.DiskMB),
+		VmdoConnectToken:     auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 	})
 	if err != nil {
 		// Mark session as failed so it doesn't count as active.
@@ -2440,9 +2442,10 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	defer cancel()
 
 	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
-		SandboxId:     sandboxID,
-		CheckpointKey: hibernation.HibernationKey,
-		Timeout:       int32(req.Timeout),
+		SandboxId:        sandboxID,
+		CheckpointKey:    hibernation.HibernationKey,
+		Timeout:          int32(req.Timeout),
+		VmdoConnectToken: auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -3364,6 +3367,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 			EgressAllowlist:      originalCfg.EgressAllowlist,
 			SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
 			SecretEnvs:           originalCfg.SecretEnvs,
+			VmdoConnectToken:     auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 		})
 		createErr = err
 		if resp != nil {

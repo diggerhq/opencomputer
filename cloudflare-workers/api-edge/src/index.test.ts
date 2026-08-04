@@ -327,6 +327,71 @@ describe("/internal/model-billing/enable — scoped-secret auth boundary", () =>
   });
 });
 
+describe("api-edge VM-DO exec routing", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sandboxIndexInserts.length = 0;
+  });
+
+  // A VmSession DO namespace stub whose /exec returns `doResponse`. The exec
+  // fast path is gated on SESSION_JWT_SECRET, which the base test env already sets.
+  const vmEnv = (doResponse: Response) =>
+    ({
+      ...env,
+      VM_SESSIONS: {
+        idFromName: (s: string) => s,
+        get: () => ({ fetch: async () => doResponse.clone() }),
+      },
+    }) as unknown as Env;
+
+  const runAsync = (e: Env) =>
+    worker.fetch(
+      new Request("https://app.opencomputer.dev/api/sandboxes/sb-123/exec/run-async", {
+        method: "POST",
+        headers: { "X-API-Key": "osb_test", "content-type": "application/json" },
+        body: JSON.stringify({ cmd: "sh", args: ["-c", "node -v"], timeout: 60 }),
+      }),
+      e,
+      ctx,
+    );
+
+  it("serves exec inline from the DO and does not hit the tunnel", async () => {
+    const tunnel = vi.fn(async () => new Response("TUNNEL", { status: 200 }));
+    vi.stubGlobal("fetch", tunnel);
+    const resp = await runAsync(vmEnv(new Response(JSON.stringify({ exitCode: 0, stdout: "v20.0.0\n", stderr: "" }), { status: 200 })));
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toEqual({ exitCode: 0, stdout: "v20.0.0\n", stderr: "" });
+    expect(tunnel).not.toHaveBeenCalled(); // one hop: edge→DO, no tunnel
+  });
+
+  it("falls back to the tunnel when the DO channel is not connected", async () => {
+    const tunnel = vi.fn(async () => new Response(JSON.stringify({ execId: "e1", running: true }), { status: 200 }));
+    vi.stubGlobal("fetch", tunnel);
+    const resp = await runAsync(vmEnv(new Response(JSON.stringify({ connected: false }), { status: 409 })));
+    expect(resp.status).toBe(200);
+    expect(tunnel).toHaveBeenCalledTimes(1); // degraded → tunnel
+  });
+
+  it("only routes run-async to the DO — other exec sub-paths take the tunnel", async () => {
+    // The result-poll (GET /exec/:id/result), files, pty, etc. must not touch the
+    // DO; the fast path is scoped to POST /exec/run-async.
+    const tunnel = vi.fn(async () => new Response("proxied", { status: 200 }));
+    vi.stubGlobal("fetch", tunnel);
+    const doGet = vi.fn();
+    const e = { ...env, VM_SESSIONS: { idFromName: (s: string) => s, get: doGet } } as unknown as Env;
+    const resp = await worker.fetch(
+      new Request("https://app.opencomputer.dev/api/sandboxes/sb-123/exec/es-1/result", {
+        headers: { "X-API-Key": "osb_test" },
+      }),
+      e,
+      ctx,
+    );
+    expect(resp.status).toBe(200);
+    expect(doGet).not.toHaveBeenCalled(); // result poll → tunnel, never the DO
+    expect(tunnel).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("safeReturnTo — deferred-action deep-link validation", () => {
   it("accepts same-origin paths (incl. query strings)", () => {
     expect(safeReturnTo("/do?action=abc")).toBe("/do?action=abc");

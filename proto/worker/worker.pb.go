@@ -96,9 +96,15 @@ type CreateSandboxRequest struct {
 	// immediately pause (RAM-resident) and park under the pool org. Skips the
 	// customer bindings (no scale_event, no D1 created, exempt from promote-to-deep).
 	// The box is later bound to a customer via ClaimSandbox.
-	Pooled        bool `protobuf:"varint,17,opt,name=pooled,proto3" json:"pooled,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Pooled bool `protobuf:"varint,17,opt,name=pooled,proto3" json:"pooled,omitempty"`
+	// Per-sandbox VM-DO connect token = HMAC(SESSION_JWT_SECRET, "vmdo:"+id),
+	// minted by the CP (which holds the shared secret) and presented by the worker
+	// host when it dials the sandbox's VmSession DO on the edge. The worker never
+	// holds the signing secret — only this per-box token. Empty = VM-DO exec plane
+	// not provisioned; the host doesn't dial and exec stays on the tunnel.
+	VmdoConnectToken string `protobuf:"bytes,18,opt,name=vmdo_connect_token,json=vmdoConnectToken,proto3" json:"vmdo_connect_token,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CreateSandboxRequest) Reset() {
@@ -250,6 +256,13 @@ func (x *CreateSandboxRequest) GetPooled() bool {
 	return false
 }
 
+func (x *CreateSandboxRequest) GetVmdoConnectToken() string {
+	if x != nil {
+		return x.VmdoConnectToken
+	}
+	return ""
+}
+
 type CreateSandboxResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SandboxId string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
@@ -337,6 +350,7 @@ type ClaimSandboxRequest struct {
 	SecretAllowedHosts map[string]string      `protobuf:"bytes,6,rep,name=secret_allowed_hosts,json=secretAllowedHosts,proto3" json:"secret_allowed_hosts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	MemoryMb           int32                  `protobuf:"varint,7,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"` // grow target via virtio-mem (0 = leave as-is)
 	CpuCount           int32                  `protobuf:"varint,8,opt,name=cpu_count,json=cpuCount,proto3" json:"cpu_count,omitempty"`
+	VmdoConnectToken   string                 `protobuf:"bytes,9,opt,name=vmdo_connect_token,json=vmdoConnectToken,proto3" json:"vmdo_connect_token,omitempty"` // per-sandbox VM-DO connect token (see CreateSandboxRequest)
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -425,6 +439,13 @@ func (x *ClaimSandboxRequest) GetCpuCount() int32 {
 		return x.CpuCount
 	}
 	return 0
+}
+
+func (x *ClaimSandboxRequest) GetVmdoConnectToken() string {
+	if x != nil {
+		return x.VmdoConnectToken
+	}
+	return ""
 }
 
 type ClaimSandboxResponse struct {
@@ -1910,12 +1931,13 @@ func (x *HibernateSandboxResponse) GetSizeBytes() int64 {
 }
 
 type WakeSandboxRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
-	CheckpointKey string                 `protobuf:"bytes,2,opt,name=checkpoint_key,json=checkpointKey,proto3" json:"checkpoint_key,omitempty"`
-	Timeout       int32                  `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId        string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	CheckpointKey    string                 `protobuf:"bytes,2,opt,name=checkpoint_key,json=checkpointKey,proto3" json:"checkpoint_key,omitempty"`
+	Timeout          int32                  `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	VmdoConnectToken string                 `protobuf:"bytes,4,opt,name=vmdo_connect_token,json=vmdoConnectToken,proto3" json:"vmdo_connect_token,omitempty"` // per-sandbox VM-DO connect token (see CreateSandboxRequest)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WakeSandboxRequest) Reset() {
@@ -1967,6 +1989,13 @@ func (x *WakeSandboxRequest) GetTimeout() int32 {
 		return x.Timeout
 	}
 	return 0
+}
+
+func (x *WakeSandboxRequest) GetVmdoConnectToken() string {
+	if x != nil {
+		return x.VmdoConnectToken
+	}
+	return ""
 }
 
 type WakeSandboxResponse struct {
@@ -4459,7 +4488,7 @@ var File_proto_worker_worker_proto protoreflect.FileDescriptor
 
 const file_proto_worker_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/worker/worker.proto\x12\x06worker\"\x98\a\n" +
+	"\x19proto/worker/worker.proto\x12\x06worker\"\xc6\a\n" +
 	"\x14CreateSandboxRequest\x12\x1a\n" +
 	"\btemplate\x18\x01 \x01(\tR\btemplate\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\x12:\n" +
@@ -4480,7 +4509,8 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\vsecret_envs\x18\x0f \x03(\v2,.worker.CreateSandboxRequest.SecretEnvsEntryR\n" +
 	"secretEnvs\x12\x17\n" +
 	"\adisk_mb\x18\x10 \x01(\x05R\x06diskMb\x12\x16\n" +
-	"\x06pooled\x18\x11 \x01(\bR\x06pooled\x1a7\n" +
+	"\x06pooled\x18\x11 \x01(\bR\x06pooled\x12,\n" +
+	"\x12vmdo_connect_token\x18\x12 \x01(\tR\x10vmdoConnectToken\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aE\n" +
@@ -4495,7 +4525,7 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1b\n" +
 	"\tmemory_mb\x18\x03 \x01(\x05R\bmemoryMb\x12%\n" +
-	"\x0egolden_version\x18\x04 \x01(\tR\rgoldenVersion\"\xe2\x04\n" +
+	"\x0egolden_version\x18\x04 \x01(\tR\rgoldenVersion\"\x90\x05\n" +
 	"\x13ClaimSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
@@ -4506,7 +4536,8 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x10egress_allowlist\x18\x05 \x03(\tR\x0fegressAllowlist\x12e\n" +
 	"\x14secret_allowed_hosts\x18\x06 \x03(\v23.worker.ClaimSandboxRequest.SecretAllowedHostsEntryR\x12secretAllowedHosts\x12\x1b\n" +
 	"\tmemory_mb\x18\a \x01(\x05R\bmemoryMb\x12\x1b\n" +
-	"\tcpu_count\x18\b \x01(\x05R\bcpuCount\x1a7\n" +
+	"\tcpu_count\x18\b \x01(\x05R\bcpuCount\x12,\n" +
+	"\x12vmdo_connect_token\x18\t \x01(\tR\x10vmdoConnectToken\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a=\n" +
@@ -4625,12 +4656,13 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12%\n" +
 	"\x0echeckpoint_key\x18\x02 \x01(\tR\rcheckpointKey\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"t\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"\xa2\x01\n" +
 	"\x12WakeSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12%\n" +
 	"\x0echeckpoint_key\x18\x02 \x01(\tR\rcheckpointKey\x12\x18\n" +
-	"\atimeout\x18\x03 \x01(\x05R\atimeout\"L\n" +
+	"\atimeout\x18\x03 \x01(\x05R\atimeout\x12,\n" +
+	"\x12vmdo_connect_token\x18\x04 \x01(\tR\x10vmdoConnectToken\"L\n" +
 	"\x13WakeSandboxResponse\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +

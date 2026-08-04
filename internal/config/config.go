@@ -200,6 +200,15 @@ type Config struct {
 	AxiomQueryToken  string
 	AxiomDataset     string
 
+	// VM-DO exec data plane (vm_do_datapane_validation). When set, the worker host
+	// dials a per-sandbox VmSession Durable Object on the edge and serves exec over
+	// that persistent WebSocket (edge→DO→host→agent), bypassing the tunnel→CP→worker
+	// hop — but only for boxes the CP hands a connect token (per-sandbox, on
+	// create/claim/wake; the worker holds no signing secret). Empty = the dialer is
+	// inert and every exec takes the tunnel path (the edge's automatic fallback).
+	// VMDOEdgeURL is the wss:// (or https://) base of the api-edge Worker.
+	VMDOEdgeURL string
+
 	// AWS Secrets Manager — if set, secrets are fetched at startup using IAM credentials.
 	// The secret should be a JSON object with keys matching env var names (e.g. OPENSANDBOX_JWT_SECRET).
 	// Env vars take precedence over secret values (for local overrides).
@@ -433,6 +442,8 @@ func Load() (*Config, error) {
 		AxiomIngestToken: os.Getenv("AXIOM_INGEST_TOKEN"),
 		AxiomQueryToken:  os.Getenv("AXIOM_QUERY_TOKEN"),
 		AxiomDataset:     envOrDefault("AXIOM_DATASET", "oc-sandbox-logs"),
+
+		VMDOEdgeURL: os.Getenv("OPENSANDBOX_VMDO_EDGE_URL"),
 
 		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
 
