@@ -6,6 +6,7 @@ import {
   BriefcaseBusiness,
   Check,
   ChevronRight,
+  Clock3,
   Clipboard,
   ClipboardCheck,
   Lightbulb,
@@ -27,6 +28,13 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -45,6 +53,12 @@ const categories = [
 ] as const
 
 type Category = (typeof categories)[number]
+type CliStep = {
+  title: string
+  commands: string[]
+}
+
+const availableTemplateIds = new Set(['email-triage'])
 
 const starterCopy = [
   {
@@ -129,20 +143,70 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 Connect only integrations that are actually available. Ask me for authorization when a connection requires it, never print credentials, and do not claim an integration or deployment succeeded unless the CLI confirms it.`
 }
 
+function buildCliSteps(
+  template: ManagedAgentTemplate,
+  origin: string,
+): CliStep[] {
+  const firstPrompt =
+    template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
+  return [
+    {
+      title: 'Install the OpenComputer CLI',
+      commands: ['npm install --global @opencomputer/cli'],
+    },
+    {
+      title: 'Log in',
+      commands: [cliCommand(origin, 'login')],
+    },
+    {
+      title: 'Initialize the Gmail triage agent',
+      commands: [
+        'mkdir gmail-triage && cd gmail-triage',
+        cliCommand(origin, `init ${template.id} .`),
+        'npm install',
+      ],
+    },
+    {
+      title: 'Connect your Gmail account',
+      commands: [cliCommand(origin, 'connection add gmail --alias personal')],
+    },
+    {
+      title: 'Test the agent locally',
+      commands: [
+        cliCommand(origin, `session "${firstPrompt.replace(/"/g, '\\"')}"`),
+      ],
+    },
+    {
+      title: 'Deploy it',
+      commands: [cliCommand(origin, 'deploy --alias production')],
+    },
+  ]
+}
+
 function TemplateCard({
   template,
   deployed,
-  copied,
-  onCopy,
+  promptCopied,
+  onCopyPrompt,
+  onShowCli,
 }: {
   template: ManagedAgentTemplate
   deployed: boolean
-  copied: boolean
-  onCopy: () => void
+  promptCopied: boolean
+  onCopyPrompt: () => void
+  onShowCli: () => void
 }) {
   const Icon = categoryIcons[template.category as Category] ?? ClipboardCheck
+  const available = availableTemplateIds.has(template.id)
   return (
-    <Panel className="flex h-full flex-col overflow-hidden">
+    <Panel
+      className={cn(
+        'flex h-full flex-col overflow-hidden',
+        available
+          ? 'border-primary/30 bg-primary/[0.025] shadow-sm'
+          : 'bg-muted/15',
+      )}
+    >
       <PanelHeader className="border-0 pb-2">
         <div className="flex min-w-0 items-start gap-3">
           <div className="bg-primary/8 text-primary flex size-9 shrink-0 items-center justify-center rounded-md">
@@ -154,6 +218,17 @@ function TemplateCard({
               {deployed ? (
                 <span className="bg-status-running-bg text-status-running rounded-full px-2 py-0.5 text-[10px] font-medium">
                   Deployed
+                </span>
+              ) : null}
+              {available && !deployed ? (
+                <span className="bg-status-running-bg text-status-running rounded-full px-2 py-0.5 text-[10px] font-medium">
+                  Available now
+                </span>
+              ) : null}
+              {!available ? (
+                <span className="bg-muted text-muted-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium">
+                  <Clock3 className="size-3" aria-hidden />
+                  Coming soon
                 </span>
               ) : null}
             </div>
@@ -177,7 +252,7 @@ function TemplateCard({
             </span>
           ))}
         </div>
-        <div className="mt-5 space-y-2">
+        <div className={cn('mt-5 space-y-2', !available && 'opacity-65')}>
           <p className="text-muted-foreground text-[10px] font-medium tracking-wider uppercase">
             First task
           </p>
@@ -185,14 +260,31 @@ function TemplateCard({
             “{template.suggestedPrompts[0]}”
           </p>
         </div>
-        <Button
-          className="mt-6 w-full"
-          variant={copied ? 'secondary' : 'default'}
-          onClick={onCopy}
-        >
-          {copied ? <Check /> : <Clipboard />}
-          {copied ? 'Agent prompt copied' : 'Copy agent prompt'}
-        </Button>
+        {available ? (
+          <div className="mt-6 space-y-2">
+            <p className="text-muted-foreground text-xs leading-5">
+              Install → login → initialize → connect Gmail → test → deploy
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                variant={promptCopied ? 'secondary' : 'default'}
+                onClick={onCopyPrompt}
+              >
+                {promptCopied ? <Check /> : <Clipboard />}
+                {promptCopied ? 'Agent prompt copied' : 'Copy agent prompt'}
+              </Button>
+              <Button variant="outline" onClick={onShowCli}>
+                <Clipboard />
+                View CLI instructions
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button className="mt-6 w-full" variant="outline" disabled>
+            <Clock3 />
+            Coming soon
+          </Button>
+        )}
       </PanelContent>
     </Panel>
   )
@@ -204,7 +296,9 @@ export default function ManagedAgentsHome({
   startersOnly?: boolean
 }) {
   const [selectedCategory, setSelectedCategory] = useState<Category>('Comms')
-  const [copiedTemplateId, setCopiedTemplateId] = useState<string>()
+  const [copiedPromptId, setCopiedPromptId] = useState<string>()
+  const [copiedCliStep, setCopiedCliStep] = useState<string>()
+  const [cliTemplate, setCliTemplate] = useState<ManagedAgentTemplate>()
   const [categoryOrder] = useState(() => shuffled(categories))
   const [copy] = useState(
     () => starterCopy[Math.floor(Math.random() * starterCopy.length)],
@@ -228,9 +322,13 @@ export default function ManagedAgentsHome({
   )
   const visibleTemplates = useMemo(
     () =>
-      randomizedTemplates.filter(
-        (template) => template.category === selectedCategory,
-      ),
+      randomizedTemplates
+        .filter((template) => template.category === selectedCategory)
+        .sort((left, right) => {
+          const leftAvailable = availableTemplateIds.has(left.id) ? 0 : 1
+          const rightAvailable = availableTemplateIds.has(right.id) ? 0 : 1
+          return leftAvailable - rightAvailable
+        }),
     [randomizedTemplates, selectedCategory],
   )
 
@@ -239,10 +337,20 @@ export default function ManagedAgentsHome({
       await navigator.clipboard.writeText(
         buildSetupPrompt(template, window.location.origin),
       )
-      setCopiedTemplateId(template.id)
+      setCopiedPromptId(template.id)
       toast.success(`${template.name} agent prompt copied`)
     } catch (error) {
       notifyError("Couldn't copy the agent prompt.", error)
+    }
+  }
+
+  async function copyCliStep(template: ManagedAgentTemplate, step: CliStep) {
+    try {
+      await navigator.clipboard.writeText(step.commands.join('\n'))
+      setCopiedCliStep(`${template.id}:${step.title}`)
+      toast.success(`${step.title} copied`)
+    } catch (error) {
+      notifyError("Couldn't copy this command.", error)
     }
   }
 
@@ -417,8 +525,9 @@ export default function ManagedAgentsHome({
                     deployed={deployedAgents.some(
                       (agent) => agent.id === template.id,
                     )}
-                    copied={copiedTemplateId === template.id}
-                    onCopy={() => void copySetupPrompt(template)}
+                    promptCopied={copiedPromptId === template.id}
+                    onCopyPrompt={() => void copySetupPrompt(template)}
+                    onShowCli={() => setCliTemplate(template)}
                   />
                 ))}
               </div>
@@ -426,6 +535,57 @@ export default function ManagedAgentsHome({
           )}
         </section>
       ) : null}
+
+      <Dialog
+        open={cliTemplate !== undefined}
+        onOpenChange={(open) => !open && setCliTemplate(undefined)}
+      >
+        <DialogContent className="max-h-[min(48rem,calc(100vh-2rem))] overflow-hidden sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Set up Gmail triage with the CLI</DialogTitle>
+            <DialogDescription>
+              Follow these commands in order to create, test, and deploy your
+              agent.
+            </DialogDescription>
+          </DialogHeader>
+          {cliTemplate ? (
+            <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
+              {buildCliSteps(cliTemplate, window.location.origin).map(
+                (step, index) => (
+                  <div key={step.title} className="flex gap-3">
+                    <div className="bg-primary/10 text-primary flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
+                      {index + 1}
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <p className="font-medium">{step.title}</p>
+                      <div className="relative">
+                        <pre className="bg-muted overflow-x-auto rounded-md border py-2 pr-11 pl-3 text-xs leading-5">
+                          <code>{step.commands.join('\n')}</code>
+                        </pre>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="bg-muted absolute top-1.5 right-1.5"
+                          aria-label={`Copy ${step.title.toLowerCase()} commands`}
+                          onClick={() => void copyCliStep(cliTemplate, step)}
+                        >
+                          {copiedCliStep ===
+                          `${cliTemplate.id}:${step.title}` ? (
+                            <Check />
+                          ) : (
+                            <Clipboard />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

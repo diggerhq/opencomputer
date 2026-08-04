@@ -107,6 +107,10 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     assert.match(connectionTool, /export const request = tool/);
     assert.match(connectionTool, /opencomputer\/fetch/);
     assert.match(connectionTool, /newAccount/);
+    assert.match(
+      connectionTool,
+      /schema\.enum\(\["gmail", "calendar", "drive", "sheets"\]\)/,
+    );
     assert.equal(connectionTool.includes('base.replace(/\\\/$/, "")'), true);
     const transpiledConnectionTool = ts.transpileModule(connectionTool, {
       compilerOptions: { module: ts.ModuleKind.ESNext },

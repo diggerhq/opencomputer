@@ -436,9 +436,9 @@ export const list = tool({
 
 export const request = tool({
   description:
-    "Ask the current user to connect an account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
+    "Ask the current user to connect an account. Use gmail for an email account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
   args: {
-    service: tool.schema.string(),
+    service: tool.schema.enum(["gmail", "calendar", "drive", "sheets"]),
     label: tool.schema.string().optional(),
     newAccount: tool.schema.boolean().optional(),
   },

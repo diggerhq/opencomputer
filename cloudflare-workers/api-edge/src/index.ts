@@ -43,7 +43,10 @@ import * as snapshots from "./snapshots";
 import * as templates from "./templates";
 import * as webhooks from "./webhooks";
 import { createAPIKey, hashAPIKey } from "./api_keys";
-import { proxyManagedAgents } from "./managed_agents";
+import {
+  handleManagedAgentChannelConnection,
+  proxyManagedAgents,
+} from "./managed_agents";
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
@@ -3200,6 +3203,9 @@ export default {
     // Managed Agents public API. Customers authenticate with their ordinary
     // OpenComputer API key; the edge replaces it with a short-lived org
     // assertion before calling the private deployment backend.
+    if (path.startsWith("/api/managed-agents/channel-connections/")) {
+      return handleManagedAgentChannelConnection(req, env);
+    }
     if (
       path === "/api/managed-agents" ||
       path.startsWith("/api/managed-agents/")

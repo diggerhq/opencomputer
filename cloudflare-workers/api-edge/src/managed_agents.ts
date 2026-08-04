@@ -267,6 +267,13 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/benchmarks/warm-pool") {
     return stripPrivateValues(body);
   }
+  if (method === "POST" && suffix === "/channel-connections/claim") {
+    return {
+      authorizationUrl: body.authorizationUrl,
+      expiresAt: body.expiresAt,
+      status: body.status,
+    };
+  }
   if (method === "GET" && suffix === "/deployments") {
     return {
       deployments: Array.isArray(body.deployments)
@@ -506,6 +513,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/me") return true;
   if (method === "POST" && suffix === "/deployments") return true;
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
+  if (method === "POST" && suffix === "/channel-connections/claim") {
+    return true;
+  }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
   if (
@@ -528,6 +538,129 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     method === "POST" &&
     /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate)$/.test(suffix)
   );
+}
+
+function channelConnectionPage(
+  action: string,
+  status: number,
+  error?: string,
+): Response {
+  const message = error
+    ? `<p role="alert">${error}</p>`
+    : `<p>Continue to securely connect an account to this agent in Slack.</p>
+       <form method="post" action="${action}">
+         <button type="submit">Continue</button>
+       </form>`;
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Connect account · OpenComputer</title><style>body{font:16px system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:2rem;color:#171717}h1{font-size:1.7rem}p{line-height:1.55;color:#555}button{font:inherit;background:#171717;color:#fff;border:0;border-radius:8px;padding:.8rem 1.2rem;cursor:pointer}</style></head><body><h1>Connect account</h1>${message}</body></html>`,
+    {
+      status,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      },
+    },
+  );
+}
+
+export async function handleManagedAgentChannelConnection(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(
+    /^\/api\/managed-agents\/channel-connections\/([^/]+)\/([a-f0-9]{32})$/i,
+  );
+  if (!match) {
+    return channelConnectionPage(
+      url.pathname,
+      404,
+      "This connection link is invalid.",
+    );
+  }
+  const accountId = decodeURIComponent(match[1]);
+  const token = match[2];
+  if (!/^[A-Za-z0-9._:-]{1,200}$/.test(accountId)) {
+    return channelConnectionPage(
+      url.pathname,
+      404,
+      "This connection link is invalid.",
+    );
+  }
+  if (request.method === "GET" || request.method === "HEAD") {
+    const response = channelConnectionPage(url.pathname, 200);
+    return request.method === "HEAD"
+      ? new Response(null, {
+          status: response.status,
+          headers: response.headers,
+        })
+      : response;
+  }
+  if (request.method !== "POST") {
+    return channelConnectionPage(
+      url.pathname,
+      405,
+      "This request is not supported.",
+    );
+  }
+  const internal = new Request(
+    new URL("/api/managed-agents/channel-connections/claim", url.origin),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    },
+  );
+  const response = await proxyManagedAgents(
+    internal,
+    env,
+    { orgID: accountId, userID: null },
+    "/api/managed-agents",
+  );
+  if (!response.ok) {
+    return channelConnectionPage(
+      url.pathname,
+      response.status === 404 ? 404 : 502,
+      response.status === 404
+        ? "This connection link has expired or was already used. Ask the agent for a new one."
+        : "OpenComputer could not start the connection. Please try again.",
+    );
+  }
+  const body = record(await response.json().catch(() => null));
+  if (body?.status === "connected") {
+    return channelConnectionPage(
+      url.pathname,
+      200,
+      "This account is already connected. You can return to Slack.",
+    );
+  }
+  let authorizationUrl: URL | null = null;
+  if (typeof body?.authorizationUrl === "string") {
+    try {
+      authorizationUrl = new URL(body.authorizationUrl);
+    } catch {
+      authorizationUrl = null;
+    }
+  }
+  if (!authorizationUrl || authorizationUrl.protocol !== "https:") {
+    return channelConnectionPage(
+      url.pathname,
+      502,
+      "OpenComputer could not start the connection. Please try again.",
+    );
+  }
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: authorizationUrl.toString(),
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 export async function proxyManagedAgents(
