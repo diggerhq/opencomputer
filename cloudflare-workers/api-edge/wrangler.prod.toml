@@ -58,9 +58,31 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opencomputer-edge-prod"
 
+# Edge claim (src/pool_stock.ts): per-cell stock of pre-reserved hot pool boxes
+# so default-shape creates are answered at the edge.
+[[durable_objects.bindings]]
+name = "POOL_STOCK"
+class_name = "PoolStock"
+script_name = "opencomputer-edge-prod"
+
+# VM-DO exec data plane (src/vm_session.ts): one DO per sandbox holds the
+# host-dialed WebSocket to the QEMU worker.
+[[durable_objects.bindings]]
+name = "VM_SESSIONS"
+class_name = "VmSession"
+script_name = "opencomputer-edge-prod"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PoolStock"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["VmSession"]
 
 # Secrets (set via `wrangler secret put --config wrangler.prod.toml`):
 #   SESSION_JWT_SECRET     — fresh prod HMAC (DO NOT reuse dev secret)
