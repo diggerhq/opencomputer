@@ -165,6 +165,9 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 			if target := s.poolTarget(); target > 0 {
 				s.reconcilePool(ctx, region, template, target)
 			}
+			// Backstop: destroy edge reservations a dead DO never released
+			// (see edge_claim.go for why destroy, not re-pool).
+			s.reapStaleEdgeReservations(ctx)
 		}
 	}
 }

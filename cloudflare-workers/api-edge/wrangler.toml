@@ -86,21 +86,33 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opensandbox-edge-dev"
 
+# Edge claim (src/pool_stock.ts): per-cell stock of pre-reserved hot pool
+# boxes so default-shape creates are answered at the edge. Kill switch:
+# EDGE_CLAIM = "0" in [vars].
+[[durable_objects.bindings]]
+name = "POOL_STOCK"
+class_name = "PoolStock"
+script_name = "opensandbox-edge-dev"
+
 # VM-DO exec data plane (vm_do_datapane_validation): one DO per sandbox holds the
-# host-dialed WebSocket to the QEMU worker. No script_name → same-script binding.
+# host-dialed WebSocket to the QEMU worker.
 [[durable_objects.bindings]]
 name = "VM_SESSIONS"
 class_name = "VmSession"
+script_name = "opensandbox-edge-dev"
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
 
-# The prior v2/v3 reconciliation entries were dropped after a clean `wrangler
-# delete` reset the migration ledger to v1; v2 below is the first real migration
-# since, adding the VmSession DO class.
 [[migrations]]
 tag = "v2"
+new_sqlite_classes = ["PoolStock"]
+
+# v3 adds the VmSession DO class (VM-DO exec data plane). Sits after PoolStock's
+# v2 to match the deployed ledger — do not renumber.
+[[migrations]]
+tag = "v3"
 new_sqlite_classes = ["VmSession"]
 
 # Secrets (set via `wrangler secret put`):

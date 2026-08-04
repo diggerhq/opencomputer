@@ -384,6 +384,15 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			if w, ok := s.manager.(guestWarmer); ok {
 				w.WarmGuest(ctx, sb.ID)
 			}
+			// Pre-grow to the default create shape (4GB/1cpu) so an edge claim
+			// of a default-shape request needs ZERO worker calls — the box is
+			// already the right size. virtio-mem is demand-backed, so guest-
+			// visible 4GB costs only the pages actually touched. No scale event:
+			// pool boxes are unbilled; billing opens at claim. Best-effort — a
+			// failed grow leaves a 1GB box the claim path grows as before.
+			if err := s.manager.SetResourceLimits(ctx, sb.ID, 0, 4096*1024*1024, 100000, 100000); err != nil {
+				log.Printf("grpc: pool pre-grow %s failed: %v (claim will grow)", sb.ID, err)
+			}
 			parked = "hot (running)"
 		} else if _, perr := pm.Pause(ctx, sb.ID); perr != nil {
 			_ = s.manager.Kill(context.Background(), sb.ID) // a box that won't pause is useless as a pool entry

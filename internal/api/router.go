@@ -343,6 +343,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if s.capTokenIssuer != nil && s.workerRegistry != nil {
 		internal := e.Group("/internal", s.capTokenMiddleware)
 		internal.POST("/sandboxes/create", s.internalCreateSandbox)
+		// Edge claim (see edge_claim.go): the api-edge PoolStock DO reserves
+		// pool boxes ahead of time and finalizes claims asynchronously.
+		internal.POST("/pool/edge-reserve", s.edgeReservePool)
+		internal.POST("/pool/edge-release", s.edgeReleasePool)
+		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
 		// Cross-cell paused-cap enforcement: the edge (which has the org-global
 		// view via D1) calls this to promote a specific paused sandbox to deep
 		// hibernation, reclaiming its worker RAM.
