@@ -28,6 +28,14 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -46,7 +54,12 @@ const categories = [
 ] as const
 
 type Category = (typeof categories)[number]
-type CopyAction = 'codex' | 'cli'
+type CopyAction = 'prompt' | 'cli'
+
+type CliStep = {
+  title: string
+  commands: string[]
+}
 
 const availableTemplateIds = new Set(['email-triage'])
 
@@ -133,42 +146,67 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 Connect only integrations that are actually available. Ask me for authorization when a connection requires it, never print credentials, and do not claim an integration or deployment succeeded unless the CLI confirms it.`
 }
 
-function buildCliInstructions(template: ManagedAgentTemplate, origin: string) {
+function buildCliSteps(
+  template: ManagedAgentTemplate,
+  origin: string,
+): CliStep[] {
   const firstPrompt =
     template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
-  return `# 1. Install the OpenComputer CLI
-npm install --global @opencomputer/cli
+  return [
+    {
+      title: 'Install the OpenComputer CLI',
+      commands: ['npm install --global @opencomputer/cli'],
+    },
+    {
+      title: 'Log in',
+      commands: [cliCommand(origin, 'login')],
+    },
+    {
+      title: 'Initialize the Gmail triage agent',
+      commands: [
+        'mkdir gmail-triage && cd gmail-triage',
+        cliCommand(origin, `init ${template.id} .`),
+        'npm install',
+      ],
+    },
+    {
+      title: 'Connect your Gmail account',
+      commands: [cliCommand(origin, 'connection add gmail --alias personal')],
+    },
+    {
+      title: 'Test the agent locally',
+      commands: [
+        cliCommand(origin, `session "${firstPrompt.replace(/"/g, '\\"')}"`),
+      ],
+    },
+    {
+      title: 'Deploy it',
+      commands: [cliCommand(origin, 'deploy --alias production')],
+    },
+  ]
+}
 
-# 2. Log in
-${cliCommand(origin, 'login')}
-
-# 3. Initialize the Gmail triage template in a new directory
-mkdir gmail-triage && cd gmail-triage
-${cliCommand(origin, `init ${template.id} .`)}
-npm install
-
-# 4. Connect your Gmail account
-${cliCommand(origin, 'connection add gmail --alias personal')}
-
-# 5. Test the agent locally
-${cliCommand(origin, `session "${firstPrompt.replace(/"/g, '\\"')}"`)}
-
-# 6. Deploy it
-${cliCommand(origin, 'deploy --alias production')}`
+function buildCliInstructions(template: ManagedAgentTemplate, origin: string) {
+  return buildCliSteps(template, origin)
+    .map(
+      (step, index) =>
+        `# ${index + 1}. ${step.title}\n${step.commands.join('\n')}`,
+    )
+    .join('\n\n')
 }
 
 function TemplateCard({
   template,
   deployed,
   copiedAction,
-  onCopyCodex,
-  onCopyCli,
+  onCopyPrompt,
+  onShowCli,
 }: {
   template: ManagedAgentTemplate
   deployed: boolean
   copiedAction?: CopyAction
-  onCopyCodex: () => void
-  onCopyCli: () => void
+  onCopyPrompt: () => void
+  onShowCli: () => void
 }) {
   const Icon = categoryIcons[template.category as Category] ?? ClipboardCheck
   const available = availableTemplateIds.has(template.id)
@@ -241,22 +279,17 @@ function TemplateCard({
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button
-                variant={copiedAction === 'codex' ? 'secondary' : 'default'}
-                onClick={onCopyCodex}
+                variant={copiedAction === 'prompt' ? 'secondary' : 'default'}
+                onClick={onCopyPrompt}
               >
-                {copiedAction === 'codex' ? <Check /> : <Clipboard />}
-                {copiedAction === 'codex'
-                  ? 'Codex prompt copied'
-                  : 'Copy Codex prompt'}
+                {copiedAction === 'prompt' ? <Check /> : <Clipboard />}
+                {copiedAction === 'prompt'
+                  ? 'Agent prompt copied'
+                  : 'Copy agent prompt'}
               </Button>
-              <Button
-                variant={copiedAction === 'cli' ? 'secondary' : 'outline'}
-                onClick={onCopyCli}
-              >
-                {copiedAction === 'cli' ? <Check /> : <Clipboard />}
-                {copiedAction === 'cli'
-                  ? 'CLI steps copied'
-                  : 'Copy CLI instructions'}
+              <Button variant="outline" onClick={onShowCli}>
+                <Clipboard />
+                View CLI instructions
               </Button>
             </div>
           </div>
@@ -281,6 +314,7 @@ export default function ManagedAgentsHome({
     templateId: string
     action: CopyAction
   }>()
+  const [cliTemplate, setCliTemplate] = useState<ManagedAgentTemplate>()
   const [categoryOrder] = useState(() => shuffled(categories))
   const [copy] = useState(
     () => starterCopy[Math.floor(Math.random() * starterCopy.length)],
@@ -319,8 +353,8 @@ export default function ManagedAgentsHome({
       await navigator.clipboard.writeText(
         buildSetupPrompt(template, window.location.origin),
       )
-      setCopied({ templateId: template.id, action: 'codex' })
-      toast.success(`${template.name} Codex prompt copied`)
+      setCopied({ templateId: template.id, action: 'prompt' })
+      toast.success(`${template.name} agent prompt copied`)
     } catch (error) {
       notifyError("Couldn't copy the agent prompt.", error)
     }
@@ -514,8 +548,8 @@ export default function ManagedAgentsHome({
                         ? copied.action
                         : undefined
                     }
-                    onCopyCodex={() => void copySetupPrompt(template)}
-                    onCopyCli={() => void copyCliInstructions(template)}
+                    onCopyPrompt={() => void copySetupPrompt(template)}
+                    onShowCli={() => setCliTemplate(template)}
                   />
                 ))}
               </div>
@@ -523,6 +557,58 @@ export default function ManagedAgentsHome({
           )}
         </section>
       ) : null}
+
+      <Dialog
+        open={cliTemplate !== undefined}
+        onOpenChange={(open) => !open && setCliTemplate(undefined)}
+      >
+        <DialogContent className="max-h-[min(48rem,calc(100vh-2rem))] overflow-hidden sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Set up Gmail triage with the CLI</DialogTitle>
+            <DialogDescription>
+              Follow these commands in order to create, test, and deploy your
+              agent.
+            </DialogDescription>
+          </DialogHeader>
+          {cliTemplate ? (
+            <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
+              {buildCliSteps(cliTemplate, window.location.origin).map(
+                (step, index) => (
+                  <div key={step.title} className="flex gap-3">
+                    <div className="bg-primary/10 text-primary flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
+                      {index + 1}
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <p className="font-medium">{step.title}</p>
+                      <pre className="bg-muted overflow-x-auto rounded-md border px-3 py-2 text-xs leading-5">
+                        <code>{step.commands.join('\n')}</code>
+                      </pre>
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                if (cliTemplate) void copyCliInstructions(cliTemplate)
+              }}
+            >
+              {copied?.templateId === cliTemplate?.id &&
+              copied?.action === 'cli' ? (
+                <Check />
+              ) : (
+                <Clipboard />
+              )}
+              {copied?.templateId === cliTemplate?.id &&
+              copied?.action === 'cli'
+                ? 'Instructions copied'
+                : 'Copy all instructions'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
