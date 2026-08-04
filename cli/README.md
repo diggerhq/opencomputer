@@ -2,7 +2,7 @@
 
 The OpenComputer CLI treats every agent as a normal source repository. A
 template creates editable instructions, TypeScript tools, connection
-declarations, channel code, a sandbox workspace, and committed agent identity.
+declarations, a sandbox workspace, and committed agent identity.
 
 [Bun](https://bun.sh/) 1.2 or newer is required. The CLI is still installed
 and published through npm:
@@ -19,6 +19,19 @@ opencomputer dev
 opencomputer session "Triage today's inbox."
 opencomputer deploy
 ```
+
+Initialize and test the PTO Calendar template the same way:
+
+```bash
+opencomputer init pto-calendar
+cd pto-calendar
+npm install
+opencomputer connection add calendar --alias work-calendar
+opencomputer session
+```
+
+The agent checks Calendar events and free/busy information before proposing an
+all-day PTO event. Creating the event requires explicit confirmation.
 
 Authentication is stored separately from the legacy `oc` CLI in
 `~/.opencomputer/config.json`. `OPENCOMPUTER_API_KEY` and
@@ -88,6 +101,7 @@ Add and manage account connections and agent channels from the same CLI:
 ```bash
 opencomputer connection add gmail --alias personal
 opencomputer connection add gmail --alias work
+opencomputer connection add calendar --alias work-calendar
 opencomputer connection list
 opencomputer connection remove work
 

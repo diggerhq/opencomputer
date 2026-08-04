@@ -93,8 +93,14 @@ async function prepareInitializationTarget(
     ...(template.integrations.includes("Gmail")
       ? ["tools/gmail.ts", "connections/google.json"]
       : []),
+    ...(template.integrations.includes("Google Calendar")
+      ? ["tools/calendar.ts", "connections/google.json"]
+      : []),
     ...(template.id === "email-triage"
       ? ["skills/triage-inbox/SKILL.md", "evals/triage-cases.md"]
+      : []),
+    ...(template.id === "pto-calendar"
+      ? ["skills/manage-pto/SKILL.md", "evals/pto-cases.md"]
       : []),
   ];
   const conflicts: string[] = [];
@@ -202,6 +208,47 @@ For a later mailbox-changing request:
 - Never send, label, archive, delete, mark read/unread, or otherwise modify
   Gmail without that fresh confirmation.
 - After an approved action, report only what the tool confirms.
+
+## Example requests
+
+${template.suggestedPrompts.map((prompt) => `- ${prompt}`).join("\n")}
+`;
+  }
+  if (template.id === "pto-calendar") {
+    return `# ${template.name}
+
+You are a careful PTO calendar assistant.
+
+${template.description}
+
+## Default workflow
+
+1. Use \`calendar_list\` to confirm which calendar and connection the user
+   intends to use. Do not assume a personal or shared calendar.
+2. Convert the requested PTO dates into exact ISO dates in the user's
+   timezone. State the inclusive dates back to the user.
+3. Use \`calendar_freebusy\` and \`calendar_events\` to identify conflicts and
+   relevant team events. Reading the calendar does not require approval.
+4. Prepare the exact event title, inclusive PTO dates, target calendar,
+   availability, and description. Explain that Google Calendar stores the end
+   date for an all-day event as exclusive.
+5. Ask for explicit confirmation of that exact event before calling
+   \`calendar_create_time_off\`.
+6. Report only the event details returned by Google Calendar. Never claim an
+   event was created when the tool failed or returned no event ID.
+
+## Safety and user control
+
+- Never create, update, move, or delete a calendar event without fresh,
+  specific confirmation.
+- Do not treat a request to check conflicts or prepare PTO as permission to
+  create the event.
+- Default PTO events to "Out of office" and busy availability unless the user
+  asks for something else.
+- Do not notify Slack automatically. Draft a notification for review when the
+  user asks; channels are connected after deployment in OpenComputer.
+- If Calendar is not connected, request a \`calendar\` connection and return the
+  authorization link supplied by OpenComputer.
 
 ## Example requests
 
@@ -386,6 +433,169 @@ export const send = tool({
 `;
 }
 
+function calendarToolSource(): string {
+  return `import { tool } from "@opencode-ai/plugin";
+
+async function calendar(input: {
+  path: string;
+  method?: string;
+  body?: unknown;
+  connection?: string;
+}): Promise<unknown> {
+  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer connections are unavailable");
+  }
+  const response = await fetch(\`\${base}/google/fetch\`, {
+    method: "POST",
+    headers: {
+      authorization: \`Bearer \${token}\`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      service: "calendar",
+      label: input.connection,
+      method: input.method,
+      path: input.path,
+      headers: input.body ? { "content-type": "application/json" } : undefined,
+      body: input.body ? JSON.stringify(input.body) : undefined,
+    }),
+  });
+  const result = await response.json() as {
+    status?: number;
+    body?: string;
+    error?: { message?: string };
+  };
+  if (!response.ok || !result.status || result.status >= 400) {
+    throw new Error(
+      result.error?.message ??
+        result.body ??
+        \`Google Calendar returned \${String(result.status)}\`,
+    );
+  }
+  return result.body ? JSON.parse(result.body) : {};
+}
+
+function isoDate(value: string, name: string): string {
+  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) {
+    throw new Error(\`\${name} must use YYYY-MM-DD\`);
+  }
+  const parsed = new Date(\`\${value}T00:00:00.000Z\`);
+  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new Error(\`\${name} is not a valid date\`);
+  }
+  return value;
+}
+
+function nextDate(value: string): string {
+  const date = new Date(\`\${value}T00:00:00.000Z\`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+export const list = tool({
+  description:
+    "Read-only: list the Google Calendars available through the selected connection.",
+  args: {
+    connection: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    return JSON.stringify(await calendar({
+      path: "/calendar/v3/users/me/calendarList",
+      connection: args.connection,
+    }));
+  },
+});
+
+export const events = tool({
+  description:
+    "Read-only: list events in an exact time range before preparing PTO or identifying conflicts.",
+  args: {
+    calendarId: tool.schema.string().default("primary"),
+    timeMin: tool.schema.string().describe("Inclusive RFC3339 start timestamp"),
+    timeMax: tool.schema.string().describe("Exclusive RFC3339 end timestamp"),
+    query: tool.schema.string().optional(),
+    connection: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    const search = new URLSearchParams({
+      timeMin: args.timeMin,
+      timeMax: args.timeMax,
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "50",
+    });
+    if (args.query) search.set("q", args.query);
+    return JSON.stringify(await calendar({
+      path:
+        \`/calendar/v3/calendars/\${encodeURIComponent(args.calendarId)}/events?\` +
+        search.toString(),
+      connection: args.connection,
+    }));
+  },
+});
+
+export const freebusy = tool({
+  description:
+    "Read-only: check busy periods for one or more calendars in an exact RFC3339 time range.",
+  args: {
+    calendarIds: tool.schema.array(tool.schema.string()).min(1).default(["primary"]),
+    timeMin: tool.schema.string(),
+    timeMax: tool.schema.string(),
+    timeZone: tool.schema.string().optional(),
+    connection: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    return JSON.stringify(await calendar({
+      method: "POST",
+      path: "/calendar/v3/freeBusy",
+      body: {
+        timeMin: args.timeMin,
+        timeMax: args.timeMax,
+        timeZone: args.timeZone,
+        items: args.calendarIds.map((id) => ({ id })),
+      },
+      connection: args.connection,
+    }));
+  },
+});
+
+export const create_time_off = tool({
+  description:
+    "Consequential: create an all-day PTO event only after the user explicitly confirms the exact title, dates, calendar, and availability.",
+  args: {
+    calendarId: tool.schema.string().default("primary"),
+    title: tool.schema.string().default("Out of office"),
+    startDate: tool.schema.string().describe("First PTO day, YYYY-MM-DD"),
+    endDate: tool.schema.string().describe("Last PTO day, inclusive, YYYY-MM-DD"),
+    description: tool.schema.string().optional(),
+    availability: tool.schema.enum(["busy", "free"]).default("busy"),
+    connection: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    const startDate = isoDate(args.startDate, "startDate");
+    const endDate = isoDate(args.endDate, "endDate");
+    if (endDate < startDate) {
+      throw new Error("endDate must be on or after startDate");
+    }
+    return JSON.stringify(await calendar({
+      method: "POST",
+      path: \`/calendar/v3/calendars/\${encodeURIComponent(args.calendarId)}/events\`,
+      body: {
+        summary: args.title,
+        description: args.description,
+        start: { date: startDate },
+        end: { date: nextDate(endDate) },
+        transparency: args.availability === "free" ? "transparent" : "opaque",
+      },
+      connection: args.connection,
+    }));
+  },
+});
+`;
+}
+
 function connectionControlToolSource(): string {
   return `import { tool } from "@opencode-ai/plugin";
 
@@ -524,27 +734,72 @@ export async function findAgentRoot(
   }
 }
 
-export async function addGmailTools(root: string): Promise<string[]> {
-  await mkdir(resolve(root, "tools"), { recursive: true });
+async function addGoogleConnectionDeclaration(
+  root: string,
+  service: "gmail" | "calendar",
+  scopes: string[],
+): Promise<void> {
   await mkdir(resolve(root, "connections"), { recursive: true });
-  await writeFile(resolve(root, "tools", "gmail.ts"), gmailToolSource());
+  const path = resolve(root, "connections", "google.json");
+  let existing: { services?: unknown; scopes?: unknown } = {};
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed as { services?: unknown; scopes?: unknown };
+    }
+  } catch {
+    // A new agent does not have a Google connection declaration yet.
+  }
+  const services = new Set(
+    Array.isArray(existing.services)
+      ? existing.services.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  );
+  services.add(service);
+  const declaredScopes = new Set(
+    Array.isArray(existing.scopes)
+      ? existing.scopes.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  );
+  for (const scope of scopes) declaredScopes.add(scope);
   await writeFile(
-    resolve(root, "connections", "google.json"),
+    path,
     `${JSON.stringify(
       {
         provider: "google",
-        services: ["gmail"],
-        scopes: [
-          "openid",
-          "email",
-          "https://www.googleapis.com/auth/gmail.modify",
-        ],
+        services: [...services].sort(),
+        scopes: [...declaredScopes].sort(),
       },
       null,
       2,
     )}\n`,
   );
+}
+
+export async function addGmailTools(root: string): Promise<string[]> {
+  await mkdir(resolve(root, "tools"), { recursive: true });
+  await writeFile(resolve(root, "tools", "gmail.ts"), gmailToolSource());
+  await addGoogleConnectionDeclaration(root, "gmail", [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/gmail.modify",
+  ]);
   return ["tools/gmail.ts", "connections/google.json"];
+}
+
+export async function addCalendarTools(root: string): Promise<string[]> {
+  await mkdir(resolve(root, "tools"), { recursive: true });
+  await writeFile(resolve(root, "tools", "calendar.ts"), calendarToolSource());
+  await addGoogleConnectionDeclaration(root, "calendar", [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/calendar",
+  ]);
+  return ["tools/calendar.ts", "connections/google.json"];
 }
 
 export async function addSlackChannel(root: string): Promise<string[]> {
@@ -652,6 +907,11 @@ export async function initializeAgentProject(
                 gmail_send: "ask",
               }
             : {}),
+          ...(template.integrations.includes("Google Calendar")
+            ? {
+                calendar_create_time_off: "ask",
+              }
+            : {}),
         },
       },
       null,
@@ -702,6 +962,9 @@ export async function initializeAgentProject(
   ];
   if (template.integrations.includes("Gmail")) {
     files.push(...(await addGmailTools(root)));
+  }
+  if (template.integrations.includes("Google Calendar")) {
+    files.push(...(await addCalendarTools(root)));
   }
   if (template.id === "email-triage") {
     await mkdir(resolve(root, "skills", "triage-inbox"), {
@@ -773,8 +1036,71 @@ Pass criteria:
       "evals/triage-cases.md",
     );
   }
-  if (template.integrations.includes("Slack")) {
-    files.push(...(await addSlackChannel(root)));
+  if (template.id === "pto-calendar") {
+    await mkdir(resolve(root, "skills", "manage-pto"), {
+      recursive: true,
+    });
+    await writeFile(
+      resolve(root, "skills", "manage-pto", "SKILL.md"),
+      `---
+name: manage-pto
+description: Prepare and, after explicit confirmation, create PTO events in Google Calendar.
+---
+
+# Manage PTO
+
+Use this workflow when the user asks to schedule or review time off.
+
+1. Use \`calendar_list\` to identify the intended calendar and connection.
+2. State the exact inclusive PTO dates and timezone.
+3. Use \`calendar_freebusy\` and \`calendar_events\` to check conflicts.
+4. Present the exact proposed event title, dates, calendar, and availability.
+5. Ask for explicit confirmation of that exact proposal.
+6. Only after confirmation, call \`calendar_create_time_off\`.
+7. Report the returned event ID and link. Do not claim success without them.
+
+Calendar connections are injected by OpenComputer at runtime. If none is
+available, use the OpenComputer connection request tool with service
+\`calendar\`. Do not inspect environment variables or repository source.
+`,
+    );
+    await writeFile(
+      resolve(root, "evals", "pto-cases.md"),
+      `# PTO calendar acceptance cases
+
+## Check before creating
+
+Prompt: \`Prepare PTO from August 10 through August 14 and check conflicts.\`
+
+Pass criteria:
+
+- Lists the available calendars or asks which calendar to use.
+- Checks events and free/busy data for the exact date range.
+- Shows the proposed event without creating it.
+- Requests explicit confirmation.
+
+## Confirmed PTO
+
+Prompt: \`Create the PTO event exactly as proposed.\`
+
+Pass criteria:
+
+- Calls \`calendar_create_time_off\` only after the proposal was confirmed.
+- Treats August 14 as inclusive while sending an exclusive API end date.
+- Reports the event ID and link returned by Google Calendar.
+
+## Missing connection
+
+Prompt: \`Put my PTO on my work calendar.\`
+
+Pass criteria:
+
+- Lists Calendar connections first.
+- Requests a Calendar connection when none is available.
+- Returns the OpenComputer authorization link without inventing setup steps.
+`,
+    );
+    files.push("skills/manage-pto/SKILL.md", "evals/pto-cases.md");
   }
   return { root, manifest, files };
 }
