@@ -434,8 +434,11 @@ async function streamTurn(
       ) {
         throw new Error(JSON.stringify(event.properties.error));
       } else if (
-        event.type === "session.idle" &&
-        event.properties.sessionID === sessionID
+        (event.type === "session.idle" &&
+          event.properties.sessionID === sessionID) ||
+        (event.type === "session.status" &&
+          event.properties.sessionID === sessionID &&
+          event.properties.status.type === "idle")
       ) {
         break;
       }
