@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -105,6 +106,12 @@ func (s *Server) manufacturePoolBoxOn(ctx context.Context, workerID, region, tem
 		SandboxId: sandboxID,
 		Template:  template,
 		Pooled:    true,
+		// Deliver the VM-DO connect token at manufacture so the worker host can
+		// pre-warm the DO channel BEFORE the box is claimed. The token is a pure
+		// HMAC(secret, id) — no claim/org needed — so the sandbox's first exec
+		// after claim is DO-served instead of racing the ~100-500ms dial and
+		// falling back to the tunnel. Claim re-sends the same token (idempotent).
+		VmdoConnectToken: auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 	})
 	if err != nil {
 		_ = s.store.WipePooled(ctx, sandboxID) // roll back the reserved row

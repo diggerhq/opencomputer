@@ -402,6 +402,12 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			s.router.Register(sb.ID, 0) // persistent — no idle timeout while parked
 			s.router.MarkPooled(sb.ID)
 		}
+		// Pre-warm the VM-DO exec channel now, while the box is still an unclaimed
+		// pool entry, so the sandbox's FIRST exec after claim is DO-served rather
+		// than racing the dial. The token is delivered even for pooled manufacture
+		// (it's a pure HMAC(secret, id), no claim needed); ClaimSandbox re-issues
+		// start() with the same token — a no-op since this dialer is already live.
+		s.doDialers.start(sb.ID, req.VmdoConnectToken)
 		log.Printf("grpc: manufactured pool box %s (template=%s) — %s", sb.ID, cfg.Template, parked)
 		return &pb.CreateSandboxResponse{
 			SandboxId:     sb.ID,
