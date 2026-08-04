@@ -1,0 +1,63 @@
+---
+title: 'Scale Sandbox'
+api: 'POST /api/sandboxes/{id}/scale'
+---
+
+Manually resize a running sandbox. Any subset of `memoryMB` and `diskMB` may be supplied; unspecified dimensions are left alone. Combining them applies both changes atomically and records a single billing event.
+
+For sandbox-driven or platform-driven resize, see the [Elasticity guide](/sandboxes/elasticity).
+
+<ParamField path="id" type="string" required>
+  Sandbox ID
+</ParamField>
+
+<ParamField body="memoryMB" type="integer">
+  Target memory in MB. Must be an allowed tier: `1024`, `4096`, `8192`, `16384`, `32768`, or `65536`. CPU scales proportionally (1 vCPU per ~4 GB up to 16 GB / 4 vCPU). Memory grow above the VM's initial ceiling is served by virtio-mem hotplug; shrink below the guest's working set is refused with `oom_floor`.
+</ParamField>
+
+<ParamField body="diskMB" type="integer">
+  Target workspace disk size in MB. Range `20480`–`262144` (20 GB–256 GB). Grow is applied online (QMP `block_resize` + `resize2fs`) and completes in ~1–2 seconds without pausing the guest. The new size persists across hibernate, wake, fork, and migration. Shrink is refused when the guest filesystem's used bytes leave less than a 500 MB safety margin below the target (`shrink_refused`).
+</ParamField>
+
+At least one of `memoryMB` or `diskMB` must be provided.
+
+## Side effects
+
+A manual **memory** scale disables the per-sandbox autoscaler (explicit user intent overrides the loop). A disk-only scale leaves the autoscaler alone — autoscale doesn't drive disk. Re-enable memory autoscale via [`PUT /api/sandboxes/{id}/autoscale`](/api-reference/sandboxes) if you want size to track load again.
+
+## Response
+
+<ResponseExample>
+```json 200 Combined resize
+{
+  "sandboxID": "sb-abc123",
+  "workerID": "w-use2-abc123",
+  "memoryMB": 8192,
+  "cpuPercent": 200,
+  "diskMB": 40960,
+  "migrated": false,
+  "ok": true,
+  "autoscaleDisabled": false
+}
+```
+</ResponseExample>
+
+Fields present in the response reflect the dimensions that were changed. A disk-only scale returns `memoryMB: 0` and `cpuPercent: 0` (no memory change) plus `diskMB` set to the applied value.
+
+`migrated: true` indicates the sandbox was moved to a larger worker to satisfy a memory grow request that the current worker couldn't fit.
+
+## Errors
+
+- **`400 Bad Request`** — no dimension supplied, `diskMB` below the 20 GB floor / above the 256 GB cap, or `memoryMB` not in the allowed tier table.
+- **`402 Payment Required`** — requested size exceeds the org's plan cap (free tier is capped at 4 GB memory / 20 GB disk).
+- **`403 Forbidden` `scaling_locked`** — the sandbox has a scaling lock active. Unlock via [`PUT /api/sandboxes/{id}/scaling-lock`](/api-reference/sandboxes) first.
+- **`403 Forbidden`** — `diskMB` exceeds the org's `MaxDiskMB` cap.
+- **`409 Conflict` `oom_floor`** — memory shrink would force a guest OOM-kill (current working set exceeds the requested size). Free memory inside the guest, then retry.
+- **`409 Conflict` `sandbox_hibernated`** — sandbox is hibernated. Call [`POST /api/sandboxes/{id}/wake`](/api-reference/sandboxes/wake) first, then retry.
+- **`shrink_refused`** (500 with structured code) — a disk shrink would leave less than 500 MB above the guest's used bytes. Free space inside the guest first.
+
+## Billing
+
+Every accepted scale records a `sandbox_scale_events` row with the resulting `memory_mb`, `cpu_percent`, and `disk_mb`. Usage aggregation groups by all three dimensions, so a mixed sequence of resizes over a billing period is attributed against the correct envelope for each slice.
+
+Disk over the 20 GB included allowance is billed at **$0.0000001 per GB-second (≈ $0.26 per GB-month)** for the lifetime of the sandbox — running or hibernated.

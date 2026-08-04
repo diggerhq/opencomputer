@@ -556,27 +556,41 @@ export class Sandbox {
   }
 
   /**
-   * Manually resize the sandbox to a specific memory tier. CPU is bundled
-   * with memory per the platform's tier table (e.g. 8 GB → 4 vCPU). Allowed
-   * tiers: 1024, 4096, 8192, 16384, 32768, 65536 MB.
+   * Manually resize the sandbox. Any subset of `memoryMB` and `diskMB` may be
+   * supplied; unspecified dimensions are left alone. Combining them applies
+   * both changes atomically and records a single billing event.
    *
-   * Side effect: a manual scale disables autoscale on this sandbox. If you
-   * want size to track load again, call `setAutoscale({ enabled: true, ... })`
-   * after.
+   * `memoryMB` bundles CPU per the platform's tier table (e.g. 8 GB → 4 vCPU);
+   * allowed tiers are 1024, 4096, 8192, 16384, 32768, 65536 MB. `diskMB` grows
+   * (or, guarded, shrinks) the customer workspace disk online — 20480–262144
+   * (20 GB–256 GB). The new size persists across hibernate, wake, fork, and
+   * migration.
+   *
+   * Side effect: a manual **memory** scale disables autoscale on this sandbox
+   * (call `setAutoscale({ enabled: true, ... })` to turn it back on). A
+   * disk-only scale leaves autoscale alone — autoscale doesn't drive disk.
    *
    * Throws `ScalingLockedError` if the sandbox has a scaling lock; throws
-   * `PlanLimitError` if the requested size exceeds your plan cap.
+   * `PlanLimitError` if the requested size exceeds your plan cap. Disk shrink
+   * is refused (400) when the guest filesystem's used bytes leave <500 MB
+   * safety margin below the target.
    *
    * [HTTP API →](/api-reference/sandboxes/scale)
    */
-  async scale(opts: { memoryMB: number }): Promise<ScaleResult> {
+  async scale(opts: { memoryMB?: number; diskMB?: number }): Promise<ScaleResult> {
+    if (!opts.memoryMB && !opts.diskMB) {
+      throw new Error("scale: at least one of memoryMB or diskMB must be provided");
+    }
+    const body: { memoryMB?: number; diskMB?: number } = {};
+    if (opts.memoryMB) body.memoryMB = opts.memoryMB;
+    if (opts.diskMB) body.diskMB = opts.diskMB;
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scale`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
       },
-      body: JSON.stringify({ memoryMB: opts.memoryMB }),
+      body: JSON.stringify(body),
     });
 
     if (!resp.ok) {

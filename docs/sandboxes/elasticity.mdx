@@ -3,7 +3,9 @@ title: "Elasticity"
 description: "Dynamically scale sandbox memory and CPU — automatically, manually, or via the in-VM API"
 ---
 
-A sandbox's memory and CPU can be resized at runtime. The platform's recommended path is **Autoscaling** — opt the sandbox in once and we resize it for you based on observed memory pressure. Lower-level controls are also available if you want to drive sizing yourself or freeze it.
+A sandbox's memory, CPU, and workspace disk can be resized at runtime. The platform's recommended path is **Autoscaling** — opt the sandbox in once and we resize it for you based on observed memory pressure. Lower-level controls are also available if you want to drive sizing yourself or freeze it.
+
+Autoscale covers memory + CPU. Disk is manual only — grow it explicitly via `scale({ diskMB })` when your workload needs more room. The new size persists across hibernate, wake, fork, and migration.
 
 CPU scales proportionally to memory in all modes (1 vCPU per ~4 GB up to 16 GB / 4 vCPU). The permissible memory tiers are:
 
@@ -109,35 +111,57 @@ curl -sf "$API/api/sandboxes/$SANDBOX_ID/autoscale" -H "X-API-Key: $API_KEY"
 
 ## Manual Scaling (Control Plane)
 
-When you want to resize once — predictable size for a benchmark, a one-off scale-up before a known-heavy task, an operator response to an alert — call `scale` from your application or operator tooling:
+When you want to resize once — predictable size for a benchmark, a one-off scale-up before a known-heavy task, an operator response to an alert — call `scale` from your application or operator tooling.
+
+Any subset of `memoryMB` and `diskMB` may be supplied; unspecified dimensions are left alone. Combining them in one call applies both changes atomically and records a single billing event.
 
 <CodeGroup>
 ```typescript TypeScript
+// Resize memory only
 await sandbox.scale({ memoryMB: 4096 });
+
+// Grow workspace disk only
+await sandbox.scale({ diskMB: 40960 });
+
+// Both at once (atomic)
+await sandbox.scale({ memoryMB: 8192, diskMB: 61440 });
 ```
 
 ```python Python
 await sandbox.scale(memory_mb=4096)
+await sandbox.scale(disk_mb=40960)
+await sandbox.scale(memory_mb=8192, disk_mb=61440)
 ```
 
 ```bash CLI
-oc sandbox scale sb-abc123 4096
+oc sandbox scale sb-abc123 4096              # memory only
+oc sandbox scale sb-abc123 --disk-mb 40960   # disk only
 ```
 
 ```bash HTTP
 curl -sf -X POST "$API/api/sandboxes/$SANDBOX_ID/scale" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"memoryMB": 4096}'
+  -d '{"memoryMB": 8192, "diskMB": 61440}'
 ```
 </CodeGroup>
 
-A manual scale **disables autoscale** on the sandbox — explicit user intent overrides the loop. Re-enable it later if you want size to track load again.
+A manual **memory** scale disables autoscale on the sandbox — explicit user intent overrides the loop. Re-enable it later if you want size to track load again. A disk-only scale leaves autoscale alone (autoscale doesn't drive disk).
 
-The endpoint can return:
+### Disk sizing behavior
+
+Disk grow completes in ~1–2 seconds — the qcow2 backing file is extended and the ext4 filesystem is resized online without pausing the guest. The new size persists through hibernate, wake, fork, and migration; nothing you need to do afterwards.
+
+**Billing.** Disk over the 20 GB included allowance is billed at **$0.0000001 per GB-second (≈ $0.26 per GB-month)** for the lifetime of the sandbox — running or hibernated. Growing a sandbox to 40 GB and then hibernating it still meters the 20 GB overage.
+
+**Shrink is guarded.** A shrink is refused if the guest filesystem's used bytes would leave less than a 500 MB safety margin below the new size. Free space inside the guest first (delete files, then wait for the fs metadata to settle) or fork to a smaller sandbox instead.
+
+### Response codes
 
 - **403 `scaling_locked`** — the sandbox is locked. See [Locking Resources](#locking-resources).
-- **409 `oom_floor`** — the requested size would force a guest OOM-kill because the current working set exceeds it. Free memory inside the guest, then retry.
+- **409 `oom_floor`** — the requested memory size would force a guest OOM-kill because the current working set exceeds it. Free memory inside the guest, then retry.
+- **409 `sandbox_hibernated`** — the sandbox is hibernated. Call `POST /wake` first, then retry the resize.
+- **`shrink_refused`** — a disk shrink would leave less than 500 MB free above the guest's used bytes.
 - **402 Payment Required** — the requested size exceeds your plan cap.
 
 ## In-VM Scaling

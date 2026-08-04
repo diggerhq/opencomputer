@@ -3532,8 +3532,13 @@ type SetSandboxLimitsRequest struct {
 	MaxMemoryBytes int64                  `protobuf:"varint,3,opt,name=max_memory_bytes,json=maxMemoryBytes,proto3" json:"max_memory_bytes,omitempty"`
 	CpuMaxUsec     int64                  `protobuf:"varint,4,opt,name=cpu_max_usec,json=cpuMaxUsec,proto3" json:"cpu_max_usec,omitempty"`
 	CpuPeriodUsec  int64                  `protobuf:"varint,5,opt,name=cpu_period_usec,json=cpuPeriodUsec,proto3" json:"cpu_period_usec,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Target customer-disk size in bytes. 0 = leave unchanged (existing callers
+	// that only adjust memory/cpu remain unaffected). Grow or shrink is applied
+	// via qemu-img resize → QMP block_resize → guest resize2fs; shrink is
+	// refused if the guest filesystem's used bytes leave no safety margin.
+	DiskBytes     int64 `protobuf:"varint,6,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SetSandboxLimitsRequest) Reset() {
@@ -3597,6 +3602,13 @@ func (x *SetSandboxLimitsRequest) GetCpuMaxUsec() int64 {
 func (x *SetSandboxLimitsRequest) GetCpuPeriodUsec() int64 {
 	if x != nil {
 		return x.CpuPeriodUsec
+	}
+	return 0
+}
+
+func (x *SetSandboxLimitsRequest) GetDiskBytes() int64 {
+	if x != nil {
+		return x.DiskBytes
 	}
 	return 0
 }
@@ -4756,7 +4768,7 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12#\n" +
 	"\rcheckpoint_id\x18\x02 \x01(\tR\fcheckpointId\"5\n" +
 	"\x19RestoreCheckpointResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xc7\x01\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xe6\x01\n" +
 	"\x17SetSandboxLimitsRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x19\n" +
@@ -4764,7 +4776,9 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x10max_memory_bytes\x18\x03 \x01(\x03R\x0emaxMemoryBytes\x12 \n" +
 	"\fcpu_max_usec\x18\x04 \x01(\x03R\n" +
 	"cpuMaxUsec\x12&\n" +
-	"\x0fcpu_period_usec\x18\x05 \x01(\x03R\rcpuPeriodUsec\"\x1a\n" +
+	"\x0fcpu_period_usec\x18\x05 \x01(\x03R\rcpuPeriodUsec\x12\x1d\n" +
+	"\n" +
+	"disk_bytes\x18\x06 \x01(\x03R\tdiskBytes\"\x1a\n" +
 	"\x18SetSandboxLimitsResponse\";\n" +
 	"\x14PreCopyDrivesRequest\x12\x1d\n" +
 	"\n" +

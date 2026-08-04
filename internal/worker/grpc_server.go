@@ -1501,21 +1501,37 @@ func downloadAndExtract(ctx context.Context, store *storage.CheckpointStore, s3K
 	return extract(tmpPath, dest)
 }
 
-// SetSandboxLimits adjusts resource limits (memory, CPU, PIDs) on a running sandbox.
-// Memory increases trigger virtio-mem hotplug; decreases adjust cgroup limits only.
+// SetSandboxLimits adjusts resource limits (memory, CPU, PIDs, disk) on a
+// running sandbox. Memory increases trigger virtio-mem hotplug; decreases
+// adjust cgroup limits only. Disk resizes qemu-img → block_resize → resize2fs
+// (grow always; shrink guarded by guest fs usage).
+//
+// Any of the three (memory, cpu, disk) may be zero to leave that dimension
+// unchanged. RecordScaleEvent inherits from the prior event when a dimension
+// is unspecified.
 func (s *GRPCServer) SetSandboxLimits(ctx context.Context, req *pb.SetSandboxLimitsRequest) (*pb.SetSandboxLimitsResponse, error) {
-	if err := s.manager.SetResourceLimits(ctx, req.SandboxId, req.MaxPids, req.MaxMemoryBytes, req.CpuMaxUsec, req.CpuPeriodUsec); err != nil {
-		return nil, fmt.Errorf("set resource limits: %w", err)
+	if req.MaxMemoryBytes > 0 || req.CpuMaxUsec > 0 {
+		if err := s.manager.SetResourceLimits(ctx, req.SandboxId, req.MaxPids, req.MaxMemoryBytes, req.CpuMaxUsec, req.CpuPeriodUsec); err != nil {
+			return nil, fmt.Errorf("set resource limits: %w", err)
+		}
 	}
 
-	// Record scale event for billing. Disk size is not affected by SetSandboxLimits;
-	// pass 0 so RecordScaleEvent inherits disk_mb from the prior event.
-	if s.store != nil && req.MaxMemoryBytes > 0 {
+	if req.DiskBytes > 0 {
+		if err := s.manager.ResizeSandboxDisk(ctx, req.SandboxId, req.DiskBytes); err != nil {
+			return nil, fmt.Errorf("resize disk: %w", err)
+		}
+	}
+
+	// Record scale event for billing. GetOrgUsage groups by (memory_mb, cpu_percent,
+	// disk_mb); dimensions the caller didn't touch stay at 0 so RecordScaleEvent
+	// inherits them from the prior event, keeping usage attribution correct.
+	if s.store != nil && (req.MaxMemoryBytes > 0 || req.DiskBytes > 0) {
 		memMB := int(req.MaxMemoryBytes / (1024 * 1024))
 		cpuPct := int(req.CpuMaxUsec / 1000) // 100000us → 100%
+		diskMB := int(req.DiskBytes / (1024 * 1024))
 		orgID, _ := s.store.GetSandboxOrgID(ctx, req.SandboxId)
 		if orgID != "" {
-			if err := s.store.RecordScaleEvent(ctx, req.SandboxId, orgID, memMB, cpuPct, 0); err != nil {
+			if err := s.store.RecordScaleEvent(ctx, req.SandboxId, orgID, memMB, cpuPct, diskMB); err != nil {
 				log.Printf("grpc: failed to record scale event for %s: %v", req.SandboxId, err)
 			}
 		}

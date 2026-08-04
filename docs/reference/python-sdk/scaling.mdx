@@ -21,20 +21,27 @@ CPU follows memory per the platform's tier table. You don't pick CPU separately.
 
 ---
 
-## `sandbox.scale(memory_mb)`
+## `sandbox.scale(memory_mb=..., disk_mb=...)`
 
-Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
+Manually resize the sandbox. Any subset of the dimensions may be supplied; unspecified dimensions are left alone. Combining them applies both changes atomically and records a single billing event. [HTTP API →](/api-reference/sandboxes/scale)
 
-<ParamField body="memory_mb" type="int" required>
-  Target memory in MB.
+<ParamField body="memory_mb" type="int">
+  Target memory in MB (allowed tiers: 1024, 4096, 8192, 16384, 32768, 65536). CPU scales proportionally.
 </ParamField>
 
-**Returns:** `dict` with `sandboxID`, `memoryMB`, `cpuPercent`.
+<ParamField body="disk_mb" type="int">
+  Target workspace disk size in MB (20480–262144, i.e. 20–256 GB). Grow is online; shrink is refused if the guest fs would leave <500 MB safety margin.
+</ParamField>
+
+**Returns:** `dict` with `sandboxID`, and whichever of `memoryMB` / `cpuPercent` / `diskMB` were applied.
 
 **Raises:**
 
+- `ValueError` — neither `memory_mb` nor `disk_mb` was supplied.
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `PlanLimitError` — `memory_mb` exceeds the org's plan cap.
+- `PlanLimitError` — requested size exceeds the org's plan cap.
+- Error with `code="sandbox_hibernated"` — sandbox is hibernated; call `sandbox.wake()` first.
+- Error with `code="shrink_refused"` — disk shrink would leave less than 500 MB above the guest fs used bytes.
 
 ```python
 from opencomputer import Sandbox, ScalingLockedError, PlanLimitError
@@ -42,8 +49,9 @@ from opencomputer import Sandbox, ScalingLockedError, PlanLimitError
 sandbox = await Sandbox.connect("sb-abc123")
 
 try:
-    result = await sandbox.scale(memory_mb=8192)
-    print(f"scaled to {result['memoryMB']}MB / {result['cpuPercent']}% CPU")
+    # Grow memory and disk in one call
+    result = await sandbox.scale(memory_mb=8192, disk_mb=40960)
+    print(f"scaled to {result['memoryMB']}MB / {result['cpuPercent']}% CPU, disk {result['diskMB']}MB")
 except ScalingLockedError:
     print("sandbox is locked — unlock to scale")
 except PlanLimitError:
