@@ -47,6 +47,7 @@ type Server struct {
 	store              *db.Store                         // nil in combined/dev mode without PG
 	jwtIssuer          *auth.JWTIssuer                   // nil if JWT not configured
 	capTokenIssuer     *auth.JWTIssuer                   // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
+	sessionJWTSecret   string                            // raw shared edge↔CP HMAC secret; mints per-sandbox VM-DO connect tokens (see auth.MintVMDOConnectToken)
 	requireCapToken    bool                              // derived from PRO_BILLING_AUTHORITY=edge: reject direct API-key creates that bypass edge billing (split mode only)
 	cfAdminSecret      string                            // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
 	cfEventSecret      string                            // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
@@ -190,6 +191,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.jwtIssuer = opts.JWTIssuer
 		if opts.SessionJWTSecret != "" {
 			s.capTokenIssuer = auth.NewJWTIssuer(opts.SessionJWTSecret)
+			s.sessionJWTSecret = opts.SessionJWTSecret // raw key for VM-DO connect-token minting
 		}
 		s.requireCapToken = opts.RequireCapToken
 		s.cfAdminSecret = opts.CFAdminSecret
@@ -341,6 +343,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if s.capTokenIssuer != nil && s.workerRegistry != nil {
 		internal := e.Group("/internal", s.capTokenMiddleware)
 		internal.POST("/sandboxes/create", s.internalCreateSandbox)
+		// Edge claim (see edge_claim.go): the api-edge PoolStock DO reserves
+		// pool boxes ahead of time and finalizes claims asynchronously.
+		internal.POST("/pool/edge-reserve", s.edgeReservePool)
+		internal.POST("/pool/edge-release", s.edgeReleasePool)
+		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
 		// Cross-cell paused-cap enforcement: the edge (which has the org-global
 		// view via D1) calls this to promote a specific paused sandbox to deep
 		// hibernation, reclaiming its worker RAM.

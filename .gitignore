@@ -81,3 +81,9 @@ deploy/azure/.dev-vector-token-*
 /server
 /seed-dev-secrets
 /backfill
+
+# Claude Code agent memory (session-local, not source)
+/memory/
+
+# Per-env wrangler config generated for CI deploys (not source)
+cloudflare-workers/api-edge/wrangler.ci.toml

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -99,7 +100,7 @@ func (s *Store) CountPooled(ctx context.Context, region, template string) (int, 
 func (s *Store) CountPooledOnWorker(ctx context.Context, workerID, template string) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM sandbox_sessions WHERE status='pooled' AND worker_id=$1 AND template=$2`,
+		`SELECT COUNT(*) FROM sandbox_sessions WHERE status IN ('pooled','edge_reserved') AND worker_id=$1 AND template=$2`,
 		workerID, template,
 	).Scan(&n)
 	return n, err
@@ -111,7 +112,7 @@ func (s *Store) CountPooledOnWorker(ctx context.Context, workerID, template stri
 // must not block the worker's termination.
 func (s *Store) ListPooledOnWorker(ctx context.Context, workerID string) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT sandbox_id FROM sandbox_sessions WHERE status='pooled' AND worker_id=$1`, workerID)
+		`SELECT sandbox_id FROM sandbox_sessions WHERE status IN ('pooled','edge_reserved') AND worker_id=$1`, workerID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +128,123 @@ func (s *Store) ListPooledOnWorker(ctx context.Context, workerID string) ([]stri
 	return ids, rows.Err()
 }
 
-// WipePooled marks a pooled box stopped (worker drain). Guarded on
-// status='pooled' so a box claimed in the meantime is never clobbered.
+// WipePooled marks a pooled box stopped (worker drain). Guarded on the parked
+// statuses (pooled / edge_reserved) so a box claimed in the meantime is never
+// clobbered.
 func (s *Store) WipePooled(ctx context.Context, sandboxID string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE sandbox_sessions SET status='stopped', stopped_at=now(), hibernation_mode=NULL
-		 WHERE sandbox_id=$1 AND status='pooled'`, sandboxID)
+		 WHERE sandbox_id=$1 AND status IN ('pooled','edge_reserved')`, sandboxID)
 	return err
+}
+
+// ReservePooledForEdge flips up to n pooled boxes to status='edge_reserved' and
+// returns them — the edge PoolStock Durable Object's restock call. Reserved
+// boxes are invisible to ClaimPooledSession (which filters status='pooled'), so
+// the edge and CP claim paths can never hand the same box to two customers.
+// A reservation that is never claimed is returned to the pool by
+// ReleaseStaleEdgeReservations (updated_at is bumped by the status trigger).
+func (s *Store) ReservePooledForEdge(ctx context.Context, region, template string, n int) ([]ClaimedBox, error) {
+	rows, err := s.pool.Query(ctx,
+		`UPDATE sandbox_sessions SET status='edge_reserved'
+		 WHERE sandbox_id IN (
+		     SELECT sandbox_id FROM sandbox_sessions
+		     WHERE status='pooled' AND region=$1 AND template=$2
+		     ORDER BY started_at ASC
+		     LIMIT $3 FOR UPDATE SKIP LOCKED
+		 )
+		 RETURNING sandbox_id, worker_id`,
+		region, template, n,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reserve pooled for edge: %w", err)
+	}
+	defer rows.Close()
+	var boxes []ClaimedBox
+	for rows.Next() {
+		var b ClaimedBox
+		if err := rows.Scan(&b.SandboxID, &b.WorkerID); err != nil {
+			return nil, err
+		}
+		boxes = append(boxes, b)
+	}
+	return boxes, rows.Err()
+}
+
+// ClaimReservedSession binds a specific edge_reserved box to a customer —
+// the finalize half of an edge claim (the edge already returned the 201; this
+// is the async bookkeeping). Mirrors ClaimPooledSession's rebind but by
+// sandbox_id: the status guard means a stale-reservation reap or a worker
+// drain in the window loses the race cleanly (we error, the caller marks the
+// customer-visible session failed).
+func (s *Store) ClaimReservedSession(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, config, metadata json.RawMessage, secretStoreID *uuid.UUID) (*ClaimedBox, error) {
+	if len(config) == 0 {
+		config = json.RawMessage(`{}`)
+	}
+	if len(metadata) == 0 {
+		metadata = json.RawMessage(`{}`)
+	}
+	var box ClaimedBox
+	err := s.pool.QueryRow(ctx,
+		`UPDATE sandbox_sessions SET
+		     org_id = $1, user_id = $2, secret_store_id = $3, config = $4, metadata = $5,
+		     status = 'pending', hibernation_mode = NULL, paused_at = NULL
+		 WHERE sandbox_id = $6 AND status = 'edge_reserved'
+		 RETURNING sandbox_id, worker_id`,
+		orgID, userID, secretStoreID, config, metadata, sandboxID,
+	).Scan(&box.SandboxID, &box.WorkerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrPoolEmpty
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim reserved session: %w", err)
+	}
+	return &box, nil
+}
+
+// ReleaseEdgeReservations returns specific edge_reserved boxes to the pool.
+// ONLY safe for boxes the edge explicitly discarded from its stock BEFORE
+// handing them to any customer — a popped entry has a minted sandbox token in
+// the wild, and a re-pooled box with a live foreign token would be a
+// cross-tenant hole. The status guard skips anything already claimed.
+func (s *Store) ReleaseEdgeReservations(ctx context.Context, sandboxIDs []string) (int, error) {
+	if len(sandboxIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status='pooled'
+		 WHERE sandbox_id = ANY($1) AND status='edge_reserved'`,
+		sandboxIDs,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("release edge reservations: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ListStaleEdgeReservations returns edge_reserved boxes older than ttl — the
+// destroy-backstop reaper's input. Unlike ReleaseEdgeReservations these are
+// DESTROYED, not re-pooled: the CP can't prove the edge never minted a token
+// for them (a dead Durable Object can't release its stock), and a re-issued
+// box with a live foreign token would be cross-tenant access. Remanufacture
+// is cheap; the hole is not.
+func (s *Store) ListStaleEdgeReservations(ctx context.Context, ttl time.Duration) ([]ClaimedBox, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT sandbox_id, worker_id FROM sandbox_sessions
+		 WHERE status='edge_reserved' AND updated_at < now() - $1::interval`,
+		fmt.Sprintf("%d seconds", int(ttl.Seconds())),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list stale edge reservations: %w", err)
+	}
+	defer rows.Close()
+	var boxes []ClaimedBox
+	for rows.Next() {
+		var b ClaimedBox
+		if err := rows.Scan(&b.SandboxID, &b.WorkerID); err != nil {
+			return nil, err
+		}
+		boxes = append(boxes, b)
+	}
+	return boxes, rows.Err()
 }

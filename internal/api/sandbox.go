@@ -691,12 +691,13 @@ func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.S
 	grpcCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	claimResp, err := client.ClaimSandbox(grpcCtx, &pb.ClaimSandboxRequest{
-		SandboxId:  box.SandboxID,
-		Timeout:    int32(cfg.Timeout),
-		Envs:       cfg.Envs,
-		SecretEnvs: cfg.SecretEnvs,
-		MemoryMb:   int32(cfg.MemoryMB),
-		CpuCount:   int32(cfg.CpuCount),
+		SandboxId:        box.SandboxID,
+		Timeout:          int32(cfg.Timeout),
+		Envs:             cfg.Envs,
+		SecretEnvs:       cfg.SecretEnvs,
+		MemoryMb:         int32(cfg.MemoryMB),
+		CpuCount:         int32(cfg.CpuCount),
+		VmdoConnectToken: auth.MintVMDOConnectToken(s.sessionJWTSecret, box.SandboxID),
 	})
 	if err != nil {
 		log.Printf("sandbox: ClaimSandbox %s failed (%v) — failing it + cold create", box.SandboxID, err)
@@ -854,9 +855,14 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTarget() > 0 &&
 		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
 		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
+		// A no-template create wants a base-golden box, which is exactly what the
+		// pool manufactures. Default to poolTemplateName() (the same value the
+		// manufacture + reconciler use — "base" unless overridden) so the claim
+		// query matches the pooled rows; the prior hardcoded "default" never
+		// matched, sending every default-shape origin create to the cold path.
 		poolTemplate := cfg.Template
 		if poolTemplate == "" {
-			poolTemplate = "default"
+			poolTemplate = poolTemplateName()
 		}
 		if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
 			return resp
@@ -935,6 +941,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		SecretAllowedHosts:   flattenSecretAllowedHosts(cfg.SecretAllowedHosts),
 		SecretEnvs:           cfg.SecretEnvs,
 		DiskMb:               int32(cfg.DiskMB),
+		VmdoConnectToken:     auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 	})
 	if err != nil {
 		// Mark session as failed so it doesn't count as active.
@@ -2440,9 +2447,10 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	defer cancel()
 
 	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
-		SandboxId:     sandboxID,
-		CheckpointKey: hibernation.HibernationKey,
-		Timeout:       int32(req.Timeout),
+		SandboxId:        sandboxID,
+		CheckpointKey:    hibernation.HibernationKey,
+		Timeout:          int32(req.Timeout),
+		VmdoConnectToken: auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -3364,6 +3372,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 			EgressAllowlist:      originalCfg.EgressAllowlist,
 			SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
 			SecretEnvs:           originalCfg.SecretEnvs,
+			VmdoConnectToken:     auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 		})
 		createErr = err
 		if resp != nil {

@@ -20,6 +20,8 @@
 //   GET  /health
 
 export { CreditAccount } from "../../shared/credit_account";
+export { PoolStock } from "./pool_stock";
+export { VmSession } from "./vm_session";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
@@ -93,6 +95,17 @@ export interface Env extends DashboardEnv {
   // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
   // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Edge claim (pool_stock.ts): per-cell Durable Object stocking pre-reserved
+  // hot pool boxes so default-shape creates are answered at the edge with zero
+  // origin round trips. EDGE_CLAIM="0" is the kill switch (default on).
+  POOL_STOCK: DurableObjectNamespace;
+  EDGE_CLAIM?: string;
+  // VM-DO exec data plane (vm_do_datapane_validation). One DO per sandbox holds a
+  // persistent host-dialed WebSocket to the QEMU worker; exec routes edge→DO→VM
+  // instead of tunnel→CP→worker, with automatic tunnel fallback when unconnected.
+  // The host's /connect is authed by a per-sandbox HMAC over SESSION_JWT_SECRET
+  // (see the /internal/vms/:id/connect route) — no dedicated secret.
+  VM_SESSIONS: DurableObjectNamespace;
 }
 
 const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
@@ -155,6 +168,42 @@ async function mintCapToken(
   return signingInput + "." + b64url(sig);
 }
 
+// Mint the sandbox-scoped JWT the create response carries (direct worker
+// access: exec WS, PTY, files). Byte-compatible with Go's
+// auth.IssueSandboxToken — same shared secret, iss="opensandbox", same claim
+// names — so cells/workers validate edge-minted tokens identically to
+// CP-minted ones. 24h TTL mirrors the CP.
+async function mintSandboxToken(
+  secret: string,
+  orgID: string,
+  sandboxID: string,
+  workerID: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload = {
+    sub: orgID,
+    iat: now,
+    exp: now + 24 * 3600,
+    iss: "opensandbox",
+    org_id: orgID,
+    sandbox_id: sandboxID,
+    worker_id: workerID,
+  };
+  const signingInput =
+    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
 interface Caller {
   orgID: string;
   userID: string | null;
@@ -172,6 +221,33 @@ interface SandboxCreateResult {
 
 function isWebSocketUpgrade(req: Request): boolean {
   return req.headers.get("upgrade")?.toLowerCase() === "websocket";
+}
+
+// Length-hiding constant-time secret compare: hash both sides to a fixed 32
+// bytes before XOR so the loop time can't leak the expected length. Used for the
+// VM-DO host-dial connect secret (vm_session.ts), which arrives as a WS
+// subprotocol value rather than an HMAC signature.
+async function tokenMatches(provided: string | null, expected: string): Promise<boolean> {
+  if (!provided || !expected) return false;
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(provided)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a[i] ^ b[i];
+  return mismatch === 0;
+}
+
+// The host presents the connect secret as the 2nd WS subprotocol, after the
+// wire-format marker "oc-protobuf-v1". Browsers/proxies can't set arbitrary WS
+// headers but CAN set Sec-WebSocket-Protocol, so this carries the credential on
+// the upgrade without a query-string leak. Returns null if the marker is absent.
+function socketSecret(req: Request): string | null {
+  const protocols = req.headers.get("sec-websocket-protocol")?.split(",").map((v) => v.trim()) ?? [];
+  return protocols[0] === "oc-protobuf-v1" ? (protocols[1] ?? null) : null;
 }
 
 function apiKeyFromRequest(req: Request): string | null {
@@ -235,6 +311,24 @@ const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: numbe
 // create, which also closes the same-isolate race where a sub-op lands before
 // the waitUntil-deferred insertSandboxIndex write does. Never caches misses.
 const sandboxRouteCache = new Map<string, { cellID: string; orgID: string }>();
+
+// resolveSandboxRoute returns a sandbox's { cellID, orgID } from the route cache,
+// falling back to a single D1 read (which it then caches). null = no such
+// sandbox. Shared by proxyToCellSDK and the VM-DO exec fast path so both enforce
+// the same org-ownership authz off the same cached mapping.
+async function resolveSandboxRoute(env: Env, id: string): Promise<{ cellID: string; orgID: string } | null> {
+  let route = sandboxRouteCache.get(id);
+  if (!route) {
+    const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
+      .bind(id)
+      .first<{ cell_id: string; org_id: string }>();
+    if (!row) return null;
+    route = { cellID: row.cell_id, orgID: row.org_id };
+    if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+    sandboxRouteCache.set(id, route);
+  }
+  return route;
+}
 
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
@@ -798,6 +892,83 @@ function indexSandboxFromSSE(
   return new Response(resp.body.pipeThrough(stream), resp);
 }
 
+// edgeClaimEligible: a create qualifies for the edge fast path only when it
+// asks for exactly what pool boxes are manufactured as — base template at the
+// default shape (4GB/1cpu/default disk), no guest-side customization (envs,
+// secrets, image, snapshot, webhooks, preview auth). Anything else falls
+// through to the cell, which handles it exactly as before (including its own
+// pool claim for claimable shapes). metadata/timeout are pure bookkeeping the
+// finalize call persists, so they don't disqualify.
+function edgeClaimEligible(bodyText: string): boolean {
+  if (!bodyText) return true;
+  let b: Record<string, unknown>;
+  try {
+    b = JSON.parse(bodyText) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  const template = typeof b.templateID === "string" ? b.templateID : "";
+  if (template !== "" && template !== "base") return false;
+  if (b.envs && Object.keys(b.envs as object).length > 0) return false;
+  if (b.secretStore || b.image || b.snapshot || b.previewAuth || b.burst) return false;
+  if (Array.isArray(b.webhooks) && b.webhooks.length > 0) return false;
+  if (b.sandboxFamily || b.alias || b.cellId || b.networkEnabled != null) return false;
+  if (typeof b.port === "number" && b.port !== 0 && b.port !== 80) return false;
+  if (typeof b.cpuCount === "number" && b.cpuCount !== 0 && b.cpuCount !== 1) return false;
+  if (typeof b.memoryMB === "number" && b.memoryMB !== 0 && b.memoryMB !== 4096) return false;
+  if (typeof b.diskMB === "number" && b.diskMB !== 0 && b.diskMB !== 20480) return false;
+  return true;
+}
+
+// finalizeEdgeClaim runs off the response path (waitUntil): D1 index row so
+// the dashboard/GET sees the box, then the cell's claim-finalize (PG rebind +
+// worker ClaimSandbox: billing on, idle timeout). On failure the box is dead —
+// mark the index row error and drop the route so the customer's next op
+// surfaces a clean failure instead of a phantom.
+async function finalizeEdgeClaim(
+  env: Env,
+  caller: Caller,
+  cell: CellRow,
+  capToken: string,
+  sandboxID: string,
+  workerID: string,
+  bodyText: string,
+): Promise<void> {
+  try {
+    await insertSandboxIndex(env, caller, cell.cell_id, { sandboxID, workerID, status: "running", memoryMB: 4096 }, 1, 4096);
+  } catch (e) {
+    console.error(`edge-claim: index insert failed for ${sandboxID}:`, e);
+  }
+  try {
+    let body: Record<string, unknown> = {};
+    try {
+      body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
+    } catch {
+      /* eligibility already vetted the body; belt-and-braces */
+    }
+    body.sandboxID = sandboxID;
+    // Bill/grow at the default create shape the box was manufactured as.
+    if (!body.memoryMB) body.memoryMB = 4096;
+    if (!body.cpuCount) body.cpuCount = 1;
+    const r = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/claim-finalize", {
+      method: "POST",
+      headers: { authorization: "Bearer " + capToken, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  } catch (e) {
+    console.error(`edge-claim: FINALIZE FAILED for ${sandboxID} — marking error:`, e);
+    sandboxRouteCache.delete(sandboxID);
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.OPENCOMPUTER_DB.prepare(
+      "UPDATE sandboxes_index SET status='error', last_event_at=?2 WHERE id=?1",
+    )
+      .bind(sandboxID, nowSec)
+      .run()
+      .catch(() => {});
+  }
+}
+
 async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const caller = await authenticate(req, env);
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
@@ -878,6 +1049,40 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   }
 
   const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
+
+  // Edge claim: for a default-shape create, pop a pre-reserved hot box from
+  // this cell's PoolStock DO and answer right here — token minted at the edge,
+  // zero origin round trips. Finalize (billing on, PG rebind, idle timeout)
+  // runs async; exec arriving before it lands routes fine (the cell proxy
+  // resolves by worker_id regardless of claim status). Miss/error falls
+  // through to the normal cell create, which is never worse than before.
+  if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText)) {
+    try {
+      const stub = env.POOL_STOCK.get(env.POOL_STOCK.idFromName(cell.cell_id));
+      const r = await stub.fetch("https://pool-stock/claim", {
+        method: "POST",
+        body: JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } }),
+      });
+      if (r.ok) {
+        const box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+        const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
+        if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+        sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
+        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
+        const resp: Record<string, unknown> = {
+          sandboxID: box.id,
+          token,
+          status: "running",
+          region: box.region,
+          workerID: box.workerID,
+        };
+        if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
+        return json(resp, 201);
+      }
+    } catch (e) {
+      console.error("edge-claim: falling back to cell create:", e);
+    }
+  }
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -1010,6 +1215,40 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
   return json({ ...sandboxRowToJSON(row), cellEndpoint: cell ? cell.base_url : null });
 }
 
+// tryVmDoExec routes POST /:id/exec/run-async through the sandbox's VmSession
+// Durable Object (the VM-DO exec data plane, vm_do_datapane_validation) instead
+// of the tunnel→CP→worker chain. Returns a Response when the DO handled it (a
+// served result, or an authz 404), or null to tell the caller to fall back to
+// the tunnel (proxyToCellSDK) — the automatic, flag-free degradation whenever
+// the host→DO channel isn't live. The DO's 200 body is already the SDK's inline
+// run-async shape ({exitCode,stdout,stderr}, no execId), so exec.run()
+// short-circuits without polling — one edge→DO→host→agent hop. Authz mirrors
+// proxyToCellSDK exactly (same route lookup + org-ownership check) so the DO
+// path can't be used to exec on another org's sandbox. See vm_session.ts.
+async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): Promise<Response | null> {
+  const route = await resolveSandboxRoute(env, id);
+  if (!route) return json({ error: "sandbox not found" }, 404);
+  if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+  try {
+    // clone() so the original request body stays readable for the tunnel
+    // fallback when the DO reports the channel isn't connected.
+    const body = await req.clone().text();
+    const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id));
+    const doResp = await stub.fetch("https://do/exec", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    // 200 = DO ran it. 409 (connected:false / channel error) = fall back.
+    if (doResp.status === 200) {
+      return new Response(doResp.body, { status: 200, headers: { "content-type": "application/json" } });
+    }
+  } catch {
+    // DO unreachable — fall through to the tunnel.
+  }
+  return null;
+}
+
 // Proxy the request to the owning cell's CP. Used for SDK runtime calls
 // (`/api/sandboxes/:id/exec`, `/files`, `/pty`, etc.). The caller has been
 // authenticated at the edge against D1; we mint a short-lived IdentityToken
@@ -1020,16 +1259,8 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string): Promise<Response> {
   // Route cache first — the sandbox→cell mapping is immutable, and the D1 read
   // it replaces is a blocking per-sub-op cost (2-3× per SDK runCommand).
-  let route = sandboxRouteCache.get(id);
-  if (!route) {
-    const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
-      .bind(id)
-      .first<{ cell_id: string; org_id: string }>();
-    if (!row) return json({ error: "sandbox not found" }, 404);
-    route = { cellID: row.cell_id, orgID: row.org_id };
-    if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
-    sandboxRouteCache.set(id, route);
-  }
+  const route = await resolveSandboxRoute(env, id);
+  if (!route) return json({ error: "sandbox not found" }, 404);
   // Authorization: the sandbox must belong to the caller's org. Without this,
   // any authenticated org could exec/files/pty/delete/hibernate/wake another
   // org's sandbox by id (the cell trusts the edge for authz). 404 not 403 so
@@ -2664,6 +2895,28 @@ export default {
       return json({ ok: true, env: env.WORKER_ENV });
     }
 
+    // VM-DO host dial: the QEMU worker host opens a persistent WebSocket to the
+    // per-sandbox VmSession DO here (vm_session.ts). Auth is a per-sandbox connect
+    // token = HMAC(SESSION_JWT_SECRET, "vmdo:"+id), minted by the CP and delivered
+    // to the worker over the create/claim/wake gRPC; the worker holds no signing
+    // secret. We re-derive it here from the id in the path and the shared secret
+    // (same construction as auth.MintVMDOConnectToken) and compare to the token
+    // the host presents as the 2nd WS subprotocol. No location hint on get() → CF
+    // places the DO near the host's colo (eastus→IAD, westus2→SEA).
+    {
+      const vmConnect = path.match(/^\/internal\/vms\/([^/]+)\/connect$/);
+      if (vmConnect && isWebSocketUpgrade(req)) {
+        const expected = env.SESSION_JWT_SECRET
+          ? await hmacHex(env.SESSION_JWT_SECRET, "vmdo:" + vmConnect[1])
+          : "";
+        if (!expected || !(await tokenMatches(socketSecret(req), expected))) {
+          return new Response("unauthorized", { status: 401 });
+        }
+        const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(vmConnect[1]));
+        return stub.fetch(new Request("https://do/connect", req));
+      }
+    }
+
     if (path === "/internal/halt-list") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
       return haltList(req, env);
@@ -3103,6 +3356,15 @@ export default {
       // SDK's api-key existing in cell PG.
       const caller = await authenticate(req, env);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      // VM-DO exec fast path: route POST /:id/exec/run-async through the
+      // sandbox's VmSession DO. Automatic tunnel fallback (no flag) whenever the
+      // channel isn't live (DO 409) — so this is safe even before/while workers
+      // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
+      // wherever the DO auth can be verified at all).
+      if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
+        const doResp = await tryVmDoExec(req, env, caller, id);
+        if (doResp) return doResp;
+      }
       return proxyToCellSDK(req, env, ctx, caller, id);
     }
 

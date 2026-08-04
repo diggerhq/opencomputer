@@ -673,6 +673,12 @@ func main() {
 	grpcServer.SetAxiomConfig(cfg.AxiomIngestToken, cfg.AxiomDataset)
 	// Tag wake-source metrics with the worker's region.
 	grpcServer.SetRegion(cfg.Region)
+	// Wire the VM-DO exec data plane. Empty URL leaves it inert (exec stays on the
+	// tunnel path); per-box it also needs a CP-minted connect token. See dodialer.go.
+	grpcServer.SetVMDialer(cfg.VMDOEdgeURL)
+	if cfg.VMDOEdgeURL != "" {
+		log.Printf("opensandbox-worker: VM-DO exec data plane enabled (edge=%s)", cfg.VMDOEdgeURL)
+	}
 	if cfg.AxiomIngestToken != "" {
 		log.Printf("opensandbox-worker: sandbox session log shipping enabled (dataset=%s)", cfg.AxiomDataset)
 	}

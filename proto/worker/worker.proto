@@ -120,6 +120,12 @@ message CreateSandboxRequest {
   // customer bindings (no scale_event, no D1 created, exempt from promote-to-deep).
   // The box is later bound to a customer via ClaimSandbox.
   bool pooled = 17;
+  // Per-sandbox VM-DO connect token = HMAC(SESSION_JWT_SECRET, "vmdo:"+id),
+  // minted by the CP (which holds the shared secret) and presented by the worker
+  // host when it dials the sandbox's VmSession DO on the edge. The worker never
+  // holds the signing secret — only this per-box token. Empty = VM-DO exec plane
+  // not provisioned; the host doesn't dial and exec stays on the tunnel.
+  string vmdo_connect_token = 18;
 }
 
 message CreateSandboxResponse {
@@ -147,6 +153,7 @@ message ClaimSandboxRequest {
   map<string, string> secret_allowed_hosts = 6;
   int32 memory_mb = 7;               // grow target via virtio-mem (0 = leave as-is)
   int32 cpu_count = 8;
+  string vmdo_connect_token = 9;     // per-sandbox VM-DO connect token (see CreateSandboxRequest)
 }
 
 message ClaimSandboxResponse {
@@ -298,6 +305,7 @@ message WakeSandboxRequest {
   string sandbox_id = 1;
   string checkpoint_key = 2;
   int32 timeout = 3;
+  string vmdo_connect_token = 4;     // per-sandbox VM-DO connect token (see CreateSandboxRequest)
 }
 
 message WakeSandboxResponse {
