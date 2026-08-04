@@ -20,6 +20,24 @@ function displayResourceName(value: string) {
     .replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
+function connectionService(connection: { provider: string; scopes: string[] }) {
+  if (
+    connection.scopes.some((scope) =>
+      scope.toLowerCase().includes('/auth/calendar'),
+    )
+  ) {
+    return 'Google Calendar'
+  }
+  if (
+    connection.scopes.some((scope) =>
+      scope.toLowerCase().includes('/auth/gmail.'),
+    )
+  ) {
+    return 'Gmail'
+  }
+  return displayResourceName(connection.provider)
+}
+
 export default function ManagedAgentConnections() {
   const [searchParams, setSearchParams] = useSearchParams()
   const channelLinkStarted = useRef(false)
@@ -171,7 +189,7 @@ export default function ManagedAgentConnections() {
                         )}
                     </p>
                     <p className="text-muted-foreground truncate text-xs">
-                      {displayResourceName(connection.provider)}
+                      {connectionService(connection)}
                       {agentName ? ` · ${agentName}` : ''}
                     </p>
                   </div>

@@ -502,7 +502,7 @@ export const list = tool({
   },
   async execute(args) {
     return JSON.stringify(await calendar({
-      path: "/calendar/v3/users/me/calendarList",
+      path: "/users/me/calendarList",
       connection: args.connection,
     }));
   },
@@ -519,6 +519,7 @@ export const events = tool({
     connection: tool.schema.string().optional(),
   },
   async execute(args) {
+    const calendarId = args.calendarId || "primary";
     const search = new URLSearchParams({
       timeMin: args.timeMin,
       timeMax: args.timeMax,
@@ -529,7 +530,7 @@ export const events = tool({
     if (args.query) search.set("q", args.query);
     return JSON.stringify(await calendar({
       path:
-        \`/calendar/v3/calendars/\${encodeURIComponent(args.calendarId)}/events?\` +
+        \`/calendars/\${encodeURIComponent(calendarId)}/events?\` +
         search.toString(),
       connection: args.connection,
     }));
@@ -547,14 +548,17 @@ export const freebusy = tool({
     connection: tool.schema.string().optional(),
   },
   async execute(args) {
+    const calendarIds = args.calendarIds?.length
+      ? args.calendarIds
+      : ["primary"];
     return JSON.stringify(await calendar({
       method: "POST",
-      path: "/calendar/v3/freeBusy",
+      path: "/freeBusy",
       body: {
         timeMin: args.timeMin,
         timeMax: args.timeMax,
         timeZone: args.timeZone,
-        items: args.calendarIds.map((id) => ({ id })),
+        items: calendarIds.map((id) => ({ id })),
       },
       connection: args.connection,
     }));
@@ -574,6 +578,7 @@ export const create_time_off = tool({
     connection: tool.schema.string().optional(),
   },
   async execute(args) {
+    const calendarId = args.calendarId || "primary";
     const startDate = isoDate(args.startDate, "startDate");
     const endDate = isoDate(args.endDate, "endDate");
     if (endDate < startDate) {
@@ -581,7 +586,7 @@ export const create_time_off = tool({
     }
     return JSON.stringify(await calendar({
       method: "POST",
-      path: \`/calendar/v3/calendars/\${encodeURIComponent(args.calendarId)}/events\`,
+      path: \`/calendars/\${encodeURIComponent(calendarId)}/events\`,
       body: {
         summary: args.title,
         description: args.description,
