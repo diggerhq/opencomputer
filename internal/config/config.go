@@ -443,7 +443,13 @@ func Load() (*Config, error) {
 		AxiomQueryToken:  os.Getenv("AXIOM_QUERY_TOKEN"),
 		AxiomDataset:     envOrDefault("AXIOM_DATASET", "oc-sandbox-logs"),
 
-		VMDOEdgeURL: os.Getenv("OPENSANDBOX_VMDO_EDGE_URL"),
+		// OPENSANDBOX_VMDO_EDGE_URL is an optional override (mapped from
+		// worker-vmdo-edge-url, left unset in our vaults). Unset → fall back to
+		// OPENSANDBOX_CF_EDGE_BASE_URL (shared-cf-edge-base-url; env-specific:
+		// app.opencomputer.dev prod / app2.opensandbox.ai dev) — the VM-DO dialer
+		// targets the same edge as the CP's edgeclient, so this auto-enables the
+		// plane wherever the edge is already configured, no separate secret to fill.
+		VMDOEdgeURL: envOrDefault("OPENSANDBOX_VMDO_EDGE_URL", os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL")),
 
 		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
 
