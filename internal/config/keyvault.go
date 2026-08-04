@@ -104,6 +104,13 @@ var kvMapping = map[string]string{
 	"worker-s3-force-path-style":          "OPENSANDBOX_S3_FORCE_PATH_STYLE",
 	"worker-cf-event-endpoint":            "OPENSANDBOX_CF_EVENT_ENDPOINT",
 	"worker-halt-list-url":                "OPENSANDBOX_HALT_LIST_URL",
+	// VM-DO exec data plane: optional per-env override for the api-edge base URL
+	// the worker host dials for the per-sandbox VmSession DO. LEFT UNSET in our
+	// vaults on purpose — config.Load() then falls back to OPENSANDBOX_CF_EDGE_BASE_URL
+	// (shared-cf-edge-base-url), which is the same edge. Only set this if VM-DO
+	// must dial a different edge than the CP's edgeclient uses. Mapped here so the
+	// knob is discoverable + provisionable rather than a ghost env var.
+	"worker-vmdo-edge-url":                "OPENSANDBOX_VMDO_EDGE_URL",
 	"worker-segment-write-key":            "SEGMENT_WRITE_KEY",
 
 	// CF-cutover event pipe (worker)
