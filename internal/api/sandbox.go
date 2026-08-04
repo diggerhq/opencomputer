@@ -855,9 +855,14 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTarget() > 0 &&
 		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
 		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
+		// A no-template create wants a base-golden box, which is exactly what the
+		// pool manufactures. Default to poolTemplateName() (the same value the
+		// manufacture + reconciler use — "base" unless overridden) so the claim
+		// query matches the pooled rows; the prior hardcoded "default" never
+		// matched, sending every default-shape origin create to the cold path.
 		poolTemplate := cfg.Template
 		if poolTemplate == "" {
-			poolTemplate = "default"
+			poolTemplate = poolTemplateName()
 		}
 		if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
 			return resp
