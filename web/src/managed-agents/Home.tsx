@@ -32,7 +32,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -54,8 +53,6 @@ const categories = [
 ] as const
 
 type Category = (typeof categories)[number]
-type CopyAction = 'prompt' | 'cli'
-
 type CliStep = {
   title: string
   commands: string[]
@@ -186,25 +183,16 @@ function buildCliSteps(
   ]
 }
 
-function buildCliInstructions(template: ManagedAgentTemplate, origin: string) {
-  return buildCliSteps(template, origin)
-    .map(
-      (step, index) =>
-        `# ${index + 1}. ${step.title}\n${step.commands.join('\n')}`,
-    )
-    .join('\n\n')
-}
-
 function TemplateCard({
   template,
   deployed,
-  copiedAction,
+  promptCopied,
   onCopyPrompt,
   onShowCli,
 }: {
   template: ManagedAgentTemplate
   deployed: boolean
-  copiedAction?: CopyAction
+  promptCopied: boolean
   onCopyPrompt: () => void
   onShowCli: () => void
 }) {
@@ -279,13 +267,11 @@ function TemplateCard({
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button
-                variant={copiedAction === 'prompt' ? 'secondary' : 'default'}
+                variant={promptCopied ? 'secondary' : 'default'}
                 onClick={onCopyPrompt}
               >
-                {copiedAction === 'prompt' ? <Check /> : <Clipboard />}
-                {copiedAction === 'prompt'
-                  ? 'Agent prompt copied'
-                  : 'Copy agent prompt'}
+                {promptCopied ? <Check /> : <Clipboard />}
+                {promptCopied ? 'Agent prompt copied' : 'Copy agent prompt'}
               </Button>
               <Button variant="outline" onClick={onShowCli}>
                 <Clipboard />
@@ -310,10 +296,8 @@ export default function ManagedAgentsHome({
   startersOnly?: boolean
 }) {
   const [selectedCategory, setSelectedCategory] = useState<Category>('Comms')
-  const [copied, setCopied] = useState<{
-    templateId: string
-    action: CopyAction
-  }>()
+  const [copiedPromptId, setCopiedPromptId] = useState<string>()
+  const [copiedCliStep, setCopiedCliStep] = useState<string>()
   const [cliTemplate, setCliTemplate] = useState<ManagedAgentTemplate>()
   const [categoryOrder] = useState(() => shuffled(categories))
   const [copy] = useState(
@@ -353,22 +337,20 @@ export default function ManagedAgentsHome({
       await navigator.clipboard.writeText(
         buildSetupPrompt(template, window.location.origin),
       )
-      setCopied({ templateId: template.id, action: 'prompt' })
+      setCopiedPromptId(template.id)
       toast.success(`${template.name} agent prompt copied`)
     } catch (error) {
       notifyError("Couldn't copy the agent prompt.", error)
     }
   }
 
-  async function copyCliInstructions(template: ManagedAgentTemplate) {
+  async function copyCliStep(template: ManagedAgentTemplate, step: CliStep) {
     try {
-      await navigator.clipboard.writeText(
-        buildCliInstructions(template, window.location.origin),
-      )
-      setCopied({ templateId: template.id, action: 'cli' })
-      toast.success(`${template.name} CLI instructions copied`)
+      await navigator.clipboard.writeText(step.commands.join('\n'))
+      setCopiedCliStep(`${template.id}:${step.title}`)
+      toast.success(`${step.title} copied`)
     } catch (error) {
-      notifyError("Couldn't copy the CLI instructions.", error)
+      notifyError("Couldn't copy this command.", error)
     }
   }
 
@@ -543,11 +525,7 @@ export default function ManagedAgentsHome({
                     deployed={deployedAgents.some(
                       (agent) => agent.id === template.id,
                     )}
-                    copiedAction={
-                      copied?.templateId === template.id
-                        ? copied.action
-                        : undefined
-                    }
+                    promptCopied={copiedPromptId === template.id}
                     onCopyPrompt={() => void copySetupPrompt(template)}
                     onShowCli={() => setCliTemplate(template)}
                   />
@@ -580,33 +558,32 @@ export default function ManagedAgentsHome({
                     </div>
                     <div className="min-w-0 flex-1 space-y-2">
                       <p className="font-medium">{step.title}</p>
-                      <pre className="bg-muted overflow-x-auto rounded-md border px-3 py-2 text-xs leading-5">
-                        <code>{step.commands.join('\n')}</code>
-                      </pre>
+                      <div className="relative">
+                        <pre className="bg-muted overflow-x-auto rounded-md border py-2 pr-11 pl-3 text-xs leading-5">
+                          <code>{step.commands.join('\n')}</code>
+                        </pre>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="bg-muted absolute top-1.5 right-1.5"
+                          aria-label={`Copy ${step.title.toLowerCase()} commands`}
+                          onClick={() => void copyCliStep(cliTemplate, step)}
+                        >
+                          {copiedCliStep ===
+                          `${cliTemplate.id}:${step.title}` ? (
+                            <Check />
+                          ) : (
+                            <Clipboard />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ),
               )}
             </div>
           ) : null}
-          <DialogFooter>
-            <Button
-              onClick={() => {
-                if (cliTemplate) void copyCliInstructions(cliTemplate)
-              }}
-            >
-              {copied?.templateId === cliTemplate?.id &&
-              copied?.action === 'cli' ? (
-                <Check />
-              ) : (
-                <Clipboard />
-              )}
-              {copied?.templateId === cliTemplate?.id &&
-              copied?.action === 'cli'
-                ? 'Instructions copied'
-                : 'Copy all instructions'}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
