@@ -14,6 +14,8 @@ import {
   sendInvitation,
   setCustomDomain,
   updateOrg,
+  updateNavigationPreferences,
+  type NavigationPreferenceUpdate,
   type OrgInvitation,
   type OrgMember,
 } from '@/api/client'
@@ -29,6 +31,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Field, Input, Label } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { Switch } from '@/components/ui/switch'
 
 function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -79,13 +82,20 @@ export default function Settings() {
   const name = draftName ?? org?.name ?? ''
 
   const saveMutation = useMutation({
-    mutationFn: (n: string) => updateOrg(n),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['org'] })
+    mutationFn: (n: string) => updateOrg({ name: n }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['org'], updated)
       setDraftName(null)
       markSaved()
     },
     onError: (e) => notifyError("Couldn't save organization settings.", e),
+  })
+
+  const navigationMutation = useMutation({
+    mutationFn: (updates: NavigationPreferenceUpdate) =>
+      updateNavigationPreferences(updates),
+    onSuccess: (updated) => queryClient.setQueryData(['me'], updated),
+    onError: (e) => notifyError("Couldn't save navigation settings.", e),
   })
 
   const setDomainMutation = useMutation({
@@ -129,6 +139,39 @@ export default function Settings() {
       <PageHeader title="Settings" description="Organization configuration" />
 
       <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2">
+        <Panel className="p-6 lg:col-span-2">
+          <div className="mb-5">
+            <PanelTitle>Navigation</PanelTitle>
+            <PanelDescription className="mt-1">
+              Choose which advanced product areas appear in the sidebar.
+            </PanelDescription>
+          </div>
+          <div className="divide-y">
+            <NavigationToggle
+              id="durable-sessions-enabled"
+              label="Enable durable sessions"
+              description="Show durable agents, sessions, and credentials."
+              checked={user?.durableSessionsEnabled ?? false}
+              disabled={navigationMutation.isPending}
+              onCheckedChange={(checked) =>
+                navigationMutation.mutate({
+                  durableSessionsEnabled: checked,
+                })
+              }
+            />
+            <NavigationToggle
+              id="infrastructure-enabled"
+              label="Enable infrastructure"
+              description="Show sandboxes, checkpoints, templates, webhooks, and browsers."
+              checked={user?.infrastructureEnabled ?? false}
+              disabled={navigationMutation.isPending}
+              onCheckedChange={(checked) =>
+                navigationMutation.mutate({ infrastructureEnabled: checked })
+              }
+            />
+          </div>
+        </Panel>
+
         {/* Organization */}
         <Panel className="p-6">
           <div className="mb-5">
@@ -334,6 +377,37 @@ export default function Settings() {
             onSuccess: () => setConfirmRemoveDomain(false),
           })
         }
+      />
+    </div>
+  )
+}
+
+function NavigationToggle({
+  id,
+  label,
+  description,
+  checked,
+  disabled,
+  onCheckedChange,
+}: {
+  id: string
+  label: string
+  description: string
+  checked: boolean
+  disabled: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-6 py-4 first:pt-0 last:pb-0">
+      <div>
+        <Label htmlFor={id}>{label}</Label>
+        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+      </div>
+      <Switch
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onCheckedChange}
       />
     </div>
   )

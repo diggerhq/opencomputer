@@ -21,6 +21,8 @@ const me = {
   id: 'user_2abc',
   email: 'igor@digger.dev',
   orgId: 'org_digger',
+  durableSessionsEnabled: true,
+  infrastructureEnabled: true,
   orgs: [
     { id: 'org_digger', name: 'Digger', isPersonal: false, isActive: true },
     { id: 'org_personal', name: 'Personal', isPersonal: true, isActive: false },
@@ -1552,6 +1554,13 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
+  if (method === 'PUT' && path === '/me/preferences') {
+    const updates = JSON.parse(String(options.body ?? '{}')) as Partial<
+      Pick<typeof me, 'durableSessionsEnabled' | 'infrastructureEnabled'>
+    >
+    Object.assign(me, updates)
+    return me as T
+  }
   if (method !== 'GET') {
     for (const [re, handler] of POST_ROUTES) {
       if (re.test(path)) return handler() as T

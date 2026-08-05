@@ -29,7 +29,6 @@ import {
   CircleAlert,
   ChevronRight,
   Plug,
-  Radio,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -128,20 +127,12 @@ const LEGACY_NAV: NavGroup[] = [
 
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
-    label: 'Serverless agents',
-    collapsible: true,
-    landingTo: '/',
     items: [
       { to: '/', label: 'Agents', icon: Bot, end: true },
       {
         to: '/managed-agents/connections',
         label: 'Connections',
         icon: Plug,
-      },
-      {
-        to: '/managed-agents/channels',
-        label: 'Channels',
-        icon: Radio,
       },
     ],
   },
@@ -177,15 +168,22 @@ const MANAGED_AGENTS_NAV: NavGroup[] = [
       { to: '/browsers', label: 'Browsers', icon: Monitor },
     ],
   },
-  {
-    label: 'Account',
-    items: [
-      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-      { to: '/billing', label: 'Billing', icon: CreditCard },
-      { to: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
 ]
+
+export function managedAgentsNav(preferences: {
+  durableSessionsEnabled: boolean
+  infrastructureEnabled: boolean
+}): NavGroup[] {
+  return MANAGED_AGENTS_NAV.filter((group) => {
+    if (group.label === 'Durable sessions') {
+      return preferences.durableSessionsEnabled
+    }
+    if (group.label === 'Infrastructure') {
+      return preferences.infrastructureEnabled
+    }
+    return true
+  })
+}
 
 function Brand() {
   return (
@@ -252,23 +250,86 @@ function OrgSwitcher() {
   )
 }
 
+function ManagedProfileMenu({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  const goTo = (path: string) => {
+    void navigate(path)
+    onNavigate?.()
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Open profile menu"
+          className="hover:bg-sidebar-accent flex w-full items-center gap-2.5 rounded-md p-1.5 text-left transition-colors"
+        >
+          <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
+            {user?.email?.charAt(0).toUpperCase() || '?'}
+          </span>
+          <span className="text-foreground min-w-0 flex-1 truncate text-xs">
+            {user?.email}
+          </span>
+          <ChevronsUpDown
+            className="text-muted-foreground/50 size-3.5 shrink-0"
+            aria-hidden
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        className="w-(--radix-dropdown-menu-trigger-width) min-w-52"
+      >
+        <DropdownMenuLabel>Account</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => goTo('/api-keys')}>
+          <KeyRound className="size-4 opacity-60" aria-hidden />
+          API Keys
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => goTo('/billing')}>
+          <CreditCard className="size-4 opacity-60" aria-hidden />
+          Billing
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => goTo('/settings')}>
+          <Settings className="size-4 opacity-60" aria-hidden />
+          Settings
+        </DropdownMenuItem>
+        {user?.capabilities?.signOut !== false ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => void logout()}>
+              <LogOut className="size-4 opacity-60" aria-hidden />
+              Sign out
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
-  const nav = managedAgentsExperimentEnabled ? MANAGED_AGENTS_NAV : LEGACY_NAV
+  const nav = managedAgentsExperimentEnabled
+    ? managedAgentsNav({
+        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
+        infrastructureEnabled: user?.infrastructureEnabled ?? false,
+      })
+    : LEGACY_NAV
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
       group.label &&
-      ((managedAgentsExperimentEnabled &&
-        group.label === 'Serverless agents' &&
-        location.pathname.startsWith('/managed-agents/')) ||
-        group.items.some(
-          (item) =>
-            location.pathname === item.to ||
-            (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
-        )),
+      group.items.some(
+        (item) =>
+          location.pathname === item.to ||
+          (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
+      ),
   )?.label
   const [openGroups, setOpenGroups] = useState<Set<string>>(
     () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
@@ -356,24 +417,28 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t p-3">
-        <div className="flex items-center gap-2.5">
-          <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
-            {user?.email?.charAt(0).toUpperCase() || '?'}
-          </span>
-          <span className="text-foreground min-w-0 flex-1 truncate text-xs">
-            {user?.email}
-          </span>
-          {user?.capabilities?.signOut !== false ? (
-            <button
-              onClick={() => void logout()}
-              aria-label="Sign out"
-              title="Sign out"
-              className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
-            >
-              <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
-            </button>
-          ) : null}
-        </div>
+        {managedAgentsExperimentEnabled ? (
+          <ManagedProfileMenu onNavigate={onNavigate} />
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              {user?.email?.charAt(0).toUpperCase() || '?'}
+            </span>
+            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
+              {user?.email}
+            </span>
+            {user?.capabilities?.signOut !== false ? (
+              <button
+                onClick={() => void logout()}
+                aria-label="Sign out"
+                title="Sign out"
+                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
+              >
+                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   )

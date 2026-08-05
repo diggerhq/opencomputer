@@ -334,11 +334,29 @@ export function streamSandboxLogs(
 
 export const getOrg = () => apiFetch('/org', {}, S.OrgSchema)
 
-export const updateOrg = (name: string) =>
+export type OrgUpdate = {
+  name?: string
+}
+
+export const updateOrg = (updates: OrgUpdate) =>
   apiFetch(
     '/org',
-    { method: 'PUT', body: JSON.stringify({ name }) },
+    { method: 'PUT', body: JSON.stringify(updates) },
     S.OrgSchema,
+  )
+
+export type NavigationPreferenceUpdate = {
+  durableSessionsEnabled?: boolean
+  infrastructureEnabled?: boolean
+}
+
+export const updateNavigationPreferences = (
+  updates: NavigationPreferenceUpdate,
+) =>
+  apiFetch(
+    '/me/preferences',
+    { method: 'PUT', body: JSON.stringify(updates) },
+    S.MeResponseSchema,
   )
 
 export const setCustomDomain = (domain: string) =>

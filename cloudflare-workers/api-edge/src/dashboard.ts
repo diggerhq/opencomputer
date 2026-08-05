@@ -362,8 +362,16 @@ async function handleMe(req: Request, env: DashboardEnv, caller: Caller): Promis
   // Load user + org list. Org list joins via org_memberships; each row carries
   // the active flag so the UI can highlight the current org.
   const user = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, email, name, workos_user_id FROM users WHERE id = ?1`,
-  ).bind(caller.userID).first<{ id: string; email: string; name: string | null; workos_user_id: string | null }>();
+    `SELECT id, email, name, workos_user_id, durable_sessions_enabled, infrastructure_enabled
+       FROM users WHERE id = ?1`,
+  ).bind(caller.userID).first<{
+    id: string;
+    email: string;
+    name: string | null;
+    workos_user_id: string | null;
+    durable_sessions_enabled: number;
+    infrastructure_enabled: number;
+  }>();
   if (!user) return json({ error: "user not found" }, 404);
 
   const { results } = await env.OPENCOMPUTER_DB.prepare(
@@ -376,8 +384,44 @@ async function handleMe(req: Request, env: DashboardEnv, caller: Caller): Promis
   }));
 
   return json({
-    id: user.id, email: user.email, name: user.name, orgId: caller.orgID, orgs,
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    orgId: caller.orgID,
+    orgs,
+    durableSessionsEnabled: !!user.durable_sessions_enabled,
+    infrastructureEnabled: !!user.infrastructure_enabled,
   });
+}
+
+async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+  type PreferenceUpdate = {
+    durableSessionsEnabled?: unknown;
+    infrastructureEnabled?: unknown;
+  };
+  const body = await req.json<PreferenceUpdate>().catch(() => ({} as PreferenceUpdate));
+  if (body.durableSessionsEnabled !== undefined && typeof body.durableSessionsEnabled !== "boolean") {
+    return json({ error: "durableSessionsEnabled must be a boolean" }, 400);
+  }
+  if (body.infrastructureEnabled !== undefined && typeof body.infrastructureEnabled !== "boolean") {
+    return json({ error: "infrastructureEnabled must be a boolean" }, 400);
+  }
+  if (body.durableSessionsEnabled === undefined && body.infrastructureEnabled === undefined) {
+    return json({ error: "at least one navigation preference is required" }, 400);
+  }
+  await env.OPENCOMPUTER_DB.prepare(
+    `UPDATE users
+        SET durable_sessions_enabled = COALESCE(?1, durable_sessions_enabled),
+            infrastructure_enabled = COALESCE(?2, infrastructure_enabled)
+      WHERE id = ?3`,
+  )
+    .bind(
+      typeof body.durableSessionsEnabled === "boolean" ? Number(body.durableSessionsEnabled) : null,
+      typeof body.infrastructureEnabled === "boolean" ? Number(body.infrastructureEnabled) : null,
+      caller.userID,
+    )
+    .run();
+  return handleMe(req, env, caller);
 }
 
 async function handleListOrgs(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
@@ -401,9 +445,14 @@ async function handleGetOrg(_req: Request, env: DashboardEnv, caller: Caller): P
 }
 
 async function handleUpdateOrg(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const body = await req.json<{ name?: string }>().catch(() => ({} as { name?: string }));
-  const name = (body.name ?? "").trim();
-  if (!name) return json({ error: "name is required" }, 400);
+  type OrgUpdate = { name?: unknown };
+  const body = await req.json<OrgUpdate>().catch(() => ({} as OrgUpdate));
+  if (body.name !== undefined && typeof body.name !== "string") {
+    return json({ error: "name must be a string" }, 400);
+  }
+  const name = typeof body.name === "string" ? body.name.trim() : undefined;
+  if (body.name !== undefined && !name) return json({ error: "name is required" }, 400);
+  if (name === undefined) return json({ error: "name is required" }, 400);
   const org = await env.OPENCOMPUTER_DB.prepare(`SELECT owner_user_id, workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ owner_user_id: string | null; workos_org_id: string | null }>();
   if (!org) return json({ error: "org not found" }, 404);
   if (org.owner_user_id !== caller.userID) return json({ error: "only owner can rename" }, 403);
@@ -412,7 +461,7 @@ async function handleUpdateOrg(req: Request, env: DashboardEnv, caller: Caller):
     .bind(name, Math.floor(Date.now() / 1000), caller.orgID).run();
 
   // Best-effort WorkOS sync. Errors logged, not surfaced.
-  if (org.workos_org_id) {
+  if (name && org.workos_org_id) {
     workosUpdateOrg(env, org.workos_org_id, name).catch((e) => console.error("workos org update failed", e));
   }
   const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
@@ -958,6 +1007,7 @@ export async function handleDashboard(
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);
   if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, caller);
+  if (sub === "/me/preferences" && method === "PUT") return handleUpdateMePreferences(req, env, caller);
   if (sub === "/org" && method === "GET") return handleGetOrg(req, env, caller);
   if (sub === "/org" && method === "PUT") return handleUpdateOrg(req, env, caller);
   if (sub === "/org/switch" && method === "POST") return handleOrgSwitch(req, env, caller);
