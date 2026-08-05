@@ -1239,7 +1239,9 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): 
     // fallback when the DO reports the channel isn't connected.
     const body = await req.clone().text();
     const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id));
-    const doResp = await stub.fetch("https://do/exec", {
+    // sid rides as a query param purely for DO-side diagnostics (idFromName is
+    // one-way; the DO can't recover its own name).
+    const doResp = await stub.fetch("https://do/exec?sid=" + id, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
@@ -1248,6 +1250,7 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): 
     if (doResp.status === 200) {
       return new Response(doResp.body, { status: 200, headers: { "content-type": "application/json" } });
     }
+    console.log(`vmdo-exec ${id}: DO ${doResp.status} — tunnel fallback`);
   } catch {
     // DO unreachable — fall through to the tunnel.
   }
