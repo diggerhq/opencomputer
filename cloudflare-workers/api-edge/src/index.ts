@@ -1006,6 +1006,16 @@ function indexSandboxFromSSE(
   return new Response(resp.body.pipeThrough(stream), resp);
 }
 
+// Stock shard fan-out (see pool_stock.ts for sizing): shard 0 uses the bare
+// cellID as its DO name — that's the pre-sharding instance, kept addressable so
+// its stock drains via claims + surplus-trim instead of stranding until TTL.
+const POOL_STOCK_SHARDS = 8;
+
+function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
+  const name = shard === 0 ? cellID : `${cellID}#${shard}`;
+  return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name));
+}
+
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
 // asks for exactly what pool boxes are manufactured as — base template at the
 // default shape (4GB/1cpu/default disk), no guest-side customization (envs,
@@ -1184,13 +1194,30 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   // through to the normal cell create, which is never worse than before.
   if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText)) {
     try {
-      const stub = env.POOL_STOCK.get(env.POOL_STOCK.idFromName(cell.cell_id));
+      // Sharded stock (see pool_stock.ts): a single DO serializes burst claims
+      // (~2ms each → ~90ms queue tail at 100-way), so claims spread across
+      // POOL_STOCK_SHARDS instances. Shard 0 keeps the legacy unsharded name so
+      // the pre-sharding DO (holding the fleet's stock at cutover) drains as a
+      // first-class shard instead of hoarding reservations until TTL. One empty
+      // shard (404) gets one retry on a different shard before the CP fallback.
+      const claimBody = JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } });
       mark("cap");
-      const r = await stub.fetch("https://pool-stock/claim", {
-        method: "POST",
-        body: JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } }),
-      });
-      if (r.ok) {
+      // Sample up to 3 distinct shards (random walk with a random stride
+      // coprime-ish to 8) — at full stock the first hit ends it; under sparse
+      // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
+      // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
+      let r: Response | null = null;
+      let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
+      const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
+      for (let attempt = 0; attempt < 3; attempt++) {
+        r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
+          method: "POST",
+          body: claimBody,
+        });
+        if (r.ok) break;
+        shard = (shard + stride) % POOL_STOCK_SHARDS;
+      }
+      if (r && r.ok) {
         const box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
         mark("claim");
         const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
