@@ -81,6 +81,17 @@ export class VmSession {
       console.log(
         `exec sid=${url.searchParams.get("sid") ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`,
       );
+      // Entry grace: under a burst, ~100 hibernated VmSessions wake at once and
+      // a few serve their first exec before the restored socket is visible —
+      // host-side evidence shows the TCP connection stayed up the whole time.
+      // Waiting briefly turns that wake-race into a slightly slower DO exec
+      // instead of an instant 409 → tunnel (~1s). A genuinely dead channel
+      // still falls back, just ~400ms later.
+      if (!this.connectedSocket()) {
+        for (let waited = 0; waited < 400 && !this.connectedSocket(); waited += 50) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
       // connected:false lets the edge fall back to the tunnel path (no flag).
       if (!this.connectedSocket()) return json({ connected: false, error: "vm not connected" }, { status: 409 });
       try {

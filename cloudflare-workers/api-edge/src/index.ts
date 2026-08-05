@@ -1031,14 +1031,9 @@ function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectSt
 // through to the cell, which handles it exactly as before (including its own
 // pool claim for claimable shapes). metadata/timeout are pure bookkeeping the
 // finalize call persists, so they don't disqualify.
-function edgeClaimEligible(bodyText: string): boolean {
+function edgeClaimEligible(bodyText: string, b: Record<string, unknown> | null): boolean {
   if (!bodyText) return true;
-  let b: Record<string, unknown>;
-  try {
-    b = JSON.parse(bodyText) as Record<string, unknown>;
-  } catch {
-    return false;
-  }
+  if (!b) return false; // non-empty body that didn't parse
   const template = typeof b.templateID === "string" ? b.templateID : "";
   if (template !== "" && template !== "base") return false;
   if (b.envs && Object.keys(b.envs as object).length > 0) return false;
@@ -1061,7 +1056,8 @@ async function finalizeEdgeClaim(
   env: Env,
   caller: Caller,
   cell: CellRow,
-  capToken: string,
+  plan: string,
+  billingProvider: string,
   sandboxID: string,
   workerID: string,
   bodyText: string,
@@ -1072,6 +1068,10 @@ async function finalizeEdgeClaim(
     console.error(`edge-claim: index insert failed for ${sandboxID}:`, e);
   }
   try {
+    // Minted HERE (off the response path) rather than on the create hot path —
+    // only this finalize call ever consumes it on the edge-claim route, and the
+    // HMAC sign was one of the larger CPU items at burst-100 concurrency.
+    const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, caller.userID);
     let body: Record<string, unknown> = {};
     try {
       body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
@@ -1130,9 +1130,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   let bodyMemoryMB = 0;
   let bodyDiskMB = 0;
   let burst = false;
+  // Single parse, shared with edgeClaimEligible below (it used to re-parse —
+  // measurable CPU at burst-100 where create cpuTime is the queueing driver).
+  let parsedBody: Record<string, unknown> | null = null;
   try {
     if (bodyText) {
-      const parsed = JSON.parse(bodyText) as {
+      parsedBody = JSON.parse(bodyText) as Record<string, unknown>;
+      const parsed = parsedBody as {
         cellId?: unknown;
         cpuCount?: unknown;
         memoryMB?: unknown;
@@ -1192,15 +1196,17 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     );
   }
 
-  const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
-
   // Edge claim: for a default-shape create, pop a pre-reserved hot box from
   // this cell's PoolStock DO and answer right here — token minted at the edge,
   // zero origin round trips. Finalize (billing on, PG rebind, idle timeout)
   // runs async; exec arriving before it lands routes fine (the cell proxy
   // resolves by worker_id regardless of claim status). Miss/error falls
   // through to the normal cell create, which is never worse than before.
-  if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText)) {
+  // NOTE: the cap-token is NOT minted here — the edge-claim response doesn't
+  // need it (finalizeEdgeClaim mints its own off the response path), and the
+  // HMAC sign was one of the larger CPU items driving isolate queueing at
+  // burst-100. The CP-fallback path mints it below, after a miss.
+  if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText, parsedBody)) {
     try {
       // Sharded stock (see pool_stock.ts): a single DO serializes burst claims
       // (~2ms each → ~90ms queue tail at 100-way), so claims spread across
@@ -1245,7 +1251,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
-        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
+        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
         console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
           status: 201,
@@ -1256,6 +1262,10 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       console.error("edge-claim: falling back to cell create:", e);
     }
   }
+
+  // CP fallback from here on — mint the cap-token the cell requires (the
+  // edge-claim path above returns without ever needing it).
+  const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
