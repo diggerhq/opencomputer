@@ -1,6 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, ExternalLink, MessageSquare } from 'lucide-react'
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  LoaderCircle,
+  MessageSquare,
+  TriangleAlert,
+} from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Field, Input } from '@/components/form'
 import {
@@ -25,12 +32,13 @@ import {
 } from './api'
 
 type Step = 'create' | 'details' | 'install' | 'done'
-const STEPS = ['Create app', 'Details', 'Install', 'Done']
+const CREATE_STEPS = ['Create app', 'Details', 'Install', 'Verify']
+const EDIT_STEPS = ['Credentials', 'Token', 'Verify']
 
-function WizardSteps({ current }: { current: number }) {
+function WizardSteps({ current, steps }: { current: number; steps: string[] }) {
   return (
     <ol className="flex items-center gap-2 pt-2">
-      {STEPS.map((label, index) => (
+      {steps.map((label, index) => (
         <li key={label} className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
@@ -52,7 +60,7 @@ function WizardSteps({ current }: { current: number }) {
           >
             {label}
           </span>
-          {index < STEPS.length - 1 ? (
+          {index < steps.length - 1 ? (
             <span className="bg-border h-px w-4 shrink-0" />
           ) : null}
         </li>
@@ -80,6 +88,8 @@ export function ManagedSlackWizard({
   const [appId, setAppId] = useState('')
   const [signingSecret, setSigningSecret] = useState('')
   const [botToken, setBotToken] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [verificationBaseline, setVerificationBaseline] = useState<string>()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
 
@@ -96,13 +106,17 @@ export function ManagedSlackWizard({
     onError: (error) => notifyError("Couldn't prepare the Slack app.", error),
   })
   const complete = useMutation({
-    mutationFn: () =>
-      completeManagedAgentSlack(manifest!.connection.id, {
+    mutationFn: () => {
+      const connectionId = manifest?.connection.id ?? connection?.id
+      if (!connectionId) throw new Error('Slack connection is unavailable')
+      return completeManagedAgentSlack(connectionId, {
         appId: appId.trim(),
         signingSecret: signingSecret.trim(),
         botToken: botToken.trim(),
-      }),
-    onSuccess: () => {
+      })
+    },
+    onSuccess: (updated) => {
+      setVerificationBaseline(updated.updatedAt)
       setStep('done')
       setSigningSecret('')
       setBotToken('')
@@ -122,17 +136,62 @@ export function ManagedSlackWizard({
 
   const reset = () => {
     setStep('create')
+    setEditing(false)
     setManifest(undefined)
     setAppId('')
     setSigningSecret('')
     setBotToken('')
+    setVerificationBaseline(undefined)
   }
   const begin = () => {
     reset()
     setOpen(true)
   }
-  const stepIndex =
-    step === 'create' ? 0 : step === 'details' ? 1 : step === 'install' ? 2 : 3
+  const beginEdit = () => {
+    reset()
+    setEditing(true)
+    setAppId(connection?.appId || '')
+    setStep('details')
+    setOpen(true)
+  }
+  const steps = editing ? EDIT_STEPS : CREATE_STEPS
+  const stepIndex = editing
+    ? step === 'details'
+      ? 0
+      : step === 'install'
+        ? 1
+        : 2
+    : step === 'create'
+      ? 0
+      : step === 'details'
+        ? 1
+        : step === 'install'
+          ? 2
+          : 3
+  const verificationUpdated = Boolean(
+    verificationBaseline &&
+    connection?.updatedAt &&
+    connection.updatedAt > verificationBaseline,
+  )
+  const eventVerified = Boolean(
+    verificationUpdated &&
+    verificationBaseline &&
+    connection?.verifiedAt &&
+    connection.verifiedAt > verificationBaseline,
+  )
+  const verificationFailed = Boolean(
+    verificationUpdated && connection?.verificationError,
+  )
+
+  useEffect(() => {
+    if (!open || step !== 'done' || eventVerified || verificationFailed) return
+    const interval = window.setInterval(() => {
+      void queryClient.invalidateQueries({
+        queryKey: ['managed-agent-channels'],
+      })
+    }, 2_000)
+    return () => window.clearInterval(interval)
+  }, [eventVerified, open, queryClient, step, verificationFailed])
 
   return (
     <>
@@ -152,14 +211,23 @@ export function ManagedSlackWizard({
             </p>
             {connection?.status === 'connected' ? (
               <p className="text-muted-foreground mt-1 text-xs">
-                Invite this app to a channel before @mentioning it. Direct
-                messages work without an invite.
+                {connection.verificationError
+                  ? 'Slack events are being rejected. Edit the signing secret and test again.'
+                  : connection.verifiedAt
+                    ? 'Listening for Slack events.'
+                    : 'Credentials saved. Send the app a message to verify event delivery.'}
               </p>
             ) : null}
           </div>
           {connection ? <StatusBadge status={connection.status} /> : null}
         </div>
         <div className="flex items-center gap-2">
+          {connection?.status === 'connected' ||
+          connection?.verificationError ? (
+            <Button variant="outline" size="sm" onClick={beginEdit}>
+              Edit credentials
+            </Button>
+          ) : null}
           {connection?.status === 'connected' ? (
             <Button
               variant="ghost"
@@ -169,7 +237,8 @@ export function ManagedSlackWizard({
               Disconnect
             </Button>
           ) : null}
-          {connection?.status !== 'connected' ? (
+          {connection?.status !== 'connected' &&
+          !connection?.verificationError ? (
             <Button size="sm" variant="outline" onClick={begin}>
               {connection ? 'Continue setup' : 'Connect Slack'}
             </Button>
@@ -187,12 +256,16 @@ export function ManagedSlackWizard({
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {step === 'done' ? 'Slack is connected' : 'Connect Slack'}
+              {step === 'done'
+                ? 'Verify Slack events'
+                : editing
+                  ? 'Edit Slack credentials'
+                  : 'Connect Slack'}
             </DialogTitle>
             <DialogDescription>
               This Slack app belongs only to {agentName} @{alias}.
             </DialogDescription>
-            <WizardSteps current={stepIndex} />
+            <WizardSteps current={stepIndex} steps={steps} />
           </DialogHeader>
 
           {step === 'create' ? (
@@ -296,7 +369,7 @@ export function ManagedSlackWizard({
                 <Button
                   type="button"
                   variant="ghost"
-                  onClick={() => setStep('create')}
+                  onClick={() => (editing ? setOpen(false) : setStep('create'))}
                 >
                   Back
                 </Button>
@@ -341,17 +414,61 @@ export function ManagedSlackWizard({
                   type="submit"
                   disabled={!botToken.trim() || complete.isPending}
                 >
-                  {complete.isPending ? 'Connecting…' : 'Connect Slack'}
+                  {complete.isPending
+                    ? 'Saving…'
+                    : editing
+                      ? 'Save credentials'
+                      : 'Connect Slack'}
                 </Button>
               </DialogFooter>
             </form>
           ) : (
             <div className="space-y-4">
-              <p className="text-sm">
-                {appName} is connected. Invite it to a channel and @-mention it,
-                or message it directly, to start a session.
-              </p>
+              {eventVerified ? (
+                <div className="flex items-start gap-3">
+                  <Check className="mt-0.5 size-5 text-emerald-600" />
+                  <div>
+                    <p className="text-sm font-medium">Event received</p>
+                    <p className="text-muted-foreground text-sm">
+                      The signing secret is correct and this agent is listening
+                      for Slack messages.
+                    </p>
+                  </div>
+                </div>
+              ) : verificationFailed ? (
+                <div className="flex items-start gap-3">
+                  <TriangleAlert className="text-destructive mt-0.5 size-5" />
+                  <div>
+                    <p className="text-sm font-medium">
+                      Signing secret did not match
+                    </p>
+                    <p className="text-muted-foreground text-sm">
+                      Copy Signing Secret from Slack Basic Information → App
+                      Credentials, then save and test again.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-3">
+                  <LoaderCircle className="mt-0.5 size-5 animate-spin" />
+                  <div>
+                    <p className="text-sm font-medium">
+                      Listening for a Slack event…
+                    </p>
+                    <p className="text-muted-foreground text-sm">
+                      In Slack, send @{connection?.appName || appName} ping in a
+                      channel where the app is invited, or send it a direct
+                      message.
+                    </p>
+                  </div>
+                </div>
+              )}
               <DialogFooter>
+                {verificationFailed ? (
+                  <Button variant="outline" onClick={() => setStep('details')}>
+                    Edit credentials
+                  </Button>
+                ) : null}
                 <Button onClick={() => setOpen(false)}>Done</Button>
               </DialogFooter>
             </div>
