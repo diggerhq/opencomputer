@@ -32,12 +32,19 @@ interface PoolStockEnv {
   SESSION_JWT_SECRET: string;
 }
 
-// Stock tuning. ENTRY_TTL well under the cell's 15-min destroy backstop so the
-// normal path is always the cheap release, never the destroy.
-const ENTRY_TTL_MS = 4 * 60_000;
-const LOW_WATER = 8;
-const RESTOCK_BATCH = 16;
-const MAX_STOCK = 40;
+// Stock tuning. TARGET_STOCK mirrors ~the whole per-cell hot pool so every
+// default-shape create is answered at the edge, not just a small reserved slice.
+// A self-scheduling alarm keeps the stock topped up to TARGET proactively (every
+// ALARM_INTERVAL) so a burst always arrives against a full stock instead of the
+// old lazy-on-claim path that left the stock empty between bursts. ENTRY_TTL
+// stays well under the cell's 15-min destroy backstop so an unclaimed box is
+// released back to the pool (cheap) long before the cell would destroy it.
+const ENTRY_TTL_MS = 10 * 60_000;
+const LOW_WATER = 40;
+const RESTOCK_BATCH = 50; // max boxes reserved per single edge-reserve call
+const TARGET_STOCK = 100; // fill the stock up to here (≈ the whole hot pool)
+const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
+const RESTOCK_MAX_CALLS = 3; // reserve calls per restock pass (batch × calls ≥ TARGET)
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,
@@ -77,6 +84,10 @@ async function mintPoolCapToken(secret: string, cellID: string): Promise<string>
 export class PoolStock {
   private stock: StockEntry[] = [];
   private restockInFlight = false;
+  // Last cell seen on a /claim, persisted so the proactive alarm can restock
+  // without waiting for the next claim (a fresh DO after eviction still knows
+  // which cell to reserve from).
+  private cell: { cellID: string; baseURL: string } | null = null;
 
   constructor(
     private state: DurableObjectState,
@@ -84,6 +95,7 @@ export class PoolStock {
   ) {
     this.state.blockConcurrencyWhile(async () => {
       this.stock = (await this.state.storage.get<StockEntry[]>("stock")) ?? [];
+      this.cell = (await this.state.storage.get<{ cellID: string; baseURL: string }>("cell")) ?? null;
     });
   }
 
@@ -106,6 +118,7 @@ export class PoolStock {
     } catch {
       /* no cell hint — claim still works, restock doesn't */
     }
+    if (cell) this.rememberCell(cell);
 
     // Expire stale entries (never handed out → safe to release back to the
     // pool). Done inline, synchronously over the in-memory array, so a
@@ -122,8 +135,11 @@ export class PoolStock {
     const entry = this.stock.shift(); // FIFO — oldest first keeps the stock young
     this.persist();
 
+    // Ensure the proactive top-up loop is running, and kick an immediate restock
+    // if this claim dropped us below the low-water mark (don't wait for the tick).
+    this.state.waitUntil(this.ensureAlarm());
     if (cell && !this.restockInFlight && this.stock.length < LOW_WATER) {
-      this.state.waitUntil(this.restock(cell));
+      this.state.waitUntil(this.restockToTarget(cell));
     }
 
     if (!entry) {
@@ -132,18 +148,70 @@ export class PoolStock {
     return Response.json(entry);
   }
 
+  // rememberCell persists the cell coordinates so the alarm can restock even on
+  // a fresh (post-eviction) DO instance that has never served a claim yet.
+  private rememberCell(cell: { cellID: string; baseURL: string }): void {
+    if (this.cell && this.cell.cellID === cell.cellID && this.cell.baseURL === cell.baseURL) return;
+    this.cell = cell;
+    void this.state.storage.put("cell", cell);
+  }
+
+  private async ensureAlarm(): Promise<void> {
+    if ((await this.state.storage.getAlarm()) === null) {
+      await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+    }
+  }
+
+  // alarm — the proactive top-up. Fires on ALARM_INTERVAL_MS: refreshes stale
+  // reservations and refills the stock to TARGET_STOCK so a create burst always
+  // hits a full stock. Reschedules itself as long as we know which cell to
+  // reserve from, so the stock stays warm without depending on claim traffic.
+  async alarm(): Promise<void> {
+    const cell = this.cell;
+    if (!cell) return; // no cell known yet → nothing to reserve; a claim will arm it
+    // Expire+release anything past TTL before topping up, so held boxes go back
+    // to the pool well before the cell's 15-min destroy backstop.
+    const now = Date.now();
+    const fresh: StockEntry[] = [];
+    const stale: StockEntry[] = [];
+    for (const e of this.stock) (now - e.atMs < ENTRY_TTL_MS ? fresh : stale).push(e);
+    this.stock = fresh;
+    if (stale.length > 0) await this.release(stale);
+    if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
+    this.persist();
+    // Keep the loop alive — stock stays full and fresh between bursts.
+    await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+  }
+
   private persist(): void {
     // storage.put without await — the DO's output gate holds the response
     // until the write is durable, so this is both safe and non-blocking.
     void this.state.storage.put("stock", this.stock);
   }
 
-  private async restock(cell: { cellID: string; baseURL: string }): Promise<void> {
+  // restockToTarget fills the stock up to TARGET_STOCK by issuing up to
+  // RESTOCK_MAX_CALLS edge-reserve calls (each up to RESTOCK_BATCH boxes). It
+  // stops early when the stock is full or the cell pool is drained (a reserve
+  // returns fewer boxes than asked) so we don't hammer an empty pool.
+  private async restockToTarget(cell: { cellID: string; baseURL: string }): Promise<void> {
     if (this.restockInFlight) return;
     this.restockInFlight = true;
     try {
-      const want = Math.min(RESTOCK_BATCH, MAX_STOCK - this.stock.length);
-      if (want <= 0) return;
+      for (let call = 0; call < RESTOCK_MAX_CALLS; call++) {
+        const want = Math.min(RESTOCK_BATCH, TARGET_STOCK - this.stock.length);
+        if (want <= 0) return;
+        const got = await this.reserveOnce(cell, want);
+        if (got < want) return; // pool drained (or error) — don't spin
+      }
+    } finally {
+      this.restockInFlight = false;
+    }
+  }
+
+  // reserveOnce reserves up to `want` boxes from the cell pool and appends them
+  // to the stock. Returns how many were actually added.
+  private async reserveOnce(cell: { cellID: string; baseURL: string }, want: number): Promise<number> {
+    try {
       const token = await mintPoolCapToken(this.env.SESSION_JWT_SECRET, cell.cellID);
       const r = await fetch(cell.baseURL.replace(/\/$/, "") + "/internal/pool/edge-reserve", {
         method: "POST",
@@ -152,7 +220,7 @@ export class PoolStock {
       });
       if (!r.ok) {
         console.error(`pool-stock ${cell.cellID}: reserve failed ${r.status} ${await r.text()}`);
-        return;
+        return 0;
       }
       const data = (await r.json()) as {
         region: string;
@@ -161,6 +229,7 @@ export class PoolStock {
       };
       const now = Date.now();
       const have = new Set(this.stock.map((e) => e.id));
+      let added = 0;
       for (const b of data.boxes) {
         if (have.has(b.sandboxID)) continue;
         this.stock.push({
@@ -172,12 +241,13 @@ export class PoolStock {
           sandboxDomain: data.sandboxDomain,
           atMs: now,
         });
+        added++;
       }
       this.persist();
+      return added;
     } catch (e) {
       console.error(`pool-stock ${cell.cellID}: restock error:`, e);
-    } finally {
-      this.restockInFlight = false;
+      return 0;
     }
   }
 
