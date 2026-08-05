@@ -33,6 +33,7 @@ export interface GlobalOptions {
   apiUrl?: string;
   apiKey?: string;
   json: boolean;
+  verbose?: boolean;
 }
 
 function printJSON(value: unknown): void {
@@ -542,7 +543,9 @@ export async function runCommand(
     const useRemote = remote || Boolean(agentOption) || action !== "create";
     if (!useRemote) {
       const prompt = args.join(" ").trim();
-      await runLocalAgent(prompt ? ["run", prompt] : ["shell"], config);
+      await runLocalAgent(prompt ? ["run", prompt] : ["shell"], config, {
+        verbose: globals.verbose,
+      });
       return;
     }
     if (action === "list") {

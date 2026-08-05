@@ -4,8 +4,7 @@ The OpenComputer CLI treats every agent as a normal source repository. A
 template creates editable instructions, TypeScript tools, connection
 declarations, a sandbox workspace, and committed agent identity.
 
-[Bun](https://bun.sh/) 1.2 or newer is required. The CLI is still installed
-and published through npm:
+Node.js 22 or newer is required. Install the CLI through npm:
 
 ```bash
 npm install --global @opencomputer/cli
@@ -69,11 +68,18 @@ opencomputer dev
 ```
 
 For a terminal-only workflow, `opencomputer session` automatically starts a
-temporary local service when one is not already running and opens an OpenTUI
-multi-turn interface. The service is stopped when the interface exits:
+temporary local service when one is not already running and opens a simple
+multi-turn `User:` / `Agent:` prompt. Type `/exit`, `/quit`, or press Ctrl+C to
+leave. The service is stopped when the prompt exits:
 
 ```bash
 opencomputer session
+```
+
+Add `--verbose` to retain reasoning, tool, and lifecycle events in the terminal:
+
+```bash
+opencomputer session --verbose
 ```
 
 Pass a prompt for a single turn. This also starts and stops the service
