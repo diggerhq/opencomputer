@@ -104,6 +104,10 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     );
     assert.match(runtimeInstructions, /You are an OpenComputer agent/);
     assert.match(runtimeInstructions, /Never direct users to OpenCode/);
+    assert.match(
+      runtimeInstructions,
+      /Use the question tool[\s\S]*resumes when the user replies/,
+    );
     assert.match(runtimeInstructions, /Email triage/);
     assert.equal(
       (await stat(resolve(runtime, ".opencode", "tools", "gmail.ts"))).isFile(),
@@ -138,12 +142,52 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
       (await stat(resolve(runtime, "opencode.json"))).isFile(),
       true,
     );
+    const runtimeOpenCode = JSON.parse(
+      await readFile(resolve(runtime, "opencode.json"), "utf8"),
+    ) as {
+      tools: { question: boolean };
+      permission: { question: string; calendar_create_time_off?: string };
+    };
+    assert.equal(runtimeOpenCode.tools.question, true);
+    assert.equal(runtimeOpenCode.permission.question, "allow");
     assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
     assert.match(runtimeInstructions, /summary count exactly matches/);
     assert.equal(
       (await stat(resolve(runtime, "README.md"))).isFile(),
       true,
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler preserves an explicit question denial", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-"));
+  const root = resolve(parent, "no-questions");
+  try {
+    await initializeAgentProject(emailTemplate, root);
+    const sourceConfig = JSON.parse(
+      await readFile(resolve(root, "opencode.json"), "utf8"),
+    ) as {
+      tools: Record<string, unknown>;
+      permission: Record<string, unknown>;
+    };
+    sourceConfig.tools.question = false;
+    sourceConfig.permission.question = "deny";
+    await writeFile(
+      resolve(root, "opencode.json"),
+      `${JSON.stringify(sourceConfig, null, 2)}\n`,
+    );
+
+    const runtime = await prepareAgent(root);
+    const runtimeConfig = JSON.parse(
+      await readFile(resolve(runtime, "opencode.json"), "utf8"),
+    ) as {
+      tools: { question: boolean };
+      permission: { question: string };
+    };
+    assert.equal(runtimeConfig.tools.question, false);
+    assert.equal(runtimeConfig.permission.question, "deny");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -222,8 +266,48 @@ test("the PTO template creates Calendar tools without checked-in channel state",
       await readFile(resolve(root, "opencode.json"), "utf8"),
       /calendar_create_time_off/,
     );
+    const opencode = JSON.parse(
+      await readFile(resolve(root, "opencode.json"), "utf8"),
+    ) as {
+      permission: { bash: string; question: string };
+      tools: { question: boolean };
+    };
+    assert.equal(opencode.permission.bash, "deny");
+    assert.equal(opencode.permission.question, "allow");
+    assert.equal(
+      (opencode.permission as { calendar_create_time_off?: string })
+        .calendar_create_time_off,
+      "allow",
+    );
+    assert.equal(opencode.tools.question, true);
+    assert.match(
+      await readFile(resolve(root, "agent.ts"), "utf8"),
+      /shell: "deny"/,
+    );
+    assert.match(
+      await readFile(resolve(root, "instructions.md"), "utf8"),
+      /Never[\s\S]*curl[\s\S]*managed connection/,
+    );
+    assert.match(
+      await readFile(resolve(root, "skills", "manage-pto", "SKILL.md"), "utf8"),
+      /Never use bash[\s\S]*direct Google API requests/,
+    );
     await assert.rejects(stat(resolve(root, "channels", "slack.ts")));
     await assert.rejects(stat(resolve(root, "slack", "manifest.json")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an incomplete PTO project cannot be packaged without Calendar tools", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "pto-calendar-incomplete-"));
+  try {
+    await initializeAgentProject(ptoTemplate, root);
+    await rm(resolve(root, "tools", "calendar.ts"));
+    await assert.rejects(
+      buildAgentArtifact(root),
+      /opencomputer tools add calendar/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
