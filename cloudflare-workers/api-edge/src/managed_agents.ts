@@ -157,6 +157,7 @@ function publicConnection(value: unknown): Record<string, unknown> {
     agentId: connection.agentId,
     alias: connection.alias,
     displayName: connection.displayName,
+    scopes: strings(connection.scopes),
     status: connection.status,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,

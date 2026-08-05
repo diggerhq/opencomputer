@@ -58,7 +58,24 @@ type CliStep = {
   commands: string[]
 }
 
-const availableTemplateIds = new Set(['email-triage'])
+const availableTemplateIds = new Set(['email-triage', 'pto-calendar'])
+
+function templateSetup(template: ManagedAgentTemplate) {
+  if (template.id === 'pto-calendar') {
+    return {
+      directory: 'pto-calendar',
+      connectionName: 'Google Calendar',
+      connectionCommand: 'connection add calendar --alias work-calendar',
+      toolCommand: 'tools add calendar',
+    }
+  }
+  return {
+    directory: 'gmail-triage',
+    connectionName: 'Gmail',
+    connectionCommand: 'connection add gmail --alias personal',
+    toolCommand: 'tools add gmail',
+  }
+}
 
 const starterCopy = [
   {
@@ -111,6 +128,7 @@ function cliCommand(origin: string, command: string) {
 }
 
 function buildSetupPrompt(template: ManagedAgentTemplate, origin: string) {
+  const setup = templateSetup(template)
   const integrations = template.integrations.join(', ')
   const firstPrompt =
     template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
@@ -132,7 +150,7 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 4. Run \`npm install\` in the repository.
 5. Inspect and tailor the checked-in source: \`opencomputer.toml\`, \`instructions.md\`, \`agent.ts\`, \`tools/\`, \`connections/\`, \`skills/\`, \`workspace/\`, and \`evals/\`.
 6. Keep the stable \`id\` in \`opencomputer.toml\`; future deployments of this repository must create new versions of that same agent.
-7. Add and authorize only supported connections. For Gmail, use \`opencomputer tools add gmail\` and \`${cliCommand(origin, 'connect google')}\`. Connect Slack from the deployed agent's Channels tab after deployment.
+7. Add and authorize the ${setup.connectionName} connection with \`${cliCommand(origin, setup.toolCommand)}\` and \`${cliCommand(origin, setup.connectionCommand)}\`. Connect Slack from the deployed agent's Channels tab after deployment.
 8. Test the editable agent locally with the OpenComputer CLI:
    \`opencomputer session "${firstPrompt.replace(/"/g, '\\"')}"\`
 9. Make any necessary source changes and test again.
@@ -147,6 +165,7 @@ function buildCliSteps(
   template: ManagedAgentTemplate,
   origin: string,
 ): CliStep[] {
+  const setup = templateSetup(template)
   const firstPrompt =
     template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
   return [
@@ -159,16 +178,16 @@ function buildCliSteps(
       commands: [cliCommand(origin, 'login')],
     },
     {
-      title: 'Initialize the Gmail triage agent',
+      title: `Initialize the ${template.name} agent`,
       commands: [
-        'mkdir gmail-triage && cd gmail-triage',
+        `mkdir ${setup.directory} && cd ${setup.directory}`,
         cliCommand(origin, `init ${template.id} .`),
         'npm install',
       ],
     },
     {
-      title: 'Connect your Gmail account',
-      commands: [cliCommand(origin, 'connection add gmail --alias personal')],
+      title: `Connect your ${setup.connectionName} account`,
+      commands: [cliCommand(origin, setup.connectionCommand)],
     },
     {
       title: 'Test the agent locally',
@@ -198,6 +217,7 @@ function TemplateCard({
 }) {
   const Icon = categoryIcons[template.category as Category] ?? ClipboardCheck
   const available = availableTemplateIds.has(template.id)
+  const setup = templateSetup(template)
   return (
     <Panel
       className={cn(
@@ -263,7 +283,7 @@ function TemplateCard({
         {available ? (
           <div className="mt-6 space-y-2">
             <p className="text-muted-foreground text-xs leading-5">
-              Install → login → initialize → connect Gmail → test → deploy
+              Install → login → initialize → connect {setup.connectionName} → test → deploy
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button

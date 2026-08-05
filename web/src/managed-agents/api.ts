@@ -49,6 +49,7 @@ const connectionSchema = z.object({
   agentId: z.string().optional().default(''),
   alias: z.string().optional().default(''),
   displayName: z.string().nullish(),
+  scopes: z.array(z.string()).optional().default([]),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

@@ -71,7 +71,7 @@ function SessionApp({ agentName, send, exit }: AppProps) {
   }, [busy, spinner.length]);
 
   useKeyboard((key) => {
-    if (key.name === "escape" || (key.ctrl && key.name === "c")) exit();
+    if (key.ctrl && !key.shift && key.name === "c") exit();
   });
 
   const updateAssistant = useCallback(
@@ -257,7 +257,7 @@ function SessionApp({ agentName, send, exit }: AppProps) {
         />
       </box>
       <box style={{ height: 1, paddingX: 2 }}>
-        <text fg="#575751">Enter send  ·  Esc exit  ·  /exit quit</text>
+        <text fg="#575751">Enter send  ·  Drag select  ·  Ctrl+Shift+C copy  ·  Ctrl+C quit</text>
       </box>
     </box>
   );

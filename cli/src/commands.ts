@@ -9,6 +9,7 @@ import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
 import { runLocalAgent } from "./local.js";
 import {
+  addCalendarTools,
   addGmailTools,
   addSlackChannel,
   buildAgentArtifact,
@@ -68,17 +69,21 @@ async function requireAgentRoot(): Promise<string> {
 
 async function connectGoogle(
   client: OpenComputerClient,
+  service: "gmail" | "calendar",
   label = "default",
 ): Promise<void> {
-  const started = await client.linkGoogle("gmail", label);
+  const displayName = service === "calendar" ? "Google Calendar" : "Gmail";
+  const started = await client.linkGoogle(service, label);
   if (started.status === "connected") {
-    process.stdout.write(`Gmail connection "${label}" is already connected.\n`);
+    process.stdout.write(
+      `${displayName} connection "${label}" is already connected.\n`,
+    );
     return;
   }
   if (!started.authorizationUrl) {
-    throw new Error("Gmail did not return an authorization link.");
+    throw new Error(`${displayName} did not return an authorization link.`);
   }
-  process.stdout.write(`Authorize Gmail:\n${started.authorizationUrl}\n`);
+  process.stdout.write(`Authorize ${displayName}:\n${started.authorizationUrl}\n`);
   openBrowser(started.authorizationUrl);
   const deadline = started.expiresAt
     ? Date.parse(started.expiresAt)
@@ -86,14 +91,14 @@ async function connectGoogle(
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     if (
-      (await client.googleConnection(started.connectionId, "gmail")).status ===
+      (await client.googleConnection(started.connectionId, service)).status ===
       "connected"
     ) {
-      process.stdout.write(`Gmail connection "${label}" connected.\n`);
+      process.stdout.write(`${displayName} connection "${label}" connected.\n`);
       return;
     }
   }
-  throw new Error("Gmail authorization timed out.");
+  throw new Error(`${displayName} authorization timed out.`);
 }
 
 async function inferAgentReference(alias: string): Promise<string | undefined> {
@@ -637,11 +642,19 @@ export async function runCommand(
 
   if (command === "tools") {
     const action = args.shift();
-    const tool = args.shift();
-    if (action !== "add" || tool !== "gmail" || args.length) {
-      throw new Error("Usage: opencomputer tools add gmail");
+    const toolName = args.shift();
+    if (
+      action !== "add" ||
+      (toolName !== "gmail" && toolName !== "calendar") ||
+      args.length
+    ) {
+      throw new Error("Usage: opencomputer tools add <gmail|calendar>");
     }
-    const files = await addGmailTools(await requireAgentRoot());
+    const root = await requireAgentRoot();
+    const files =
+      toolName === "calendar"
+        ? await addCalendarTools(root)
+        : await addGmailTools(root);
     process.stdout.write(
       `${files.map((file) => `Created ${file}`).join("\n")}\n`,
     );
@@ -653,7 +666,7 @@ export async function runCommand(
     if ((provider !== "google" && provider !== "gmail") || args.length) {
       throw new Error("Usage: opencomputer connect google");
     }
-    await connectGoogle(client, "default");
+    await connectGoogle(client, "gmail", "default");
     return;
   }
 
@@ -662,12 +675,13 @@ export async function runCommand(
     if (action === "add" || action === "connect") {
       const provider = args.shift();
       const alias = option(args, "--alias") ?? "default";
-      if ((provider !== "google" && provider !== "gmail") || args.length) {
+      const service = provider === "google" ? "gmail" : provider;
+      if ((service !== "gmail" && service !== "calendar") || args.length) {
         throw new Error(
-          "Usage: opencomputer connection add gmail [--alias <name>]",
+          "Usage: opencomputer connection add <gmail|calendar> [--alias <name>]",
         );
       }
-      await connectGoogle(client, alias);
+      await connectGoogle(client, service, alias);
       return;
     }
     if (action === "remove" || action === "disconnect") {
@@ -692,9 +706,14 @@ export async function runCommand(
         );
       }
       const connection = matches[0]!;
+      const googleService = connection.scopes?.some((scope) =>
+        scope.includes("/auth/calendar"),
+      )
+        ? "calendar"
+        : "gmail";
       const disconnected =
         connection.provider === "google"
-          ? await client.disconnectGoogle(connection.id, "gmail")
+          ? await client.disconnectGoogle(connection.id, googleService)
           : await client.disconnectConnection(connection.id);
       if (globals.json) printJSON(disconnected);
       else process.stdout.write(`Removed connection "${connection.label}".\n`);

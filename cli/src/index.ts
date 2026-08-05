@@ -2,7 +2,7 @@
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.9";
+const VERSION = "0.3.10";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -50,8 +50,8 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer tools add gmail
-  opencomputer connection add gmail [--alias <name>]
+  opencomputer tools add <gmail|calendar>
+  opencomputer connection add <gmail|calendar> [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>
   opencomputer channels list [--local|--remote]
