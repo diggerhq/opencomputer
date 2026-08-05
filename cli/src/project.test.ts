@@ -106,7 +106,7 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     assert.match(runtimeInstructions, /Never direct users to OpenCode/);
     assert.match(
       runtimeInstructions,
-      /Never use an interactive question tool[\s\S]*normal assistant message/,
+      /Use the question tool[\s\S]*resumes when the user replies/,
     );
     assert.match(runtimeInstructions, /Email triage/);
     assert.equal(
@@ -144,14 +144,50 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     );
     const runtimeOpenCode = JSON.parse(
       await readFile(resolve(runtime, "opencode.json"), "utf8"),
-    ) as { tools: { question: boolean } };
-    assert.equal(runtimeOpenCode.tools.question, false);
+    ) as {
+      tools: { question: boolean };
+      permission: { question: string; calendar_create_time_off?: string };
+    };
+    assert.equal(runtimeOpenCode.tools.question, true);
+    assert.equal(runtimeOpenCode.permission.question, "allow");
     assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
     assert.match(runtimeInstructions, /summary count exactly matches/);
     assert.equal(
       (await stat(resolve(runtime, "README.md"))).isFile(),
       true,
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler preserves an explicit question denial", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-"));
+  const root = resolve(parent, "no-questions");
+  try {
+    await initializeAgentProject(emailTemplate, root);
+    const sourceConfig = JSON.parse(
+      await readFile(resolve(root, "opencode.json"), "utf8"),
+    ) as {
+      tools: Record<string, unknown>;
+      permission: Record<string, unknown>;
+    };
+    sourceConfig.tools.question = false;
+    sourceConfig.permission.question = "deny";
+    await writeFile(
+      resolve(root, "opencode.json"),
+      `${JSON.stringify(sourceConfig, null, 2)}\n`,
+    );
+
+    const runtime = await prepareAgent(root);
+    const runtimeConfig = JSON.parse(
+      await readFile(resolve(runtime, "opencode.json"), "utf8"),
+    ) as {
+      tools: { question: boolean };
+      permission: { question: string };
+    };
+    assert.equal(runtimeConfig.tools.question, false);
+    assert.equal(runtimeConfig.permission.question, "deny");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -232,9 +268,18 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     );
     const opencode = JSON.parse(
       await readFile(resolve(root, "opencode.json"), "utf8"),
-    ) as { permission: { bash: string }; tools: { question: boolean } };
+    ) as {
+      permission: { bash: string; question: string };
+      tools: { question: boolean };
+    };
     assert.equal(opencode.permission.bash, "deny");
-    assert.equal(opencode.tools.question, false);
+    assert.equal(opencode.permission.question, "allow");
+    assert.equal(
+      (opencode.permission as { calendar_create_time_off?: string })
+        .calendar_create_time_off,
+      "allow",
+    );
+    assert.equal(opencode.tools.question, true);
     assert.match(
       await readFile(resolve(root, "agent.ts"), "utf8"),
       /shell: "deny"/,
