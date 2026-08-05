@@ -1,0 +1,15 @@
+{
+  "name": "opencomputer-vm-do",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260518.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.92.0"
+  }
+}

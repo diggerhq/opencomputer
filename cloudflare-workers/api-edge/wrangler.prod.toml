@@ -65,12 +65,15 @@ name = "POOL_STOCK"
 class_name = "PoolStock"
 script_name = "opencomputer-edge-prod"
 
-# VM-DO exec data plane (src/vm_session.ts): one DO per sandbox holds the
-# host-dialed WebSocket to the QEMU worker.
+# VM-DO exec data plane: one DO per sandbox holds the host-dialed WebSocket to
+# the QEMU worker. The class lives in the separate vm-do worker
+# (cloudflare-workers/vm-do → opencomputer-vmdo-prod) so edge deploys — which
+# happen on every merge touching web/ or edge code — don't reset the DOs and
+# sever the sockets. Deploy order on first cutover: vm-do worker BEFORE this.
 [[durable_objects.bindings]]
 name = "VM_SESSIONS"
 class_name = "VmSession"
-script_name = "opencomputer-edge-prod"
+script_name = "opencomputer-vmdo-prod"
 
 [[migrations]]
 tag = "v1"
@@ -83,6 +86,14 @@ new_sqlite_classes = ["PoolStock"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["VmSession"]
+
+# v4 removes the edge-local VmSession class — it moved to the vm-do worker
+# (see the VM_SESSIONS binding above). Safe to delete: VmSession keeps no
+# durable state, only live sockets, and hosts redial the new namespace within
+# ~1s of the cutover deploy.
+[[migrations]]
+tag = "v4"
+deleted_classes = ["VmSession"]
 
 # Secrets (set via `wrangler secret put --config wrangler.prod.toml`):
 #   SESSION_JWT_SECRET     — fresh prod HMAC (DO NOT reuse dev secret)

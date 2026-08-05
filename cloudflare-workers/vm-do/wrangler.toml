@@ -1,0 +1,22 @@
+# vm-do Worker — DEV. Owns the VmSession Durable Object class; api-edge
+# (opensandbox-edge-dev) binds it cross-script via script_name. Deliberately a
+# separate worker so api-edge's deploy cadence (every merge touching web/ or
+# edge code) doesn't reset the DOs and sever the host-dialed VM WebSockets.
+# Deploy: `wrangler deploy` — and ONLY when VM-DO logic changes.
+#
+# No routes on purpose: nothing reaches this worker over HTTP. The edge
+# authenticates /internal/vms/:id/connect and routes exec, then calls the DO
+# through its VM_SESSIONS binding.
+
+name = "opensandbox-vmdo-dev"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+account_id = "1241f114453e32d292197e3fb36210b2"
+
+[[durable_objects.bindings]]
+name = "VM_SESSIONS"
+class_name = "VmSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VmSession"]

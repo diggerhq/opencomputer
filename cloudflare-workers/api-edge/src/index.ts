@@ -21,7 +21,11 @@
 
 export { CreditAccount } from "../../shared/credit_account";
 export { PoolStock } from "./pool_stock";
-export { VmSession } from "./vm_session";
+// VmSession (VM-DO exec data plane) lives in its own worker
+// (cloudflare-workers/vm-do) and is bound cross-script via VM_SESSIONS —
+// deliberately NOT exported here, so the edge's deploy cadence (every merge
+// touching web/ or edge code) can't reset the DOs and sever the host-dialed
+// VM WebSockets.
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
@@ -1226,6 +1230,7 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // proxyToCellSDK exactly (same route lookup + org-ownership check) so the DO
 // path can't be used to exec on another org's sandbox. See vm_session.ts.
 async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): Promise<Response | null> {
+  if (!env.VM_SESSIONS) return null; // binding absent mid-cutover → tunnel
   const route = await resolveSandboxRoute(env, id);
   if (!route) return json({ error: "sandbox not found" }, 404);
   if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
@@ -2906,6 +2911,10 @@ export default {
     {
       const vmConnect = path.match(/^\/internal\/vms\/([^/]+)\/connect$/);
       if (vmConnect && isWebSocketUpgrade(req)) {
+        // 503 (not a crash) if the binding is absent — happens only during the
+        // two-step cutover that moves VmSession between workers; hosts just
+        // keep redialing until the rebind deploy lands.
+        if (!env.VM_SESSIONS) return new Response("vm sessions unavailable", { status: 503 });
         const expected = env.SESSION_JWT_SECRET
           ? await hmacHex(env.SESSION_JWT_SECRET, "vmdo:" + vmConnect[1])
           : "";

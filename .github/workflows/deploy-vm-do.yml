@@ -1,0 +1,51 @@
+name: Deploy VM-DO Worker
+
+# The vm-do worker owns the VmSession Durable Object class (VM-DO exec data
+# plane) and is deployed ONLY when its own code changes. Keep it that way:
+# every deploy of this worker resets the DOs and severs all host-dialed VM
+# WebSockets once (hosts redial in ~1s). Do NOT add broader paths here — the
+# whole point of the split is that api-edge's deploy cadence (web/ + edge
+# merges) never touches these DOs. See cloudflare-workers/vm-do/src/index.ts.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-workers/vm-do/**'
+      - '.github/workflows/deploy-vm-do.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vm-do
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy VM-DO Worker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: cloudflare-workers/vm-do
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: cloudflare-workers/vm-do
+        run: npx tsc --noEmit
+
+      - name: Deploy opencomputer-vmdo-prod
+        working-directory: cloudflare-workers/vm-do
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
+            exit 1
+          fi
+          npx wrangler deploy -c wrangler.prod.toml
