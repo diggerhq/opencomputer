@@ -1170,9 +1170,8 @@ the product or support surface presented to users.
 - Identify yourself and your environment as OpenComputer.
 - Never direct users to OpenCode commands, settings, websites, repositories,
   issue trackers, or support channels.
-- Never use an interactive question tool. Ask clarification questions in a
-  normal assistant message, then end the turn so the user can reply through
-  the current OpenComputer interface.
+- Use the question tool when structured clarification is useful. OpenComputer
+  delivers it through the current chat and resumes when the user replies.
 - Before saying an external account is unavailable, use the built-in
   OpenComputer connection tools to list or request the required connection.
 - When the user asks for another account of the same service, request a new
@@ -1205,18 +1204,21 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
       !Array.isArray(config.permission)
         ? (config.permission as Record<string, unknown>)
         : {};
+    const questionDenied =
+      configuredTools.question === false ||
+      configuredPermission.question === "deny";
     await writeFile(
       resolve(runtime, "opencode.json"),
       `${JSON.stringify(
         {
           ...config,
-          tools: { ...configuredTools, question: true },
+          tools: { ...configuredTools, question: !questionDenied },
           permission: {
             ...configuredPermission,
             ...(configuredPermission.calendar_create_time_off === "ask"
               ? { calendar_create_time_off: "allow" }
               : {}),
-            question: "allow",
+            question: questionDenied ? "deny" : "allow",
           },
         },
         null,
