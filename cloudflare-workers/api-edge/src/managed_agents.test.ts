@@ -357,6 +357,7 @@ describe("managed agents proxy", () => {
           agentId: "email-triage",
           alias: "production",
           displayName: "Personal Gmail",
+          scopes: ["gmail.readonly"],
           status: "connected",
           createdAt: "2026-07-31T00:00:00.000Z",
           updatedAt: "2026-07-31T01:00:00.000Z",

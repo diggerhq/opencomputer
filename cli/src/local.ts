@@ -4,7 +4,7 @@ import {
   type ToolPart,
 } from "@opencode-ai/sdk/v2";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -24,7 +24,7 @@ import { renderDevUI } from "./dev-ui.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
 
 interface DevState {
-  version: 1;
+  version: 3;
   pid: number;
   url: string;
   token: string;
@@ -109,7 +109,7 @@ function openBrowser(url: string): void {
   child.unref();
 }
 
-async function startGateway(config: ResolvedConfig): Promise<{
+export async function startGateway(config: ResolvedConfig): Promise<{
   url: string;
   token: string;
   close(): Promise<void>;
@@ -132,27 +132,86 @@ async function startGateway(config: ResolvedConfig): Promise<{
         return;
       }
       let target: string;
+      let upstreamMethod = request.method;
+      let upstreamBody: Buffer | string | undefined;
       if (request.method === "POST" && url.pathname === "/google/fetch") {
         target = `${config.apiUrl}/api/managed-agents/connections/google/fetch`;
+        upstreamBody = await readBody(request);
+      } else if (
+        request.method === "POST" &&
+        url.pathname === "/opencomputer/fetch"
+      ) {
+        const raw = await readBody(request);
+        let input: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(raw.toString("utf8"));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("invalid payload");
+          }
+          input = parsed as Record<string, unknown>;
+        } catch {
+          sendJSON(response, 400, {
+            error: { message: "Connection control payload must be valid JSON" },
+          });
+          return;
+        }
+        if (input.action === "list") {
+          target = `${config.apiUrl}/api/managed-agents/connections`;
+          upstreamMethod = "GET";
+        } else if (input.action === "request") {
+          const service = input.service;
+          if (
+            typeof service !== "string" ||
+            !["gmail", "calendar", "drive", "sheets"].includes(service)
+          ) {
+            sendJSON(response, 400, {
+              error: {
+                message:
+                  "Expected one of gmail, calendar, drive, or sheets",
+              },
+            });
+            return;
+          }
+          const requestedLabel =
+            typeof input.label === "string" && input.label.trim()
+              ? input.label.trim()
+              : undefined;
+          const label =
+            requestedLabel ??
+            (input.newAccount === true
+              ? `${service}-${randomUUID().slice(0, 8)}`
+              : "default");
+          target = `${config.apiUrl}/api/managed-agents/connections/google/link`;
+          upstreamMethod = "POST";
+          upstreamBody = JSON.stringify({ service, label });
+        } else {
+          sendJSON(response, 400, {
+            error: {
+              message: "Expected a list or request connection action",
+            },
+          });
+          return;
+        }
       } else if (url.pathname.startsWith("/openrouter/")) {
         target =
           `${config.apiUrl}/api/managed-agents/openrouter` +
           `${url.pathname.slice("/openrouter".length)}${url.search}`;
+        upstreamBody =
+          request.method === "GET" || request.method === "HEAD"
+            ? undefined
+            : await readBody(request);
       } else {
         response.writeHead(404).end();
         return;
       }
       const upstream = await fetch(target, {
-        method: request.method,
+        method: upstreamMethod,
         headers: {
           "content-type":
             request.headers["content-type"] ?? "application/json",
           "x-api-key": config.apiKey!,
         },
-        body:
-          request.method === "GET" || request.method === "HEAD"
-            ? undefined
-            : await readBody(request),
+        body: upstreamBody,
         signal: AbortSignal.timeout(60_000),
       });
       response.writeHead(upstream.status, {
@@ -316,6 +375,11 @@ async function streamTurn(
       sessionID,
       directory,
       model: { providerID: model.providerID, modelID: model.modelID },
+      // OpenComputer owns the multi-turn UI. The OpenCode question tool waits
+      // for a separate client-side reply channel that our CLI and hosted
+      // sessions do not expose, so agents must ask follow-up questions in the
+      // conversation instead.
+      tools: { question: false },
       parts: [{ type: "text", text: prompt }],
     });
     if (started.error) throw new Error(JSON.stringify(started.error));
@@ -375,8 +439,11 @@ async function streamTurn(
       ) {
         throw new Error(JSON.stringify(event.properties.error));
       } else if (
-        event.type === "session.idle" &&
-        event.properties.sessionID === sessionID
+        (event.type === "session.idle" &&
+          event.properties.sessionID === sessionID) ||
+        (event.type === "session.status" &&
+          event.properties.sessionID === sessionID &&
+          event.properties.status.type === "idle")
       ) {
         break;
       }
@@ -413,7 +480,7 @@ function statePath(root: string): string {
 async function readDevState(root: string): Promise<DevState | null> {
   try {
     const state = JSON.parse(await readFile(statePath(root), "utf8")) as DevState;
-    if (state.version !== 1 || !state.url || !state.token) return null;
+    if (state.version !== 3 || !state.url || !state.token) return null;
     const response = await fetch(`${state.url}/health`, {
       headers: { authorization: `Bearer ${state.token}` },
       signal: AbortSignal.timeout(1_000),
@@ -667,7 +734,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     throw new Error("The OpenComputer dev service did not receive a port");
   }
   const state: DevState = {
-    version: 1,
+    version: 3,
     pid: process.pid,
     url: `http://127.0.0.1:${String(address.port)}`,
     token,
