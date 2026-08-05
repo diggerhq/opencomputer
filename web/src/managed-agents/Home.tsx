@@ -217,7 +217,6 @@ function TemplateCard({
 }) {
   const Icon = categoryIcons[template.category as Category] ?? ClipboardCheck
   const available = availableTemplateIds.has(template.id)
-  const setup = templateSetup(template)
   return (
     <Panel
       className={cn(
@@ -281,10 +280,7 @@ function TemplateCard({
           </p>
         </div>
         {available ? (
-          <div className="mt-6 space-y-2">
-            <p className="text-muted-foreground text-xs leading-5">
-              Install → login → initialize → connect {setup.connectionName} → test → deploy
-            </p>
+          <div className="mt-6">
             <div className="grid gap-2 sm:grid-cols-2">
               <Button
                 variant={promptCopied ? 'secondary' : 'default'}

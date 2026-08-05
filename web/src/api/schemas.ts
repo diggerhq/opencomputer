@@ -19,6 +19,8 @@ export const MeResponseSchema = z.object({
   email: z.string(),
   orgId: z.string(),
   orgs: z.array(OrgInfoSchema).optional(),
+  durableSessionsEnabled: z.boolean(),
+  infrastructureEnabled: z.boolean(),
   authMode: z.string().optional(),
   capabilities: z
     .object({

@@ -6,6 +6,8 @@ export interface AuthUser {
   email: string
   orgId: string
   orgs?: OrgInfo[]
+  durableSessionsEnabled: boolean
+  infrastructureEnabled: boolean
   authMode?: string
   capabilities?: {
     signOut: boolean
