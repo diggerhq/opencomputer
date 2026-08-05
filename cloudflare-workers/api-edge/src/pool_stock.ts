@@ -54,6 +54,12 @@ const RESTOCK_BATCH = 25; // max boxes reserved per single edge-reserve call
 const TARGET_STOCK = 25; // per-shard fill level (× 8 shards = 200 fleet)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
 const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls ≥ TARGET)
+// Self-decommission: a shard that hasn't served a claim in this long releases
+// its whole stock and stops its alarm (a later claim re-arms it). This is what
+// lets a retired shard GENERATION (index.ts POOL_STOCK_SHARD_GEN bump — e.g.
+// after a placement mistake) drain instead of hoarding reservations forever,
+// and returns idle cells' boxes to the pool for non-default-shape creates.
+const IDLE_DECOMMISSION_MS = 30 * 60_000;
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,
@@ -93,6 +99,7 @@ async function mintPoolCapToken(secret: string, cellID: string): Promise<string>
 export class PoolStock {
   private stock: StockEntry[] = [];
   private restockInFlight = false;
+  private lastClaimMs = 0;
   // One-shot colo self-identification (diagnostics): placement is sticky at
   // first-touch; a stock DO cross-colo from the claiming edge adds per-claim RTT.
   private coloLogged = false;
@@ -154,6 +161,8 @@ export class PoolStock {
     }
 
     const entry = this.stock.shift(); // FIFO — oldest first keeps the stock young
+    this.lastClaimMs = Date.now();
+    void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
     this.persist();
 
     // Ensure the proactive top-up loop is running, and kick an immediate restock
@@ -190,6 +199,17 @@ export class PoolStock {
   async alarm(): Promise<void> {
     const cell = this.cell;
     if (!cell) return; // no cell known yet → nothing to reserve; a claim will arm it
+    // Idle self-decommission (see IDLE_DECOMMISSION_MS): release everything and
+    // let the alarm lapse. A future claim re-arms and restocks.
+    const lastClaim = this.lastClaimMs || ((await this.state.storage.get<number>("lastClaim")) ?? 0);
+    if (Date.now() - lastClaim > IDLE_DECOMMISSION_MS) {
+      if (this.stock.length > 0) {
+        const all = this.stock.splice(0);
+        await this.release(all);
+        this.persist();
+      }
+      return; // no reschedule — decommissioned until the next claim
+    }
     // Expire+release anything past TTL before topping up, so held boxes go back
     // to the pool well before the cell's 15-min destroy backstop.
     const now = Date.now();

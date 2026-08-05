@@ -1009,10 +1009,18 @@ function indexSandboxFromSSE(
 // Stock shard fan-out (see pool_stock.ts for sizing): shard 0 uses the bare
 // cellID as its DO name — that's the pre-sharding instance, kept addressable so
 // its stock drains via claims + surplus-trim instead of stranding until TTL.
+//
+// SHARD_GEN: bump to mint fresh DO instances when placement went wrong — a DO
+// pins to the colo of its FIRST request forever, so shards must only ever be
+// first-touched by traffic from the cell's own metro (create from a sandbox in
+// the cell, never a laptop). g1's shards 1-7 were armed from off-metro and
+// pinned cross-country; g2 exists to re-place them. Old-gen shards strand their
+// reservations at most ENTRY_TTL + the cell's 15-min reaper.
 const POOL_STOCK_SHARDS = 8;
+const POOL_STOCK_SHARD_GEN = "g2";
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
-  const name = shard === 0 ? cellID : `${cellID}#${shard}`;
+  const name = shard === 0 ? cellID : `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
   return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name));
 }
 
