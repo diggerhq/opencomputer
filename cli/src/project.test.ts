@@ -244,3 +244,17 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("an incomplete PTO project cannot be packaged without Calendar tools", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "pto-calendar-incomplete-"));
+  try {
+    await initializeAgentProject(ptoTemplate, root);
+    await rm(resolve(root, "tools", "calendar.ts"));
+    await assert.rejects(
+      buildAgentArtifact(root),
+      /opencomputer tools add calendar/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

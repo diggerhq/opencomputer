@@ -1237,11 +1237,35 @@ async function collectFiles(
   return result;
 }
 
+async function validateTemplateRequirements(
+  root: string,
+  manifest: AgentManifest,
+): Promise<void> {
+  if (manifest.template !== "pto-calendar") return;
+  let calendarDeclared = false;
+  try {
+    const declaration = JSON.parse(
+      await readFile(resolve(root, "connections", "google.json"), "utf8"),
+    ) as { services?: unknown };
+    calendarDeclared =
+      Array.isArray(declaration.services) &&
+      declaration.services.includes("calendar");
+  } catch {
+    // Report one actionable error below for an incomplete PTO project.
+  }
+  if (!(await exists(resolve(root, "tools", "calendar.ts"))) || !calendarDeclared) {
+    throw new Error(
+      "PTO calendar tools are missing. Run `opencomputer tools add calendar` before deploying.",
+    );
+  }
+}
+
 export async function buildAgentArtifact(
   root: string,
 ): Promise<BuiltAgentArtifact> {
   const startedAt = performance.now();
   const manifest = await readManifest(root);
+  await validateTemplateRequirements(root, manifest);
   const runtime = await prepareAgent(root);
   const channels = await collectNames(root, "channels");
   const connections = await collectNames(root, "connections");
