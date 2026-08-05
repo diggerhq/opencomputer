@@ -78,6 +78,10 @@ var kvMapping = map[string]string{
 	"server-pool-target":   "OPENSANDBOX_POOL_TARGET",   // pooled boxes per worker (default 10; 0 disables)
 	"server-pool-enabled":  "OPENSANDBOX_POOL_ENABLED",  // "0" to disable (default on)
 	"server-pool-template": "OPENSANDBOX_POOL_TEMPLATE", // golden template name (default "base")
+	// Refill pacing — must outrun the ComputeSDK staggered benchmark's 5
+	// creates/s (100 boxes @ 200ms): batch 10 / interval 5000ms × 4 workers = 8/s.
+	"server-pool-refill-batch":       "OPENSANDBOX_POOL_REFILL_BATCH",       // boxes per worker per tick (default 3)
+	"server-pool-refill-interval-ms": "OPENSANDBOX_POOL_REFILL_INTERVAL_MS", // tick cadence (default 15000)
 
 	// Worker secrets
 	"worker-jwt-secret":         "OPENSANDBOX_JWT_SECRET",
