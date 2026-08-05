@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Build, test, connect, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
@@ -11,14 +11,15 @@
     "README.md"
   ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:server": "tsc -p tsconfig.json",
     "build:ui": "tsc -p tsconfig.ui.json --noEmit && vite build",
-    "build": "npm run build:server && npm run build:ui",
+    "build": "npm run clean && npm run build:server && npm run build:ui",
     "test": "npm run build && node --test dist/*.test.js",
     "prepack": "npm test"
   },
   "engines": {
-    "bun": ">=1.2.0"
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -35,8 +36,6 @@
   ],
   "dependencies": {
     "@opencode-ai/sdk": "1.18.4",
-    "@opentui/core": "^0.4.5",
-    "@opentui/react": "^0.4.5",
     "ai": "^7.0.45",
     "opencode-ai": "1.18.4",
     "react": "^19.2.8"

@@ -1,8 +1,8 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.11";
+const VERSION = "0.3.12";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -63,6 +63,7 @@ Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)
   --api-key <key>   API key (or OPENCOMPUTER_API_KEY)
   --json            Print machine-readable output
+  --verbose         Print session events
   --help            Show this help
   --version         Show the CLI version
 `);
@@ -82,6 +83,7 @@ async function main(): Promise<void> {
     apiUrl: takeOption(args, "--api-url"),
     apiKey: takeOption(args, "--api-key"),
     json: takeFlag(args, "--json"),
+    verbose: takeFlag(args, "--verbose"),
   };
   const command = args.shift();
   if (!command) {

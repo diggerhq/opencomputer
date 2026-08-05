@@ -22,6 +22,10 @@ import { fileURLToPath } from "node:url";
 import type { ResolvedConfig } from "./config.js";
 import { renderDevUI } from "./dev-ui.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
+import {
+  formatSessionEvent,
+  runSessionPrompt,
+} from "./session-prompt.js";
 
 interface DevState {
   version: 3;
@@ -891,13 +895,16 @@ async function ensureDevService(
   throw new Error("Timed out starting the local development service");
 }
 
-async function runSessionShell(config: ResolvedConfig): Promise<void> {
+async function runSessionShell(
+  config: ResolvedConfig,
+  verbose: boolean,
+): Promise<void> {
   const target = await ensureDevService(config);
   try {
     const manifest = await readManifest(target.state.agentRoot);
-    const { runSessionTUI } = await import("./tui.js");
-    await runSessionTUI({
+    await runSessionPrompt({
       agentName: manifest.name,
+      verbose,
       send: (prompt, sessionId, emit) =>
         runLocalSession(prompt, target.state, sessionId, emit),
     });
@@ -909,10 +916,23 @@ async function runSessionShell(config: ResolvedConfig): Promise<void> {
 async function runOneShotSession(
   prompt: string,
   config: ResolvedConfig,
+  verbose: boolean,
 ): Promise<void> {
   const target = await ensureDevService(config);
   try {
-    await runLocalSession(prompt, target.state);
+    let streamedText = false;
+    await runLocalSession(prompt, target.state, undefined, (event) => {
+      if (event.type === "message.delta") {
+        streamedText = true;
+        process.stdout.write(String(event.data.text ?? ""));
+      } else if (event.type === "message.completed") {
+        if (!streamedText) process.stdout.write(String(event.data.text ?? ""));
+      } else if (verbose) {
+        const formatted = formatSessionEvent(event);
+        if (formatted) process.stderr.write(`${formatted}\n`);
+      }
+    });
+    process.stdout.write("\n");
   } finally {
     await stopOwnedDev(target.owned);
   }
@@ -921,6 +941,7 @@ async function runOneShotSession(
 export async function runLocalAgent(
   args: string[],
   config: ResolvedConfig,
+  options: { verbose?: boolean } = {},
 ): Promise<void> {
   if (args[0] === "dev") {
     if (args.length > 1) throw new Error(`Unexpected local argument: ${args[1]}`);
@@ -930,12 +951,12 @@ export async function runLocalAgent(
   if (args[0] === "run") {
     const prompt = args.slice(1).join(" ").trim();
     if (!prompt) throw new Error("A prompt is required");
-    await runOneShotSession(prompt, config);
+    await runOneShotSession(prompt, config, options.verbose === true);
     return;
   }
   if (args[0] === "shell") {
     if (args.length > 1) throw new Error(`Unexpected local argument: ${args[1]}`);
-    await runSessionShell(config);
+    await runSessionShell(config, options.verbose === true);
     return;
   }
   throw new Error(`Unexpected local argument: ${args[0] ?? "none"}`);
