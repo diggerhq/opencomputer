@@ -1084,12 +1084,23 @@ async function finalizeEdgeClaim(
 }
 
 async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  // Per-phase timing → Server-Timing response header (Date.now advances on I/O
+  // in Workers, so deltas attribute I/O waits; pure CPU shows ~0).
+  const phases: string[] = [];
+  let tPrev = Date.now();
+  const mark = (name: string): void => {
+    const t = Date.now();
+    phases.push(`${name};dur=${t - tPrev}`);
+    tPrev = t;
+  };
   const caller = await authenticate(req, env);
+  mark("auth");
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
 
   // One batched D1 round-trip for org + running-count + active-cells (was three
   // serial reads on the create hot path). Cache-aware: warm isolates skip D1.
   const { org, activeCount, cells } = await loadCreateContext(env, caller.orgID, ctx);
+  mark("ctx");
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -1152,6 +1163,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     }, activeCount),
     pickCell(env, org.home_cell, requestedCellID, cells),
   ]);
+  mark("gatecell");
   if (gate) return gate;
   if (!cell) {
     return json(
@@ -1173,20 +1185,23 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText)) {
     try {
       const stub = env.POOL_STOCK.get(env.POOL_STOCK.idFromName(cell.cell_id));
+      mark("cap");
       const r = await stub.fetch("https://pool-stock/claim", {
         method: "POST",
         body: JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } }),
       });
       if (r.ok) {
         const box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+        mark("claim");
         const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
         // Seed the colo-shared route so the first exec — which usually lands on
-        // a different isolate — skips its blocking D1 route read. Awaited (~2ms)
-        // so the seed is durable BEFORE the client can send that exec.
-        await coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC);
-        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
+        // a different isolate — skips its blocking D1 route read. waitUntil is
+        // race-safe here: the client can't send that exec until the 201 crosses
+        // the network (≥ one RTT), and the put lands in ~5ms.
+        ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+        mark("mintseed");
         const resp: Record<string, unknown> = {
           sandboxID: box.id,
           token,
@@ -1195,7 +1210,12 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
-        return json(resp, 201);
+        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
+        console.log(`create-timing ${box.id} ${phases.join(" ")}`);
+        return new Response(JSON.stringify(resp), {
+          status: 201,
+          headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
+        });
       }
     } catch (e) {
       console.error("edge-claim: falling back to cell create:", e);
@@ -1244,7 +1264,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     if (parsed.sandboxID) {
       if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
       sandboxRouteCache.set(parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
-      await coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC);
+      ctx.waitUntil(coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
     }
     // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
     // write alive after we return; events-ingest reconciles the row anyway.
@@ -1344,9 +1364,11 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // short-circuits without polling — one edge→DO→host→agent hop. Authz mirrors
 // proxyToCellSDK exactly (same route lookup + org-ownership check) so the DO
 // path can't be used to exec on another org's sandbox. See vm_session.ts.
-async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): Promise<Response | null> {
+async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
   if (!env.VM_SESSIONS) return null; // binding absent mid-cutover → tunnel
+  const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
+  const routeMs = Date.now() - tRoute;
   if (!route) return json({ error: "sandbox not found" }, 404);
   if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
   try {
@@ -1356,14 +1378,25 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string): 
     const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id));
     // sid rides as a query param purely for DO-side diagnostics (idFromName is
     // one-way; the DO can't recover its own name).
+    const tDo = Date.now();
     const doResp = await stub.fetch("https://do/exec?sid=" + id, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
     });
+    const doMs = Date.now() - tDo;
     // 200 = DO ran it. 409 (connected:false / channel error) = fall back.
     if (doResp.status === 200) {
-      return new Response(doResp.body, { status: 200, headers: { "content-type": "application/json" } });
+      // agent = host-side manager.Exec time (from the result frame); do − agent
+      // ≈ edge→DO + DO→host WS round trips.
+      const agentMs = doResp.headers.get("x-agent-ms") ?? "-1";
+      return new Response(doResp.body, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, do;dur=${doMs}, agent;dur=${agentMs}`,
+        },
+      });
     }
     console.log(`vmdo-exec ${id}: DO ${doResp.status} — tunnel fallback`);
   } catch {
@@ -3481,7 +3514,9 @@ export default {
       // cell — proxy with an edge-minted IdentityToken (the cell's existing
       // API-key middleware accepts that JWT shape) so we don't depend on the
       // SDK's api-key existing in cell PG.
+      const tAuth = Date.now();
       const caller = await authenticate(req, env);
+      const authMs = Date.now() - tAuth;
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       // VM-DO exec fast path: route POST /:id/exec/run-async through the
       // sandbox's VmSession DO. Automatic tunnel fallback (no flag) whenever the
@@ -3489,7 +3524,7 @@ export default {
       // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
       // wherever the DO auth can be verified at all).
       if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
-        const doResp = await tryVmDoExec(req, env, caller, id);
+        const doResp = await tryVmDoExec(req, env, caller, id, authMs);
         if (doResp) return doResp;
       }
       return proxyToCellSDK(req, env, ctx, caller, id);
