@@ -26,6 +26,7 @@ export { PoolStock } from "./pool_stock";
 // deliberately NOT exported here, so the edge's deploy cadence (every merge
 // touching web/ or edge code) can't reset the DOs and sever the host-dialed
 // VM WebSockets.
+import { coloGet, coloPut } from "./colo_cache";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
@@ -316,21 +317,33 @@ const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: numbe
 // the waitUntil-deferred insertSandboxIndex write does. Never caches misses.
 const sandboxRouteCache = new Map<string, { cellID: string; orgID: string }>();
 
+// The route is immutable for a sandbox's lifetime, but a destroyed sandbox's
+// entry can linger — same semantics as the isolate Map (the cell 404s). 15 min
+// bounds colo-level lingering.
+const ROUTE_COLO_TTL_SEC = 900;
+
 // resolveSandboxRoute returns a sandbox's { cellID, orgID } from the route cache,
-// falling back to a single D1 read (which it then caches). null = no such
-// sandbox. Shared by proxyToCellSDK and the VM-DO exec fast path so both enforce
-// the same org-ownership authz off the same cached mapping.
+// falling back to the colo-shared tier (colo_cache.ts) and then a single D1 read
+// (each hit backfills the tier above it). null = no such sandbox. Shared by
+// proxyToCellSDK and the VM-DO exec fast path so both enforce the same
+// org-ownership authz off the same cached mapping. The colo tier matters for the
+// SDK's create → exec shape: the exec routinely lands on a different isolate
+// than the create that seeded the Map, and this read is the exec path's only
+// blocking D1 dependency.
 async function resolveSandboxRoute(env: Env, id: string): Promise<{ cellID: string; orgID: string } | null> {
-  let route = sandboxRouteCache.get(id);
+  const warm = sandboxRouteCache.get(id);
+  if (warm) return warm;
+  let route = await coloGet<{ cellID: string; orgID: string }>("route", id);
   if (!route) {
     const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
       .bind(id)
       .first<{ cell_id: string; org_id: string }>();
     if (!row) return null;
     route = { cellID: row.cell_id, orgID: row.org_id };
-    if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
-    sandboxRouteCache.set(id, route);
+    await coloPut("route", id, route, ROUTE_COLO_TTL_SEC);
   }
+  if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+  sandboxRouteCache.set(id, route);
   return route;
 }
 
@@ -368,6 +381,19 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
     return cached.caller;
   }
 
+  // Colo tier: a fresh box's sub-ops usually land on isolates that never saw
+  // this key. cachedAtMs travels with the entry so the total staleness bound
+  // (revocation lag) stays AUTH_TTL_MS, not colo-TTL + isolate-TTL stacked.
+  const shared = await coloGet<{ caller: Caller; expiresAt: number | null; cachedAtMs: number }>("auth", hash);
+  if (shared && nowMs - shared.cachedAtMs < AUTH_TTL_MS) {
+    if (shared.expiresAt && shared.expiresAt < nowSec) return null;
+    if (authCache.size >= CACHE_MAX) authCache.clear();
+    const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0 };
+    authCache.set(hash, entry);
+    bumpLastUsed(env, hash, entry, nowMs);
+    return shared.caller;
+  }
+
   const row = await env.OPENCOMPUTER_DB.prepare(
     "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
   )
@@ -380,6 +406,7 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   if (authCache.size >= CACHE_MAX) authCache.clear();
   const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
   authCache.set(hash, entry);
+  await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
   bumpLastUsed(env, hash, entry, nowMs);
   return caller;
 }
@@ -438,9 +465,44 @@ async function loadCreateContext(
   let activeCount = cntWarm ? cc!.count : 0;
   let cells = cellsWarm ? activeCellsCache!.cells : [];
 
+  // Colo tier: try the shared cache (same TTLs as the isolate caches) for the
+  // cold pieces before falling to D1 — cross-isolate creates in the same colo
+  // then skip the batch entirely. Parallel lookups; each hit backfills the
+  // isolate cache so the next create here is a pure memory hit.
+  let orgHave = orgWarm;
+  let cntHave = cntWarm;
+  let cellsHave = cellsWarm;
+  {
+    const [so, sc, scl] = await Promise.all([
+      orgHave ? null : coloGet<{ policy: OrgPolicy | null; cachedAtMs: number }>("org", orgID),
+      cntHave ? null : coloGet<{ count: number; cachedAtMs: number }>("count", orgID),
+      cellsHave ? null : coloGet<{ cells: CellRow[]; cachedAtMs: number }>("cells", "active"),
+    ]);
+    if (so && nowMs - so.cachedAtMs < ORG_POLICY_TTL_MS) {
+      org = so.policy;
+      orgHave = true;
+      if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
+      orgPolicyCache.set(orgID, { policy: so.policy, cachedAtMs: so.cachedAtMs });
+    }
+    if (sc && nowMs - sc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS) {
+      activeCount = sc.count;
+      cntHave = true;
+      if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
+      concurrencyCountCache.set(orgID, { count: sc.count, cachedAtMs: sc.cachedAtMs });
+    }
+    if (scl && nowMs - scl.cachedAtMs < CELL_TTL_MS) {
+      cells = scl.cells;
+      cellsHave = true;
+      activeCellsCache = { cells: scl.cells, cachedAtMs: scl.cachedAtMs };
+    }
+  }
+  const orgWarm2 = orgHave;
+  const cntWarm2 = cntHave;
+  const cellsWarm2 = cellsHave;
+
   const stmts: D1PreparedStatement[] = [];
   const kinds: Array<"org" | "count" | "cells"> = [];
-  if (!orgWarm) {
+  if (!orgWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare(
         "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
@@ -448,13 +510,13 @@ async function loadCreateContext(
     );
     kinds.push("org");
   }
-  if (!cntWarm) {
+  if (!cntWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare("SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'").bind(orgID),
     );
     kinds.push("count");
   }
-  if (!cellsWarm) {
+  if (!cellsWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare(
         "SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at FROM cells WHERE status = 'active'",
@@ -465,20 +527,25 @@ async function loadCreateContext(
 
   if (stmts.length > 0) {
     const res = await env.OPENCOMPUTER_DB.batch(stmts);
+    const puts: Promise<void>[] = [];
     for (let i = 0; i < kinds.length; i++) {
       if (kinds[i] === "org") {
         org = ((res[i].results?.[0] as OrgPolicy) ?? null);
         if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
         orgPolicyCache.set(orgID, { policy: org, cachedAtMs: nowMs });
+        puts.push(coloPut("org", orgID, { policy: org, cachedAtMs: nowMs }, ORG_POLICY_TTL_MS / 1000));
       } else if (kinds[i] === "count") {
         activeCount = (res[i].results?.[0] as { n: number } | undefined)?.n ?? 0;
         if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
         concurrencyCountCache.set(orgID, { count: activeCount, cachedAtMs: nowMs });
+        puts.push(coloPut("count", orgID, { count: activeCount, cachedAtMs: nowMs }, 2));
       } else {
         cells = (res[i].results as CellRow[]) ?? [];
         activeCellsCache = { cells, cachedAtMs: nowMs };
+        puts.push(coloPut("cells", "active", { cells, cachedAtMs: nowMs }, CELL_TTL_MS / 1000));
       }
     }
+    await Promise.all(puts);
   }
   return { org, activeCount, cells };
 }
@@ -1072,6 +1139,9 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
+        // Seed the colo-shared route so the first exec — which usually lands on
+        // a different isolate — skips its blocking D1 route read.
+        ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
         ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
         const resp: Record<string, unknown> = {
           sandboxID: box.id,
@@ -1130,6 +1200,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     if (parsed.sandboxID) {
       if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
       sandboxRouteCache.set(parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
+      ctx.waitUntil(coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
     }
     // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
     // write alive after we return; events-ingest reconciles the row anyway.
