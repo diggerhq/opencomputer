@@ -45,13 +45,14 @@ const ENTRY_TTL_MS = 10 * 60_000;
 // ~90ms projected at 100-way. The edge spreads claims across POOL_STOCK_SHARDS
 // (index.ts) DO instances; 8 shards cuts the 100-way queue tail to ~25ms, and
 // past ~8 the alarm/restock machinery and shard-empty retries outgrow the gain.
-// Sizing below is PER SHARD; fleet stock = SHARDS × TARGET_STOCK = 200, matching
-// the ComputeSDK full battery (sequential 100 → staggered 100 @200ms → burst
-// 100 back-to-back ≈ 300 boxes; burst needs ≥100 on hand) with the CP pool
-// (OPENSANDBOX_POOL_TARGET × workers) and refill pacing sized to match.
-const LOW_WATER = 12;
-const RESTOCK_BATCH = 25; // max boxes reserved per single edge-reserve call
-const TARGET_STOCK = 25; // per-shard fill level (× 8 shards = 200 fleet)
+// Sizing below is PER SHARD; fleet stock = SHARDS × TARGET_STOCK = 304 — deep
+// enough that a sustained ~300-create drain (sequential or 100-way burst) is
+// served entirely from seasoned stock, never from mid-drain refill manufacture
+// (freshly-restored boxes are the p99 tail). CP pool (OPENSANDBOX_POOL_TARGET ×
+// workers) and refill pacing must stay ≥ this.
+const LOW_WATER = 18;
+const RESTOCK_BATCH = 38; // max boxes reserved per single edge-reserve call
+const TARGET_STOCK = 38; // per-shard fill level (× 8 shards = 304 fleet)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
 const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls ≥ TARGET)
 // Self-decommission: a shard that hasn't served a claim in this long releases

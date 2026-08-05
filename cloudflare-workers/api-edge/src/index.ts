@@ -1420,10 +1420,35 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
     // clone() so the original request body stays readable for the tunnel
     // fallback when the DO reports the channel isn't connected.
     const body = await req.clone().text();
-    const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id));
-    // sid rides as a query param purely for DO-side diagnostics (idFromName is
-    // one-way; the DO can't recover its own name).
+    const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id)) as DurableObjectStub & {
+      execCommand?: (b: unknown, sid: string) => Promise<
+        { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number } | { ok: false; error: string }
+      >;
+    };
     const tDo = Date.now();
+    // Prefer the RPC entrypoint (skips HTTP serialization on the edge→DO hop);
+    // fall back to the fetch route if the DO build predates it.
+    if (typeof stub.execCommand === "function") {
+      let parsed: unknown = {};
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch {
+        return json({ error: "invalid body" }, 400);
+      }
+      const res = await stub.execCommand(parsed, id);
+      const doMs = Date.now() - tDo;
+      if (res.ok) {
+        return new Response(JSON.stringify({ exitCode: res.exitCode, stdout: res.stdout, stderr: res.stderr }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, do;dur=${doMs}, agent;dur=${res.agentMs}`,
+          },
+        });
+      }
+      console.log(`vmdo-exec ${id}: DO rpc not-connected — tunnel fallback`);
+      return null;
+    }
     const doResp = await stub.fetch("https://do/exec?sid=" + id, {
       method: "POST",
       headers: { "content-type": "application/json" },

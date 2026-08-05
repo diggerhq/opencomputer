@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { decodeResult, encodeExec, type ExecResult } from "./protocol";
 
 // VmSession — one Durable Object per sandbox, holding a persistent, hibernatable
@@ -9,8 +10,8 @@ import { decodeResult, encodeExec, type ExecResult } from "./protocol";
 // Auth is enforced at the edge /internal/vms/:id/connect route (a per-sandbox
 // HMAC over SESSION_JWT_SECRET) before the upgrade reaches this DO, so the DO
 // itself is unauthenticated glue.
-// Written in the plain-class DO style (like shared/credit_account.ts) so it needs
-// no `cloudflare:workers` import and loads under the plain-node vitest setup.
+// Extends DurableObject (cloudflare:workers) so execCommand is callable as a
+// native RPC method from the edge stub — cheaper than HTTP-over-fetch per hop.
 
 interface PendingCommand {
   resolve: (result: ExecResult) => void;
@@ -41,17 +42,46 @@ function commandFrom(body: RunBody): string {
   return [body.cmd, ...(body.args ?? [])].map((part) => `'${part.replaceAll("'", `'\\''`)}'`).join(" ");
 }
 
-export class VmSession {
+export class VmSession extends DurableObject {
   state: DurableObjectState;
 
   private readonly pending = new Map<number, PendingCommand>();
   private nextRequestId = Math.floor(Math.random() * 0x7fffffff) + 1;
 
-  constructor(state: DurableObjectState, _env: unknown) {
+  constructor(state: DurableObjectState, env: unknown) {
+    super(state, env as never);
     this.state = state;
     // Rebind hibernation-restored sockets' message/close handlers to this
     // instance (the runtime re-creates the DO on wake with the sockets intact).
     // acceptWebSocket already tagged them "vm"; nothing else to restore.
+  }
+
+  // RPC exec entrypoint — same semantics as the fetch /exec route but without
+  // the HTTP request/response serialization on the edge→DO hop (a few ms per
+  // call at the volumes the exec path runs at). The fetch route stays for
+  // rollout compatibility; callers prefer this when the stub exposes it.
+  async execCommand(body: RunBody, sid?: string): Promise<
+    { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number } | { ok: false; error: string }
+  > {
+    const socks = this.state.getWebSockets("vm");
+    console.log(`exec sid=${sid ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`);
+    if (!this.connectedSocket()) {
+      for (let waited = 0; waited < 400 && !this.connectedSocket(); waited += 50) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    if (!this.connectedSocket()) return { ok: false, error: "vm not connected" };
+    try {
+      const result = await this.run(
+        commandFrom(body),
+        body.cwd ?? "",
+        body.envs ?? {},
+        Math.max(1, body.timeout ?? 60) * 1000,
+      );
+      return { ok: true, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, agentMs: result.durationMs };
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) };
+    }
   }
 
   // The live host WebSocket (hibernatable, tagged "vm"), if connected.
