@@ -144,8 +144,12 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     );
     const runtimeOpenCode = JSON.parse(
       await readFile(resolve(runtime, "opencode.json"), "utf8"),
-    ) as { tools: { question: boolean } };
-    assert.equal(runtimeOpenCode.tools.question, false);
+    ) as {
+      tools: { question: boolean };
+      permission: { question: string; calendar_create_time_off?: string };
+    };
+    assert.equal(runtimeOpenCode.tools.question, true);
+    assert.equal(runtimeOpenCode.permission.question, "allow");
     assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
     assert.match(runtimeInstructions, /summary count exactly matches/);
     assert.equal(
@@ -232,9 +236,18 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     );
     const opencode = JSON.parse(
       await readFile(resolve(root, "opencode.json"), "utf8"),
-    ) as { permission: { bash: string }; tools: { question: boolean } };
+    ) as {
+      permission: { bash: string; question: string };
+      tools: { question: boolean };
+    };
     assert.equal(opencode.permission.bash, "deny");
-    assert.equal(opencode.tools.question, false);
+    assert.equal(opencode.permission.question, "allow");
+    assert.equal(
+      (opencode.permission as { calendar_create_time_off?: string })
+        .calendar_create_time_off,
+      "allow",
+    );
+    assert.equal(opencode.tools.question, true);
     assert.match(
       await readFile(resolve(root, "agent.ts"), "utf8"),
       /shell: "deny"/,

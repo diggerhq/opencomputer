@@ -943,9 +943,10 @@ export async function initializeAgentProject(
       {
         $schema: "https://opencode.ai/config.json",
         tools: {
-          question: false,
+          question: true,
         },
         permission: {
+          question: "allow",
           bash: template.id === "pto-calendar" ? "deny" : "ask",
           ...(template.integrations.includes("Gmail")
             ? {
@@ -955,7 +956,7 @@ export async function initializeAgentProject(
             : {}),
           ...(template.integrations.includes("Google Calendar")
             ? {
-                calendar_create_time_off: "ask",
+                calendar_create_time_off: "allow",
               }
             : {}),
         },
@@ -1198,12 +1199,25 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
       !Array.isArray(config.tools)
         ? (config.tools as Record<string, unknown>)
         : {};
+    const configuredPermission =
+      config.permission &&
+      typeof config.permission === "object" &&
+      !Array.isArray(config.permission)
+        ? (config.permission as Record<string, unknown>)
+        : {};
     await writeFile(
       resolve(runtime, "opencode.json"),
       `${JSON.stringify(
         {
           ...config,
-          tools: { ...configuredTools, question: false },
+          tools: { ...configuredTools, question: true },
+          permission: {
+            ...configuredPermission,
+            ...(configuredPermission.calendar_create_time_off === "ask"
+              ? { calendar_create_time_off: "allow" }
+              : {}),
+            question: "allow",
+          },
         },
         null,
         2,
