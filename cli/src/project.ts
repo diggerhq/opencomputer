@@ -237,6 +237,10 @@ ${template.description}
 6. Report only the event details returned by Google Calendar. Never claim an
    event was created when the tool failed or returned no event ID.
 
+Use only the injected \`calendar_*\` tools for Calendar reads and writes. Never
+use shell commands, \`curl\`, or direct Google API requests: they bypass the
+user's managed connection and cannot authenticate as that user.
+
 ## Safety and user control
 
 - Never create, update, move, or delete a calendar event without fresh,
@@ -927,7 +931,7 @@ export async function initializeAgentProject(
     `export default {
   model: process.env.OPENCOMPUTER_MODEL,
   permissions: {
-    shell: "ask",
+    shell: "${template.id === "pto-calendar" ? "deny" : "ask"}",
     files: "allow",
   },
 };
@@ -938,8 +942,11 @@ export async function initializeAgentProject(
     `${JSON.stringify(
       {
         $schema: "https://opencode.ai/config.json",
+        tools: {
+          question: false,
+        },
         permission: {
-          bash: "ask",
+          bash: template.id === "pto-calendar" ? "deny" : "ask",
           ...(template.integrations.includes("Gmail")
             ? {
                 gmail_modify: "ask",
@@ -1098,6 +1105,10 @@ Use this workflow when the user asks to schedule or review time off.
 6. Only after confirmation, call \`calendar_create_time_off\`.
 7. Report the returned event ID and link. Do not claim success without them.
 
+Use only the injected \`calendar_*\` tools. Never use bash, shell commands,
+\`curl\`, or direct Google API requests for Calendar operations. Those paths do
+not carry the user's managed Calendar identity.
+
 Calendar connections are injected by OpenComputer at runtime. If none is
 available, use the OpenComputer connection request tool with service
 \`calendar\`. Do not inspect environment variables or repository source.
@@ -1158,6 +1169,9 @@ the product or support surface presented to users.
 - Identify yourself and your environment as OpenComputer.
 - Never direct users to OpenCode commands, settings, websites, repositories,
   issue trackers, or support channels.
+- Never use an interactive question tool. Ask clarification questions in a
+  normal assistant message, then end the turn so the user can reply through
+  the current OpenComputer interface.
 - Before saying an external account is unavailable, use the built-in
   OpenComputer connection tools to list or request the required connection.
 - When the user asks for another account of the same service, request a new
@@ -1173,7 +1187,28 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
   );
   const openCodeConfig = resolve(root, "opencode.json");
   if (await exists(openCodeConfig)) {
-    await cp(openCodeConfig, resolve(runtime, "opencode.json"));
+    const parsed: unknown = JSON.parse(await readFile(openCodeConfig, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("opencode.json must contain a JSON object");
+    }
+    const config = parsed as Record<string, unknown>;
+    const configuredTools =
+      config.tools &&
+      typeof config.tools === "object" &&
+      !Array.isArray(config.tools)
+        ? (config.tools as Record<string, unknown>)
+        : {};
+    await writeFile(
+      resolve(runtime, "opencode.json"),
+      `${JSON.stringify(
+        {
+          ...config,
+          tools: { ...configuredTools, question: false },
+        },
+        null,
+        2,
+      )}\n`,
+    );
   }
   for (const directory of ["skills", "tools"]) {
     const source = resolve(root, directory);
@@ -1229,11 +1264,35 @@ async function collectFiles(
   return result;
 }
 
+async function validateTemplateRequirements(
+  root: string,
+  manifest: AgentManifest,
+): Promise<void> {
+  if (manifest.template !== "pto-calendar") return;
+  let calendarDeclared = false;
+  try {
+    const declaration = JSON.parse(
+      await readFile(resolve(root, "connections", "google.json"), "utf8"),
+    ) as { services?: unknown };
+    calendarDeclared =
+      Array.isArray(declaration.services) &&
+      declaration.services.includes("calendar");
+  } catch {
+    // Report one actionable error below for an incomplete PTO project.
+  }
+  if (!(await exists(resolve(root, "tools", "calendar.ts"))) || !calendarDeclared) {
+    throw new Error(
+      "PTO calendar tools are missing. Run `opencomputer tools add calendar` before deploying.",
+    );
+  }
+}
+
 export async function buildAgentArtifact(
   root: string,
 ): Promise<BuiltAgentArtifact> {
   const startedAt = performance.now();
   const manifest = await readManifest(root);
+  await validateTemplateRequirements(root, manifest);
   const runtime = await prepareAgent(root);
   const channels = await collectNames(root, "channels");
   const connections = await collectNames(root, "connections");
