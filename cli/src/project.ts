@@ -942,6 +942,9 @@ export async function initializeAgentProject(
     `${JSON.stringify(
       {
         $schema: "https://opencode.ai/config.json",
+        tools: {
+          question: false,
+        },
         permission: {
           bash: template.id === "pto-calendar" ? "deny" : "ask",
           ...(template.integrations.includes("Gmail")
@@ -1166,6 +1169,9 @@ the product or support surface presented to users.
 - Identify yourself and your environment as OpenComputer.
 - Never direct users to OpenCode commands, settings, websites, repositories,
   issue trackers, or support channels.
+- Never use an interactive question tool. Ask clarification questions in a
+  normal assistant message, then end the turn so the user can reply through
+  the current OpenComputer interface.
 - Before saying an external account is unavailable, use the built-in
   OpenComputer connection tools to list or request the required connection.
 - When the user asks for another account of the same service, request a new
@@ -1181,7 +1187,28 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
   );
   const openCodeConfig = resolve(root, "opencode.json");
   if (await exists(openCodeConfig)) {
-    await cp(openCodeConfig, resolve(runtime, "opencode.json"));
+    const parsed: unknown = JSON.parse(await readFile(openCodeConfig, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("opencode.json must contain a JSON object");
+    }
+    const config = parsed as Record<string, unknown>;
+    const configuredTools =
+      config.tools &&
+      typeof config.tools === "object" &&
+      !Array.isArray(config.tools)
+        ? (config.tools as Record<string, unknown>)
+        : {};
+    await writeFile(
+      resolve(runtime, "opencode.json"),
+      `${JSON.stringify(
+        {
+          ...config,
+          tools: { ...configuredTools, question: false },
+        },
+        null,
+        2,
+      )}\n`,
+    );
   }
   for (const directory of ["skills", "tools"]) {
     const source = resolve(root, directory);
