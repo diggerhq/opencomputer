@@ -65,6 +65,8 @@ const channelSchema = z.object({
   appId: z.string().nullish(),
   teamId: z.string().nullish(),
   botUserId: z.string().nullish(),
+  verifiedAt: z.string().nullish(),
+  verificationError: z.enum(['signing_secret_mismatch']).nullish(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
