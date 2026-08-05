@@ -40,11 +40,15 @@ interface PoolStockEnv {
 // stays well under the cell's 15-min destroy backstop so an unclaimed box is
 // released back to the pool (cheap) long before the cell would destroy it.
 const ENTRY_TTL_MS = 10 * 60_000;
-const LOW_WATER = 40;
+// Sized for the ComputeSDK full battery (sequential 100 → staggered 100 @
+// 200ms → burst 100, back-to-back ≈ 300 boxes): the stock must hold ≥100 at
+// the moment burst fires, with the CP pool (OPENSANDBOX_POOL_TARGET × workers)
+// and refill pacing sized to match.
+const LOW_WATER = 100;
 const RESTOCK_BATCH = 50; // max boxes reserved per single edge-reserve call
-const TARGET_STOCK = 100; // fill the stock up to here (≈ the whole hot pool)
+const TARGET_STOCK = 200; // fill the stock up to here (≈ the whole hot pool)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
-const RESTOCK_MAX_CALLS = 3; // reserve calls per restock pass (batch × calls ≥ TARGET)
+const RESTOCK_MAX_CALLS = 4; // reserve calls per restock pass (batch × calls ≥ TARGET)
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,
