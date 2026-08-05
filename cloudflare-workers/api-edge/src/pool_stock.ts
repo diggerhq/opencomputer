@@ -84,6 +84,9 @@ async function mintPoolCapToken(secret: string, cellID: string): Promise<string>
 export class PoolStock {
   private stock: StockEntry[] = [];
   private restockInFlight = false;
+  // One-shot colo self-identification (diagnostics): placement is sticky at
+  // first-touch; a stock DO cross-colo from the claiming edge adds per-claim RTT.
+  private coloLogged = false;
   // Last cell seen on a /claim, persisted so the proactive alarm can restock
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
@@ -111,6 +114,15 @@ export class PoolStock {
   }
 
   private async claim(req: Request): Promise<Response> {
+    if (!this.coloLogged) {
+      this.coloLogged = true;
+      void fetch("https://www.cloudflare.com/cdn-cgi/trace")
+        .then(async (r) => {
+          const colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+          console.log(`pool-stock colo=${colo}`);
+        })
+        .catch(() => {});
+    }
     let cell: { cellID: string; baseURL: string } | null = null;
     try {
       const body = (await req.json()) as { cell?: { cellID: string; baseURL: string } };
@@ -184,9 +196,13 @@ export class PoolStock {
   }
 
   private persist(): void {
-    // storage.put without await — the DO's output gate holds the response
-    // until the write is durable, so this is both safe and non-blocking.
-    void this.state.storage.put("stock", this.stock);
+    // allowUnconfirmed skips the output gate: the claim response leaves ~10ms
+    // sooner instead of waiting for the write to be durable. Failure window
+    // (DO crash after responding, before the write lands) resurrects a popped
+    // entry → a later claim double-pops it → the second claim-finalize loses
+    // the `edge_reserved` CAS and fails cleanly. Rare + already-handled, and
+    // the claim hop is the entire cost of an edge create, so the ~10ms wins.
+    void this.state.storage.put("stock", this.stock, { allowUnconfirmed: true });
   }
 
   // restockToTarget fills the stock up to TARGET_STOCK by issuing up to

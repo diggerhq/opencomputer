@@ -90,7 +90,12 @@ export class VmSession {
           body.envs ?? {},
           Math.max(1, body.timeout ?? 60) * 1000,
         );
-        return json({ exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr });
+        // x-agent-ms = host-side manager.Exec duration from the result frame —
+        // lets the edge's Server-Timing split DO-transit from agent time.
+        return json(
+          { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
+          { headers: { "x-agent-ms": String(result.durationMs) } },
+        );
       } catch (e) {
         // Channel dropped mid-exec, or command errored on the agent side — 409
         // so the edge can retry via the tunnel instead of surfacing a 500.
@@ -100,7 +105,24 @@ export class VmSession {
     return new Response("not found", { status: 404 });
   }
 
+  // One-shot colo self-identification (diagnostics): DO placement is sticky at
+  // first-touch, and a DO sitting cross-colo from the edge that calls it adds
+  // per-hop RTT that Server-Timing can't attribute on its own.
+  private coloLogged = false;
+
+  private logColoOnce(kind: string): void {
+    if (this.coloLogged) return;
+    this.coloLogged = true;
+    void fetch("https://www.cloudflare.com/cdn-cgi/trace")
+      .then(async (r) => {
+        const colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+        console.log(`vmsession colo=${colo} (${kind})`);
+      })
+      .catch(() => {});
+  }
+
   private acceptHostConnection(): Response {
+    this.logColoOnce("connect");
     console.log(`connect: replacing ${this.state.getWebSockets("vm").length} existing socket(s)`);
     // Only one host socket per box; a redial replaces the old one.
     for (const socket of this.state.getWebSockets("vm")) socket.close(1012, "replaced");
