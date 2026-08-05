@@ -237,6 +237,10 @@ ${template.description}
 6. Report only the event details returned by Google Calendar. Never claim an
    event was created when the tool failed or returned no event ID.
 
+Use only the injected \`calendar_*\` tools for Calendar reads and writes. Never
+use shell commands, \`curl\`, or direct Google API requests: they bypass the
+user's managed connection and cannot authenticate as that user.
+
 ## Safety and user control
 
 - Never create, update, move, or delete a calendar event without fresh,
@@ -927,7 +931,7 @@ export async function initializeAgentProject(
     `export default {
   model: process.env.OPENCOMPUTER_MODEL,
   permissions: {
-    shell: "ask",
+    shell: "${template.id === "pto-calendar" ? "deny" : "ask"}",
     files: "allow",
   },
 };
@@ -939,7 +943,7 @@ export async function initializeAgentProject(
       {
         $schema: "https://opencode.ai/config.json",
         permission: {
-          bash: "ask",
+          bash: template.id === "pto-calendar" ? "deny" : "ask",
           ...(template.integrations.includes("Gmail")
             ? {
                 gmail_modify: "ask",
@@ -1097,6 +1101,10 @@ Use this workflow when the user asks to schedule or review time off.
 5. Ask for explicit confirmation of that exact proposal.
 6. Only after confirmation, call \`calendar_create_time_off\`.
 7. Report the returned event ID and link. Do not claim success without them.
+
+Use only the injected \`calendar_*\` tools. Never use bash, shell commands,
+\`curl\`, or direct Google API requests for Calendar operations. Those paths do
+not carry the user's managed Calendar identity.
 
 Calendar connections are injected by OpenComputer at runtime. If none is
 available, use the OpenComputer connection request tool with service

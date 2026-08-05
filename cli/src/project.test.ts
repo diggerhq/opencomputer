@@ -222,6 +222,22 @@ test("the PTO template creates Calendar tools without checked-in channel state",
       await readFile(resolve(root, "opencode.json"), "utf8"),
       /calendar_create_time_off/,
     );
+    const opencode = JSON.parse(
+      await readFile(resolve(root, "opencode.json"), "utf8"),
+    ) as { permission: { bash: string } };
+    assert.equal(opencode.permission.bash, "deny");
+    assert.match(
+      await readFile(resolve(root, "agent.ts"), "utf8"),
+      /shell: "deny"/,
+    );
+    assert.match(
+      await readFile(resolve(root, "instructions.md"), "utf8"),
+      /Never[\s\S]*curl[\s\S]*managed connection/,
+    );
+    assert.match(
+      await readFile(resolve(root, "skills", "manage-pto", "SKILL.md"), "utf8"),
+      /Never use bash[\s\S]*direct Google API requests/,
+    );
     await assert.rejects(stat(resolve(root, "channels", "slack.ts")));
     await assert.rejects(stat(resolve(root, "slack", "manifest.json")));
   } finally {
