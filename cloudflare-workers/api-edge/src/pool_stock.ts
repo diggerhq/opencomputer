@@ -40,15 +40,20 @@ interface PoolStockEnv {
 // stays well under the cell's 15-min destroy backstop so an unclaimed box is
 // released back to the pool (cheap) long before the cell would destroy it.
 const ENTRY_TTL_MS = 10 * 60_000;
-// Sized for the ComputeSDK full battery (sequential 100 → staggered 100 @
-// 200ms → burst 100, back-to-back ≈ 300 boxes): the stock must hold ≥100 at
-// the moment burst fires, with the CP pool (OPENSANDBOX_POOL_TARGET × workers)
-// and refill pacing sized to match.
-const LOW_WATER = 100;
-const RESTOCK_BATCH = 50; // max boxes reserved per single edge-reserve call
-const TARGET_STOCK = 200; // fill the stock up to here (≈ the whole hot pool)
+// SHARDED: a Durable Object processes requests ~serially (~2ms/claim), so one
+// stock DO serializes a burst — measured claim;dur 12ms solo → 47ms at 50-way,
+// ~90ms projected at 100-way. The edge spreads claims across POOL_STOCK_SHARDS
+// (index.ts) DO instances; 8 shards cuts the 100-way queue tail to ~25ms, and
+// past ~8 the alarm/restock machinery and shard-empty retries outgrow the gain.
+// Sizing below is PER SHARD; fleet stock = SHARDS × TARGET_STOCK = 200, matching
+// the ComputeSDK full battery (sequential 100 → staggered 100 @200ms → burst
+// 100 back-to-back ≈ 300 boxes; burst needs ≥100 on hand) with the CP pool
+// (OPENSANDBOX_POOL_TARGET × workers) and refill pacing sized to match.
+const LOW_WATER = 12;
+const RESTOCK_BATCH = 25; // max boxes reserved per single edge-reserve call
+const TARGET_STOCK = 25; // per-shard fill level (× 8 shards = 200 fleet)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
-const RESTOCK_MAX_CALLS = 4; // reserve calls per restock pass (batch × calls ≥ TARGET)
+const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls ≥ TARGET)
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,
@@ -193,6 +198,14 @@ export class PoolStock {
     for (const e of this.stock) (now - e.atMs < ENTRY_TTL_MS ? fresh : stale).push(e);
     this.stock = fresh;
     if (stale.length > 0) await this.release(stale);
+    // Surplus trim: release anything above the per-shard target back to the
+    // pool. This is how the pre-sharding legacy DO (which becomes shard 0 and
+    // held the whole fleet's stock) sheds down to TARGET_STOCK so the other
+    // shards can reserve those boxes; it also self-heals any future oversizing.
+    if (this.stock.length > TARGET_STOCK) {
+      const surplus = this.stock.splice(TARGET_STOCK);
+      await this.release(surplus);
+    }
     if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
     this.persist();
     // Keep the loop alive — stock stays full and fresh between bursts.
