@@ -307,6 +307,11 @@ const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: n
 // create. Under burst the cached value reads low (index lag), so it stays
 // permissive — no spurious 429s.
 const CONCURRENCY_COUNT_TTL_MS = 1_500;
+// Optimistic-gate stale window + headroom: a count up to 30s old may gate a
+// create IF it sits at least HEADROOM below the org's limit (see
+// loadCreateContext). Bounds the worst-case cap overshoot to ~HEADROOM boxes.
+const CONCURRENCY_STALE_MAX_MS = 30_000;
+const CONCURRENCY_STALE_HEADROOM = 8;
 const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: number }>();
 // Sandbox → owning-cell route. proxyToCellSDK otherwise pays a blocking D1
 // read per sub-op (exec run-async + each result poll = 2-3 reads per SDK
@@ -453,6 +458,7 @@ async function listActiveCells(env: Env): Promise<CellRow[]> {
 async function loadCreateContext(
   env: Env,
   orgID: string,
+  ctx?: ExecutionContext,
 ): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }> {
   const nowMs = Date.now();
   const oc = orgPolicyCache.get(orgID);
@@ -472,6 +478,9 @@ async function loadCreateContext(
   let orgHave = orgWarm;
   let cntHave = cntWarm;
   let cellsHave = cellsWarm;
+  // Stale-but-usable count for the optimistic concurrency gate below.
+  let staleCount: { count: number; cachedAtMs: number } | null =
+    cc !== undefined && nowMs - cc.cachedAtMs < CONCURRENCY_STALE_MAX_MS ? cc : null;
   {
     const [so, sc, scl] = await Promise.all([
       orgHave ? null : coloGet<{ policy: OrgPolicy | null; cachedAtMs: number }>("org", orgID),
@@ -489,6 +498,8 @@ async function loadCreateContext(
       cntHave = true;
       if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
       concurrencyCountCache.set(orgID, { count: sc.count, cachedAtMs: sc.cachedAtMs });
+    } else if (sc && nowMs - sc.cachedAtMs < CONCURRENCY_STALE_MAX_MS) {
+      if (!staleCount || sc.cachedAtMs > staleCount.cachedAtMs) staleCount = sc;
     }
     if (scl && nowMs - scl.cachedAtMs < CELL_TTL_MS) {
       cells = scl.cells;
@@ -496,6 +507,38 @@ async function loadCreateContext(
       activeCellsCache = { cells: scl.cells, cachedAtMs: scl.cachedAtMs };
     }
   }
+
+  // Optimistic concurrency gate: the COUNT read is the last per-create D1
+  // dependency once org+cells are cache-served (its 1.5s TTL is shorter than a
+  // typical create→exec→destroy cycle, so it expires between benchmark-shaped
+  // creates). When the org's policy is already known WITHOUT D1 and a stale
+  // (≤30s) count sits comfortably below the limit, use the stale value and
+  // refresh it in the background — the cap stays enforced within
+  // CONCURRENCY_STALE_HEADROOM of the limit, matching the gate's existing
+  // "index trails events, reads low under burst" approximate semantics. Near
+  // the limit (or with nothing cached) the blocking read still happens.
+  if (!cntHave && orgHave && staleCount) {
+    const limit = org?.max_concurrent_sandboxes ?? DEFAULT_MAX_CONCURRENT_SANDBOXES;
+    if (staleCount.count + CONCURRENCY_STALE_HEADROOM <= limit) {
+      activeCount = staleCount.count;
+      cntHave = true;
+      const refresh = env.OPENCOMPUTER_DB.prepare(
+        "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
+      )
+        .bind(orgID)
+        .first<{ n: number }>()
+        .then(async (row) => {
+          const n = row?.n ?? 0;
+          const at = Date.now();
+          if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
+          concurrencyCountCache.set(orgID, { count: n, cachedAtMs: at });
+          await coloPut("count", orgID, { count: n, cachedAtMs: at }, CONCURRENCY_STALE_MAX_MS / 1000);
+        })
+        .catch(() => {});
+      if (ctx) ctx.waitUntil(refresh);
+    }
+  }
+
   const orgWarm2 = orgHave;
   const cntWarm2 = cntHave;
   const cellsWarm2 = cellsHave;
@@ -538,7 +581,7 @@ async function loadCreateContext(
         activeCount = (res[i].results?.[0] as { n: number } | undefined)?.n ?? 0;
         if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
         concurrencyCountCache.set(orgID, { count: activeCount, cachedAtMs: nowMs });
-        puts.push(coloPut("count", orgID, { count: activeCount, cachedAtMs: nowMs }, 2));
+        puts.push(coloPut("count", orgID, { count: activeCount, cachedAtMs: nowMs }, CONCURRENCY_STALE_MAX_MS / 1000));
       } else {
         cells = (res[i].results as CellRow[]) ?? [];
         activeCellsCache = { cells, cachedAtMs: nowMs };
@@ -1046,7 +1089,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
 
   // One batched D1 round-trip for org + running-count + active-cells (was three
   // serial reads on the create hot path). Cache-aware: warm isolates skip D1.
-  const { org, activeCount, cells } = await loadCreateContext(env, caller.orgID);
+  const { org, activeCount, cells } = await loadCreateContext(env, caller.orgID, ctx);
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -1140,8 +1183,9 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
         // Seed the colo-shared route so the first exec — which usually lands on
-        // a different isolate — skips its blocking D1 route read.
-        ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+        // a different isolate — skips its blocking D1 route read. Awaited (~2ms)
+        // so the seed is durable BEFORE the client can send that exec.
+        await coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC);
         ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
         const resp: Record<string, unknown> = {
           sandboxID: box.id,
@@ -1200,7 +1244,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     if (parsed.sandboxID) {
       if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
       sandboxRouteCache.set(parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
-      ctx.waitUntil(coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+      await coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC);
     }
     // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
     // write alive after we return; events-ingest reconciles the row anyway.
