@@ -75,6 +75,12 @@ export class VmSession {
       } catch {
         return json({ error: "invalid body" }, { status: 400 });
       }
+      // Diagnostic: socket census at exec time — sid comes from the edge as a
+      // query param (idFromName is one-way, the DO doesn't know its own name).
+      const socks = this.state.getWebSockets("vm");
+      console.log(
+        `exec sid=${url.searchParams.get("sid") ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`,
+      );
       // connected:false lets the edge fall back to the tunnel path (no flag).
       if (!this.connectedSocket()) return json({ connected: false, error: "vm not connected" }, { status: 409 });
       try {
@@ -95,6 +101,7 @@ export class VmSession {
   }
 
   private acceptHostConnection(): Response {
+    console.log(`connect: replacing ${this.state.getWebSockets("vm").length} existing socket(s)`);
     // Only one host socket per box; a redial replaces the old one.
     for (const socket of this.state.getWebSockets("vm")) socket.close(1012, "replaced");
     const pair = new WebSocketPair();

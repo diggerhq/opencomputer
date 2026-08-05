@@ -1,0 +1,21 @@
+# vm-do Worker — PROD on Mo's CF account. Owns the VmSession Durable Object
+# class; api-edge (opencomputer-edge-prod) binds it cross-script via
+# script_name. Deliberately a separate worker so api-edge's deploy cadence
+# (every merge touching web/ or edge code redeploys the edge, and every deploy
+# resets all DOs → severs every host-dialed VM WebSocket) can't flap the exec
+# data plane. Deploy: `wrangler deploy -c wrangler.prod.toml` — and ONLY when
+# VM-DO logic changes; each deploy of THIS worker resets the sockets once
+# (hosts redial within ~1s).
+
+name = "opencomputer-vmdo-prod"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+account_id = "b8f23cb87a7a6c64040d3134643da448"
+
+[[durable_objects.bindings]]
+name = "VM_SESSIONS"
+class_name = "VmSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VmSession"]
