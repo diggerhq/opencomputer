@@ -1936,8 +1936,16 @@ async function provisionWorkOSIdentity(
   if (!userRow) {
     const candidateID = crypto.randomUUID();
     await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO users (id, email, workos_user_id, name, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)
+      `INSERT INTO users (
+         id,
+         email,
+         workos_user_id,
+         name,
+         created_at,
+         durable_sessions_enabled,
+         infrastructure_enabled
+       )
+       VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)
        ON CONFLICT(email) DO UPDATE SET workos_user_id = excluded.workos_user_id`,
     )
       .bind(candidateID, profile.email, profile.id, displayName, nowSec)
