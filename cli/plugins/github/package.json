@@ -1,0 +1,17 @@
+{
+  "name": "@opencomputer/plugin-github",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "default": "./dist/index.js"
+  },
+  "files": ["dist", "skills"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@opencomputer/cli": "^0.4.0"
+  }
+}

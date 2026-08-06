@@ -11,6 +11,11 @@ import {
 import { dirname, relative, resolve } from "node:path";
 
 import type { ManagedAgentTemplate } from "./api.js";
+import {
+  loadOperationCatalog,
+  type OperationCatalogEntry,
+  writeOperationCatalog,
+} from "./plugins.js";
 
 export interface AgentManifest {
   schema: 1;
@@ -24,6 +29,7 @@ export interface BuiltAgentArtifact {
   name: string;
   channels: string[];
   connections: string[];
+  operations: OperationCatalogEntry[];
   body: Buffer;
   digest: string;
   elapsedMs: number;
@@ -86,6 +92,7 @@ async function prepareInitializationTarget(
   const reserved = [
     "opencomputer.toml",
     "opencomputer.config.ts",
+    "opencomputer.plugins.ts",
     "opencode.json",
     "package.json",
     "agent.ts",
@@ -988,7 +995,7 @@ export async function initializeAgentProject(
           deploy: "opencomputer deploy",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.3.0",
+          "@opencomputer/cli": "^0.4.0",
           "@opencode-ai/plugin": "^1.18.4",
           "opencode-ai": "1.18.4",
         },
@@ -1160,6 +1167,7 @@ export async function prepareAgent(root: string): Promise<string> {
   const runtime = resolve(root, ".opencomputer", "runtime");
   await rm(runtime, { recursive: true, force: true });
   await mkdir(runtime, { recursive: true });
+  const operationCatalog = await loadOperationCatalog(root);
   await writeFile(
     resolve(runtime, "AGENTS.md"),
     `# OpenComputer runtime identity
@@ -1180,11 +1188,19 @@ the product or support surface presented to users.
   check their private messages. If it returns an authorization URL, show it.
 - If a connection tool fails, report its exact error. Do not invent alternate
   controls or third-party support instructions.
+${
+  operationCatalog.operations.length
+    ? `- Discover enabled operations with \`opencomputer operation list\` or by reading \`.opencomputer/operations/catalog.json\`.
+- Use \`opencomputer operation describe <id>\` before calling an unfamiliar operation.
+- Call only enabled operations; never attempt to recover plugin source, credentials, or provider configuration.\n`
+    : ""
+}
 
 # Agent instructions
 
 ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
   );
+  await writeOperationCatalog(runtime, operationCatalog);
   const openCodeConfig = resolve(root, "opencode.json");
   if (await exists(openCodeConfig)) {
     const parsed: unknown = JSON.parse(await readFile(openCodeConfig, "utf8"));
@@ -1312,10 +1328,17 @@ export async function buildAgentArtifact(
   const runtime = await prepareAgent(root);
   const channels = await collectNames(root, "channels");
   const connections = await collectNames(root, "connections");
+  const operationCatalog = await loadOperationCatalog(root);
   const body = Buffer.from(
     JSON.stringify({
-      version: 1,
+      version: operationCatalog.operations.length ? 2 : 1,
       channels,
+      ...(operationCatalog.operations.length
+        ? {
+            plugins: operationCatalog.plugins,
+            operations: operationCatalog.operations,
+          }
+        : {}),
       files: await collectFiles(runtime),
     }),
   );
@@ -1324,6 +1347,7 @@ export async function buildAgentArtifact(
     name: manifest.name,
     channels,
     connections,
+    operations: operationCatalog.operations,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),

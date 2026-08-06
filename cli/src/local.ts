@@ -4,7 +4,7 @@ import {
   type ToolPart,
 } from "@opencode-ai/sdk/v2";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -26,6 +26,7 @@ import {
   formatSessionEvent,
   runSessionPrompt,
 } from "./session-prompt.js";
+import { loadOperationCatalog, testOperation } from "./plugins.js";
 
 interface DevState {
   version: 3;
@@ -113,7 +114,10 @@ function openBrowser(url: string): void {
   child.unref();
 }
 
-export async function startGateway(config: ResolvedConfig): Promise<{
+export async function startGateway(
+  config: ResolvedConfig,
+  agentRoot?: string,
+): Promise<{
   url: string;
   token: string;
   close(): Promise<void>;
@@ -138,7 +142,85 @@ export async function startGateway(config: ResolvedConfig): Promise<{
       let target: string;
       let upstreamMethod = request.method;
       let upstreamBody: Buffer | string | undefined;
-      if (request.method === "POST" && url.pathname === "/google/fetch") {
+      if (request.method === "POST" && url.pathname === "/operations/call") {
+        if (!agentRoot) {
+          sendJSON(response, 404, { error: { message: "No agent project is loaded" } });
+          return;
+        }
+        const raw = await readBody(request);
+        const input = JSON.parse(raw.toString("utf8")) as {
+          id?: unknown;
+          input?: unknown;
+          connection?: unknown;
+        };
+        if (typeof input.id !== "string") {
+          sendJSON(response, 400, { error: { message: "Operation id is required" } });
+          return;
+        }
+        const catalog = await loadOperationCatalog(agentRoot);
+        const operation = catalog.operations.find((entry) => entry.id === input.id);
+        if (!operation) {
+          sendJSON(response, 404, { error: { message: `Operation ${input.id} is not enabled` } });
+          return;
+        }
+        const result = await testOperation(catalog, input.id, input.input, {
+          connection: operation.connection
+            ? {
+                kind: operation.connection,
+                ...(typeof input.connection === "string"
+                  ? { alias: input.connection }
+                  : {}),
+              }
+            : undefined,
+          async fetch(requestInput, init) {
+            const requested = new URL(requestInput);
+            if (!operation.network.includes(requested.origin)) {
+              throw new Error(`Operation ${input.id} cannot access ${requested.origin}`);
+            }
+            if (operation.connection === "gmail" && requested.hostname === "gmail.googleapis.com") {
+              const upstream = await fetch(
+                `${config.apiUrl}/api/managed-agents/connections/google/fetch`,
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-api-key": config.apiKey!,
+                  },
+                  body: JSON.stringify({
+                    service: "gmail",
+                    label: typeof input.connection === "string" ? input.connection : undefined,
+                    method: init?.method,
+                    path: `${requested.pathname}${requested.search}`,
+                    headers: init?.headers,
+                    body: typeof init?.body === "string" ? init.body : undefined,
+                  }),
+                },
+              );
+              const envelope = (await upstream.json()) as {
+                status?: number;
+                body?: string;
+                error?: { message?: string };
+              };
+              if (!upstream.ok || !envelope.status) {
+                throw new Error(envelope.error?.message ?? "Connection request failed");
+              }
+              return new Response(envelope.body, { status: envelope.status });
+            }
+            return fetch(requested, init);
+          },
+          async artifact(value) {
+            const sha256 = createHash("sha256").update(value.body).digest("hex");
+            return {
+              id: `local-${sha256.slice(0, 16)}`,
+              mediaType: value.mediaType,
+              size: value.body.byteLength,
+              sha256,
+            };
+          },
+        });
+        sendJSON(response, 200, result);
+        return;
+      } else if (request.method === "POST" && url.pathname === "/google/fetch") {
         target = `${config.apiUrl}/api/managed-agents/connections/google/fetch`;
         upstreamBody = await readBody(request);
       } else if (
@@ -508,7 +590,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   }
   const directory = await prepareAgent(root);
   const manifest = await readManifest(root);
-  const gateway = await startGateway(config);
+  const gateway = await startGateway(config, root);
   addBundledRuntimeToPath();
   const abortController = new AbortController();
   const model = modelParts();

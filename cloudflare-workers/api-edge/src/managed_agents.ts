@@ -500,6 +500,7 @@ async function deploySourceAgent(
       alias: body.alias,
       channels: strings(body.channels),
       connections: strings(body.connections),
+      operations: Array.isArray(body.operations) ? body.operations : [],
       artifact,
     }),
     redirect: "manual",

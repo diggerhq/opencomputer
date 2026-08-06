@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
 
 import {
   OpenComputerClient,
@@ -17,6 +18,11 @@ import {
   initializeAgentProject,
   readManifest,
 } from "./project.js";
+import {
+  findOperationRoot,
+  loadOperationCatalog,
+  testOperation,
+} from "./plugins.js";
 import {
   captureLocalSlackState,
   clearSlackState,
@@ -56,6 +62,57 @@ function option(args: string[], name: string): string | undefined {
   }
   args.splice(index, 2);
   return value;
+}
+
+async function readJSONInput(reference: string | undefined): Promise<unknown> {
+  if (!reference) throw new Error("--input <file|-> is required");
+  const source =
+    reference === "-"
+      ? await new Promise<string>((done, reject) => {
+          let value = "";
+          process.stdin.setEncoding("utf8");
+          process.stdin.on("data", (chunk: string) => (value += chunk));
+          process.stdin.on("end", () => done(value));
+          process.stdin.on("error", reject);
+        })
+      : await readFile(reference, "utf8");
+  try {
+    return JSON.parse(source) as unknown;
+  } catch {
+    throw new Error(`Operation input from ${reference} must be valid JSON`);
+  }
+}
+
+async function callOperationBridge(
+  id: string,
+  input: unknown,
+  connection?: string,
+): Promise<unknown> {
+  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error(
+      "Operation calls require an active OpenComputer dev or deployed session",
+    );
+  }
+  const response = await fetch(`${base.replace(/\/$/, "")}/operations/call`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ id, input, connection }),
+  });
+  const result: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const message =
+      result && typeof result === "object" &&
+      typeof (result as { error?: { message?: unknown } }).error?.message === "string"
+        ? (result as { error: { message: string } }).error.message
+        : `Operation call failed (${response.status})`;
+    throw new Error(message);
+  }
+  return result;
 }
 
 async function requireAgentRoot(): Promise<string> {
@@ -484,6 +541,7 @@ export async function runCommand(
       alias,
       channels: built.channels,
       connections: built.connections,
+      operations: built.operations,
       source: {
         digest: built.digest,
         size: built.body.byteLength,
@@ -661,6 +719,104 @@ export async function runCommand(
     process.stdout.write(
       `${files.map((file) => `Created ${file}`).join("\n")}\n`,
     );
+    return;
+  }
+
+  if (command === "plugin" || command === "plugins") {
+    const action = args.shift();
+    if ((action !== "list" && action !== "check") || args.length) {
+      throw new Error("Usage: opencomputer plugin <list|check>");
+    }
+    const operationRoot = (await findOperationRoot()) ?? (await requireAgentRoot());
+    const catalog = await loadOperationCatalog(operationRoot);
+    if (action === "check") {
+      if (globals.json) {
+        printJSON({ valid: true, plugins: catalog.plugins, operations: catalog.operations });
+      } else {
+        process.stdout.write(
+          `Validated ${catalog.plugins.length} plugin${catalog.plugins.length === 1 ? "" : "s"} and ${catalog.operations.length} operation${catalog.operations.length === 1 ? "" : "s"}.\n`,
+        );
+      }
+      return;
+    }
+    if (globals.json) printJSON(catalog.plugins);
+    else if (!catalog.plugins.length) process.stdout.write("No plugins enabled.\n");
+    else {
+      for (const plugin of catalog.plugins) {
+        process.stdout.write(
+          `${plugin.name.padEnd(18)} ${plugin.packageName}@${plugin.packageVersion} ${plugin.packageDigest.slice(0, 12)}\n`,
+        );
+      }
+    }
+    return;
+  }
+
+  if (command === "operation" || command === "operations") {
+    const action = args.shift();
+    const root = (await findOperationRoot()) ?? (await requireAgentRoot());
+    const catalog = await loadOperationCatalog(root);
+    if (action === "list" || action === "search") {
+      const query = action === "search" ? args.join(" ").trim().toLowerCase() : "";
+      const operations = query
+        ? catalog.operations.filter((operation) =>
+            `${operation.id} ${operation.description}`.toLowerCase().includes(query),
+          )
+        : catalog.operations;
+      if (globals.json) printJSON(operations);
+      else if (!operations.length) process.stdout.write("No matching operations.\n");
+      else {
+        for (const operation of operations) {
+          process.stdout.write(
+            `${operation.id.padEnd(38)} ${operation.execution.padEnd(7)} ${operation.effects.join(",")}\n`,
+          );
+        }
+      }
+      return;
+    }
+    const id = args.shift();
+    if (!id) {
+      throw new Error(
+        "Usage: opencomputer operation <list|search|describe|test|call>",
+      );
+    }
+    const operation = catalog.operations.find((candidate) => candidate.id === id);
+    if (!operation) throw new Error(`Operation ${id} is not enabled`);
+    if (action === "describe") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      printJSON(operation);
+      return;
+    }
+    if (action !== "test" && action !== "call") {
+      throw new Error(
+        "Usage: opencomputer operation <list|search|describe|test|call>",
+      );
+    }
+    const input = await readJSONInput(option(args, "--input"));
+    const connection = option(args, "--connection");
+    const mock = option(args, "--mock");
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (action === "call") {
+      printJSON(await callOperationBridge(id, input, connection));
+      return;
+    }
+    const fixture = mock ? await readJSONInput(mock) : undefined;
+    const output = await testOperation(catalog, id, input, {
+      connection: operation.connection
+        ? { kind: operation.connection, ...(connection ? { alias: connection } : {}) }
+        : undefined,
+      fetch: fixture !== undefined
+        ? async () => Response.json(fixture)
+        : (request, init) => fetch(request, init),
+      async artifact(value) {
+        return {
+          id: `local-${createHash("sha256").update(value.body).digest("hex").slice(0, 16)}`,
+          mediaType: value.mediaType,
+          size: value.body.byteLength,
+          sha256: createHash("sha256").update(value.body).digest("hex"),
+        };
+      },
+    });
+    printJSON(output);
     return;
   }
 

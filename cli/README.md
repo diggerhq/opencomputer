@@ -52,6 +52,51 @@ email-triage/
 └── evals/
 ```
 
+## Plugins and operations
+
+Provider integrations can be installed as ordinary npm plugins. A plugin owns
+one integration namespace and contributes one or more narrowly scoped,
+schema-validated operations plus optional skills.
+
+```bash
+npm install @opencomputer/plugin-github
+opencomputer plugin check
+opencomputer operation list
+opencomputer operation describe github.repository.inspect
+```
+
+Register the exact operations used by the agent in
+`opencomputer.plugins.ts`:
+
+```ts
+import { definePlugins } from "@opencomputer/cli/plugin";
+import { githubPlugin } from "@opencomputer/plugin-github";
+
+export default definePlugins([
+  githubPlugin({
+    operations: ["repository.inspect", "repository.checkout"],
+  }),
+]);
+```
+
+Organization plugins use the same npm contract. They may be published or kept
+inside the agent repository and installed with a `file:` dependency. The CLI
+derives schemas, documentation, package versions, and immutable digests; agent
+authors do not maintain a second JSON or YAML operation manifest.
+
+Local operation tests execute the TypeScript implementation and validate both
+input and output:
+
+```bash
+opencomputer operation test github.repository.inspect --input request.json
+opencomputer operation test github.repository.inspect \
+  --input request.json --mock test/fixtures/github.json
+```
+
+Deployment exposes only registered operations. Credentials remain in managed
+connections and are selected using the authenticated session principal; they
+are never fields in an operation schema.
+
 `opencomputer.toml` is committed with the agent and contains its stable ID.
 The directory can be renamed without creating a different deployed agent; each
 `opencomputer deploy` publishes a new immutable deployment and advances the

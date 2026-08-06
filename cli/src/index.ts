@@ -2,7 +2,7 @@
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.12";
+const VERSION = "0.4.0";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -51,6 +51,12 @@ Usage:
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
   opencomputer tools add <gmail|calendar>
+  opencomputer plugin <list|check>
+  opencomputer operation list
+  opencomputer operation search [query]
+  opencomputer operation describe <plugin.operation>
+  opencomputer operation test <plugin.operation> --input <file|-> [--mock <fixture>]
+  opencomputer operation call <plugin.operation> --input <file|-> [--connection <alias>]
   opencomputer connection add <gmail|calendar> [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>

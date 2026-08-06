@@ -560,6 +560,7 @@ describe("managed agents proxy", () => {
     ).toMatchObject({
       agentId: "gmail-summarizer",
       name: "Gentle Falcon",
+      operations: [],
     });
     expect(JSON.stringify(await response.json())).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,

@@ -32,6 +32,18 @@ export interface ManagedAgentDeployment {
   createdAt: string;
 }
 
+export interface ManagedOperationDeployment {
+  id: string;
+  packageName: string;
+  packageVersion: string;
+  packageDigest: string;
+  execution: "broker" | "hybrid";
+  effects: string[];
+  connection?: string;
+  network: string[];
+  workspaceAdapter?: "git.checkout";
+}
+
 export interface ManagedConnection {
   id: string;
   kind?: "channel" | "tool";
@@ -207,6 +219,7 @@ export class OpenComputerClient {
     alias: string;
     channels: string[];
     connections: string[];
+    operations: ManagedOperationDeployment[];
     source: {
       digest: string;
       size: number;
