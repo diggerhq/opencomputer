@@ -573,9 +573,10 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 // destroySem bounds background teardown concurrency. A bench/agent-shaped
 // workload destroys dozens of boxes in seconds; each Kill is QEMU-teardown +
 // overlay-unlink heavy, and running them foreground-concurrent competes with
-// live execs on the same host (measured as exec-tail blips). Three at a time
-// keeps the disk quiet while draining a 100-destroy burst in ~30s.
-var destroySem = make(chan struct{}, 3)
+// live execs on the same host (measured as exec-tail blips). Ten at a time
+// drains a 100-destroy burst in ~10s so backlog never spills into the next
+// workload phase (3-wide let seq+staggered teardown pile into the burst window).
+var destroySem = make(chan struct{}, 10)
 
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
 	// Tear the VM-DO exec channel down first so an in-flight exec can't land on
