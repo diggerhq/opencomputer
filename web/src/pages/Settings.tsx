@@ -148,6 +148,16 @@ export default function Settings() {
           </div>
           <div className="divide-y">
             <NavigationToggle
+              id="infrastructure-enabled"
+              label="Enable infrastructure"
+              description="Show sandboxes, checkpoints, templates, webhooks, and browsers."
+              checked={user?.infrastructureEnabled ?? true}
+              disabled={navigationMutation.isPending}
+              onCheckedChange={(checked) =>
+                navigationMutation.mutate({ infrastructureEnabled: checked })
+              }
+            />
+            <NavigationToggle
               id="durable-sessions-enabled"
               label="Enable durable sessions"
               description="Show durable agents, sessions, and credentials."
@@ -157,16 +167,6 @@ export default function Settings() {
                 navigationMutation.mutate({
                   durableSessionsEnabled: checked,
                 })
-              }
-            />
-            <NavigationToggle
-              id="infrastructure-enabled"
-              label="Enable infrastructure"
-              description="Show sandboxes, checkpoints, templates, webhooks, and browsers."
-              checked={user?.infrastructureEnabled ?? false}
-              disabled={navigationMutation.isPending}
-              onCheckedChange={(checked) =>
-                navigationMutation.mutate({ infrastructureEnabled: checked })
               }
             />
           </div>

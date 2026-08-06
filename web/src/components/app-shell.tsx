@@ -8,8 +8,6 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutGrid,
-  Rocket,
   Bot,
   MessagesSquare,
   Monitor,
@@ -28,7 +26,6 @@ import {
   Loader2,
   CircleAlert,
   ChevronRight,
-  Plug,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -51,7 +48,6 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
-import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 
 type NavItem = {
   to: string
@@ -67,73 +63,17 @@ type NavGroup = {
   landingTo?: string
 }
 
-// Two planes, subtly separated: the durable-agent plane and the raw-compute
-// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
-// label rather than hard dividers.
-const LEGACY_NAV: NavGroup[] = [
+const PRODUCT_NAV: NavGroup[] = [
   {
-    items: [
-      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
-      { to: '/getting-started', label: 'Getting started', icon: Rocket },
-    ],
-  },
-  {
-    label: 'Agents',
-    items: [
-      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
-      {
-        to: '/sessions',
-        label: 'Sessions',
-        icon: MessagesSquare,
-        preview: true,
-      },
-      {
-        to: '/credentials',
-        label: 'Credentials',
-        icon: KeySquare,
-        preview: true,
-      },
-    ],
-  },
-  {
-    label: 'Browser Sessions',
-    items: [
-      {
-        to: '/browsers',
-        label: 'Browsers',
-        icon: Monitor,
-        preview: true,
-      },
-    ],
-  },
-  {
-    label: 'Sandboxes',
+    label: 'Infrastructure',
+    collapsible: true,
+    landingTo: '/sandboxes',
     items: [
       { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
       { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Templates', icon: Package },
+      { to: '/templates', label: 'Sandbox templates', icon: Package },
       { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-    ],
-  },
-  {
-    label: 'Account',
-    items: [
-      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-      { to: '/billing', label: 'Billing', icon: CreditCard },
-      { to: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
-]
-
-const MANAGED_AGENTS_NAV: NavGroup[] = [
-  {
-    items: [
-      { to: '/', label: 'Agents', icon: Bot, end: true },
-      {
-        to: '/managed-agents/connections',
-        label: 'Connections',
-        icon: Plug,
-      },
+      { to: '/browsers', label: 'Browsers', icon: Monitor },
     ],
   },
   {
@@ -156,25 +96,13 @@ const MANAGED_AGENTS_NAV: NavGroup[] = [
       },
     ],
   },
-  {
-    label: 'Infrastructure',
-    collapsible: true,
-    landingTo: '/sandboxes',
-    items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Sandbox templates', icon: Package },
-      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-      { to: '/browsers', label: 'Browsers', icon: Monitor },
-    ],
-  },
 ]
 
-export function managedAgentsNav(preferences: {
+export function productNav(preferences: {
   durableSessionsEnabled: boolean
   infrastructureEnabled: boolean
 }): NavGroup[] {
-  return MANAGED_AGENTS_NAV.filter((group) => {
+  return PRODUCT_NAV.filter((group) => {
     if (group.label === 'Durable sessions') {
       return preferences.durableSessionsEnabled
     }
@@ -315,12 +243,10 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
-  const nav = managedAgentsExperimentEnabled
-    ? managedAgentsNav({
-        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
-        infrastructureEnabled: user?.infrastructureEnabled ?? false,
-      })
-    : LEGACY_NAV
+  const nav = productNav({
+    durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
+    infrastructureEnabled: user?.infrastructureEnabled ?? true,
+  })
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
@@ -331,9 +257,14 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
       ),
   )?.label
-  const [openGroups, setOpenGroups] = useState<Set<string>>(
-    () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
-  )
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    const groups = new Set<string>()
+    if (nav.some((group) => group.label === 'Infrastructure')) {
+      groups.add('Infrastructure')
+    }
+    if (activeCollapsibleGroup) groups.add(activeCollapsibleGroup)
+    return groups
+  })
 
   useEffect(() => {
     if (!activeCollapsibleGroup) return
@@ -417,28 +348,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t p-3">
-        {managedAgentsExperimentEnabled ? (
-          <ManagedProfileMenu onNavigate={onNavigate} />
-        ) : (
-          <div className="flex items-center gap-2.5">
-            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
-              {user?.email?.charAt(0).toUpperCase() || '?'}
-            </span>
-            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
-              {user?.email}
-            </span>
-            {user?.capabilities?.signOut !== false ? (
-              <button
-                onClick={() => void logout()}
-                aria-label="Sign out"
-                title="Sign out"
-                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
-              >
-                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        )}
+        <ManagedProfileMenu onNavigate={onNavigate} />
       </div>
     </div>
   )
@@ -524,14 +434,7 @@ export default function AppShell() {
           <HaltBanner />
           <AgentSecurityAlertBanner />
         </div>
-        <main
-          className={cn(
-            'mx-auto px-4 py-6 sm:px-8',
-            location.pathname.startsWith('/managed-agents/')
-              ? 'max-w-[1600px]'
-              : 'max-w-7xl',
-          )}
-        >
+        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter
               state can't bleed across orgs. */}
