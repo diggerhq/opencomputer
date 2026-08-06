@@ -61,8 +61,12 @@ export class VmSession extends DurableObject {
   // call at the volumes the exec path runs at). The fetch route stays for
   // rollout compatibility; callers prefer this when the stub exposes it.
   async execCommand(body: RunBody, sid?: string): Promise<
-    { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number } | { ok: false; error: string }
+    | { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number; internalMs: number }
+    | { ok: false; error: string }
   > {
+    // internalMs = time spent INSIDE this method. The edge's do;dur minus this
+    // = isolate wake + edge→DO transit — the unattributed gap in the exec tail.
+    const tEntry = Date.now();
     const socks = this.state.getWebSockets("vm");
     console.log(`exec sid=${sid ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`);
     if (!this.connectedSocket()) {
@@ -78,7 +82,14 @@ export class VmSession extends DurableObject {
         body.envs ?? {},
         Math.max(1, body.timeout ?? 60) * 1000,
       );
-      return { ok: true, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, agentMs: result.durationMs };
+      return {
+        ok: true,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        agentMs: result.durationMs,
+        internalMs: Date.now() - tEntry,
+      };
     } catch (e) {
       return { ok: false, error: String((e as Error)?.message ?? e) };
     }
