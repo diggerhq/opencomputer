@@ -1,58 +1,89 @@
 # OpenComputer
 
-OpenComputer provides full Linux virtual machines in the cloud for running AI applications and untrusted code. Sandboxes start quickly, keep their filesystem between commands, hibernate when idle, and can be checkpointed, restored, and forked.
+**Serverless agents.** Build an agent as code, test it locally, deploy it with one command. No infrastructure to run, no servers to keep alive, no agent loop to babysit.
 
 ```bash
-# Install the CLI
-curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/scripts/install.sh | bash
+npm install --global @opencomputer/cli
 
-# Authenticate, create a sandbox, and run a command
-oc auth login
-oc sandbox create
-oc exec <sandbox-id> -- uname -a
+opencomputer init email-triage gmail-summarizer   # start from a template
+cd gmail-summarizer && npm install
+
+opencomputer connection add gmail --alias personal   # managed OAuth, no keys in the project
+
+opencomputer session "Summarize my unread inbox."    # test locally, same connections as prod
+
+opencomputer deploy --alias production               # publish an immutable version
+
+opencomputer run gmail-summarizer "Summarize my unread inbox and call out anything urgent."
 ```
 
-[Documentation](https://docs.opencomputer.dev/introduction) · [Quickstart](https://docs.opencomputer.dev/quickstart) · [Dashboard](https://app.opencomputer.dev)
+[Documentation](https://docs.opencomputer.dev/agents/overview) · [Quickstart](https://docs.opencomputer.dev/agents/quickstart) · [Dashboard](https://app.opencomputer.dev)
 
-## SDKs
+## Agents as code
 
-Create and control sandboxes from TypeScript or Python:
+An OpenComputer agent is a source-controlled project: identity, instructions, tools, connections, and runtime configuration in a normal directory you review and commit.
+
+```text
+gmail-summarizer/
+├── opencomputer.toml    # committed identity: stable ID across deployments
+├── instructions.md      # the agent's role, rules, and approval boundaries
+├── agent.ts             # model and runtime permissions
+├── tools/               # code-native tools
+├── connections/         # declarations for managed services (Gmail, ...)
+├── skills/              # reusable domain knowledge and workflows
+├── workspace/           # durable working files packaged with the agent
+└── evals/               # repeatable checks for agent behavior
+```
+
+Everything the agent is lives in that directory. Review changes in pull requests, and grow the agent by editing files: sharpen `instructions.md`, add a tool, drop in a skill.
+
+## Develop locally, deploy identically
+
+`opencomputer session` runs one task against your working copy; `opencomputer dev` gives you an interactive session. Both use your project files and the same managed connections the agent will use in production, so what you test is what ships.
 
 ```bash
-npm install @opencomputer/sdk
-pip install opencomputer-sdk
+opencomputer session "Summarize up to 10 unread Gmail messages. Do not modify any email."
+opencomputer dev
 ```
 
-```typescript
-import { Sandbox } from "@opencomputer/sdk";
+## Versioned deployment
 
-const sandbox = await Sandbox.create();
-const result = await sandbox.commands.run("echo 'Hello from OpenComputer'");
-console.log(result.stdout);
-await sandbox.kill();
+A stable agent ID points to immutable deployments. Shipping an update is a commit and a deploy; the `production` alias moves to the new version, and rollback is a pointer move.
+
+```bash
+git commit -am "Refine inbox urgency rules"
+opencomputer deploy --alias production
 ```
 
-```python
-import asyncio
-from opencomputer import Sandbox
+Once deployed, the platform runs the agent for you and manages lifecycle, persistence, and connected services. A completed turn suspends; the next message resumes it with its session and workspace intact. Drive it from the CLI:
 
-async def main():
-    sandbox = await Sandbox.create()
-    result = await sandbox.commands.run("echo 'Hello from OpenComputer'")
-    print(result.stdout)
-    await sandbox.kill()
+```bash
+opencomputer run gmail-summarizer "Summarize my unread inbox."
 
-asyncio.run(main())
+opencomputer session create --remote --agent gmail-summarizer@production
+opencomputer session send <session-id> "Summarize today's inbox."
+opencomputer session attach <session-id>
 ```
 
-## Sandbox capabilities
+## Managed connections
 
-- Full Linux VMs with hardware-level isolation
-- Persistent filesystems and configurable idle timeouts
-- Checkpoints, restores, and forks
-- Runtime CPU and memory scaling
-- Interactive terminals and command execution
-- File transfer, secrets, and HTTPS preview URLs
-- TypeScript and Python SDKs plus the `oc` CLI
+Authorize services like Gmail through the CLI. OAuth credentials stay managed by OpenComputer and are never written into the project. Connect multiple accounts with aliases:
 
-See the [sandbox overview](https://docs.opencomputer.dev/sandboxes/overview) for the complete lifecycle and API.
+```bash
+opencomputer connection add gmail --alias personal
+opencomputer connection add gmail --alias work
+```
+
+## Channels
+
+Connect a deployed agent to Slack from the dashboard and invoke it from DMs or channel mentions, with per-user identity isolation. No Slack files or credentials in your repo.
+
+## Get started
+
+```bash
+npm install --global @opencomputer/cli
+opencomputer login
+opencomputer templates
+```
+
+Then follow the [quickstart](https://docs.opencomputer.dev/agents/quickstart): create, connect, test, and deploy a Gmail summarizer from a template.
