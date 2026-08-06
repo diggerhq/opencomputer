@@ -43,6 +43,15 @@ const ptoTemplate: ManagedAgentTemplate = {
   suggestedPrompts: ["Prepare PTO and check conflicts."],
 };
 
+const prReviewTemplate: ManagedAgentTemplate = {
+  id: "pr-review-readiness",
+  name: "PR review readiness",
+  description: "Decide whether a connected PR is ready for human review.",
+  category: "Coding",
+  integrations: ["GitHub"],
+  suggestedPrompts: ["Review this pull request."],
+};
+
 test("a template creates a flat agent repository with stable identity", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-agent-"));
   const original = resolve(parent, "my-inbox-agent");
@@ -122,7 +131,7 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     assert.match(connectionTool, /newAccount/);
     assert.match(
       connectionTool,
-      /schema\.enum\(\["gmail", "calendar", "drive", "sheets"\]\)/,
+      /schema\.enum\(\["gmail", "calendar", "drive", "sheets", "github"\]\)/,
     );
     assert.equal(connectionTool.includes('base.replace(/\\\/$/, "")'), true);
     const transpiledConnectionTool = ts.transpileModule(connectionTool, {
@@ -308,6 +317,69 @@ test("an incomplete PTO project cannot be packaged without Calendar tools", asyn
       buildAgentArtifact(root),
       /opencomputer tools add calendar/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the PR readiness template creates brokered read-only GitHub tools", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "pr-review-readiness-"));
+  try {
+    const initialized = await initializeAgentProject(prReviewTemplate, root);
+    assert.ok(initialized.files.includes("tools/github.ts"));
+    const githubTool = await readFile(
+      resolve(root, "tools", "github.ts"),
+      "utf8",
+    );
+    assert.match(githubTool, /export const pr_context = tool/);
+    assert.match(githubTool, /export const checkout = tool/);
+    assert.match(githubTool, /issues\/.*\/comments/);
+    assert.match(githubTool, /pulls\/.*\/reviews/);
+    assert.match(githubTool, /pulls\/.*\/files/);
+    assert.match(githubTool, /application\/vnd\.github\.v3\.diff/);
+    assert.match(githubTool, /OPENCOMPUTER_CONNECTIONS_URL/);
+    assert.match(githubTool, /\/github\/fetch/);
+    assert.match(githubTool, /method: "GET"/);
+    assert.match(githubTool, /\/contents\//);
+    assert.match(githubTool, /MAX_CHECKOUT_FILES = 100/);
+    assert.match(githubTool, /resolve\(context\.directory\)/);
+    assert.doesNotMatch(githubTool, /destination: tool\.schema\.string/);
+    assert.doesNotMatch(githubTool, /\/tarball\//);
+    assert.match(githubTool, /remoteConfigured: false/);
+    assert.doesNotMatch(githubTool, /api\.github\.com/);
+    assert.doesNotMatch(githubTool, /git push/i);
+    const transpiledGithubTool = ts.transpileModule(githubTool, {
+      compilerOptions: {
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+      },
+      reportDiagnostics: true,
+    });
+    assert.equal(
+      transpiledGithubTool.diagnostics?.length ?? 0,
+      0,
+      transpiledGithubTool.diagnostics
+        ?.map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        )
+        .join("\n"),
+    );
+
+    const instructions = await readFile(
+      resolve(root, "instructions.md"),
+      "utf8",
+    );
+    assert.match(instructions, /READY_FOR_HUMAN_REVIEW/);
+    assert.match(instructions, /NOT_READY/);
+    assert.match(instructions, /NEEDS_INFORMATION/);
+    assert.match(instructions, /credentials remain in the OpenComputer control plane/);
+    assert.match(instructions, /Never push/);
+    assert.match(instructions, /current OpenComputer session/);
+
+    const built = await buildAgentArtifact(root);
+    assert.deepEqual(built.connections, ["github"]);
+    assert.deepEqual(built.channels, []);
+    assert.match(built.body.toString("utf8"), /tools\/github\.ts/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

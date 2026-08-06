@@ -9,6 +9,7 @@ import {
   Clock3,
   Clipboard,
   ClipboardCheck,
+  Code2,
   Lightbulb,
   Loader2,
   MessageSquareText,
@@ -46,6 +47,7 @@ import {
 
 const categories = [
   'Comms',
+  'Coding',
   'Operations',
   'Admin',
   'Growth',
@@ -58,15 +60,29 @@ type CliStep = {
   commands: string[]
 }
 
-const availableTemplateIds = new Set(['email-triage', 'pto-calendar'])
+const availableTemplateIds = new Set([
+  'email-triage',
+  'pr-review-readiness',
+  'pto-calendar',
+])
 
 function templateSetup(template: ManagedAgentTemplate) {
+  if (template.id === 'pr-review-readiness') {
+    return {
+      directory: 'pr-review-readiness',
+      connectionName: 'GitHub',
+      connectionCommand: 'connection add github --alias default',
+      toolCommand: '',
+      requiresConnection: true,
+    }
+  }
   if (template.id === 'pto-calendar') {
     return {
       directory: 'pto-calendar',
       connectionName: 'Google Calendar',
       connectionCommand: 'connection add calendar --alias work-calendar',
       toolCommand: 'tools add calendar',
+      requiresConnection: true,
     }
   }
   return {
@@ -74,6 +90,7 @@ function templateSetup(template: ManagedAgentTemplate) {
     connectionName: 'Gmail',
     connectionCommand: 'connection add gmail --alias personal',
     toolCommand: 'tools add gmail',
+    requiresConnection: true,
   }
 }
 
@@ -106,6 +123,7 @@ const starterCopy = [
 
 const categoryIcons = {
   Comms: MessageSquareText,
+  Coding: Code2,
   Operations: Workflow,
   Admin: BriefcaseBusiness,
   Growth: TrendingUp,
@@ -132,6 +150,10 @@ function buildSetupPrompt(template: ManagedAgentTemplate, origin: string) {
   const integrations = template.integrations.join(', ')
   const firstPrompt =
     template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
+  const connectionCommands = [setup.toolCommand, setup.connectionCommand]
+    .filter(Boolean)
+    .map((command) => `\`${cliCommand(origin, command)}\``)
+    .join(' and ')
   return `Create a local "${template.name}" OpenComputer agent repository for me.
 
 The agent's job:
@@ -150,7 +172,11 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 4. Run \`npm install\` in the repository.
 5. Inspect and tailor the checked-in source: \`opencomputer.toml\`, \`instructions.md\`, \`agent.ts\`, \`tools/\`, \`connections/\`, \`skills/\`, \`workspace/\`, and \`evals/\`.
 6. Keep the stable \`id\` in \`opencomputer.toml\`; future deployments of this repository must create new versions of that same agent.
-7. Add and authorize the ${setup.connectionName} connection with \`${cliCommand(origin, setup.toolCommand)}\` and \`${cliCommand(origin, setup.connectionCommand)}\`. Connect Slack from the deployed agent's Channels tab after deployment.
+7. ${
+    setup.requiresConnection
+      ? `Add and authorize the ${setup.connectionName} connection with ${connectionCommands}.`
+      : 'Connect GitHub to review public or private pull requests. GitHub credentials stay in the control plane, and the agent can use only allowlisted read requests.'
+  }
 8. Test the editable agent locally with the OpenComputer CLI:
    \`opencomputer session "${firstPrompt.replace(/"/g, '\\"')}"\`
 9. Make any necessary source changes and test again.
@@ -185,10 +211,14 @@ function buildCliSteps(
         'npm install',
       ],
     },
-    {
-      title: `Connect your ${setup.connectionName} account`,
-      commands: [cliCommand(origin, setup.connectionCommand)],
-    },
+    ...(setup.requiresConnection
+      ? [
+          {
+            title: `Connect your ${setup.connectionName} account`,
+            commands: [cliCommand(origin, setup.connectionCommand)],
+          },
+        ]
+      : []),
     {
       title: 'Test the agent locally',
       commands: [

@@ -138,8 +138,12 @@ export async function startGateway(config: ResolvedConfig): Promise<{
       let target: string;
       let upstreamMethod = request.method;
       let upstreamBody: Buffer | string | undefined;
-      if (request.method === "POST" && url.pathname === "/google/fetch") {
-        target = `${config.apiUrl}/api/managed-agents/connections/google/fetch`;
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/google/fetch" || url.pathname === "/github/fetch")
+      ) {
+        const provider = url.pathname.startsWith("/github/") ? "github" : "google";
+        target = `${config.apiUrl}/api/managed-agents/connections/${provider}/fetch`;
         upstreamBody = await readBody(request);
       } else if (
         request.method === "POST" &&
@@ -166,12 +170,12 @@ export async function startGateway(config: ResolvedConfig): Promise<{
           const service = input.service;
           if (
             typeof service !== "string" ||
-            !["gmail", "calendar", "drive", "sheets"].includes(service)
+            !["gmail", "calendar", "drive", "sheets", "github"].includes(service)
           ) {
             sendJSON(response, 400, {
               error: {
                 message:
-                  "Expected one of gmail, calendar, drive, or sheets",
+                  "Expected one of gmail, calendar, drive, sheets, or github",
               },
             });
             return;
@@ -185,7 +189,7 @@ export async function startGateway(config: ResolvedConfig): Promise<{
             (input.newAccount === true
               ? `${service}-${randomUUID().slice(0, 8)}`
               : "default");
-          target = `${config.apiUrl}/api/managed-agents/connections/google/link`;
+          target = `${config.apiUrl}/api/managed-agents/connections/link`;
           upstreamMethod = "POST";
           upstreamBody = JSON.stringify({ service, label });
         } else {

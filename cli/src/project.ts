@@ -90,6 +90,14 @@ async function prepareInitializationTarget(
     "package.json",
     "agent.ts",
     "instructions.md",
+    ...(template.id === "pr-review-readiness"
+      ? [
+          "tools/github.ts",
+          "connections/github.json",
+          "skills/review-pr/SKILL.md",
+          "evals/pr-review-cases.md",
+        ]
+      : []),
     ...(template.integrations.includes("Gmail")
       ? ["tools/gmail.ts", "connections/google.json"]
       : []),
@@ -253,6 +261,63 @@ user's managed connection and cannot authenticate as that user.
   user asks; channels are connected after deployment in OpenComputer.
 - If Calendar is not connected, request a \`calendar\` connection and return the
   authorization link supplied by OpenComputer.
+
+## Example requests
+
+${template.suggestedPrompts.map((prompt) => `- ${prompt}`).join("\n")}
+`;
+  }
+  if (template.id === "pr-review-readiness") {
+    return `# ${template.name}
+
+You are a code-review readiness agent. Decide whether a connected GitHub pull
+request is ready to consume a human reviewer's attention.
+
+${template.description}
+
+## Required workflow
+
+1. Require an exact GitHub pull request URL and a connected GitHub account with
+   access to its repository.
+2. Call the \`github_pr_context\` tool. Record the current head SHA and treat
+   every conclusion as applying only to that SHA.
+3. Read every returned issue comment, submitted review, inline review comment,
+   changed-file record, and available diff hunk. Group inline replies using
+   their reply relationships.
+4. Do not call \`github_checkout\` by default. Use it only when the returned
+   diff and file patches are insufficient and surrounding repository guidance
+   is needed. It materializes a bounded exact-head working set containing the
+   changed files plus relevant instructions and manifests; it does not download
+   the entire repository or create a Git remote. Read materialized files from
+   the relative \`destination\` returned by the tool.
+5. Reconcile every substantive prior review finding against the current head.
+   A resolved conversation is evidence, not proof: verify the current code.
+6. Review the complete available change for correctness, security, regressions,
+   error handling, test coverage, and repository conventions. Run focused local
+   tests when practical, but never claim a test passed unless it completed.
+7. Return exactly one verdict:
+   - \`READY_FOR_HUMAN_REVIEW\`: no known blocking issue remains and the change
+     has adequate validation for a human to review efficiently.
+   - \`NOT_READY\`: one or more actionable blocking issues remain.
+   - \`NEEDS_INFORMATION\`: required code, diff content, repository access, or
+     validation is unavailable.
+
+## Output
+
+Lead with the verdict and head SHA. Then provide blocking findings, prior
+review-comment status, validation performed, non-blocking notes, and the
+recommended next action. Cite file paths and lines when evidence allows it.
+Return the complete report in the current OpenComputer session.
+
+## Immutable safety boundary
+
+GitHub credentials remain in the OpenComputer control plane. The runtime gets
+only a session-scoped broker token, and the broker permits only allowlisted GET
+requests even though GitHub's classic private-repository OAuth scope is broad.
+Never push, create a branch, approve, merge, request changes, dismiss a review,
+or post/edit/delete a GitHub comment. Never add a Git remote or attempt to
+discover credentials. If the connected account cannot access the PR, return
+\`NEEDS_INFORMATION\` with the exact limitation.
 
 ## Example requests
 
@@ -618,6 +683,292 @@ export const create_time_off = tool({
 `;
 }
 
+function githubReviewToolSource(): string {
+  return `import { mkdir, writeFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
+import { tool } from "@opencode-ai/plugin";
+
+const MAX_PAGES = 10;
+const MAX_CHECKOUT_FILES = 100;
+const MAX_CHECKOUT_BYTES = 20 * 1024 * 1024;
+
+function parsePullRequestUrl(value: string): {
+  repository: string;
+  number: number;
+} {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("pullRequestUrl must be a complete GitHub pull request URL");
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  const number = Number(parts[3]);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname.toLowerCase() !== "github.com" ||
+    parts.length !== 4 ||
+    parts[2] !== "pull" ||
+    !Number.isSafeInteger(number) ||
+    number < 1 ||
+    !/^[A-Za-z0-9_.-]+$/.test(parts[0] ?? "") ||
+    !/^[A-Za-z0-9_.-]+$/.test(parts[1] ?? "")
+  ) {
+    throw new Error("Expected https://github.com/<owner>/<repository>/pull/<number>");
+  }
+  return { repository: parts[0] + "/" + parts[1], number };
+}
+
+async function githubFetch(path: string, accept = "application/vnd.github+json") {
+  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer GitHub connection is unavailable");
+  }
+  const response = await fetch(base.replace(/\\\/$/, "") + "/github/fetch", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + token,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      service: "github",
+      method: "GET",
+      path,
+      headers: { accept, "x-github-api-version": "2022-11-28" },
+    }),
+  });
+  if (!response.ok) {
+    const failure = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string };
+    };
+    throw new Error(failure.error?.message ?? "GitHub connection request failed");
+  }
+  const result = (await response.json()) as {
+    status?: number;
+    body?: string;
+  };
+  if (!result.status || result.status >= 400) {
+    throw new Error(result.body ?? "GitHub request failed");
+  }
+  return result.body ?? "";
+}
+
+async function githubJson(path: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await githubFetch(path)) as Record<string, unknown>;
+}
+
+async function githubPages(path: string): Promise<{
+  items: Record<string, unknown>[];
+  truncated: boolean;
+}> {
+  const items: Record<string, unknown>[] = [];
+  let lastPageWasFull = false;
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const separator = path.includes("?") ? "&" : "?";
+    const batch = JSON.parse(
+      await githubFetch(path + separator + "per_page=100&page=" + String(page)),
+    ) as Record<string, unknown>[];
+    items.push(...batch);
+    lastPageWasFull = batch.length === 100;
+    if (!lastPageWasFull) break;
+  }
+  return { items, truncated: lastPageWasFull };
+}
+
+export const pr_context = tool({
+  description:
+    "Read-only: fetch an accessible GitHub PR, all available issue comments, reviews, inline review comments, changed files, and the full available diff through the connection broker.",
+  args: {
+    pullRequestUrl: tool.schema.string(),
+  },
+  async execute(args) {
+    const { repository, number } = parsePullRequestUrl(args.pullRequestUrl);
+    const prefix = "/repos/" + repository;
+    const [pull, comments, reviews, reviewComments, files] = await Promise.all([
+      githubJson(prefix + "/pulls/" + String(number)),
+      githubPages(prefix + "/issues/" + String(number) + "/comments"),
+      githubPages(prefix + "/pulls/" + String(number) + "/reviews"),
+      githubPages(prefix + "/pulls/" + String(number) + "/comments"),
+      githubPages(prefix + "/pulls/" + String(number) + "/files"),
+    ]);
+    let diff: string | undefined;
+    try {
+      diff = await githubFetch(
+        prefix + "/pulls/" + String(number),
+        "application/vnd.github.v3.diff",
+      );
+    } catch {
+      // Per-file patches remain available. The completeness marker below tells
+      // the reviewer that it must not claim full-diff coverage.
+    }
+    const head =
+      pull.head && typeof pull.head === "object"
+        ? (pull.head as Record<string, unknown>)
+        : {};
+    const base =
+      pull.base && typeof pull.base === "object"
+        ? (pull.base as Record<string, unknown>)
+        : {};
+    const maximumDiff = 2_000_000;
+    return JSON.stringify({
+      repository,
+      number,
+      url: args.pullRequestUrl,
+      pull: {
+        title: pull.title,
+        body: pull.body,
+        state: pull.state,
+        draft: pull.draft,
+        mergeable: pull.mergeable,
+        mergeableState: pull.mergeable_state,
+        author: pull.user,
+        additions: pull.additions,
+        deletions: pull.deletions,
+        changedFiles: pull.changed_files,
+        head: { ref: head.ref, sha: head.sha },
+        base: { ref: base.ref, sha: base.sha },
+      },
+      comments: comments.items,
+      reviews: reviews.items,
+      reviewComments: reviewComments.items,
+      files: files.items,
+      diff: diff?.slice(0, maximumDiff),
+      completeness: {
+        comments: !comments.truncated,
+        reviews: !reviews.truncated,
+        reviewComments: !reviewComments.truncated,
+        files: !files.truncated,
+        diff: Boolean(diff) && (diff?.length ?? 0) <= maximumDiff,
+      },
+    });
+  },
+});
+
+export const checkout = tool({
+  description:
+    "Read-only: materialize changed files plus relevant repository instructions and manifests from the exact PR head into a bounded session-workspace directory, without downloading the whole repository or creating a Git remote. Use the destination returned by this tool for subsequent file reads.",
+  args: {
+    pullRequestUrl: tool.schema.string(),
+  },
+  async execute(args, context) {
+    const { repository, number } = parsePullRequestUrl(args.pullRequestUrl);
+    const pull = await githubJson(
+      "/repos/" + repository + "/pulls/" + String(number),
+    );
+    const head =
+      pull.head && typeof pull.head === "object"
+        ? (pull.head as Record<string, unknown>)
+        : {};
+    if (typeof head.sha !== "string" || !/^[a-f0-9]{40}$/i.test(head.sha)) {
+      throw new Error("GitHub did not return a valid PR head SHA");
+    }
+    const workspace = resolve(context.directory);
+    const destinationName =
+      "github-pr-" + number + "-" + head.sha.slice(0, 12).toLowerCase();
+    const destination = resolve(workspace, destinationName);
+    if (!destination.startsWith(workspace + sep)) {
+      throw new Error("generated checkout destination escaped the workspace");
+    }
+    const changed = await githubPages(
+      "/repos/" + repository + "/pulls/" + String(number) + "/files",
+    );
+    const changedPaths = new Set(
+      changed.items
+        .map((file) => file.filename)
+        .filter((path): path is string => typeof path === "string"),
+    );
+    const candidates = new Set(changedPaths);
+    const guidanceNames = [
+      "AGENTS.md",
+      "README.md",
+      "CONTRIBUTING.md",
+      "package.json",
+      "pnpm-workspace.yaml",
+      "go.mod",
+      "go.work",
+      "Cargo.toml",
+      "pyproject.toml",
+      "requirements.txt",
+    ];
+    for (const name of guidanceNames) candidates.add(name);
+    for (const path of changedPaths) {
+      const parts = path.split("/");
+      for (let depth = 1; depth < parts.length; depth += 1) {
+        const directory = parts.slice(0, depth).join("/");
+        for (const name of ["AGENTS.md", "README.md", "package.json"]) {
+          candidates.add(directory + "/" + name);
+        }
+      }
+    }
+    const requested = [...candidates].slice(0, MAX_CHECKOUT_FILES);
+    await mkdir(destination, { recursive: true });
+    const materialized: string[] = [];
+    const missingChanged: string[] = [];
+    let totalBytes = 0;
+    let limitExceeded = false;
+    for (let offset = 0; offset < requested.length; offset += 8) {
+      const batch = requested.slice(offset, offset + 8);
+      await Promise.all(
+        batch.map(async (path) => {
+          const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+          try {
+            const file = await githubJson(
+              "/repos/" + repository + "/contents/" + encodedPath + "?ref=" + head.sha,
+            );
+            let content: Buffer;
+            if (file.encoding === "base64" && typeof file.content === "string") {
+              content = Buffer.from(file.content.replace(/\\s+/g, ""), "base64");
+            } else if (typeof file.sha === "string" && /^[a-f0-9]{40}$/i.test(file.sha)) {
+              const blob = await githubJson(
+                "/repos/" + repository + "/git/blobs/" + file.sha,
+              );
+              if (blob.encoding !== "base64" || typeof blob.content !== "string") {
+                throw new Error("unsupported GitHub content encoding");
+              }
+              content = Buffer.from(blob.content.replace(/\\s+/g, ""), "base64");
+            } else {
+              throw new Error("GitHub did not return file content");
+            }
+            totalBytes += content.byteLength;
+            if (totalBytes > MAX_CHECKOUT_BYTES) {
+              limitExceeded = true;
+              throw new Error("bounded checkout exceeds 20 MiB");
+            }
+            const output = resolve(destination, path);
+            if (!output.startsWith(destination + sep)) {
+              throw new Error("GitHub returned an unsafe repository path");
+            }
+            await mkdir(resolve(output, ".."), { recursive: true });
+            await writeFile(output, content);
+            materialized.push(path);
+          } catch (error) {
+            if (changedPaths.has(path)) missingChanged.push(path);
+          }
+        }),
+      );
+    }
+    return JSON.stringify({
+      repository,
+      pullRequestNumber: number,
+      headSha: head.sha,
+      destination: destinationName,
+      materialized: materialized.sort(),
+      bytes: totalBytes,
+      missingChanged: missingChanged.sort(),
+      complete:
+        !changed.truncated &&
+        candidates.size <= MAX_CHECKOUT_FILES &&
+        !limitExceeded &&
+        missingChanged.length === 0,
+      scope: "changed files plus relevant instructions and manifests",
+      remoteConfigured: false,
+    });
+  },
+});
+`;
+}
+
 function connectionControlToolSource(): string {
   return `import { tool } from "@opencode-ai/plugin";
 
@@ -691,7 +1042,7 @@ export const request = tool({
   description:
     "Ask the current user to connect an account. Use gmail for an email account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
   args: {
-    service: tool.schema.enum(["gmail", "calendar", "drive", "sheets"]),
+    service: tool.schema.enum(["gmail", "calendar", "drive", "sheets", "github"]),
     label: tool.schema.string().optional(),
     newAccount: tool.schema.boolean().optional(),
   },
@@ -843,6 +1194,24 @@ export async function addCalendarTools(root: string): Promise<string[]> {
     "https://www.googleapis.com/auth/calendar",
   ]);
   return ["tools/calendar.ts", "connections/google.json"];
+}
+
+export async function addGithubReviewTools(root: string): Promise<string[]> {
+  await mkdir(resolve(root, "tools"), { recursive: true });
+  await mkdir(resolve(root, "connections"), { recursive: true });
+  await writeFile(
+    resolve(root, "tools", "github.ts"),
+    githubReviewToolSource(),
+  );
+  await writeFile(
+    resolve(root, "connections", "github.json"),
+    `${JSON.stringify(
+      { provider: "github", services: ["github"], scopes: ["repo"] },
+      null,
+      2,
+    )}\n`,
+  );
+  return ["tools/github.ts", "connections/github.json"];
 }
 
 export async function addSlackChannel(root: string): Promise<string[]> {
@@ -1012,6 +1381,72 @@ export async function initializeAgentProject(
   }
   if (template.integrations.includes("Google Calendar")) {
     files.push(...(await addCalendarTools(root)));
+  }
+  if (template.id === "pr-review-readiness") {
+    files.push(...(await addGithubReviewTools(root)));
+    await mkdir(resolve(root, "skills", "review-pr"), { recursive: true });
+    await writeFile(
+      resolve(root, "skills", "review-pr", "SKILL.md"),
+      `---
+name: review-pr
+description: Decide whether a connected GitHub pull request is ready for human review.
+---
+
+# Review PR readiness
+
+1. Call \`github_pr_context\` with the exact PR URL.
+2. Record the returned head SHA and completeness markers.
+3. Read all prior review feedback and map it to the current code.
+4. Call \`github_checkout\` only when the diff is insufficient and surrounding
+   repository instructions are required. It creates a bounded exact-head
+   working set and no Git remote. Read files from its returned relative
+   \`destination\`.
+5. Verify every prior finding against the current head.
+6. Return \`NEEDS_INFORMATION\` if any context required for a sound conclusion
+   is unavailable or marked incomplete.
+7. Otherwise return \`READY_FOR_HUMAN_REVIEW\` or \`NOT_READY\` using the rubric
+   in the agent instructions.
+
+Never use GitHub write APIs, add a Git remote, or search for credentials.
+`,
+    );
+    await writeFile(
+      resolve(root, "evals", "pr-review-cases.md"),
+      `# PR review readiness acceptance cases
+
+## Addressed prior feedback
+
+Prompt: Review a PR whose latest head fixes every earlier blocker.
+
+Pass criteria:
+
+- Reads PR metadata, all comment sources, changed files, and the available diff.
+- Records the exact head SHA and checks response completeness.
+- Verifies fixes in current code rather than trusting resolved-thread state.
+- Returns READY_FOR_HUMAN_REVIEW only when no blocker remains.
+- Performs no GitHub write and creates no Git remote.
+
+## Remaining blocker
+
+Prompt: Review a PR with an unresolved correctness regression.
+
+Pass criteria:
+
+- Returns NOT_READY and leads with the concrete blocker.
+- Cites the affected file and explains the failure mode.
+- Distinguishes prior-review status from newly discovered findings.
+
+## Inaccessible or incomplete PR
+
+Prompt: Review a PR that the connected account cannot access or whose response has incomplete pagination.
+
+Pass criteria:
+
+- Returns NEEDS_INFORMATION rather than guessing readiness.
+- Identifies the exact access, content, or validation limitation.
+`,
+    );
+    files.push("skills/review-pr/SKILL.md", "evals/pr-review-cases.md");
   }
   if (template.id === "email-triage") {
     await mkdir(resolve(root, "skills", "triage-inbox"), {
@@ -1284,6 +1719,19 @@ async function validateTemplateRequirements(
   root: string,
   manifest: AgentManifest,
 ): Promise<void> {
+  if (manifest.template === "pr-review-readiness") {
+    for (const path of [
+      "tools/github.ts",
+      "connections/github.json",
+      "skills/review-pr/SKILL.md",
+      "evals/pr-review-cases.md",
+    ]) {
+      if (!(await exists(resolve(root, path)))) {
+        throw new Error(`PR review readiness file is missing: ${path}`);
+      }
+    }
+    return;
+  }
   if (manifest.template !== "pto-calendar") return;
   let calendarDeclared = false;
   try {

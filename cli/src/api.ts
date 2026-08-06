@@ -234,7 +234,7 @@ export class OpenComputerClient {
     );
   }
 
-  linkGoogle(service: string, label: string) {
+  linkManagedConnection(service: string, label: string) {
     return this.request<{
       connectionId: string;
       label: string;
@@ -244,13 +244,14 @@ export class OpenComputerClient {
       connectedAccountId?: string;
       authorizationUrl?: string;
       expiresAt?: string;
-    }>("/api/managed-agents/connections/google/link", {
+    }>("/api/managed-agents/connections/link", {
       method: "POST",
       body: JSON.stringify({ service, label }),
     });
   }
 
-  googleConnection(connectionId: string, service: string) {
+  managedConnection(connectionId: string, service: string) {
+    const provider = service === "github" ? "github" : "google";
     return this.request<{
       connectionId: string;
       label: string;
@@ -261,11 +262,12 @@ export class OpenComputerClient {
       authorizationUrl?: string;
       expiresAt?: string;
     }>(
-      `/api/managed-agents/connections/google/status?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
+      `/api/managed-agents/connections/${provider}/status?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
     );
   }
 
-  disconnectGoogle(connectionId: string, service: string) {
+  disconnectManagedConnection(connectionId: string, service: string) {
+    const provider = service === "github" ? "github" : "google";
     return this.request<{
       connectionId: string;
       label: string;
@@ -274,7 +276,7 @@ export class OpenComputerClient {
       status: "disconnected";
       connectedAccountId?: string;
     }>(
-      `/api/managed-agents/connections/google?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
+      `/api/managed-agents/connections/${provider}?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
       { method: "DELETE" },
     );
   }
