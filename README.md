@@ -1,89 +1,92 @@
 # OpenComputer
 
-**Serverless agents.** Build an agent as code, test it locally, deploy it with one command. No infrastructure to run, no servers to keep alive, no agent loop to babysit.
+**Cloud sandboxes for AI agents.** Each sandbox is a full Linux VM in the cloud — its own kernel, filesystem, network, and process space, isolated with hardware-level virtualization via KVM. Write files, install packages, run commands, and build complete projects inside secure, disposable environments that boot in milliseconds and sleep when idle.
+
+```typescript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+const result = await sandbox.exec.run("echo Hello from $(uname -a)");
+console.log(result.stdout);
+await sandbox.kill();
+```
+
+[Documentation](https://docs.opencomputer.dev) · [Quickstart](https://docs.opencomputer.dev/quickstart) · [Dashboard](https://app.opencomputer.dev)
+
+## Why OpenComputer
+
+- **Full Linux VMs, not containers.** Real kernel, real memory, real disk. Hardware-level isolation via KVM.
+- **Long-running.** Sandboxes live for hours or days, not minutes. Install packages, build projects, run test suites, iterate — no cold starts between steps. A rolling idle timeout hibernates them when you stop using them.
+- **Checkpoint and fork.** Named snapshots you can branch from — like git branches for VMs. Try five approaches in parallel from the same starting point.
+- **Elastic compute.** Scale memory and CPU at runtime. Request more resources for heavy tasks and release them after.
+- **Hibernate and wake.** Idle sandboxes snapshot their state and stop costing compute. Waking restores them in seconds, and preview URLs wake them on demand.
+
+## Install
 
 ```bash
-npm install --global @opencomputer/cli
+npm install @opencomputer/sdk        # TypeScript SDK
 
-opencomputer init email-triage gmail-summarizer   # start from a template
-cd gmail-summarizer && npm install
-
-opencomputer connection add gmail --alias personal   # managed OAuth, no keys in the project
-
-opencomputer session "Summarize my unread inbox."    # test locally, same connections as prod
-
-opencomputer deploy --alias production               # publish an immutable version
-
-opencomputer run gmail-summarizer "Summarize my unread inbox and call out anything urgent."
+# CLI (installs to ~/.local/bin, no sudo)
+curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/scripts/install.sh | bash
 ```
-
-[Documentation](https://docs.opencomputer.dev/agents/overview) · [Quickstart](https://docs.opencomputer.dev/agents/quickstart) · [Dashboard](https://app.opencomputer.dev)
-
-## Agents as code
-
-An OpenComputer agent is a source-controlled project: identity, instructions, tools, connections, and runtime configuration in a normal directory you review and commit.
-
-```text
-gmail-summarizer/
-├── opencomputer.toml    # committed identity: stable ID across deployments
-├── instructions.md      # the agent's role, rules, and approval boundaries
-├── agent.ts             # model and runtime permissions
-├── tools/               # code-native tools
-├── connections/         # declarations for managed services (Gmail, ...)
-├── skills/              # reusable domain knowledge and workflows
-├── workspace/           # durable working files packaged with the agent
-└── evals/               # repeatable checks for agent behavior
-```
-
-Everything the agent is lives in that directory. Review changes in pull requests, and grow the agent by editing files: sharpen `instructions.md`, add a tool, drop in a skill.
-
-## Develop locally, deploy identically
-
-`opencomputer session` runs one task against your working copy; `opencomputer dev` gives you an interactive session. Both use your project files and the same managed connections the agent will use in production, so what you test is what ships.
 
 ```bash
-opencomputer session "Summarize up to 10 unread Gmail messages. Do not modify any email."
-opencomputer dev
+export OPENCOMPUTER_API_KEY=your-api-key
 ```
 
-## Versioned deployment
+Grab your API key from [app.opencomputer.dev](https://app.opencomputer.dev).
 
-A stable agent ID points to immutable deployments. Shipping an update is a commit and a deploy; the `production` alias moves to the new version, and rollback is a pointer move.
+## Checkpoint and fork
+
+Set up an environment once, snapshot it, and fork independent copies — each fork is a fully isolated VM starting from the same state:
+
+```typescript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+await sandbox.exec.run("npm install && npm run build", { cwd: "/app" });
+
+// Checkpoint after setup
+const cp = await sandbox.createCheckpoint("after-build");
+
+// Fork two independent sandboxes from it
+const a = await Sandbox.createFromCheckpoint(cp.id);
+const b = await Sandbox.createFromCheckpoint(cp.id);
+
+await a.exec.run("npm run test:unit", { cwd: "/app" });
+await b.exec.run("npm run test:e2e", { cwd: "/app" });
+```
+
+## Everything a machine can do
+
+- **Commands** — one-off runs or persistent exec sessions, with streaming output ([docs](https://docs.opencomputer.dev/sandboxes/running-commands))
+- **Files** — read, write, list, and transfer files; signed upload/download URLs for large artifacts ([docs](https://docs.opencomputer.dev/sandboxes/working-with-files))
+- **Interactive terminals** — real PTY sessions for shells and TUIs ([docs](https://docs.opencomputer.dev/sandboxes/interactive-terminals))
+- **Preview URLs** — expose any port on a public HTTPS URL, with optional auth and custom domains ([docs](https://docs.opencomputer.dev/sandboxes/preview-urls))
+- **Custom templates** — define your environment declaratively and boot from pre-built snapshots ([docs](https://docs.opencomputer.dev/sandboxes/templates))
+- **Secrets** — encrypted secret stores with egress allowlists, resolved inside the VM ([docs](https://docs.opencomputer.dev/sandboxes/secrets))
+- **Webhooks** — signed, retried lifecycle events for boots, hibernation, stops, and scaling ([docs](https://docs.opencomputer.dev/sandboxes/webhooks))
+
+## CLI
+
+The `oc` CLI manages sandboxes from your terminal:
 
 ```bash
-git commit -am "Refine inbox urgency rules"
-opencomputer deploy --alias production
+oc login
+
+oc create --timeout 600                        # create a sandbox
+oc exec sb-abc123 --wait -- echo "hello"       # run a command
+oc shell sb-abc123                             # interactive terminal
+oc checkpoint create sb-abc123 --name after-setup
+oc preview create sb-abc123 --port 3000        # public HTTPS URL
 ```
 
-Once deployed, the platform runs the agent for you and manages lifecycle, persistence, and connected services. A completed turn suspends; the next message resumes it with its session and workspace intact. Drive it from the CLI:
+See the [CLI docs](https://docs.opencomputer.dev/cli/overview) for the full command set.
 
-```bash
-opencomputer run gmail-summarizer "Summarize my unread inbox."
+## Self-hosting
 
-opencomputer session create --remote --agent gmail-summarizer@production
-opencomputer session send <session-id> "Summarize today's inbox."
-opencomputer session attach <session-id>
-```
-
-## Managed connections
-
-Authorize services like Gmail through the CLI. OAuth credentials stay managed by OpenComputer and are never written into the project. Connect multiple accounts with aliases:
-
-```bash
-opencomputer connection add gmail --alias personal
-opencomputer connection add gmail --alias work
-```
-
-## Channels
-
-Connect a deployed agent to Slack from the dashboard and invoke it from DMs or channel mentions, with per-user identity isolation. No Slack files or credentials in your repo.
+OpenComputer is a control plane plus a fleet of bare-metal workers running real VMs with QEMU/KVM, and you can run it in your own cloud account. See [SELFHOSTING.md](./SELFHOSTING.md).
 
 ## Get started
 
-```bash
-npm install --global @opencomputer/cli
-opencomputer login
-opencomputer templates
-```
-
-Then follow the [quickstart](https://docs.opencomputer.dev/agents/quickstart): create, connect, test, and deploy a Gmail summarizer from a template.
+Follow the [quickstart](https://docs.opencomputer.dev/quickstart) to create your first sandbox in two minutes.
