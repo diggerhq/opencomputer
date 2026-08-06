@@ -13,6 +13,10 @@ import { decodeResult, encodeExec, type ExecResult } from "./protocol";
 // Extends DurableObject (cloudflare:workers) so execCommand is callable as a
 // native RPC method from the edge stub — cheaper than HTTP-over-fetch per hop.
 
+// Flip to true to re-enable per-exec socket-census logging (tail-consumer +
+// per-op cost otherwise; the colo/connect one-shot logs stay on).
+const DIAG = false;
+
 interface PendingCommand {
   resolve: (result: ExecResult) => void;
   reject: (error: Error) => void;
@@ -67,8 +71,10 @@ export class VmSession extends DurableObject {
     // internalMs = time spent INSIDE this method. The edge's do;dur minus this
     // = isolate wake + edge→DO transit — the unattributed gap in the exec tail.
     const tEntry = Date.now();
-    const socks = this.state.getWebSockets("vm");
-    console.log(`exec sid=${sid ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`);
+    if (DIAG) {
+      const socks = this.state.getWebSockets("vm");
+      console.log(`exec sid=${sid ?? "?"} sockets=${socks.length} states=[${socks.map((s) => s.readyState).join(",")}]`);
+    }
     if (!this.connectedSocket()) {
       for (let waited = 0; waited < 400 && !this.connectedSocket(); waited += 50) {
         await new Promise((resolve) => setTimeout(resolve, 50));
