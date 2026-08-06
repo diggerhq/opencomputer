@@ -1220,19 +1220,38 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // coprime-ish to 8) — at full stock the first hit ends it; under sparse
       // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
       // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
-      let r: Response | null = null;
+      //
+      // Each popped box is then VERIFIED: one /status call to its VmSession —
+      // which doubles as the pre-warm (it wakes the DO hibernated since the
+      // manufacture dial, so the customer's first exec never pays the isolate
+      // wake) and as the liveness gate (dead host channel → swap to another
+      // box instead of letting the first exec discover it and tunnel ~1.3s).
+      // A rejected box stays edge_reserved; the cell's 15-min reaper collects it.
+      let box: { id: string; workerID: string; region: string; sandboxDomain: string } | null = null;
       let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
       const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
-      for (let attempt = 0; attempt < 3; attempt++) {
-        r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
+      for (let attempt = 0; attempt < 3 && !box; attempt++) {
+        const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
           method: "POST",
           body: claimBody,
         });
-        if (r.ok) break;
         shard = (shard + stride) % POOL_STOCK_SHARDS;
+        if (!r.ok) continue;
+        const candidate = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+        try {
+          const st = (await env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(candidate.id))
+            .fetch("https://do/status")
+            .then((sr) => sr.json())) as { connected?: boolean };
+          if (st.connected) {
+            box = candidate;
+          } else {
+            console.log(`edge-claim: ${candidate.id} exec channel down — swapping box`);
+          }
+        } catch {
+          console.log(`edge-claim: ${candidate.id} status check failed — swapping box`);
+        }
       }
-      if (r && r.ok) {
-        const box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+      if (box) {
         mark("claim");
         const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
@@ -1422,7 +1441,8 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
     const body = await req.clone().text();
     const stub = env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(id)) as DurableObjectStub & {
       execCommand?: (b: unknown, sid: string) => Promise<
-        { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number } | { ok: false; error: string }
+        | { ok: true; exitCode: number; stdout: string; stderr: string; agentMs: number; internalMs?: number }
+        | { ok: false; error: string }
       >;
     };
     const tDo = Date.now();
@@ -1442,7 +1462,7 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
           status: 200,
           headers: {
             "content-type": "application/json",
-            "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, do;dur=${doMs}, agent;dur=${res.agentMs}`,
+            "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, do;dur=${doMs}, doin;dur=${res.internalMs ?? -1}, agent;dur=${res.agentMs}`,
           },
         });
       }

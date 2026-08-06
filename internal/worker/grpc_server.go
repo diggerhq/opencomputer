@@ -570,6 +570,13 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 		GoldenVersion: sb.GoldenVersion}, nil
 }
 
+// destroySem bounds background teardown concurrency. A bench/agent-shaped
+// workload destroys dozens of boxes in seconds; each Kill is QEMU-teardown +
+// overlay-unlink heavy, and running them foreground-concurrent competes with
+// live execs on the same host (measured as exec-tail blips). Three at a time
+// keeps the disk quiet while draining a 100-destroy burst in ~30s.
+var destroySem = make(chan struct{}, 3)
+
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
 	// Tear the VM-DO exec channel down first so an in-flight exec can't land on
 	// a box we're about to kill (it falls back to the tunnel, which 404s cleanly).
@@ -582,26 +589,35 @@ func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxR
 		}
 	}
 
-	if err := s.manager.Kill(ctx, req.SandboxId); err != nil {
-		return nil, fmt.Errorf("failed to destroy sandbox: %w", err)
-	}
-
 	// Unregister from sandbox router
 	if s.router != nil {
 		s.router.Unregister(req.SandboxId)
 	}
 
-	// Emit terminal lifecycle event BEFORE removing the per-sandbox SQLite.
-	// The SandboxDBManager's OnRemove hook synchronously flushes any unsynced
-	// events to Redis, so this event makes it upstream to events-ingest, which
-	// updates D1 sandboxes_index. Without this, terminations leak as phantoms
-	// in the global view.
-	if s.sandboxDBs != nil {
-		if sdb, dbErr := s.sandboxDBs.Get(req.SandboxId); dbErr == nil {
-			_ = sdb.LogEvent("stopped", map[string]string{"sandbox_id": req.SandboxId})
+	// The heavy teardown (QEMU kill + overlay unlink + SQLite flush) runs in the
+	// background, bounded by destroySem — the caller gets an immediate ack, and
+	// the CP's PG row is gone regardless. A failed/stuck Kill is collected by
+	// the orphan reaper, so deferring loses no safety, only foreground I/O.
+	go func(id string) {
+		destroySem <- struct{}{}
+		defer func() { <-destroySem }()
+		killCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := s.manager.Kill(killCtx, id); err != nil {
+			log.Printf("grpc: background destroy %s: %v (orphan reaper will collect)", id, err)
 		}
-		_ = s.sandboxDBs.Remove(req.SandboxId)
-	}
+		// Emit terminal lifecycle event BEFORE removing the per-sandbox SQLite.
+		// The SandboxDBManager's OnRemove hook synchronously flushes any unsynced
+		// events to Redis, so this event makes it upstream to events-ingest, which
+		// updates D1 sandboxes_index. Without this, terminations leak as phantoms
+		// in the global view.
+		if s.sandboxDBs != nil {
+			if sdb, dbErr := s.sandboxDBs.Get(id); dbErr == nil {
+				_ = sdb.LogEvent("stopped", map[string]string{"sandbox_id": id})
+			}
+			_ = s.sandboxDBs.Remove(id)
+		}
+	}(req.SandboxId)
 
 	return &pb.DestroySandboxResponse{}, nil
 }
