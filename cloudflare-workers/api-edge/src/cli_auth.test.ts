@@ -535,6 +535,9 @@ describe("CLI device authorization edge contract", () => {
     const membershipInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO org_memberships"));
     const keyInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO api_keys"));
     expect(userInsert).toBeDefined();
+    expect(userInsert?.sql).toContain("durable_sessions_enabled");
+    expect(userInsert?.sql).toContain("infrastructure_enabled");
+    expect(userInsert?.sql).toMatch(/VALUES\s*\(\?1, \?2, \?3, \?4, \?5, 1, 1\)/);
     expect(orgInsert?.args[3]).toBe("azure-us-east-2-a");
     expect(membershipInsert?.args[0]).toBe(body.org.id);
     expect(membershipInsert?.args[1]).toBe(body.user.id);
