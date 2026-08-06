@@ -24,21 +24,6 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Serverless Agents",
-        "groups": [
-          {
-            "group": "Serverless Agents",
-            "pages": [
-              "agents/overview",
-              "agents/quickstart",
-              "agents/connections",
-              "agents/channels",
-              "agents/architecture"
-            ]
-          }
-        ]
-      },
-      {
         "tab": "Sandboxes",
         "groups": [
           {
