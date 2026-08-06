@@ -111,6 +111,7 @@ export interface Env extends DashboardEnv {
   // The host's /connect is authed by a per-sandbox HMAC over SESSION_JWT_SECRET
   // (see the /internal/vms/:id/connect route) — no dedicated secret.
   VM_SESSIONS: DurableObjectNamespace;
+  DIAG?: string; // "1" enables per-op diagnostic logging (create-timing etc.)
 }
 
 const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
@@ -136,6 +137,29 @@ const b64url = (buf: ArrayBuffer | Uint8Array): string => {
 // org_id + cell_id + plan (+ optional user_id). Mirrors auth.CapabilityClaims
 // in Go. Plan flows through so the worker can tag usage_tick events without
 // a per-event PG lookup.
+// Cap-tokens are org+cell scoped with exp=120s — memoize for 60s so a battery's
+// ~400 mints (per-DELETE proxy, finalize, CP fallback) collapse to ~1/min of
+// HMAC CPU on the create/destroy hot path.
+const capTokenCache = new Map<string, { token: string; mintedAtMs: number }>();
+
+async function cachedCapToken(
+  secret: string,
+  orgID: string,
+  cellID: string,
+  plan: string,
+  billingProvider: string,
+  userID: string | null,
+): Promise<string> {
+  const key = `${orgID}|${cellID}|${plan}|${billingProvider}|${userID ?? ""}`;
+  const hit = capTokenCache.get(key);
+  const nowMs = Date.now();
+  if (hit && nowMs - hit.mintedAtMs < 60_000) return hit.token;
+  const token = await mintCapToken(secret, orgID, cellID, plan, billingProvider, userID);
+  if (capTokenCache.size >= CACHE_MAX) capTokenCache.clear();
+  capTokenCache.set(key, { token, mintedAtMs: nowMs });
+  return token;
+}
+
 async function mintCapToken(
   secret: string,
   orgID: string,
@@ -1062,16 +1086,16 @@ async function finalizeEdgeClaim(
   workerID: string,
   bodyText: string,
 ): Promise<void> {
-  try {
-    await insertSandboxIndex(env, caller, cell.cell_id, { sandboxID, workerID, status: "running", memoryMB: 4096 }, 1, 4096);
-  } catch (e) {
-    console.error(`edge-claim: index insert failed for ${sandboxID}:`, e);
-  }
+  // Index insert is DEFERRED below the finalize call + a short delay: D1 has a
+  // single writer, and a create burst otherwise queues ~100 inserts exactly
+  // when cold-isolate hot-path READS (auth/route/count) need D1. The colo route
+  // cache serves the box's own sub-ops, and events-ingest reconciles the row
+  // regardless — the insert only backstops dashboard/list visibility.
   try {
     // Minted HERE (off the response path) rather than on the create hot path —
     // only this finalize call ever consumes it on the edge-claim route, and the
     // HMAC sign was one of the larger CPU items at burst-100 concurrency.
-    const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, caller.userID);
+    const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, caller.userID);
     let body: Record<string, unknown> = {};
     try {
       body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
@@ -1088,6 +1112,10 @@ async function finalizeEdgeClaim(
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await insertSandboxIndex(env, caller, cell.cell_id, { sandboxID, workerID, status: "running", memoryMB: 4096 }, 1, 4096).catch((e) =>
+      console.error(`edge-claim: index insert failed for ${sandboxID}:`, e),
+    );
   } catch (e) {
     console.error(`edge-claim: FINALIZE FAILED for ${sandboxID} — marking error:`, e);
     sandboxRouteCache.delete(sandboxID);
@@ -1220,13 +1248,6 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // coprime-ish to 8) — at full stock the first hit ends it; under sparse
       // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
       // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
-      //
-      // Each popped box is then VERIFIED: one /status call to its VmSession —
-      // which doubles as the pre-warm (it wakes the DO hibernated since the
-      // manufacture dial, so the customer's first exec never pays the isolate
-      // wake) and as the liveness gate (dead host channel → swap to another
-      // box instead of letting the first exec discover it and tunnel ~1.3s).
-      // A rejected box stays edge_reserved; the cell's 15-min reaper collects it.
       let box: { id: string; workerID: string; region: string; sandboxDomain: string } | null = null;
       let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
       const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
@@ -1237,19 +1258,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         });
         shard = (shard + stride) % POOL_STOCK_SHARDS;
         if (!r.ok) continue;
-        const candidate = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
-        try {
-          const st = (await env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(candidate.id))
-            .fetch("https://do/status")
-            .then((sr) => sr.json())) as { connected?: boolean };
-          if (st.connected) {
-            box = candidate;
-          } else {
-            console.log(`edge-claim: ${candidate.id} exec channel down — swapping box`);
-          }
-        } catch {
-          console.log(`edge-claim: ${candidate.id} status check failed — swapping box`);
-        }
+        box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
       }
       if (box) {
         mark("claim");
@@ -1271,7 +1280,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
         ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
-        console.log(`create-timing ${box.id} ${phases.join(" ")}`);
+        if (env.DIAG === "1") console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
           status: 201,
           headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
@@ -1284,7 +1293,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
 
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
-  const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
+  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -1528,7 +1537,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", caller.userID);
+  const token = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
