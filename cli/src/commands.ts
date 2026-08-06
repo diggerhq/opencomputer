@@ -68,13 +68,14 @@ async function requireAgentRoot(): Promise<string> {
   return root;
 }
 
-async function connectGoogle(
+async function connectManagedService(
   client: OpenComputerClient,
-  service: "gmail" | "calendar",
+  service: "gmail" | "calendar" | "github",
   label = "default",
 ): Promise<void> {
-  const displayName = service === "calendar" ? "Google Calendar" : "Gmail";
-  const started = await client.linkGoogle(service, label);
+  const displayName =
+    service === "calendar" ? "Google Calendar" : service === "github" ? "GitHub" : "Gmail";
+  const started = await client.linkManagedConnection(service, label);
   if (started.status === "connected") {
     process.stdout.write(
       `${displayName} connection "${label}" is already connected.\n`,
@@ -92,7 +93,7 @@ async function connectGoogle(
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     if (
-      (await client.googleConnection(started.connectionId, service)).status ===
+      (await client.managedConnection(started.connectionId, service)).status ===
       "connected"
     ) {
       process.stdout.write(`${displayName} connection "${label}" connected.\n`);
@@ -669,7 +670,7 @@ export async function runCommand(
     if ((provider !== "google" && provider !== "gmail") || args.length) {
       throw new Error("Usage: opencomputer connect google");
     }
-    await connectGoogle(client, "gmail", "default");
+    await connectManagedService(client, "gmail", "default");
     return;
   }
 
@@ -679,12 +680,15 @@ export async function runCommand(
       const provider = args.shift();
       const alias = option(args, "--alias") ?? "default";
       const service = provider === "google" ? "gmail" : provider;
-      if ((service !== "gmail" && service !== "calendar") || args.length) {
+      if (
+        (service !== "gmail" && service !== "calendar" && service !== "github") ||
+        args.length
+      ) {
         throw new Error(
-          "Usage: opencomputer connection add <gmail|calendar> [--alias <name>]",
+          "Usage: opencomputer connection add <gmail|calendar|github> [--alias <name>]",
         );
       }
-      await connectGoogle(client, service, alias);
+      await connectManagedService(client, service, alias);
       return;
     }
     if (action === "remove" || action === "disconnect") {
@@ -714,9 +718,10 @@ export async function runCommand(
       )
         ? "calendar"
         : "gmail";
+      const managedService = connection.provider === "github" ? "github" : googleService;
       const disconnected =
-        connection.provider === "google"
-          ? await client.disconnectGoogle(connection.id, googleService)
+        connection.provider === "google" || connection.provider === "github"
+          ? await client.disconnectManagedConnection(connection.id, managedService)
           : await client.disconnectConnection(connection.id);
       if (globals.json) printJSON(disconnected);
       else process.stdout.write(`Removed connection "${connection.label}".\n`);

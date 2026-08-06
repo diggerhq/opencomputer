@@ -49,7 +49,7 @@ test("the local gateway proxies connection list and calendar requests", async ()
     assert.equal(requested.status, 200);
     assert.equal(
       upstream[1]?.url,
-      "https://mo-oc-dev.com/api/managed-agents/connections/google/link",
+      "https://mo-oc-dev.com/api/managed-agents/connections/link",
     );
     assert.equal(upstream[1]?.init?.method, "POST");
     assert.deepEqual(JSON.parse(String(upstream[1]?.init?.body)), {
