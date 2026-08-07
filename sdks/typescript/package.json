@@ -53,6 +53,10 @@
     "@types/node": "^25.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5.4.0",
+    "undici": "^7.29.0",
     "vitest": "^1.6.0"
+  },
+  "optionalDependencies": {
+    "undici": "^6.0.0 || ^7.0.0"
   }
 }

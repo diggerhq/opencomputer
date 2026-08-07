@@ -73,7 +73,7 @@ class FakeStatement {
   }
 
   async run() {
-    if (this.sql.includes("INSERT OR REPLACE INTO sandboxes_index")) {
+    if (this.sql.includes("INSERT INTO sandboxes_index") && this.sql.includes("ON CONFLICT(id)")) {
       sandboxIndexInserts.push(this.args);
     }
     return {};
