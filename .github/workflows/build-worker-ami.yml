@@ -165,8 +165,27 @@ jobs:
           PKR_VAR_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           PKR_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
         run: |
-          # Use run number as patch version for gallery (must be integer)
+          # pipefail is REQUIRED: `packer build | tee` otherwise reports tee's
+          # exit 0 and masks a packer failure. A masked failure (e.g. the gallery
+          # version already exists) let the job go green, the Verify step
+          # false-passed on the pre-existing image, and the publish step wrote
+          # mismatched image-id/version coordinates into Infisical — poisoning the
+          # rolling replace with a target version no image contains.
+          set -eo pipefail
+
+          # Use run number as patch version for gallery (must be integer). Fail
+          # loudly if that version already exists rather than letting packer's
+          # "already exists" error slip through — a collision means the patch
+          # numbering drifted and must be resolved, not silently republished.
           PATCH=${{ github.run_number }}
+          if az sig image-version show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --gallery-name "$AZURE_GALLERY_NAME" \
+              --gallery-image-definition osb-worker-v7 \
+              --gallery-image-version "1.0.${PATCH}" -o none 2>/dev/null; then
+            echo "ERROR: gallery image version 1.0.${PATCH} already exists — refusing to build over it (patch numbering drift)"
+            exit 1
+          fi
 
           packer build \
             -var "use_azure_cli_auth=false" \
@@ -201,13 +220,23 @@ jobs:
         run: |
           PATCH=${{ github.run_number }}
           GALLERY_IMAGE_ID="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_RESOURCE_GROUP}/providers/Microsoft.Compute/galleries/${AZURE_GALLERY_NAME}/images/osb-worker-v7/versions/1.0.${PATCH}"
-          if ! az sig image-version show \
+          BAKED_VERSION=$(az sig image-version show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --gallery-name ${AZURE_GALLERY_NAME} \
             --gallery-image-definition osb-worker-v7 \
-            --gallery-image-version "1.0.${PATCH}" -o none 2>/dev/null; then
+            --gallery-image-version "1.0.${PATCH}" \
+            --query "tags.\"opensandbox-version\"" -o tsv 2>/dev/null || echo "")
+          if [ -z "$BAKED_VERSION" ]; then
             echo "ERROR: Gallery image version 1.0.${PATCH} not found after build"
             cat /tmp/packer-output.txt
+            exit 1
+          fi
+          # Guard against publishing coordinates for a stale pre-existing image:
+          # the version this build baked (opensandbox-version tag) MUST equal the
+          # VERSION we're about to publish. A mismatch means packer didn't produce
+          # this image, so we must not fan its id/version out to the cells.
+          if [ "$BAKED_VERSION" != "$VERSION" ]; then
+            echo "ERROR: gallery 1.0.${PATCH} bakes worker version '$BAKED_VERSION' but this build is '$VERSION' — refusing to publish stale coordinates"
             exit 1
           fi
           echo "IMAGE_ID=$GALLERY_IMAGE_ID" >> $GITHUB_ENV
