@@ -139,3 +139,19 @@ MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]
 service = "opencomputer-log-tail-prod"
+
+# Off-isolate edge-claim finalize (see FINALIZE_QUEUE in index.ts). createSandbox
+# enqueues a tiny finalize message; the queue() consumer runs the CP
+# claim-finalize + D1 insert on its own invocations, off the burst-create hot
+# path. PREREQ: the queue must exist before deploy — `wrangler queues create
+# edge-finalize` on the prod account (one-time). Inline fallback in code covers
+# any window where it's unbound.
+[[queues.producers]]
+binding = "FINALIZE_QUEUE"
+queue = "edge-finalize"
+
+[[queues.consumers]]
+queue = "edge-finalize"
+max_batch_size = 25
+max_batch_timeout = 2
+max_retries = 3

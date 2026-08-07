@@ -172,3 +172,17 @@ MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 # as the VM journald stream so we can cross-correlate edge ↔ cell.
 [[tail_consumers]]
 service = "opensandbox-log-tail"
+
+# Off-isolate edge-claim finalize (see FINALIZE_QUEUE in index.ts). Producer:
+# createSandbox enqueues a tiny finalize message. Consumer: the queue() handler
+# runs the CP claim-finalize + D1 insert on its own invocations, off the create
+# hot path (which was the burst-create bottleneck).
+[[queues.producers]]
+binding = "FINALIZE_QUEUE"
+queue = "edge-finalize-dev"
+
+[[queues.consumers]]
+queue = "edge-finalize-dev"
+max_batch_size = 25
+max_batch_timeout = 2
+max_retries = 3

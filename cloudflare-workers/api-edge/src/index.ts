@@ -111,7 +111,28 @@ export interface Env extends DashboardEnv {
   // The host's /connect is authed by a per-sandbox HMAC over SESSION_JWT_SECRET
   // (see the /internal/vms/:id/connect route) — no dedicated secret.
   VM_SESSIONS: DurableObjectNamespace;
+  // Off-isolate edge-claim finalize. finalizeEdgeClaim (CP claim-finalize fetch +
+  // D1 index insert) was the dominant burst-create cost: run per create in
+  // waitUntil, ~100 of them accumulate on the create isolate and saturate its
+  // concurrent-subrequest budget, queueing every later create's pool pop. The
+  // create now enqueues a tiny message and returns; the queue() consumer runs the
+  // finalize on its own invocations, off the create hot path. Optional — an
+  // unbound queue falls back to the old inline waitUntil (safe during rollout).
+  FINALIZE_QUEUE?: Queue<FinalizeMsg>;
   DIAG?: string; // "1" enables per-op diagnostic logging (create-timing etc.)
+}
+
+// Serializable payload for the off-isolate finalize (see FINALIZE_QUEUE).
+export interface FinalizeMsg {
+  orgID: string;
+  userID: string | null;
+  cellID: string;
+  baseURL: string;
+  plan: string;
+  billingProvider: string;
+  sandboxID: string;
+  workerID: string;
+  bodyText: string;
 }
 
 const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
@@ -1342,7 +1363,33 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
             .then(() => {})
             .catch(() => {}),
         );
-        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
+        // Finalize off the create isolate: enqueue a tiny message (one cheap
+        // send) instead of running the CP fetch + D1 insert here. ~100 inline
+        // finalizes otherwise accumulate on the isolate and stall the burst (dev
+        // A/B: 888ms→~150ms with finalize removed from the hot path). An unbound
+        // queue (rollout / non-queue env) falls back to the old inline path.
+        if (env.FINALIZE_QUEUE) {
+          const msg: FinalizeMsg = {
+            orgID: caller.orgID,
+            userID: caller.userID ?? null,
+            cellID: cell.cell_id,
+            baseURL: cell.base_url,
+            plan,
+            billingProvider: org.billing_provider,
+            sandboxID: box.id,
+            workerID: box.workerID,
+            bodyText,
+          };
+          ctx.waitUntil(
+            env.FINALIZE_QUEUE.send(msg).catch((e) => {
+              // Enqueue failed — finalize inline so the box still binds.
+              console.error(`edge-claim: finalize enqueue failed for ${box.id}, running inline:`, e);
+              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText);
+            }),
+          );
+        } else {
+          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
+        }
         if (env.DIAG === "1") console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
           status: 201,
@@ -3794,4 +3841,32 @@ export default {
       );
     }
   },
-} satisfies ExportedHandler<Env>;
+
+  // Off-isolate edge-claim finalize consumer (see FINALIZE_QUEUE). Runs on its
+  // own invocations, so the CP claim-finalize fetch + D1 index insert never
+  // contend with the create hot path. finalizeEdgeClaim handles its own failure
+  // (marks the box error), so a message is acked once processed; genuine
+  // enqueue-side failures already fell back to inline finalize at the producer.
+  async queue(batch: MessageBatch<FinalizeMsg>, env: Env): Promise<void> {
+    await Promise.all(
+      batch.messages.map(async (m) => {
+        const b = m.body;
+        try {
+          await finalizeEdgeClaim(
+            env,
+            { orgID: b.orgID, userID: b.userID } as Caller,
+            { cell_id: b.cellID, base_url: b.baseURL } as CellRow,
+            b.plan,
+            b.billingProvider,
+            b.sandboxID,
+            b.workerID,
+            b.bodyText,
+          );
+        } catch (e) {
+          console.error(`finalize-queue: ${b.sandboxID} failed:`, e);
+        }
+        m.ack();
+      }),
+    );
+  },
+} satisfies ExportedHandler<Env, FinalizeMsg>;
