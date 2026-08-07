@@ -209,9 +209,9 @@ source "azure-arm" "worker" {
   image_offer     = "ubuntu-24_04-lts"
   image_sku       = "server"
 
-  os_type         = "Linux"
-  vm_size         = var.vm_size
-  ssh_username    = "packer"
+  os_type      = "Linux"
+  vm_size      = var.vm_size
+  ssh_username = "packer"
 
   # Output: Managed Image (required as intermediate for gallery publish)
   managed_image_name                = "${var.image_name_prefix}-${var.worker_version}"
@@ -445,7 +445,7 @@ build {
     destination = "/tmp/vector-ctx.tar.gz"
   }
   provisioner "shell" {
-    execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
+    execute_command  = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
     environment_vars = ["PACKER_BUILD=1"]
     inline = [
       "mkdir -p /tmp/vector-ctx",
@@ -628,6 +628,32 @@ build {
   }
 
   # 5. Deprovision for Azure image capture
+  # Host performance tuning (benchmark tail + variance). A bursty `node -v`
+  # spike otherwise runs at a low P-state until DVFS ramps; pinning the CPU
+  # governor to `performance` removes that ramp and tightens p95/p99. THP set
+  # to `madvise`. Both sysfs values reset on reboot, so a systemd oneshot
+  # re-applies them every boot; it no-ops on families that don't expose cpufreq.
+  provisioner "shell" {
+    execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline = [
+      <<-EOT
+      tee /etc/systemd/system/osb-perf-tuning.service >/dev/null <<'UNIT'
+      [Unit]
+      Description=OpenSandbox host performance tuning (CPU governor + THP)
+      After=multi-user.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -w "$g" ] && echo performance > "$g" || true; done'
+      ExecStart=/bin/bash -c 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true'
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      systemctl enable osb-perf-tuning.service
+      EOT
+    ]
+  }
+
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
     inline = [

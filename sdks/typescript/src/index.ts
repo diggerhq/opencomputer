@@ -1,3 +1,10 @@
+import { configureHttp2 } from "./http2.js";
+
+// Switch the Node global fetch dispatcher to HTTP/2 on import (browser-safe
+// no-op). Multiplexes concurrent requests over one connection — a large burst
+// win for create(). See http2.ts.
+configureHttp2();
+
 export {
   Sandbox,
   ScalingLockedError,

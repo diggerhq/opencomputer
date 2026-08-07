@@ -2670,6 +2670,26 @@ func (m *Manager) HibernateAll(ctx context.Context, checkpointStore *storage.Che
 }
 
 // Exec runs a command in the VM via the agent.
+// shellSafeArgv splits a command string into argv IFF it contains no shell
+// metacharacters — in which case `sh -c "<cmd>"` and a direct exec are
+// equivalent and the direct exec saves a /bin/sh fork+exec. Returns nil (caller
+// keeps `/bin/sh -c`) for an empty string or anything with shell syntax
+// (pipes, redirects, subshells, globs, quotes, var refs/assignments, &&, ~, #),
+// so behavior is unchanged for every command that actually needs a shell.
+func shellSafeArgv(command string) []string {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	if strings.ContainsAny(command, "|&;<>()$`\\\"'*?[]{}~=!#\n\r\t") {
+		return nil
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
 func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error) {
 	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
@@ -2684,8 +2704,18 @@ func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessC
 	command := cfg.Command
 	args := cfg.Args
 	if len(args) == 0 {
-		args = []string{"-c", command}
-		command = "/bin/sh"
+		// A single command string with no shell metacharacters (e.g. "node -v")
+		// can be exec'd directly, skipping the extra `/bin/sh -c` fork+exec.
+		// PATH resolution still works: the agent's baseEnv guarantees a full
+		// PATH and Go's exec.Command LookPaths a bare name. Anything with shell
+		// syntax (pipes, redirects, globs, quotes, vars, &&) keeps the shell.
+		if fields := shellSafeArgv(command); fields != nil {
+			command = fields[0]
+			args = fields[1:]
+		} else {
+			args = []string{"-c", command}
+			command = "/bin/sh"
+		}
 	}
 
 	req := &pb.ExecRequest{

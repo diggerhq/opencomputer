@@ -186,15 +186,30 @@ async function mintCapToken(
   const enc = new TextEncoder();
   const signingInput =
     b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey(
+  const key = await hmacSignKey(secret);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
+// Cache the imported HMAC signing key. The secret is constant, but
+// crypto.subtle.importKey ran on every token mint — and the create hot path
+// mints per create, where the code notes the HMAC work was a top CPU item
+// driving isolate queueing at burst-100. Memoize the imported CryptoKey per
+// secret (shared Promise so concurrent first-callers don't double-import) so
+// only sign() runs per mint. importKey is extractable:false, so the key never
+// leaves the isolate.
+let hmacSignKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
+function hmacSignKey(secret: string): Promise<CryptoKey> {
+  if (hmacSignKeyCache && hmacSignKeyCache.secret === secret) return hmacSignKeyCache.key;
+  const key = crypto.subtle.importKey(
     "raw",
-    enc.encode(secret),
+    new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
+  hmacSignKeyCache = { secret, key };
+  return key;
 }
 
 // Mint the sandbox-scoped JWT the create response carries (direct worker
@@ -222,13 +237,7 @@ async function mintSandboxToken(
   };
   const signingInput =
     b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await hmacSignKey(secret);
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
   return signingInput + "." + b64url(sig);
 }
@@ -1083,7 +1092,12 @@ const POOL_STOCK_SHARD_GEN = "g2";
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
   const name = shard === 0 ? cellID : `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
-  return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name));
+  // Deterministic placement hint: pin the stock DO to eastern North America
+  // (covers eastus2 / the IAD leaderboard runner) so a claim never eats a
+  // cross-colo hop even if the first touch comes from an off-metro edge. A
+  // no-op for DOs already placed; guards future/new shards from the
+  // first-touch-colo placement trap that previously cost ~70ms/claim.
+  return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name), { locationHint: "enam" });
 }
 
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
@@ -2873,13 +2887,7 @@ async function mintSessionJWT(secret: string, orgID: string, userID: string, pla
   const enc = new TextEncoder();
   const signingInput =
     b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await hmacSignKey(secret);
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
   return signingInput + "." + b64url(sig);
 }

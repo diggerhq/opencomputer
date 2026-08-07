@@ -405,7 +405,12 @@ export class Exec {
 
     const execId = handle.execId!;
     const deadline = opts.timeoutMs != null ? Date.now() + opts.timeoutMs : null;
-    let delay = 200;
+    // First poll is short (the common fast command is already answered inline by
+    // the server hold, so this ladder only runs for commands that outlive the
+    // hold or for a waking box); a 50ms first delay reclaims up to ~150ms there
+    // before backing off. Cheap insurance; the server /result long-poll absorbs
+    // the extra request.
+    let delay = 50;
     const maxDelay = 2000;
 
     for (;;) {
