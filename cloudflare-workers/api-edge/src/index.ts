@@ -313,6 +313,9 @@ function stripApiKeyQueryParam(target: string): string {
 // bounded; CACHE_MAX guards pathological key cardinality.
 const AUTH_TTL_MS = 60_000;
 const ORG_POLICY_TTL_MS = 5_000; // short: bounds is_halted / cap staleness
+// SWR window for org policy in the colo tier: a ≤60s-stale not-halted policy
+// may gate a create while a background refresh runs (see loadCreateContext).
+const ORG_STALE_MAX_MS = 60_000;
 const LAST_USED_BUMP_MS = 60_000; // at most once/min/key/isolate
 const CACHE_MAX = 10_000;
 
@@ -516,6 +519,29 @@ async function loadCreateContext(
       orgHave = true;
       if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
       orgPolicyCache.set(orgID, { policy: so.policy, cachedAtMs: so.cachedAtMs });
+    } else if (so && nowMs - so.cachedAtMs < ORG_STALE_MAX_MS && so.policy && !so.policy.is_halted) {
+      // Stale-while-revalidate (mirrors the count gate): a ≤60s-stale,
+      // not-halted org policy gates this create while a background refresh
+      // brings it fresh — removing the periodic org+count D1 batch (~130ms)
+      // from every Nth create. Halt latency worst case = ORG_STALE_MAX_MS.
+      org = so.policy;
+      orgHave = true;
+      if (ctx) {
+        ctx.waitUntil(
+          env.OPENCOMPUTER_DB.prepare(
+            "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
+          )
+            .bind(orgID)
+            .first<OrgPolicy>()
+            .then(async (row) => {
+              const at = Date.now();
+              if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
+              orgPolicyCache.set(orgID, { policy: row ?? null, cachedAtMs: at });
+              await coloPut("org", orgID, { policy: row ?? null, cachedAtMs: at }, ORG_STALE_MAX_MS / 1000);
+            })
+            .catch(() => {}),
+        );
+      }
     }
     if (sc && nowMs - sc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS) {
       activeCount = sc.count;
@@ -600,7 +626,7 @@ async function loadCreateContext(
         org = ((res[i].results?.[0] as OrgPolicy) ?? null);
         if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
         orgPolicyCache.set(orgID, { policy: org, cachedAtMs: nowMs });
-        puts.push(coloPut("org", orgID, { policy: org, cachedAtMs: nowMs }, ORG_POLICY_TTL_MS / 1000));
+        puts.push(coloPut("org", orgID, { policy: org, cachedAtMs: nowMs }, ORG_STALE_MAX_MS / 1000));
       } else if (kinds[i] === "count") {
         activeCount = (res[i].results?.[0] as { n: number } | undefined)?.n ?? 0;
         if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
@@ -929,10 +955,22 @@ async function insertSandboxIndex(
   fallbackMemoryMB: number,
 ): Promise<void> {
   if (!parsed.sandboxID) return;
+  // Guarded upsert (was INSERT OR REPLACE): the edge-claim finalize insert runs
+  // ~1.5s after the box is returned, so a destroy in that window can land a
+  // 'stopped' tombstone first (see the DELETE handler). The WHERE clause makes
+  // this insert refuse to resurrect a row that a concurrent destroy already
+  // moved to a terminal state — closing the create→destroy leak. On a normal
+  // create the row doesn't exist yet, so the plain INSERT branch runs.
   await env.OPENCOMPUTER_DB.prepare(
-    `INSERT OR REPLACE INTO sandboxes_index
+    `INSERT INTO sandboxes_index
        (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+     ON CONFLICT(id) DO UPDATE SET
+       org_id=excluded.org_id, user_id=excluded.user_id, cell_id=excluded.cell_id,
+       worker_id=excluded.worker_id, status=excluded.status,
+       cpu_count=excluded.cpu_count, memory_mb=excluded.memory_mb,
+       last_event_at=excluded.last_event_at
+     WHERE sandboxes_index.status NOT IN ('stopped', 'error')`,
   )
     .bind(
       parsed.sandboxID,
@@ -1279,6 +1317,17 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
+        // Pre-wake the box's VmSession OFF the response path: the DO hibernated
+        // after the manufacture dial, and its isolate wake (~180ms, measured via
+        // do−doin) otherwise lands on the customer's first exec. waitUntil runs
+        // after the 201 is sent, so unlike the reverted inline /status verify
+        // this cannot tax create latency.
+        ctx.waitUntil(
+          env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(box.id))
+            .fetch("https://do/status")
+            .then(() => {})
+            .catch(() => {}),
+        );
         ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
         if (env.DIAG === "1") console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
@@ -1614,14 +1663,30 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   const resp = await fetch(target, init);
   if (postUpdate && resp.status >= 200 && resp.status < 300) {
     const nowSec = Math.floor(Date.now() / 1000);
-    const updateSQL = postUpdate.setStopped
-      ? "UPDATE sandboxes_index SET status = ?1, hibernation_mode = ?4, stopped_at = ?2, last_event_at = ?2 WHERE id = ?3"
-      : "UPDATE sandboxes_index SET status = ?1, hibernation_mode = ?4, last_event_at = ?2 WHERE id = ?3";
+    let stmt: D1PreparedStatement;
+    if (postUpdate.setStopped) {
+      // Tombstone UPSERT (was a bare UPDATE ... WHERE id). On an edge-claim the
+      // index row is inserted ~1.5s after the box is returned (finalizeEdgeClaim
+      // deferral). A destroy inside that window would UPDATE zero rows and be
+      // lost, then the deferred finalize insert would resurrect the box as
+      // 'running'. Writing a durable 'stopped' tombstone here — which the
+      // guarded finalize upsert (insertSandboxIndex) refuses to overwrite —
+      // closes the create→destroy leak regardless of which write lands first.
+      stmt = env.OPENCOMPUTER_DB.prepare(
+        `INSERT INTO sandboxes_index (id, org_id, user_id, cell_id, status, hibernation_mode, created_at, last_event_at, stopped_at)
+         VALUES (?1, ?2, ?3, ?4, 'stopped', ?5, ?6, ?6, ?6)
+         ON CONFLICT(id) DO UPDATE SET status='stopped', hibernation_mode=?5, stopped_at=?6, last_event_at=?6`,
+      ).bind(id, route.orgID, caller.userID ?? null, route.cellID, postUpdate.mode, nowSec);
+    } else {
+      stmt = env.OPENCOMPUTER_DB.prepare(
+        "UPDATE sandboxes_index SET status = ?1, hibernation_mode = ?4, last_event_at = ?2 WHERE id = ?3",
+      ).bind(postUpdate.status, nowSec, id, postUpdate.mode);
+    }
     // ctx.waitUntil keeps the background D1 write alive after the response
     // returns. Without it the Worker terminates the in-flight Promise and
-    // the UPDATE never runs — sandboxes_index drifts behind cell PG.
+    // the write never runs — sandboxes_index drifts behind cell PG.
     ctx.waitUntil(
-      env.OPENCOMPUTER_DB.prepare(updateSQL).bind(postUpdate.status, nowSec, id, postUpdate.mode).run().catch((e) => {
+      stmt.run().catch((e) => {
         console.error(`sandboxes_index ${postUpdate!.status} update failed for ${id}:`, e);
       }),
     );

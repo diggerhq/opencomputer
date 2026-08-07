@@ -918,7 +918,14 @@ func (s *Store) updateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	var query string
 	var args []interface{}
 	if status == "stopped" || status == "error" {
-		query = `UPDATE sandbox_sessions SET status = $1, stopped_at = now(), error_msg = $2 WHERE sandbox_id = $3 AND status = 'running'`
+		// Also match edge_reserved/pending, not just running: an edge-claimed box
+		// is edge_reserved until claimFinalize promotes it (edge_reserved→pending
+		// →running). A destroy arriving in that window previously no-oped (the
+		// box wasn't 'running' yet), so finalize then promoted it to running and
+		// leaked it. Stopping it here makes finalize's ClaimReservedSession CAS
+		// (WHERE status='edge_reserved') miss → it aborts with "reservation lost"
+		// instead of resurrecting the box. Closes the create→destroy race.
+		query = `UPDATE sandbox_sessions SET status = $1, stopped_at = now(), error_msg = $2 WHERE sandbox_id = $3 AND status IN ('running', 'edge_reserved', 'pending')`
 		args = []interface{}{status, errorMsg, sandboxID}
 	} else if status == "failed" {
 		// Pending → failed: creation never succeeded, record the error.
