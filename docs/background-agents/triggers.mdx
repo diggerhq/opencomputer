@@ -1,0 +1,86 @@
+---
+title: "Triggers & Connections"
+description: "Events in, results out"
+---
+
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
+Triggers bring events to your agent; deliveries carry its work back out.
+Both run through **connections** — integrations OpenComputer operates.
+
+## Connections
+
+```bash
+oc connect github            # install the OpenComputer GitHub App on your org
+oc connect github --as-user  # optional personal grant: deliveries act as you
+```
+
+Installing the App is the entire GitHub integration — no app registration,
+webhook configuration, or secrets. Model provider keys are also connections;
+see [Models](/background-agents/models).
+
+A **Slack** connection (per-workspace OAuth, token held platform-side) powers
+the Slack conversation [channel](/background-agents/channels).
+
+```bash
+oc connect slack             # install the OpenComputer Slack app to your workspace
+```
+
+<Note>**Preview** — in v0 the Slack app is **platform-configured** for a single
+demo workspace; self-serve `oc connect slack` and multiple workspaces are
+planned. See the [overview](/background-agents/overview).</Note>
+
+## Triggers
+
+Declared on the agent:
+
+```toml
+[[triggers]]
+type = "github"
+on = "issue.labeled:agent"
+```
+
+Supported GitHub events include issue labels and PR/issue comments. Events are
+acknowledged instantly, then routed:
+
+- **Routing keys** group events into sessions — by default one session per
+  issue.
+- A comment on a PR the agent opened resumes the session that opened it.
+
+Only members of your organization can trigger an agent or wake a session —
+labels and comments from anyone else are ignored. Configurable per agent
+([policies](/background-agents/agents#policies)).
+
+### Slack
+
+A `slack` trigger makes the agent conversational — an `@mention` starts or
+continues a thread-session:
+
+```toml
+[[triggers]]
+type = "slack"
+on   = "mention"
+```
+
+The agent that declares this trigger *is* the Slack agent: mentions and thread
+replies route to it as steers, and it talks back in the thread. See
+[Channels](/background-agents/channels) for the full two-way model and
+[`slack-helper`](/background-agents/quickstart) for a complete example.
+
+<Note>**Preview** — `cron` and `http`/email triggers are planned, not built in
+v0.</Note>
+
+## Deliveries
+
+Agents hold no GitHub tokens. To open a PR or post a comment, the agent
+requests a **delivery** and the platform performs it:
+
+- With a personal grant, the PR is opened **as the person who triggered the
+  work** — review attribution and permissions behave as if they pushed it.
+- Without a grant, the App opens it with *"on behalf of @user"* attribution.
+- Defaults: draft PRs only, never to protected branches
+  ([policies](/background-agents/agents#policies)).
+
+Every delivery appears on the session timeline, and the PR links back to its
+session.

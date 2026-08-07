@@ -1,0 +1,111 @@
+---
+title: "Channels"
+description: "Connect deployed agents to Slack and other conversational interfaces"
+---
+
+Channels make a deployed agent available from an external interface such as
+Slack. The agent's behavior remains defined by its source repository; the
+channel supplies messages to managed sessions and returns the streamed result.
+
+## Connect Slack
+
+Slack is connected after deployment and does not require channel source files,
+a Slack manifest in Git, or the Slack CLI.
+
+<Steps>
+  <Step title="Deploy the agent">
+    Deploy the source with `opencomputer deploy`. A channel targets an alias,
+    such as `production`, so later deployments can advance that alias without
+    reinstalling the Slack app.
+  </Step>
+  <Step title="Open Channels">
+    In the OpenComputer dashboard, open the deployed agent and select the
+    **Channels** tab. Choose **Connect Slack**.
+  </Step>
+  <Step title="Name and create the Slack app">
+    Choose the app name people will see in Slack. Copy the generated manifest,
+    open Slack's app creation page, and create an app from that manifest.
+  </Step>
+  <Step title="Complete installation">
+    Follow the wizard to enter the App ID and Signing Secret, install the app,
+    and enter its Bot User OAuth Token. Secrets are stored encrypted and never
+    committed to the agent repository.
+  </Step>
+</Steps>
+
+Each deployment alias has its own Slack app connection. For example,
+`support-agent@production` and `support-agent@staging` can be installed and
+tested independently.
+
+## Sessions from channels
+
+Each supported Slack conversation creates or resumes a managed agent session.
+Messages in the same user thread continue the same multi-turn session, while
+other users and threads remain isolated. Invite the app to a channel and
+@-mention it, or message it directly.
+
+Channel sessions use the same deployed source and runtime behavior as sessions
+started from the CLI or dashboard. They appear in the agent's session history.
+
+## Linking a channel identity
+
+A Slack identity is not automatically treated as the person who installed the
+Slack application. Before an agent can access personal connections, each Slack
+user links their own OpenComputer identity.
+
+<Steps>
+  <Step title="Message the agent">
+    If the Slack user is not linked, the agent replies with a short-lived
+    OpenComputer dashboard link.
+  </Step>
+  <Step title="Sign in to OpenComputer">
+    Opening the link associates that Slack user with the authenticated
+    OpenComputer user.
+  </Step>
+  <Step title="Connect required services">
+    If the agent needs Gmail or another declared service, it can send that
+    Slack user a private connection link. Authorization never appears in the
+    shared channel.
+  </Step>
+  <Step title="Message the agent again">
+    The channel session can now use only the connections owned by the linked
+    user.
+  </Step>
+</Steps>
+
+This prevents a shared Slack channel from inheriting the installer's Gmail or
+another teammate's connected accounts.
+
+OpenComputer identifies a Slack user within their Slack workspace and remembers
+the linked OpenComputer identity. The same person can therefore use their own
+connections across that workspace's OpenComputer agent apps without relinking
+each app. This identity boundary also keeps two Slack workspaces with matching
+user IDs separate.
+
+## Connections and channels are different
+
+| Concept               | Purpose                                             | Ownership                                      |
+| --------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| Connection            | Authorizes an external service such as Gmail        | Individual OpenComputer user                   |
+| Channel               | Provides an interface for invoking a deployed agent | Agent deployment alias and installed workspace |
+| Channel identity link | Maps an external user to an OpenComputer user       | Individual external user                       |
+
+A channel does not grant service access by itself. It identifies who sent the
+message, and the managed session resolves only that user's connections.
+
+Disconnect Slack from the same Channels tab. This stops new messages without
+deleting the agent, its deployments, sessions, or personal service connections.
+
+<CardGroup cols={2}>
+  <Card title="Connections" icon="plug" href="/agents/connections">
+    Authorize multiple user-scoped accounts with recognizable aliases.
+  </Card>
+  <Card
+    title="Agents architecture"
+    icon="diagram-project"
+    href="/agents/architecture"
+  >
+    See how source, deployments, sessions, connections, and channels fit
+    together.
+  </Card>
+</CardGroup>

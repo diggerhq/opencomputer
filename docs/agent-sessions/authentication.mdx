@@ -1,0 +1,101 @@
+---
+mode: "wide"
+title: "Authentication"
+description: "Org keys, browser-safe client tokens, and bring-your-own model keys"
+---
+
+Durable Agent Sessions use four credential types.
+
+## Org API key
+
+Your account key. Use it server-side for all **management** calls — creating agents, starting sessions, registering webhooks, managing credentials.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! }); // org key, server-side only
+
+const session = await oc.sessions.create({
+  agent: "agt_...",
+  input: "Run the tests and summarize failures.",
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "agent": "agt_...", "input": "Run the tests and summarize failures." }
+```
+
+</CodeGroup>
+
+<Warning>Never ship the org API key to a browser or mobile client — it can do anything on your account. Use a client token instead.</Warning>
+
+## Client tokens
+
+A **session-scoped, short-lived** token with `read` + `steer` scope — safe to hand to a front-end. It can stream and steer **one** session and nothing else.
+
+You get one back from `POST /v3/sessions`, and can mint more:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.get("ses_...");
+
+const clientToken = await session.mintClientToken({
+  scopes: ["read", "steer"],
+  ttlSeconds: 3600,
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions/ses_.../client-tokens
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "scopes": ["read", "steer"], "ttl": 3600 }
+```
+
+</CodeGroup>
+
+Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
+
+<Warning>A client token isn't free to hand out: each `steer` starts a turn, which consumes model usage for the session it's scoped to. Mint short-lived tokens and set [session limits](/agent-sessions/sessions#usage-and-limits). The token threshold is checked between turns on built-in runtimes and may overshoot by one in-flight turn; it is not a currency or aggregate spend cap.</Warning>
+
+```
+browser  -> your backend: create task
+backend  -> OpenComputer: POST /v3/sessions (org key)
+backend  -> browser: client_token
+browser  -> OpenComputer: stream + steer (client_token)
+```
+
+For the SSE stream the browser passes the client token as `?token=` (native `EventSource` can't set an `Authorization` header); other calls use the `Authorization` header normally.
+
+## Hook URLs
+
+A [Hook URL](/agent-sessions/hooks) is a bearer credential embedded in one
+agent's `/hooks/<token>` path. It grants only the ability to start a fresh
+session on that agent. It cannot read or steer the created session, invoke
+another agent, or call management routes. The sender supplies no Authorization
+header.
+
+The complete URL is returned once on creation and stored only as a hash. Create
+one per external system so you can revoke it independently. Do not put Hook
+URLs in source control, logs, analytics, browser URLs, or public documentation.
+
+| Surface | Credential | Capability |
+| --- | --- | --- |
+| Agent URL `POST /` | org API key | create a session; receive a scoped client token |
+| Agent URL `POST /hooks/<token>` | Hook URL | create a session only |
+| Sessions API read/stream/steer | client token or org API key | one scoped session, or full org authority |
+| Management API | org API key | agents, sessions, Hooks, credentials, and other account resources |
+
+## Model credentials
+
+Sessions run the model either **Managed** — via OpenComputer, billed to your **credits**, with no key (the default for new orgs) — or on **your own provider key** (Anthropic for the `claude` [runtime](/agent-sessions/runtimes), OpenAI for `codex`). A bring-your-own key is stored at rest in a dedicated secrets vault ([Infisical](https://infisical.com)), write-only, and **never returned** by the API. The real key never enters a sandbox: the runtime gets an opaque placeholder, and a [secret-store egress proxy](/sandboxes/secrets) swaps in the real value in flight, only on the outbound HTTPS call to the provider. A key isn't required — Managed needs none; a session fails to start (`422 no_credential`) only when it resolves to neither Managed nor a usable key.
+
+For Managed, set an agent's `credential` to `"managed"` (or rely on the org default) — nothing to add. For BYO, the quickest way to add a key is inline when you [create an agent](/agent-sessions/agents) (`"key": "…"`). To reuse a key across agents, set an org default, or rotate/remove keys, see the dedicated **[Credentials](/agent-sessions/credentials)** page.

@@ -21,7 +21,7 @@ const me = {
   id: 'user_2abc',
   email: 'igor@digger.dev',
   orgId: 'org_digger',
-  durableSessionsEnabled: false,
+  durableSessionsEnabled: true,
   infrastructureEnabled: true,
   orgs: [
     { id: 'org_digger', name: 'Digger', isPersonal: false, isActive: true },
@@ -1210,12 +1210,171 @@ type Handler = () => unknown
 // missing resource) — used for an agent with no deployment-source link.
 const NOT_FOUND = Symbol('not_found')
 
+const managedAgentTemplates = [
+  {
+    id: 'email-triage',
+    name: 'Email triage',
+    description:
+      'Summarize your inbox, surface messages that need replies, and leave every action under your control.',
+    category: 'Comms',
+    integrations: ['Gmail', 'OpenComputer'],
+    suggestedPrompts: [
+      "Triage today's inbox and show me the messages that need a reply.",
+    ],
+  },
+  {
+    id: 'github-changelog',
+    name: 'GitHub changelog',
+    description:
+      'Turn merged work into a clear changelog and keep product documentation current.',
+    category: 'Operations',
+    integrations: ['GitHub', 'Confluence'],
+    suggestedPrompts: [
+      "Draft this week's changelog from merged pull requests.",
+    ],
+  },
+  {
+    id: 'collect-receipts',
+    name: 'Collect receipts',
+    description:
+      'Find purchase receipts, name them consistently, and file them in the correct expense folder.',
+    category: 'Admin',
+    integrations: ['Gmail', 'Google Drive'],
+    suggestedPrompts: ["Find this month's receipts and prepare a filing plan."],
+  },
+]
+
+let managedAgentItems: Array<{
+  id: string
+  name: string
+  activeAlias: string
+  activeDeploymentId: string
+  deploymentCount: number
+  createdAt: string
+  updatedAt: string
+}> = []
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
   [
     /^\/agent-security-notifications(?:\?.*)?$/,
     () => ({ data: [], next_cursor: null }),
+  ],
+  [
+    /^\/managed-agents\/templates$/,
+    () => ({ templates: managedAgentTemplates }),
+  ],
+  [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
+  [
+    /^\/managed-agents\/connections$/,
+    () => ({
+      connections: [
+        {
+          id: 'connection_google_preview',
+          kind: 'tool',
+          provider: 'google',
+          label: 'gmail',
+          agentId: 'email-triage',
+          alias: 'production',
+          displayName: 'Gmail',
+          status: 'connected',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/channels$/,
+    () => ({
+      channels: [
+        {
+          id: 'channel_slack_preview',
+          channel: 'slack',
+          agentId: 'research-assistant',
+          alias: 'production',
+          teamName: 'OpenComputer',
+          status: 'connected',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/deployments\?agentId=[^&]+$/,
+    () => ({
+      deployments: [
+        {
+          id: 'research-assistant:preview',
+          agentId: 'research-assistant',
+          alias: 'production',
+          channels: ['slack'],
+          connections: ['gmail'],
+          createdAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/deployments\/[^/]+$/,
+    () => ({
+      id: 'research-assistant:preview',
+      agentId: 'research-assistant',
+      alias: 'production',
+      channels: [],
+      connections: [],
+      createdAt: new Date(BASE).toISOString(),
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions$/,
+    () => ({
+      sessions: [
+        {
+          id: 'session_preview',
+          agentId: 'research-assistant',
+          deploymentId: 'research-assistant:preview',
+          status: 'suspended',
+          source: 'channel',
+          microvmState: 'suspended',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+          turns: [],
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/events(?:\?.*)?$/,
+    () => ({
+      events: [
+        { seq: 1, type: 'runtime.connected', data: {} },
+        {
+          seq: 2,
+          type: 'message.completed',
+          data: {
+            text: 'Here is a concise response from your deployed agent.',
+          },
+        },
+        { seq: 3, type: 'turn.completed', data: {} },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+$/,
+    () => ({
+      id: 'session_preview',
+      agentId: 'research-assistant',
+      deploymentId: 'research-assistant:preview',
+      status: 'suspended',
+      source: 'playground',
+      microvmState: 'suspended',
+      createdAt: new Date(BASE).toISOString(),
+      updatedAt: new Date(BASE).toISOString(),
+      turns: [],
+    }),
   ],
   [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],
   [/^\/sessions\/[^/]+$/, () => sessionDetail],
@@ -1313,6 +1472,57 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [
+    /^\/managed-agents\/templates\/[^/]+\/deploy$/,
+    () => {
+      const template = managedAgentTemplates[0]
+      const timestamp = new Date(BASE).toISOString()
+      managedAgentItems = [
+        {
+          id: template.id,
+          name: template.name,
+          activeAlias: 'production',
+          activeDeploymentId: `${template.id}:preview`,
+          deploymentCount: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ]
+      return {
+        template,
+        deployment: {
+          id: `${template.id}:preview`,
+          agentId: template.id,
+          alias: 'production',
+          channels: [],
+          connections: [],
+          createdAt: timestamp,
+        },
+      }
+    },
+  ],
+  [
+    /^\/managed-agents\/sessions$/,
+    () => ({
+      session: { id: 'session_preview', status: 'connecting' },
+      deployment: {
+        id: 'research-assistant:preview',
+        agentId: 'research-assistant',
+        alias: 'production',
+        channels: [],
+        connections: [],
+        createdAt: new Date(BASE).toISOString(),
+      },
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/turns$/,
+    () => ({ turnId: 'turn_preview', duplicate: false }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/suspend$/,
+    () => ({ id: 'session_preview', status: 'suspended' }),
+  ],
   [/^\/v3\/agents\/[^/]+\/repository-access$/, () => repositoryAccess],
   [/^\/v3\/github\/deploy-app\/inspect$/, () => flueInspection],
   [
@@ -1345,7 +1555,8 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
   if (method === 'PUT' && path === '/me/preferences') {
-    const updates = JSON.parse(String(options.body ?? '{}')) as Partial<
+    const body = typeof options.body === 'string' ? options.body : '{}'
+    const updates = JSON.parse(body) as Partial<
       Pick<typeof me, 'durableSessionsEnabled' | 'infrastructureEnabled'>
     >
     Object.assign(me, updates)

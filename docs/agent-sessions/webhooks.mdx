@@ -1,0 +1,167 @@
+---
+mode: "wide"
+title: "Webhooks"
+description: "Deliver session events to your backend"
+---
+
+Register a **destination** to receive a session's [events](/agent-sessions/events) as a **delivery envelope**. Deliveries are at-least-once, signed when a secret is set, and retried. The envelope carries routing fields, session [`metadata`](/agent-sessions/api-reference#sessions), and the full event under `event`:
+
+<Note>
+  Webhooks send your agent's events **to your application**. To send external
+  events **to an agent**, use an inbound [Hook URL](/agent-sessions/hooks).
+</Note>
+
+```json
+{
+  "type": "turn.completed",          // the event type (route on this)
+  "sessionId": "ses_…",
+  "eventId": "evt_…",                 // == webhook-id (dedupe on it)
+  "metadata": { "owner": "acme", "repo": "widgets", "pullNumber": 42 },
+  "event": { "id": "evt_…", "seq": 12, "type": "turn.completed",
+             "level": "user", "actor": {…}, "body": {…}, "ts": "…" }
+}
+```
+
+`event` is the full [Event](/agent-sessions/events) — the same shape the [SSE stream](/agent-sessions/events) emits (the SSE stream delivers that bare Event; webhooks wrap it in this envelope). `metadata` is the opaque routing state you set at [create](/agent-sessions/api-reference#sessions), delivered **verbatim on every send and redelivery** (so a handler can route the callback without a lookup); it's `null` if unset. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive to avoid internal runtime detail.
+
+## Destinations
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get(sessionId);
+
+await session.destinations.create({
+  url: "https://your.app/oc-webhook",
+  secret: "whsec_...",
+  level: "user",
+  includeRaw: false,
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions/ses_.../destinations
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "url": "https://your.app/oc-webhook",
+  "secret": "whsec_...",
+  "level": "user",
+  "include_raw": false
+}
+```
+
+</CodeGroup>
+
+`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered event (the envelope's `event.body.raw`). To get only completions, set `types: ["turn.completed"]`.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.destinations.create(params)` | Register a destination. |
+| `session.destinations.list()` | List destinations. |
+| `session.destinations.get(did)` | Fetch one. |
+| `session.destinations.update(did, params)` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
+| `session.destinations.delete(did)` | Remove. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/destinations` | Register a destination. |
+| `GET /sessions/:id/destinations` | List destinations. |
+| `GET /sessions/:id/destinations/:did` | Fetch one. |
+| `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
+| `DELETE /sessions/:id/destinations/:did` | Remove. |
+
+</Tab>
+
+</Tabs>
+
+A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. Destinations are not retroactive.
+
+## Deliveries
+
+Each send is recorded with status, attempts, and the latest response or error.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.deliveries.list(opts)` | List deliveries — status, attempts, last response/error. |
+| `session.deliveries.get(id)` | One delivery, in detail. |
+| `session.deliveries.redeliver(id)` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/deliveries?destination=&status=` | List deliveries — status, attempts, last response/error. |
+| `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+</Tabs>
+
+A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts.
+
+```
+Delivery = {
+  id, session, destination, event_id, event_seq, status, attempts,
+  last_attempt_at, response_code?, error?, created_at, updated_at
+}
+```
+
+## Signing, retries, and dedupe
+
+- **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a delivery interrupted after it reached you, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
+- **Signed with [Standard Webhooks](https://www.standardwebhooks.com) — when the destination has a `secret`.** Every request carries `webhook-id` and `webhook-timestamp`; if the destination was created with a `secret`, it also carries `webhook-signature` (= `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`). **Set a `secret` to get signed deliveries** — without one, requests are unsigned. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
+- A delivery succeeds on HTTP `2xx`.
+
+### Verify a webhook
+
+The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope:
+
+```ts
+import { verifyWebhook } from "@opencomputer/sdk";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse.
+// Throws on a missing / expired / invalid signature.
+const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
+if (delivery.type === "turn.completed") {
+  // route on delivery.metadata, then fetch the result
+}
+```
+
+Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly:
+
+```js
+import { Webhook } from "standardwebhooks";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse
+function verify(headers, rawBody, secret) {
+  // throws on a missing/expired/invalid signature
+  return new Webhook(secret).verify(rawBody, {
+    "webhook-id":        headers["webhook-id"],
+    "webhook-timestamp": headers["webhook-timestamp"],
+    "webhook-signature": headers["webhook-signature"],
+  });
+}
+```
+
+<Note>These deliver a **session's** events (turns, messages, results). To react to **sandbox lifecycle** — boot, hibernate, stop, scale — see [Sandbox webhooks](/sandboxes/webhooks): the **same** Standard Webhooks `verifyWebhook` helper, but a different header dialect and delivery ownership. Sessions use `webhook-*` headers (where `webhook-id` is the *event id*) with the delivery-row id in `X-OC-Delivery-ID`, and signing is opt-in. Sandbox webhooks are delivered by Svix, always signed, under `svix-*` headers where `svix-id` is the delivery/dedupe id, with per-destination metadata as custom headers.</Note>

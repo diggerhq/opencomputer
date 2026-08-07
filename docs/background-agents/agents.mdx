@@ -1,0 +1,103 @@
+---
+title: "Agents"
+description: "From a single prompt to a versioned agent defined as code"
+---
+
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
+An agent is configuration, not compute: what it knows (prompt, skills), what
+drives it (runtime, model), what wakes it (triggers), what it may do
+(policies), and a connection scoping which repos it acts on. Sessions
+reference an agent; the agent itself never runs.
+
+An agent is **not bound to a repo or a workspace**. Its connection defines the
+*candidate set* of repos it may act on; each session
+[resolves](/background-agents/workspaces#resolution-and-sharing) which one(s) to
+work in at runtime — from the trigger, the conversation, an optional `repo`
+default on the agent, or by asking. This is why one agent can serve issues in
+several repos, or hold a chat where it picks the repo from what you ask.
+
+## Start as a prompt
+
+```bash
+oc agent create fixer \
+  --model anthropic/claude-opus-4-8 \
+  --prompt "You fix bugs labeled 'agent' in acme/web." \
+  --trigger github:issue.labeled:agent
+```
+
+```bash
+curl -X POST https://api.opencomputer.dev/v2/agents \
+  -H "Authorization: Bearer $OC_API_KEY" \
+  -d '{
+    "name": "fixer",
+    "runtime": { "image": "claude", "model": "anthropic/claude-opus-4-8" },
+    "prompt": "You fix bugs labeled agent in acme/web.",
+    "triggers": [{ "type": "github", "on": "issue.labeled:agent" }]
+  }'
+```
+
+## Grow into a repo
+
+When one prompt isn't enough, the agent becomes a directory:
+
+```
+my-agent/
+  opencomputer.toml # name, runtime, model, triggers, policies, connection
+  prompt.md
+  skills/
+    testing.md      # conventions the agent loads when relevant
+    deploys.md
+  mcp.json          # MCP servers the agent may use
+```
+
+```bash
+oc agent deploy
+```
+
+Keep it in git, review changes as PRs, deploy from CI. The directory and the
+API are two views of the same object; GitHub is not required.
+
+```toml
+# opencomputer.toml
+name = "fixer"
+
+[runtime]
+image = "claude"
+model = "anthropic/claude-opus-4-8"
+
+[[triggers]]
+type = "github"
+on = "issue.labeled:agent"
+
+[policies]
+budget.per_session_usd = 5
+```
+
+## Versions
+
+Every change — config update, deploy, model switch — is a new immutable
+version:
+
+```bash
+oc agent versions fixer
+oc agent diff fixer v3 v4
+oc agent rollback fixer v3
+```
+
+Sessions pin the version they started with; updates apply to new sessions
+only.
+
+## Policies
+
+- **Deliveries** — draft PRs only by default; protected branches are never
+  pushed; target repos can be restricted.
+- **Actors** — who can trigger work and wake sessions; your organization's
+  members by default.
+- **Budget** — per-session and per-month caps.
+- **Models** — restrict allowed providers.
+- **Network** — sandbox egress is allowlist-based.
+
+Organization policies are ceilings: an agent can be stricter, not looser.
+Policies live in the versioned config, so every change is a visible diff.

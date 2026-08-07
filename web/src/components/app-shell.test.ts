@@ -1,28 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { productNav } from './app-shell'
+import { managedAgentsNav } from './app-shell-nav'
 
-describe('product navigation', () => {
-  it('shows only infrastructure for new-user preferences', () => {
-    const nav = productNav({
+describe('managed agents navigation', () => {
+  it('shows only unlabeled agents and connections by default', () => {
+    const nav = managedAgentsNav({
       durableSessionsEnabled: false,
-      infrastructureEnabled: true,
+      infrastructureEnabled: false,
     })
 
-    expect(nav.map((group) => group.label)).toEqual(['Infrastructure'])
-    expect(nav[0]?.collapsible).toBe(true)
-    expect(nav[0]?.items[0]?.label).toBe('Sandboxes')
+    expect(nav.map((group) => group.label)).toEqual([undefined])
+    expect(nav[0]?.collapsible).toBeUndefined()
+    expect(nav[0]?.items.map((item) => item.label)).toEqual([
+      'Agents',
+      'Connections',
+    ])
   })
 
   it('reveals each advanced group independently', () => {
     expect(
-      productNav({
+      managedAgentsNav({
         durableSessionsEnabled: true,
         infrastructureEnabled: false,
       }).map((group) => group.label),
     ).toContain('Durable sessions')
 
     expect(
-      productNav({
+      managedAgentsNav({
         durableSessionsEnabled: false,
         infrastructureEnabled: true,
       }).map((group) => group.label),

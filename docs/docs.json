@@ -24,6 +24,21 @@
   "navigation": {
     "tabs": [
       {
+        "tab": "Serverless Agents",
+        "groups": [
+          {
+            "group": "Serverless Agents",
+            "pages": [
+              "agents/overview",
+              "agents/quickstart",
+              "agents/connections",
+              "agents/channels",
+              "agents/architecture"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "Sandboxes",
         "groups": [
           {
@@ -148,6 +163,7 @@
               "reference/cli/checkpoint",
               "reference/cli/patch",
               "reference/cli/preview",
+              "reference/cli/agent",
               "reference/cli/auth",
               "reference/cli/config"
             ]
@@ -293,6 +309,56 @@
             "pages": [
               "self-hosting/overview",
               "self-hosting/gcp-development"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Durable Agent Sessions",
+        "groups": [
+          {
+            "group": "Durable Agent Sessions",
+            "tag": "Preview",
+            "pages": [
+              "agent-sessions/overview",
+              "agent-sessions/quickstart",
+              "agent-sessions/agents",
+              "agent-sessions/revisions",
+              "agent-sessions/skills",
+              "agent-sessions/sessions",
+              "agent-sessions/agent-urls",
+              "agent-sessions/hooks",
+              "agent-sessions/credentials",
+              "agent-sessions/repos",
+              "agent-sessions/events",
+              "agent-sessions/authentication",
+              "agent-sessions/messaging",
+              "agent-sessions/webhooks",
+              "agent-sessions/slack",
+              "agent-sessions/runtimes",
+              "agent-sessions/runtime-tools",
+              "agent-sessions/watches",
+              "agent-sessions/schedules",
+              "agent-sessions/api-reference",
+              {
+                "group": "Frameworks",
+                "expanded": true,
+                "pages": [
+                  "agent-sessions/flue"
+                ]
+              },
+              {
+                "group": "Labs",
+                "tag": "Labs",
+                "expanded": true,
+                "pages": [
+                  "agent-sessions/custom-runtimes",
+                  "agent-sessions/triggers",
+                  "agent-sessions/channels",
+                  "agent-sessions/workspaces",
+                  "agent-sessions/artifacts"
+                ]
+              }
             ]
           }
         ]

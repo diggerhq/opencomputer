@@ -1,0 +1,199 @@
+---
+mode: "wide"
+title: "Sessions"
+description: "Durable, resumable agent execution"
+---
+
+A **session** is an [agent](/agent-sessions/agents) run with an append-only [event log](/agent-sessions/events), a pinned configuration snapshot, and a lifecycle status. The execution substrate depends on the [runtime](/agent-sessions/runtimes): built-in runtimes use managed sandboxes, while [Flue](/agent-sessions/flue) uses a deployed Worker and one Durable Object per session.
+
+<Note>
+  The [dashboard](https://app.opencomputer.dev) lists your sessions and opens
+  each with a live event stream you can watch and steer — handy for following or
+  debugging a run without building UI.
+</Note>
+
+## Session flow
+
+1. You create a session from an [agent](/agent-sessions/agents). Built-in runtimes pin the active [revision](/agent-sessions/revisions), including its prompt, model, and skills. Flue records the selected deployment, but all of an agent's Flue sessions execute on its one live Worker; see [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).
+2. OpenComputer stores the input, allocates a turn, and returns. Runtime execution continues asynchronously. Pass `model` to override a built-in runtime's model for this session; Flue rejects model overrides because its model is part of the deployed app.
+3. The runtime appends [events](/agent-sessions/events) as it works. Built-in runtimes execute in managed sandboxes. Flue executes in its Worker and Durable Object, with no sandbox unless the app explicitly uses `ocSandbox`.
+4. With nothing left to do, the session becomes **idle**. A [steer](/agent-sessions/messaging) message starts the next ordered turn with the same conversation context.
+
+Pass [`sources`](/agent-sessions/repos) to give a session working repositories. Built-in runtimes prepare them before turn one. Flue keeps the same pinned source contract but materializes a repository lazily, when its app first uses the repository tools.
+
+<Note>
+  The built-in runtimes restart from checkpointed state, enforce a turn
+  deadline, and survive sandbox reclaim. Flue relies on Durable Object recovery
+  and event projection instead; its current limit and recovery differences are
+  listed on the [Flue page](/agent-sessions/flue#session-behavior).
+</Note>
+
+## Lifecycle
+
+| Status           | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `queued`         | Scheduled; no turn is running.                                     |
+| `running`        | A turn is executing.                                               |
+| `awaiting_input` | A turn ended asking you a question — steerable; reply to continue. |
+| `idle`           | No turn running; steerable; runtime state is retained.             |
+| `failed`         | The session errored out.                                           |
+| `archived`       | Closed; read-only.                                                 |
+
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `active_seconds`, `usage`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you why the last turn ended: `completed`, `needs_input` (the agent asked a question and the session is now `awaiting_input`), `budget_exceeded`, `deadline_exceeded`, `max_turns`, or `canceled`. Limit outcomes require runtime enforcement; the current Flue path does not enforce the generic session limits below.
+
+## Fetch the result
+
+Do not infer completion from prose. Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get("ses_...");
+const { lastTurn, result } = await session.result();
+```
+
+```http REST API
+GET https://api.opencomputer.dev/v3/sessions/ses_.../result
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
+
+</CodeGroup>
+
+Response:
+
+```json
+{
+  "last_turn": {
+    "id": "trn_...",
+    "state": "ok",
+    "yield_reason": "completed",
+    "result_event_id": "evt_..."
+  },
+  "result": {
+    "type": "agent.message",
+    "level": "user",
+    "body": { "text": "Done. I found..." }
+  }
+}
+```
+
+<Tip>
+  **For background jobs, register a [destination](/agent-sessions/webhooks).**
+  Polling `GET /…/result` ties up a request and doesn't survive your process
+  restarting. Create the session with `metadata` and a `destination`; handle
+  `turn.completed` in your webhook, then fetch the result. Reserve `result()`
+  polling for synchronous or interactive flows.
+</Tip>
+
+## Idempotency & routing
+
+Three independent knobs — don't overload one for another:
+
+- **`key`** — _get-or-create_. One session per natural key (e.g. one per PR). A second create with the same `key` returns the same session; reusing a `key` with a **different** request body is rejected (`create key already used with a different request`).
+- **`Idempotency-Key`** (header) — _retry-safe create_. Makes a keyless create safe to retry (e.g. on a webhook redelivery) without spawning duplicates.
+- **`metadata`** — _routing / app state_. Opaque JSON (≤ 16 KB) echoed back on get/list and **verbatim in webhooks**, so your callback can route to the right record. Never use `key` for routing — that's what `metadata` is for.
+
+## Usage and limits
+
+Terminal turns expose `active_seconds` and normalized `usage`. A reported turn
+contains four disjoint token components, their `tokens` sum, and optional
+`total_cost_usd`. Missing cost means unknown, not zero. If only some runtime
+observations were trustworthy, the turn keeps that lower bound and adds
+`complete: false`; a turn with no trustworthy observation returns
+`reported: false` instead of inventing a zero.
+
+The session `usage` rollup contains:
+
+```json
+{
+  "active_seconds": 42,
+  "reported_turns": 2,
+  "unreported_turns": 0,
+  "complete": true,
+  "input_tokens": 8200,
+  "output_tokens": 640,
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 1200,
+  "tokens": 10040,
+  "total_cost_usd": 0.0231,
+  "attribution": "exact"
+}
+```
+
+If `complete` is false, any token or cost total present is a **lower bound**.
+Historical sessions created before usage reporting may return an empty object;
+clients should show that as unknown. `total_cost_usd` is runtime/provider-
+reported visibility, not the billing ledger.
+
+Cap a session at create (or default it on the [agent](/agent-sessions/agents))
+with `limits: { tokens, turn_seconds, turns }`: an observed token threshold,
+per-turn wall-clock limit, and auto-run count. These are runtime limits, not
+currency or aggregate spend controls.
+
+On built-in runtimes, `limits.tokens` is evaluated from committed usage before
+the next model turn. It does not interrupt an in-flight request and can
+overshoot by one turn. `turn_seconds` and the organization's credit halt are
+separate controls. A [Hook](/agent-sessions/hooks) starts a fresh session, so
+all three limits reset on every accepted Hook POST.
+
+<Warning>
+  [Flue](/agent-sessions/flue) exposes best-effort per-session usage
+  attribution; its agent/org gateway remains the spend-enforcement authority.
+  The generic session limits are not enforced on the current Flue execution
+  path, so do not use them as its deadline, turn-count, or token safety
+  boundary.
+</Warning>
+
+## Model
+
+A session runs the model pinned in its agent snapshot. Pass `model` at create to run **this one session** on a different model — omit it and the session inherits the agent's model (the default). The override is the same `provider/model` form as the agent's model, and its provider must match the agent's [runtime](/agent-sessions/runtimes) (e.g. `anthropic/…` for a `claude` agent — a mismatched prefix is rejected at create, a model the provider doesn't recognize fails on the [first turn](/agent-sessions/runtimes)). Like the rest of the snapshot it's **pinned for the session's life** — there's no mid-session model switch; start another session to run another model.
+
+Not available for [Flue](/agent-sessions/flue) agents: their model is fixed in the deployed app, so a `model` on a Flue session is rejected.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.create({
+  agent: "agt_...",
+  input: "Summarize the incident channel and draft a postmortem.",
+  model: "anthropic/claude-sonnet-5", // this session only; omit to use the agent's model
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "agent": "agt_...",
+  "input": "Summarize the incident channel and draft a postmortem.",
+  "model": "anthropic/claude-sonnet-5"
+}
+```
+
+</CodeGroup>
+
+## Stop a session
+
+`POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint with a `turn.completed` (`yield_reason: "canceled"`), so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
+
+**`archive` is not delete** — the session's log is retained, just read-only.
+
+For Flue, archive also retains the conversation in the session's Durable Object storage. See
+[Flue session behavior](/agent-sessions/flue#session-behavior).
+
+<Note>
+  When the agent needs input, the turn ends with `yield_reason: "needs_input"`
+  and the session status becomes `awaiting_input`; reply by
+  [steering](/agent-sessions/messaging).
+</Note>
+
+<Note>
+  **No cross-session memory.** Each session starts from the agent's prompt +
+  that session's `input` — a durable log is *session history*, not memory the
+  agent carries between sessions.
+</Note>

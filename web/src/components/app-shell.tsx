@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useState } from 'react'
 import {
   Link,
   NavLink,
@@ -8,6 +8,8 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
+  LayoutGrid,
+  Rocket,
   Bot,
   MessagesSquare,
   Monitor,
@@ -48,6 +50,8 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
+import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
+import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
 type NavItem = {
   to: string
@@ -56,30 +60,20 @@ type NavItem = {
   end?: boolean
   preview?: boolean
 }
-type NavGroup = {
-  label?: string
-  items: NavItem[]
-  collapsible?: boolean
-  landingTo?: string
-}
+type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
 
-const PRODUCT_NAV: NavGroup[] = [
+// Two planes, subtly separated: the durable-agent plane and the raw-compute
+// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
+// label rather than hard dividers.
+const LEGACY_NAV: LegacyNavGroup[] = [
   {
-    label: 'Infrastructure',
-    collapsible: true,
-    landingTo: '/sandboxes',
     items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Sandbox templates', icon: Package },
-      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-      { to: '/browsers', label: 'Browsers', icon: Monitor },
+      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
+      { to: '/getting-started', label: 'Getting started', icon: Rocket },
     ],
   },
   {
-    label: 'Durable sessions',
-    collapsible: true,
-    landingTo: '/agents',
+    label: 'Agents',
     items: [
       { to: '/agents', label: 'Agents', icon: Bot, preview: true },
       {
@@ -96,22 +90,35 @@ const PRODUCT_NAV: NavGroup[] = [
       },
     ],
   },
+  {
+    label: 'Browser Sessions',
+    items: [
+      {
+        to: '/browsers',
+        label: 'Browsers',
+        icon: Monitor,
+        preview: true,
+      },
+    ],
+  },
+  {
+    label: 'Sandboxes',
+    items: [
+      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
+      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
+      { to: '/templates', label: 'Templates', icon: Package },
+      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [
+      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
+      { to: '/billing', label: 'Billing', icon: CreditCard },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ]
-
-export function productNav(preferences: {
-  durableSessionsEnabled: boolean
-  infrastructureEnabled: boolean
-}): NavGroup[] {
-  return PRODUCT_NAV.filter((group) => {
-    if (group.label === 'Durable sessions') {
-      return preferences.durableSessionsEnabled
-    }
-    if (group.label === 'Infrastructure') {
-      return preferences.infrastructureEnabled
-    }
-    return true
-  })
-}
 
 function Brand() {
   return (
@@ -243,10 +250,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
-  const nav = productNav({
-    durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
-    infrastructureEnabled: user?.infrastructureEnabled ?? true,
-  })
+  const nav = managedAgentsExperimentEnabled
+    ? managedAgentsNav({
+        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
+        infrastructureEnabled: user?.infrastructureEnabled ?? false,
+      })
+    : LEGACY_NAV
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
@@ -257,24 +266,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
       ),
   )?.label
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    const groups = new Set<string>()
-    if (nav.some((group) => group.label === 'Infrastructure')) {
-      groups.add('Infrastructure')
-    }
-    if (activeCollapsibleGroup) groups.add(activeCollapsibleGroup)
-    return groups
-  })
-
-  useEffect(() => {
-    if (!activeCollapsibleGroup) return
-    setOpenGroups((current) => {
-      if (current.has(activeCollapsibleGroup)) return current
-      const next = new Set(current)
-      next.add(activeCollapsibleGroup)
-      return next
-    })
-  }, [activeCollapsibleGroup])
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
+  )
+  const expandedGroups = new Set(openGroups)
+  if (activeCollapsibleGroup) expandedGroups.add(activeCollapsibleGroup)
   return (
     <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
@@ -299,12 +295,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   if (group.landingTo) void navigate(group.landingTo)
                 }}
                 className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
-                aria-expanded={openGroups.has(group.label)}
+                aria-expanded={expandedGroups.has(group.label)}
               >
                 <ChevronRight
                   className={cn(
                     'size-3 transition-transform',
-                    openGroups.has(group.label) && 'rotate-90',
+                    expandedGroups.has(group.label) && 'rotate-90',
                   )}
                 />
                 {group.label}
@@ -314,7 +310,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 {group.label}
               </div>
             ) : null}
-            {(!group.collapsible || openGroups.has(group.label ?? '')) &&
+            {(!group.collapsible || expandedGroups.has(group.label ?? '')) &&
               group.items.map((item) => (
                 <NavLink
                   key={item.to}
@@ -348,7 +344,28 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t p-3">
-        <ManagedProfileMenu onNavigate={onNavigate} />
+        {managedAgentsExperimentEnabled ? (
+          <ManagedProfileMenu onNavigate={onNavigate} />
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              {user?.email?.charAt(0).toUpperCase() || '?'}
+            </span>
+            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
+              {user?.email}
+            </span>
+            {user?.capabilities?.signOut !== false ? (
+              <button
+                onClick={() => void logout()}
+                aria-label="Sign out"
+                title="Sign out"
+                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
+              >
+                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -434,7 +451,14 @@ export default function AppShell() {
           <HaltBanner />
           <AgentSecurityAlertBanner />
         </div>
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
+        <main
+          className={cn(
+            'mx-auto px-4 py-6 sm:px-8',
+            location.pathname.startsWith('/managed-agents/')
+              ? 'max-w-[1600px]'
+              : 'max-w-7xl',
+          )}
+        >
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter
               state can't bleed across orgs. */}
