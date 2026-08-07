@@ -166,26 +166,30 @@ jobs:
           PKR_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
         run: |
           # pipefail is REQUIRED: `packer build | tee` otherwise reports tee's
-          # exit 0 and masks a packer failure. A masked failure (e.g. the gallery
-          # version already exists) let the job go green, the Verify step
-          # false-passed on the pre-existing image, and the publish step wrote
-          # mismatched image-id/version coordinates into Infisical — poisoning the
-          # rolling replace with a target version no image contains.
+          # exit 0 and masks a packer failure — a masked failure let the job go
+          # green, the Verify step false-passed on a pre-existing image, and
+          # mismatched image-id/version coordinates got published to Infisical,
+          # poisoning the rolling replace with a target version no image contains.
           set -eo pipefail
 
-          # Use run number as patch version for gallery (must be integer). Fail
-          # loudly if that version already exists rather than letting packer's
-          # "already exists" error slip through — a collision means the patch
-          # numbering drifted and must be resolved, not silently republished.
-          PATCH=${{ github.run_number }}
-          if az sig image-version show \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --gallery-name "$AZURE_GALLERY_NAME" \
-              --gallery-image-definition osb-worker-v7 \
-              --gallery-image-version "1.0.${PATCH}" -o none 2>/dev/null; then
-            echo "ERROR: gallery image version 1.0.${PATCH} already exists — refusing to build over it (patch numbering drift)"
-            exit 1
-          fi
+          # Pick the next free gallery patch version. github.run_number is only a
+          # floor: an out-of-band/manual build (or a re-run) can leave a version
+          # occupying that number, and packer errors hard on a collision. The
+          # patch number is arbitrary — the scaler compares the baked worker
+          # version (opensandbox-version tag), not the gallery version — so we
+          # just take max(highest existing patch, run_number) + 1 and always move
+          # forward. Never build over an existing version, never stall on a clash.
+          RUN_NUMBER=${{ github.run_number }}
+          MAX_PATCH=$(az sig image-version list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --gallery-name "$AZURE_GALLERY_NAME" \
+            --gallery-image-definition osb-worker-v7 \
+            --query "[].name" -o tsv 2>/dev/null | awk -F. '{print $3}' | sort -n | tail -1)
+          MAX_PATCH=${MAX_PATCH:-0}
+          PATCH=$((MAX_PATCH + 1))
+          if [ "$PATCH" -lt "$RUN_NUMBER" ]; then PATCH=$RUN_NUMBER; fi
+          echo "PATCH=$PATCH" >> "$GITHUB_ENV"
+          echo "Building gallery version 1.0.$PATCH (highest existing=$MAX_PATCH, run_number=$RUN_NUMBER)"
 
           packer build \
             -var "use_azure_cli_auth=false" \
@@ -218,7 +222,8 @@ jobs:
 
       - name: Verify image + export id
         run: |
-          PATCH=${{ github.run_number }}
+          # PATCH is inherited from the Build step via $GITHUB_ENV (the next-free
+          # gallery version it actually built), NOT recomputed from run_number.
           GALLERY_IMAGE_ID="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_RESOURCE_GROUP}/providers/Microsoft.Compute/galleries/${AZURE_GALLERY_NAME}/images/osb-worker-v7/versions/1.0.${PATCH}"
           BAKED_VERSION=$(az sig image-version show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
