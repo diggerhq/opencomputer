@@ -13,8 +13,8 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Template name
 </ParamField>
 
-<ParamField body="timeout" type="number" default="300">
-  Idle timeout in seconds
+<ParamField body="timeout" type="number" default="0">
+  Idle timeout in seconds. `0` (the default) means persistent — the sandbox never auto-hibernates.
 </ParamField>
 
 <ParamField body="apiKey" type="string">
@@ -116,7 +116,7 @@ Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoint
   Checkpoint ID
 </ParamField>
 
-<ParamField body="timeout" type="number" default="300">
+<ParamField body="timeout" type="number" default="0">
   Idle timeout
 </ParamField>
 
@@ -192,7 +192,7 @@ Snapshot VM state and stop. No compute cost while hibernated. [HTTP API →](/ap
 
 Resume a hibernated sandbox. [HTTP API →](/api-reference/sandboxes/wake)
 
-<ParamField body="timeout" type="number" default="300">
+<ParamField body="timeout" type="number" default="0">
   Idle timeout after wake
 </ParamField>
 

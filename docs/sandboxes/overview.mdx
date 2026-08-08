@@ -75,7 +75,7 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `template` | string | `"base"` | Template for the VM root filesystem |
-| `timeout` | number | `300` | Idle timeout in seconds (resets on every operation) |
+| `timeout` | number | `0` | Idle timeout in seconds, resets on every operation. `0` (default) = persistent, never auto-hibernates |
 | `envs` | object | — | Environment variables set inside the VM |
 | `metadata` | object | — | Arbitrary key-value pairs stored with the sandbox |
 | `cpuCount` | number | — | CPU cores. TypeScript and HTTP API only |
@@ -125,7 +125,7 @@ Sandboxes have four states:
 | `stopped` | Terminated |
 | `error` | Failed |
 
-A rolling idle timeout (default 300s) resets on every operation — exec, file access, agent activity. When the timeout expires, the sandbox auto-hibernates if possible, otherwise stops.
+By default a sandbox is persistent (`timeout` `0`) and never auto-hibernates. When you set a positive `timeout`, a rolling idle timer resets on every operation — exec, file access, agent activity. When the timer expires, the sandbox auto-hibernates if possible, otherwise stops.
 
 ## Hibernation & Wake
 
