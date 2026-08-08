@@ -47,6 +47,7 @@ import {
 import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { AgentDeployments } from '@/components/agent-deployments'
+import { AgentEvals } from '@/components/agent-evals'
 import { AgentHooksPanel } from '@/components/agent-hooks-panel'
 import {
   RepositoryAccessPanel,
@@ -82,6 +83,7 @@ type Tab =
   | 'deployments'
   | 'revisions'
   | 'sessions'
+  | 'evals'
   | 'schedules'
   | 'settings'
 
@@ -96,11 +98,13 @@ export default function AgentDetail() {
         ? 'revisions'
         : tab === 'sessions'
           ? 'sessions'
-          : tab === 'schedules'
-            ? 'schedules'
-            : tab === 'settings'
-              ? 'settings'
-              : 'overview'
+          : tab === 'evals'
+            ? 'evals'
+            : tab === 'schedules'
+              ? 'schedules'
+              : tab === 'settings'
+                ? 'settings'
+                : 'overview'
 
   // Each tab is a thin control panel over one API resource — surface the call it drives
   // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
@@ -123,6 +127,10 @@ export default function AgentDetail() {
       path: '/v3/sessions',
       sdk: 'oc.sessions.create({ agent })',
       docs: `${DOCS}/sessions`,
+    },
+    evals: {
+      method: 'GET',
+      path: `/api/dashboard/evals?agent_id=${agentId}`,
     },
     schedules: {
       method: 'GET',
@@ -507,6 +515,11 @@ export default function AgentDetail() {
             current={active === 'sessions'}
           />
           <TabLink
+            to={`${base}/evals`}
+            label="Evals"
+            current={active === 'evals'}
+          />
+          <TabLink
             to={`${base}/schedules`}
             label="Schedules"
             current={active === 'schedules'}
@@ -760,6 +773,7 @@ export default function AgentDetail() {
 
         {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
         {active === 'deployments' && <AgentDeployments agentId={agent.id} />}
+        {active === 'evals' && <AgentEvals agentId={agent.id} />}
         {active === 'schedules' && <AgentSchedulesTab agentId={agent.id} />}
 
         {active === 'sessions' && (
