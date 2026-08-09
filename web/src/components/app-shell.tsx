@@ -454,7 +454,8 @@ export default function AppShell() {
         <main
           className={cn(
             'mx-auto px-4 py-6 sm:px-8',
-            location.pathname.startsWith('/managed-agents/')
+            location.pathname.startsWith('/managed-agents/') ||
+              location.pathname.startsWith('/projects/')
               ? 'max-w-[1600px]'
               : 'max-w-7xl',
           )}

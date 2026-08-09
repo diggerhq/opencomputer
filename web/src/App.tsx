@@ -28,6 +28,7 @@ const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
+const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedAgentConnections = lazy(
   () => import('./managed-agents/Connections'),
 )
@@ -72,7 +73,11 @@ export default function App() {
             />
             <Route
               path="managed-agents/new"
-              element={<ManagedAgentsHome startersOnly />}
+              element={<Navigate to="/" replace />}
+            />
+            <Route
+              path="projects/:projectId"
+              element={<ManagedProjectDetail />}
             />
             <Route
               path="managed-agents/:agentId"

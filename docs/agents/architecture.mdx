@@ -1,204 +1,59 @@
 ---
 title: "Architecture"
-description: "How agent projects become managed, connected deployments"
+description: "How OpenComputer projects connect applications and agents"
 ---
 
-OpenComputer keeps the agent development experience code-first while managing
-the infrastructure required to run it. You work with one public surface—the
-`opencomputer` CLI—and the same agent project can run locally or in a managed
-sandbox.
+OpenComputer separates application UI from agent definitions while keeping
+both in one project repository.
 
 ```mermaid
 flowchart LR
-    A["Agent project<br/>Git + local files"] --> B["OpenComputer CLI"]
-    B --> C["Agent control plane"]
-    C --> D["Immutable deployment<br/>stable ID + alias"]
-    D --> E["Managed session"]
-    E --> F["Isolated sandbox<br/>OpenCode + workspace"]
-    F --> G["Connection broker"]
-    G --> H["Gmail, Slack, and other services"]
+    A["React app<br/>src/"] --> B["useAgent"]
+    B --> C["Local agent server<br/>npm run dev"]
+    C --> D["Agent definitions<br/>opencomputer/"]
+    D --> E["Development deployment"]
+    E --> F["Immutable production versions"]
+    F --> G["Durable sessions"]
 ```
 
-## The layers
+## Project source
 
-### Agent project
+The `opencomputer/` tree contains project identity, agents, instructions,
+tools, connections, channels, skills, routing, and runtime configuration. The
+`src/` tree is a normal React application and can be changed independently.
 
-The project is the portable definition of the agent. Its committed files
-describe:
+Projects can contain multiple agents. The initial scaffold creates only
+`hello-world`, so the developer can see the complete loop before adding more
+behavior.
 
-- stable UUID and readable display name in `opencomputer.toml`
-- behavior and approval rules in `instructions.md`
-- runtime and model configuration
-- tools and skills
-- required connections
-- initial workspace files and evaluations
+## Local development
 
-The project contains declarations and code, not provider credentials.
+`npm run dev` starts the agent server. It writes ephemeral connection details
+inside the selected agent's ignored `.opencomputer/` directory. `npm run
+dev:web` starts Vite; its server-side proxy reads those details and forwards
+browser requests. The credential is never bundled into React code.
 
-### OpenComputer CLI
+The generated `useAgent` hook:
 
-The CLI owns the developer workflow:
+- creates a session on the first prompt;
+- streams newline-delimited agent events;
+- appends assistant message deltas; and
+- reuses the session ID for follow-up prompts.
 
-- discover templates
-- initialize a complete project
-- authenticate the developer
-- authorize managed connections
-- run the project locally with OpenCode
-- package and deploy the project
-- start sessions from deployed agents
+## Environments and versions
 
-When you run `opencomputer deploy`, the CLI builds a canonical source artifact
-from the agent directory and sends it to OpenComputer. Infrastructure provider
-details are not part of the CLI contract.
+Every project starts with a development environment. Local edits can be tested
+against the live development agent, then deployed as an immutable version and
+promoted through a stable alias such as `production`. Version history remains
+available for inspection and rollback.
 
-### Agent identity and deployments
+## Project and session resources
 
-The UUID in `opencomputer.toml` identifies the agent across its lifetime. Its
-two-word name is display metadata and can change without creating a different
-agent. Each distinct source artifact becomes an immutable deployment.
+A project owns its agents, deployments, sessions, files shared by agents,
+connections, inbound channels, schedules, agent schema, and access tokens.
+A session owns its durable log, produced files, agent-written data, and secrets
+shared specifically with that session. The model supports a main agent and
+subagents with separate logs as that capability is introduced.
 
-```text
-0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8 (Gentle Falcon)
-├── deployment A
-├── deployment B
-└── production ──> deployment B
-```
-
-Aliases such as `production` provide a stable target while preserving the
-exact source behind every deployment. Deploying unchanged source is
-idempotent; deploying changed source creates a new version.
-
-### Managed sessions and sandboxes
-
-A deployed run creates a managed session from the selected agent version.
-OpenComputer prepares an isolated sandbox, loads the agent source and
-workspace, starts OpenCode, and streams the result back to the CLI.
-
-The sandbox is an implementation detail of the agent experience. You do not
-need to create or manage a separate sandbox before deploying an agent.
-
-Each session has:
-
-- the exact deployed source version
-- an isolated filesystem and process environment
-- a workspace that the agent can use during the task
-- access to the connections allowed by that agent and channels attached to its deployment alias
-- lifecycle management handled by OpenComputer
-
-### Connections
-
-Connections let agent tools act on services such as Gmail without committing
-OAuth tokens to Git.
-
-For Gmail:
-
-<Steps>
-  <Step title="Declare">
-    The template places a Google connection declaration in
-    `connections/google.json`.
-  </Step>
-  <Step title="Authorize">
-    `opencomputer connection add gmail --alias personal` opens the account
-    authorization flow. Add another alias to connect another Gmail account.
-  </Step>
-  <Step title="Develop locally">
-    The CLI gives the local agent a short-lived, scoped route to the managed
-    connection.
-  </Step>
-  <Step title="Run when deployed">
-    The managed session receives the same connection capability inside its
-    sandbox. Provider credentials remain outside the project and agent output.
-  </Step>
-</Steps>
-
-An agent's instructions should still define explicit approval boundaries.
-Connection scope controls which service operations are possible; instructions
-control when the agent should use them.
-
-The Gmail connection is centralized for the OpenComputer user. Local
-development does not create a second local OAuth installation:
-
-```text
-                         ┌───────────────────────┐
-                         │  OpenComputer user    │
-                         └───────────┬───────────┘
-                                     │ authorizes once
-                         ┌───────────▼───────────┐
-                         │ Managed Gmail         │
-                         │ connection            │
-                         └──────┬─────────┬──────┘
-                                │         │
-                scoped local    │         │ scoped managed
-                capability      │         │ capability
-                    ┌───────────▼─┐     ┌─▼──────────────┐
-                    │ Local agent │     │ Deployed agent │
-                    │ + OpenCode  │     │ + sandbox      │
-                    └───────────┬─┘     └─┬──────────────┘
-                                │         │
-                                └────┬────┘
-                                     │
-                            ┌────────▼────────┐
-                            │    Gmail API    │
-                            └─────────────────┘
-```
-
-The repository contains only the connection declaration. OAuth credentials
-stay outside Git and are never given directly to the model.
-
-<Card title="Connections and aliases" icon="plug" href="/agents/connections">
-  Learn how connection declarations, user identity, and multiple accounts work.
-</Card>
-
-## Local and deployed execution
-
-|             | Local session                | Deployed session                                                     |
-| ----------- | ---------------------------- | -------------------------------------------------------------------- |
-| Source      | Current working directory    | Immutable deployed artifact                                          |
-| Runtime     | OpenCode on your machine     | OpenCode in an isolated OpenComputer sandbox                         |
-| Connections | Scoped through the local CLI | Scoped through the managed runtime                                   |
-| Best for    | Iteration and debugging      | Durable, repeatable execution                                        |
-| Command     | `opencomputer session`       | `opencomputer session create --remote` or `opencomputer run <agent>` |
-
-This symmetry is intentional: develop the actual agent locally, then deploy
-the same directory instead of rebuilding the workflow in a dashboard.
-
-Managed sessions can be listed, inspected, attached to, resumed with another
-turn, and ended from the CLI. A session is the durable unit of interaction;
-the sandbox runtime may suspend between turns and resume when needed.
-
-## Deployment sequence
-
-```mermaid
-sequenceDiagram
-    participant Developer
-    participant CLI as OpenComputer CLI
-    participant Control as Agent control plane
-    participant Runtime as Managed sandbox
-    participant Service as Connected service
-
-    Developer->>CLI: opencomputer deploy
-    CLI->>CLI: Build canonical source artifact
-    CLI->>Control: Publish source for stable agent ID
-    Control-->>CLI: Immutable deployment ID
-    Developer->>CLI: opencomputer run gmail-summarizer "..."
-    CLI->>Control: Start session from production alias
-    Control->>Runtime: Load deployment and start OpenCode
-    Runtime->>Service: Use scoped managed connection
-    Runtime-->>Control: Stream agent events and result
-    Control-->>CLI: Stream result
-```
-
-## Security boundaries
-
-- Agent source and identity are reviewable and commit-friendly.
-- OAuth credentials are managed separately from source code.
-- Local connection access uses a scoped session capability.
-- Deployed agents run inside isolated sandboxes.
-- The public CLI and API do not expose infrastructure-provider credentials or
-  storage implementation details.
-- Consequential actions should remain behind explicit instructions and user
-  approval.
-
-<Card title="Deploy a Gmail summarizer" icon="rocket" href="/agents/quickstart">
-  Follow the complete CLI workflow.
-</Card>
+The dashboard and CLI call the public OpenComputer API. Runtime and
+infrastructure services remain private implementation details.

@@ -1,4 +1,5 @@
 import { rm } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 
 import {
   OpenComputerClient,
@@ -12,6 +13,8 @@ import {
   addCalendarTools,
   addGmailTools,
   addSlackChannel,
+  agentIdFromName,
+  assertStarterTarget,
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
@@ -62,7 +65,7 @@ async function requireAgentRoot(): Promise<string> {
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer agent repository found. Run `opencomputer init <directory>` first.",
     );
   }
   return root;
@@ -74,7 +77,11 @@ async function connectManagedService(
   label = "default",
 ): Promise<void> {
   const displayName =
-    service === "calendar" ? "Google Calendar" : service === "github" ? "GitHub" : "Gmail";
+    service === "calendar"
+      ? "Google Calendar"
+      : service === "github"
+        ? "GitHub"
+        : "Gmail";
   const started = await client.linkManagedConnection(service, label);
   if (started.status === "connected") {
     process.stdout.write(
@@ -85,7 +92,9 @@ async function connectManagedService(
   if (!started.authorizationUrl) {
     throw new Error(`${displayName} did not return an authorization link.`);
   }
-  process.stdout.write(`Authorize ${displayName}:\n${started.authorizationUrl}\n`);
+  process.stdout.write(
+    `Authorize ${displayName}:\n${started.authorizationUrl}\n`,
+  );
   openBrowser(started.authorizationUrl);
   const deadline = started.expiresAt
     ? Date.parse(started.expiresAt)
@@ -406,46 +415,41 @@ export async function runCommand(
     return;
   }
 
-  if (command === "templates") {
-    const templates = await client.templates();
-    if (globals.json) printJSON(templates);
-    else {
-      for (const template of templates) {
-        process.stdout.write(
-          `${template.id.padEnd(22)} ${template.name}\n` +
-            `${"".padEnd(23)}${template.description}\n` +
-            `${"".padEnd(23)}${template.integrations.join(", ")}\n`,
-        );
-      }
-    }
-    return;
-  }
-
   if (command === "init") {
-    const templateId = args.shift();
-    if (!templateId) {
-      throw new Error("Usage: opencomputer init <template> [directory]");
+    const directory = args.shift();
+    if (!directory) {
+      throw new Error("Usage: opencomputer init <directory|.>");
     }
-    const directory = args.shift() ?? templateId;
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const template = (await client.templates()).find(
-      (candidate) => candidate.id === templateId,
-    );
-    if (!template) throw new Error(`Unknown agent template: ${templateId}`);
-    const initialized = await initializeAgentProject(template, directory);
+    await assertStarterTarget(directory);
+    const requestedName = basename(resolve(directory));
+    const requestedSlug = agentIdFromName(requestedName);
+    const projects = await client.projects();
+    const project =
+      projects.find((candidate) => candidate.slug === requestedSlug) ??
+      (await client.createProject(requestedName, requestedSlug));
+    const agent = project.agents[0];
+    if (!agent) throw new Error("OpenComputer did not create a starter agent");
+    const initialized = await initializeAgentProject(directory, {
+      id: project.id,
+      name: project.name,
+      agentId: agent.id,
+    });
     if (globals.json) printJSON(initialized);
     else {
       const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
-        `Created ${initialized.manifest.name} from ${template.name}\n` +
+        `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Name:      ${initialized.manifest.name}\n` +
+          `Project:   ${project.name} (${project.id})\n` +
           `Agent ID:  ${initialized.manifest.id}\n` +
-          `Identity:  opencomputer.toml\n\n` +
+          `Agents:    opencomputer/\n` +
+          `React:     src/\n\n` +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  opencomputer dev\n`,
+          `  npm run dev       # terminal 1: agent server\n` +
+          `  npm run dev:web   # terminal 2: React app\n`,
       );
     }
     return;
@@ -456,7 +460,7 @@ export async function runCommand(
     if (globals.json) printJSON(agents);
     else if (!agents.length) {
       process.stdout.write(
-        "No agents deployed. Run `opencomputer templates` to get started.\n",
+        "No agents deployed. Run `opencomputer init <directory>` to get started.\n",
       );
     } else {
       for (const agent of agents) {
@@ -681,7 +685,9 @@ export async function runCommand(
       const alias = option(args, "--alias") ?? "default";
       const service = provider === "google" ? "gmail" : provider;
       if (
-        (service !== "gmail" && service !== "calendar" && service !== "github") ||
+        (service !== "gmail" &&
+          service !== "calendar" &&
+          service !== "github") ||
         args.length
       ) {
         throw new Error(
@@ -718,10 +724,14 @@ export async function runCommand(
       )
         ? "calendar"
         : "gmail";
-      const managedService = connection.provider === "github" ? "github" : googleService;
+      const managedService =
+        connection.provider === "github" ? "github" : googleService;
       const disconnected =
         connection.provider === "google" || connection.provider === "github"
-          ? await client.disconnectManagedConnection(connection.id, managedService)
+          ? await client.disconnectManagedConnection(
+              connection.id,
+              managedService,
+            )
           : await client.disconnectConnection(connection.id);
       if (globals.json) printJSON(disconnected);
       else process.stdout.write(`Removed connection "${connection.label}".\n`);

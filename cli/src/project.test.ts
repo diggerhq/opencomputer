@@ -16,7 +16,9 @@ import ts from "typescript";
 import type { ManagedAgentTemplate } from "./api.js";
 import {
   buildAgentArtifact,
-  initializeAgentProject,
+  findAgentRoot,
+  initializeAgentProject as initializeStarterProject,
+  initializeTemplateAgentProject as initializeAgentProject,
   prepareAgent,
   readManifest,
 } from "./project.js";
@@ -52,6 +54,57 @@ const prReviewTemplate: ManagedAgentTemplate = {
   suggestedPrompts: ["Review this pull request."],
 };
 
+test("init creates a multi-agent-ready project and React hello world app", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-project-"));
+  const root = resolve(parent, "hello-app");
+  try {
+    await mkdir(root);
+    await writeFile(resolve(root, "NOTES.md"), "# Existing notes\n");
+    const initialized = await initializeStarterProject(root, {
+      id: "prj_hello",
+      name: "My Agent",
+      agentId: "my-agent",
+    });
+    assert.equal(initialized.root, root);
+    assert.equal(initialized.manifest.name, "Hello World");
+    assert.equal(initialized.manifest.id, "my-agent");
+    assert.equal(
+      initialized.agentRoot,
+      resolve(root, "opencomputer", "agents", "hello-world"),
+    );
+    assert.equal(await findAgentRoot(root), initialized.agentRoot);
+    assert.match(
+      await readFile(resolve(root, "opencomputer", "project.ts"), "utf8"),
+      /id: "prj_hello"[\s\S]*name: "My Agent"[\s\S]*agents: \["hello-world"\]/,
+    );
+    assert.match(
+      await readFile(resolve(root, "src", "use-agent.ts"), "utf8"),
+      /export function useAgent/,
+    );
+    const packageJSON = JSON.parse(
+      await readFile(resolve(root, "package.json"), "utf8"),
+    ) as {
+      scripts: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    assert.equal(packageJSON.scripts.dev, "opencomputer dev");
+    assert.equal(packageJSON.scripts["dev:web"], "vite");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.0");
+    assert.ok(packageJSON.devDependencies["@types/node"]);
+    assert.match(
+      await readFile(resolve(root, "vite.config.ts"), "utf8"),
+      /command === "serve"/,
+    );
+    assert.equal(
+      await readFile(resolve(root, "NOTES.md"), "utf8"),
+      "# Existing notes\n",
+    );
+    await assert.rejects(stat(resolve(root, "opencomputer", "package.json")));
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("a template creates a flat agent repository with stable identity", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-agent-"));
   const original = resolve(parent, "my-inbox-agent");
@@ -77,9 +130,7 @@ test("a template creates a flat agent repository with stable identity", async ()
     assert.match(gmailTool, /export const read_full/);
     assert.equal(
       (
-        await stat(
-          resolve(original, "skills", "triage-inbox", "SKILL.md"),
-        )
+        await stat(resolve(original, "skills", "triage-inbox", "SKILL.md"))
       ).isFile(),
       true,
     );
@@ -161,10 +212,7 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     assert.equal(runtimeOpenCode.permission.question, "allow");
     assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
     assert.match(runtimeInstructions, /summary count exactly matches/);
-    assert.equal(
-      (await stat(resolve(runtime, "README.md"))).isFile(),
-      true,
-    );
+    assert.equal((await stat(resolve(runtime, "README.md"))).isFile(), true);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -213,7 +261,10 @@ test("a template initializes at the root of a fresh Git repository", async () =>
     assert.equal(initialized.root, root);
     assert.match(initialized.manifest.id, UUID_PATTERN);
     assert.match(initialized.manifest.name, PRETTY_NAME_PATTERN);
-    assert.equal(await readFile(resolve(root, "README.md"), "utf8"), "# My agent\n");
+    assert.equal(
+      await readFile(resolve(root, "README.md"), "utf8"),
+      "# My agent\n",
+    );
     const gitignore = await readFile(resolve(root, ".gitignore"), "utf8");
     assert.match(gitignore, /\.DS_Store/);
     assert.match(gitignore, /\.opencomputer\//);
@@ -240,7 +291,10 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     assert.match(calendarTool, /export const freebusy = tool/);
     assert.match(calendarTool, /export const create_time_off = tool/);
     assert.doesNotMatch(calendarTool, /calendar\/v3/);
-    assert.match(calendarTool, /const calendarId = args\.calendarId \|\| "primary"/);
+    assert.match(
+      calendarTool,
+      /const calendarId = args\.calendarId \|\| "primary"/,
+    );
     assert.match(calendarTool, /: \["primary"\]/);
     assert.match(calendarTool, /end: \{ date: nextDate\(endDate\) \}/);
     assert.match(calendarTool, /result\.detail/);
@@ -266,9 +320,7 @@ test("the PTO template creates Calendar tools without checked-in channel state",
       connection.scopes.includes("https://www.googleapis.com/auth/calendar"),
     );
     assert.equal(
-      (
-        await stat(resolve(root, "skills", "manage-pto", "SKILL.md"))
-      ).isFile(),
+      (await stat(resolve(root, "skills", "manage-pto", "SKILL.md"))).isFile(),
       true,
     );
     assert.match(
@@ -372,7 +424,10 @@ test("the PR readiness template creates brokered read-only GitHub tools", async 
     assert.match(instructions, /READY_FOR_HUMAN_REVIEW/);
     assert.match(instructions, /NOT_READY/);
     assert.match(instructions, /NEEDS_INFORMATION/);
-    assert.match(instructions, /credentials remain in the OpenComputer control plane/);
+    assert.match(
+      instructions,
+      /credentials remain in the OpenComputer control plane/,
+    );
     assert.match(instructions, /Never push/);
     assert.match(instructions, /current OpenComputer session/);
 

@@ -8,7 +8,7 @@ import type { ManagedAgentTemplate } from "./api.js";
 import { runCommand } from "./commands.js";
 import {
   addSlackChannel,
-  initializeAgentProject,
+  initializeTemplateAgentProject as initializeAgentProject,
 } from "./project.js";
 import {
   ensureSlackHooks,
@@ -61,10 +61,7 @@ test("Slack channel state renders local and remote manifests", async () => {
       unknown
     >;
     assert.equal(settings.socket_mode_enabled, false);
-    assert.equal(
-      subscriptions.request_url,
-      "https://example.com/slack/events",
-    );
+    assert.equal(subscriptions.request_url, "https://example.com/slack/events");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -79,11 +76,9 @@ test("Slack hooks accept source metadata from the Slack CLI", async () => {
     await addSlackChannel(root);
     process.chdir(root);
     await assert.doesNotReject(
-      runCommand(
-        "slack-hook",
-        ["manifest", `--source=${root}`],
-        { json: false },
-      ),
+      runCommand("slack-hook", ["manifest", `--source=${root}`], {
+        json: false,
+      }),
     );
   } finally {
     process.chdir(previousDirectory);

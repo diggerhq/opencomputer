@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
-  it('shows only unlabeled agents and connections by default', () => {
+  it('shows only unlabeled projects and connections by default', () => {
     const nav = managedAgentsNav({
       durableSessionsEnabled: false,
       infrastructureEnabled: false,
@@ -11,7 +11,7 @@ describe('managed agents navigation', () => {
     expect(nav.map((group) => group.label)).toEqual([undefined])
     expect(nav[0]?.collapsible).toBeUndefined()
     expect(nav[0]?.items.map((item) => item.label)).toEqual([
-      'Agents',
+      'Projects',
       'Connections',
     ])
   })

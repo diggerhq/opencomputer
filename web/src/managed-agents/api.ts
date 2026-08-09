@@ -41,6 +41,24 @@ const agentsResponseSchema = z.object({
   agents: z.array(agentSchema),
 })
 
+const projectSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  environments: z.array(
+    z.object({
+      name: z.enum(['development', 'production']),
+      activeDeploymentId: z.string().optional(),
+      updatedAt: z.string(),
+    }),
+  ),
+  agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
+
 const connectionSchema = z.object({
   id: z.string(),
   kind: z.enum(['tool', 'channel']),
@@ -145,8 +163,21 @@ const sessionSchema = z.object({
 
 const sessionsResponseSchema = z.object({ sessions: z.array(sessionSchema) })
 
+const projectOverviewSchema = z.object({
+  project: projectSchema,
+  sessions: z.array(sessionSchema),
+  deployments: z.array(deploymentSchema),
+  connections: z.array(connectionSchema),
+  channels: z.array(channelSchema),
+  schedules: z.array(z.record(z.string(), z.unknown())),
+  files: z.array(z.record(z.string(), z.unknown())),
+  schema: z.record(z.string(), z.unknown()),
+})
+
 export type ManagedAgentTemplate = z.infer<typeof templateSchema>
 export type ManagedAgentSummary = z.infer<typeof agentSchema>
+export type ManagedProject = z.infer<typeof projectSchema>
+export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
 export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
@@ -178,6 +209,32 @@ export async function getManagedAgents() {
   return (
     await apiFetch('/managed-agents/agents', undefined, agentsResponseSchema)
   ).agents
+}
+
+export async function getManagedProjects() {
+  return (
+    await apiFetch(
+      '/managed-agents/projects',
+      undefined,
+      projectsResponseSchema,
+    )
+  ).projects
+}
+
+export async function createManagedProject(name: string) {
+  return apiFetch(
+    '/managed-agents/projects',
+    { method: 'POST', body: JSON.stringify({ name }) },
+    projectSchema,
+  )
+}
+
+export async function getManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}`,
+    undefined,
+    projectOverviewSchema,
+  )
 }
 
 export async function getManagedAgentConnections() {

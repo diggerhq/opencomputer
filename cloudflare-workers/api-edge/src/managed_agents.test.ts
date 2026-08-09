@@ -182,7 +182,8 @@ describe("managed agents proxy", () => {
       "/api/managed-agents",
     );
 
-    expect(await response.json()).toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       templates: [
         {
           id: "email-triage",
@@ -227,7 +228,8 @@ describe("managed agents proxy", () => {
       "/api/managed-agents",
     );
 
-    expect(await response.json()).toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       agents: [
         {
           id: "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8",
@@ -240,6 +242,52 @@ describe("managed agents proxy", () => {
         },
       ],
     });
+  });
+
+  it("creates and lists projects without exposing the backend account model", async () => {
+    const fetchSpy = vi.fn(async (request: URL | RequestInfo) => {
+      const url = String(request);
+      const project = {
+        id: "prj_test",
+        slug: "hello-world",
+        name: "Hello World",
+        agentId: "hello-world",
+        environments: [{ name: "development", updatedAt: "2026-08-08" }],
+        accountId: "private-account",
+        createdAt: "2026-08-08",
+        updatedAt: "2026-08-08",
+      };
+      return Response.json(
+        url.endsWith("/v1/projects") ? { projects: [project] } : project,
+      );
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/projects"),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    const body = await response.json();
+    expect(body).toEqual({
+      projects: [
+        {
+          id: "prj_test",
+          slug: "hello-world",
+          name: "Hello World",
+          environments: [{ name: "development", updatedAt: "2026-08-08" }],
+          agents: [{ id: "hello-world", name: "Hello World" }],
+          createdAt: "2026-08-08",
+          updatedAt: "2026-08-08",
+        },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
   it("exposes a sanitized active deployment for agent details", async () => {

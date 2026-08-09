@@ -147,6 +147,23 @@ function publicDeployment(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicProject(value: unknown): Record<string, unknown> {
+  const project = record(value) ?? {};
+  const agentId =
+    typeof project.agentId === "string" ? project.agentId : undefined;
+  return {
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    environments: Array.isArray(project.environments)
+      ? stripPrivateValues(project.environments)
+      : [],
+    agents: agentId ? [{ id: agentId, name: "Hello World" }] : [],
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
 function publicConnection(value: unknown): Record<string, unknown> {
   const connection = record(value) ?? {};
   return {
@@ -260,6 +277,35 @@ function publicSuccessBody(
             };
           })
         : [],
+    };
+  }
+  if (method === "GET" && suffix === "/projects") {
+    return {
+      projects: Array.isArray(body.projects)
+        ? body.projects.map(publicProject)
+        : [],
+    };
+  }
+  if (method === "POST" && suffix === "/projects") {
+    return publicProject(body);
+  }
+  if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) {
+    const project = publicProject(body.project);
+    return {
+      project,
+      sessions: stripPrivateValues(body.sessions ?? []),
+      deployments: Array.isArray(body.deployments)
+        ? body.deployments.map(publicDeployment)
+        : [],
+      connections: Array.isArray(body.connections)
+        ? body.connections.map(publicConnection)
+        : [],
+      channels: Array.isArray(body.channels)
+        ? body.channels.map(publicChannel)
+        : [],
+      schedules: stripPrivateValues(body.schedules ?? []),
+      files: stripPrivateValues(body.files ?? []),
+      schema: stripPrivateValues(body.schema ?? {}),
     };
   }
   if (method === "GET" && suffix === "/me") {
@@ -515,6 +561,10 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && suffix === "/me") return true;
+  if ((method === "GET" || method === "POST") && suffix === "/projects") {
+    return true;
+  }
+  if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "POST" && suffix === "/deployments") return true;
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
   if (method === "POST" && suffix === "/channel-connections/claim") {
@@ -564,7 +614,8 @@ function channelConnectionPage(
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
-        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        "content-security-policy":
+          "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       },
     },
   );

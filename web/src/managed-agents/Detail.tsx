@@ -43,12 +43,22 @@ import {
   getManagedAgentSessions,
   type ManagedAgentEvent,
   type ManagedAgentSession,
+  type ManagedAgentSummary,
+  type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
 import { isNearScrollEnd } from './scroll-follow'
 import { ManagedSlackWizard } from './SlackWizard'
 
-type DetailTab = 'playground' | 'deployments' | 'sessions' | 'channels'
+type DetailTab =
+  | 'playground'
+  | 'deployments'
+  | 'sessions'
+  | 'files'
+  | 'connections'
+  | 'channels'
+  | 'schedules'
+  | 'schema'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -427,8 +437,15 @@ function PlaygroundChat({
   )
 }
 
-export default function ManagedAgentDetail() {
-  const { agentId = '' } = useParams()
+export default function ManagedAgentDetail({
+  agentId: agentIdOverride,
+  project,
+}: {
+  agentId?: string
+  project?: ManagedProjectOverview
+} = {}) {
+  const params = useParams()
+  const agentId = agentIdOverride ?? params.agentId ?? ''
   const [activeTab, setActiveTab] = useState<DetailTab>('playground')
   const [selectedPlaygroundId, setSelectedPlaygroundId] = useState<string>()
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
@@ -438,7 +455,23 @@ export default function ManagedAgentDetail() {
     queryKey: ['managed-agents'],
     queryFn: getManagedAgents,
   })
-  const agent = agents.data?.find((candidate) => candidate.id === agentId)
+  const listedAgent = agents.data?.find((candidate) => candidate.id === agentId)
+  const projectAgent = project?.project.agents.find(
+    (candidate) => candidate.id === agentId,
+  )
+  const agent: ManagedAgentSummary | undefined =
+    listedAgent ??
+    (projectAgent && project
+      ? {
+          id: projectAgent.id,
+          name: projectAgent.name,
+          activeAlias: 'development',
+          activeDeploymentId: project.deployments[0]?.id,
+          deploymentCount: project.deployments.length,
+          createdAt: project.project.createdAt,
+          updatedAt: project.project.updatedAt,
+        }
+      : undefined)
   const activeDeployment = useQuery({
     queryKey: ['managed-agent-deployment', agent?.activeDeploymentId],
     queryFn: () => getManagedAgentDeployment(agent!.activeDeploymentId!),
@@ -539,7 +572,7 @@ export default function ManagedAgentDetail() {
           description="This agent is not available in your organization."
           action={
             <Button asChild variant="outline">
-              <Link to="/">Back to agents</Link>
+              <Link to="/">Back to projects</Link>
             </Button>
           }
         />
@@ -548,10 +581,22 @@ export default function ManagedAgentDetail() {
   }
 
   const tabs: Array<{ id: DetailTab; label: string }> = [
-    { id: 'playground', label: 'Playground' },
+    { id: 'playground', label: project ? 'Agent playground' : 'Playground' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
+    ...(project
+      ? ([
+          { id: 'files', label: 'Files' },
+          { id: 'connections', label: 'Connections' },
+        ] as const)
+      : []),
     { id: 'channels', label: 'Channels' },
+    ...(project
+      ? ([
+          { id: 'schedules', label: 'Schedules' },
+          { id: 'schema', label: 'Agent schema' },
+        ] as const)
+      : []),
   ]
 
   return (
@@ -563,16 +608,21 @@ export default function ManagedAgentDetail() {
       )}
     >
       <PageHeader
-        title={agent ? displayManagedAgentName(agent) : 'Agent'}
+        title={
+          project?.project.name ??
+          (agent ? displayManagedAgentName(agent) : 'Agent')
+        }
         description={
-          activeDeployment.data
-            ? `Active deployment · ${activeDeployment.data.alias}`
-            : 'Loading active deployment…'
+          project
+            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'} · development and production environments`
+            : activeDeployment.data
+              ? `Active deployment · ${activeDeployment.data.alias}`
+              : 'Loading active deployment…'
         }
         actions={
           <Button asChild variant="outline" size="sm">
             <Link to="/">
-              <ArrowLeft /> All agents
+              <ArrowLeft /> All projects
             </Link>
           </Button>
         }
@@ -608,7 +658,17 @@ export default function ManagedAgentDetail() {
         </div>
       </div>
 
-      {activeTab === 'playground' ? (
+      {activeTab === 'playground' &&
+      project &&
+      project.deployments.length === 0 ? (
+        <Panel>
+          <EmptyState
+            icon={Bot}
+            title="Deploy the hello-world agent to use Agent playground"
+            description={`Run opencomputer init ${project.project.slug}, develop it with the React app, then deploy it to test durable sessions here.`}
+          />
+        </Panel>
+      ) : activeTab === 'playground' ? (
         <Panel className="min-h-0 flex-1 overflow-hidden">
           <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] lg:grid-rows-1">
             <aside className="bg-muted/15 flex min-h-0 flex-col overflow-hidden border-b lg:border-r lg:border-b-0">
@@ -835,6 +895,68 @@ export default function ManagedAgentDetail() {
           )}
         </Panel>
       ) : null}
+
+      {activeTab === 'files' && project ? (
+        <ProjectResourcePanel
+          title="Files"
+          description="Files shared by agents and project sessions."
+          values={project.files}
+        />
+      ) : null}
+
+      {activeTab === 'connections' && project ? (
+        <ProjectResourcePanel
+          title="Connections"
+          description="Managed service connections available to this project."
+          values={project.connections}
+        />
+      ) : null}
+
+      {activeTab === 'schedules' && project ? (
+        <ProjectResourcePanel
+          title="Schedules"
+          description="Functions in this project that run on a cron schedule."
+          values={project.schedules}
+        />
+      ) : null}
+
+      {activeTab === 'schema' && project ? (
+        <ProjectResourcePanel
+          title="Agent schema"
+          description="Agents, tools, and connections deployed by this project."
+          values={[project.schema]}
+        />
+      ) : null}
     </div>
+  )
+}
+
+function ProjectResourcePanel({
+  title,
+  description,
+  values,
+}: {
+  title: string
+  description: string
+  values: unknown[]
+}) {
+  return (
+    <Panel>
+      <PanelHeader>
+        <div>
+          <PanelTitle>{title}</PanelTitle>
+          <PanelDescription className="mt-1">{description}</PanelDescription>
+        </div>
+      </PanelHeader>
+      <PanelContent>
+        {values.length ? (
+          <pre className="bg-muted overflow-x-auto rounded-md border p-4 text-xs leading-5">
+            {JSON.stringify(values.length === 1 ? values[0] : values, null, 2)}
+          </pre>
+        ) : (
+          <p className="text-muted-foreground text-sm">Nothing here yet.</p>
+        )}
+      </PanelContent>
+    </Panel>
   )
 }

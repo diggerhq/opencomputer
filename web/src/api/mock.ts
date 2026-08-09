@@ -1254,6 +1254,19 @@ let managedAgentItems: Array<{
   updatedAt: string
 }> = []
 
+let managedProjects: Array<{
+  id: string
+  slug: string
+  name: string
+  environments: Array<{
+    name: 'development' | 'production'
+    updatedAt: string
+  }>
+  agents: Array<{ id: string; name: string }>
+  createdAt: string
+  updatedAt: string
+}> = []
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
@@ -1266,6 +1279,20 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ templates: managedAgentTemplates }),
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
+  [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
+  [
+    /^\/managed-agents\/projects\/[^/]+$/,
+    () => ({
+      project: managedProjects[0],
+      sessions: [],
+      deployments: [],
+      connections: [],
+      channels: [],
+      schedules: [],
+      files: [],
+      schema: { version: 0, agents: managedProjects[0]?.agents ?? [] },
+    }),
+  ],
   [
     /^\/managed-agents\/connections$/,
     () => ({
@@ -1472,6 +1499,26 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [
+    /^\/managed-agents\/projects$/,
+    () => {
+      const timestamp = new Date(BASE).toISOString()
+      const project = {
+        id: 'prj_preview',
+        slug: 'hello-world',
+        name: 'Hello World',
+        environments: [
+          { name: 'development' as const, updatedAt: timestamp },
+          { name: 'production' as const, updatedAt: timestamp },
+        ],
+        agents: [{ id: 'hello-world', name: 'Hello World' }],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }
+      managedProjects = [project]
+      return project
+    },
+  ],
   [
     /^\/managed-agents\/templates\/[^/]+\/deploy$/,
     () => {

@@ -124,7 +124,13 @@ async function prepareInitializationTarget(
 
 async function updateGitignore(root: string): Promise<void> {
   const path = resolve(root, ".gitignore");
-  const required = ["node_modules/", ".opencomputer/", ".env"];
+  const required = [
+    "node_modules/",
+    "dist/",
+    ".opencomputer/",
+    ".env",
+    ".env.local",
+  ];
   let existing = "";
   try {
     existing = await readFile(path, "utf8");
@@ -134,7 +140,8 @@ async function updateGitignore(root: string): Promise<void> {
   const lines = new Set(existing.split(/\r?\n/));
   const missing = required.filter((line) => !lines.has(line));
   if (!missing.length) return;
-  const prefix = existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
+  const prefix =
+    existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
   await writeFile(path, `${prefix}${missing.join("\n")}\n`);
 }
 
@@ -1092,9 +1099,7 @@ function tomlString(source: string, key: string): string | undefined {
 
 export async function readManifest(root: string): Promise<AgentManifest> {
   const source = await readFile(resolve(root, "opencomputer.toml"), "utf8");
-  const schema = Number(
-    source.match(/^\s*schema\s*=\s*(\d+)\s*$/m)?.[1],
-  );
+  const schema = Number(source.match(/^\s*schema\s*=\s*(\d+)\s*$/m)?.[1]);
   const id = tomlString(source, "id");
   const name = tomlString(source, "name");
   const template = tomlString(source, "template");
@@ -1116,11 +1121,43 @@ export async function findAgentRoot(
 ): Promise<string | undefined> {
   let directory = resolve(startDirectory);
   for (;;) {
+    const nested = resolve(directory, "opencomputer");
     if (
       (await exists(resolve(directory, "opencomputer.toml"))) &&
       (await exists(resolve(directory, "instructions.md")))
     ) {
       return directory;
+    }
+    if (
+      (await exists(resolve(nested, "opencomputer.toml"))) &&
+      (await exists(resolve(nested, "instructions.md")))
+    ) {
+      return nested;
+    }
+    for (const agentsDirectory of [
+      resolve(directory, "opencomputer", "agents"),
+      resolve(directory, "agents"),
+    ]) {
+      if (!(await exists(agentsDirectory))) continue;
+      const detected: string[] = [];
+      for (const entry of await readdir(agentsDirectory, {
+        withFileTypes: true,
+      })) {
+        if (!entry.isDirectory()) continue;
+        const agent = resolve(agentsDirectory, entry.name);
+        if (
+          (await exists(resolve(agent, "opencomputer.toml"))) &&
+          (await exists(resolve(agent, "instructions.md")))
+        ) {
+          detected.push(agent);
+        }
+      }
+      if (detected.length === 1) return detected[0];
+      if (detected.length > 1) {
+        throw new Error(
+          "This project has multiple agents. Select an agent when starting dev mode.",
+        );
+      }
     }
     const parent = dirname(directory);
     if (parent === directory) return undefined;
@@ -1264,7 +1301,7 @@ export async function addSlackChannel(root: string): Promise<string[]> {
   return ["channels/slack.ts", "slack/manifest.json"];
 }
 
-export async function initializeAgentProject(
+export async function initializeTemplateAgentProject(
   template: ManagedAgentTemplate,
   directory: string,
 ): Promise<{ root: string; manifest: AgentManifest; files: string[] }> {
@@ -1513,10 +1550,7 @@ Pass criteria:
 - Does not modify Gmail or send mail.
 `,
     );
-    files.push(
-      "skills/triage-inbox/SKILL.md",
-      "evals/triage-cases.md",
-    );
+    files.push("skills/triage-inbox/SKILL.md", "evals/triage-cases.md");
   }
   if (template.id === "pto-calendar") {
     await mkdir(resolve(root, "skills", "manage-pto"), {
@@ -1589,6 +1623,449 @@ Pass criteria:
     files.push("skills/manage-pto/SKILL.md", "evals/pto-cases.md");
   }
   return { root, manifest, files };
+}
+
+const HELLO_WORLD_TEMPLATE: ManagedAgentTemplate = {
+  id: "hello-world",
+  name: "Hello World",
+  description:
+    "Greet the user, explain that this agent is running live, and answer simple questions clearly.",
+  category: "Getting started",
+  integrations: [],
+  suggestedPrompts: ["Say hello and tell me what you can do."],
+};
+
+export async function assertStarterTarget(directory: string): Promise<void> {
+  const root = resolve(directory);
+  if (!(await exists(root))) {
+    await mkdir(root, { recursive: true });
+    return;
+  }
+  const reserved = [
+    "opencomputer/project.ts",
+    "opencomputer/agents/hello-world/opencomputer.toml",
+    "package.json",
+    "vite.config.ts",
+    "index.html",
+    "src/App.tsx",
+    "src/main.tsx",
+  ];
+  const conflicts: string[] = [];
+  for (const path of reserved) {
+    if (await exists(resolve(root, path))) conflicts.push(path);
+  }
+  if (conflicts.length) {
+    throw new Error(
+      `Target already contains OpenComputer app files: ${conflicts.join(", ")}`,
+    );
+  }
+}
+
+export async function initializeAgentProject(
+  directory: string,
+  project?: { id: string; name: string; agentId: string },
+): Promise<{
+  root: string;
+  agentRoot: string;
+  manifest: AgentManifest;
+  files: string[];
+}> {
+  const root = resolve(directory);
+  const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
+  await assertStarterTarget(root);
+  const initialized = await initializeTemplateAgentProject(
+    HELLO_WORLD_TEMPLATE,
+    agentRoot,
+  );
+  const manifest: AgentManifest = {
+    ...initialized.manifest,
+    ...(project ? { id: project.agentId } : {}),
+    name: "Hello World",
+  };
+  await writeManifest(agentRoot, manifest);
+  await rm(resolve(agentRoot, "package.json"), { force: true });
+  await rm(resolve(agentRoot, ".gitignore"), { force: true });
+  await updateGitignore(root);
+  await mkdir(resolve(root, "src"), { recursive: true });
+  await writeFile(
+    resolve(root, "opencomputer", "project.ts"),
+    `export default {
+  id: ${JSON.stringify(project?.id ?? manifest.id)},
+  name: ${JSON.stringify(project?.name ?? "Hello World")},
+  agents: ["hello-world"],
+};
+`,
+  );
+
+  await writeFile(
+    resolve(root, "package.json"),
+    `${JSON.stringify(
+      {
+        name: `opencomputer-app-${manifest.id}`,
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        scripts: {
+          dev: "opencomputer dev",
+          "dev:web": "vite",
+          build: "tsc -b && vite build",
+          session: "opencomputer session",
+          deploy: "opencomputer deploy",
+        },
+        dependencies: {
+          react: "^19.2.0",
+          "react-dom": "^19.2.0",
+        },
+        devDependencies: {
+          "@opencomputer/cli": "^0.4.0",
+          "@opencode-ai/plugin": "^1.18.4",
+          "@types/node": "^24.0.0",
+          "@types/react": "^19.2.0",
+          "@types/react-dom": "^19.2.0",
+          "@vitejs/plugin-react": "^6.0.0",
+          "opencode-ai": "1.18.4",
+          typescript: "^5.9.0",
+          vite: "^8.0.0",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    resolve(root, "vite.config.ts"),
+    `import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+function openComputerDev() {
+  try {
+    return JSON.parse(
+      readFileSync(
+        resolve("opencomputer/agents/hello-world/.opencomputer/dev.json"),
+        "utf8",
+      ),
+    ) as { url: string; token: string };
+  } catch {
+    throw new Error(
+      "OpenComputer is not running. Start npm run dev in another terminal first.",
+    );
+  }
+}
+
+export default defineConfig(({ command }) => {
+  const dev = command === "serve" ? openComputerDev() : undefined;
+  return {
+    plugins: [react()],
+    ...(dev ? { server: {
+      proxy: {
+        "/api/opencomputer": {
+          target: dev.url,
+          headers: { authorization: \`Bearer \${dev.token}\` },
+          rewrite: (path) => path.replace(/^\\/api\\/opencomputer/, ""),
+        },
+      },
+    } } : {}),
+  };
+});
+`,
+  );
+  await writeFile(
+    resolve(root, "tsconfig.json"),
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          useDefineForClassFields: true,
+          lib: ["ES2022", "DOM", "DOM.Iterable"],
+          allowJs: false,
+          skipLibCheck: true,
+          esModuleInterop: true,
+          allowSyntheticDefaultImports: true,
+          strict: true,
+          forceConsistentCasingInFileNames: true,
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          resolveJsonModule: true,
+          isolatedModules: true,
+          noEmit: true,
+          jsx: "react-jsx",
+          types: ["node", "vite/client"],
+        },
+        include: ["src", "vite.config.ts"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    resolve(root, "index.html"),
+    `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#11110f" />
+    <title>Hello World · OpenComputer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+`,
+  );
+  await writeFile(
+    resolve(root, "src", "use-agent.ts"),
+    `import { useCallback, useState } from "react";
+
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
+interface AgentEvent {
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export function useAgent() {
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string>();
+  const [isRunning, setIsRunning] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const send = useCallback(async (value: string) => {
+    const prompt = value.trim();
+    if (!prompt || isRunning) return;
+    const userMessage: AgentMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      text: prompt,
+    };
+    const assistantId = crypto.randomUUID();
+    setMessages((current) => [
+      ...current,
+      userMessage,
+      { id: assistantId, role: "assistant", text: "" },
+    ]);
+    setIsRunning(true);
+    setError(undefined);
+    try {
+      const endpoint = sessionId
+        ? \`/api/opencomputer/sessions/\${encodeURIComponent(sessionId)}\`
+        : "/api/opencomputer/sessions";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(\`Agent request failed (\${response.status})\`);
+      }
+      const createdSession = response.headers.get("x-opencomputer-session-id");
+      if (createdSession) setSessionId(createdSession);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      let streamed = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split("\\n");
+        buffered = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as AgentEvent;
+          if (event.type === "message.delta") {
+            streamed += String(event.data.text ?? "");
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId
+                  ? { ...message, text: streamed }
+                  : message,
+              ),
+            );
+          } else if (event.type === "message.completed" && !streamed) {
+            const text = String(event.data.text ?? "");
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId ? { ...message, text } : message,
+              ),
+            );
+          } else if (event.type === "session.failed") {
+            throw new Error(String(event.data.message ?? "Agent failed"));
+          }
+        }
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantId && !item.text
+            ? { ...item, text: "I couldn't complete that request." }
+            : item,
+        ),
+      );
+    } finally {
+      setIsRunning(false);
+    }
+  }, [isRunning, sessionId]);
+
+  return { messages, send, isRunning, error };
+}
+`,
+  );
+  await writeFile(
+    resolve(root, "src", "App.tsx"),
+    `import { FormEvent, useState } from "react";
+import { useAgent } from "./use-agent";
+
+export default function App() {
+  const [input, setInput] = useState("");
+  const { messages, send, isRunning, error } = useAgent();
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const prompt = input;
+    setInput("");
+    void send(prompt);
+  }
+
+  return (
+    <main>
+      <section className="hero">
+        <span className="eyebrow">OpenComputer</span>
+        <h1>Hello, world.</h1>
+        <p>Your first agent is live. Ask it anything to see the local backend and React app working together.</p>
+      </section>
+
+      <section className="chat" aria-label="Agent conversation">
+        <div className="messages">
+          {messages.length === 0 ? (
+            <button className="suggestion" onClick={() => void send("Say hello and tell me what you can do.")}>
+              Say hello and tell me what you can do →
+            </button>
+          ) : (
+            messages.map((message) => (
+              <article key={message.id} className={message.role}>
+                <strong>{message.role === "user" ? "You" : "Agent"}</strong>
+                <p>{message.text || "Thinking…"}</p>
+              </article>
+            ))
+          )}
+        </div>
+        {error ? <p className="error">{error}</p> : null}
+        <form onSubmit={submit}>
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Message the hello-world agent…"
+            aria-label="Message"
+          />
+          <button disabled={isRunning || !input.trim()}>
+            {isRunning ? "Running…" : "Send"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+`,
+  );
+  await writeFile(
+    resolve(root, "src", "main.tsx"),
+    `import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./styles.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+`,
+  );
+  await writeFile(
+    resolve(root, "src", "styles.css"),
+    `@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap");
+
+:root { color: #1d1c19; background: #f4f1e9; font-family: "DM Sans", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+main { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 12vh 0 48px; }
+.hero { margin-bottom: 36px; }
+.eyebrow { color: #706b60; font-size: 12px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+h1 { margin: 10px 0; font: 400 clamp(48px, 10vw, 84px)/.95 "DM Serif Display", serif; }
+.hero p { max-width: 580px; color: #625e55; font-size: 18px; line-height: 1.6; }
+.chat { overflow: hidden; border: 1px solid #d9d4c8; border-radius: 18px; background: rgba(255,255,255,.72); box-shadow: 0 18px 60px rgba(56,48,34,.08); }
+.messages { display: grid; gap: 14px; min-height: 260px; max-height: 52vh; overflow-y: auto; padding: 24px; }
+article { max-width: 82%; border-radius: 14px; padding: 12px 14px; }
+article strong { display: block; margin-bottom: 4px; font-size: 12px; color: #777166; }
+article p { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+article.user { justify-self: end; background: #1d1c19; color: white; }
+article.user strong { color: #bdb7ab; }
+article.assistant { background: #ece8de; }
+.suggestion { align-self: center; justify-self: center; border: 1px solid #d9d4c8; border-radius: 999px; background: transparent; padding: 10px 16px; cursor: pointer; }
+.suggestion:hover { background: #ece8de; }
+.error { margin: 0 24px 12px; color: #a33a2b; font-size: 14px; }
+form { display: flex; gap: 10px; border-top: 1px solid #ddd8cc; padding: 14px; background: white; }
+input { min-width: 0; flex: 1; border: 0; outline: 0; padding: 10px; background: transparent; }
+form button { border: 0; border-radius: 10px; background: #d85b35; color: white; padding: 10px 18px; font-weight: 600; cursor: pointer; }
+form button:disabled { cursor: default; opacity: .45; }
+`,
+  );
+  await writeFile(
+    resolve(root, "README.md"),
+    `# Hello World OpenComputer app
+
+This project keeps agent definitions in \`opencomputer/\` and the React app in
+\`src/\`.
+
+Start the agent server in one terminal:
+
+\`\`\`bash
+npm run dev
+\`\`\`
+
+Then start the React app in another:
+
+\`\`\`bash
+npm run dev:web
+\`\`\`
+`,
+  );
+
+  const appFiles = [
+    "package.json",
+    "vite.config.ts",
+    "tsconfig.json",
+    "index.html",
+    "README.md",
+    ".gitignore",
+    "src/App.tsx",
+    "src/main.tsx",
+    "src/styles.css",
+    "src/use-agent.ts",
+  ];
+  return {
+    root,
+    agentRoot,
+    manifest,
+    files: [
+      "opencomputer/project.ts",
+      ...initialized.files
+        .filter((path) => path !== "package.json" && path !== ".gitignore")
+        .map((path) => `opencomputer/agents/hello-world/${path}`),
+      ...appFiles,
+    ],
+  };
 }
 
 export async function prepareAgent(root: string): Promise<string> {
@@ -1684,9 +2161,11 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
 
 async function collectNames(root: string, type: "channels" | "connections") {
   try {
-    return (await readdir(resolve(root, type), {
-      withFileTypes: true,
-    }))
+    return (
+      await readdir(resolve(root, type), {
+        withFileTypes: true,
+      })
+    )
       .filter((entry) => entry.isFile())
       .map((entry) => entry.name.replace(/\.[^.]+$/, "").toLowerCase())
       .sort();
@@ -1744,7 +2223,10 @@ async function validateTemplateRequirements(
   } catch {
     // Report one actionable error below for an incomplete PTO project.
   }
-  if (!(await exists(resolve(root, "tools", "calendar.ts"))) || !calendarDeclared) {
+  if (
+    !(await exists(resolve(root, "tools", "calendar.ts"))) ||
+    !calendarDeclared
+  ) {
     throw new Error(
       "PTO calendar tools are missing. Run `opencomputer tools add calendar` before deploying.",
     );

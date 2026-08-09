@@ -5,9 +5,11 @@ import { readFileSync } from "node:fs";
 import { runCommand, type GlobalOptions } from "./commands.js";
 
 const VERSION = String(
-  (JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version: unknown }).version,
+  (
+    JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: unknown }
+  ).version,
 );
 
 const BANNER = String.raw`   ____                   ______                            __
@@ -44,9 +46,8 @@ Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
-  opencomputer templates
   opencomputer agents
-  opencomputer init <template> [directory]
+  opencomputer init <directory|.>
   opencomputer dev
   opencomputer session [prompt]
   opencomputer session create <prompt> [--local]

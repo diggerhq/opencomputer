@@ -1,6 +1,7 @@
 import {
   Bot,
   Boxes,
+  FolderKanban,
   KeySquare,
   Layers,
   MessagesSquare,
@@ -29,7 +30,7 @@ export type NavGroup = {
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
     items: [
-      { to: '/', label: 'Agents', icon: Bot, end: true },
+      { to: '/', label: 'Projects', icon: FolderKanban, end: true },
       {
         to: '/managed-agents/connections',
         label: 'Connections',

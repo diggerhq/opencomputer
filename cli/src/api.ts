@@ -25,6 +25,20 @@ export interface ManagedAgentSummary {
   updatedAt: string;
 }
 
+export interface ManagedProject {
+  id: string;
+  slug: string;
+  name: string;
+  environments: Array<{
+    name: "development" | "production";
+    activeDeploymentId?: string;
+    updatedAt: string;
+  }>;
+  agents: Array<{ id: string; name: string }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
@@ -199,6 +213,20 @@ export class OpenComputerClient {
       "/api/managed-agents/agents",
     );
     return result.agents;
+  }
+
+  async projects(): Promise<ManagedProject[]> {
+    const result = await this.request<{ projects: ManagedProject[] }>(
+      "/api/managed-agents/projects",
+    );
+    return result.projects;
+  }
+
+  createProject(name: string, slug: string) {
+    return this.request<ManagedProject>("/api/managed-agents/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, slug }),
+    });
   }
 
   registerDeployment(input: {
