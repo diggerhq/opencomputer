@@ -1,0 +1,89 @@
+---
+title: "Serverless Agents"
+description: "Build projects with live agent backends and React apps"
+---
+
+An OpenComputer project groups one or more agents, their deployments, and the
+application that interacts with them. Agent behavior and integrations are code;
+OpenComputer manages execution, durable sessions, and version history.
+
+<CardGroup cols={2}>
+  <Card title="Projects" icon="folder">
+    Keep related agents, sessions, files, connections, channels, and schedules
+    in one place.
+  </Card>
+  <Card title="Agents as code" icon="code">
+    Instructions, tools, skills, connection declarations, and routing live in
+    source control.
+  </Card>
+  <Card title="Live development" icon="terminal">
+    Run the agent server and React app separately while edits are deployed to
+    your development environment.
+  </Card>
+  <Card title="Versioned deployment" icon="code-branch">
+    Promote an immutable deployment after testing it in development.
+  </Card>
+</CardGroup>
+## Initialize a project
+
+```bash
+npm create @opencomputer/start@latest my-agent
+cd my-agent
+npm install
+npx opencomputer login
+```
+
+The initial project contains one hello-world agent and is structured to accept
+more agents later:
+
+```text
+my-agent/
+├── opencomputer/
+│   ├── project.ts
+│   └── agents/
+│       └── hello-world/
+│           └── agent.ts
+└── src/
+    ├── App.tsx
+    ├── main.tsx
+    └── use-agent.ts
+```
+
+`opencomputer/project.ts` lists the agents in the app. The first `npm run dev`
+binds the local app to an OpenComputer cloud project.
+
+## Development workflow
+
+<Steps>
+  <Step title="Start the agent backend">
+    Run `npm run dev`. It watches the agent definition and syncs it to the
+    project's Development (Cloud) environment.
+  </Step>
+  <Step title="Start the application">
+    In another terminal, run `npm run dev:web`. The generated `useAgent` hook
+    streams messages through the Vite proxy.
+  </Step>
+  <Step title="Customize and connect">
+    Edit instructions and add tools, connections, skills, channels, or routing
+    under `opencomputer/`.
+  </Step>
+  <Step title="Deploy a version">
+    Run `opencomputer deploy`. The project has a development environment by
+    default; promote a tested immutable version to production when ready.
+  </Step>
+</Steps>
+
+## Project resources
+
+The project view includes **Agent playground**, **Sessions**, **Files**,
+**Connections**, **Channels**, **Schedules**, and **Agent schema**. A session
+has a durable log and can own produced files, session data, and shared secrets.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="play" href="/agents/quickstart">
+    Create and run the hello-world project.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
+    Follow requests from React to the agent runtime.
+  </Card>
+</CardGroup>

@@ -1,0 +1,98 @@
+---
+title: "Observability"
+description: "Timeline, turns, model calls, machine output — all correlated"
+---
+
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
+Background agents work unattended; everything they do is recorded and
+correlated. From any point on a session's timeline you can drill down to the
+model calls and commands behind it.
+
+## Timeline
+
+The durable record: [events](/background-agents/sessions#events) for every
+message, action, question, delivery, and error.
+
+```bash
+oc session attach <id>                    # live
+oc session events <id> --after <cursor>   # history, paginated
+```
+
+```bash
+curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse" \
+  -H "Authorization: Bearer $OC_API_KEY"
+```
+
+## Levels
+
+Every event carries a **level** — a visibility class — and the stream carries
+**everything**, full fidelity. You filter; the platform never decides for you
+what to show your users.
+
+| Level | What | Example |
+|---|---|---|
+| `internal` | Platform/runtime mechanics, raw tool I/O | `action` (a tool call), model-call marks |
+| `progress` | The play-by-play — "watch it work" | agent narration, `status` ("cloned repo", "running tests") |
+| `user` | What an end-user sees by default | the agent's `say`, `ask`, and `delivery` ("opened PR #42") |
+
+The stream filters by a **minimum** level — `?level=user` is just the
+conversation; `?level=progress` adds narration; `?level=internal` is everything
+(the debug view). Default is full fidelity.
+
+```bash
+oc session attach <id> --level user
+```
+
+```bash
+curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse&level=progress" \
+  -H "Authorization: Bearer $OC_API_KEY"
+```
+
+This is how a [channel](/background-agents/channels) decides what to surface: a
+Slack thread renders `user`/`progress`, a debugging view renders `internal`
+too — from the one stream.
+
+## Turns
+
+A turn is one stretch of activity (wake → work → sleep):
+
+```bash
+oc session turns <id>
+# t_7   2m41s   anthropic/claude-opus-4-8   31.2k tok   $0.41   yielded: delivered PR #413
+oc session trace <id> t_7        # spans: model calls, commands, deliveries, timings
+oc session logs <id> --turn t_7  # raw runtime output
+oc session model-calls <id>      # per call: provider, model served, tokens, latency
+```
+
+Command output appears on the timeline as `action` events, truncated inline
+with full output downloadable.
+
+## Cost
+
+```bash
+oc session get <id>    # usage: active_seconds, tokens, usd
+```
+
+Metered per session and per turn. Dormant time is absent because it isn't
+billed.
+
+## Model traffic privacy
+
+By default, model-call metadata (model, tokens, latency, cost) is recorded;
+prompt and response contents are not exposed. Payload capture is opt-in per
+agent (`capture_model_io`) and surfaces in `oc session model-calls --full`.
+
+<Note>**Preview** — payload capture runs through the model gateway, which is not
+enabled in v0 (see the [overview](/background-agents/overview)). Until then,
+only metadata is available; the `capture_model_io` opt-in and `--full` payloads
+are the designed behavior.</Note>
+
+## Debugging
+
+1. `oc session attach` — what did it do and say?
+2. `oc session trace` — where did time and tokens go?
+3. `oc session shell` — open the machine.
+4. `oc session state download` — export the working context to reproduce
+   the run locally in the same harness.

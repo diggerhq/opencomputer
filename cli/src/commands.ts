@@ -7,11 +7,12 @@ import {
 } from "./api.js";
 import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
+import { runCloudDevelopment } from "./dev.js";
+import { findOpenComputerProjectRoot } from "./binding.js";
 import { runLocalAgent } from "./local.js";
 import {
-  addCalendarTools,
-  addGmailTools,
   addSlackChannel,
+  assertStarterTarget,
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
@@ -62,7 +63,7 @@ async function requireAgentRoot(): Promise<string> {
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer agent repository found. Run `opencomputer init <directory>` first.",
     );
   }
   return root;
@@ -74,7 +75,11 @@ async function connectManagedService(
   label = "default",
 ): Promise<void> {
   const displayName =
-    service === "calendar" ? "Google Calendar" : service === "github" ? "GitHub" : "Gmail";
+    service === "calendar"
+      ? "Google Calendar"
+      : service === "github"
+        ? "GitHub"
+        : "Gmail";
   const started = await client.linkManagedConnection(service, label);
   if (started.status === "connected") {
     process.stdout.write(
@@ -85,7 +90,9 @@ async function connectManagedService(
   if (!started.authorizationUrl) {
     throw new Error(`${displayName} did not return an authorization link.`);
   }
-  process.stdout.write(`Authorize ${displayName}:\n${started.authorizationUrl}\n`);
+  process.stdout.write(
+    `Authorize ${displayName}:\n${started.authorizationUrl}\n`,
+  );
   openBrowser(started.authorizationUrl);
   const deadline = started.expiresAt
     ? Date.parse(started.expiresAt)
@@ -406,46 +413,28 @@ export async function runCommand(
     return;
   }
 
-  if (command === "templates") {
-    const templates = await client.templates();
-    if (globals.json) printJSON(templates);
-    else {
-      for (const template of templates) {
-        process.stdout.write(
-          `${template.id.padEnd(22)} ${template.name}\n` +
-            `${"".padEnd(23)}${template.description}\n` +
-            `${"".padEnd(23)}${template.integrations.join(", ")}\n`,
-        );
-      }
-    }
-    return;
-  }
-
   if (command === "init") {
-    const templateId = args.shift();
-    if (!templateId) {
-      throw new Error("Usage: opencomputer init <template> [directory]");
+    const directory = args.shift();
+    if (!directory) {
+      throw new Error("Usage: opencomputer init <directory|.>");
     }
-    const directory = args.shift() ?? templateId;
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const template = (await client.templates()).find(
-      (candidate) => candidate.id === templateId,
-    );
-    if (!template) throw new Error(`Unknown agent template: ${templateId}`);
-    const initialized = await initializeAgentProject(template, directory);
+    await assertStarterTarget(directory);
+    const initialized = await initializeAgentProject(directory);
     if (globals.json) printJSON(initialized);
     else {
       const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
-        `Created ${initialized.manifest.name} from ${template.name}\n` +
+        `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Name:      ${initialized.manifest.name}\n` +
-          `Agent ID:  ${initialized.manifest.id}\n` +
-          `Identity:  opencomputer.toml\n\n` +
+          `Project:   choose or create one on the first npm run dev\n` +
+          `Agents:    opencomputer/\n` +
+          `React:     src/\n\n` +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  opencomputer dev\n`,
+          `  npm run dev       # terminal 1: cloud agent sync\n` +
+          `  npm run dev:web   # terminal 2: React app\n`,
       );
     }
     return;
@@ -456,7 +445,7 @@ export async function runCommand(
     if (globals.json) printJSON(agents);
     else if (!agents.length) {
       process.stdout.write(
-        "No agents deployed. Run `opencomputer templates` to get started.\n",
+        "No agents deployed. Run `opencomputer init <directory>` to get started.\n",
       );
     } else {
       for (const agent of agents) {
@@ -516,8 +505,19 @@ export async function runCommand(
   }
 
   if (command === "dev") {
+    const project = option(args, "--project");
+    const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    await runLocalAgent(["dev"], config);
+    await runCloudDevelopment(
+      client,
+      config,
+      await findOpenComputerProjectRoot(process.cwd()),
+      {
+        project,
+        createProjectName,
+        interactive: !globals.json,
+      },
+    );
     return;
   }
 
@@ -644,27 +644,6 @@ export async function runCommand(
     return;
   }
 
-  if (command === "tools") {
-    const action = args.shift();
-    const toolName = args.shift();
-    if (
-      action !== "add" ||
-      (toolName !== "gmail" && toolName !== "calendar") ||
-      args.length
-    ) {
-      throw new Error("Usage: opencomputer tools add <gmail|calendar>");
-    }
-    const root = await requireAgentRoot();
-    const files =
-      toolName === "calendar"
-        ? await addCalendarTools(root)
-        : await addGmailTools(root);
-    process.stdout.write(
-      `${files.map((file) => `Created ${file}`).join("\n")}\n`,
-    );
-    return;
-  }
-
   if (command === "connect") {
     const provider = args.shift();
     if ((provider !== "google" && provider !== "gmail") || args.length) {
@@ -681,7 +660,9 @@ export async function runCommand(
       const alias = option(args, "--alias") ?? "default";
       const service = provider === "google" ? "gmail" : provider;
       if (
-        (service !== "gmail" && service !== "calendar" && service !== "github") ||
+        (service !== "gmail" &&
+          service !== "calendar" &&
+          service !== "github") ||
         args.length
       ) {
         throw new Error(
@@ -718,10 +699,14 @@ export async function runCommand(
       )
         ? "calendar"
         : "gmail";
-      const managedService = connection.provider === "github" ? "github" : googleService;
+      const managedService =
+        connection.provider === "github" ? "github" : googleService;
       const disconnected =
         connection.provider === "google" || connection.provider === "github"
-          ? await client.disconnectManagedConnection(connection.id, managedService)
+          ? await client.disconnectManagedConnection(
+              connection.id,
+              managedService,
+            )
           : await client.disconnectConnection(connection.id);
       if (globals.json) printJSON(disconnected);
       else process.stdout.write(`Removed connection "${connection.label}".\n`);

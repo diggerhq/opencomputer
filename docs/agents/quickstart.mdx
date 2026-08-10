@@ -1,0 +1,88 @@
+---
+title: "Quickstart"
+description: "Create a hello-world agent project and React app"
+---
+
+This quickstart creates your first OpenComputer project, syncs its hello-world
+agent to Development (Cloud), and opens a local React app that can steer it.
+
+## Prerequisites
+
+- Node.js 22 or newer
+- An OpenComputer account
+
+## 1. Create the app
+
+```bash
+npm create @opencomputer/start@latest my-agent
+cd my-agent
+npm install
+```
+
+Use `npm create @opencomputer/start@latest .` to initialize the current
+directory instead.
+
+## 2. Log in
+
+```bash
+npx opencomputer login
+```
+
+The generated project includes the OpenComputer CLI. You do not need to install
+it globally.
+
+## 3. Sync the agent to Development (Cloud)
+
+In the first terminal:
+
+```bash
+npm run dev
+```
+
+The first run asks you to select an existing cloud project or create one. It
+then watches `opencomputer/` and continuously deploys changes to that project's
+development environment.
+
+## 4. Run the React app
+
+In a second terminal:
+
+```bash
+npm run dev:web
+```
+
+Open the Vite URL and send the suggested hello-world prompt. The generated
+`useAgent` hook streams the response and reuses the session for follow-up
+messages.
+
+## 5. Customize the agent
+
+Edit `opencomputer/agents/hello-world/agent.ts`. Add reactive tools,
+connections, skills, model selection, and routing as code beside it. React UI
+code stays under `src/`.
+
+```text
+my-agent/
+├── opencomputer/
+│   ├── project.ts
+│   └── agents/hello-world/
+└── src/
+```
+
+## 6. Deploy
+
+```bash
+opencomputer deploy --alias production
+```
+
+Each source change produces an immutable deployment version. Open the project
+in the dashboard and select **Agent playground** to test the deployed agent.
+
+<CardGroup cols={2}>
+  <Card title="Agents overview" icon="robot" href="/agents/overview">
+    Learn about projects, agents, sessions, and deployments.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
+    See how the React app connects to local and deployed agents.
+  </Card>
+</CardGroup>

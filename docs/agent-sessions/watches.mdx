@@ -1,0 +1,188 @@
+---
+mode: "wide"
+title: "Watches"
+description: "Wake a session when a PR it opened gets checks, reviews, comments, or merges"
+---
+
+A **watch** wakes a session when a PR it opened changes. The agent opens a PR, declares a watch, and ends the turn; when checks finish, a review or comment lands, or the PR merges, OpenComputer appends a normalized event and wakes the session to react. This is the open-a-PR-then-respond-to-CI loop without polling GitHub.
+
+<Note>**Preview** — APIs may change before general availability.</Note>
+
+Declare a watch from inside the sandbox with the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool, or from your backend with the REST endpoints [below](#management-api).
+
+## How it works
+
+Declaring a watch doesn't change session state — the session goes **idle** after the turn like any other. On a PR transition, OpenComputer appends an event and wakes the session, the same path as a [steer](/agent-sessions/messaging).
+
+- **Authoritative re-read.** A webhook is a hint. Before waking, OpenComputer re-reads PR state from GitHub and wakes with that snapshot, so late, duplicate, or out-of-order webhooks converge.
+- **Coalesced.** One wake per transition — a burst of check events for a commit is a single `checks_completed` wake.
+- **Loop-suppressed.** The session's own comments and pushes don't wake it; only third-party changes do.
+- **Delivered as `user` events.** The event is appended at level `user` (`source: "github"`) and the session resumes with prior context.
+
+<Warning>
+A watch lets the agent react; it doesn't grant a GitHub write path. There is no comment-write tool — the agent reads the event and responds by [pushing a fix](/agent-sessions/repos#what-the-agent-can-do) to the branch or opening a follow-up PR. It cannot post a reply comment to GitHub.
+</Warning>
+
+## What you can watch
+
+A session can only watch a PR it opened itself via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). The PR must have been opened through the **OpenComputer GitHub App** (`oc_app` sources) — that App's webhook and read token are what drive the watch. Inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
+
+<Note>
+**Owner-side prerequisite.** The OpenComputer GitHub App needs **Pull requests: Read**, **Checks: Read**, and **Issues: Read**, plus event subscriptions to **`pull_request`**, **`pull_request_review`**, **`pull_request_review_comment`**, **`check_suite`**, **`check_run`**, and **`issue_comment`**. Existing installs must **re-accept the new permissions**. Until they do, a watch is created but declares as `auth_required` and won't deliver events.
+</Note>
+
+## Wake conditions
+
+`wake_on` is the **wake condition** — the PR state change that wakes the session. It's *what* the watch waits for; the *why* is [`intent`](#intent-why), replayed on wake.
+
+| `wake_on` | Wakes when |
+| --- | --- |
+| `checks` | GitHub **check runs/suites** for the head commit finish (**default**). Legacy commit *statuses* aren't watched. |
+| `review` | A review **decision** lands — approved or changes-requested (not plain comments). |
+| `comment` | A new comment on the PR (review comment or issue comment). |
+| `merge` | The PR reaches a terminal state — merged, or closed without merging. |
+
+`events` is **derived** from `wake_on`; it is not part of the create request.
+
+### intent (why)
+
+`intent` is a freeform note — *why* the agent is watching (e.g. "Fix CI if it fails"). It doesn't affect *when* the session wakes; it's replayed back to the agent on wake so it knows what to do.
+
+## Runtime tools
+
+The agent declares and clears watches from inside the sandbox. Full signatures: [Runtime tools](/agent-sessions/runtime-tools#github-tools).
+
+| Tool | What it does |
+| --- | --- |
+| `watch_pull_request(wake_on?, repo?, pr?, intent?)` | Subscribe to a PR the session opened. Does **not** block — call it, then finish the turn. Defaults to the most recent PR the session opened; `wake_on` defaults to `checks`. `intent` is a freeform note replayed on wake. |
+| `unwatch_pull_request(repo?, pr?)` | Stop watching. Defaults to the only active watch. |
+
+## Management API
+
+Manage watches from your backend with the SDK, the `oc` CLI, or REST — authenticated with your **org API key** (server-side). `repo`/`pr` are optional; omitted, they resolve to the PR this session opened.
+
+**Create a watch:**
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.get("ses_...");
+const watch = await session.watches.create({
+  repo: "acme/web",          // optional — defaults to the PR this session opened
+  pr: 42,                    // optional
+  wakeOn: "review",          // checks (default) · review · comment · merge
+  intent: "Address review feedback on the auth refactor.",
+});
+// → { id: "wch_...", status: "active", ... }
+```
+
+```bash oc CLI
+oc session watch ses_... \
+  --repo acme/web --pr 42 \
+  --wake-on review \
+  --intent "Address review feedback on the auth refactor."
+```
+
+```http REST
+POST https://api.opencomputer.dev/v3/sessions/ses_.../watches
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "type": "github_pr", "repo": "acme/web", "pr": 42,
+  "wake_on": "review", "intent": "Address review feedback on the auth refactor." }
+// → 201 { "watch": { … } }
+```
+
+</CodeGroup>
+
+**List watches:**
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const watches = await session.watches.list();
+```
+
+```bash oc CLI
+oc session watches ses_...
+```
+
+```http REST
+GET https://api.opencomputer.dev/v3/sessions/ses_.../watches
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+// → { "data": [ { … } ] }
+```
+
+</CodeGroup>
+
+**Delete a watch:**
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await session.watches.delete("wch_...");
+```
+
+```bash oc CLI
+oc session unwatch ses_... wch_...
+```
+
+```http REST
+DELETE https://api.opencomputer.dev/v3/sessions/ses_.../watches/wch_...
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+// → { "ok": true }
+```
+
+</CodeGroup>
+
+## The watch object
+
+| Field | Notes |
+| --- | --- |
+| `id` | `wch_…` |
+| `type` | `github_pr` |
+| `repo` `pr` | the watched repo and PR number |
+| `wake_on` | the wake condition (table above) |
+| `intent?` | freeform note, replayed on wake |
+| `status` | lifecycle status (below) |
+| `origin` | how it was declared (runtime tool or management API) |
+| `last_snapshot_at?` | last authoritative PR re-read |
+| `expires_at` | when the 30-day TTL lapses; past this the watch stops firing (status stays `active`) |
+| `created_at` | timestamp |
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| `active` | Watching; delivering events. |
+| `closed` | The PR merged or closed, so the watch ended with it. |
+| `revoked` | Removed via `unwatch_pull_request` or `DELETE`. |
+| `auth_required` | The App lacks the required permissions or event subscriptions — [re-accept them](#what-you-can-watch). Re-declare the watch once fixed. |
+
+A watch that hits its 30-day TTL simply stops firing (its `expires_at` passes) — re-declare to renew it.
+
+### Delivered events
+
+One event per transition, appended at level `user` with `source: "github"`. The `body` is a normalized summary (a comment event carries author, text, and URL), never the raw webhook.
+
+| `type` | Fires on |
+| --- | --- |
+| `github.pr.checks_completed` | Check suites for the head commit finished (coalesced). |
+| `github.pr.review_submitted` | A review decision was submitted (approved / changes requested). |
+| `github.pr.comment` | A comment landed on the PR — issue-style **or** review (diff) comment. |
+| `github.pr.merged` | The PR merged. |
+| `github.pr.closed` | The PR closed without merging. |
+
+These join the standard session [event types](/agent-sessions/events#event-types) — switch on `type`, don't parse prose.
+
+## Limits
+
+- Max **10** active watches per session.
+- **30-day** TTL, and never outlives the PR — the watch ends when the PR closes or merges.
+
+## Example
+
+1. Agent calls `github_publish_pull_request("web", "Refactor auth")` → PR opened on branch `oc/<session>/web-<id>`.
+2. Agent calls `watch_pull_request(wake_on: "review", intent: "Address review feedback")`, `say`s, ends the turn. Session goes idle.
+3. Reviewer comments. OpenComputer re-reads the PR, appends `github.pr.comment` (author, text, URL) at level `user`, and wakes the session.
+4. Agent edits the source and calls `github_publish_pull_request` again to push onto the same branch. Its own push is loop-suppressed. The watch runs until the PR merges or the TTL expires.

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" font-family="ui-sans-serif, system-ui, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0.6 0.8 L7.4 4 L0.6 7.2 Z" fill="#9a9a9a"/>
+    </marker>
+    <marker id="ahs" viewBox="0 0 8 8" refX="1" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M7.4 0.8 L0.6 4 L7.4 7.2 Z" fill="#9a9a9a"/>
+    </marker>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="959" height="559" rx="12" fill="#ffffff" stroke="#e5e5e5" stroke-width="1"/>
+
+  <!-- ============ LEFT: Your app ============ -->
+  <text x="44" y="189" font-size="10" letter-spacing="1.5" fill="#6b6b6b">YOUR APP</text>
+
+  <rect x="40" y="201" width="116" height="30" rx="15" fill="#ffffff" stroke="#d4d4d4"/>
+  <text x="98" y="220" font-size="12" fill="#131311" text-anchor="middle">start</text>
+
+  <rect x="40" y="243" width="116" height="30" rx="15" fill="#ffffff" stroke="#d4d4d4"/>
+  <text x="98" y="262" font-size="12" fill="#131311" text-anchor="middle">steer</text>
+
+  <rect x="40" y="285" width="116" height="30" rx="15" fill="#ffffff" stroke="#d4d4d4"/>
+  <text x="98" y="304" font-size="12" fill="#131311" text-anchor="middle">stream (SSE)</text>
+
+  <line x1="160" y1="216" x2="183" y2="216" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+  <line x1="160" y1="258" x2="183" y2="258" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+  <line x1="160" y1="300" x2="183" y2="300" stroke="#9a9a9a" stroke-width="1.25" marker-start="url(#ahs)" marker-end="url(#ah)"/>
+
+  <!-- ============ CENTER: Session (durable) ============ -->
+  <rect x="190" y="140" width="190" height="236" rx="10" fill="#f4f4f2" stroke="#d4d4d4"/>
+  <text x="204" y="166" font-size="14" font-weight="600" fill="#131311">Session</text>
+  <text x="204" y="183" font-size="11" fill="#6b6b6b">durable event log</text>
+
+  <!-- event rows -->
+  <rect x="204" y="196" width="162" height="28" rx="6" fill="#f0eff7" stroke="#cfcee4"/>
+  <circle cx="220" cy="210" r="3" fill="#7c7aae"/>
+  <text x="232" y="214" font-size="12" fill="#131311">message</text>
+
+  <rect x="204" y="232" width="162" height="28" rx="6" fill="#f0eff7" stroke="#cfcee4"/>
+  <circle cx="220" cy="246" r="3" fill="#7c7aae"/>
+  <text x="232" y="250" font-size="12" fill="#131311">tool · result</text>
+
+  <rect x="204" y="268" width="162" height="28" rx="6" fill="#f0eff7" stroke="#cfcee4"/>
+  <circle cx="220" cy="282" r="3" fill="#7c7aae"/>
+  <text x="232" y="286" font-size="12" fill="#131311">turn.completed</text>
+
+  <!-- next append slot -->
+  <rect x="204" y="304" width="162" height="28" rx="6" fill="none" stroke="#cfcee4" stroke-dasharray="4 4" opacity="0.8"/>
+
+  <text x="285" y="350" font-size="11" fill="#6b6b6b" text-anchor="middle">append-only</text>
+  <text x="285" y="366" font-size="11" fill="#6b6b6b" text-anchor="middle">stream · resume from any cursor</text>
+
+  <!-- Session <-> Runtime -->
+  <line x1="388" y1="172" x2="452" y2="172" stroke="#9a9a9a" stroke-width="1.25" marker-start="url(#ahs)" marker-end="url(#ah)"/>
+  <text x="420" y="160" font-size="10" fill="#6b6b6b" text-anchor="middle">reads / appends</text>
+
+  <!-- ============ RIGHT TOP: Runtime (brain) ============ -->
+  <rect x="460" y="56" width="250" height="160" rx="12" fill="#ffffff" stroke="#8a8a8a" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="478" y="92" font-size="18" font-weight="700" fill="#131311">Runtime<tspan font-size="13" font-weight="400" fill="#6b6b6b"> — the brain</tspan></text>
+  <text x="478" y="122" font-size="12" fill="#131311">plans and decides every step</text>
+  <text x="478" y="143" font-size="11" fill="#6b6b6b">auto-restarted · runs your model</text>
+  <text x="478" y="165" font-size="11" fill="#7c7aae">your key stays in a secure secret store —</text>
+  <text x="478" y="183" font-size="11" fill="#6b6b6b">never in the sandbox or shown to the model</text>
+
+  <!-- Runtime -> Model -->
+  <line x1="714" y1="110" x2="736" y2="110" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+
+  <!-- ============ RIGHT: Model / LLM ============ -->
+  <rect x="744" y="84" width="176" height="56" rx="8" fill="#f4f4f2" stroke="#d4d4d4"/>
+  <text x="758" y="108" font-size="12" font-weight="600" fill="#4a4a4a">Model (LLM)</text>
+  <text x="758" y="128" font-size="10" fill="#6b6b6b">runs on your key</text>
+
+  <!-- Runtime -> Sandbox -->
+  <line x1="585" y1="220" x2="585" y2="266" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+  <text x="573" y="247" font-size="11" fill="#6b6b6b" text-anchor="end">acts: commands · edits · tests</text>
+
+  <!-- ============ RIGHT BOTTOM: Sandbox (hands) ============ -->
+  <rect x="460" y="272" width="250" height="160" rx="12" fill="#ffffff" stroke="#8a8a8a" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="478" y="308" font-size="18" font-weight="700" fill="#131311">Sandbox<tspan font-size="13" font-weight="400" fill="#6b6b6b"> — the hands</tspan></text>
+  <text x="478" y="342" font-size="12" fill="#131311">where the work actually happens</text>
+  <text x="478" y="364" font-size="11" fill="#6b6b6b">runs commands + file edits</text>
+  <text x="478" y="384" font-size="11" fill="#6b6b6b">disposable · hibernates on idle</text>
+
+  <!-- Delivery: the runtime appends an event onto the session; the platform's
+       outbox delivers it to your webhook. The sandbox never calls out. -->
+  <line x1="285" y1="376" x2="285" y2="402" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+  <text x="297" y="394" font-size="10" fill="#6b6b6b">user-level events</text>
+
+  <rect x="210" y="404" width="150" height="30" rx="8" fill="#ffffff" stroke="#d4d4d4"/>
+  <text x="285" y="423" font-size="11" fill="#131311" text-anchor="middle">outbox · at-least-once</text>
+
+  <line x1="285" y1="434" x2="285" y2="462" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
+
+  <rect x="207" y="468" width="156" height="30" rx="15" fill="#ffffff" stroke="#d4d4d4"/>
+  <text x="285" y="487" font-size="12" fill="#131311" text-anchor="middle">your webhook</text>
+
+  <!-- ============ Legend ============ -->
+  <rect x="44" y="518" width="22" height="14" rx="4" fill="#f0eff7" stroke="#7c7aae"/>
+  <text x="74" y="529" font-size="11" fill="#6b6b6b">durable (survives anything)</text>
+
+  <rect x="252" y="518" width="22" height="14" rx="4" fill="#ffffff" stroke="#8a8a8a" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="282" y="529" font-size="11" fill="#6b6b6b">disposable (replaceable any moment)</text>
+</svg>

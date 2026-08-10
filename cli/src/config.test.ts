@@ -7,6 +7,7 @@ import {
   loadStoredConfig,
   normalizeAPIURL,
   saveStoredConfig,
+  resolveConfig,
 } from "./config.js";
 
 test("normalizes the public API URL and rejects insecure remotes", () => {
@@ -19,6 +20,27 @@ test("normalizes the public API URL and rejects insecure remotes", () => {
     normalizeAPIURL("http://localhost:8787"),
     "http://localhost:8787",
   );
+});
+
+test("defaults to production and only reuses credentials for that API", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "opencomputer-cli-config-"));
+  process.env.OPENCOMPUTER_CONFIG = join(directory, "config.json");
+  try {
+    await saveStoredConfig({
+      apiUrl: "https://blue.mo-oc-dev.com",
+      apiKey: "dev-key",
+    });
+    assert.deepEqual(await resolveConfig({}), {
+      apiUrl: "https://app.opencomputer.dev",
+      apiKey: undefined,
+    });
+    assert.deepEqual(
+      await resolveConfig({ apiUrl: "https://blue.mo-oc-dev.com" }),
+      { apiUrl: "https://blue.mo-oc-dev.com", apiKey: "dev-key" },
+    );
+  } finally {
+    delete process.env.OPENCOMPUTER_CONFIG;
+  }
 });
 
 test("stores agent CLI credentials in a mode-0600 file", async () => {

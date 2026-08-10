@@ -129,9 +129,7 @@ export async function clearSlackState(
   mode: "local" | "remote",
 ): Promise<void> {
   await rm(
-    mode === "local"
-      ? localSlackStatePath(root)
-      : remoteSlackStatePath(root),
+    mode === "local" ? localSlackStatePath(root) : remoteSlackStatePath(root),
     { force: true },
   );
 }
@@ -159,9 +157,7 @@ export async function ensureSlackHooks(root: string): Promise<void> {
     startHook === undefined ||
     (typeof startHook === "string" &&
       (startHook.includes("@opencomputer/cli") ||
-        startHook.includes(".opencomputer/slack-hook.mjs") ||
-        startHook.includes("@opencomputer/blue") ||
-        startHook.includes(".blue/slack-hook.mjs")));
+        startHook.includes(".opencomputer/slack-hook.mjs")));
   if (!managed) return;
   const config =
     existing.config &&
@@ -314,14 +310,13 @@ export async function captureLocalSlackState(
     const parsed = JSON.parse(await readFile(path, "utf8")) as SlackAppsFile;
     const entries = parsed.apps
       ? Object.values(parsed.apps)
-      : Object.values(parsed).filter(
-          (entry): entry is SlackAppEntry =>
-            Boolean(
-              entry &&
-                typeof entry === "object" &&
-                "app_id" in entry &&
-                "team_id" in entry,
-            ),
+      : Object.values(parsed).filter((entry): entry is SlackAppEntry =>
+          Boolean(
+            entry &&
+            typeof entry === "object" &&
+            "app_id" in entry &&
+            "team_id" in entry,
+          ),
         );
     const selected =
       entries.find((entry) => entry.team_domain === parsed.default) ??

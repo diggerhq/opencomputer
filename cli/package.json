@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.3.13",
+  "version": "0.4.4",
   "description": "Build, test, connect, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
@@ -38,7 +38,8 @@
     "@opencode-ai/sdk": "1.18.4",
     "ai": "^7.0.45",
     "opencode-ai": "1.18.4",
-    "react": "^19.2.8"
+    "react": "^19.2.8",
+    "typescript": "^5.9.0"
   },
   "devDependencies": {
     "@ai-sdk/react": "^4.0.48",
@@ -49,7 +50,6 @@
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "typescript": "^5.9.0",
     "vite": "^8.2.0"
   }
 }

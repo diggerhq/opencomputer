@@ -2080,7 +2080,7 @@ async function provisionWorkOSIdentity(
          durable_sessions_enabled,
          infrastructure_enabled
        )
-       VALUES (?1, ?2, ?3, ?4, ?5, 0, 1)
+       VALUES (?1, ?2, ?3, ?4, ?5, 0, 0)
        ON CONFLICT(email) DO UPDATE SET workos_user_id = excluded.workos_user_id`,
     )
       .bind(candidateID, profile.email, profile.id, displayName, nowSec)

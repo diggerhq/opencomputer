@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useState } from 'react'
 import {
   Link,
   NavLink,
@@ -8,6 +8,8 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
+  LayoutGrid,
+  Rocket,
   Bot,
   MessagesSquare,
   Monitor,
@@ -48,6 +50,13 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
+import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
+import { getManagedProject } from '@/managed-agents/api'
+import {
+  projectEnvironmentSearch,
+  type ProjectEnvironment,
+} from '@/managed-agents/project-context'
+import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
 type NavItem = {
   to: string
@@ -56,30 +65,20 @@ type NavItem = {
   end?: boolean
   preview?: boolean
 }
-type NavGroup = {
-  label?: string
-  items: NavItem[]
-  collapsible?: boolean
-  landingTo?: string
-}
+type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
 
-const PRODUCT_NAV: NavGroup[] = [
+// Two planes, subtly separated: the durable-agent plane and the raw-compute
+// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
+// label rather than hard dividers.
+const LEGACY_NAV: LegacyNavGroup[] = [
   {
-    label: 'Infrastructure',
-    collapsible: true,
-    landingTo: '/sandboxes',
     items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Sandbox templates', icon: Package },
-      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-      { to: '/browsers', label: 'Browsers', icon: Monitor },
+      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
+      { to: '/getting-started', label: 'Getting started', icon: Rocket },
     ],
   },
   {
-    label: 'Durable sessions',
-    collapsible: true,
-    landingTo: '/agents',
+    label: 'Agents',
     items: [
       { to: '/agents', label: 'Agents', icon: Bot, preview: true },
       {
@@ -96,22 +95,35 @@ const PRODUCT_NAV: NavGroup[] = [
       },
     ],
   },
+  {
+    label: 'Browser Sessions',
+    items: [
+      {
+        to: '/browsers',
+        label: 'Browsers',
+        icon: Monitor,
+        preview: true,
+      },
+    ],
+  },
+  {
+    label: 'Sandboxes',
+    items: [
+      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
+      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
+      { to: '/templates', label: 'Templates', icon: Package },
+      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [
+      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
+      { to: '/billing', label: 'Billing', icon: CreditCard },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ]
-
-export function productNav(preferences: {
-  durableSessionsEnabled: boolean
-  infrastructureEnabled: boolean
-}): NavGroup[] {
-  return PRODUCT_NAV.filter((group) => {
-    if (group.label === 'Durable sessions') {
-      return preferences.durableSessionsEnabled
-    }
-    if (group.label === 'Infrastructure') {
-      return preferences.infrastructureEnabled
-    }
-    return true
-  })
-}
 
 function Brand() {
   return (
@@ -120,6 +132,57 @@ function Brand() {
         opencomputer
       </span>
     </Link>
+  )
+}
+
+function projectIdFromPath(pathname: string): string | undefined {
+  const match = pathname.match(/^\/projects\/([^/]+)(?:\/|$)/)
+  if (!match?.[1]) return undefined
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return undefined
+  }
+}
+
+function ManagedProjectContext({
+  projectName,
+  environment,
+  onChange,
+}: {
+  projectName?: string
+  environment: ProjectEnvironment
+  onChange: (environment: ProjectEnvironment) => void
+}) {
+  if (!projectName) {
+    return (
+      <div className="text-muted-foreground flex min-w-0 items-center gap-2 font-mono text-sm">
+        <span className="text-muted-foreground/50">/</span>
+        <span>Loading project…</span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
+      <span className="text-muted-foreground/50">/</span>
+      <label className="border-border bg-background flex h-8 shrink-0 items-center rounded-md border px-2">
+        <span className="sr-only">Project environment</span>
+        <select
+          aria-label="Project environment"
+          value={environment}
+          onChange={(event) =>
+            onChange(event.target.value as ProjectEnvironment)
+          }
+          className="max-w-[min(70vw,28rem)] bg-transparent text-sm font-medium outline-none"
+        >
+          {(['development', 'production'] as const).map((candidate) => (
+            <option key={candidate} value={candidate}>
+              {projectName} ({candidate})
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   )
 }
 
@@ -243,10 +306,14 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
-  const nav = productNav({
-    durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
-    infrastructureEnabled: user?.infrastructureEnabled ?? true,
-  })
+  const projectId = projectIdFromPath(location.pathname)
+  const nav = managedAgentsExperimentEnabled
+    ? managedAgentsNav({
+        projectId,
+        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
+        infrastructureEnabled: user?.infrastructureEnabled ?? false,
+      })
+    : LEGACY_NAV
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
@@ -257,24 +324,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
       ),
   )?.label
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    const groups = new Set<string>()
-    if (nav.some((group) => group.label === 'Infrastructure')) {
-      groups.add('Infrastructure')
-    }
-    if (activeCollapsibleGroup) groups.add(activeCollapsibleGroup)
-    return groups
-  })
-
-  useEffect(() => {
-    if (!activeCollapsibleGroup) return
-    setOpenGroups((current) => {
-      if (current.has(activeCollapsibleGroup)) return current
-      const next = new Set(current)
-      next.add(activeCollapsibleGroup)
-      return next
-    })
-  }, [activeCollapsibleGroup])
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
+  )
+  const expandedGroups = new Set(openGroups)
+  if (activeCollapsibleGroup) expandedGroups.add(activeCollapsibleGroup)
   return (
     <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
@@ -299,12 +353,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   if (group.landingTo) void navigate(group.landingTo)
                 }}
                 className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
-                aria-expanded={openGroups.has(group.label)}
+                aria-expanded={expandedGroups.has(group.label)}
               >
                 <ChevronRight
                   className={cn(
                     'size-3 transition-transform',
-                    openGroups.has(group.label) && 'rotate-90',
+                    expandedGroups.has(group.label) && 'rotate-90',
                   )}
                 />
                 {group.label}
@@ -314,11 +368,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 {group.label}
               </div>
             ) : null}
-            {(!group.collapsible || openGroups.has(group.label ?? '')) &&
+            {(!group.collapsible || expandedGroups.has(group.label ?? '')) &&
               group.items.map((item) => (
                 <NavLink
                   key={item.to}
-                  to={item.to}
+                  to={
+                    projectId && item.to.startsWith('/projects/')
+                      ? { pathname: item.to, search: location.search }
+                      : item.to
+                  }
                   end={item.end}
                   onClick={onNavigate}
                   className={({ isActive }) =>
@@ -348,7 +406,28 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t p-3">
-        <ManagedProfileMenu onNavigate={onNavigate} />
+        {managedAgentsExperimentEnabled ? (
+          <ManagedProfileMenu onNavigate={onNavigate} />
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
+              {user?.email?.charAt(0).toUpperCase() || '?'}
+            </span>
+            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
+              {user?.email}
+            </span>
+            {user?.capabilities?.signOut !== false ? (
+              <button
+                onClick={() => void logout()}
+                aria-label="Sign out"
+                title="Sign out"
+                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
+              >
+                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -390,6 +469,28 @@ export default function AppShell() {
   const { user } = useAuth()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
+  const projectId = managedAgentsExperimentEnabled
+    ? projectIdFromPath(location.pathname)
+    : undefined
+  const project = useQuery({
+    queryKey: ['managed-project', projectId],
+    queryFn: () => getManagedProject(projectId!),
+    enabled: Boolean(projectId),
+  })
+  const environment: ProjectEnvironment =
+    new URLSearchParams(location.search).get('environment') === 'production'
+      ? 'production'
+      : 'development'
+  function changeProjectEnvironment(nextEnvironment: ProjectEnvironment) {
+    void navigate(
+      {
+        pathname: location.pathname,
+        search: projectEnvironmentSearch(location.search, nextEnvironment),
+      },
+      { replace: true },
+    )
+  }
 
   return (
     <div className="bg-background text-foreground min-h-screen font-sans">
@@ -399,6 +500,15 @@ export default function AppShell() {
         <div className="flex h-full w-60 shrink-0 items-center border-r px-6">
           <Brand />
         </div>
+        {projectId ? (
+          <div className="flex min-w-0 items-center px-6">
+            <ManagedProjectContext
+              projectName={project.data?.project.name}
+              environment={environment}
+              onChange={changeProjectEnvironment}
+            />
+          </div>
+        ) : null}
       </header>
 
       {/* Desktop sidebar (below the top bar) */}
@@ -426,6 +536,13 @@ export default function AppShell() {
           </SheetContent>
         </Sheet>
         <Brand />
+        {projectId ? (
+          <ManagedProjectContext
+            projectName={project.data?.project.name}
+            environment={environment}
+            onChange={changeProjectEnvironment}
+          />
+        ) : null}
       </header>
 
       {/* Main content */}
@@ -434,7 +551,15 @@ export default function AppShell() {
           <HaltBanner />
           <AgentSecurityAlertBanner />
         </div>
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
+        <main
+          className={cn(
+            'mx-auto px-4 py-6 sm:px-8',
+            location.pathname.startsWith('/managed-agents/') ||
+              location.pathname.startsWith('/projects/')
+              ? 'max-w-[1600px]'
+              : 'max-w-7xl',
+          )}
+        >
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter
               state can't bleed across orgs. */}

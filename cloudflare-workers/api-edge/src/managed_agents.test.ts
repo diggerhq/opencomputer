@@ -118,11 +118,11 @@ describe("managed agents proxy", () => {
   });
 
   it("keeps API keys out of the private backend request", async () => {
-    const fetchSpy = vi.fn(async () => Response.json({ templates: [] }));
+    const fetchSpy = vi.fn(async () => Response.json({ agents: [] }));
     vi.stubGlobal("fetch", fetchSpy);
     const response = await proxyManagedAgents(
       new Request(
-        "https://app.opencomputer.dev/api/managed-agents/templates?limit=3",
+        "https://app.opencomputer.dev/api/managed-agents/agents?limit=3",
         {
           headers: {
             "X-API-Key": "osb_customer_secret",
@@ -144,56 +144,11 @@ describe("managed agents proxy", () => {
       RequestInit,
     ];
     expect(target.toString()).toBe(
-      "https://managedagents.test/v1/templates?limit=3",
+      "https://managedagents.test/v1/agents?limit=3",
     );
     const headers = new Headers(init.headers);
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
-  });
-
-  it("preserves public template integrations and strips backend fields", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({
-          templates: [
-            {
-              id: "email-triage",
-              name: "Email triage",
-              description: "Triage mail.",
-              category: "Comms",
-              integrations: ["Gmail", "OpenComputer"],
-              suggestedPrompts: ["Triage today's inbox."],
-              instructions: "private runtime instructions",
-              imageArn: "private image",
-            },
-          ],
-        }),
-      ),
-    );
-
-    const response = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/templates"),
-      {
-        OC_MANAGED_AGENTS_SECRET: "test-secret",
-        MANAGED_AGENTS_API_URL: "https://managedagents.test",
-      },
-      { orgID: "org_test", userID: "user_test" },
-      "/api/managed-agents",
-    );
-
-    expect(await response.json()).toEqual({
-      templates: [
-        {
-          id: "email-triage",
-          name: "Email triage",
-          description: "Triage mail.",
-          category: "Comms",
-          integrations: ["Gmail", "OpenComputer"],
-          suggestedPrompts: ["Triage today's inbox."],
-        },
-      ],
-    });
   });
 
   it("returns agent display names separately from stable IDs", async () => {
@@ -227,7 +182,8 @@ describe("managed agents proxy", () => {
       "/api/managed-agents",
     );
 
-    expect(await response.json()).toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       agents: [
         {
           id: "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8",
@@ -240,6 +196,52 @@ describe("managed agents proxy", () => {
         },
       ],
     });
+  });
+
+  it("creates and lists projects without exposing the backend account model", async () => {
+    const fetchSpy = vi.fn(async (request: URL | RequestInfo) => {
+      const url = String(request);
+      const project = {
+        id: "prj_test",
+        slug: "hello-world",
+        name: "Hello World",
+        agentId: "hello-world",
+        environments: [{ name: "development", updatedAt: "2026-08-08" }],
+        accountId: "private-account",
+        createdAt: "2026-08-08",
+        updatedAt: "2026-08-08",
+      };
+      return Response.json(
+        url.endsWith("/v1/projects") ? { projects: [project] } : project,
+      );
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/projects"),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    const body = await response.json();
+    expect(body).toEqual({
+      projects: [
+        {
+          id: "prj_test",
+          slug: "hello-world",
+          name: "Hello World",
+          environments: [{ name: "development", updatedAt: "2026-08-08" }],
+          agents: [{ id: "hello-world", name: "Hello Hello World" }],
+          createdAt: "2026-08-08",
+          updatedAt: "2026-08-08",
+        },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
   it("exposes a sanitized active deployment for agent details", async () => {

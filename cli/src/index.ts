@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
+
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.12";
+const VERSION = String(
+  (
+    JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: unknown }
+  ).version,
+);
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -38,10 +46,9 @@ Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
-  opencomputer templates
   opencomputer agents
-  opencomputer init <template> [directory]
-  opencomputer dev
+  opencomputer init <directory|.>
+  opencomputer dev [--project <id|slug> | --create-project <name>]
   opencomputer session [prompt]
   opencomputer session create <prompt> [--local]
   opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]
@@ -50,7 +57,6 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer tools add <gmail|calendar>
   opencomputer connection add <gmail|calendar|github> [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>

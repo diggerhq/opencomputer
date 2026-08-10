@@ -5,12 +5,7 @@ import {
 } from "@opencode-ai/sdk/v2";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  mkdir,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -20,12 +15,8 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedConfig } from "./config.js";
-import { renderDevUI } from "./dev-ui.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
-import {
-  formatSessionEvent,
-  runSessionPrompt,
-} from "./session-prompt.js";
+import { formatSessionEvent, runSessionPrompt } from "./session-prompt.js";
 
 interface DevState {
   version: 3;
@@ -97,22 +88,6 @@ function sendJSON(
   response.end(JSON.stringify(body));
 }
 
-function openBrowser(url: string): void {
-  if (process.env.OPENCOMPUTER_NO_OPEN === "1") return;
-  const command =
-    process.platform === "darwin"
-      ? { file: "open", args: [url] }
-      : process.platform === "win32"
-        ? { file: "cmd", args: ["/c", "start", "", url] }
-        : { file: "xdg-open", args: [url] };
-  const child = spawn(command.file, command.args, {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.on("error", () => undefined);
-  child.unref();
-}
-
 export async function startGateway(config: ResolvedConfig): Promise<{
   url: string;
   token: string;
@@ -142,7 +117,9 @@ export async function startGateway(config: ResolvedConfig): Promise<{
         request.method === "POST" &&
         (url.pathname === "/google/fetch" || url.pathname === "/github/fetch")
       ) {
-        const provider = url.pathname.startsWith("/github/") ? "github" : "google";
+        const provider = url.pathname.startsWith("/github/")
+          ? "github"
+          : "google";
         target = `${config.apiUrl}/api/managed-agents/connections/${provider}/fetch`;
         upstreamBody = await readBody(request);
       } else if (
@@ -170,7 +147,9 @@ export async function startGateway(config: ResolvedConfig): Promise<{
           const service = input.service;
           if (
             typeof service !== "string" ||
-            !["gmail", "calendar", "drive", "sheets", "github"].includes(service)
+            !["gmail", "calendar", "drive", "sheets", "github"].includes(
+              service,
+            )
           ) {
             sendJSON(response, 400, {
               error: {
@@ -208,6 +187,14 @@ export async function startGateway(config: ResolvedConfig): Promise<{
           request.method === "GET" || request.method === "HEAD"
             ? undefined
             : await readBody(request);
+      } else if (url.pathname.startsWith("/managed-agents/")) {
+        target =
+          `${config.apiUrl}/api/managed-agents` +
+          `${url.pathname.slice("/managed-agents".length)}${url.search}`;
+        upstreamBody =
+          request.method === "GET" || request.method === "HEAD"
+            ? undefined
+            : await readBody(request);
       } else {
         response.writeHead(404).end();
         return;
@@ -215,8 +202,7 @@ export async function startGateway(config: ResolvedConfig): Promise<{
       const upstream = await fetch(target, {
         method: upstreamMethod,
         headers: {
-          "content-type":
-            request.headers["content-type"] ?? "application/json",
+          "content-type": request.headers["content-type"] ?? "application/json",
           "x-api-key": config.apiKey!,
         },
         body: upstreamBody,
@@ -268,8 +254,7 @@ function addBundledRuntimeToPath(): void {
 
 function modelParts(): { providerID: string; modelID: string; full: string } {
   const full =
-    process.env.OPENCOMPUTER_MODEL ??
-    "openrouter/anthropic/claude-sonnet-4.6";
+    process.env.OPENCOMPUTER_MODEL ?? "openrouter/anthropic/claude-sonnet-4.6";
   const separator = full.indexOf("/");
   return {
     providerID: separator === -1 ? "openrouter" : full.slice(0, separator),
@@ -298,10 +283,7 @@ async function streamTurn(
   const assistantMessages = new Set<string>();
   const streamedTextParts = new Set<string>();
 
-  const consumePendingDeltas = (
-    partID?: string,
-    messageID?: string,
-  ): void => {
+  const consumePendingDeltas = (partID?: string, messageID?: string): void => {
     for (const [candidatePartID, deltas] of pendingDeltas) {
       if (partID && candidatePartID !== partID) continue;
       const partType = partTypes.get(candidatePartID);
@@ -398,9 +380,15 @@ async function streamTurn(
     }
     for await (const event of events()) {
       if (event.type === "message.part.delta") {
-        const { sessionID: eventSessionID, messageID, partID, field, delta } =
-          event.properties;
-        if (eventSessionID !== sessionID || field !== "text" || !delta) continue;
+        const {
+          sessionID: eventSessionID,
+          messageID,
+          partID,
+          field,
+          delta,
+        } = event.properties;
+        if (eventSessionID !== sessionID || field !== "text" || !delta)
+          continue;
         const pending = pendingDeltas.get(partID) ?? [];
         pending.push({ messageID, delta });
         pendingDeltas.set(partID, pending);
@@ -487,7 +475,9 @@ function statePath(root: string): string {
 
 async function readDevState(root: string): Promise<DevState | null> {
   try {
-    const state = JSON.parse(await readFile(statePath(root), "utf8")) as DevState;
+    const state = JSON.parse(
+      await readFile(statePath(root), "utf8"),
+    ) as DevState;
     if (state.version !== 3 || !state.url || !state.token) return null;
     const response = await fetch(`${state.url}/health`, {
       headers: { authorization: `Bearer ${state.token}` },
@@ -503,7 +493,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer agent repository found. Run `opencomputer init <directory>` first.",
     );
   }
   const existing = await readDevState(root);
@@ -565,31 +555,11 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/") {
-        response.writeHead(200, {
-          "content-type": "text/html; charset=utf-8",
-          "cache-control": "no-store",
-          "content-security-policy":
-            "default-src 'none'; script-src 'self'; style-src 'self'; " +
-            "connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'",
+        sendJSON(response, 200, {
+          service: "OpenComputer local agent",
+          agent: { id: manifest.id, name: manifest.name },
+          web: "Run npm run dev:web in another terminal",
         });
-        response.end(renderDevUI(manifest.name));
-        return;
-      }
-      const assetMatch = url.pathname.match(
-        /^\/assets\/([A-Za-z0-9_.-]+\.(?:js|css))$/,
-      );
-      if (request.method === "GET" && assetMatch?.[1]) {
-        const filename = assetMatch[1];
-        const asset = await readFile(
-          fileURLToPath(new URL(`./ui/${filename}`, import.meta.url)),
-        );
-        response.writeHead(200, {
-          "content-type": filename.endsWith(".css")
-            ? "text/css; charset=utf-8"
-            : "text/javascript; charset=utf-8",
-          "cache-control": "no-store",
-        });
-        response.end(asset);
         return;
       }
       if (!authorized(request, token)) {
@@ -611,7 +581,9 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
         created = false,
       ): Promise<void> => {
         if (running.has(session.id)) {
-          sendJSON(response, 409, { message: "This session is already running" });
+          sendJSON(response, 409, {
+            message: "This session is already running",
+          });
           return;
         }
         running.add(session.id);
@@ -654,7 +626,9 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
       if (request.method === "GET" && url.pathname === "/sessions") {
         sendJSON(response, 200, {
           sessions: [...sessions.values()]
-            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+            .sort((left, right) =>
+              right.updatedAt.localeCompare(left.updatedAt),
+            )
             .map(({ id, title, createdAt, updatedAt, messages }) => ({
               id,
               title,
@@ -699,7 +673,9 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
           return;
         }
         if (request.method === "POST") {
-          const body = JSON.parse((await readBody(request)).toString("utf8")) as {
+          const body = JSON.parse(
+            (await readBody(request)).toString("utf8"),
+          ) as {
             prompt?: unknown;
           };
           if (typeof body.prompt !== "string" || !body.prompt.trim()) {
@@ -754,15 +730,13 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   await writeFile(statePath(root), `${JSON.stringify(state, null, 2)}\n`, {
     mode: 0o600,
   });
-  const webUrl = `${state.url}/#token=${encodeURIComponent(token)}`;
   process.stdout.write(
     `OpenComputer dev service ready\n` +
       `Agent: ${manifest.name} (${manifest.id})\n` +
-      `Web: ${webUrl}\n` +
       `Local API: ${state.url}\n` +
+      `React app: npm run dev:web (in another terminal)\n` +
       `Session: opencomputer session\n`,
   );
-  openBrowser(webUrl);
 
   await new Promise<void>((done) => {
     process.once("SIGINT", done);
@@ -821,7 +795,8 @@ async function runLocalSession(
         if (!onEvent) process.stdout.write(String(event.data.text ?? ""));
       } else if (event.type === "message.completed") {
         if (!onEvent) {
-          if (!streamedText) process.stdout.write(String(event.data.text ?? ""));
+          if (!streamedText)
+            process.stdout.write(String(event.data.text ?? ""));
           process.stdout.write("\n");
         }
       } else if (event.type === "tool.started") {
@@ -845,7 +820,8 @@ async function runLocalSession(
       }
     }
   }
-  if (!resolvedSessionID) throw new Error("The local session did not return an ID");
+  if (!resolvedSessionID)
+    throw new Error("The local session did not return an ID");
   return resolvedSessionID;
 }
 
@@ -865,7 +841,7 @@ async function ensureDevService(
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer agent repository found. Run `opencomputer init <directory>` first.",
     );
   }
   const existing = await readDevState(root);
@@ -948,7 +924,8 @@ export async function runLocalAgent(
   options: { verbose?: boolean } = {},
 ): Promise<void> {
   if (args[0] === "dev") {
-    if (args.length > 1) throw new Error(`Unexpected local argument: ${args[1]}`);
+    if (args.length > 1)
+      throw new Error(`Unexpected local argument: ${args[1]}`);
     await startDevService(config);
     return;
   }
@@ -959,7 +936,8 @@ export async function runLocalAgent(
     return;
   }
   if (args[0] === "shell") {
-    if (args.length > 1) throw new Error(`Unexpected local argument: ${args[1]}`);
+    if (args.length > 1)
+      throw new Error(`Unexpected local argument: ${args[1]}`);
     await runSessionShell(config, options.verbose === true);
     return;
   }

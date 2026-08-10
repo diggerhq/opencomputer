@@ -3,9 +3,11 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
+import { managedAgentsExperimentEnabled } from './managed-agents/feature'
 
 // Route pages are code-split so the initial bundle stays small; the heaviest
 // deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Agents = lazy(() => import('./pages/Agents'))
 const AgentNew = lazy(() => import('./pages/AgentNew'))
 const AgentDetail = lazy(() => import('./pages/AgentDetail'))
@@ -24,6 +26,11 @@ const Billing = lazy(() => import('./pages/Billing'))
 const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
 const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
+const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
+const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
+const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
+const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
+const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
 
 export default function App() {
   return (
@@ -34,10 +41,57 @@ export default function App() {
         <Route path="do" element={<DeferredAction />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            <Route index element={<Navigate to="/sandboxes" replace />} />
+            <Route
+              index
+              element={
+                managedAgentsExperimentEnabled ? (
+                  <ManagedAgentsHome />
+                ) : (
+                  <Dashboard />
+                )
+              }
+            />
             <Route
               path="getting-started"
-              element={<Navigate to="/sandboxes" replace />}
+              element={
+                managedAgentsExperimentEnabled ? (
+                  <ManagedAgentsHome />
+                ) : (
+                  <Dashboard />
+                )
+              }
+            />
+            <Route
+              path="managed-agents/channels"
+              element={<ManagedAgentChannels />}
+            />
+            <Route
+              path="managed-agents/connections"
+              element={<Navigate to="/" replace />}
+            />
+            <Route
+              path="managed-agents/new"
+              element={<Navigate to="/" replace />}
+            />
+            <Route
+              path="projects/:projectId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/playground/:projectAgentId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/sessions/:sessionId"
+              element={<ManagedSessionDetail />}
+            />
+            <Route
+              path="projects/:projectId/:tab"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="managed-agents/:agentId"
+              element={<ManagedAgentDetail />}
             />
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />

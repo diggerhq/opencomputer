@@ -1,0 +1,120 @@
+---
+title: "Connections"
+description: "Give agents user-scoped access to services such as Gmail"
+---
+
+Connections let an agent use an external service without storing OAuth tokens
+or provider credentials in the agent repository. A connection belongs to an
+OpenComputer user and can be used during both local development and deployed
+sessions.
+
+## Declarations and authorizations
+
+An agent repository declares the kinds of connections its tools can use. For
+example, a Gmail agent contains a Google connection declaration alongside its
+source:
+
+```text
+email-triage/
+├── opencomputer.toml
+├── connections/
+│   └── google.json
+└── tools/
+    └── gmail.ts
+```
+
+The declaration is safe to commit. It describes the provider, services, and
+requested scopes, but contains no user credentials.
+
+Authorization is separate. Each user connects their own account through the
+OpenComputer CLI:
+
+```bash
+opencomputer connection add gmail --alias personal
+```
+
+OpenComputer opens the provider authorization page and stores the resulting
+connection outside the repository.
+
+<Note>
+Deploying an agent does not grant it access to the developer's account. At run
+time, OpenComputer resolves connections using the identity of the user who
+started the session.
+</Note>
+
+## Multiple accounts and aliases
+
+Aliases distinguish multiple connections of the same type. For example, one
+user can connect personal and work Gmail accounts:
+
+```bash
+opencomputer connection add gmail --alias personal
+opencomputer connection add gmail --alias work
+opencomputer connection list
+```
+
+Agent tools can select the appropriate alias for a request. If no alias is
+specified, they use the `default` connection.
+
+Use short, recognizable aliases made from letters, numbers, dots, dashes, or
+underscores. An alias identifies a connection within your own OpenComputer
+identity; it does not expose or share that account with another user.
+
+## Using connections in sessions
+
+The same managed connection works in both execution modes:
+
+| Session | How access is provided |
+| --- | --- |
+| Local development | The CLI gives the local session a temporary connection capability. |
+| Deployed agent | OpenComputer gives the managed session a user-scoped connection capability. |
+
+Provider credentials remain outside the agent's source, workspace, prompts,
+and model output.
+
+Every agent runtime includes connection discovery and request tools. The agent
+can list the providers and aliases available to the current session identity,
+then ask that user to authorize a declared service when one is missing. These
+tools return connection metadata only; they never return provider credentials.
+
+In the CLI and playground, a connection request returns a secure dashboard
+link. In Slack, OpenComputer privately messages that link to the person who
+invoked the agent instead of posting it in the shared channel. After the user
+authorizes the account, later sessions can find the connection by its alias.
+
+An agent can request only connection providers declared by its deployed source.
+The user still chooses whether to authorize the account and which provider
+permissions to grant.
+
+## List and remove connections
+
+```bash
+opencomputer connection list
+opencomputer connection remove work
+```
+
+You can remove a connection by alias or by its connection ID. Use the ID when
+more than one listed connection has the same alias.
+
+Removing a connection prevents future sessions from using it. Agent source and
+existing deployments are unchanged.
+
+## Identity and security
+
+- Connections belong to an authenticated OpenComputer user, not a device,
+  directory, agent, or organization-wide shared pool.
+- Two users running the same deployed agent receive access to their own
+  connections only.
+- A connection declaration limits which integrations an agent expects, while
+  the provider authorization limits the scopes that are actually available.
+- Agent instructions should still require confirmation before consequential
+  actions such as sending messages or modifying external data.
+
+<CardGroup cols={2}>
+  <Card title="Deploy a Gmail summarizer" icon="envelope" href="/agents/quickstart">
+    Create an agent, authorize Gmail, test it locally, and deploy it.
+  </Card>
+  <Card title="Channels" icon="comments" href="/agents/channels">
+    Let people invoke deployed agents from Slack and other interfaces.
+  </Card>
+</CardGroup>

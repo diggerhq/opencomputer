@@ -48,10 +48,15 @@ export async function login(
     );
   }
   const stored = await loadStoredConfig();
-  if (stored.apiKey && !options.force) {
+  const storedAPIURL = stored.apiUrl ?? config.apiUrl;
+  if (
+    stored.apiKey &&
+    !options.force &&
+    storedAPIURL.replace(/\/$/, "") === config.apiUrl.replace(/\/$/, "")
+  ) {
     try {
       return await new OpenComputerClient({
-        apiUrl: stored.apiUrl ?? config.apiUrl,
+        apiUrl: config.apiUrl,
         apiKey: stored.apiKey,
       }).whoami();
     } catch {

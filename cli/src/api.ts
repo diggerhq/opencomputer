@@ -7,20 +7,25 @@ export interface OpenComputerIdentity {
   org_name: string | null;
 }
 
-export interface ManagedAgentTemplate {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  integrations: string[];
-  suggestedPrompts: string[];
-}
-
 export interface ManagedAgentSummary {
   id: string;
   name?: string;
   activeAlias?: string;
   deploymentCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedProject {
+  id: string;
+  slug: string;
+  name: string;
+  environments: Array<{
+    name: "development" | "production";
+    activeDeploymentId?: string;
+    updatedAt: string;
+  }>;
+  agents: Array<{ id: string; name: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -187,18 +192,25 @@ export class OpenComputerClient {
     return this.request<void>("/auth/cli/credential", { method: "DELETE" });
   }
 
-  async templates(): Promise<ManagedAgentTemplate[]> {
-    const result = await this.request<{ templates: ManagedAgentTemplate[] }>(
-      "/api/managed-agents/templates",
-    );
-    return result.templates;
-  }
-
   async agents(): Promise<ManagedAgentSummary[]> {
     const result = await this.request<{ agents: ManagedAgentSummary[] }>(
       "/api/managed-agents/agents",
     );
     return result.agents;
+  }
+
+  async projects(): Promise<ManagedProject[]> {
+    const result = await this.request<{ projects: ManagedProject[] }>(
+      "/api/managed-agents/projects",
+    );
+    return result.projects;
+  }
+
+  createProject(name: string, slug: string) {
+    return this.request<ManagedProject>("/api/managed-agents/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, slug }),
+    });
   }
 
   registerDeployment(input: {

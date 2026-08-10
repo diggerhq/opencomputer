@@ -1,0 +1,253 @@
+---
+title: "Deployments & revisions"
+description: "Deploy and version agent behavior"
+---
+
+For the built-in runtimes, what you deploy is a small directory:
+
+```
+my-agent/
+├─ agent.toml      # name, model, runtime family
+├─ prompt.md       # the system prompt
+├─ skills/         # optional — folders the agent loads when it needs them
+└─ runtime/        # optional — a custom runtime image (coming soon)
+```
+
+`agent.toml` + `prompt.md` are all a built-in agent needs; `skills/` and `runtime/` are additive. A **deployment** is one attempt to turn source or uploaded behavior into a live agent. A successful attempt creates an immutable [**revision**](#revisions); failed, canceled, superseded, and skipped attempts remain deployment history but do not create one.
+
+<Note>A [Flue](/agent-sessions/flue) deployment packages a compiled Cloudflare app instead. It records revisions in the same API, but currently has one live Worker per agent rather than independently routable revision artifacts. Its staging and rollback behavior is therefore different.</Note>
+
+Built-in runtime behavior can be deployed through the **API/SDK**, the **`oc` CLI**, or a [**repo push**](#deploy-from-a-repo). A Flue app can be imported and built from GitHub in the dashboard, or deployed from a local checkout with `oc agent deploy`.
+
+## Revisions
+
+A **revision** is an immutable, numbered record of one successful deployment. For a built-in runtime, it freezes the `prompt`, `model`, and skills used by new sessions. For Flue, it records the app deployment and Worker version that passed verification. An imported Flue agent begins undeployed, with no active revision; its first successful build and verification creates revision #1.
+
+Revisions are **linear** (the number only goes up) and never rewritten. Built-in runtime sessions keep the revision they started on; only new sessions pick up a change. Flue sessions share the agent's live Worker, so a Worker deployment also changes the code used by existing sessions.
+
+| Field | |
+|---|---|
+| `number` | Monotonic per agent (`1, 2, 3, …`). |
+| `prompt` / `model` | The behavior at deployment time. |
+| `skill_bundle_digest` | The skill files (a content-addressed bundle); `null` when there are no skills. |
+| `digest` | A content hash of the behavior (used for change detection). |
+
+The agent itself holds only **identity + bindings** (`name`, `runtime`, `credential`, `limits`) plus a pointer to the active revision; `prompt`/`model` are served from that revision.
+
+## Deploy
+
+`POST /agents/:id/deployments` is the common post-creation command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys an already-linked repo — see [Deploy from a repo](#deploy-from-a-repo). The CLI uses a bounded `source` upload for a local prompt-defined Flue root. Creating a new Flue agent from GitHub uses the atomic [`POST /agents/import`](#import-a-flue-repository) command instead.
+
+An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const deployment = await oc.agents.deployments.create("agt_123", {
+  input: {
+    type: "inline",
+    prompt: "You triage pull requests.",
+    model: "anthropic/claude-opus-4-8",
+    skills: [{ path: "triage/SKILL.md", content: "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }],
+  },
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/deployments
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "input": {
+    "type": "inline",
+    "prompt": "You triage pull requests.",
+    "model": "anthropic/claude-opus-4-8",
+    "skills": [{ "path": "triage/SKILL.md", "content": "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }]
+  }
+}
+```
+
+```bash CLI
+# from a directory holding agent.toml + prompt.md + skills/
+oc agent deploy
+```
+
+</CodeGroup>
+
+The response is a **deployment**:
+
+```json
+{ "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
+```
+
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) for the built-in runtimes. A [Flue](/agent-sessions/flue) deploy returns `state: "verifying"` while the managed deploy runner uploads the agent Worker and waits for two consecutive healthy responses from that exact live Worker. Poll it like an asynchronous deployment (`verifying` to `ready` or `failed`). Repository deployments start at `accepted`; poll `GET /agents/:id/deployments/:deployment_id` and its durable log until terminal.
+
+### Staging vs activating
+
+<Warning>Isolated staging is not available for Flue. A Flue upload changes the one live Worker even when deployment metadata requests `activate: false`. Do not use `--no-activate` as a Flue canary. See [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).</Warning>
+
+By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active.
+
+```ts
+// Stage a revision (not activated).
+const { deployment } = await oc.agents.deployments.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
+
+// After reviewing it, promote it to make it active.
+await oc.agents.revisions.activate("agt_123", deployment.revision_id);
+```
+
+A session always starts on the agent's active revision. A staged built-in revision cannot be invoked directly today; activate it when you are ready for new sessions to use it.
+
+For built-in [repo deployments](#deploy-from-a-repo), the **branch decides** and `activate` is ignored:
+a push to the production branch activates, while another branch stages. Flue repository deployment
+accepts only its linked production branch because the current runtime has one live Worker and no
+isolated preview Worker.
+
+<Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
+
+## Deploy from a repo
+
+### Import a Flue repository
+
+Choose **Agents → Create agent → Import from GitHub** in the dashboard. OpenComputer inspects the
+selected branch and root without executing code, then creates the agent, source link, and first
+deployment as one retry-safe command. The OpenComputer agent's editable display name is separate
+from `agent.toml.name`, which identifies the exported Flue entrypoint inside the built app.
+
+The managed path is deliberately narrow: one self-contained npm root, a committed
+`package-lock.json`, a compatible `engines.node`, and a local `@flue/cli` dependency. OpenComputer
+fetches the exact commit with a repository-scoped GitHub App token in a source sandbox, removes Git
+metadata and auth, then runs `npm ci` and the offline builder in a separate tokenless sandbox. npm
+lifecycle scripts do run in that ordinary disposable OpenComputer sandbox, but its request carries
+no source, platform, model, or deployment credential.
+
+The deployment detail page keeps one persisted chronological log and summarizes the attempt as
+**Prepare**, **Build**, and **Deploy**. An install/build failure leaves the imported agent visible
+and undeployed; it creates no revision and cannot start a session. Fix the source and push the
+production branch again.
+
+<Note>Each later push that touches the linked root on the production branch automatically creates a Flue deployment. Non-production pushes do not create preview/staged Flue Workers. **Deploy latest** manually rebuilds the current production head when needed.</Note>
+
+### Link a built-in agent directory
+
+Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo, then connect it to an agent:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.deploymentSource.link("agt_123", { repo: "acme/agents", path: "issue-fixer", productionRef: "main" });
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/deployment-source
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "repo": "acme/agents", "path": "issue-fixer", "production_ref": "main" }
+```
+
+```bash CLI
+oc agent link acme/agents --path issue-fixer --branch main
+```
+
+</CodeGroup>
+
+Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-deploy` to skip). Then every push that touches the directory deploys:
+
+- push to **`main`** (production) → a new revision, **activated**.
+- push to **another branch** → a revision **staged** (review, then [promote](#roll-back-and-promote)).
+- a push not touching the directory → **no-op**; identical directory content → **skipped** (no churn).
+
+OpenComputer posts a **commit status** (queued → ready / failed) so a deployment's result shows in GitHub.
+
+For built-in behavior, your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory at the exact commit in an isolated worker, and no repository code runs. A managed Flue build uses the same short-lived source-token boundary, then runs repository code only after the tokenless handoff described above.
+
+## Deploy from your machine
+
+No repo needed — the CLI bundles a local agent directory and deploys it:
+
+```bash CLI
+oc agent deploy                       # deploy ./ (the agent named in agent.toml)
+oc agent deploy ./agents/issue-fixer  # a specific directory
+oc agent deploy --no-activate         # stage a built-in runtime revision
+```
+
+Same as a repo push — handy for CI that isn't GitHub, or trying a change before you commit.
+
+### Flue framework agents
+
+A prompt-defined [Flue](/agent-sessions/flue) agent contains `agent.toml`,
+`prompt.md`, and optional `skills/`. The CLI uploads those bounded files and
+waits while OpenComputer synthesizes and builds the app in the isolated managed
+builder:
+
+```bash CLI
+oc agent deploy   # upload source, managed build, verify live Worker
+```
+
+A complete Flue app instead carries its behavior in code. The CLI runs its
+locally installed framework build and uploads the generated modules:
+
+```bash CLI
+oc agent deploy   # flue build --target cloudflare, upload, verify live Worker
+```
+
+Both paths create the agent from `agent.toml` when needed and wait for the exact
+live Worker to become stable. See [Run Flue agents](/agent-sessions/flue) for
+the two source shapes and current deployment constraints.
+
+## Roll back and promote
+
+Rollback and promote are the **same primitive** — set the active revision. Re-activate any earlier revision (rollback) or a staged one (promote):
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.revisions.activate("agt_123", 3);
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/revisions/3/activate
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
+
+```bash CLI
+oc agent rollback 3
+```
+
+</CodeGroup>
+
+Instant — no rebuild. Running sessions are unaffected; new sessions use the newly-active revision.
+
+<Warning>The pointer-only rollback above applies to the built-in runtimes. It does not replace a Flue agent's live Worker bytes. To restore a Flue build, check out the known-good source and run `oc agent deploy` again. Do not downgrade across an incompatible Flue Durable Object schema version.</Warning>
+
+## Inspect
+
+```http REST API
+GET /v3/agents/agt_123/deployments?limit=50      # deployment history + opaque next_cursor
+GET /v3/agents/agt_123/deployments/dep_123       # one attempt, timing, source, build, result
+GET /v3/agents/agt_123/deployments/dep_123/logs  # durable chunks; resume with ?after=<cursor>
+GET /v3/agents/agt_123/revisions                # revision history (newest first; active flagged)
+GET /v3/agents/agt_123/revisions/5              # one revision + its skill file manifest
+GET /v3/agents/agt_123/activations              # active-pointer audit log
+```
+
+`GET /agents/:id` also includes an `active_revision` summary (`id`, `number`, `digest`).
+
+## Skills
+
+Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deployment (`skills:[…]`, above), upload a `.zip` (`PUT …/skills`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
+
+See the **[Skills](/agent-sessions/skills)** page for the `SKILL.md` format, how skills are invoked, all three ways to add them, and limits.
+
+## Not yet supported
+
+These are **coming soon** — a deployment that includes them is rejected today:
+- **MCP servers** (`mcp.json`)
+- **Custom runtimes** (a `runtime/` directory)
+- **Skills on `codex` agents** — skills are `claude`-runtime only for now
+
+## Dashboard
+
+The agent page in the [dashboard](https://app.opencomputer.dev) keeps **Deployments** as the operational attempt history and **Revisions** as successful immutable results. Repository deployment detail includes its exact commit, phase, timing, build metadata, safe error summary, and persisted log.

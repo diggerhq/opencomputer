@@ -181,7 +181,7 @@ Redelivery re-sends the **same** message to the endpoint (same `svix-id`) — fo
 
 ### Verify a webhook
 
-The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope. Pass `SandboxLifecycleEvent` to type the nested event:
+The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope. It's the **same `verifyWebhook`** used for [session webhooks](/agent-sessions/webhooks); pass `SandboxLifecycleEvent` to type the nested event:
 
 ```ts
 import { verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
@@ -196,3 +196,5 @@ if (delivery.type === "sandbox.stopped") {
 ```
 
 Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) / Svix library directly, against the raw body and the `svix-id` / `svix-timestamp` / `svix-signature` headers.
+
+<Note>Webhooks here cover **sandbox lifecycle**. To deliver an agent's *session* events (turns, messages, results), see [Agent Sessions webhooks](/agent-sessions/webhooks) — verified with the same `verifyWebhook` helper. Session webhooks differ in a couple of specifics today: their `webhook-id` is the event id, and signing is opt-in (set a `secret`).</Note>

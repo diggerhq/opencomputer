@@ -1,0 +1,111 @@
+---
+title: "Channels"
+description: "Two-way conversation — talk to an agent in Slack, watch it work, steer it"
+---
+
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out. Slack is the first channel and is
+live in v0 (single, platform-configured workspace — see [State](#state)).</Note>
+
+A session is not just a record you read after the fact — it is a two-way
+thread you can talk to. A **channel** connects that thread to a place people
+already work: a Slack thread, a GitHub PR. The same session can be reached
+from several places at once; you never have to declare it "a Slack agent" or
+"a GitHub agent."
+
+Target experience: *"@agent the build's failing — take a look"* in a Slack
+thread. The agent replies in-thread, narrates what it's doing, asks when it
+needs a decision, opens a draft PR — and a comment on that PR is just another
+message into the **same** session.
+
+## Slack as a channel
+
+A Slack-triggered agent declares one trigger — that is the whole thing. The
+agent that declares the Slack trigger *is* the Slack agent:
+
+```toml
+# opencomputer.toml
+name = "slack-helper"
+
+[runtime]
+image = "claude"
+model = "anthropic/claude-opus-4-8"
+
+[[triggers]]
+type = "slack"          # an @mention starts or continues a thread-session
+on   = "mention"
+
+[connection]
+github = "diggerhq"     # the repos it may act on (it resolves which from the chat)
+```
+
+`@mention` it in a channel and it starts a session bound to that Slack thread;
+replies in the thread continue the same session. The agent resolves which repo
+to work in from the conversation (see [Workspaces](/background-agents/workspaces#resolution-and-sharing)),
+investigates in a sandbox, and opens a draft PR — reporting back in the thread
+throughout. The full example is [`slack-helper`](/background-agents/quickstart).
+
+## How it flows
+
+- **Ingress.** Slack delivers the mention/reply to the platform's `/gw/slack`
+  endpoint; it is verified, de-duplicated by Slack's event id, and appended to
+  the session's timeline as a **steer** (an inbound message — see
+  [Conversation](/background-agents/sessions#conversation)).
+- **Routing.** A **channel binding** ties the session to the Slack
+  `channel + thread_ts`. The platform finds the session by that binding (or
+  creates one), so every later reply lands on the same thread.
+- **Projection.** The platform's **outbox** posts the agent's outbound events
+  back to the thread — durably and idempotently, retrying through any provider
+  blip. What gets shown is controlled by event
+  [level](/background-agents/observability#levels): `user` messages and `ask`
+  questions post as replies; `progress` narration can be coalesced into a
+  single live "working…" message.
+
+The agent never calls Slack itself. It only appends events; the platform
+projects them. The same machinery serves any provider — GitHub is the other
+instance of this contract today.
+
+## Bindings are additive — no forced surface
+
+A session has a *set* of bindings, added over its life — never a fixed type:
+
+- A Slack-born session that opens a PR gains a **delivery** binding to that PR;
+  the PR links back to the same session.
+- A session can be surfaced in more than one place — the model does not force a
+  choice between "Slack" and "GitHub."
+
+Routing follows event level: conversation (`user`/`progress`) goes to
+conversation bindings, work product (`delivery`) goes to delivery targets. An
+event may name a specific binding to override (e.g. answer on the PR rather
+than in Slack).
+
+<Note>**Preview** — a GitHub PR comment flowing back into a chat-born session
+as *conversation* is designed but not built in v0: today PR comments wake the
+session that opened the PR (delivery), and Slack is the conversation channel.
+The binding model above is built so this is a later addition, not a redesign.</Note>
+
+## Build your own surface
+
+Slack is one consumer of a small public API — the same surface a custom UI is
+built on (see the [API](/background-agents/api#messaging)):
+
+```http
+POST /v2/sessions/:id/messages   # send a message in (a steer)
+GET  /v2/sessions/:id/events?stream=sse&level=user   # render the thread out
+POST /v2/sessions/:id/channels   # bind a thread { provider, thread_ref, role[] }
+```
+
+Post messages in, render the event stream at the level you want, optionally
+bind a thread so the platform projects for you. Building a chat UI on a session
+is an afternoon.
+
+## State
+
+- **v0 (live):** Slack ingress + projection, additive bindings, the outbox,
+  `ask`/answer, and cheap-visible resilience (kill the sandbox mid-thread and
+  the conversation resumes, nothing dropped). Single workspace,
+  **platform-configured** for the demo.
+- **Preview / planned:** `oc connect slack` self-serve OAuth and multiple Slack
+  workspaces; PR-comment-as-conversation into a chat-born session; channels
+  beyond Slack (Discord, email, web); recovering messages sent while the
+  platform was down by reconciling against channel history.
