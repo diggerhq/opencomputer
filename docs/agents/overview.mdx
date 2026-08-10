@@ -1,89 +1,77 @@
 ---
 title: "Serverless Agents"
-description: "Build projects with live agent backends and React apps"
+description: "Define reactive agents in TypeScript and run them in the OpenComputer cloud"
 ---
 
-An OpenComputer project groups one or more agents, their deployments, and the
-application that interacts with them. Agent behavior and integrations are code;
-OpenComputer manages execution, durable sessions, and version history.
+OpenComputer is a managed runtime for agents defined as code. A project can
+contain several agents and a React application that talks to them. You write
+the behavior; OpenComputer manages development deployments, model execution,
+tools, durable sessions, streaming, and production versions.
+
+```tsx
+import { useInput, useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+
+  return input.text
+    ? `Help the user with this request: ${input.text}`
+    : "You are a helpful assistant.";
+}
+```
+
+The exported function is a reactive description of the agent. OpenComputer
+renders it for the current input and uses its return value as instructions for
+the managed agent loop. Hooks attach the model, tools, connections, MCP
+servers, and subagents needed for that render.
 
 <CardGroup cols={2}>
-  <Card title="Projects" icon="folder">
-    Keep related agents, sessions, files, connections, channels, and schedules
-    in one place.
+  <Card title="Projects" icon="folder" href="/agents/projects">
+    Group multiple agents and a client application in one repository.
   </Card>
-  <Card title="Agents as code" icon="code">
-    Instructions, tools, skills, connection declarations, and routing live in
-    source control.
+  <Card title="Reactive agents" icon="code" href="/agents/reactive-agents">
+    Build agent behavior with a function and conditional hooks.
   </Card>
-  <Card title="Live development" icon="terminal">
-    Run the agent server and React app separately while edits are deployed to
-    your development environment.
+  <Card title="Cloud development" icon="cloud" href="/agents/development">
+    Sync source directly to a managed development environment.
   </Card>
-  <Card title="Versioned deployment" icon="code-branch">
-    Promote an immutable deployment after testing it in development.
+  <Card title="Sessions" icon="comments" href="/agents/sessions">
+    Stream responses and inspect durable conversations.
   </Card>
 </CardGroup>
-## Initialize a project
+
+## Start a project
 
 ```bash
 npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
 npx opencomputer login
+npm run dev
 ```
 
-The initial project contains one hello-world agent and is structured to accept
-more agents later:
+The first `npm run dev` lets you create a cloud project or select an existing
+one. OpenComputer stores the local project binding under `.opencomputer/` and
+syncs every configured agent to the project's `development` environment.
 
-```text
-my-agent/
-├── opencomputer/
-│   ├── project.ts
-│   └── agents/
-│       └── hello-world/
-│           └── agent.ts
-└── src/
-    ├── App.tsx
-    ├── main.tsx
-    └── use-agent.ts
-```
+<Note>
+There is no local agent server. The React app runs locally, while agent code
+runs in OpenComputer's managed development cloud.
+</Note>
 
-`opencomputer/project.ts` lists the agents in the app. The first `npm run dev`
-binds the local app to an OpenComputer cloud project.
+## What is available today
 
-## Development workflow
+- TypeScript projects containing one or more agents
+- reactive instructions, model selection, tools, subagents, connections, MCP
+  servers, input metadata, and session data reads
+- cloud development with file watching and automatic synchronization
+- a generated React client with streaming and multi-turn session reuse
+- dashboard and CLI playground sessions
+- immutable deployments promoted through aliases such as `production`
+- user-scoped Gmail, Calendar, and GitHub connections
+- Slack channels connected to deployed agent aliases
 
-<Steps>
-  <Step title="Start the agent backend">
-    Run `npm run dev`. It watches the agent definition and syncs it to the
-    project's Development (Cloud) environment.
-  </Step>
-  <Step title="Start the application">
-    In another terminal, run `npm run dev:web`. The generated `useAgent` hook
-    streams messages through the Vite proxy.
-  </Step>
-  <Step title="Customize and connect">
-    Edit instructions and add tools, connections, skills, channels, or routing
-    under `opencomputer/`.
-  </Step>
-  <Step title="Deploy a version">
-    Run `opencomputer deploy`. The project has a development environment by
-    default; promote a tested immutable version to production when ready.
-  </Step>
-</Steps>
-
-## Project resources
-
-The project view includes **Agent playground**, **Sessions**, **Files**,
-**Connections**, **Channels**, **Schedules**, and **Agent schema**. A session
-has a durable log and can own produced files, session data, and shared secrets.
-
-<CardGroup cols={2}>
-  <Card title="Quickstart" icon="play" href="/agents/quickstart">
-    Create and run the hello-world project.
-  </Card>
-  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
-    Follow requests from React to the agent runtime.
-  </Card>
-</CardGroup>
+The dashboard is primarily an inspection and testing surface. Agent behavior
+belongs in the repository under `opencomputer/`; credentials and user account
+authorizations remain managed by OpenComputer.

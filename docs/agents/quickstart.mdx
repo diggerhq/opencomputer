@@ -1,15 +1,12 @@
 ---
 title: "Quickstart"
-description: "Create a hello-world agent project and React app"
+description: "Create an agent project and sync it to Development (Cloud)"
 ---
-
-This quickstart creates your first OpenComputer project, syncs its hello-world
-agent to Development (Cloud), and opens a local React app that can steer it.
 
 ## Prerequisites
 
 - Node.js 22 or newer
-- An OpenComputer account
+- an OpenComputer account
 
 ## 1. Create the app
 
@@ -19,8 +16,7 @@ cd my-agent
 npm install
 ```
 
-Use `npm create @opencomputer/start@latest .` to initialize the current
-directory instead.
+Use `.` instead of `my-agent` to initialize an empty current directory.
 
 ## 2. Log in
 
@@ -28,10 +24,10 @@ directory instead.
 npx opencomputer login
 ```
 
-The generated project includes the OpenComputer CLI. You do not need to install
-it globally.
+The CLI opens the OpenComputer device-login flow and stores the login locally.
+The production API at `https://app.opencomputer.dev` is used by default.
 
-## 3. Sync the agent to Development (Cloud)
+## 3. Start cloud development
 
 In the first terminal:
 
@@ -39,11 +35,10 @@ In the first terminal:
 npm run dev
 ```
 
-The first run asks you to select an existing cloud project or create one. It
-then watches `opencomputer/` and continuously deploys changes to that project's
-development environment.
+On the first run, choose an existing project or create a new one. The process
+stays open, watches `opencomputer/`, and syncs changes to `development`.
 
-## 4. Run the React app
+## 4. Start React
 
 In a second terminal:
 
@@ -51,38 +46,48 @@ In a second terminal:
 npm run dev:web
 ```
 
-Open the Vite URL and send the suggested hello-world prompt. The generated
-`useAgent` hook streams the response and reuses the session for follow-up
+Open the Vite URL and send a message. The generated React hook creates a
+durable session, streams response events, and reuses that session for follow-up
 messages.
 
-## 5. Customize the agent
+<Warning>
+Keep `npm run dev` running while using `npm run dev:web`. Vite reads temporary
+bridge details from `.opencomputer/dev.json`; those details are intentionally
+not bundled into browser code.
+</Warning>
 
-Edit `opencomputer/agents/hello-world/agent.ts`. Add reactive tools,
-connections, skills, model selection, and routing as code beside it. React UI
-code stays under `src/`.
+## 5. Change the agent
 
-```text
-my-agent/
-├── opencomputer/
-│   ├── project.ts
-│   └── agents/hello-world/
-└── src/
+Edit `opencomputer/agents/hello-world/agent.ts`:
+
+```tsx
+import { useInput, useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+
+  return `Be concise and practical. Current request: ${input.text ?? "none"}`;
+}
 ```
 
-## 6. Deploy
+Saving the file publishes a new development deployment. Refreshing or
+restarting the React app is not required for agent-only changes.
+
+## 6. Deploy to production
 
 ```bash
-opencomputer deploy --alias production
+npm run deploy -- --alias production
 ```
 
-Each source change produces an immutable deployment version. Open the project
-in the dashboard and select **Agent playground** to test the deployed agent.
+The command builds an immutable deployment and advances the `production`
+alias. Development remains available for subsequent edits.
 
 <CardGroup cols={2}>
-  <Card title="Agents overview" icon="robot" href="/agents/overview">
-    Learn about projects, agents, sessions, and deployments.
+  <Card title="Projects" icon="folder" href="/agents/projects">
+    Add more agents and understand project bindings.
   </Card>
-  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
-    See how the React app connects to local and deployed agents.
+  <Card title="Reactive agents" icon="code" href="/agents/reactive-agents">
+    Add models, tools, connections, MCP servers, and subagents.
   </Card>
 </CardGroup>

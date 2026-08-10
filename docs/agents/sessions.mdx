@@ -1,0 +1,68 @@
+---
+title: "Sessions and playground"
+description: "Create durable conversations from React, the dashboard, channels, or the CLI"
+---
+
+A session is a durable conversation with a deployed agent. Each turn appends
+input and streamed runtime events to the session, allowing clients to resume a
+conversation without rebuilding its history locally.
+
+## React
+
+The starter includes `src/use-agent.ts`. Its `useAgent()` hook exposes:
+
+- `messages` — accumulated user and assistant messages
+- `send(text)` — create a session if necessary and stream the next turn
+- `isRunning` — whether a turn is active
+- `error` — the latest request error
+
+The generated hook is ordinary application code. Extend it, replace its UI, or
+build additional hooks around the same session endpoints.
+
+## Agent playground
+
+Open a project in the dashboard and choose **Agent playground**. Select the
+agent and environment independently, then create a new session or resume a
+previous playground session.
+
+Playground sessions stay in the playground list. Sessions started through an
+API or channel appear under **Sessions**, where their durable turn history can
+be inspected.
+
+## CLI
+
+Start an interactive session against the development agent:
+
+```bash
+npm run session
+```
+
+Or manage remote sessions explicitly:
+
+```bash
+npx opencomputer session create "Draft a response" --remote \
+  --agent hello-world@development
+npx opencomputer session list
+npx opencomputer session inspect <session-id>
+npx opencomputer session attach <session-id>
+npx opencomputer session send <session-id> "Continue"
+npx opencomputer session end <session-id>
+```
+
+Use `--keep` on supported commands when the session should remain active after
+the command exits.
+
+## Input sources
+
+Inside an agent, `useInput().source` identifies how the current work arrived:
+
+```tsx
+const input = useInput();
+
+if (input.source === "channel") {
+  return "Respond naturally for a shared chat channel.";
+}
+```
+
+This lets the same agent adapt to React, playground, API, channel, schedule,
+webhook, subagent, and system inputs without separate agent definitions.
