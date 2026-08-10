@@ -31,9 +31,11 @@
             "pages": [
               "agents/overview",
               "agents/quickstart",
+              "agents/projects",
+              "agents/reactive-agents",
+              "agents/sessions",
               "agents/connections",
-              "agents/channels",
-              "agents/architecture"
+              "agents/channels"
             ]
           }
         ]

@@ -1,0 +1,136 @@
+---
+title: "Reactive agents"
+description: "Render instructions and capabilities from the current input"
+---
+
+An agent is a synchronous TypeScript function that returns instructions. The
+OpenComputer runtime owns the durable conversation, streaming model calls,
+tool loop, and continuation. Your function calculates the agent configuration
+for the current render.
+
+```tsx
+export default function Agent() {
+  return "You are a helpful assistant.";
+}
+```
+
+This keeps ordinary TypeScript control flow available. Hooks may be called
+conditionally, so a capability can be attached only when the current request
+needs it.
+
+## Hooks
+
+| Hook | Current value or effect |
+| --- | --- |
+| `useInput()` | Reads the current source, text, and optional structured payload |
+| `useCurrentInput()` | Alias for `useInput()` |
+| `useModel(model)` | Selects a model using `provider/model` notation |
+| `useTool(tool)` | Makes a named or code-defined tool available |
+| `useSubagent(agent)` | Makes another project agent available as a subagent |
+| `useConnection(connection)` | Declares a user-scoped service connection needed by this render |
+| `useMcpServer(server)` | Attaches a managed HTTPS MCP server |
+| `useSessionData(key)` | Reads a value previously stored in the current session |
+
+`useInput()` is not a human-in-the-loop prompt. It describes the input that
+caused the current render. Its `source` can be `user`, `channel`, `schedule`,
+`webhook`, `subagent`, or `system`.
+
+## Conditional configuration
+
+```tsx
+import {
+  useInput,
+  useModel,
+  useSubagent,
+  useTool,
+} from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+
+  if (input.text?.includes("research")) {
+    useTool("web-search");
+    useSubagent("researcher");
+  }
+
+  return "Answer directly. Research and verify when those capabilities exist.";
+}
+```
+
+The hook calls describe capabilities for the next model step; they do not run
+the model or tool themselves.
+
+## Define a tool
+
+Tools are TypeScript values with JSON Schema inputs and an asynchronous or
+synchronous `run` function. Put the implementation beside the agent, for
+example at `opencomputer/agents/hello-world/tools/hacker-news.ts`:
+
+```tsx
+import { defineTool } from "@opencomputer/agent";
+
+export const latestStories = defineTool({
+  name: "latest_hacker_news_stories",
+  description: "Fetch the current top Hacker News stories",
+  input: {
+    type: "object",
+    properties: { limit: { type: "number" } },
+  },
+  async run({ input, signal, reportProgress }) {
+    await reportProgress({ status: "fetching" });
+    const limit = Number(input.limit ?? 10);
+    const ids = await fetch(
+      "https://hacker-news.firebaseio.com/v0/topstories.json",
+      { signal },
+    ).then((response) => response.json() as Promise<number[]>);
+    return ids.slice(0, limit);
+  },
+});
+```
+
+Import and attach it from `agent.ts`:
+
+```tsx
+import { useTool } from "@opencomputer/agent";
+import { latestStories } from "./tools/hacker-news";
+
+export default function Agent() {
+  useTool(latestStories);
+  return "Use the Hacker News tool when the user asks for current stories.";
+}
+```
+
+Tool names may contain letters, numbers, underscores, and hyphens. Tool code
+runs in the managed agent runtime, not in the browser.
+
+## Skills
+
+Skills are reusable instruction bundles for the coding-agent harness. Add a
+skill only when an agent needs one:
+
+```text
+opencomputer/agents/hello-world/skills/code-review/SKILL.md
+```
+
+Skills in an agent's `skills/` directory are packaged with that agent and can
+be loaded by the runtime when their description matches the task. Unlike
+tools, skills provide instructions and supporting resources rather than a
+callable JSON Schema function.
+
+## Models
+
+Use `provider/model` strings:
+
+```tsx
+useModel("anthropic/claude-sonnet-4.6");
+```
+
+An object form is also supported:
+
+```tsx
+useModel({ provider: "anthropic", model: "claude-sonnet-4.6" });
+```
+
+Provider credentials are resolved by the managed model gateway and are not
+placed in the agent sandbox or React application.

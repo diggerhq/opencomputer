@@ -1,0 +1,95 @@
+---
+title: "Projects and agents"
+description: "Organize multiple cloud agents and a React application"
+---
+
+A project is the cloud boundary for related agents, environments, deployments,
+and sessions. A source repository contains the project's agent definitions and
+the application that interacts with them.
+
+## Project structure
+
+The starter is intentionally small:
+
+```text
+my-agent/
+├── opencomputer/
+│   ├── project.ts
+│   └── agents/
+│       └── hello-world/
+│           ├── agent.ts
+│           ├── tools/       # optional
+│           └── skills/      # optional
+├── src/
+│   ├── App.tsx
+│   ├── main.tsx
+│   └── use-agent.ts
+├── package.json
+└── vite.config.ts
+```
+
+- `opencomputer/project.ts` declares project metadata and agent IDs.
+- `opencomputer/agents/<id>/agent.ts` defines one agent.
+- `src/` is a normal React application.
+- `.opencomputer/` is ignored local state created by the CLI.
+
+Add source files only when the project uses them. The starter does not generate
+placeholder capability directories.
+
+## Create or select the cloud project
+
+The source scaffold and cloud project are separate. `npm create` writes local
+source; the first `npm run dev` asks where to sync it.
+
+For non-interactive use:
+
+```bash
+npx opencomputer dev --project <project-id-or-slug>
+npx opencomputer dev --create-project "Support agents"
+```
+
+Later runs reuse `.opencomputer/project.json`. Delete or change that binding
+only when you intentionally want this source directory to target another
+project.
+
+## Add another agent
+
+Create a new agent module:
+
+```text
+opencomputer/agents/researcher/agent.ts
+```
+
+```tsx
+import { useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  return "Research the request, verify claims, and cite useful sources.";
+}
+```
+
+Then list it in `opencomputer/project.ts`:
+
+```tsx
+export default {
+  name: "Customer workspace",
+  agents: ["hello-world", "researcher"],
+};
+```
+
+The running development process synchronizes both agents. In the dashboard,
+the project-level environment selector switches between `development` and
+`production`; the playground has a separate agent selector.
+
+## Inspect the project
+
+The current project dashboard provides:
+
+- **Agent playground** for creating and resuming test sessions
+- **Deployments** for immutable version history and active aliases
+- **Sessions** created through channels or the API
+- **Channels** connected to a deployed agent alias
+
+Project and agent behavior remains code-owned. The dashboard is for selection,
+inspection, testing, and credential-backed setup flows.

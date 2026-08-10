@@ -5,7 +5,9 @@
 ## Serverless Agents
 
 - [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, connect, and deploy agents as code.
-- [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Deploy a Gmail summarizer agent with the OpenComputer CLI.
-- [Connections](https://docs.opencomputer.dev/agents/connections.md): Give agents user-scoped access to services such as Gmail.
-- [Channels](https://docs.opencomputer.dev/agents/channels.md): Connect deployed agents to Slack and other conversational interfaces.
-- [Architecture](https://docs.opencomputer.dev/agents/architecture.md): Learn how agent projects become managed, connected deployments.
+- [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
+- [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple agents and a React application.
+- [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, connections, and MCP servers from code.
+- [Sessions and playground](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
+- [Connections and MCP](https://docs.opencomputer.dev/agents/connections.md): Attach user-scoped services and managed MCP servers from code.
+- [Channels](https://docs.opencomputer.dev/agents/channels.md): Connect deployed agents to Slack.

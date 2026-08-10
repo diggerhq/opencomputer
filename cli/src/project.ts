@@ -494,7 +494,7 @@ export default function Agent() {
           "react-dom": "^19.2.0",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.4",
+          "@opencomputer/cli": "^0.4.6",
           "@types/node": "^24.0.0",
           "@types/react": "^19.2.0",
           "@types/react-dom": "^19.2.0",
@@ -517,10 +517,7 @@ import { defineConfig } from "vite";
 function openComputerDev() {
   try {
     return JSON.parse(
-      readFileSync(
-        resolve("opencomputer/agents/hello-world/.opencomputer/dev.json"),
-        "utf8",
-      ),
+      readFileSync(resolve(".opencomputer/dev.json"), "utf8"),
     ) as { url: string; token: string; agent: string };
   } catch {
     throw new Error(
