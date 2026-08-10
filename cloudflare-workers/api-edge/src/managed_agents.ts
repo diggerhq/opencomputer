@@ -151,6 +151,21 @@ function publicProject(value: unknown): Record<string, unknown> {
   const project = record(value) ?? {};
   const agentId =
     typeof project.agentId === "string" ? project.agentId : undefined;
+  const agents = Array.isArray(project.agents)
+    ? project.agents.flatMap((value) => {
+        const agent = record(value);
+        return agent && typeof agent.id === "string"
+          ? [
+              {
+                id: agent.id,
+                name: typeof agent.name === "string" ? agent.name : agent.id,
+              },
+            ]
+          : [];
+      })
+    : agentId
+      ? [{ id: agentId, name: "Hello World" }]
+      : [];
   return {
     id: project.id,
     slug: project.slug,
@@ -158,7 +173,7 @@ function publicProject(value: unknown): Record<string, unknown> {
     environments: Array.isArray(project.environments)
       ? stripPrivateValues(project.environments)
       : [],
-    agents: agentId ? [{ id: agentId, name: "Hello World" }] : [],
+    agents,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };

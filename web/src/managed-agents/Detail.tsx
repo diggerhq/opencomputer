@@ -474,7 +474,9 @@ export default function ManagedAgentDetail({
     (candidate) => candidate.id === agentId,
   )
   const projectEnvironment = project?.project.environments.find(
-    (candidate) => candidate.name === environment,
+    (candidate) =>
+      candidate.name === environment &&
+      (!candidate.agentId || candidate.agentId === agentId),
   )
   const agent: ManagedAgentSummary | undefined =
     projectAgent && project

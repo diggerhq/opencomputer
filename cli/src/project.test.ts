@@ -91,7 +91,7 @@ test("init creates a multi-agent-ready project and React hello world app", async
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
     assert.equal(packageJSON.scripts["dev:web"], "vite");
     assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.2.0");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.3");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.4");
     assert.ok(packageJSON.devDependencies["@types/node"]);
     assert.match(
       await readFile(resolve(root, "vite.config.ts"), "utf8"),

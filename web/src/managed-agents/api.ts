@@ -48,6 +48,7 @@ const projectSchema = z.object({
   environments: z.array(
     z.object({
       name: z.enum(['development', 'production']),
+      agentId: z.string().optional(),
       activeDeploymentId: z.string().optional(),
       updatedAt: z.string(),
     }),

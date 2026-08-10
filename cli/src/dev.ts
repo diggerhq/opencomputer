@@ -6,10 +6,12 @@ import type { OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
 import {
   ensureProjectBinding,
+  findOpenComputerProjectRoot,
+  type ProjectBinding,
   type ProjectBindingOptions,
 } from "./binding.js";
 import { startGateway } from "./local.js";
-import { buildAgentArtifact } from "./project.js";
+import { buildAgentArtifact, readProjectAgents } from "./project.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
@@ -36,6 +38,33 @@ export async function publishDevelopment(
   return { built, deployment };
 }
 
+export function cloudAgentId(
+  binding: ProjectBinding,
+  localId: string,
+  index: number,
+) {
+  return index === 0 ? binding.agentId : `${binding.agentId}--${localId}`;
+}
+
+export async function publishProjectDevelopment(
+  client: Pick<OpenComputerClient, "registerDeployment">,
+  projectRoot: string,
+  binding: ProjectBinding,
+) {
+  const agents = await readProjectAgents(projectRoot);
+  const results = [];
+  for (const [index, agent] of agents.entries()) {
+    results.push(
+      await publishDevelopment(
+        client,
+        agent.root,
+        cloudAgentId(binding, agent.localId, index),
+      ),
+    );
+  }
+  return results;
+}
+
 function sourceChange(filename: string | Buffer | null): boolean {
   if (!filename) return true;
   const normalized = filename.toString().replaceAll("\\", "/");
@@ -60,7 +89,13 @@ export async function runCloudDevelopment(
   root: string,
   options: ProjectBindingOptions = {},
 ): Promise<void> {
-  const binding = await ensureProjectBinding(client, config, root, options);
+  const projectRoot = await findOpenComputerProjectRoot(root);
+  const binding = await ensureProjectBinding(
+    client,
+    config,
+    projectRoot,
+    options,
+  );
   const gateway = await startGateway(config);
   const stateDirectory = resolve(root, ".opencomputer");
   const stateFile = resolve(stateDirectory, "dev.json");
@@ -81,7 +116,7 @@ export async function runCloudDevelopment(
   let timer: NodeJS.Timeout | undefined;
   let publishing = false;
   let pending = false;
-  let lastDigest: string | undefined;
+  const lastDigests = new Map<string, string>();
 
   const publish = async () => {
     if (publishing) {
@@ -93,12 +128,20 @@ export async function runCloudDevelopment(
       do {
         pending = false;
         try {
-          const result = await publishDevelopment(client, root, binding.agentId);
-          if (result.built.digest !== lastDigest) {
-            lastDigest = result.built.digest;
-            process.stdout.write(
-              `Synced ${result.deployment.agentId}@development  ${result.deployment.id}\n`,
-            );
+          const results = await publishProjectDevelopment(
+            client,
+            projectRoot,
+            binding,
+          );
+          for (const result of results) {
+            if (
+              result.built.digest !== lastDigests.get(result.deployment.agentId)
+            ) {
+              lastDigests.set(result.deployment.agentId, result.built.digest);
+              process.stdout.write(
+                `Synced ${result.deployment.agentId}@development  ${result.deployment.id}\n`,
+              );
+            }
           }
         } catch (error) {
           process.stderr.write(
@@ -112,17 +155,23 @@ export async function runCloudDevelopment(
   };
 
   try {
-    const initial = await publishDevelopment(client, root, binding.agentId);
-    lastDigest = initial.built.digest;
+    const initial = await publishProjectDevelopment(
+      client,
+      projectRoot,
+      binding,
+    );
+    for (const result of initial) {
+      lastDigests.set(result.deployment.agentId, result.built.digest);
+    }
     process.stdout.write(
       `Development (Cloud)\n` +
         `Project:    ${binding.projectName} (${binding.projectId})\n` +
-        `Agent:      ${initial.deployment.agentId}@development\n` +
-        `Deployment: ${initial.deployment.id}\n` +
-        `Watching:   ${root}\n` +
+        `Agents:     ${initial.map((result) => `${result.deployment.agentId}@development`).join(", ")}\n` +
+        `Deployments:${initial.map((result) => ` ${result.deployment.id}`).join("\n            ")}\n` +
+        `Watching:   ${projectRoot}\n` +
         `React:      run npm run dev:web in another terminal\n`,
     );
-    watcher = watch(root, { recursive: true }, (_event, filename) => {
+    watcher = watch(projectRoot, { recursive: true }, (_event, filename) => {
       if (!sourceChange(filename)) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void publish(), DEBOUNCE_MS);

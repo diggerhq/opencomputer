@@ -8,6 +8,7 @@ import {
 import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
 import { runCloudDevelopment } from "./dev.js";
+import { findOpenComputerProjectRoot } from "./binding.js";
 import { runLocalAgent } from "./local.js";
 import {
   addCalendarTools,
@@ -509,11 +510,16 @@ export async function runCommand(
     const project = option(args, "--project");
     const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    await runCloudDevelopment(client, config, await requireAgentRoot(), {
-      project,
-      createProjectName,
-      interactive: !globals.json,
-    });
+    await runCloudDevelopment(
+      client,
+      config,
+      await findOpenComputerProjectRoot(process.cwd()),
+      {
+        project,
+        createProjectName,
+        interactive: !globals.json,
+      },
+    );
     return;
   }
 

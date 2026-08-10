@@ -30,6 +30,12 @@ export interface BuiltAgentArtifact {
   elapsedMs: number;
 }
 
+export interface ProjectAgentSource {
+  localId: string;
+  root: string;
+  manifest: AgentManifest;
+}
+
 const AGENT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const AGENT_NAME_ADJECTIVES = [
@@ -1213,14 +1219,10 @@ export async function findAgentRoot(
   let directory = resolve(startDirectory);
   for (;;) {
     const nested = resolve(directory, "opencomputer");
-    if (
-      (await exists(resolve(directory, "agent.ts")))
-    ) {
+    if (await exists(resolve(directory, "agent.ts"))) {
       return directory;
     }
-    if (
-      (await exists(resolve(nested, "agent.ts")))
-    ) {
+    if (await exists(resolve(nested, "agent.ts"))) {
       return nested;
     }
     for (const agentsDirectory of [
@@ -1234,9 +1236,7 @@ export async function findAgentRoot(
       })) {
         if (!entry.isDirectory()) continue;
         const agent = resolve(agentsDirectory, entry.name);
-        if (
-          (await exists(resolve(agent, "agent.ts")))
-        ) {
+        if (await exists(resolve(agent, "agent.ts"))) {
           detected.push(agent);
         }
       }
@@ -1251,6 +1251,65 @@ export async function findAgentRoot(
     if (parent === directory) return undefined;
     directory = parent;
   }
+}
+
+function projectAgentIds(source: string, path: string): string[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  for (const statement of file.statements) {
+    if (
+      !ts.isExportAssignment(statement) ||
+      !ts.isObjectLiteralExpression(statement.expression)
+    ) {
+      continue;
+    }
+    const property = statement.expression.properties.find(
+      (candidate): candidate is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(candidate) &&
+        ((ts.isIdentifier(candidate.name) &&
+          candidate.name.text === "agents") ||
+          (ts.isStringLiteral(candidate.name) &&
+            candidate.name.text === "agents")),
+    );
+    if (!property || !ts.isArrayLiteralExpression(property.initializer)) break;
+    const ids = property.initializer.elements.map((element) => {
+      if (!ts.isStringLiteralLike(element)) {
+        throw new Error(
+          "opencomputer/project.ts agents must be string literals",
+        );
+      }
+      return element.text;
+    });
+    if (!ids.length || new Set(ids).size !== ids.length) {
+      throw new Error(
+        "opencomputer/project.ts must list at least one unique agent",
+      );
+    }
+    return ids;
+  }
+  throw new Error(
+    "opencomputer/project.ts must export an object with an agents array",
+  );
+}
+
+export async function readProjectAgents(
+  projectRoot: string,
+): Promise<ProjectAgentSource[]> {
+  const path = resolve(projectRoot, "opencomputer", "project.ts");
+  const ids = projectAgentIds(await readFile(path, "utf8"), path);
+  return Promise.all(
+    ids.map(async (localId) => {
+      if (!AGENT_ID_PATTERN.test(localId)) {
+        throw new Error(`Invalid project agent ID: ${localId}`);
+      }
+      const root = resolve(projectRoot, "opencomputer", "agents", localId);
+      if (!(await exists(resolve(root, "agent.ts")))) {
+        throw new Error(
+          `Project agent ${localId} is missing opencomputer/agents/${localId}/agent.ts`,
+        );
+      }
+      return { localId, root, manifest: await readManifest(root) };
+    }),
+  );
 }
 
 async function addGoogleConnectionDeclaration(
@@ -1773,7 +1832,10 @@ function templateReactiveTools(template: ManagedAgentTemplate): string[] {
     tools.push("github_pr_context", "github_checkout");
   }
   if (tools.length) {
-    tools.push("opencomputer_connections_list", "opencomputer_connections_request");
+    tools.push(
+      "opencomputer_connections_list",
+      "opencomputer_connections_request",
+    );
   }
   return tools;
 }
@@ -1816,10 +1878,7 @@ export async function initializeAgentProject(
   const root = resolve(directory);
   const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
   await assertStarterTarget(root);
-  await initializeTemplateAgentProject(
-    HELLO_WORLD_TEMPLATE,
-    agentRoot,
-  );
+  await initializeTemplateAgentProject(HELLO_WORLD_TEMPLATE, agentRoot);
   const manifest: AgentManifest = {
     schema: 1,
     id: project?.agentId ?? "hello-world",
@@ -1889,7 +1948,7 @@ export default function Agent() {
           "react-dom": "^19.2.0",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.3",
+          "@opencomputer/cli": "^0.4.4",
           "@types/node": "^24.0.0",
           "@types/react": "^19.2.0",
           "@types/react-dom": "^19.2.0",
@@ -2288,23 +2347,28 @@ npm run dev:web
 }
 
 function literalHookIds(source: string, hook: string): string[] {
-  const pattern = new RegExp(
-    `\\b${hook}\\(\\s*["']([^"']+)["']`,
-    "g",
-  );
+  const pattern = new RegExp(`\\b${hook}\\(\\s*["']([^"']+)["']`, "g");
   return [...source.matchAll(pattern)].map((match) => match[1]!).sort();
 }
 
 function definedMcpServerIds(source: string): string[] {
-  return [...source.matchAll(
-    /\bdefineMcpServer\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-  )].map((match) => match[1]!).sort();
+  return [
+    ...source.matchAll(
+      /\bdefineMcpServer\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
+    ),
+  ]
+    .map((match) => match[1]!)
+    .sort();
 }
 
 function definedToolIds(source: string): string[] {
-  return [...source.matchAll(
-    /\btool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-  )].map((match) => match[1]!).sort();
+  return [
+    ...source.matchAll(
+      /\btool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
+    ),
+  ]
+    .map((match) => match[1]!)
+    .sort();
 }
 
 function agentApiRuntimeSource(): string {
@@ -2347,9 +2411,13 @@ export async function prepareAgent(root: string): Promise<string> {
   await rm(runtime, { recursive: true, force: true });
   await mkdir(runtime, { recursive: true });
   const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
-  const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(agentSource);
+  const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(
+    agentSource,
+  );
   if (!reactive) {
-    throw new Error("agent.ts must default-export a synchronous agent function");
+    throw new Error(
+      "agent.ts must default-export a synchronous agent function",
+    );
   }
   await writeFile(
     resolve(runtime, "AGENTS.md"),
@@ -2432,31 +2500,37 @@ the product or support surface presented to users.
   );
   const transpile = (source: string, filename: string) =>
     ts.transpileModule(source, {
-        fileName: filename,
-        compilerOptions: {
-          target: ts.ScriptTarget.ES2022,
-          module: ts.ModuleKind.ESNext,
-          moduleResolution: ts.ModuleResolutionKind.Bundler,
-        },
-        reportDiagnostics: true,
+      fileName: filename,
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+      },
+      reportDiagnostics: true,
     });
   const compiledAgent = transpile(agentSource, "agent.ts");
   const diagnostics = compiledAgent.diagnostics ?? [];
-  if (diagnostics.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
+  if (
+    diagnostics.some(
+      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+    )
+  ) {
     throw new Error(
-        `agent.ts could not be compiled: ${diagnostics
-          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
-          .join("; ")}`,
+      `agent.ts could not be compiled: ${diagnostics
+        .map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+        )
+        .join("; ")}`,
     );
   }
   const compiledSource = compiledAgent.outputText.replace(
-      /(["'])@opencomputer\/agent\1/g,
-      '"./opencomputer-agent.js"',
+    /(["'])@opencomputer\/agent\1/g,
+    '"./opencomputer-agent.js"',
   );
   await writeFile(resolve(runtime, "agent.js"), compiledSource);
   await writeFile(
-      resolve(runtime, "opencomputer-agent.js"),
-      agentApiRuntimeSource(),
+    resolve(runtime, "opencomputer-agent.js"),
+    agentApiRuntimeSource(),
   );
   const toolSources: Array<{ filename: string; source: string }> = [
     {
@@ -2480,9 +2554,8 @@ the product or support surface presented to users.
   await mkdir(resolve(runtime, "tools"), { recursive: true });
   for (const candidate of toolSources) {
     const ids = definedToolIds(candidate.source);
-    const calls = [
-      ...candidate.source.matchAll(/\btool(?:<[^>]+>)?\s*\(/g),
-    ].length;
+    const calls = [...candidate.source.matchAll(/\btool(?:<[^>]+>)?\s*\(/g)]
+      .length;
     if (ids.length !== calls) {
       throw new Error(
         `${candidate.filename} must give every tool() a literal string id`,
@@ -2490,12 +2563,16 @@ the product or support surface presented to users.
     }
     const compiledTool = transpile(candidate.source, candidate.filename);
     const toolDiagnostics = compiledTool.diagnostics ?? [];
-    if (toolDiagnostics.some(
-      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-    )) {
+    if (
+      toolDiagnostics.some(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      )
+    ) {
       throw new Error(
         `${candidate.filename} could not be compiled: ${toolDiagnostics
-          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
+          .map((diagnostic) =>
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          )
           .join("; ")}`,
       );
     }
@@ -2514,33 +2591,41 @@ the product or support surface presented to users.
     (id, index) => reactiveTools.indexOf(id) !== index,
   );
   if (duplicateTool) {
-    throw new Error(`Tool id ${JSON.stringify(duplicateTool)} is defined more than once`);
+    throw new Error(
+      `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
+    );
   }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
-      resolve(runtime, ".opencomputer", "reactive.json"),
-      `${JSON.stringify(
-        {
-          version: 2,
-          entry: "../agent.js",
-          tools: [...new Set([
+    resolve(runtime, ".opencomputer", "reactive.json"),
+    `${JSON.stringify(
+      {
+        version: 2,
+        entry: "../agent.js",
+        tools: [
+          ...new Set([
             ...reactiveTools,
             ...literalHookIds(agentSource, "useTool"),
-          ])].sort(),
-          toolModules: toolModules.sort(),
-          subagents: literalHookIds(agentSource, "useSubagent"),
-          connections: [...new Set([
+          ]),
+        ].sort(),
+        toolModules: toolModules.sort(),
+        subagents: literalHookIds(agentSource, "useSubagent"),
+        connections: [
+          ...new Set([
             ...literalHookIds(agentSource, "connection"),
             ...literalHookIds(agentSource, "useConnection"),
-          ])].sort(),
-          mcpServers: [...new Set([
+          ]),
+        ].sort(),
+        mcpServers: [
+          ...new Set([
             ...definedMcpServerIds(agentSource),
             ...literalHookIds(agentSource, "useMcpServer"),
-          ])].sort(),
-        },
-        null,
-        2,
-      )}\n`,
+          ]),
+        ].sort(),
+      },
+      null,
+      2,
+    )}\n`,
   );
   return runtime;
 }
