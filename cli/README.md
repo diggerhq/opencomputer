@@ -44,3 +44,38 @@ opencomputer run hello-world "Say hello"
 
 The CLI calls the public OpenComputer API and uses OpenComputer authentication.
 It does not require a separate backend account, key, or CLI.
+
+## Secrets and managed egress
+
+Secret values are read from a hidden prompt, or from standard input in CI.
+They are write-only: list output contains names, scope, environment, and
+allowed origins, never values.
+
+```bash
+# Project-level development secret. Allowed origins are inferred from code.
+opencomputer secrets set GITHUB_TOKEN
+
+# Agent-level production override.
+opencomputer secrets set GITHUB_TOKEN \
+  --agent current \
+  --environment production
+
+opencomputer secrets list --environment development
+opencomputer secrets remove GITHUB_TOKEN --environment development
+```
+
+Agent code declares secret-backed destinations with `defineConnection()`,
+`useSecret()`, and `useConnection()`. Requests use the managed gateway, which
+injects a secret only for the declared origin, path, method, agent, and
+environment. The plaintext secret is not added to the deployment or runtime.
+
+## Logs
+
+Read runtime stdout/stderr and managed-egress events from the public
+OpenComputer API:
+
+```bash
+opencomputer logs
+opencomputer logs --agent my-agent --environment development --follow
+opencomputer logs --session <session-id> --json
+```

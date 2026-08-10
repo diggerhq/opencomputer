@@ -60,6 +60,10 @@ Usage:
   opencomputer connection add <gmail|calendar|github> [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>
+  opencomputer secrets set <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer secrets list [--environment development|production] [--agent <agent>|current]
+  opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer channels list [--local|--remote]
   opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]

@@ -510,6 +510,20 @@ describe("managed agents proxy", () => {
             alias: "production",
             channels: [],
             connections: ["google"],
+            httpConnections: [
+              {
+                id: "github-api",
+                origin: "https://api.github.com",
+                methods: ["GET"],
+                headers: {
+                  Authorization: {
+                    kind: "secret",
+                    name: "GITHUB_TOKEN",
+                    prefix: "Bearer ",
+                  },
+                },
+              },
+            ],
             createdAt: "2026-07-30T00:00:00.000Z",
             artifact: { bucket: "private-bucket" },
             imageArn: "arn:aws:private",
@@ -530,6 +544,20 @@ describe("managed agents proxy", () => {
             alias: "production",
             channels: [],
             connections: ["google"],
+            httpConnections: [
+              {
+                id: "github-api",
+                origin: "https://api.github.com",
+                methods: ["GET"],
+                headers: {
+                  Authorization: {
+                    kind: "secret",
+                    name: "GITHUB_TOKEN",
+                    prefix: "Bearer ",
+                  },
+                },
+              },
+            ],
             source: {
               digest,
               size: source.length,
@@ -562,10 +590,85 @@ describe("managed agents proxy", () => {
     ).toMatchObject({
       agentId: "gmail-summarizer",
       name: "Gentle Falcon",
+      httpConnections: [
+        expect.objectContaining({
+          id: "github-api",
+          origin: "https://api.github.com",
+        }),
+      ],
     });
     expect(JSON.stringify(await response.json())).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,
     );
+  });
+
+  it("forwards managed secret metadata and aggregate logs through the public contract", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          name: "GITHUB_TOKEN",
+          projectId: "prj_1",
+          environment: "development",
+          allowedOrigins: ["https://api.github.com"],
+          createdAt: "2026-08-10T00:00:00.000Z",
+          updatedAt: "2026-08-10T00:00:00.000Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          logs: [
+            {
+              id: "log_1",
+              cursor: "cursor_1",
+              timestamp: "2026-08-10T00:00:00.000Z",
+              level: "info",
+              event: "runtime.log",
+              agentId: "agent-1",
+              sessionId: "session-1",
+              data: { message: "ready" },
+            },
+          ],
+          cursor: "cursor_1",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+    const environment = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const secret = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/secrets/GITHUB_TOKEN",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            value: "never-return-this",
+            environment: "development",
+            allowedOrigins: ["https://api.github.com"],
+          }),
+        },
+      ),
+      environment,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(secret.status).toBe(200);
+    expect(JSON.stringify(await secret.json())).not.toContain("never-return-this");
+
+    const logs = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/logs?agentId=agent-1"),
+      environment,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(logs.status).toBe(200);
+    await expect(logs.json()).resolves.toMatchObject({
+      logs: [{ event: "runtime.log", data: { message: "ready" } }],
+    });
   });
 
   it("redacts backend implementation errors", async () => {

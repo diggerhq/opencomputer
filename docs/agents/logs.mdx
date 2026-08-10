@@ -1,0 +1,48 @@
+---
+title: "Logs"
+description: "Inspect runtime output and managed-egress activity from the OpenComputer CLI"
+---
+
+OpenComputer collects runtime stdout and stderr together with managed-egress
+events. Logs are indexed by project, environment, agent, and session so you can
+inspect failures without opening the agent sandbox.
+
+## Read the current agent's logs
+
+From an initialized project:
+
+```bash
+npx opencomputer logs
+```
+
+The CLI uses the local project binding and current agent automatically. Follow
+new entries while developing:
+
+```bash
+npx opencomputer logs --follow
+```
+
+## Filter logs
+
+```bash
+npx opencomputer logs --agent hello-world --environment development
+npx opencomputer logs --session <session-id>
+npx opencomputer logs --limit 200
+```
+
+Use JSON Lines for scripts and log processors:
+
+```bash
+npx opencomputer logs --follow --json
+```
+
+Each entry includes a stable cursor, timestamp, level, source, message, and
+the applicable agent or session identifiers.
+
+## Secret safety
+
+Managed-egress logs describe the connection, method, destination path, status,
+and timing. They do not contain injected secret values or secret-bearing
+headers. Runtime request headers that could override managed credentials are
+discarded by the gateway.
+

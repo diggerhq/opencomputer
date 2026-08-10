@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Reactive agent authoring API for OpenComputer.",
   "type": "module",
   "main": "./dist/index.js",
