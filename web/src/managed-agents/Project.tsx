@@ -1,14 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { FolderKanban, Loader2 } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import ManagedAgentDetail from './Detail'
 import { getManagedProject } from './api'
+import { selectedProjectAgentId } from './project-context'
 
 export default function ProjectDetail() {
   const { projectId = '', projectAgentId } = useParams()
+  const location = useLocation()
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId),
@@ -40,9 +42,13 @@ export default function ProjectDetail() {
     )
   }
 
-  const agentId =
-    project.data.project.agents.find((agent) => agent.id === projectAgentId)
-      ?.id ?? project.data.project.agents[0]?.id
+  const agentId = selectedProjectAgentId(
+    projectAgentId
+      ? `/projects/${encodeURIComponent(projectId)}/playground/${encodeURIComponent(projectAgentId)}`
+      : location.pathname,
+    location.search,
+    project.data.project.agents,
+  )
   if (!agentId) {
     return (
       <Panel>

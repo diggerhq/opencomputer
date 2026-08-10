@@ -33,29 +33,25 @@ export type ModelSelection =
 export type ToolInputSchema = Readonly<Record<string, unknown>>;
 
 export interface ToolExecutionContext {
+  readonly input: Record<string, unknown>;
   readonly sessionId: string;
   readonly messageId: string;
   readonly agentId: string;
+  readonly signal?: AbortSignal;
   reportProgress(
     metadata: Readonly<Record<string, DataValue>>,
   ): Promise<void>;
 }
 
-export interface ToolResult {
-  readonly content: string;
-  readonly metadata?: Readonly<Record<string, DataValue>>;
-}
-
-export interface ToolDefinition<Input = Record<string, unknown>>
+export interface ToolDefinition<Output extends DataValue = DataValue>
   extends ResourceReference {
   readonly kind: "tool";
   readonly version: 1;
+  readonly name: string;
   readonly description: string;
-  readonly input: ToolInputSchema;
-  execute(
-    input: Input,
-    context: ToolExecutionContext,
-  ): ToolResult | string | Promise<ToolResult | string>;
+  readonly input?: ToolInputSchema;
+  readonly output?: ToolInputSchema;
+  run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
 interface AgentHooks {
@@ -107,32 +103,34 @@ export function defineMcpServer(input: {
   });
 }
 
-export function tool<Input = Record<string, unknown>>(input: {
-  id: string;
+export function defineTool<Output extends DataValue = DataValue>(input: {
+  name: string;
   description: string;
-  input: ToolInputSchema;
-  execute(
-    input: Input,
-    context: ToolExecutionContext,
-  ): ToolResult | string | Promise<ToolResult | string>;
-}): ToolDefinition<Input> {
-  const id = identifier(input.id, "tool");
+  input?: ToolInputSchema;
+  output?: ToolInputSchema;
+  run(context: ToolExecutionContext): Output | Promise<Output>;
+}): ToolDefinition<Output> {
+  const id = identifier(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw new Error(
       "Tool IDs may contain only letters, numbers, underscores, and hyphens",
     );
   }
   if (!input.description.trim()) {
-    throw new Error("tool requires a non-empty description");
+    throw new Error("defineTool requires a non-empty description");
   }
-  if (!input.input || typeof input.input !== "object") {
-    throw new Error("tool requires a JSON Schema input object");
+  if (input.input && typeof input.input !== "object") {
+    throw new Error("defineTool input must be a JSON Schema object");
+  }
+  if (input.output && typeof input.output !== "object") {
+    throw new Error("defineTool output must be a JSON Schema object");
   }
   return Object.freeze({
     kind: "tool" as const,
     version: 1 as const,
     ...input,
     id,
+    name: id,
   });
 }
 

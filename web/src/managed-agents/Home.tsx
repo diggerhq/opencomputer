@@ -26,25 +26,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { notifyError } from '@/lib/errors'
 import { createManagedProject, getManagedProjects } from './api'
-
-function cliCommand(origin: string, command: string) {
-  const apiOption =
-    origin === 'https://app.opencomputer.dev' ? '' : ` --api-url ${origin}`
-  return `opencomputer${apiOption} ${command}`
-}
-
-function setupCommands(origin: string, directory: string) {
-  return [
-    'npm install --global @opencomputer/cli',
-    cliCommand(origin, 'login'),
-    cliCommand(origin, `init ${directory}`),
-    `cd ${directory}`,
-    'npm install',
-    'npm run dev',
-    '# In another terminal:',
-    'npm run dev:web',
-  ]
-}
+import { createStartCommand, starterCommands } from './onboarding'
 
 export default function ProjectsHome() {
   const navigate = useNavigate()
@@ -74,15 +56,13 @@ export default function ProjectsHome() {
     if (value) createProject.mutate(value)
   }
 
-  async function copySetup() {
+  async function copyCommand() {
     try {
-      await navigator.clipboard.writeText(
-        setupCommands(window.location.origin, 'hello-world').join('\n'),
-      )
+      await navigator.clipboard.writeText(createStartCommand('hello-world'))
       setCopied(true)
-      toast.success('Setup commands copied')
+      toast.success('Command copied')
     } catch (error) {
-      notifyError("Couldn't copy the setup commands.", error)
+      notifyError("Couldn't copy the command.", error)
     }
   }
 
@@ -130,13 +110,16 @@ export default function ProjectsHome() {
               Start with one hello-world agent and a React app. Your
               OpenComputer project is ready for more agents as it grows.
             </p>
+            <pre className="bg-foreground text-background mt-5 overflow-x-auto rounded-lg px-4 py-3 text-sm leading-7">
+              <code>{starterCommands('hello-world').join('\n')}</code>
+            </pre>
             <div className="mt-6 flex flex-wrap gap-3">
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus /> Create project
               </Button>
-              <Button variant="outline" onClick={() => void copySetup()}>
+              <Button variant="outline" onClick={() => void copyCommand()}>
                 {copied ? <Check /> : <Clipboard />}
-                {copied ? 'Copied' : 'Copy local setup'}
+                {copied ? 'Copied' : 'Copy command'}
               </Button>
             </div>
           </div>
@@ -180,7 +163,7 @@ export default function ProjectsHome() {
           <div>
             <p className="text-sm font-medium">Cloud development</p>
             <p className="text-muted-foreground mt-1 text-sm">
-              <code>opencomputer init &lt;directory|.&gt;</code> creates an{' '}
+              <code>npm create @opencomputer/start@latest</code> creates an{' '}
               <code>opencomputer/</code> agent backend and a <code>src/</code>{' '}
               React app. Agent code syncs to the development environment while
               the React app hot reloads locally in a second terminal.

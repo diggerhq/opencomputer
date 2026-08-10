@@ -51,10 +51,11 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
+import { getManagedProject } from '@/managed-agents/api'
 import {
-  displayManagedAgentName,
-  getManagedProject,
-} from '@/managed-agents/api'
+  projectEnvironmentSearch,
+  type ProjectEnvironment,
+} from '@/managed-agents/project-context'
 import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
 type NavItem = {
@@ -145,32 +146,40 @@ function projectIdFromPath(pathname: string): string | undefined {
 }
 
 function ManagedProjectContext({
-  agentName,
+  projectName,
   environment,
-  onEnvironmentChange,
+  onChange,
 }: {
-  agentName: string
-  environment: 'development' | 'production'
-  onEnvironmentChange: (environment: 'development' | 'production') => void
+  projectName?: string
+  environment: ProjectEnvironment
+  onChange: (environment: ProjectEnvironment) => void
 }) {
+  if (!projectName) {
+    return (
+      <div className="text-muted-foreground flex min-w-0 items-center gap-2 font-mono text-sm">
+        <span className="text-muted-foreground/50">/</span>
+        <span>Loading project…</span>
+      </div>
+    )
+  }
   return (
     <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
       <span className="text-muted-foreground/50">/</span>
-      <span className="truncate font-medium">{agentName}</span>
       <label className="border-border bg-background flex h-8 shrink-0 items-center rounded-md border px-2">
         <span className="sr-only">Project environment</span>
         <select
           aria-label="Project environment"
           value={environment}
           onChange={(event) =>
-            onEnvironmentChange(
-              event.target.value as 'development' | 'production',
-            )
+            onChange(event.target.value as ProjectEnvironment)
           }
-          className="bg-transparent text-xs font-medium outline-none"
+          className="max-w-[min(70vw,28rem)] bg-transparent text-sm font-medium outline-none"
         >
-          <option value="development">development</option>
-          <option value="production">production</option>
+          {(['development', 'production'] as const).map((candidate) => (
+            <option key={candidate} value={candidate}>
+              {projectName} ({candidate})
+            </option>
+          ))}
         </select>
       </label>
     </div>
@@ -469,21 +478,15 @@ export default function AppShell() {
     queryFn: () => getManagedProject(projectId!),
     enabled: Boolean(projectId),
   })
-  const environment: 'development' | 'production' =
+  const environment: ProjectEnvironment =
     new URLSearchParams(location.search).get('environment') === 'production'
       ? 'production'
       : 'development'
-  const agent = project.data?.project.agents[0]
-  const agentName = agent ? displayManagedAgentName(agent) : 'agent'
-
-  function changeEnvironment(next: 'development' | 'production') {
-    const search = new URLSearchParams(location.search)
-    if (next === 'development') search.delete('environment')
-    else search.set('environment', next)
+  function changeProjectEnvironment(nextEnvironment: ProjectEnvironment) {
     void navigate(
       {
         pathname: location.pathname,
-        search: search.size ? `?${search.toString()}` : '',
+        search: projectEnvironmentSearch(location.search, nextEnvironment),
       },
       { replace: true },
     )
@@ -500,9 +503,9 @@ export default function AppShell() {
         {projectId ? (
           <div className="flex min-w-0 items-center px-6">
             <ManagedProjectContext
-              agentName={agentName}
+              projectName={project.data?.project.name}
               environment={environment}
-              onEnvironmentChange={changeEnvironment}
+              onChange={changeProjectEnvironment}
             />
           </div>
         ) : null}
@@ -535,9 +538,9 @@ export default function AppShell() {
         <Brand />
         {projectId ? (
           <ManagedProjectContext
-            agentName={agentName}
+            projectName={project.data?.project.name}
             environment={environment}
-            onEnvironmentChange={changeEnvironment}
+            onChange={changeProjectEnvironment}
           />
         ) : null}
       </header>

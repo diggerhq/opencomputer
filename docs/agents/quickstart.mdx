@@ -3,35 +3,35 @@ title: "Quickstart"
 description: "Create a hello-world agent project and React app"
 ---
 
-This quickstart creates your first OpenComputer project, runs its hello-world
-agent locally, and opens a React app that can steer it.
+This quickstart creates your first OpenComputer project, syncs its hello-world
+agent to Development (Cloud), and opens a local React app that can steer it.
 
 ## Prerequisites
 
 - Node.js 22 or newer
 - An OpenComputer account
 
-## 1. Install and log in
+## 1. Create the app
 
 ```bash
-npm install --global @opencomputer/cli
-opencomputer login
-opencomputer whoami
-```
-
-## 2. Create a project
-
-```bash
-opencomputer init my-agent
+npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
 ```
 
-Use `opencomputer init .` to initialize the current directory instead. The CLI
-creates or links the matching project in your OpenComputer organization and
-adds one `hello-world` agent.
+Use `npm create @opencomputer/start@latest .` to initialize the current
+directory instead.
 
-## 3. Run the agent server
+## 2. Log in
+
+```bash
+npx opencomputer login
+```
+
+The generated project includes the OpenComputer CLI. You do not need to install
+it globally.
+
+## 3. Sync the agent to Development (Cloud)
 
 In the first terminal:
 
@@ -39,8 +39,9 @@ In the first terminal:
 npm run dev
 ```
 
-This watches the files under `opencomputer/` and starts the local agent API.
-It does not start the web application.
+The first run asks you to select an existing cloud project or create one. It
+then watches `opencomputer/` and continuously deploys changes to that project's
+development environment.
 
 ## 4. Run the React app
 
@@ -56,9 +57,9 @@ messages.
 
 ## 5. Customize the agent
 
-Edit `opencomputer/agents/hello-world/instructions.md`. Add tools, connections,
-skills, channel declarations, or workspace files beside it. React UI code stays
-under `src/`.
+Edit `opencomputer/agents/hello-world/agent.ts`. Add reactive tools,
+connections, skills, model selection, and routing as code beside it. React UI
+code stays under `src/`.
 
 ```text
 my-agent/

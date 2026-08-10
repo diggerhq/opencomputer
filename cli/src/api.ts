@@ -7,15 +7,6 @@ export interface OpenComputerIdentity {
   org_name: string | null;
 }
 
-export interface ManagedAgentTemplate {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  integrations: string[];
-  suggestedPrompts: string[];
-}
-
 export interface ManagedAgentSummary {
   id: string;
   name?: string;
@@ -199,13 +190,6 @@ export class OpenComputerClient {
 
   revokeCredential() {
     return this.request<void>("/auth/cli/credential", { method: "DELETE" });
-  }
-
-  async templates(): Promise<ManagedAgentTemplate[]> {
-    const result = await this.request<{ templates: ManagedAgentTemplate[] }>(
-      "/api/managed-agents/templates",
-    );
-    return result.templates;
   }
 
   async agents(): Promise<ManagedAgentSummary[]> {

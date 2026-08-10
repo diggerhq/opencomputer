@@ -2,13 +2,21 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   Bot,
+  Check,
   ChevronRight,
   Clock3,
+  Clipboard,
   GitCommitHorizontal,
   Loader2,
   Plus,
@@ -47,6 +55,8 @@ import {
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
 import { isNearScrollEnd } from './scroll-follow'
+import { createStartCommand, starterCommands } from './onboarding'
+import { projectContextSearch } from './project-context'
 import { ManagedSlackWizard } from './SlackWizard'
 
 type DetailTab =
@@ -441,10 +451,12 @@ export default function ManagedAgentDetail({
   project?: ManagedProjectOverview
 } = {}) {
   const params = useParams()
+  const location = useLocation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const agentId = agentIdOverride ?? params.agentId ?? ''
   const [standaloneTab, setStandaloneTab] = useState<DetailTab>('playground')
+  const [starterCopied, setStarterCopied] = useState(false)
   const routeTab = params.tab as DetailTab | undefined
   const projectTabs = new Set<DetailTab>([
     'playground',
@@ -628,29 +640,7 @@ export default function ManagedAgentDetail({
               : 'Loading active deployment…'
         }
         actions={
-          project ? (
-            <label className="border-border bg-background flex h-9 items-center gap-2 rounded-md border px-3">
-              <span className="text-muted-foreground text-xs">Agent</span>
-              <select
-                aria-label="Playground agent"
-                value={agentId}
-                onChange={(event) => {
-                  const path = `/projects/${encodeURIComponent(project.project.id)}/playground/${encodeURIComponent(event.target.value)}`
-                  void navigate({
-                    pathname: path,
-                    search: searchParams.toString(),
-                  })
-                }}
-                className="bg-transparent text-sm font-medium outline-none"
-              >
-                {project.project.agents.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
+          project ? undefined : (
             <Button asChild variant="outline" size="sm">
               <Link to="/">All projects</Link>
             </Button>
@@ -658,6 +648,41 @@ export default function ManagedAgentDetail({
         }
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
+
+      {project && activeTab === 'playground' ? (
+        <div className="flex shrink-0 items-center gap-3">
+          <label
+            htmlFor="playground-agent"
+            className="text-muted-foreground text-xs font-medium"
+          >
+            Agent
+          </label>
+          <select
+            id="playground-agent"
+            aria-label="Playground agent"
+            value={agentId}
+            onChange={(event) => {
+              setSelectedPlaygroundId(undefined)
+              setNewSessionKey(crypto.randomUUID())
+              void navigate({
+                pathname: location.pathname,
+                search: projectContextSearch(
+                  location.search,
+                  event.target.value,
+                  environment,
+                ),
+              })
+            }}
+            className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
+          >
+            {project.project.agents.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {displayManagedAgentName(candidate)}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       {!project ? (
         <div className="flex shrink-0 items-end justify-between gap-6 border-b">
@@ -694,7 +719,31 @@ export default function ManagedAgentDetail({
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Agent playground"
-            description={`Run opencomputer init ${project.project.slug}, then npm run dev to sync the agent to ${environment}.`}
+            description={`Create the starter locally, then sync it directly to ${environment}.`}
+            action={
+              <div className="flex max-w-xl flex-col items-center gap-3">
+                <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">
+                  <code>
+                    {starterCommands(project.project.slug).join('\n')}
+                  </code>
+                </pre>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(createStartCommand(project.project.slug))
+                      .then(() => setStarterCopied(true))
+                      .catch((error) =>
+                        notifyError("Couldn't copy the command.", error),
+                      )
+                  }}
+                >
+                  {starterCopied ? <Check /> : <Clipboard />}
+                  {starterCopied ? 'Copied' : 'Copy command'}
+                </Button>
+              </div>
+            }
           />
         </Panel>
       ) : activeTab === 'playground' ? (

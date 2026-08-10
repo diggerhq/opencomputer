@@ -1,15 +1,6 @@
 import { z } from 'zod'
 import { apiFetch } from '@/api/client'
 
-const templateSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  category: z.string(),
-  integrations: z.array(z.string()),
-  suggestedPrompts: z.array(z.string()),
-})
-
 const agentSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -31,10 +22,6 @@ const deploymentSchema = z.object({
 
 const deploymentsResponseSchema = z.object({
   deployments: z.array(deploymentSchema),
-})
-
-const templatesResponseSchema = z.object({
-  templates: z.array(templateSchema),
 })
 
 const agentsResponseSchema = z.object({
@@ -175,7 +162,6 @@ const projectOverviewSchema = z.object({
   schema: z.record(z.string(), z.unknown()),
 })
 
-export type ManagedAgentTemplate = z.infer<typeof templateSchema>
 export type ManagedAgentSummary = z.infer<typeof agentSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
@@ -194,16 +180,6 @@ export function displayManagedAgentName(
 ) {
   const name = agent.name.trim()
   return !name || UUID_NAME.test(name) ? 'Untitled agent' : name
-}
-
-export async function getManagedAgentTemplates() {
-  return (
-    await apiFetch(
-      '/managed-agents/templates',
-      undefined,
-      templatesResponseSchema,
-    )
-  ).templates
 }
 
 export async function getManagedAgents() {

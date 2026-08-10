@@ -118,11 +118,11 @@ describe("managed agents proxy", () => {
   });
 
   it("keeps API keys out of the private backend request", async () => {
-    const fetchSpy = vi.fn(async () => Response.json({ templates: [] }));
+    const fetchSpy = vi.fn(async () => Response.json({ agents: [] }));
     vi.stubGlobal("fetch", fetchSpy);
     const response = await proxyManagedAgents(
       new Request(
-        "https://app.opencomputer.dev/api/managed-agents/templates?limit=3",
+        "https://app.opencomputer.dev/api/managed-agents/agents?limit=3",
         {
           headers: {
             "X-API-Key": "osb_customer_secret",
@@ -144,57 +144,11 @@ describe("managed agents proxy", () => {
       RequestInit,
     ];
     expect(target.toString()).toBe(
-      "https://managedagents.test/v1/templates?limit=3",
+      "https://managedagents.test/v1/agents?limit=3",
     );
     const headers = new Headers(init.headers);
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
-  });
-
-  it("preserves public template integrations and strips backend fields", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({
-          templates: [
-            {
-              id: "email-triage",
-              name: "Email triage",
-              description: "Triage mail.",
-              category: "Comms",
-              integrations: ["Gmail", "OpenComputer"],
-              suggestedPrompts: ["Triage today's inbox."],
-              instructions: "private runtime instructions",
-              imageArn: "private image",
-            },
-          ],
-        }),
-      ),
-    );
-
-    const response = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/templates"),
-      {
-        OC_MANAGED_AGENTS_SECRET: "test-secret",
-        MANAGED_AGENTS_API_URL: "https://managedagents.test",
-      },
-      { orgID: "org_test", userID: "user_test" },
-      "/api/managed-agents",
-    );
-
-    const body = await response.json();
-    expect(body).toEqual({
-      templates: [
-        {
-          id: "email-triage",
-          name: "Email triage",
-          description: "Triage mail.",
-          category: "Comms",
-          integrations: ["Gmail", "OpenComputer"],
-          suggestedPrompts: ["Triage today's inbox."],
-        },
-      ],
-    });
   });
 
   it("returns agent display names separately from stable IDs", async () => {
@@ -281,7 +235,7 @@ describe("managed agents proxy", () => {
           slug: "hello-world",
           name: "Hello World",
           environments: [{ name: "development", updatedAt: "2026-08-08" }],
-          agents: [{ id: "hello-world", name: "Hello World" }],
+          agents: [{ id: "hello-world", name: "Hello Hello World" }],
           createdAt: "2026-08-08",
           updatedAt: "2026-08-08",
         },

@@ -57,7 +57,6 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer tools add <gmail|calendar>
   opencomputer connection add <gmail|calendar|github> [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>

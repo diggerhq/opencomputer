@@ -27,9 +27,10 @@ OpenComputer manages execution, durable sessions, and version history.
 ## Initialize a project
 
 ```bash
-opencomputer init my-agent
+npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
+npx opencomputer login
 ```
 
 The initial project contains one hello-world agent and is structured to accept
@@ -41,30 +42,22 @@ my-agent/
 │   ├── project.ts
 │   └── agents/
 │       └── hello-world/
-│           ├── opencomputer.toml
-│           ├── opencomputer.config.ts
-│           ├── agent.ts
-│           ├── instructions.md
-│           ├── tools/
-│           ├── connections/
-│           ├── channels/
-│           ├── skills/
-│           ├── workspace/
-│           └── evals/
+│           └── agent.ts
 └── src/
     ├── App.tsx
     ├── main.tsx
     └── use-agent.ts
 ```
 
-`opencomputer/project.ts` identifies the remote project and its agents.
-`opencomputer.toml` is the stable identity for an individual agent.
+`opencomputer/project.ts` lists the agents in the app. The first `npm run dev`
+binds the local app to an OpenComputer cloud project.
 
 ## Development workflow
 
 <Steps>
   <Step title="Start the agent backend">
-    Run `npm run dev`. It watches the agent definition and exposes a local API.
+    Run `npm run dev`. It watches the agent definition and syncs it to the
+    project's Development (Cloud) environment.
   </Step>
   <Step title="Start the application">
     In another terminal, run `npm run dev:web`. The generated `useAgent` hook

@@ -123,18 +123,6 @@ function strings(value: unknown): string[] {
     : [];
 }
 
-function publicTemplate(value: unknown): Record<string, unknown> {
-  const template = record(value) ?? {};
-  return {
-    id: template.id,
-    name: template.name,
-    description: template.description,
-    category: template.category,
-    integrations: strings(template.integrations),
-    suggestedPrompts: strings(template.suggestedPrompts),
-  };
-}
-
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
   return {
@@ -164,7 +152,15 @@ function publicProject(value: unknown): Record<string, unknown> {
           : [];
       })
     : agentId
-      ? [{ id: agentId, name: "Hello World" }]
+      ? [
+          {
+            id: agentId,
+            name: `Hello ${typeof project.name === "string" ? project.name : agentId}`.slice(
+              0,
+              80,
+            ),
+          },
+        ]
       : [];
   return {
     id: project.id,
@@ -266,13 +262,6 @@ function publicSuccessBody(
   value: unknown,
 ): unknown {
   const body = record(value) ?? {};
-  if (method === "GET" && suffix === "/templates") {
-    return {
-      templates: Array.isArray(body.templates)
-        ? body.templates.map(publicTemplate)
-        : [],
-    };
-  }
   if (method === "GET" && suffix === "/agents") {
     return {
       agents: Array.isArray(body.agents)
@@ -572,9 +561,7 @@ async function deploySourceAgent(
 }
 
 function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
-  if (method === "GET" && (suffix === "/templates" || suffix === "/agents")) {
-    return true;
-  }
+  if (method === "GET" && suffix === "/agents") return true;
   if (method === "GET" && suffix === "/me") return true;
   if ((method === "GET" || method === "POST") && suffix === "/projects") {
     return true;

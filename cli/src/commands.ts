@@ -11,8 +11,6 @@ import { runCloudDevelopment } from "./dev.js";
 import { findOpenComputerProjectRoot } from "./binding.js";
 import { runLocalAgent } from "./local.js";
 import {
-  addCalendarTools,
-  addGmailTools,
   addSlackChannel,
   assertStarterTarget,
   buildAgentArtifact,
@@ -643,27 +641,6 @@ export async function runCommand(
       else process.stdout.write(`Session ${sessionId} ended.\n`);
       return;
     }
-    return;
-  }
-
-  if (command === "tools") {
-    const action = args.shift();
-    const toolName = args.shift();
-    if (
-      action !== "add" ||
-      (toolName !== "gmail" && toolName !== "calendar") ||
-      args.length
-    ) {
-      throw new Error("Usage: opencomputer tools add <gmail|calendar>");
-    }
-    const root = await requireAgentRoot();
-    const files =
-      toolName === "calendar"
-        ? await addCalendarTools(root)
-        : await addGmailTools(root);
-    process.stdout.write(
-      `${files.map((file) => `Created ${file}`).join("\n")}\n`,
-    );
     return;
   }
 

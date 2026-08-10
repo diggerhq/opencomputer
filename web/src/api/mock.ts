@@ -1210,40 +1210,6 @@ type Handler = () => unknown
 // missing resource) — used for an agent with no deployment-source link.
 const NOT_FOUND = Symbol('not_found')
 
-const managedAgentTemplates = [
-  {
-    id: 'email-triage',
-    name: 'Email triage',
-    description:
-      'Summarize your inbox, surface messages that need replies, and leave every action under your control.',
-    category: 'Comms',
-    integrations: ['Gmail', 'OpenComputer'],
-    suggestedPrompts: [
-      "Triage today's inbox and show me the messages that need a reply.",
-    ],
-  },
-  {
-    id: 'github-changelog',
-    name: 'GitHub changelog',
-    description:
-      'Turn merged work into a clear changelog and keep product documentation current.',
-    category: 'Operations',
-    integrations: ['GitHub', 'Confluence'],
-    suggestedPrompts: [
-      "Draft this week's changelog from merged pull requests.",
-    ],
-  },
-  {
-    id: 'collect-receipts',
-    name: 'Collect receipts',
-    description:
-      'Find purchase receipts, name them consistently, and file them in the correct expense folder.',
-    category: 'Admin',
-    integrations: ['Gmail', 'Google Drive'],
-    suggestedPrompts: ["Find this month's receipts and prepare a filing plan."],
-  },
-]
-
 let managedAgentItems: Array<{
   id: string
   name: string
@@ -1273,10 +1239,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [
     /^\/agent-security-notifications(?:\?.*)?$/,
     () => ({ data: [], next_cursor: null }),
-  ],
-  [
-    /^\/managed-agents\/templates$/,
-    () => ({ templates: managedAgentTemplates }),
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
   [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
@@ -1517,35 +1479,6 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
       }
       managedProjects = [project]
       return project
-    },
-  ],
-  [
-    /^\/managed-agents\/templates\/[^/]+\/deploy$/,
-    () => {
-      const template = managedAgentTemplates[0]
-      const timestamp = new Date(BASE).toISOString()
-      managedAgentItems = [
-        {
-          id: template.id,
-          name: template.name,
-          activeAlias: 'production',
-          activeDeploymentId: `${template.id}:preview`,
-          deploymentCount: 1,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-      ]
-      return {
-        template,
-        deployment: {
-          id: `${template.id}:preview`,
-          agentId: template.id,
-          alias: 'production',
-          channels: [],
-          connections: [],
-          createdAt: timestamp,
-        },
-      }
     },
   ],
   [

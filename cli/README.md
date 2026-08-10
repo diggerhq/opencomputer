@@ -4,14 +4,14 @@ The agent-focused OpenComputer CLI creates, develops, and deploys projects that
 contain agent code and a React application.
 
 ```bash
-npm install --global @opencomputer/cli
-opencomputer login
-opencomputer init my-agent
+npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
+npx opencomputer login
 ```
 
-Initialization creates only the local hello-world app. Agent definitions live
+The npm initializer delegates to `opencomputer init` and creates the same
+hello-world app. Agent definitions live
 under `opencomputer/agents/`; the generated React app lives under `src/`.
 
 Use two terminals during development:

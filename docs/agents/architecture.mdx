@@ -9,7 +9,7 @@ both in one project repository.
 ```mermaid
 flowchart LR
     A["React app<br/>src/"] --> B["useAgent"]
-    B --> C["Local agent server<br/>npm run dev"]
+    B --> C["Authenticated local bridge<br/>npm run dev"]
     C --> D["Agent definitions<br/>opencomputer/"]
     D --> E["Development deployment"]
     E --> F["Immutable production versions"]
@@ -26,12 +26,13 @@ Projects can contain multiple agents. The initial scaffold creates only
 `hello-world`, so the developer can see the complete loop before adding more
 behavior.
 
-## Local development
+## Cloud development
 
-`npm run dev` starts the agent server. It writes ephemeral connection details
-inside the selected agent's ignored `.opencomputer/` directory. `npm run
-dev:web` starts Vite; its server-side proxy reads those details and forwards
-browser requests. The credential is never bundled into React code.
+`npm run dev` watches agent code and deploys it to Development (Cloud). It also
+writes ephemeral connection details inside the selected agent's ignored
+`.opencomputer/` directory. `npm run dev:web` starts Vite; its server-side
+proxy reads those details and forwards browser requests. The credential is
+never bundled into React code.
 
 The generated `useAgent` hook:
 

@@ -4,11 +4,10 @@ Build, steer, and deploy serverless agents as code. An OpenComputer project
 contains one or more agents plus the React app used to interact with them.
 
 ```bash
-npm install --global @opencomputer/cli
-opencomputer login
-opencomputer init my-agent
+npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
+npx opencomputer login
 ```
 
 Sync agent code to Development (Cloud) in one terminal:
@@ -27,7 +26,8 @@ npm run dev:web
 
 ## Project structure
 
-`opencomputer init <directory|.>` creates a complete hello-world project:
+`npm create @opencomputer/start@latest <directory|.>` creates a complete
+hello-world project:
 
 ```text
 my-agent/
@@ -35,16 +35,7 @@ my-agent/
 │   ├── project.ts
 │   └── agents/
 │       └── hello-world/
-│           ├── opencomputer.toml
-│           ├── opencomputer.config.ts
-│           ├── opencomputer.ts
-│           ├── agent.ts
-│           ├── tools/
-│           ├── connections/
-│           ├── channels/
-│           ├── skills/
-│           ├── workspace/
-│           └── evals/
+│           └── agent.ts
 └── src/
     ├── App.tsx
     └── use-agent.ts
@@ -84,6 +75,7 @@ from the legacy Go `oc` CLI. Common commands are:
 
 ```bash
 opencomputer whoami
+opencomputer init my-agent
 opencomputer agents
 opencomputer session "Say hello"
 opencomputer deploy --alias production
