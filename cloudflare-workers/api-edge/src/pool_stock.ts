@@ -82,6 +82,52 @@ const b64url = (buf: ArrayBuffer | Uint8Array): string => {
 // Minimal cap-token mint for the DO's own cell calls (reserve/release).
 // Duplicates index.ts's mintCapToken rather than importing it — the DO must
 // not pull in the Worker's module graph (circular import, isolate bloat).
+// Cached HMAC key for sandbox-token minting (see mintSandboxTokenDO).
+let doSignKey: Promise<CryptoKey> | null = null;
+function doHmacKey(secret: string): Promise<CryptoKey> {
+  if (!doSignKey) {
+    doSignKey = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+  }
+  return doSignKey;
+}
+
+// The JWT header is constant — encode it once per isolate instead of
+// JSON.stringify + base64 on every mint.
+const JWT_HEADER_B64 = b64url(new TextEncoder().encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+
+// mintSandboxTokenDO mints the customer-facing sandbox token INSIDE this DO, so
+// a batch claim returns ready-to-serve tokens and the create isolate performs no
+// HMAC at all. Byte-identical to index.ts's mintSandboxToken (same secret, same
+// claims) — the create path just hands this through. Duplicated rather than
+// imported: the DO must not pull in the Worker's module graph.
+async function mintSandboxTokenDO(
+  secret: string,
+  orgID: string,
+  sandboxID: string,
+  workerID: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const payload = {
+    sub: orgID,
+    iat: now,
+    exp: now + 24 * 3600,
+    iss: "opensandbox",
+    org_id: orgID,
+    sandbox_id: sandboxID,
+    worker_id: workerID,
+  };
+  const signingInput = JWT_HEADER_B64 + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const sig = await crypto.subtle.sign("HMAC", await doHmacKey(secret), enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
 async function mintPoolCapToken(secret: string, cellID: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const enc = new TextEncoder();
@@ -128,6 +174,9 @@ export class PoolStock {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/claim") {
       return this.claim(req);
+    }
+    if (req.method === "POST" && url.pathname === "/claim-batch") {
+      return this.claimBatch(req);
     }
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({ stock: this.stock.length, restocking: this.restockInFlight });
@@ -186,6 +235,65 @@ export class PoolStock {
     return Response.json({ ...entry, stock: this.stock.length });
   }
 
+  // claimBatch pops up to `count` entries in ONE call and returns them with
+  // their sandbox tokens already minted. This is the magazine refill (see
+  // index.ts): instead of a burst doing one DO subrequest + one HMAC per create
+  // on the saturated create isolate, one call serves ~N creates from isolate
+  // memory with zero further subrequests and zero edge crypto. Popped entries
+  // are TOKENED, so — exactly like /claim — they must never return to the pool;
+  // an isolate that dies holding them leaves them to the cell's reaper.
+  private async claimBatch(req: Request): Promise<Response> {
+    let cell: { cellID: string; baseURL: string } | null = null;
+    let orgID = "";
+    let count = 1;
+    try {
+      const body = (await req.json()) as {
+        cell?: { cellID: string; baseURL: string };
+        orgID?: string;
+        count?: number;
+      };
+      cell = body.cell ?? null;
+      orgID = typeof body.orgID === "string" ? body.orgID : "";
+      count = Math.max(1, Math.min(Number(body.count) || 1, TARGET_STOCK));
+    } catch {
+      /* fall through with defaults */
+    }
+    if (!orgID) return new Response(JSON.stringify({ error: "orgID required" }), { status: 400 });
+    if (cell) this.rememberCell(cell);
+
+    // Same inline stale-expiry as claim(), synchronous over the in-memory array
+    // so a concurrent claim can't double-pop across an await.
+    const now = Date.now();
+    const fresh: StockEntry[] = [];
+    const stale: StockEntry[] = [];
+    for (const e of this.stock) (now - e.atMs < ENTRY_TTL_MS ? fresh : stale).push(e);
+    this.stock = fresh;
+    if (stale.length > 0) this.state.waitUntil(this.release(stale));
+
+    const entries = this.stock.splice(0, Math.min(count, this.stock.length));
+    this.lastClaimMs = Date.now();
+    void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
+    this.persist();
+
+    this.state.waitUntil(this.ensureAlarm());
+    if (cell && !this.restockInFlight && this.stock.length < LOW_WATER) {
+      this.state.waitUntil(this.restockToTarget(cell));
+    }
+
+    // Mint every token here (one isolate, N signs) rather than N times on the
+    // create isolate. Parallel — crypto.subtle.sign is async.
+    const boxes = await Promise.all(
+      entries.map(async (e) => ({
+        id: e.id,
+        workerID: e.workerID,
+        region: e.region,
+        sandboxDomain: e.sandboxDomain,
+        token: await mintSandboxTokenDO(this.env.SESSION_JWT_SECRET, orgID, e.id, e.workerID),
+      })),
+    );
+    return Response.json({ boxes, stock: this.stock.length });
+  }
+
   // rememberCell persists the cell coordinates so the alarm can restock even on
   // a fresh (post-eviction) DO instance that has never served a claim yet.
   private rememberCell(cell: { cellID: string; baseURL: string }): void {
@@ -236,31 +344,25 @@ export class PoolStock {
     }
     if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
     this.persist();
-    // Keep the SITTING stock's VmSession DOs warm. A DO hibernates ~10s after
-    // its last activity, so a box reserved minutes ago is cold at claim and its
-    // first exec pays the ~180ms isolate wake. reserveOnce warms freshly-reserved
-    // boxes; this tick re-warms the ones that sit, so a burst against a full-but-
-    // aged pool still lands on warm DOs. Off the response path (alarm + waitUntil).
-    this.prewakeStock();
-    // Keep the loop alive — stock stays full, fresh, and warm between bursts.
+    // NOTE: deliberately NO periodic re-prewake of sitting stock here. Warming
+    // every entry each tick costs 8 shards × TARGET_STOCK DO pokes every
+    // ALARM_INTERVAL — sustained background load on the vm-do worker plus
+    // waitUntil work competing with this DO's own claim serving — and prod
+    // measurement showed the burst gate is edge-isolate admission, not DO
+    // coldness (exec held ~48ms with 100% VM-DO). Fresh boxes are warmed once in
+    // reserveOnce; a box that re-hibernates while it sits wakes on the host dial
+    // or first exec, as it always did.
     await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
   }
 
   // prewakeBox wakes one box's VmSession DO isolate (best-effort, off any hot
-  // path). Shared by reserveOnce (fresh boxes) and the alarm (sitting stock).
+  // path). Called from reserveOnce when a box enters the stock.
   private prewakeBox(sandboxID: string): void {
     const vs = this.env.VM_SESSIONS;
     if (!vs) return;
     this.state.waitUntil(
       vs.get(vs.idFromName(sandboxID)).fetch("https://do/status").then(() => {}).catch(() => {}),
     );
-  }
-
-  // prewakeStock re-warms every box currently in stock (per-shard ≤ TARGET_STOCK,
-  // so ≤38 DO pokes per tick per shard). Runs on the alarm so aged stock never
-  // goes cold before a burst claims it.
-  private prewakeStock(): void {
-    for (const e of this.stock) this.prewakeBox(e.id);
   }
 
   private persist(): void {
