@@ -30,6 +30,11 @@ interface StockEntry {
 
 interface PoolStockEnv {
   SESSION_JWT_SECRET: string;
+  // VmSession DOs are pre-woken here at stock-prep (see reserveOnce) instead of
+  // on the create hot path — a burst-100 otherwise fires ~100 prewake
+  // subrequests from the create isolate, saturating its subrequest budget.
+  // Optional so the binding can be absent mid-cutover (prewake just skips).
+  VM_SESSIONS?: DurableObjectNamespace;
 }
 
 // Stock tuning. TARGET_STOCK mirrors ~the whole per-cell hot pool so every
@@ -176,7 +181,9 @@ export class PoolStock {
     if (!entry) {
       return new Response(JSON.stringify({ error: "stock empty" }), { status: 404 });
     }
-    return Response.json(entry);
+    // `stock` = entries left in this shard after the pop (telemetry #7): lets the
+    // create path surface shard depletion via Server-Timing.
+    return Response.json({ ...entry, stock: this.stock.length });
   }
 
   // rememberCell persists the cell coordinates so the alarm can restock even on
@@ -229,8 +236,31 @@ export class PoolStock {
     }
     if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
     this.persist();
-    // Keep the loop alive — stock stays full and fresh between bursts.
+    // Keep the SITTING stock's VmSession DOs warm. A DO hibernates ~10s after
+    // its last activity, so a box reserved minutes ago is cold at claim and its
+    // first exec pays the ~180ms isolate wake. reserveOnce warms freshly-reserved
+    // boxes; this tick re-warms the ones that sit, so a burst against a full-but-
+    // aged pool still lands on warm DOs. Off the response path (alarm + waitUntil).
+    this.prewakeStock();
+    // Keep the loop alive — stock stays full, fresh, and warm between bursts.
     await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+  }
+
+  // prewakeBox wakes one box's VmSession DO isolate (best-effort, off any hot
+  // path). Shared by reserveOnce (fresh boxes) and the alarm (sitting stock).
+  private prewakeBox(sandboxID: string): void {
+    const vs = this.env.VM_SESSIONS;
+    if (!vs) return;
+    this.state.waitUntil(
+      vs.get(vs.idFromName(sandboxID)).fetch("https://do/status").then(() => {}).catch(() => {}),
+    );
+  }
+
+  // prewakeStock re-warms every box currently in stock (per-shard ≤ TARGET_STOCK,
+  // so ≤38 DO pokes per tick per shard). Runs on the alarm so aged stock never
+  // goes cold before a burst claims it.
+  private prewakeStock(): void {
+    for (const e of this.stock) this.prewakeBox(e.id);
   }
 
   private persist(): void {
@@ -296,6 +326,10 @@ export class PoolStock {
           atMs: now,
         });
         added++;
+        // Pre-wake the box's VmSession DO now (stock-prep), off any hot path, so
+        // the create burst doesn't fan out ~100 prewake subrequests from the
+        // create isolate. The alarm (prewakeStock) keeps it warm while it sits.
+        this.prewakeBox(b.sandboxID);
       }
       this.persist();
       return added;

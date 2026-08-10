@@ -356,6 +356,9 @@ interface AuthEntry {
   lastBumpMs: number;
 }
 const authCache = new Map<string, AuthEntry>();
+// In-flight auth misses, keyed by API-key hash — single-flights concurrent cold
+// lookups so a burst doesn't fan out N identical colo/D1 reads (see authenticate).
+const authInflight = new Map<string, Promise<Caller | null>>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
 // The create concurrency cap counts running sandboxes from the global
 // sandboxes_index — a per-create D1 read. That index already trails events, so
@@ -443,6 +446,29 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
     return cached.caller;
   }
 
+  // Single-flight the cold miss: a burst-100 of a fresh (uncached) key otherwise
+  // fires ~100 identical colo-gets + api_keys D1 reads from this one isolate,
+  // piling onto the concurrent-subrequest fan-out that gates burst creates.
+  // Coalesce by hash so only the leader touches colo/D1; the rest await it.
+  // Deleted on settle, so a revoked key still re-checks within AUTH_TTL_MS.
+  let inflight = authInflight.get(hash);
+  if (!inflight) {
+    inflight = resolveAuthMiss(env, hash);
+    authInflight.set(hash, inflight);
+    void inflight.finally(() => {
+      if (authInflight.get(hash) === inflight) authInflight.delete(hash);
+    });
+  }
+  return inflight;
+}
+
+// resolveAuthMiss is the (coalesced) cold path for authenticate(): colo tier →
+// D1 → populate both caches. Kept separate so authenticate() can single-flight
+// it per key hash. Negatives are never cached (a freshly-created key must work
+// at once).
+async function resolveAuthMiss(env: Env, hash: string): Promise<Caller | null> {
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
   // Colo tier: a fresh box's sub-ops usually land on isolates that never saw
   // this key. cachedAtMs travels with the entry so the total staleness bound
   // (revocation lag) stays AUTH_TTL_MS, not colo-TTL + isolate-TTL stacked.
@@ -506,13 +532,53 @@ async function listActiveCells(env: Env): Promise<CellRow[]> {
   return cells;
 }
 
-// loadCreateContext fetches the three org-keyed reads the create hot path needs
-// — org policy, running-sandbox count, active-cells list — in a SINGLE D1 round
-// trip via db.batch(), instead of three sequential awaits. Under a cold burst
-// (fresh isolates, caches empty) that collapses ~3×D1-latency into one. Each
-// piece still honours + populates its existing per-isolate cache, so warm/
-// sustained traffic skips D1 entirely and only the cold misses are batched.
+// In-flight create-context loads, keyed by org — single-flights concurrent cold
+// loads so a burst-100 for one org does ONE org/count/cells load instead of 100
+// (see loadCreateContext).
+const createCtxInflight = new Map<
+  string,
+  Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }>
+>();
+
+// loadCreateContext is a thin coalescing wrapper over loadCreateContextCold: a
+// fully-warm isolate returns immediately (no map churn); otherwise concurrent
+// cold loads for the same org share one in-flight load. The concurrency-count
+// snapshot is shared across the coalesced creates — no weaker than the existing
+// gate, which already reads low under burst (the sandboxes_index count trails
+// create events), so a same-instant burst overshoots identically today.
 async function loadCreateContext(
+  env: Env,
+  orgID: string,
+  ctx?: ExecutionContext,
+): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }> {
+  const nowMs = Date.now();
+  const oc = orgPolicyCache.get(orgID);
+  const cc = concurrencyCountCache.get(orgID);
+  if (
+    oc !== undefined && nowMs - oc.cachedAtMs < ORG_POLICY_TTL_MS &&
+    cc !== undefined && nowMs - cc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS &&
+    activeCellsCache !== null && nowMs - activeCellsCache.cachedAtMs < CELL_TTL_MS
+  ) {
+    return { org: oc.policy, activeCount: cc.count, cells: activeCellsCache.cells };
+  }
+  let inflight = createCtxInflight.get(orgID);
+  if (!inflight) {
+    inflight = loadCreateContextCold(env, orgID, ctx);
+    createCtxInflight.set(orgID, inflight);
+    void inflight.finally(() => {
+      if (createCtxInflight.get(orgID) === inflight) createCtxInflight.delete(orgID);
+    });
+  }
+  return inflight;
+}
+
+// loadCreateContextCold fetches the three org-keyed reads the create hot path
+// needs — org policy, running-sandbox count, active-cells list — in a SINGLE D1
+// round trip via db.batch(), instead of three sequential awaits. Under a cold
+// burst (fresh isolates, caches empty) that collapses ~3×D1-latency into one.
+// Each piece still honours + populates its existing per-isolate cache, so warm/
+// sustained traffic skips D1 entirely and only the cold misses are batched.
+async function loadCreateContextCold(
   env: Env,
   orgID: string,
   ctx?: ExecutionContext,
@@ -1321,20 +1387,30 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // coprime-ish to 8) — at full stock the first hit ends it; under sparse
       // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
       // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
-      let box: { id: string; workerID: string; region: string; sandboxDomain: string } | null = null;
+      let box: { id: string; workerID: string; region: string; sandboxDomain: string; stock?: number } | null = null;
       let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
       const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
+      let shardHit = -1; // which shard served (telemetry, see #7)
+      let probes = 0;
       for (let attempt = 0; attempt < 3 && !box; attempt++) {
+        probes++;
+        const tryShard = shard;
         const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
           method: "POST",
           body: claimBody,
         });
         shard = (shard + stride) % POOL_STOCK_SHARDS;
         if (!r.ok) continue;
-        box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+        box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string; stock?: number };
+        shardHit = tryShard;
       }
       if (box) {
         mark("claim");
+        // Stock telemetry (#7): shard that served, probes used, and stock left in
+        // that shard after the pop — surfaced via Server-Timing so a burst run can
+        // correlate latency with shard balance / stock depletion. dur is a value
+        // here, not a duration.
+        phases.push(`shard;dur=${shardHit}`, `probes;dur=${probes}`, `stock;dur=${box.stock ?? -1}`);
         const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
@@ -1352,17 +1428,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
-        // Pre-wake the box's VmSession OFF the response path: the DO hibernated
-        // after the manufacture dial, and its isolate wake (~180ms, measured via
-        // do−doin) otherwise lands on the customer's first exec. waitUntil runs
-        // after the 201 is sent, so unlike the reverted inline /status verify
-        // this cannot tax create latency.
-        ctx.waitUntil(
-          env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(box.id))
-            .fetch("https://do/status")
-            .then(() => {})
-            .catch(() => {}),
-        );
+        // NOTE: the VmSession pre-wake was MOVED off this create hot path to
+        // stock-prep (pool_stock.ts reserveOnce). At burst-100 the per-create
+        // prewake fanned out ~100 DO /status subrequests from the create
+        // isolate, saturating its subrequest budget — create p100 549ms at
+        // 100-way vs ~140ms at 30-way. Warming at reserve keeps the DO hot for
+        // the common case; a box that re-hibernates before claim wakes on the
+        // host dial / first exec as before.
         // Finalize off the create isolate: enqueue a tiny message (one cheap
         // send) instead of running the CP fetch + D1 insert here. ~100 inline
         // finalizes otherwise accumulate on the isolate and stall the burst (dev

@@ -2,8 +2,13 @@ import { configureHttp2 } from "./http2.js";
 
 // Switch the Node global fetch dispatcher to HTTP/2 on import (browser-safe
 // no-op). Multiplexes concurrent requests over one connection — a large burst
-// win for create(). See http2.ts.
-configureHttp2();
+// win for create(). Top-level await so the dispatcher is installed BEFORE the
+// importer can issue any request (a dynamic `import("@opencomputer/sdk")` — how
+// the leaderboard adapter loads us — fully settles this first); otherwise the
+// first burst races the async undici import and leaks onto HTTP/1.1. The SDK is
+// ESM-only, so top-level await breaks no existing (already-ESM) consumer, and
+// configureHttp2 never rejects. See http2.ts.
+await configureHttp2();
 
 export {
   Sandbox,
