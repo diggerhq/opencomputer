@@ -45,15 +45,20 @@ export async function resolveConfig(overrides: {
   apiKey?: string;
 }): Promise<ResolvedConfig> {
   const stored = await loadStoredConfig();
+  const apiUrl = normalizeAPIURL(
+    overrides.apiUrl ??
+      process.env.OPENCOMPUTER_API_URL ??
+      DEFAULT_API_URL,
+  );
+  const storedAPIURL = stored.apiUrl
+    ? normalizeAPIURL(stored.apiUrl)
+    : DEFAULT_API_URL;
   return {
-    apiUrl: normalizeAPIURL(
-      overrides.apiUrl ??
-        process.env.OPENCOMPUTER_API_URL ??
-        stored.apiUrl ??
-        DEFAULT_API_URL,
-    ),
+    apiUrl,
     apiKey:
-      overrides.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? stored.apiKey,
+      overrides.apiKey ??
+      process.env.OPENCOMPUTER_API_KEY ??
+      (storedAPIURL === apiUrl ? stored.apiKey : undefined),
   };
 }
 

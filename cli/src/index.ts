@@ -48,7 +48,7 @@ Usage:
   opencomputer whoami
   opencomputer agents
   opencomputer init <directory|.>
-  opencomputer dev
+  opencomputer dev [--project <id|slug> | --create-project <name>]
   opencomputer session [prompt]
   opencomputer session create <prompt> [--local]
   opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]

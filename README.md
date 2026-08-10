@@ -11,7 +11,7 @@ cd my-agent
 npm install
 ```
 
-Start the agent server in one terminal:
+Sync agent code to Development (Cloud) in one terminal:
 
 ```bash
 npm run dev
@@ -37,8 +37,8 @@ my-agent/
 │       └── hello-world/
 │           ├── opencomputer.toml
 │           ├── opencomputer.config.ts
+│           ├── opencomputer.ts
 │           ├── agent.ts
-│           ├── instructions.md
 │           ├── tools/
 │           ├── connections/
 │           ├── channels/
@@ -52,14 +52,20 @@ my-agent/
 
 The `opencomputer/` tree is the backend definition. It is designed to grow to
 multiple agents in one project. The `src/` tree is a normal Vite + React app;
-its generated `useAgent` hook talks to the local agent server without exposing
-the server token to browser code.
+its generated `useAgent` hook talks to the remote development agent through a
+small authenticated local bridge without exposing the server token to browser
+code.
 
 ## Develop and deploy
 
-Edit the agent instructions, tools, connections, and routing while the local
-server is running. The React app streams turns and keeps the durable session ID
-for follow-up messages.
+On the first `npm run dev`, choose an existing project from your account or
+create a new one. That binding is reused on later runs. The CLI uses
+`https://app.opencomputer.dev` by default; pass `--api-url` or set
+`OPENCOMPUTER_API_URL` only when intentionally targeting another service.
+
+Edit the agent function, tools, connections, and routing while cloud sync
+is running. The React app streams turns and keeps the durable session ID for
+follow-up messages.
 
 When the project is ready, publish an immutable deployment:
 

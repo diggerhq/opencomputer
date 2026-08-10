@@ -51,6 +51,10 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
+import {
+  displayManagedAgentName,
+  getManagedProject,
+} from '@/managed-agents/api'
 import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
 type NavItem = {
@@ -127,6 +131,49 @@ function Brand() {
         opencomputer
       </span>
     </Link>
+  )
+}
+
+function projectIdFromPath(pathname: string): string | undefined {
+  const match = pathname.match(/^\/projects\/([^/]+)(?:\/|$)/)
+  if (!match?.[1]) return undefined
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return undefined
+  }
+}
+
+function ManagedProjectContext({
+  agentName,
+  environment,
+  onEnvironmentChange,
+}: {
+  agentName: string
+  environment: 'development' | 'production'
+  onEnvironmentChange: (environment: 'development' | 'production') => void
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
+      <span className="text-muted-foreground/50">/</span>
+      <span className="truncate font-medium">{agentName}</span>
+      <label className="border-border bg-background flex h-8 shrink-0 items-center rounded-md border px-2">
+        <span className="sr-only">Project environment</span>
+        <select
+          aria-label="Project environment"
+          value={environment}
+          onChange={(event) =>
+            onEnvironmentChange(
+              event.target.value as 'development' | 'production',
+            )
+          }
+          className="bg-transparent text-xs font-medium outline-none"
+        >
+          <option value="development">development</option>
+          <option value="production">production</option>
+        </select>
+      </label>
+    </div>
   )
 }
 
@@ -250,8 +297,10 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
+  const projectId = projectIdFromPath(location.pathname)
   const nav = managedAgentsExperimentEnabled
     ? managedAgentsNav({
+        projectId,
         durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
         infrastructureEnabled: user?.infrastructureEnabled ?? false,
       })
@@ -314,7 +363,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
               group.items.map((item) => (
                 <NavLink
                   key={item.to}
-                  to={item.to}
+                  to={
+                    projectId && item.to.startsWith('/projects/')
+                      ? { pathname: item.to, search: location.search }
+                      : item.to
+                  }
                   end={item.end}
                   onClick={onNavigate}
                   className={({ isActive }) =>
@@ -407,6 +460,34 @@ export default function AppShell() {
   const { user } = useAuth()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
+  const projectId = managedAgentsExperimentEnabled
+    ? projectIdFromPath(location.pathname)
+    : undefined
+  const project = useQuery({
+    queryKey: ['managed-project', projectId],
+    queryFn: () => getManagedProject(projectId!),
+    enabled: Boolean(projectId),
+  })
+  const environment: 'development' | 'production' =
+    new URLSearchParams(location.search).get('environment') === 'production'
+      ? 'production'
+      : 'development'
+  const agent = project.data?.project.agents[0]
+  const agentName = agent ? displayManagedAgentName(agent) : 'agent'
+
+  function changeEnvironment(next: 'development' | 'production') {
+    const search = new URLSearchParams(location.search)
+    if (next === 'development') search.delete('environment')
+    else search.set('environment', next)
+    void navigate(
+      {
+        pathname: location.pathname,
+        search: search.size ? `?${search.toString()}` : '',
+      },
+      { replace: true },
+    )
+  }
 
   return (
     <div className="bg-background text-foreground min-h-screen font-sans">
@@ -416,6 +497,15 @@ export default function AppShell() {
         <div className="flex h-full w-60 shrink-0 items-center border-r px-6">
           <Brand />
         </div>
+        {projectId ? (
+          <div className="flex min-w-0 items-center px-6">
+            <ManagedProjectContext
+              agentName={agentName}
+              environment={environment}
+              onEnvironmentChange={changeEnvironment}
+            />
+          </div>
+        ) : null}
       </header>
 
       {/* Desktop sidebar (below the top bar) */}
@@ -443,6 +533,13 @@ export default function AppShell() {
           </SheetContent>
         </Sheet>
         <Brand />
+        {projectId ? (
+          <ManagedProjectContext
+            agentName={agentName}
+            environment={environment}
+            onEnvironmentChange={changeEnvironment}
+          />
+        ) : null}
       </header>
 
       {/* Main content */}

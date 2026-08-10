@@ -60,14 +60,10 @@ test("init creates a multi-agent-ready project and React hello world app", async
   try {
     await mkdir(root);
     await writeFile(resolve(root, "NOTES.md"), "# Existing notes\n");
-    const initialized = await initializeStarterProject(root, {
-      id: "prj_hello",
-      name: "My Agent",
-      agentId: "my-agent",
-    });
+    const initialized = await initializeStarterProject(root);
     assert.equal(initialized.root, root);
     assert.equal(initialized.manifest.name, "Hello World");
-    assert.equal(initialized.manifest.id, "my-agent");
+    assert.equal(initialized.manifest.id, "hello-world");
     assert.equal(
       initialized.agentRoot,
       resolve(root, "opencomputer", "agents", "hello-world"),
@@ -75,31 +71,75 @@ test("init creates a multi-agent-ready project and React hello world app", async
     assert.equal(await findAgentRoot(root), initialized.agentRoot);
     assert.match(
       await readFile(resolve(root, "opencomputer", "project.ts"), "utf8"),
-      /id: "prj_hello"[\s\S]*name: "My Agent"[\s\S]*agents: \["hello-world"\]/,
+      /name: "hello-app"[\s\S]*agents: \["hello-world"\]/,
+    );
+    assert.doesNotMatch(
+      await readFile(resolve(root, "opencomputer", "project.ts"), "utf8"),
+      /id:/,
     );
     assert.match(
       await readFile(resolve(root, "src", "use-agent.ts"), "utf8"),
-      /export function useAgent/,
+      /const AGENT = __OPENCOMPUTER_AGENT__[\s\S]*export function useAgent/,
     );
     const packageJSON = JSON.parse(
       await readFile(resolve(root, "package.json"), "utf8"),
     ) as {
       scripts: Record<string, string>;
+      dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
     assert.equal(packageJSON.scripts["dev:web"], "vite");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.2.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.3");
     assert.ok(packageJSON.devDependencies["@types/node"]);
     assert.match(
       await readFile(resolve(root, "vite.config.ts"), "utf8"),
       /command === "serve"/,
+    );
+    assert.match(
+      await readFile(resolve(root, "README.md"), "utf8"),
+      /Sync agent code to Development \(Cloud\)/,
     );
     assert.equal(
       await readFile(resolve(root, "NOTES.md"), "utf8"),
       "# Existing notes\n",
     );
     await assert.rejects(stat(resolve(root, "opencomputer", "package.json")));
+    const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
+    assert.match(
+      await readFile(resolve(agentRoot, "agent.ts"), "utf8"),
+      /useInput[\s\S]*useModel\("anthropic\/claude-sonnet-4\.6"\)/,
+    );
+    for (const removed of [
+      "opencomputer.toml",
+      "opencomputer.config.ts",
+      "opencomputer.ts",
+      "opencode.json",
+      "README.md",
+      "tools",
+      "connections",
+      "skills",
+      "channels",
+      "workspace",
+      "evals",
+    ]) {
+      await assert.rejects(stat(resolve(agentRoot, removed)));
+    }
+    assert.deepEqual(initialized.files, [
+      "opencomputer/project.ts",
+      "opencomputer/agents/hello-world/agent.ts",
+      "package.json",
+      "vite.config.ts",
+      "tsconfig.json",
+      "index.html",
+      "README.md",
+      ".gitignore",
+      "src/App.tsx",
+      "src/main.tsx",
+      "src/styles.css",
+      "src/use-agent.ts",
+    ]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -111,10 +151,12 @@ test("a template creates a flat agent repository with stable identity", async ()
   const renamed = resolve(parent, "renamed-agent-folder");
   try {
     const initialized = await initializeAgentProject(emailTemplate, original);
+    assert.equal((await stat(resolve(original, "agent.ts"))).isFile(), true);
     assert.equal(
-      (await stat(resolve(original, "instructions.md"))).isFile(),
+      (await stat(resolve(original, "opencomputer.ts"))).isFile(),
       true,
     );
+    await assert.rejects(stat(resolve(original, "instructions.md")));
     assert.equal((await stat(resolve(original, "tools"))).isDirectory(), true);
     await assert.rejects(stat(resolve(original, "agent")));
     assert.equal(
@@ -125,7 +167,8 @@ test("a template creates a flat agent repository with stable identity", async ()
       resolve(original, "tools", "gmail.ts"),
       "utf8",
     );
-    assert.match(gmailTool, /max\(25\)\.default\(10\)/);
+    assert.match(gmailTool, /maximum: 25, default: 10/);
+    assert.match(gmailTool, /from "@opencomputer\/agent"/);
     assert.match(gmailTool, /format=metadata/);
     assert.match(gmailTool, /export const read_full/);
     assert.equal(
@@ -168,13 +211,35 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
       runtimeInstructions,
       /Use the question tool[\s\S]*resumes when the user replies/,
     );
-    assert.match(runtimeInstructions, /Email triage/);
+    assert.doesNotMatch(runtimeInstructions, /Email triage/);
+    assert.match(
+      await readFile(resolve(runtime, "agent.js"), "utf8"),
+      /Email triage/,
+    );
+    const reactiveManifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as {
+      version: number;
+      entry: string;
+      tools: string[];
+      toolModules: string[];
+      connections: string[];
+      mcpServers: string[];
+    };
+    assert.equal(reactiveManifest.version, 2);
+    assert.equal(reactiveManifest.entry, "../agent.js");
+    assert.ok(reactiveManifest.tools.includes("gmail_search"));
+    assert.ok(reactiveManifest.toolModules.includes("../tools/gmail.js"));
+    assert.deepEqual(reactiveManifest.mcpServers, []);
     assert.equal(
-      (await stat(resolve(runtime, ".opencode", "tools", "gmail.ts"))).isFile(),
+      (await stat(resolve(runtime, "tools", "gmail.js"))).isFile(),
       true,
     );
     const connectionTool = await readFile(
-      resolve(runtime, ".opencode", "tools", "opencomputer-connections.ts"),
+      resolve(runtime, "tools", "opencomputer-connections.js"),
       "utf8",
     );
     assert.match(connectionTool, /export const request = tool/);
@@ -182,7 +247,7 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     assert.match(connectionTool, /newAccount/);
     assert.match(
       connectionTool,
-      /schema\.enum\(\["gmail", "calendar", "drive", "sheets", "github"\]\)/,
+      /enum: \["gmail", "calendar", "drive", "sheets", "github"\]/,
     );
     assert.equal(connectionTool.includes('base.replace(/\\\/$/, "")'), true);
     const transpiledConnectionTool = ts.transpileModule(connectionTool, {
@@ -210,9 +275,137 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
     };
     assert.equal(runtimeOpenCode.tools.question, true);
     assert.equal(runtimeOpenCode.permission.question, "allow");
-    assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
-    assert.match(runtimeInstructions, /summary count exactly matches/);
+    const reactiveAgent = await readFile(resolve(runtime, "agent.js"), "utf8");
+    assert.match(reactiveAgent, /start with the `gmail_search` tool/);
+    assert.match(reactiveAgent, /summary count exactly matches/);
     assert.equal((await stat(resolve(runtime, "README.md"))).isFile(), true);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the code-first compiler records hook resources without config files", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-hooks-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeStarterProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import {
+  connection,
+  defineMcpServer,
+  useConnection,
+  useInput,
+  useMcpServer,
+  useModel,
+  useSubagent,
+  useTool,
+} from "@opencomputer/agent";
+
+const github = connection("github");
+const docs = defineMcpServer({
+  id: "docs",
+  url: "https://mcp.example.com",
+  connection: github,
+});
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+  useTool("search-docs");
+  useSubagent("researcher");
+  useConnection(github);
+  if (input.text?.includes("docs")) useMcpServer(docs);
+  return "Help with the request.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as {
+      version: number;
+      tools: string[];
+      toolModules: string[];
+      subagents: string[];
+      connections: string[];
+      mcpServers: string[];
+    };
+    assert.deepEqual(manifest, {
+      version: 2,
+      entry: "../agent.js",
+      tools: [
+        "opencomputer_connections_list",
+        "opencomputer_connections_request",
+        "search-docs",
+      ],
+      toolModules: ["../tools/opencomputer-connections.js"],
+      subagents: ["researcher"],
+      connections: ["github"],
+      mcpServers: ["docs"],
+    });
+    await assert.rejects(
+      stat(resolve(initialized.agentRoot, "opencomputer.toml")),
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler packages OpenComputer tools for native OpenCode 2 registration", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-v2-tools-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeStarterProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "hacker-news.ts"),
+      `import { tool } from "@opencomputer/agent";
+
+export const hackerNews = tool<{ limit?: number }>({
+  id: "hacker_news",
+  description: "Fetch current Hacker News stories",
+  input: {
+    type: "object",
+    properties: { limit: { type: "integer", minimum: 1, maximum: 20 } },
+    additionalProperties: false,
+  },
+  async execute({ limit = 5 }) {
+    return JSON.stringify({ limit });
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { hackerNews } from "./tools/hacker-news.js";
+
+export default function Agent() {
+  useTool(hackerNews);
+  return "Use the live Hacker News tool.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { tools: string[]; toolModules: string[] };
+    assert.ok(manifest.tools.includes("hacker_news"));
+    assert.ok(manifest.toolModules.includes("../tools/hacker-news.js"));
+    assert.match(
+      await readFile(resolve(runtime, "tools", "hacker-news.js"), "utf8"),
+      /from "\.\.\/opencomputer-agent\.js"/,
+    );
+    assert.match(
+      await readFile(resolve(runtime, "agent.js"), "utf8"),
+      /useTool\(hackerNews\)/,
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -343,10 +536,6 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     assert.equal(opencode.tools.question, true);
     assert.match(
       await readFile(resolve(root, "agent.ts"), "utf8"),
-      /shell: "deny"/,
-    );
-    assert.match(
-      await readFile(resolve(root, "instructions.md"), "utf8"),
       /Never[\s\S]*curl[\s\S]*managed connection/,
     );
     assert.match(
@@ -394,7 +583,7 @@ test("the PR readiness template creates brokered read-only GitHub tools", async 
     assert.match(githubTool, /method: "GET"/);
     assert.match(githubTool, /\/contents\//);
     assert.match(githubTool, /MAX_CHECKOUT_FILES = 100/);
-    assert.match(githubTool, /resolve\(context\.directory\)/);
+    assert.match(githubTool, /resolve\(process\.cwd\(\)\)/);
     assert.doesNotMatch(githubTool, /destination: tool\.schema\.string/);
     assert.doesNotMatch(githubTool, /\/tarball\//);
     assert.match(githubTool, /remoteConfigured: false/);
@@ -417,10 +606,7 @@ test("the PR readiness template creates brokered read-only GitHub tools", async 
         .join("\n"),
     );
 
-    const instructions = await readFile(
-      resolve(root, "instructions.md"),
-      "utf8",
-    );
+    const instructions = await readFile(resolve(root, "agent.ts"), "utf8");
     assert.match(instructions, /READY_FOR_HUMAN_REVIEW/);
     assert.match(instructions, /NOT_READY/);
     assert.match(instructions, /NEEDS_INFORMATION/);
@@ -434,7 +620,7 @@ test("the PR readiness template creates brokered read-only GitHub tools", async 
     const built = await buildAgentArtifact(root);
     assert.deepEqual(built.connections, ["github"]);
     assert.deepEqual(built.channels, []);
-    assert.match(built.body.toString("utf8"), /tools\/github\.ts/);
+    assert.match(built.body.toString("utf8"), /tools\/github\.js/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

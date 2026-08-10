@@ -2,33 +2,54 @@ import { describe, expect, it } from 'vitest'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
-  it('shows only unlabeled projects and connections by default', () => {
-    const nav = managedAgentsNav({
-      durableSessionsEnabled: false,
-      infrastructureEnabled: false,
-    })
+  const defaults = {
+    durableSessionsEnabled: false,
+    infrastructureEnabled: false,
+  }
 
-    expect(nav.map((group) => group.label)).toEqual([undefined])
-    expect(nav[0]?.collapsible).toBeUndefined()
-    expect(nav[0]?.items.map((item) => item.label)).toEqual([
-      'Projects',
-      'Connections',
-    ])
+  it('leaves the homepage sidebar empty when advanced areas are disabled', () => {
+    expect(managedAgentsNav(defaults)).toEqual([])
   })
 
-  it('reveals each advanced group independently', () => {
+  it('shows project navigation only after a project is selected', () => {
+    const nav = managedAgentsNav({ ...defaults, projectId: 'project one' })
+
+    expect(nav[0]?.items.map((item) => item.label)).toEqual([
+      'Back to all projects',
+    ])
+    expect(nav[1]?.items.map((item) => item.label)).toEqual([
+      'Agent playground',
+      'Deployments',
+      'Sessions',
+      'Channels',
+      'Schedules',
+    ])
+    expect(nav[1]?.items[0]?.to).toBe('/projects/project%20one')
+  })
+
+  it('reveals each advanced area independently', () => {
     expect(
       managedAgentsNav({
+        ...defaults,
         durableSessionsEnabled: true,
-        infrastructureEnabled: false,
       }).map((group) => group.label),
-    ).toContain('Durable sessions')
+    ).toEqual(['Durable sessions'])
 
     expect(
       managedAgentsNav({
-        durableSessionsEnabled: false,
+        ...defaults,
         infrastructureEnabled: true,
       }).map((group) => group.label),
-    ).toContain('Infrastructure')
+    ).toEqual(['Infrastructure'])
+  })
+
+  it('keeps enabled advanced areas below project navigation', () => {
+    expect(
+      managedAgentsNav({
+        projectId: 'project-one',
+        durableSessionsEnabled: true,
+        infrastructureEnabled: true,
+      }).map((group) => group.label),
+    ).toEqual([undefined, undefined, 'Durable sessions', 'Infrastructure'])
   })
 })

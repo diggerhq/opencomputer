@@ -187,6 +187,14 @@ export async function startGateway(config: ResolvedConfig): Promise<{
           request.method === "GET" || request.method === "HEAD"
             ? undefined
             : await readBody(request);
+      } else if (url.pathname.startsWith("/managed-agents/")) {
+        target =
+          `${config.apiUrl}/api/managed-agents` +
+          `${url.pathname.slice("/managed-agents".length)}${url.search}`;
+        upstreamBody =
+          request.method === "GET" || request.method === "HEAD"
+            ? undefined
+            : await readBody(request);
       } else {
         response.writeHead(404).end();
         return;

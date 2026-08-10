@@ -8,12 +8,12 @@ import ManagedAgentDetail from './Detail'
 import { getManagedProject } from './api'
 
 export default function ProjectDetail() {
-  const { projectId = '' } = useParams()
+  const { projectId = '', projectAgentId } = useParams()
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId),
     enabled: Boolean(projectId),
-    refetchInterval: 5_000,
+    refetchInterval: 1_500,
   })
 
   if (project.isLoading) {
@@ -40,7 +40,9 @@ export default function ProjectDetail() {
     )
   }
 
-  const agentId = project.data.project.agents[0]?.id
+  const agentId =
+    project.data.project.agents.find((agent) => agent.id === projectAgentId)
+      ?.id ?? project.data.project.agents[0]?.id
   if (!agentId) {
     return (
       <Panel>

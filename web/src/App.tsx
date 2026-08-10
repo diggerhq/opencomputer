@@ -29,9 +29,7 @@ const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
-const ManagedAgentConnections = lazy(
-  () => import('./managed-agents/Connections'),
-)
+const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
 const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
 
 export default function App() {
@@ -64,12 +62,12 @@ export default function App() {
               }
             />
             <Route
-              path="managed-agents/connections"
-              element={<ManagedAgentConnections />}
-            />
-            <Route
               path="managed-agents/channels"
               element={<ManagedAgentChannels />}
+            />
+            <Route
+              path="managed-agents/connections"
+              element={<Navigate to="/" replace />}
             />
             <Route
               path="managed-agents/new"
@@ -77,6 +75,18 @@ export default function App() {
             />
             <Route
               path="projects/:projectId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/playground/:projectAgentId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/sessions/:sessionId"
+              element={<ManagedSessionDetail />}
+            />
+            <Route
+              path="projects/:projectId/:tab"
               element={<ManagedProjectDetail />}
             />
             <Route

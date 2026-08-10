@@ -1,5 +1,4 @@
 import { rm } from "node:fs/promises";
-import { basename, resolve } from "node:path";
 
 import {
   OpenComputerClient,
@@ -8,12 +7,12 @@ import {
 } from "./api.js";
 import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
+import { runCloudDevelopment } from "./dev.js";
 import { runLocalAgent } from "./local.js";
 import {
   addCalendarTools,
   addGmailTools,
   addSlackChannel,
-  agentIdFromName,
   assertStarterTarget,
   buildAgentArtifact,
   findAgentRoot,
@@ -422,33 +421,20 @@ export async function runCommand(
     }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     await assertStarterTarget(directory);
-    const requestedName = basename(resolve(directory));
-    const requestedSlug = agentIdFromName(requestedName);
-    const projects = await client.projects();
-    const project =
-      projects.find((candidate) => candidate.slug === requestedSlug) ??
-      (await client.createProject(requestedName, requestedSlug));
-    const agent = project.agents[0];
-    if (!agent) throw new Error("OpenComputer did not create a starter agent");
-    const initialized = await initializeAgentProject(directory, {
-      id: project.id,
-      name: project.name,
-      agentId: agent.id,
-    });
+    const initialized = await initializeAgentProject(directory);
     if (globals.json) printJSON(initialized);
     else {
       const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
         `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Project:   ${project.name} (${project.id})\n` +
-          `Agent ID:  ${initialized.manifest.id}\n` +
+          `Project:   choose or create one on the first npm run dev\n` +
           `Agents:    opencomputer/\n` +
           `React:     src/\n\n` +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  npm run dev       # terminal 1: agent server\n` +
+          `  npm run dev       # terminal 1: cloud agent sync\n` +
           `  npm run dev:web   # terminal 2: React app\n`,
       );
     }
@@ -520,8 +506,14 @@ export async function runCommand(
   }
 
   if (command === "dev") {
+    const project = option(args, "--project");
+    const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    await runLocalAgent(["dev"], config);
+    await runCloudDevelopment(client, config, await requireAgentRoot(), {
+      project,
+      createProjectName,
+      interactive: !globals.json,
+    });
     return;
   }
 

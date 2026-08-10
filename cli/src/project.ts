@@ -8,7 +8,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
+import ts from "typescript";
 
 import type { ManagedAgentTemplate } from "./api.js";
 
@@ -89,7 +90,7 @@ async function prepareInitializationTarget(
     "opencode.json",
     "package.json",
     "agent.ts",
-    "instructions.md",
+    "opencomputer.ts",
     ...(template.id === "pr-review-readiness"
       ? [
           "tools/github.ts",
@@ -359,7 +360,7 @@ ${template.suggestedPrompts.map((prompt) => `- ${prompt}`).join("\n")}
 }
 
 function gmailToolSource(): string {
-  return `import { tool } from "@opencode-ai/plugin";
+  return `import { tool } from "@opencomputer/agent";
 
 async function gmail(input: {
   path: string;
@@ -403,28 +404,40 @@ async function gmail(input: {
 }
 
 export const search = tool({
+  id: "gmail_search",
   description:
     "Read-only: search Gmail messages using a Gmail search query. Use this before reading individual messages.",
-  args: {
-    query: tool.schema.string(),
-    maxResults: tool.schema.number().min(1).max(25).default(10),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+      maxResults: { type: "integer", minimum: 1, maximum: 25, default: 10 },
+      connection: { type: "string" },
+    },
+    required: ["query"],
+    additionalProperties: false,
   },
   async execute(args) {
     const query = encodeURIComponent(args.query);
     return JSON.stringify(await gmail({
-      path: \`/gmail/v1/users/me/messages?q=\${query}&maxResults=\${args.maxResults}\`,
+      path: \`/gmail/v1/users/me/messages?q=\${query}&maxResults=\${args.maxResults ?? 10}\`,
       connection: args.connection,
     }));
   },
 });
 
 export const read = tool({
+  id: "gmail_read",
   description:
     "Read-only: get a Gmail message's sender, recipients, subject, date, labels, and snippet. Use this for inbox triage after gmail_search.",
-  args: {
-    messageId: tool.schema.string(),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["messageId"],
+    additionalProperties: false,
   },
   async execute(args) {
     return JSON.stringify(await gmail({
@@ -442,11 +455,17 @@ export const read = tool({
 });
 
 export const read_full = tool({
+  id: "gmail_read_full",
   description:
     "Read-only: get the complete Gmail message body. Use only when gmail_read metadata and snippet are insufficient.",
-  args: {
-    messageId: tool.schema.string(),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["messageId"],
+    additionalProperties: false,
   },
   async execute(args) {
     return JSON.stringify(await gmail({
@@ -457,21 +476,27 @@ export const read_full = tool({
 });
 
 export const modify = tool({
+  id: "gmail_modify",
   description:
     "Consequential: add or remove Gmail labels only after the user explicitly confirms the exact change.",
-  args: {
-    messageId: tool.schema.string(),
-    addLabelIds: tool.schema.array(tool.schema.string()).default([]),
-    removeLabelIds: tool.schema.array(tool.schema.string()).default([]),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      addLabelIds: { type: "array", items: { type: "string" }, default: [] },
+      removeLabelIds: { type: "array", items: { type: "string" }, default: [] },
+      connection: { type: "string" },
+    },
+    required: ["messageId"],
+    additionalProperties: false,
   },
   async execute(args) {
     return JSON.stringify(await gmail({
       method: "POST",
       path: \`/gmail/v1/users/me/messages/\${encodeURIComponent(args.messageId)}/modify\`,
       body: {
-        addLabelIds: args.addLabelIds,
-        removeLabelIds: args.removeLabelIds,
+        addLabelIds: args.addLabelIds ?? [],
+        removeLabelIds: args.removeLabelIds ?? [],
       },
       connection: args.connection,
     }));
@@ -479,13 +504,19 @@ export const modify = tool({
 });
 
 export const send = tool({
+  id: "gmail_send",
   description:
     "Consequential: send an email only after the user reviews the full draft and explicitly confirms this exact send.",
-  args: {
-    to: tool.schema.string(),
-    subject: tool.schema.string(),
-    body: tool.schema.string(),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      to: { type: "string" },
+      subject: { type: "string" },
+      body: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["to", "subject", "body"],
+    additionalProperties: false,
   },
   async execute(args) {
     if (/[\\r\\n]/.test(args.to) || /[\\r\\n]/.test(args.subject)) {
@@ -510,7 +541,7 @@ export const send = tool({
 }
 
 function calendarToolSource(): string {
-  return `import { tool } from "@opencode-ai/plugin";
+  return `import { tool } from "@opencomputer/agent";
 
 async function calendar(input: {
   path: string;
@@ -584,10 +615,13 @@ function nextDate(value: string): string {
 }
 
 export const list = tool({
+  id: "calendar_list",
   description:
     "Read-only: list the Google Calendars available through the selected connection.",
-  args: {
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: { connection: { type: "string" } },
+    additionalProperties: false,
   },
   async execute(args) {
     return JSON.stringify(await calendar({
@@ -598,14 +632,20 @@ export const list = tool({
 });
 
 export const events = tool({
+  id: "calendar_events",
   description:
     "Read-only: list events in an exact time range before preparing PTO or identifying conflicts.",
-  args: {
-    calendarId: tool.schema.string().default("primary"),
-    timeMin: tool.schema.string().describe("Inclusive RFC3339 start timestamp"),
-    timeMax: tool.schema.string().describe("Exclusive RFC3339 end timestamp"),
-    query: tool.schema.string().optional(),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      calendarId: { type: "string", default: "primary" },
+      timeMin: { type: "string", description: "Inclusive RFC3339 start timestamp" },
+      timeMax: { type: "string", description: "Exclusive RFC3339 end timestamp" },
+      query: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["timeMin", "timeMax"],
+    additionalProperties: false,
   },
   async execute(args) {
     const calendarId = args.calendarId || "primary";
@@ -627,14 +667,25 @@ export const events = tool({
 });
 
 export const freebusy = tool({
+  id: "calendar_freebusy",
   description:
     "Read-only: check busy periods for one or more calendars in an exact RFC3339 time range.",
-  args: {
-    calendarIds: tool.schema.array(tool.schema.string()).min(1).default(["primary"]),
-    timeMin: tool.schema.string(),
-    timeMax: tool.schema.string(),
-    timeZone: tool.schema.string().optional(),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      calendarIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        default: ["primary"],
+      },
+      timeMin: { type: "string" },
+      timeMax: { type: "string" },
+      timeZone: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["timeMin", "timeMax"],
+    additionalProperties: false,
   },
   async execute(args) {
     const calendarIds = args.calendarIds?.length
@@ -655,16 +706,22 @@ export const freebusy = tool({
 });
 
 export const create_time_off = tool({
+  id: "calendar_create_time_off",
   description:
     "Consequential: create an all-day PTO event only after the user explicitly confirms the exact title, dates, calendar, and availability.",
-  args: {
-    calendarId: tool.schema.string().default("primary"),
-    title: tool.schema.string().default("Out of office"),
-    startDate: tool.schema.string().describe("First PTO day, YYYY-MM-DD"),
-    endDate: tool.schema.string().describe("Last PTO day, inclusive, YYYY-MM-DD"),
-    description: tool.schema.string().optional(),
-    availability: tool.schema.enum(["busy", "free"]).default("busy"),
-    connection: tool.schema.string().optional(),
+  input: {
+    type: "object",
+    properties: {
+      calendarId: { type: "string", default: "primary" },
+      title: { type: "string", default: "Out of office" },
+      startDate: { type: "string", description: "First PTO day, YYYY-MM-DD" },
+      endDate: { type: "string", description: "Last PTO day, inclusive, YYYY-MM-DD" },
+      description: { type: "string" },
+      availability: { type: "string", enum: ["busy", "free"], default: "busy" },
+      connection: { type: "string" },
+    },
+    required: ["startDate", "endDate"],
+    additionalProperties: false,
   },
   async execute(args) {
     const calendarId = args.calendarId || "primary";
@@ -677,7 +734,7 @@ export const create_time_off = tool({
       method: "POST",
       path: \`/calendars/\${encodeURIComponent(calendarId)}/events\`,
       body: {
-        summary: args.title,
+        summary: args.title || "Out of office",
         description: args.description,
         start: { date: startDate },
         end: { date: nextDate(endDate) },
@@ -693,7 +750,7 @@ export const create_time_off = tool({
 function githubReviewToolSource(): string {
   return `import { mkdir, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
-import { tool } from "@opencode-ai/plugin";
+import { tool } from "@opencomputer/agent";
 
 const MAX_PAGES = 10;
 const MAX_CHECKOUT_FILES = 100;
@@ -784,10 +841,14 @@ async function githubPages(path: string): Promise<{
 }
 
 export const pr_context = tool({
+  id: "github_pr_context",
   description:
     "Read-only: fetch an accessible GitHub PR, all available issue comments, reviews, inline review comments, changed files, and the full available diff through the connection broker.",
-  args: {
-    pullRequestUrl: tool.schema.string(),
+  input: {
+    type: "object",
+    properties: { pullRequestUrl: { type: "string", format: "uri" } },
+    required: ["pullRequestUrl"],
+    additionalProperties: false,
   },
   async execute(args) {
     const { repository, number } = parsePullRequestUrl(args.pullRequestUrl);
@@ -853,12 +914,16 @@ export const pr_context = tool({
 });
 
 export const checkout = tool({
+  id: "github_checkout",
   description:
     "Read-only: materialize changed files plus relevant repository instructions and manifests from the exact PR head into a bounded session-workspace directory, without downloading the whole repository or creating a Git remote. Use the destination returned by this tool for subsequent file reads.",
-  args: {
-    pullRequestUrl: tool.schema.string(),
+  input: {
+    type: "object",
+    properties: { pullRequestUrl: { type: "string", format: "uri" } },
+    required: ["pullRequestUrl"],
+    additionalProperties: false,
   },
-  async execute(args, context) {
+  async execute(args) {
     const { repository, number } = parsePullRequestUrl(args.pullRequestUrl);
     const pull = await githubJson(
       "/repos/" + repository + "/pulls/" + String(number),
@@ -870,7 +935,7 @@ export const checkout = tool({
     if (typeof head.sha !== "string" || !/^[a-f0-9]{40}$/i.test(head.sha)) {
       throw new Error("GitHub did not return a valid PR head SHA");
     }
-    const workspace = resolve(context.directory);
+    const workspace = resolve(process.cwd());
     const destinationName =
       "github-pr-" + number + "-" + head.sha.slice(0, 12).toLowerCase();
     const destination = resolve(workspace, destinationName);
@@ -977,7 +1042,7 @@ export const checkout = tool({
 }
 
 function connectionControlToolSource(): string {
-  return `import { tool } from "@opencode-ai/plugin";
+  return `import { tool } from "@opencomputer/agent";
 
 async function connectionControl(
   method: "GET" | "POST",
@@ -1037,21 +1102,35 @@ async function connectionControl(
 }
 
 export const list = tool({
+  id: "opencomputer_connections_list",
   description:
     "List the connected accounts available to the current session identity. Use this to discover connection providers and aliases without exposing credentials.",
-  args: {},
+  input: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
   async execute() {
     return JSON.stringify(await connectionControl("GET"));
   },
 });
 
 export const request = tool({
+  id: "opencomputer_connections_request",
   description:
     "Ask the current user to connect an account. Use gmail for an email account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
-  args: {
-    service: tool.schema.enum(["gmail", "calendar", "drive", "sheets", "github"]),
-    label: tool.schema.string().optional(),
-    newAccount: tool.schema.boolean().optional(),
+  input: {
+    type: "object",
+    properties: {
+      service: {
+        type: "string",
+        enum: ["gmail", "calendar", "drive", "sheets", "github"],
+      },
+      label: { type: "string" },
+      newAccount: { type: "boolean" },
+    },
+    required: ["service"],
+    additionalProperties: false,
   },
   async execute(args) {
     return JSON.stringify(await connectionControl("POST", args));
@@ -1098,6 +1177,18 @@ function tomlString(source: string, key: string): string | undefined {
 }
 
 export async function readManifest(root: string): Promise<AgentManifest> {
+  if (!(await exists(resolve(root, "opencomputer.toml")))) {
+    const id = agentIdFromName(basename(root));
+    return {
+      schema: 1,
+      id,
+      name: id
+        .split("-")
+        .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+        .join(" "),
+      template: "hello-world",
+    };
+  }
   const source = await readFile(resolve(root, "opencomputer.toml"), "utf8");
   const schema = Number(source.match(/^\s*schema\s*=\s*(\d+)\s*$/m)?.[1]);
   const id = tomlString(source, "id");
@@ -1123,14 +1214,12 @@ export async function findAgentRoot(
   for (;;) {
     const nested = resolve(directory, "opencomputer");
     if (
-      (await exists(resolve(directory, "opencomputer.toml"))) &&
-      (await exists(resolve(directory, "instructions.md")))
+      (await exists(resolve(directory, "agent.ts")))
     ) {
       return directory;
     }
     if (
-      (await exists(resolve(nested, "opencomputer.toml"))) &&
-      (await exists(resolve(nested, "instructions.md")))
+      (await exists(resolve(nested, "agent.ts")))
     ) {
       return nested;
     }
@@ -1146,8 +1235,7 @@ export async function findAgentRoot(
         if (!entry.isDirectory()) continue;
         const agent = resolve(agentsDirectory, entry.name);
         if (
-          (await exists(resolve(agent, "opencomputer.toml"))) &&
-          (await exists(resolve(agent, "instructions.md")))
+          (await exists(resolve(agent, "agent.ts")))
         ) {
           detected.push(agent);
         }
@@ -1323,6 +1411,7 @@ export async function initializeTemplateAgentProject(
     name: generateAgentName(),
     template: template.id,
   };
+  const reactiveTools = templateReactiveTools(template);
   await writeManifest(root, manifest);
   await writeFile(
     resolve(root, "opencomputer.config.ts"),
@@ -1334,13 +1423,42 @@ export async function initializeTemplateAgentProject(
   );
   await writeFile(
     resolve(root, "agent.ts"),
-    `export default {
-  model: process.env.OPENCOMPUTER_MODEL,
-  permissions: {
-    shell: "${template.id === "pto-calendar" ? "deny" : "ask"}",
-    files: "allow",
-  },
+    `${reactiveTools.length ? 'import { useTool } from "./opencomputer.js";\n\n' : ""}export default function Agent() {
+${reactiveTools
+  .map((tool) => `  useTool(${JSON.stringify(tool)});`)
+  .join("\n")}${reactiveTools.length ? "\n" : ""}
+  return ${JSON.stringify(templateInstructions(template))};
+}
+`,
+  );
+  await writeFile(
+    resolve(root, "opencomputer.ts"),
+    `export type SessionDataValue =
+  | null | boolean | number | string
+  | readonly SessionDataValue[]
+  | { readonly [key: string]: SessionDataValue };
+
+type Hooks = {
+  useModel(model: string | { provider: string; model: string }): void;
+  useTool(tool: string | { id: string }): void;
+  useSubagent(agent: string | { id: string }): void;
+  useSessionData<T extends SessionDataValue>(key: string): T | undefined;
 };
+
+function hooks(): Hooks {
+  const value = (globalThis as Record<PropertyKey, unknown>)[
+    Symbol.for("opencomputer.agent-hooks")
+  ];
+  if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
+  return value as Hooks;
+}
+
+export const useModel: Hooks["useModel"] = (model) => hooks().useModel(model);
+export const useTool: Hooks["useTool"] = (tool) => hooks().useTool(tool);
+export const useSubagent: Hooks["useSubagent"] = (agent) => hooks().useSubagent(agent);
+export function useSessionData<T extends SessionDataValue>(key: string): T | undefined {
+  return hooks().useSessionData<T>(key);
+}
 `,
   );
   await writeFile(
@@ -1370,10 +1488,6 @@ export async function initializeTemplateAgentProject(
       null,
       2,
     )}\n`,
-  );
-  await writeFile(
-    resolve(root, "instructions.md"),
-    templateInstructions(template),
   );
   await writeFile(
     resolve(root, "workspace", "README.md"),
@@ -1409,8 +1523,9 @@ export async function initializeTemplateAgentProject(
     "opencode.json",
     "package.json",
     ".gitignore",
+    "README.md",
     "agent.ts",
-    "instructions.md",
+    "opencomputer.ts",
     "workspace/README.md",
   ];
   if (template.integrations.includes("Gmail")) {
@@ -1635,6 +1750,34 @@ const HELLO_WORLD_TEMPLATE: ManagedAgentTemplate = {
   suggestedPrompts: ["Say hello and tell me what you can do."],
 };
 
+function templateReactiveTools(template: ManagedAgentTemplate): string[] {
+  const tools: string[] = [];
+  if (template.integrations.includes("Gmail")) {
+    tools.push(
+      "gmail_search",
+      "gmail_read",
+      "gmail_read_full",
+      "gmail_modify",
+      "gmail_send",
+    );
+  }
+  if (template.integrations.includes("Google Calendar")) {
+    tools.push(
+      "calendar_list",
+      "calendar_events",
+      "calendar_freebusy",
+      "calendar_create_time_off",
+    );
+  }
+  if (template.integrations.includes("GitHub")) {
+    tools.push("github_pr_context", "github_checkout");
+  }
+  if (tools.length) {
+    tools.push("opencomputer_connections_list", "opencomputer_connections_request");
+  }
+  return tools;
+}
+
 export async function assertStarterTarget(directory: string): Promise<void> {
   const root = resolve(directory);
   if (!(await exists(root))) {
@@ -1643,7 +1786,7 @@ export async function assertStarterTarget(directory: string): Promise<void> {
   }
   const reserved = [
     "opencomputer/project.ts",
-    "opencomputer/agents/hello-world/opencomputer.toml",
+    "opencomputer/agents/hello-world/agent.ts",
     "package.json",
     "vite.config.ts",
     "index.html",
@@ -1673,25 +1816,53 @@ export async function initializeAgentProject(
   const root = resolve(directory);
   const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
   await assertStarterTarget(root);
-  const initialized = await initializeTemplateAgentProject(
+  await initializeTemplateAgentProject(
     HELLO_WORLD_TEMPLATE,
     agentRoot,
   );
   const manifest: AgentManifest = {
-    ...initialized.manifest,
-    ...(project ? { id: project.agentId } : {}),
+    schema: 1,
+    id: project?.agentId ?? "hello-world",
     name: "Hello World",
+    template: "hello-world",
   };
-  await writeManifest(agentRoot, manifest);
-  await rm(resolve(agentRoot, "package.json"), { force: true });
-  await rm(resolve(agentRoot, ".gitignore"), { force: true });
+  for (const path of [
+    "opencomputer.toml",
+    "opencomputer.config.ts",
+    "opencomputer.ts",
+    "opencode.json",
+    "package.json",
+    ".gitignore",
+    "README.md",
+    "tools",
+    "connections",
+    "skills",
+    "channels",
+    "workspace",
+    "evals",
+  ]) {
+    await rm(resolve(agentRoot, path), { recursive: true, force: true });
+  }
+  await writeFile(
+    resolve(agentRoot, "agent.ts"),
+    `import { useInput, useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+
+  return input.text
+    ? "You are a helpful OpenComputer agent. Respond directly to: " + input.text
+    : "You are a helpful OpenComputer agent.";
+}
+`,
+  );
   await updateGitignore(root);
   await mkdir(resolve(root, "src"), { recursive: true });
   await writeFile(
     resolve(root, "opencomputer", "project.ts"),
     `export default {
-  id: ${JSON.stringify(project?.id ?? manifest.id)},
-  name: ${JSON.stringify(project?.name ?? "Hello World")},
+  name: ${JSON.stringify(project?.name ?? basename(root))},
   agents: ["hello-world"],
 };
 `,
@@ -1713,17 +1884,16 @@ export async function initializeAgentProject(
           deploy: "opencomputer deploy",
         },
         dependencies: {
+          "@opencomputer/agent": "^0.2.0",
           react: "^19.2.0",
           "react-dom": "^19.2.0",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.0",
-          "@opencode-ai/plugin": "^1.18.4",
+          "@opencomputer/cli": "^0.4.3",
           "@types/node": "^24.0.0",
           "@types/react": "^19.2.0",
           "@types/react-dom": "^19.2.0",
           "@vitejs/plugin-react": "^6.0.0",
-          "opencode-ai": "1.18.4",
           typescript: "^5.9.0",
           vite: "^8.0.0",
         },
@@ -1746,7 +1916,7 @@ function openComputerDev() {
         resolve("opencomputer/agents/hello-world/.opencomputer/dev.json"),
         "utf8",
       ),
-    ) as { url: string; token: string };
+    ) as { url: string; token: string; agent: string };
   } catch {
     throw new Error(
       "OpenComputer is not running. Start npm run dev in another terminal first.",
@@ -1754,10 +1924,29 @@ function openComputerDev() {
   }
 }
 
+function openComputerAgent() {
+  try {
+    const binding = JSON.parse(
+      readFileSync(resolve(".opencomputer/project.json"), "utf8"),
+    ) as { agentId?: string };
+    if (binding.agentId) return binding.agentId;
+  } catch {
+    // The production build below reports the actionable binding error.
+  }
+  throw new Error(
+    "This app is not connected to an OpenComputer project. Run npm run dev first.",
+  );
+}
+
 export default defineConfig(({ command }) => {
   const dev = command === "serve" ? openComputerDev() : undefined;
   return {
     plugins: [react()],
+    define: {
+      __OPENCOMPUTER_AGENT__: JSON.stringify(
+        dev?.agent ?? \`\${openComputerAgent()}@production\`,
+      ),
+    },
     ...(dev ? { server: {
       proxy: {
         "/api/opencomputer": {
@@ -1818,7 +2007,7 @@ export default defineConfig(({ command }) => {
   );
   await writeFile(
     resolve(root, "src", "use-agent.ts"),
-    `import { useCallback, useState } from "react";
+    `import { useCallback, useRef, useState } from "react";
 
 export interface AgentMessage {
   id: string;
@@ -1827,13 +2016,31 @@ export interface AgentMessage {
 }
 
 interface AgentEvent {
+  seq: number;
   type: string;
   data: Record<string, unknown>;
+}
+
+declare const __OPENCOMPUTER_AGENT__: string;
+const AGENT = __OPENCOMPUTER_AGENT__;
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(\`/api/opencomputer/managed-agents\${path}\`, {
+    ...init,
+    headers: { "content-type": "application/json", ...init?.headers },
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body?.error?.message ?? \`Agent request failed (\${response.status})\`);
+  }
+  return body as T;
 }
 
 export function useAgent() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [sessionId, setSessionId] = useState<string>();
+  const sessionRef = useRef<string | undefined>(undefined);
+  const cursorRef = useRef(0);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -1854,32 +2061,28 @@ export function useAgent() {
     setIsRunning(true);
     setError(undefined);
     try {
-      const endpoint = sessionId
-        ? \`/api/opencomputer/sessions/\${encodeURIComponent(sessionId)}\`
-        : "/api/opencomputer/sessions";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(\`Agent request failed (\${response.status})\`);
+      let activeSession = sessionRef.current;
+      if (!activeSession) {
+        const created = await request<{ session: { id: string } }>("/sessions", {
+          method: "POST",
+          body: JSON.stringify({ agentId: AGENT, source: "local-react" }),
+        });
+        activeSession = created.session.id;
+        sessionRef.current = activeSession;
+        setSessionId(activeSession);
+      } else {
+        await request(\`/sessions/\${encodeURIComponent(activeSession)}/resume\`, {
+          method: "POST",
+        });
       }
-      const createdSession = response.headers.get("x-opencomputer-session-id");
-      if (createdSession) setSessionId(createdSession);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffered = "";
       let streamed = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffered += decoder.decode(value, { stream: true });
-        const lines = buffered.split("\\n");
-        buffered = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const event = JSON.parse(line) as AgentEvent;
+      const waitFor = async (terminal: (event: AgentEvent) => boolean) => {
+        for (;;) {
+          const result = await request<{ events: AgentEvent[] }>(
+            \`/sessions/\${encodeURIComponent(activeSession!)}/events?after=\${cursorRef.current}\`,
+          );
+          for (const event of result.events) {
+            cursorRef.current = Math.max(cursorRef.current, event.seq);
           if (event.type === "message.delta") {
             streamed += String(event.data.text ?? "");
             setMessages((current) =>
@@ -1896,11 +2099,26 @@ export function useAgent() {
                 message.id === assistantId ? { ...message, text } : message,
               ),
             );
-          } else if (event.type === "session.failed") {
-            throw new Error(String(event.data.message ?? "Agent failed"));
           }
+            if (terminal(event)) return event;
+          }
+          await new Promise((done) => setTimeout(done, 500));
         }
+      };
+      await waitFor((event) => event.type === "runtime.connected");
+      await request(\`/sessions/\${encodeURIComponent(activeSession)}/turns\`, {
+        method: "POST",
+        body: JSON.stringify({ input: prompt, idempotencyKey: crypto.randomUUID() }),
+      });
+      const completed = await waitFor((event) =>
+        event.type === "turn.completed" || event.type === "turn.failed",
+      );
+      if (completed.type === "turn.failed") {
+        throw new Error(String(completed.data.message ?? "Agent failed"));
       }
+      await request(\`/sessions/\${encodeURIComponent(activeSession)}/suspend\`, {
+        method: "POST",
+      });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
@@ -1914,7 +2132,7 @@ export function useAgent() {
     } finally {
       setIsRunning(false);
     }
-  }, [isRunning, sessionId]);
+  }, [isRunning]);
 
   return { messages, send, isRunning, error };
 }
@@ -1941,7 +2159,7 @@ export default function App() {
       <section className="hero">
         <span className="eyebrow">OpenComputer</span>
         <h1>Hello, world.</h1>
-        <p>Your first agent is live. Ask it anything to see the local backend and React app working together.</p>
+        <p>Your first agent is live. The React app stays local while agent code syncs to Development (Cloud).</p>
       </section>
 
       <section className="chat" aria-label="Agent conversation">
@@ -2028,11 +2246,14 @@ form button:disabled { cursor: default; opacity: .45; }
 This project keeps agent definitions in \`opencomputer/\` and the React app in
 \`src/\`.
 
-Start the agent server in one terminal:
+Sync agent code to Development (Cloud) in one terminal:
 
 \`\`\`bash
 npm run dev
 \`\`\`
+
+The first run asks you to create a cloud project or select an existing one.
+That choice is saved for later development runs.
 
 Then start the React app in another:
 
@@ -2060,18 +2281,76 @@ npm run dev:web
     manifest,
     files: [
       "opencomputer/project.ts",
-      ...initialized.files
-        .filter((path) => path !== "package.json" && path !== ".gitignore")
-        .map((path) => `opencomputer/agents/hello-world/${path}`),
+      "opencomputer/agents/hello-world/agent.ts",
       ...appFiles,
     ],
   };
+}
+
+function literalHookIds(source: string, hook: string): string[] {
+  const pattern = new RegExp(
+    `\\b${hook}\\(\\s*["']([^"']+)["']`,
+    "g",
+  );
+  return [...source.matchAll(pattern)].map((match) => match[1]!).sort();
+}
+
+function definedMcpServerIds(source: string): string[] {
+  return [...source.matchAll(
+    /\bdefineMcpServer\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
+  )].map((match) => match[1]!).sort();
+}
+
+function definedToolIds(source: string): string[] {
+  return [...source.matchAll(
+    /\btool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
+  )].map((match) => match[1]!).sort();
+}
+
+function agentApiRuntimeSource(): string {
+  return `function hooks() {
+  const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
+  if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
+  return value;
+}
+function id(value, kind) {
+  const normalized = String(value).trim();
+  if (!normalized) throw new Error(kind + " requires a non-empty id");
+  return normalized;
+}
+export const connection = (value) => Object.freeze({ kind: "connection", id: id(value, "connection") });
+export const defineMcpServer = (input) => {
+  const url = new URL(input.url);
+  if (url.protocol !== "https:") throw new Error("MCP server URLs must use HTTPS");
+  return Object.freeze({ kind: "mcp", ...input, id: id(input.id, "defineMcpServer"), url: url.toString() });
+};
+export const tool = (input) => {
+  const toolId = id(input.id, "tool");
+  if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
+  if (!String(input.description).trim()) throw new Error("tool requires a non-empty description");
+  if (!input.input || typeof input.input !== "object") throw new Error("tool requires a JSON Schema input object");
+  return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId });
+};
+export const useInput = () => hooks().useInput();
+export const useCurrentInput = useInput;
+export const useModel = (model) => hooks().useModel(model);
+export const useTool = (tool) => hooks().useTool(tool);
+export const useSubagent = (agent) => hooks().useSubagent(agent);
+export const useConnection = (value) => hooks().useConnection(value);
+export const useMcpServer = (server) => hooks().useMcpServer(server);
+export const useSessionData = (key) => hooks().useSessionData(key);
+`;
 }
 
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = resolve(root, ".opencomputer", "runtime");
   await rm(runtime, { recursive: true, force: true });
   await mkdir(runtime, { recursive: true });
+  const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
+  const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(agentSource);
+  if (!reactive) {
+    throw new Error("agent.ts must default-export a synchronous agent function");
+  }
   await writeFile(
     resolve(runtime, "AGENTS.md"),
     `# OpenComputer runtime identity
@@ -2093,9 +2372,7 @@ the product or support surface presented to users.
 - If a connection tool fails, report its exact error. Do not invent alternate
   controls or third-party support instructions.
 
-# Agent instructions
-
-${await readFile(resolve(root, "instructions.md"), "utf8")}`,
+`,
   );
   const openCodeConfig = resolve(root, "opencode.json");
   if (await exists(openCodeConfig)) {
@@ -2138,24 +2415,133 @@ ${await readFile(resolve(root, "instructions.md"), "utf8")}`,
       )}\n`,
     );
   }
-  for (const directory of ["skills", "tools"]) {
-    const source = resolve(root, directory);
-    if (await exists(source)) {
-      await mkdir(resolve(runtime, ".opencode"), { recursive: true });
-      await cp(source, resolve(runtime, ".opencode", directory), {
-        recursive: true,
-      });
-    }
+  const skills = resolve(root, "skills");
+  if (await exists(skills)) {
+    await mkdir(resolve(runtime, ".opencode"), { recursive: true });
+    await cp(skills, resolve(runtime, ".opencode", "skills"), {
+      recursive: true,
+    });
   }
-  await mkdir(resolve(runtime, ".opencode", "tools"), { recursive: true });
-  await writeFile(
-    resolve(runtime, ".opencode", "tools", "opencomputer-connections.ts"),
-    connectionControlToolSource(),
-  );
   const workspace = resolve(root, "workspace");
   if (await exists(workspace)) {
     await cp(workspace, runtime, { recursive: true });
   }
+  await writeFile(
+    resolve(runtime, "package.json"),
+    `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
+  );
+  const transpile = (source: string, filename: string) =>
+    ts.transpileModule(source, {
+        fileName: filename,
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+        },
+        reportDiagnostics: true,
+    });
+  const compiledAgent = transpile(agentSource, "agent.ts");
+  const diagnostics = compiledAgent.diagnostics ?? [];
+  if (diagnostics.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
+    throw new Error(
+        `agent.ts could not be compiled: ${diagnostics
+          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
+          .join("; ")}`,
+    );
+  }
+  const compiledSource = compiledAgent.outputText.replace(
+      /(["'])@opencomputer\/agent\1/g,
+      '"./opencomputer-agent.js"',
+  );
+  await writeFile(resolve(runtime, "agent.js"), compiledSource);
+  await writeFile(
+      resolve(runtime, "opencomputer-agent.js"),
+      agentApiRuntimeSource(),
+  );
+  const toolSources: Array<{ filename: string; source: string }> = [
+    {
+      filename: "opencomputer-connections.ts",
+      source: connectionControlToolSource(),
+    },
+  ];
+  const sourceTools = resolve(root, "tools");
+  if (await exists(sourceTools)) {
+    const entries = await readdir(sourceTools, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.[cm]?[jt]s$/.test(entry.name)) continue;
+      toolSources.push({
+        filename: entry.name,
+        source: await readFile(resolve(sourceTools, entry.name), "utf8"),
+      });
+    }
+  }
+  const reactiveTools: string[] = [];
+  const toolModules: string[] = [];
+  await mkdir(resolve(runtime, "tools"), { recursive: true });
+  for (const candidate of toolSources) {
+    const ids = definedToolIds(candidate.source);
+    const calls = [
+      ...candidate.source.matchAll(/\btool(?:<[^>]+>)?\s*\(/g),
+    ].length;
+    if (ids.length !== calls) {
+      throw new Error(
+        `${candidate.filename} must give every tool() a literal string id`,
+      );
+    }
+    const compiledTool = transpile(candidate.source, candidate.filename);
+    const toolDiagnostics = compiledTool.diagnostics ?? [];
+    if (toolDiagnostics.some(
+      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+    )) {
+      throw new Error(
+        `${candidate.filename} could not be compiled: ${toolDiagnostics
+          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
+          .join("; ")}`,
+      );
+    }
+    const outputName = candidate.filename.replace(/\.[^.]+$/, ".js");
+    const output = compiledTool.outputText.replace(
+      /(["'])@opencomputer\/agent\1/g,
+      '"../opencomputer-agent.js"',
+    );
+    await writeFile(resolve(runtime, "tools", outputName), output);
+    if (ids.length > 0) {
+      reactiveTools.push(...ids);
+      toolModules.push(`../tools/${outputName}`);
+    }
+  }
+  const duplicateTool = reactiveTools.find(
+    (id, index) => reactiveTools.indexOf(id) !== index,
+  );
+  if (duplicateTool) {
+    throw new Error(`Tool id ${JSON.stringify(duplicateTool)} is defined more than once`);
+  }
+  await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
+  await writeFile(
+      resolve(runtime, ".opencomputer", "reactive.json"),
+      `${JSON.stringify(
+        {
+          version: 2,
+          entry: "../agent.js",
+          tools: [...new Set([
+            ...reactiveTools,
+            ...literalHookIds(agentSource, "useTool"),
+          ])].sort(),
+          toolModules: toolModules.sort(),
+          subagents: literalHookIds(agentSource, "useSubagent"),
+          connections: [...new Set([
+            ...literalHookIds(agentSource, "connection"),
+            ...literalHookIds(agentSource, "useConnection"),
+          ])].sort(),
+          mcpServers: [...new Set([
+            ...definedMcpServerIds(agentSource),
+            ...literalHookIds(agentSource, "useMcpServer"),
+          ])].sort(),
+        },
+        null,
+        2,
+      )}\n`,
+  );
   return runtime;
 }
 
@@ -2235,6 +2621,7 @@ async function validateTemplateRequirements(
 
 export async function buildAgentArtifact(
   root: string,
+  agentId?: string,
 ): Promise<BuiltAgentArtifact> {
   const startedAt = performance.now();
   const manifest = await readManifest(root);
@@ -2250,7 +2637,7 @@ export async function buildAgentArtifact(
     }),
   );
   return {
-    agentId: manifest.id,
+    agentId: agentId ?? manifest.id,
     name: manifest.name,
     channels,
     connections,

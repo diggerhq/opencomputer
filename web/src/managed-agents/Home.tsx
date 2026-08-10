@@ -90,7 +90,7 @@ export default function ProjectsHome() {
     <div className="space-y-8">
       <PageHeader
         title="Projects"
-        description="Projects contain your agents, sessions, files, connections, schedules, and channels."
+        description="Choose a project to open its agent playground, deployments, sessions, and resources."
         actions={
           items.length > 0 ? (
             <Button onClick={() => setDialogOpen(true)}>
@@ -178,11 +178,12 @@ export default function ProjectsHome() {
         <PanelContent className="flex items-start gap-3">
           <Bot className="text-muted-foreground mt-0.5 size-4" />
           <div>
-            <p className="text-sm font-medium">Local-first development</p>
+            <p className="text-sm font-medium">Cloud development</p>
             <p className="text-muted-foreground mt-1 text-sm">
               <code>opencomputer init &lt;directory|.&gt;</code> creates an{' '}
               <code>opencomputer/</code> agent backend and a <code>src/</code>{' '}
-              React app. Run the agent server and web app in separate terminals.
+              React app. Agent code syncs to the development environment while
+              the React app hot reloads locally in a second terminal.
             </p>
           </div>
         </PanelContent>
@@ -193,8 +194,8 @@ export default function ProjectsHome() {
           <DialogHeader>
             <DialogTitle>Create project</DialogTitle>
             <DialogDescription>
-              Projects can contain multiple agents and share connections,
-              channels, files, and schedules.
+              Projects can contain multiple agents and share channels, files,
+              and schedules.
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={submit}>

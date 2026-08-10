@@ -2,11 +2,10 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  ArrowLeft,
   Bot,
   ChevronRight,
   Clock3,
@@ -54,11 +53,8 @@ type DetailTab =
   | 'playground'
   | 'deployments'
   | 'sessions'
-  | 'files'
-  | 'connections'
   | 'channels'
   | 'schedules'
-  | 'schema'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -445,11 +441,29 @@ export default function ManagedAgentDetail({
   project?: ManagedProjectOverview
 } = {}) {
   const params = useParams()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const agentId = agentIdOverride ?? params.agentId ?? ''
-  const [activeTab, setActiveTab] = useState<DetailTab>('playground')
+  const [standaloneTab, setStandaloneTab] = useState<DetailTab>('playground')
+  const routeTab = params.tab as DetailTab | undefined
+  const projectTabs = new Set<DetailTab>([
+    'playground',
+    'deployments',
+    'sessions',
+    'channels',
+    'schedules',
+  ])
+  const activeTab = project
+    ? routeTab && projectTabs.has(routeTab)
+      ? routeTab
+      : 'playground'
+    : standaloneTab
+  const environment =
+    searchParams.get('environment') === 'production'
+      ? 'production'
+      : 'development'
   const [selectedPlaygroundId, setSelectedPlaygroundId] = useState<string>()
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
-  const [expandedSessionId, setExpandedSessionId] = useState<string>()
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -459,19 +473,21 @@ export default function ManagedAgentDetail({
   const projectAgent = project?.project.agents.find(
     (candidate) => candidate.id === agentId,
   )
+  const projectEnvironment = project?.project.environments.find(
+    (candidate) => candidate.name === environment,
+  )
   const agent: ManagedAgentSummary | undefined =
-    listedAgent ??
-    (projectAgent && project
+    projectAgent && project
       ? {
           id: projectAgent.id,
           name: projectAgent.name,
-          activeAlias: 'development',
-          activeDeploymentId: project.deployments[0]?.id,
+          activeAlias: environment,
+          activeDeploymentId: projectEnvironment?.activeDeploymentId,
           deploymentCount: project.deployments.length,
           createdAt: project.project.createdAt,
           updatedAt: project.project.updatedAt,
         }
-      : undefined)
+      : listedAgent
   const activeDeployment = useQuery({
     queryKey: ['managed-agent-deployment', agent?.activeDeploymentId],
     queryFn: () => getManagedAgentDeployment(agent!.activeDeploymentId!),
@@ -480,6 +496,7 @@ export default function ManagedAgentDetail({
   const deployments = useQuery({
     queryKey: ['managed-agent-deployments', agentId],
     queryFn: () => getManagedAgentDeployments(agentId),
+    refetchInterval: project ? 1_500 : false,
   })
   const sessions = useQuery({
     queryKey: ['managed-agent-sessions', agentId],
@@ -498,16 +515,16 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
   })
-  const sessionEvents = useQuery({
-    queryKey: ['managed-agent-session-events', expandedSessionId],
-    queryFn: () => getManagedAgentSessionEvents(expandedSessionId!),
-    enabled: Boolean(expandedSessionId),
-  })
 
-  const playgroundSessions = (sessions.data ?? []).filter(
+  const environmentSessions = (sessions.data ?? []).filter(
+    (session) =>
+      !projectEnvironment?.activeDeploymentId ||
+      session.deploymentId === projectEnvironment.activeDeploymentId,
+  )
+  const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
-  const externalSessions = (sessions.data ?? []).filter(
+  const externalSessions = environmentSessions.filter(
     (session) => session.source !== 'playground',
   )
   const activeAliasChannel = (channels.data ?? []).find(
@@ -584,19 +601,8 @@ export default function ManagedAgentDetail({
     { id: 'playground', label: project ? 'Agent playground' : 'Playground' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
-    ...(project
-      ? ([
-          { id: 'files', label: 'Files' },
-          { id: 'connections', label: 'Connections' },
-        ] as const)
-      : []),
     { id: 'channels', label: 'Channels' },
-    ...(project
-      ? ([
-          { id: 'schedules', label: 'Schedules' },
-          { id: 'schema', label: 'Agent schema' },
-        ] as const)
-      : []),
+    ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
   ]
 
   return (
@@ -620,52 +626,73 @@ export default function ManagedAgentDetail({
               : 'Loading active deployment…'
         }
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link to="/">
-              <ArrowLeft /> All projects
-            </Link>
-          </Button>
+          project ? (
+            <label className="border-border bg-background flex h-9 items-center gap-2 rounded-md border px-3">
+              <span className="text-muted-foreground text-xs">Agent</span>
+              <select
+                aria-label="Playground agent"
+                value={agentId}
+                onChange={(event) => {
+                  const path = `/projects/${encodeURIComponent(project.project.id)}/playground/${encodeURIComponent(event.target.value)}`
+                  void navigate({
+                    pathname: path,
+                    search: searchParams.toString(),
+                  })
+                }}
+                className="bg-transparent text-sm font-medium outline-none"
+              >
+                {project.project.agents.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <Button asChild variant="outline" size="sm">
+              <Link to="/">All projects</Link>
+            </Button>
+          )
         }
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
 
-      <div className="flex shrink-0 items-end justify-between gap-6 border-b">
-        <nav className="flex gap-5" aria-label="Agent details">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                '-mb-px border-b-2 px-0.5 pb-3 text-sm font-medium transition-colors',
-                activeTab === tab.id
-                  ? 'border-foreground text-foreground'
-                  : 'text-muted-foreground hover:text-foreground border-transparent',
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-        <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
-          <span>{agent?.deploymentCount ?? 0} deployments</span>
-          <span>
-            {activeDeployment.data?.connections.length ?? 0} connections
-          </span>
-          <span>
-            {activeAliasChannel?.status === 'connected' ? 1 : 0} channels
-          </span>
+      {!project ? (
+        <div className="flex shrink-0 items-end justify-between gap-6 border-b">
+          <nav className="flex gap-5" aria-label="Agent details">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStandaloneTab(tab.id)}
+                className={cn(
+                  '-mb-px border-b-2 px-0.5 pb-3 text-sm font-medium transition-colors',
+                  activeTab === tab.id
+                    ? 'border-foreground text-foreground'
+                    : 'text-muted-foreground hover:text-foreground border-transparent',
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+          <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
+            <span>{agent?.deploymentCount ?? 0} deployments</span>
+            <span>
+              {activeAliasChannel?.status === 'connected' ? 1 : 0} channels
+            </span>
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {activeTab === 'playground' &&
       project &&
-      project.deployments.length === 0 ? (
+      !projectEnvironment?.activeDeploymentId ? (
         <Panel>
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Agent playground"
-            description={`Run opencomputer init ${project.project.slug}, develop it with the React app, then deploy it to test durable sessions here.`}
+            description={`Run opencomputer init ${project.project.slug}, then npm run dev to sync the agent to ${environment}.`}
           />
         </Panel>
       ) : activeTab === 'playground' ? (
@@ -730,8 +757,8 @@ export default function ManagedAgentDetail({
               </div>
             ) : (
               <PlaygroundChat
-                key={selectedPlaygroundId ?? newSessionKey}
-                agentId={agentId}
+                key={`${environment}:${selectedPlaygroundId ?? newSessionKey}`}
+                agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
               />
@@ -763,7 +790,10 @@ export default function ManagedAgentDetail({
                       <p className="truncate font-mono text-xs">
                         {deployment.id}
                       </p>
-                      {deployment.id === agent?.activeDeploymentId ? (
+                      {deployment.id ===
+                        projectEnvironment?.activeDeploymentId ||
+                      (!project &&
+                        deployment.id === agent?.activeDeploymentId) ? (
                         <span className="text-muted-foreground mt-1 block text-[10px] font-medium uppercase">
                           Active
                         </span>
@@ -782,7 +812,9 @@ export default function ManagedAgentDetail({
                   </div>
                   <StatusBadge
                     status={
-                      deployment.id === agent?.activeDeploymentId
+                      deployment.id ===
+                        projectEnvironment?.activeDeploymentId ||
+                      (!project && deployment.id === agent?.activeDeploymentId)
                         ? 'active'
                         : 'inactive'
                     }
@@ -819,45 +851,10 @@ export default function ManagedAgentDetail({
             rows={externalSessions}
             rowKey={(session) => session.id}
             loading={sessions.isLoading}
-            onRowClick={(session) =>
-              setExpandedSessionId((current) =>
-                current === session.id ? undefined : session.id,
-              )
-            }
-            renderSubRow={(session) => {
-              if (expandedSessionId !== session.id) return null
-              const replies = (sessionEvents.data ?? []).filter(
-                (event) => event.type === 'message.completed',
-              )
-              return (
-                <div className="bg-muted/20 space-y-4 border-y px-5 py-4">
-                  {session.turns.map((turn) => (
-                    <div key={turn.id}>
-                      <p className="text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase">
-                        You · {turn.status}
-                      </p>
-                      <p className="text-sm whitespace-pre-wrap">
-                        {turn.input}
-                      </p>
-                    </div>
-                  ))}
-                  {replies.map((event) => (
-                    <div key={event.id ?? event.seq}>
-                      <p className="text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase">
-                        Agent
-                      </p>
-                      <p className="text-sm leading-6 whitespace-pre-wrap">
-                        {eventText(event)}
-                      </p>
-                    </div>
-                  ))}
-                  {sessionEvents.isLoading ? (
-                    <div className="text-muted-foreground flex items-center gap-2 text-xs">
-                      <Loader2 className="size-3.5 animate-spin" /> Loading
-                      session events…
-                    </div>
-                  ) : null}
-                </div>
+            onRowClick={(session) => {
+              if (!project) return
+              void navigate(
+                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}?${searchParams.toString()}`,
               )
             }}
             empty={
@@ -896,35 +893,11 @@ export default function ManagedAgentDetail({
         </Panel>
       ) : null}
 
-      {activeTab === 'files' && project ? (
-        <ProjectResourcePanel
-          title="Files"
-          description="Files shared by agents and project sessions."
-          values={project.files}
-        />
-      ) : null}
-
-      {activeTab === 'connections' && project ? (
-        <ProjectResourcePanel
-          title="Connections"
-          description="Managed service connections available to this project."
-          values={project.connections}
-        />
-      ) : null}
-
       {activeTab === 'schedules' && project ? (
         <ProjectResourcePanel
           title="Schedules"
           description="Functions in this project that run on a cron schedule."
           values={project.schedules}
-        />
-      ) : null}
-
-      {activeTab === 'schema' && project ? (
-        <ProjectResourcePanel
-          title="Agent schema"
-          description="Agents, tools, and connections deployed by this project."
-          values={[project.schema]}
         />
       ) : null}
     </div>
