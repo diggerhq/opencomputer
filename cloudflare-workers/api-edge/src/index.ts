@@ -233,35 +233,11 @@ function hmacSignKey(secret: string): Promise<CryptoKey> {
   return key;
 }
 
-// Mint the sandbox-scoped JWT the create response carries (direct worker
-// access: exec WS, PTY, files). Byte-compatible with Go's
-// auth.IssueSandboxToken — same shared secret, iss="opensandbox", same claim
-// names — so cells/workers validate edge-minted tokens identically to
-// CP-minted ones. 24h TTL mirrors the CP.
-async function mintSandboxToken(
-  secret: string,
-  orgID: string,
-  sandboxID: string,
-  workerID: string,
-): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const enc = new TextEncoder();
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    sub: orgID,
-    iat: now,
-    exp: now + 24 * 3600,
-    iss: "opensandbox",
-    org_id: orgID,
-    sandbox_id: sandboxID,
-    worker_id: workerID,
-  };
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await hmacSignKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
+// NOTE: the sandbox-scoped JWT that the create response carries is now minted in
+// the PoolStock DO (mintSandboxTokenDO), once per batch rather than once per
+// create — see the magazine below. It stays byte-compatible with Go's
+// auth.IssueSandboxToken (same secret, iss="opensandbox", same claim names, 24h
+// TTL), so cells/workers validate it identically.
 
 interface Caller {
   orgID: string;
@@ -354,9 +330,18 @@ interface AuthEntry {
   expiresAt: number | null;
   cachedAtMs: number;
   lastBumpMs: number;
+  // SHA-256 of the key, carried so a cache HIT never has to recompute it
+  // (bumpLastUsed + the colo tier are keyed by hash).
+  hash: string;
 }
+// Keyed by the RAW api key, not its hash: hashing costs a crypto.subtle SHA-256
+// plus a 32-byte hex encode on EVERY request, and at burst-100 that CPU
+// serializes on the isolate's single JS thread — pure overhead when the answer
+// is already cached. The raw key is per-isolate memory only (it arrived in this
+// request's header); the SHARED colo tier stays hash-keyed, so a key is never
+// persisted in plaintext.
 const authCache = new Map<string, AuthEntry>();
-// In-flight auth misses, keyed by API-key hash — single-flights concurrent cold
+// In-flight auth misses, keyed by raw api key — single-flights concurrent cold
 // lookups so a burst doesn't fan out N identical colo/D1 reads (see authenticate).
 const authInflight = new Map<string, Promise<Caller | null>>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
@@ -435,38 +420,41 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   ) {
     return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
   }
-  const hash = await hashAPIKey(apiKey);
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
 
-  const cached = authCache.get(hash);
+  // Warm path: one Map lookup, ZERO crypto. (The hash is only needed on a miss.)
+  const cached = authCache.get(apiKey);
   if (cached && nowMs - cached.cachedAtMs < AUTH_TTL_MS) {
     if (cached.expiresAt && cached.expiresAt < nowSec) return null;
-    bumpLastUsed(env, hash, cached, nowMs);
+    bumpLastUsed(env, cached.hash, cached, nowMs);
     return cached.caller;
   }
 
   // Single-flight the cold miss: a burst-100 of a fresh (uncached) key otherwise
-  // fires ~100 identical colo-gets + api_keys D1 reads from this one isolate,
-  // piling onto the concurrent-subrequest fan-out that gates burst creates.
-  // Coalesce by hash so only the leader touches colo/D1; the rest await it.
-  // Deleted on settle, so a revoked key still re-checks within AUTH_TTL_MS.
-  let inflight = authInflight.get(hash);
+  // fires ~100 identical SHA-256s + colo-gets + api_keys D1 reads from this one
+  // isolate, piling onto the concurrent-subrequest fan-out that gates burst
+  // creates. Coalesce by key so only the leader hashes and touches colo/D1; the
+  // rest await it. Deleted on settle, so a revoked key still re-checks within
+  // AUTH_TTL_MS.
+  let inflight = authInflight.get(apiKey);
   if (!inflight) {
-    inflight = resolveAuthMiss(env, hash);
-    authInflight.set(hash, inflight);
+    inflight = resolveAuthMiss(env, apiKey);
+    authInflight.set(apiKey, inflight);
     void inflight.finally(() => {
-      if (authInflight.get(hash) === inflight) authInflight.delete(hash);
+      if (authInflight.get(apiKey) === inflight) authInflight.delete(apiKey);
     });
   }
   return inflight;
 }
 
-// resolveAuthMiss is the (coalesced) cold path for authenticate(): colo tier →
-// D1 → populate both caches. Kept separate so authenticate() can single-flight
-// it per key hash. Negatives are never cached (a freshly-created key must work
+// resolveAuthMiss is the (coalesced) cold path for authenticate(): hash → colo
+// tier → D1 → populate both caches. Kept separate so authenticate() can
+// single-flight it per key, and so the SHA-256 is paid ONCE per miss instead of
+// once per request. Negatives are never cached (a freshly-created key must work
 // at once).
-async function resolveAuthMiss(env: Env, hash: string): Promise<Caller | null> {
+async function resolveAuthMiss(env: Env, apiKey: string): Promise<Caller | null> {
+  const hash = await hashAPIKey(apiKey);
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
   // Colo tier: a fresh box's sub-ops usually land on isolates that never saw
@@ -476,8 +464,8 @@ async function resolveAuthMiss(env: Env, hash: string): Promise<Caller | null> {
   if (shared && nowMs - shared.cachedAtMs < AUTH_TTL_MS) {
     if (shared.expiresAt && shared.expiresAt < nowSec) return null;
     if (authCache.size >= CACHE_MAX) authCache.clear();
-    const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0 };
-    authCache.set(hash, entry);
+    const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0, hash };
+    authCache.set(apiKey, entry);
     bumpLastUsed(env, hash, entry, nowMs);
     return shared.caller;
   }
@@ -492,8 +480,8 @@ async function resolveAuthMiss(env: Env, hash: string): Promise<Caller | null> {
 
   const caller: Caller = { orgID: row.org_id, userID: row.created_by };
   if (authCache.size >= CACHE_MAX) authCache.clear();
-  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
-  authCache.set(hash, entry);
+  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0, hash };
+  authCache.set(apiKey, entry);
   await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
   bumpLastUsed(env, hash, entry, nowMs);
   return caller;
@@ -1187,6 +1175,135 @@ function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectSt
   return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name), { locationHint: "enam" });
 }
 
+// ---------------------------------------------------------------------------
+// Magazine: isolate-local inventory of pre-claimed, pre-tokened pool boxes.
+//
+// Every create used to cost one PoolStock DO subrequest + one HMAC on the create
+// isolate. Prod attribution showed the burst-100 gate is isolate admission/CPU
+// (create wall ~420ms against ~10ms of server-side claim), so the win is to stop
+// doing per-create work at all: one /claim-batch call fetches N boxes WITH their
+// tokens already minted in the DO, and the next N-1 creates are pure memory —
+// zero subrequests, zero crypto. Classic magazine/thread-local free-list.
+//
+// Sizing is ADAPTIVE so this never wastes boxes on low traffic: the refill asks
+// for exactly as many creates as are currently waiting (clamped to
+// MAGAZINE_MAX). A lone create asks for 1 — byte-identical to the old behaviour.
+// A 100-way burst asks for MAGAZINE_MAX and serves the rest from memory.
+//
+// Safety: a magazine is keyed by cell AND org, and its boxes are already tokened
+// for that org, so a box can only ever be handed to the org it was minted for —
+// no cross-tenant exposure. pop() is atomic w.r.t. other tasks (single-threaded
+// JS), so two concurrent creates can never take the same box. The residual cost
+// is waste: boxes held by an isolate that gets evicted are stranded until the
+// cell's reaper reclaims them, which is why the TTL is short and the batch is
+// sized to demand rather than a fixed constant.
+interface MagazineBox {
+  id: string;
+  workerID: string;
+  region: string;
+  sandboxDomain: string;
+  token: string;
+  atMs: number;
+}
+const MAGAZINE_MAX = 24;
+const MAGAZINE_TTL_MS = 60_000;
+const magazines = new Map<string, MagazineBox[]>();
+const magazineInflight = new Map<string, Promise<void>>();
+const magazineWaiters = new Map<string, number>();
+// Stock depth reported by the most recent refill (telemetry only).
+const magazineLastStock = new Map<string, number>();
+
+// refillMagazine pulls one batch into this isolate's magazine, walking shards the
+// same way a single claim does (random start + stride, 3 tries) so a drained or
+// unlucky shard falls through instead of failing the create.
+async function refillMagazine(
+  env: Env,
+  cell: CellRow,
+  orgID: string,
+  key: string,
+  want: number,
+): Promise<void> {
+  const body = JSON.stringify({
+    cell: { cellID: cell.cell_id, baseURL: cell.base_url },
+    orgID,
+    count: want,
+  });
+  let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
+  const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
+  let got = 0;
+  // Keep pulling across shards until the batch is filled. A single shard can be
+  // short (small cell, or mid-burst depletion), and stopping at the first
+  // partial fill would drop the remaining waiters to the CP fallback.
+  for (let attempt = 0; attempt < POOL_STOCK_SHARDS && got < want; attempt++) {
+    const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
+      method: "POST",
+      body: got === 0 ? body : JSON.stringify({
+        cell: { cellID: cell.cell_id, baseURL: cell.base_url },
+        orgID,
+        count: want - got,
+      }),
+    });
+    shard = (shard + stride) % POOL_STOCK_SHARDS;
+    if (!r.ok) continue;
+    const data = (await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number };
+    magazineLastStock.set(key, data.stock ?? -1);
+    if (!data.boxes || data.boxes.length === 0) continue;
+    const now = Date.now();
+    const arr = magazines.get(key) ?? [];
+    for (const b of data.boxes) arr.push({ ...b, atMs: now });
+    magazines.set(key, arr);
+    got += data.boxes.length;
+  }
+}
+
+// claimMagazineBox returns a ready-to-serve box (token already minted) or null to
+// fall through to the CP create. `amortized` reports that this create did NOT
+// perform a DO call of its own — it either popped a box already in memory or
+// rode someone else's in-flight batch. That ratio IS the fan-out reduction: in a
+// burst of N served by one batch, one create pays and N-1 are amortized.
+async function claimMagazineBox(
+  env: Env,
+  cell: CellRow,
+  orgID: string,
+): Promise<{ box: MagazineBox; amortized: boolean; stock: number } | null> {
+  const key = `${cell.cell_id}|${orgID}`;
+  magazineWaiters.set(key, (magazineWaiters.get(key) ?? 0) + 1);
+  let didRefill = false;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const mag = magazines.get(key);
+      if (mag && mag.length > 0) {
+        const box = mag.pop()!;
+        // Held too long (idle isolate): drop the whole batch rather than serve a
+        // box the cell may be about to reap. Rare — TTL is far under the DO's
+        // 10-min entry TTL and the cell's 15-min destroy backstop.
+        if (Date.now() - box.atMs < MAGAZINE_TTL_MS) {
+          return { box, amortized: !didRefill, stock: magazineLastStock.get(key) ?? -1 };
+        }
+        magazines.set(key, []);
+      }
+      let inflight = magazineInflight.get(key);
+      if (!inflight) {
+        didRefill = true;
+        // Size the batch to demand: how many creates are waiting on this org's
+        // magazine right now (1 for a lone create → no over-fetch, no waste).
+        const want = Math.min(MAGAZINE_MAX, Math.max(1, magazineWaiters.get(key) ?? 1));
+        inflight = refillMagazine(env, cell, orgID, key, want);
+        magazineInflight.set(key, inflight);
+        void inflight.finally(() => {
+          if (magazineInflight.get(key) === inflight) magazineInflight.delete(key);
+        });
+      }
+      await inflight;
+    }
+    return null;
+  } finally {
+    const n = (magazineWaiters.get(key) ?? 1) - 1;
+    if (n <= 0) magazineWaiters.delete(key);
+    else magazineWaiters.set(key, n);
+  }
+}
+
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
 // asks for exactly what pool boxes are manufactured as — base template at the
 // default shape (4GB/1cpu/default disk), no guest-side customization (envs,
@@ -1381,37 +1498,20 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // the pre-sharding DO (holding the fleet's stock at cutover) drains as a
       // first-class shard instead of hoarding reservations until TTL. One empty
       // shard (404) gets one retry on a different shard before the CP fallback.
-      const claimBody = JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } });
       mark("cap");
-      // Sample up to 3 distinct shards (random walk with a random stride
-      // coprime-ish to 8) — at full stock the first hit ends it; under sparse
-      // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
-      // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
-      let box: { id: string; workerID: string; region: string; sandboxDomain: string; stock?: number } | null = null;
-      let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
-      const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
-      let shardHit = -1; // which shard served (telemetry, see #7)
-      let probes = 0;
-      for (let attempt = 0; attempt < 3 && !box; attempt++) {
-        probes++;
-        const tryShard = shard;
-        const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
-          method: "POST",
-          body: claimBody,
-        });
-        shard = (shard + stride) % POOL_STOCK_SHARDS;
-        if (!r.ok) continue;
-        box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string; stock?: number };
-        shardHit = tryShard;
-      }
-      if (box) {
+      // Magazine claim: a hit is pure isolate memory (no subrequest, no HMAC —
+      // the DO minted the token when it filled the batch). A miss single-flights
+      // one /claim-batch sized to the number of creates currently waiting, so a
+      // burst pays ~N/MAGAZINE_MAX DO calls instead of N.
+      const claimed = await claimMagazineBox(env, cell, caller.orgID);
+      const box = claimed?.box ?? null;
+      if (box && claimed) {
         mark("claim");
-        // Stock telemetry (#7): shard that served, probes used, and stock left in
-        // that shard after the pop — surfaced via Server-Timing so a burst run can
-        // correlate latency with shard balance / stock depletion. dur is a value
-        // here, not a duration.
-        phases.push(`shard;dur=${shardHit}`, `probes;dur=${probes}`, `stock;dur=${box.stock ?? -1}`);
-        const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
+        // Telemetry (#7): whether this create was served from the magazine (no
+        // origin work at all) and the stock left in the shard at last refill.
+        // `dur` is a value here, not a duration.
+        phases.push(`mag;dur=${claimed.amortized ? 1 : 0}`, `stock;dur=${claimed.stock}`);
+        const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
         // Seed the colo-shared route so the first exec — which usually lands on
