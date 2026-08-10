@@ -1124,7 +1124,7 @@ export const defineConnection = (input) => {
       new Headers(init.headers).forEach((value, name) => { headers[name] = value; });
       if (init.body != null && typeof init.body !== "string") throw new Error("Managed connection request bodies must currently be strings");
       if (typeof init.body === "string" && init.body.length > 5 * 1024 * 1024) throw new Error("Managed connection request bodies cannot exceed 5 MiB");
-      return fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(connectionId) + "/fetch", {
+      return fetch(base.replace(/\\\/$/, "") + "/" + encodeURIComponent(connectionId) + "/fetch", {
         method: "POST",
         headers: { authorization: "Bearer " + token, "content-type": "application/json" },
         body: JSON.stringify({ method: (init.method || "GET").toUpperCase(), path, headers, ...(init.body == null ? {} : { body: init.body }) }),

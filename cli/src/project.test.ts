@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   buildAgentArtifact,
@@ -227,6 +228,11 @@ export default function Agent() {
     );
 
     const built = await buildAgentArtifact(initialized.agentRoot);
+    await assert.doesNotReject(
+      import(
+        `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+      ),
+    );
     assert.deepEqual(built.httpConnections, [
       {
         id: "github-api",
