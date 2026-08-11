@@ -466,7 +466,7 @@ export async function initializeAgentProject(
 
 export default function Agent() {
   const input = useInput();
-  useModel("google/gemini-3.6-flash");
+  useModel("anthropic/claude-sonnet-4.6");
 
   return input.text
     ? "You are a helpful OpenComputer agent. Respond directly to: " + input.text

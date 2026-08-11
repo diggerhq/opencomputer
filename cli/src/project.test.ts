@@ -76,7 +76,7 @@ test("init creates a multi-agent-ready project and React hello world app", async
     const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
     assert.match(
       await readFile(resolve(agentRoot, "agent.ts"), "utf8"),
-      /useInput[\s\S]*useModel\("google\/gemini-3\.6-flash"\)/,
+      /useInput[\s\S]*useModel\("anthropic\/claude-sonnet-4\.6"\)/,
     );
     for (const removed of [
       "opencomputer.toml",
@@ -139,7 +139,7 @@ const docs = defineMcpServer({
 
 export default function Agent() {
   const input = useInput();
-  useModel("google/gemini-3.6-flash");
+  useModel("anthropic/claude-sonnet-4.6");
   useTool("search-docs");
   useSubagent("researcher");
   useConnection(github);
