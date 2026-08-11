@@ -22,9 +22,21 @@ export interface BuiltAgentArtifact {
   name: string;
   channels: string[];
   connections: string[];
+  httpConnections: HttpConnectionManifest[];
   body: Buffer;
   digest: string;
   elapsedMs: number;
+}
+
+export interface HttpConnectionManifest {
+  id: string;
+  origin: string;
+  headers: Record<
+    string,
+    string | { kind: "secret"; name: string; prefix?: string; suffix?: string }
+  >;
+  methods?: string[];
+  pathPrefix?: string;
 }
 
 export interface ProjectAgentSource {
@@ -489,12 +501,12 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.2.0",
+          "@opencomputer/agent": "^0.3.0",
           react: "^19.2.0",
           "react-dom": "^19.2.0",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.6",
+          "@opencomputer/cli": "^0.4.7",
           "@types/node": "^24.0.0",
           "@types/react": "^19.2.0",
           "@types/react-dom": "^19.2.0",
@@ -904,6 +916,163 @@ function definedMcpServerIds(source: string): string[] {
     .sort();
 }
 
+function objectProperty(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): ts.Expression | undefined {
+  const property = object.properties.find(
+    (candidate): candidate is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(candidate) &&
+      ((ts.isIdentifier(candidate.name) && candidate.name.text === name) ||
+        (ts.isStringLiteral(candidate.name) && candidate.name.text === name)),
+  );
+  return property?.initializer;
+}
+
+function literalStringValue(
+  expression: ts.Expression | undefined,
+  label: string,
+): string {
+  if (!expression || !ts.isStringLiteralLike(expression)) {
+    throw new Error(`${label} must be a string literal`);
+  }
+  return expression.text;
+}
+
+function secretNameFromExpression(expression: ts.Expression): string {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression) ||
+    expression.expression.text !== "useSecret"
+  ) {
+    throw new Error("Connection secret headers must reference useSecret()");
+  }
+  return literalStringValue(expression.arguments[0], "useSecret name");
+}
+
+function connectionHeaderValue(
+  expression: ts.Expression,
+): HttpConnectionManifest["headers"][string] {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
+  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
+    throw new Error(
+      "Connection headers must be string literals, bearer(useSecret()), or secretHeader(useSecret())",
+    );
+  }
+  const helper = expression.expression.text;
+  if (helper === "bearer") {
+    const secret = expression.arguments[0];
+    if (!secret) throw new Error("bearer() requires useSecret()");
+    return {
+      kind: "secret",
+      name: secretNameFromExpression(secret),
+      prefix: "Bearer ",
+    };
+  }
+  if (helper === "secretHeader") {
+    const secret = expression.arguments[0];
+    if (!secret) throw new Error("secretHeader() requires useSecret()");
+    const result: {
+      kind: "secret";
+      name: string;
+      prefix?: string;
+      suffix?: string;
+    } = { kind: "secret", name: secretNameFromExpression(secret) };
+    const options = expression.arguments[1];
+    if (options) {
+      if (!ts.isObjectLiteralExpression(options)) {
+        throw new Error("secretHeader options must be an object literal");
+      }
+      const prefix = objectProperty(options, "prefix");
+      const suffix = objectProperty(options, "suffix");
+      if (prefix) result.prefix = literalStringValue(prefix, "secretHeader prefix");
+      if (suffix) result.suffix = literalStringValue(suffix, "secretHeader suffix");
+    }
+    return result;
+  }
+  throw new Error(`Unsupported connection header helper: ${helper}`);
+}
+
+function definedHttpConnections(
+  source: string,
+  path: string,
+): HttpConnectionManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const definitions: HttpConnectionManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineConnection"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error("defineConnection() requires an object literal");
+      }
+      const id = literalStringValue(objectProperty(input, "id"), "connection id");
+      const originValue = literalStringValue(
+        objectProperty(input, "origin"),
+        `connection ${id} origin`,
+      );
+      const origin = new URL(originValue);
+      if (origin.protocol !== "https:" || origin.pathname !== "/") {
+        throw new Error(`Connection ${id} must use an HTTPS origin without a path`);
+      }
+      const headers: HttpConnectionManifest["headers"] = {};
+      const headerExpression = objectProperty(input, "headers");
+      if (headerExpression) {
+        if (!ts.isObjectLiteralExpression(headerExpression)) {
+          throw new Error(`Connection ${id} headers must be an object literal`);
+        }
+        for (const property of headerExpression.properties) {
+          if (!ts.isPropertyAssignment(property)) {
+            throw new Error(`Connection ${id} headers cannot use spreads`);
+          }
+          const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+            ? property.name.text
+            : undefined;
+          if (!name) throw new Error(`Connection ${id} has an invalid header name`);
+          const value = connectionHeaderValue(property.initializer);
+          if (
+            ["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(
+              name.toLowerCase(),
+            ) &&
+            typeof value === "string"
+          ) {
+            throw new Error(`Connection ${id} header ${name} must use useSecret()`);
+          }
+          headers[name] = value;
+        }
+      }
+      const definition: HttpConnectionManifest = {
+        id,
+        origin: origin.origin,
+        headers,
+      };
+      const methods = objectProperty(input, "methods");
+      if (methods) {
+        if (!ts.isArrayLiteralExpression(methods)) {
+          throw new Error(`Connection ${id} methods must be an array literal`);
+        }
+        definition.methods = methods.elements.map((method) =>
+          literalStringValue(method, `connection ${id} method`).toUpperCase(),
+        );
+      }
+      const pathPrefix = objectProperty(input, "pathPrefix");
+      if (pathPrefix) {
+        definition.pathPrefix = literalStringValue(
+          pathPrefix,
+          `connection ${id} pathPrefix`,
+        );
+      }
+      definitions.push(definition);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return definitions;
+}
+
 function definedToolIds(source: string): string[] {
   return [
     ...source.matchAll(
@@ -926,6 +1095,44 @@ function id(value, kind) {
   return normalized;
 }
 export const connection = (value) => Object.freeze({ kind: "connection", id: id(value, "connection") });
+export const useSecret = (value) => {
+  const name = id(value, "useSecret");
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
+  return Object.freeze({ kind: "secret", id: name });
+};
+export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
+export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
+export const defineConnection = (input) => {
+  const connectionId = id(input.id, "defineConnection");
+  const origin = new URL(input.origin);
+  if (origin.protocol !== "https:" || origin.pathname !== "/") throw new Error("Connection origins must be HTTPS origins without a path");
+  for (const [name, value] of Object.entries(input.headers || {})) {
+    if (["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(name.toLowerCase()) && typeof value === "string") throw new Error(name + " must use useSecret()");
+  }
+  return Object.freeze({
+    kind: "connection",
+    ...input,
+    id: connectionId,
+    origin: origin.origin,
+    headers: Object.freeze({ ...(input.headers || {}) }),
+    async fetch(path, init = {}) {
+      const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+      const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+      if (!base || !token) throw new Error("OpenComputer managed egress is unavailable");
+      if (!path.startsWith("/")) throw new Error("Connection requests require an absolute path");
+      const headers = {};
+      new Headers(init.headers).forEach((value, name) => { headers[name] = value; });
+      if (init.body != null && typeof init.body !== "string") throw new Error("Managed connection request bodies must currently be strings");
+      if (typeof init.body === "string" && init.body.length > 5 * 1024 * 1024) throw new Error("Managed connection request bodies cannot exceed 5 MiB");
+      return fetch(base.replace(/\\\/$/, "") + "/" + encodeURIComponent(connectionId) + "/fetch", {
+        method: "POST",
+        headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+        body: JSON.stringify({ method: (init.method || "GET").toUpperCase(), path, headers, ...(init.body == null ? {} : { body: init.body }) }),
+        signal: init.signal,
+      });
+    },
+  });
+};
 export const defineMcpServer = (input) => {
   const url = new URL(input.url);
   if (url.protocol !== "https:") throw new Error("MCP server URLs must use HTTPS");
@@ -1141,6 +1348,17 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
+  const httpConnections = [agentSource, ...toolSources.map((item) => item.source)]
+    .flatMap((source, index) =>
+      definedHttpConnections(source, index === 0 ? "agent.ts" : toolSources[index - 1]!.filename),
+    );
+  const duplicateConnection = httpConnections.find(
+    (connection, index) =>
+      httpConnections.findIndex((candidate) => candidate.id === connection.id) !== index,
+  );
+  if (duplicateConnection) {
+    throw new Error(`Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`);
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -1160,8 +1378,10 @@ the product or support surface presented to users.
           ...new Set([
             ...literalHookIds(agentSource, "connection"),
             ...literalHookIds(agentSource, "useConnection"),
+            ...httpConnections.map((connection) => connection.id),
           ]),
         ].sort(),
+        httpConnections,
         mcpServers: [
           ...new Set([
             ...definedMcpServerIds(agentSource),
@@ -1219,7 +1439,16 @@ export async function buildAgentArtifact(
   const manifest = await readManifest(root);
   const runtime = await prepareAgent(root);
   const channels = await collectNames(root, "channels");
-  const connections = await collectNames(root, "connections");
+  const reactive = JSON.parse(
+    await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+  ) as { connections?: string[]; httpConnections?: HttpConnectionManifest[] };
+  const connections = [
+    ...new Set([
+      ...(await collectNames(root, "connections")),
+      ...(reactive.connections ?? []),
+    ]),
+  ].sort();
+  const httpConnections = reactive.httpConnections ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -1232,6 +1461,7 @@ export async function buildAgentArtifact(
     name: manifest.name,
     channels,
     connections,
+    httpConnections,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),

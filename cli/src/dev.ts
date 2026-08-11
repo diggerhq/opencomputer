@@ -28,6 +28,7 @@ export async function publishDevelopment(
     alias: DEVELOPMENT_ALIAS,
     channels: built.channels,
     connections: built.connections,
+    httpConnections: built.httpConnections,
     source: {
       digest: built.digest,
       size: built.body.byteLength,

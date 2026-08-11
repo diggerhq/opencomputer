@@ -39,6 +39,12 @@ servers, and subagents needed for that render.
   <Card title="Sessions" icon="comments" href="/agents/sessions">
     Stream responses and inspect durable conversations.
   </Card>
+  <Card title="Secrets" icon="key" href="/agents/secrets">
+    Declare secret-backed connections without exposing credentials to agents.
+  </Card>
+  <Card title="Logs" icon="terminal" href="/agents/logs">
+    Follow runtime and managed-egress activity from the CLI.
+  </Card>
 </CardGroup>
 
 ## Start a project
@@ -70,6 +76,8 @@ runs in OpenComputer's managed development cloud.
 - dashboard and CLI playground sessions
 - immutable deployments promoted through aliases such as `production`
 - user-scoped Gmail, Calendar, and GitHub connections
+- project-level secrets with optional agent overrides and managed egress
+- indexed runtime and egress logs available from the CLI
 - Slack channels connected to deployed agent aliases
 
 The dashboard is primarily an inspection and testing surface. Agent behavior

@@ -18,13 +18,16 @@ describe('managed agents navigation', () => {
       'Back to all projects',
     ])
     expect(nav[1]?.items.map((item) => item.label)).toEqual([
-      'Agent playground',
       'Deployments',
       'Sessions',
       'Channels',
       'Schedules',
+      'Secrets',
+      'Debug playground',
     ])
-    expect(nav[1]?.items[0]?.to).toBe('/projects/project%20one')
+    expect(nav[1]?.items[nav[1].items.length - 1]?.to).toBe(
+      '/projects/project%20one',
+    )
   })
 
   it('reveals each advanced area independently', () => {

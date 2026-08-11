@@ -30,6 +30,53 @@ Use `connection()` and `defineMcpServer()` for stable code declarations. Never
 put credentials in these declarations: OpenComputer resolves secrets through
 its managed gateway.
 
+## Secret-backed HTTP connections
+
+Declare the destination and the exact place a secret may be injected. The
+secret reference is compiled into deployment metadata; its value never enters
+the agent artifact or runtime:
+
+```ts
+import {
+  bearer,
+  defineConnection,
+  defineTool,
+  useConnection,
+  useSecret,
+  useTool,
+} from "@opencomputer/agent";
+
+const github = defineConnection({
+  id: "github-api",
+  origin: "https://api.github.com",
+  methods: ["GET"],
+  pathPrefix: "/repos/",
+  headers: {
+    Authorization: bearer(useSecret("GITHUB_TOKEN")),
+  },
+});
+
+const repository = defineTool({
+  name: "github_repository",
+  description: "Read a GitHub repository.",
+  async run() {
+    const response = await github.fetch("/repos/opencomputer/example");
+    return await response.json();
+  },
+});
+
+export default function Agent() {
+  useConnection(github);
+  useTool(repository);
+  return "Use GitHub when the user asks about a repository.";
+}
+```
+
+`defineConnection().fetch()` sends a relative request through OpenComputer's
+managed egress gateway. The gateway checks the deployment, agent, environment,
+origin, path, and method before resolving and injecting the secret. Redirects
+are not followed by the gateway.
+
 Hooks may only be called while the managed runtime is rendering an agent.
 
 ## Code-defined tools

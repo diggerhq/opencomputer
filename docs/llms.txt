@@ -10,4 +10,6 @@
 - [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, connections, and MCP servers from code.
 - [Sessions and playground](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
 - [Connections and MCP](https://docs.opencomputer.dev/agents/connections.md): Attach user-scoped services and managed MCP servers from code.
+- [Secrets and managed egress](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
+- [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow runtime and managed-egress logs.
 - [Channels](https://docs.opencomputer.dev/agents/channels.md): Connect deployed agents to Slack.

@@ -51,12 +51,6 @@ export function managedAgentsNav(options: {
       {
         items: [
           {
-            to: projectPath,
-            label: 'Agent playground',
-            icon: Bot,
-            end: true,
-          },
-          {
             to: `${projectPath}/deployments`,
             label: 'Deployments',
             icon: Rocket,
@@ -75,6 +69,17 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/schedules`,
             label: 'Schedules',
             icon: CalendarClock,
+          },
+          {
+            to: `${projectPath}/secrets`,
+            label: 'Secrets',
+            icon: KeySquare,
+          },
+          {
+            to: projectPath,
+            label: 'Debug playground',
+            icon: Bot,
+            end: true,
           },
         ],
       },

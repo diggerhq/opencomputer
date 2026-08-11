@@ -20,6 +20,25 @@ export interface ConnectionReference extends ResourceReference {
   readonly kind: "connection";
 }
 
+export interface SecretReference extends ResourceReference {
+  readonly kind: "secret";
+}
+
+export interface SecretHeaderReference {
+  readonly kind: "secret-header";
+  readonly secret: SecretReference;
+  readonly prefix?: string;
+  readonly suffix?: string;
+}
+
+export interface HttpConnectionDefinition extends ConnectionReference {
+  readonly origin: string;
+  readonly headers: Readonly<Record<string, string | SecretHeaderReference>>;
+  readonly methods?: readonly string[];
+  readonly pathPrefix?: string;
+  fetch(path: string, init?: RequestInit): Promise<Response>;
+}
+
 export interface McpServerDefinition extends ResourceReference {
   readonly kind: "mcp";
   readonly url: string;
@@ -84,6 +103,106 @@ function identifier(value: string, kind: string): string {
 
 export function connection(id: string): ConnectionReference {
   return Object.freeze({ kind: "connection", id: identifier(id, "connection") });
+}
+
+export function useSecret(name: string): SecretReference {
+  const id = identifier(name, "useSecret");
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(id)) {
+    throw new Error(
+      "Secret names must use uppercase letters, numbers, and underscores",
+    );
+  }
+  return Object.freeze({ kind: "secret", id });
+}
+
+export function secretHeader(
+  secret: SecretReference,
+  options: { prefix?: string; suffix?: string } = {},
+): SecretHeaderReference {
+  return Object.freeze({ kind: "secret-header", secret, ...options });
+}
+
+export function bearer(secret: SecretReference): SecretHeaderReference {
+  return secretHeader(secret, { prefix: "Bearer " });
+}
+
+export function defineConnection(input: {
+  id: string;
+  origin: string;
+  headers?: Readonly<Record<string, string | SecretHeaderReference>>;
+  methods?: readonly string[];
+  pathPrefix?: string;
+}): HttpConnectionDefinition {
+  const id = identifier(input.id, "defineConnection");
+  const origin = new URL(input.origin);
+  if (origin.protocol !== "https:" || origin.pathname !== "/") {
+    throw new Error("Connection origins must be HTTPS origins without a path");
+  }
+  for (const [name, value] of Object.entries(input.headers ?? {})) {
+    if (
+      ["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(
+        name.toLowerCase(),
+      ) &&
+      typeof value === "string"
+    ) {
+      throw new Error(`${name} must use useSecret()`);
+    }
+  }
+  const definition = {
+    kind: "connection" as const,
+    id,
+    origin: origin.origin,
+    headers: Object.freeze({ ...(input.headers ?? {}) }),
+    ...(input.methods
+      ? { methods: Object.freeze(input.methods.map((method) => method.toUpperCase())) }
+      : {}),
+    ...(input.pathPrefix ? { pathPrefix: input.pathPrefix } : {}),
+    async fetch(path: string, init: RequestInit = {}): Promise<Response> {
+      const runtime = globalThis as typeof globalThis & {
+        process?: { env?: Record<string, string | undefined> };
+      };
+      const base = runtime.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+      const token = runtime.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+      if (!base || !token) {
+        throw new Error("OpenComputer managed egress is unavailable");
+      }
+      if (!path.startsWith("/")) {
+        throw new Error("Connection requests require an absolute path");
+      }
+      const headers = Object.fromEntries(new Headers(init.headers).entries());
+      const body =
+        init.body === undefined || init.body === null
+          ? undefined
+          : typeof init.body === "string"
+            ? init.body
+            : (() => {
+                throw new Error(
+                  "Managed connection request bodies must currently be strings",
+                );
+              })();
+      if (body !== undefined && body.length > 5 * 1024 * 1024) {
+        throw new Error("Managed connection request bodies cannot exceed 5 MiB");
+      }
+      return fetch(
+        `${base.replace(/\/$/, "")}/${encodeURIComponent(id)}/fetch`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            method: (init.method ?? "GET").toUpperCase(),
+            path,
+            headers,
+            ...(body === undefined ? {} : { body }),
+          }),
+          signal: init.signal,
+        },
+      );
+    },
+  };
+  return Object.freeze(definition);
 }
 
 export function defineMcpServer(input: {

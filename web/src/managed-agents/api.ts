@@ -47,6 +47,18 @@ const projectSchema = z.object({
 
 const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
 
+const secretSchema = z.object({
+  name: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string().optional(),
+  allowedOrigins: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const secretsResponseSchema = z.object({ secrets: z.array(secretSchema) })
+
 const connectionSchema = z.object({
   id: z.string(),
   kind: z.enum(['tool', 'channel']),
@@ -118,6 +130,23 @@ const eventSchema = z.object({
   data: z.record(z.string(), z.unknown()),
 })
 
+const renderDebugSchema = z.object({
+  renderId: z.string(),
+  responseId: z.string(),
+  providerTurn: z.number(),
+  stateVersion: z.number(),
+  instructionsHash: z.string(),
+  instructions: z.string(),
+  enabledTools: z.array(z.string()),
+  enabledSubagents: z.array(z.string()),
+  requiredConnections: z.array(z.string()),
+  enabledMcpServers: z.array(z.string()),
+  input: z.object({ source: z.string(), text: z.string().optional() }),
+  tools: z.array(z.object({ name: z.string(), description: z.string() })),
+  model: z.object({ provider: z.string(), model: z.string() }).optional(),
+  renderedAt: z.string(),
+})
+
 const eventsResponseSchema = z.object({
   events: z.array(eventSchema),
 })
@@ -167,10 +196,12 @@ export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
 export type ManagedAgentEvent = z.infer<typeof eventSchema>
+export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
+export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -211,6 +242,56 @@ export async function getManagedProject(projectId: string) {
     `/managed-agents/projects/${encodeURIComponent(projectId)}`,
     undefined,
     projectOverviewSchema,
+  )
+}
+
+export async function getManagedProjectSecrets(
+  projectId: string,
+  environment: 'development' | 'production',
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/secrets?environment=${encodeURIComponent(environment)}`,
+      undefined,
+      secretsResponseSchema,
+    )
+  ).secrets
+}
+
+export async function putManagedProjectSecret(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+  value: string
+  allowedOrigins: string[]
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        environment: input.environment,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        value: input.value,
+        allowedOrigins: input.allowedOrigins,
+      }),
+    },
+    secretSchema,
+  )
+}
+
+export async function deleteManagedProjectSecret(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  if (input.agentId) query.set('agentId', input.agentId)
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
+    { method: 'DELETE' },
   )
 }
 
@@ -330,6 +411,12 @@ export async function getManagedAgentSessionEvents(sessionId: string) {
       eventsResponseSchema,
     )
   ).events
+}
+
+export function managedAgentRenderDebug(event: ManagedAgentEvent) {
+  if (event.type !== 'agent.rendered') return undefined
+  const parsed = renderDebugSchema.safeParse(event.data)
+  return parsed.success ? parsed.data : undefined
 }
 
 export async function getManagedAgentSession(sessionId: string) {

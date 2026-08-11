@@ -72,6 +72,29 @@ export interface ManagedAgentEvent {
   data: Record<string, unknown>;
 }
 
+export interface ManagedSecretMetadata {
+  name: string;
+  projectId: string;
+  environment: "development" | "production";
+  agentId?: string;
+  allowedOrigins: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedAgentLog {
+  id: string;
+  cursor: string;
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  event: string;
+  environment: "development" | "production";
+  agentId: string;
+  deploymentId: string;
+  sessionId: string;
+  data: Record<string, unknown>;
+}
+
 export interface ManagedSessionSnapshot {
   id: string;
   status: string;
@@ -213,12 +236,96 @@ export class OpenComputerClient {
     });
   }
 
+  async secrets(input: {
+    projectId: string;
+    environment?: "development" | "production";
+    agentId?: string;
+  }): Promise<ManagedSecretMetadata[]> {
+    const query = new URLSearchParams();
+    if (input.environment) query.set("environment", input.environment);
+    if (input.agentId) query.set("agentId", input.agentId);
+    const suffix = query.size ? `?${query.toString()}` : "";
+    const result = await this.request<{ secrets: ManagedSecretMetadata[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets${suffix}`,
+    );
+    return result.secrets;
+  }
+
+  putSecret(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    environment: "development" | "production";
+    agentId?: string;
+    allowedOrigins: string[];
+  }) {
+    return this.request<ManagedSecretMetadata>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          value: input.value,
+          environment: input.environment,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+          allowedOrigins: input.allowedOrigins,
+        }),
+      },
+    );
+  }
+
+  deleteSecret(input: {
+    projectId: string;
+    name: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    const query = new URLSearchParams({ environment: input.environment });
+    if (input.agentId) query.set("agentId", input.agentId);
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
+      { method: "DELETE" },
+    );
+  }
+
+  logs(input: {
+    agentId?: string;
+    sessionId?: string;
+    environment?: "development" | "production";
+    after?: string;
+    limit?: number;
+  }) {
+    const query = new URLSearchParams();
+    if (input.agentId) query.set("agentId", input.agentId);
+    if (input.sessionId) query.set("sessionId", input.sessionId);
+    if (input.environment) query.set("environment", input.environment);
+    if (input.after) query.set("after", input.after);
+    if (input.limit) query.set("limit", String(input.limit));
+    return this.request<{ logs: ManagedAgentLog[]; cursor: string }>(
+      `/api/managed-agents/logs?${query.toString()}`,
+    );
+  }
+
   registerDeployment(input: {
     agentId: string;
     name: string;
     alias: string;
     channels: string[];
     connections: string[];
+    httpConnections: Array<{
+      id: string;
+      origin: string;
+      headers: Record<
+        string,
+        string | {
+          kind: "secret";
+          name: string;
+          prefix?: string;
+          suffix?: string;
+        }
+      >;
+      methods?: string[];
+      pathPrefix?: string;
+    }>;
     source: {
       digest: string;
       size: number;

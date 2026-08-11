@@ -54,9 +54,11 @@ import {
   type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
+import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
+import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
 
 type DetailTab =
@@ -65,6 +67,7 @@ type DetailTab =
   | 'sessions'
   | 'channels'
   | 'schedules'
+  | 'secrets'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -293,6 +296,12 @@ function PlaygroundChat({
       }),
     [agentId, session?.id],
   )
+  const debugEvents = useQuery({
+    queryKey: ['managed-agent-session-events', liveSessionId],
+    queryFn: () => getManagedAgentSessionEvents(liveSessionId!),
+    enabled: Boolean(liveSessionId),
+    refetchInterval: 1_000,
+  })
   const { messages, sendMessage, status, stop, error } = useChat({
     id: session?.id ?? `new-${agentId}`,
     messages: initialMessages,
@@ -303,6 +312,11 @@ function PlaygroundChat({
       void queryClient.invalidateQueries({
         queryKey: ['managed-agent-sessions', agentId],
       })
+      if (liveSessionId) {
+        void queryClient.invalidateQueries({
+          queryKey: ['managed-agent-session-events', liveSessionId],
+        })
+      }
     },
   })
   const running = status === 'submitted' || status === 'streaming'
@@ -329,116 +343,125 @@ function PlaygroundChat({
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b px-5 py-3">
-        <div>
-          <p className="text-sm font-medium">
-            {session?.turns[0]?.input || 'New playground session'}
-          </p>
-          <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">
-            {liveSessionId ?? 'A session is created when you send a message'}
-          </p>
+    <div className="grid h-full min-h-0 min-w-0 xl:grid-cols-[minmax(0,1fr)_24rem]">
+      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <div>
+            <p className="text-sm font-medium">
+              {session?.turns[0]?.input || 'New playground session'}
+            </p>
+            <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">
+              {liveSessionId ?? 'A session is created when you send a message'}
+            </p>
+          </div>
+          {running ? (
+            <div className="text-muted-foreground flex items-center gap-2 text-xs">
+              <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
+              Agent is working
+            </div>
+          ) : null}
         </div>
-        {running ? (
-          <div className="text-muted-foreground flex items-center gap-2 text-xs">
-            <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
-            Agent is working
-          </div>
-        ) : null}
-      </div>
 
-      <div
-        ref={timelineRef}
-        onScroll={(event) => {
-          followOutputRef.current = isNearScrollEnd(event.currentTarget)
-        }}
-        className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-5 py-6"
-      >
-        {messages.length === 0 ? (
-          <div className="text-muted-foreground flex min-h-80 flex-col items-center justify-center text-center">
-            <Bot className="mb-3 size-7" aria-hidden />
-            <p className="text-foreground text-sm font-medium">
-              Start a conversation
-            </p>
-            <p className="mt-1 max-w-sm text-sm">
-              This runs the active deployment and keeps context across every
-              message in this playground session.
-            </p>
-          </div>
-        ) : (
-          messages.map((message, index) => {
-            const isLast = index === messages.length - 1
-            const messageRunning =
-              running && isLast && message.role === 'assistant'
-            const text = message.parts
-              .filter((part) => part.type === 'text')
-              .map((part) => part.text)
-              .join('')
-            return (
-              <div
-                key={message.id}
-                className={cn(
-                  'max-w-3xl',
-                  message.role === 'user' && 'ml-auto max-w-2xl',
-                )}
-              >
-                <p className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wider uppercase">
-                  {message.role === 'user' ? 'You' : 'Agent'}
-                </p>
-                {message.role === 'assistant' ? (
-                  <MessageActivity message={message} running={messageRunning} />
-                ) : null}
-                {text ? (
-                  message.role === 'user' ? (
-                    <div className="bg-muted rounded-xl rounded-br-sm px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap">
-                      {text}
-                    </div>
-                  ) : (
-                    <AgentMarkdown>{text}</AgentMarkdown>
-                  )
-                ) : messageRunning ? (
-                  <div className="text-muted-foreground flex items-center gap-2 text-sm">
-                    <Loader2 className="size-4 animate-spin" />
-                    Starting the agent…
-                  </div>
-                ) : null}
-              </div>
-            )
-          })
-        )}
-      </div>
-
-      <div className="bg-panel shrink-0 border-t p-4">
-        {error ? (
-          <p className="text-destructive mb-2 text-xs">{error.message}</p>
-        ) : null}
         <div
-          ref={composerRef}
-          className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
+          ref={timelineRef}
+          onScroll={(event) => {
+            followOutputRef.current = isNearScrollEnd(event.currentTarget)
+          }}
+          className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-5 py-6"
         >
-          <ChatTextarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            onSend={send}
-            placeholder="Message this agent…"
-            className="min-h-12 border-0 px-2 shadow-none focus-visible:border-transparent"
-          />
-          <div className="flex items-center justify-between gap-3 px-1 pt-1">
-            <p className="text-muted-foreground text-[10px]">
-              Enter to send · Shift + Enter for a new line
-            </p>
-            {running ? (
-              <Button variant="outline" size="sm" onClick={() => void stop()}>
-                <Square className="fill-current" /> Stop
-              </Button>
-            ) : (
-              <Button size="sm" disabled={!prompt.trim()} onClick={send}>
-                <Send /> Send
-              </Button>
-            )}
+          {messages.length === 0 ? (
+            <div className="text-muted-foreground flex min-h-80 flex-col items-center justify-center text-center">
+              <Bot className="mb-3 size-7" aria-hidden />
+              <p className="text-foreground text-sm font-medium">
+                Start a conversation
+              </p>
+              <p className="mt-1 max-w-sm text-sm">
+                This runs the active deployment and keeps context across every
+                message in this playground session.
+              </p>
+            </div>
+          ) : (
+            messages.map((message, index) => {
+              const isLast = index === messages.length - 1
+              const messageRunning =
+                running && isLast && message.role === 'assistant'
+              const text = message.parts
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text)
+                .join('')
+              return (
+                <div
+                  key={message.id}
+                  className={cn(
+                    'max-w-3xl',
+                    message.role === 'user' && 'ml-auto max-w-2xl',
+                  )}
+                >
+                  <p className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wider uppercase">
+                    {message.role === 'user' ? 'You' : 'Agent'}
+                  </p>
+                  {message.role === 'assistant' ? (
+                    <MessageActivity
+                      message={message}
+                      running={messageRunning}
+                    />
+                  ) : null}
+                  {text ? (
+                    message.role === 'user' ? (
+                      <div className="bg-muted rounded-xl rounded-br-sm px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap">
+                        {text}
+                      </div>
+                    ) : (
+                      <AgentMarkdown>{text}</AgentMarkdown>
+                    )
+                  ) : messageRunning ? (
+                    <div className="text-muted-foreground flex items-center gap-2 text-sm">
+                      <Loader2 className="size-4 animate-spin" />
+                      Starting the agent…
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        <div className="bg-panel shrink-0 border-t p-4">
+          {error ? (
+            <p className="text-destructive mb-2 text-xs">{error.message}</p>
+          ) : null}
+          <div
+            ref={composerRef}
+            className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
+          >
+            <ChatTextarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onSend={send}
+              placeholder="Message this agent…"
+              className="min-h-12 border-0 px-2 shadow-none focus-visible:border-transparent"
+            />
+            <div className="flex items-center justify-between gap-3 px-1 pt-1">
+              <p className="text-muted-foreground text-[10px]">
+                Enter to send · Shift + Enter for a new line
+              </p>
+              {running ? (
+                <Button variant="outline" size="sm" onClick={() => void stop()}>
+                  <Square className="fill-current" /> Stop
+                </Button>
+              ) : (
+                <Button size="sm" disabled={!prompt.trim()} onClick={send}>
+                  <Send /> Send
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>
+      <DebugInspector
+        events={debugEvents.data ?? events}
+        deploymentId={session?.deploymentId}
+      />
     </div>
   )
 }
@@ -464,6 +487,7 @@ export default function ManagedAgentDetail({
     'sessions',
     'channels',
     'schedules',
+    'secrets',
   ])
   const activeTab = project
     ? routeTab && projectTabs.has(routeTab)
@@ -612,11 +636,12 @@ export default function ManagedAgentDetail({
   }
 
   const tabs: Array<{ id: DetailTab; label: string }> = [
-    { id: 'playground', label: project ? 'Agent playground' : 'Playground' },
+    { id: 'playground', label: project ? 'Debug playground' : 'Playground' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
     { id: 'channels', label: 'Channels' },
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
+    ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
   ]
 
   return (
@@ -718,7 +743,7 @@ export default function ManagedAgentDetail({
         <Panel>
           <EmptyState
             icon={Bot}
-            title="Deploy the hello-world agent to use Agent playground"
+            title="Deploy the hello-world agent to use Debug playground"
             description={`Create the starter locally, then sync it directly to ${environment}.`}
             action={
               <div className="flex max-w-xl flex-col items-center gap-3">
@@ -949,6 +974,14 @@ export default function ManagedAgentDetail({
           title="Schedules"
           description="Functions in this project that run on a cron schedule."
           values={project.schedules}
+        />
+      ) : null}
+
+      {activeTab === 'secrets' && project ? (
+        <ManagedProjectSecrets
+          projectId={project.project.id}
+          agents={project.project.agents}
+          environment={environment}
         />
       ) : null}
     </div>

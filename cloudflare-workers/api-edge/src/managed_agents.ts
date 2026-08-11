@@ -240,13 +240,15 @@ const PRIVATE_EVENT_KEYS = new Set([
   "runtime_id",
   "runtimeToken",
   "runtime_token",
+  "platformInstructions",
+  "platform_instructions",
 ]);
 
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
-  if (type.startsWith("runtime.")) return {};
+  if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
     return { message: "The agent could not complete this request." };
   }
@@ -292,6 +294,15 @@ function publicSuccessBody(
   }
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
+  }
+  if (
+    (method === "GET" || method === "PUT") &&
+    /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return stripPrivateValues(body);
+  }
+  if (method === "GET" && suffix === "/logs") {
+    return stripPrivateValues(body);
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) {
     const project = publicProject(body.project);
@@ -550,6 +561,9 @@ async function deploySourceAgent(
       alias: body.alias,
       channels: strings(body.channels),
       connections: strings(body.connections),
+      httpConnections: Array.isArray(body.httpConnections)
+        ? body.httpConnections
+        : [],
       artifact,
     }),
     redirect: "manual",
@@ -567,6 +581,13 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (method === "GET" && suffix === "/logs") return true;
   if (method === "POST" && suffix === "/deployments") return true;
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
   if (method === "POST" && suffix === "/channel-connections/claim") {
@@ -792,6 +813,7 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (!upstream.ok) return publicErrorResponse(upstream);
+    if (upstream.status === 204) return new Response(null, { status: 204 });
     if (suffix.startsWith("/openrouter/")) {
       return upstream;
     }

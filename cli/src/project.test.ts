@@ -9,8 +9,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
+  buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
   prepareAgent,
@@ -52,8 +54,8 @@ test("init creates a multi-agent-ready project and React hello world app", async
     };
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
     assert.equal(packageJSON.scripts["dev:web"], "vite");
-    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.2.0");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.6");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.3.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.7");
     assert.ok(packageJSON.devDependencies["@types/node"]);
     const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
     assert.match(viteConfig, /command === "serve"/);
@@ -159,6 +161,7 @@ export default function Agent() {
       toolModules: string[];
       subagents: string[];
       connections: string[];
+      httpConnections: unknown[];
       mcpServers: string[];
     };
     assert.deepEqual(manifest, {
@@ -172,10 +175,110 @@ export default function Agent() {
       toolModules: ["../tools/opencomputer-connections.js"],
       subagents: ["researcher"],
       connections: ["github"],
+      httpConnections: [],
       mcpServers: ["docs"],
     });
     await assert.rejects(
       stat(resolve(initialized.agentRoot, "opencomputer.toml")),
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler records secret-backed HTTP connections without secret values", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "github.ts"),
+      `import { bearer, defineConnection, defineTool, useSecret } from "@opencomputer/agent";
+
+export const github = defineConnection({
+  id: "github-api",
+  origin: "https://api.github.com",
+  methods: ["GET"],
+  pathPrefix: "/repos/",
+  headers: { Authorization: bearer(useSecret("GITHUB_TOKEN")) },
+});
+
+export const repository = defineTool({
+  name: "github_repository",
+  description: "Read a GitHub repository",
+  async run() {
+    const response = await github.fetch("/repos/opencomputer/example");
+    return await response.json();
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useConnection, useTool } from "@opencomputer/agent";
+import { github, repository } from "./tools/github.js";
+
+export default function Agent() {
+  useConnection(github);
+  useTool(repository);
+  return "Use GitHub when needed.";
+}
+`,
+    );
+
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    await assert.doesNotReject(
+      import(
+        `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+      ),
+    );
+    assert.deepEqual(built.httpConnections, [
+      {
+        id: "github-api",
+        origin: "https://api.github.com",
+        methods: ["GET"],
+        pathPrefix: "/repos/",
+        headers: {
+          Authorization: {
+            kind: "secret",
+            name: "GITHUB_TOKEN",
+            prefix: "Bearer ",
+          },
+        },
+      },
+    ]);
+    assert.ok(built.connections.includes("github-api"));
+    assert.doesNotMatch(built.body.toString("utf8"), /actual-secret-value/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects hard-coded sensitive connection headers", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-secret-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineConnection } from "@opencomputer/agent";
+
+defineConnection({
+  id: "unsafe-api",
+  origin: "https://api.example.com",
+  headers: { Authorization: "Bearer hard-coded" },
+});
+
+export default function Agent() {
+  return "Hello";
+}
+`,
+    );
+
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /Authorization must use useSecret\(\)/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });
