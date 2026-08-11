@@ -18,5 +18,10 @@
   },
   "engines": { "node": ">=22.0.0" },
   "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diggerhq/opencomputer.git",
+    "directory": "agent"
+  },
   "devDependencies": { "typescript": "^5.9.0" }
 }
