@@ -1,0 +1,95 @@
+---
+title: "Skills"
+description: "Package reusable instructions and supporting resources with an agent"
+---
+
+A skill is a reusable instruction bundle that teaches an agent how to perform
+a task. A tool executes code; a skill provides a procedure, checklist, or
+domain playbook the managed coding-agent harness can load when relevant.
+
+## Create a skill
+
+Add a directory containing `SKILL.md` under the agent:
+
+```text
+opencomputer/agents/campaign-writer/
+├── agent.ts
+└── skills/
+    └── campaign-brief/
+        ├── SKILL.md
+        └── CHECKLIST.md
+```
+
+Write a clear name and routing description in the frontmatter, then put the
+full procedure in the body:
+
+```md
+---
+name: campaign-brief
+description: Create a sourced campaign brief. Use when planning a new campaign or revising its audience and messaging.
+---
+
+# Campaign brief
+
+1. Restate the product, audience, goal, and constraints.
+2. Research the audience before proposing messaging.
+3. Separate sourced facts from recommendations.
+4. Produce a positioning statement, three message pillars, and five concepts.
+5. Read `CHECKLIST.md` before returning the final brief.
+```
+
+The description should say both what the skill does and when it applies. It is
+the information the harness uses to decide whether to load the instructions.
+
+## Use the skill
+
+Skills do not need a hook in the current authoring API. OpenComputer packages
+the entire `skills/` directory with that agent, and the managed harness can
+load a matching skill during the session.
+
+Tell the agent when the skill should guide its work:
+
+```tsx
+export default function Agent() {
+  return [
+    "Plan and improve marketing campaigns.",
+    "For a new campaign brief, use the campaign-brief skill and follow its checklist.",
+  ].join(" ");
+}
+```
+
+## Add supporting files
+
+Keep the core procedure in `SKILL.md`. Put longer material beside it:
+
+```text
+campaign-brief/
+├── SKILL.md
+├── CHECKLIST.md
+├── VOICE.md
+└── examples/
+    └── launch-brief.md
+```
+
+Reference those files from `SKILL.md` so the agent knows when to read them.
+Supporting files are deployed with the skill and need no imports from
+`agent.ts`.
+
+## Scope skills to an agent
+
+Skills live under `opencomputer/agents/<agent-id>/skills/`, so each deployment
+receives only its own skill set. To reuse a skill, copy or generate the skill
+directory into each agent that needs it.
+
+## Skills versus tools
+
+| Skill | Tool |
+| --- | --- |
+| Markdown instructions and resources | Executable TypeScript |
+| Teaches a repeatable workflow | Performs a specific operation |
+| Loaded when its description matches | Called with JSON Schema arguments |
+| May tell the agent which tools to use | Produces a JSON-compatible result |
+
+Many useful workflows combine both: a campaign skill explains the research
+process while an [Exa search tool](/agents/examples/exa-campaign-session)
+retrieves current sources.

@@ -1,0 +1,79 @@
+---
+title: "Subagents"
+description: "Let an agent delegate focused work with useSubagent"
+---
+
+A subagent is another agent in the same project that can take a focused task.
+Use `useSubagent()` to make that agent available to the current render.
+
+## Add the specialist
+
+Create a second agent:
+
+```tsx
+// opencomputer/agents/researcher/agent.ts
+import { useModel, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  useTool("web-search");
+  return "Research the delegated question. Return sourced findings only.";
+}
+```
+
+Register both agents in the project:
+
+```tsx
+// opencomputer/project.ts
+export default {
+  name: "Campaign workspace",
+  agents: ["campaign-planner", "researcher"],
+};
+```
+
+## Expose it with `useSubagent`
+
+```tsx
+// opencomputer/agents/campaign-planner/agent.ts
+import { useModel, useSubagent } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  useSubagent("researcher");
+  return [
+    "Plan the campaign from evidence.",
+    "Delegate audience and competitor research to the researcher.",
+  ].join(" ");
+}
+```
+
+The value passed to `useSubagent()` is the agent ID from
+`opencomputer/project.ts`. Give the parent clear instructions about what it
+should delegate and what result it expects.
+
+Inputs created by delegation have `useInput().source === "subagent"`, so the
+specialist can adapt its response:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  return input.source === "subagent"
+    ? "Complete only the delegated research task and return concise findings."
+    : "Help the user research their question.";
+}
+```
+
+## Attach conditionally
+
+Like other resource hooks, `useSubagent()` can be conditional:
+
+```tsx
+const input = useInput();
+if (input.text?.includes("research")) {
+  useSubagent("researcher");
+}
+```
+
+This keeps the delegate unavailable for requests where it adds no value.

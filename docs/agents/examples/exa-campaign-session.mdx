@@ -1,0 +1,243 @@
+---
+title: "Exa campaign session"
+description: "Build a campaign-planning agent with Exa research, skills, a subagent, and session context"
+---
+
+This example builds a campaign-planning session that researches current
+sources with [Exa](https://exa.ai/docs/reference/search), delegates audience
+analysis, follows a campaign-brief skill, and adapts to durable session
+context.
+
+You will create:
+
+```text
+opencomputer/
+├── project.ts
+└── agents/
+    ├── campaign-planner/
+    │   ├── agent.ts
+    │   ├── tools/
+    │   │   └── exa-search.ts
+    │   └── skills/
+    │       └── campaign-brief/
+    │           └── SKILL.md
+    └── audience-researcher/
+        └── agent.ts
+```
+
+## 1. Add the Exa connection and tool
+
+Declare exactly where OpenComputer may inject the Exa API key, then wrap the
+Search API in a tool:
+
+```tsx
+// opencomputer/agents/campaign-planner/tools/exa-search.ts
+import {
+  defineConnection,
+  defineTool,
+  secretHeader,
+  useSecret,
+} from "@opencomputer/agent";
+
+export const exa = defineConnection({
+  id: "exa-api",
+  origin: "https://api.exa.ai",
+  methods: ["POST"],
+  pathPrefix: "/search",
+  headers: {
+    "x-api-key": secretHeader(useSecret("EXA_API_KEY")),
+    "content-type": "application/json",
+  },
+});
+
+export const searchExa = defineTool({
+  name: "search_exa",
+  description: "Search the web for current campaign, audience, and competitor evidence",
+  input: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "A specific research question" },
+      numResults: { type: "integer", minimum: 1, maximum: 10 },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  async run({ input, signal, reportProgress }) {
+    await reportProgress({ phase: "searching", provider: "exa" });
+
+    const response = await exa.fetch("/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: String(input.query),
+        numResults: Number(input.numResults ?? 5),
+        contents: { highlights: true },
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      return { error: `Exa search failed with status ${response.status}` };
+    }
+
+    return await response.text();
+  },
+});
+```
+
+The secret value never enters the tool or agent runtime. `exa.fetch()` sends
+the relative request through OpenComputer's managed egress gateway.
+
+## 2. Add a campaign skill
+
+```md
+<!-- opencomputer/agents/campaign-planner/skills/campaign-brief/SKILL.md -->
+---
+name: campaign-brief
+description: Create a sourced campaign brief. Use for a new campaign or when revising its audience, positioning, or message pillars.
+---
+
+# Campaign brief
+
+1. Confirm the product, audience, goal, region, and constraints.
+2. Research current audience needs and competing messages with `search_exa`.
+3. Keep sourced observations separate from recommendations.
+4. Produce a positioning statement, three message pillars, and five campaign concepts.
+5. Cite the source URL beside every external claim.
+6. End with open questions and the next decision needed from the user.
+```
+
+There is no skill hook to call. OpenComputer packages the agent's `skills/`
+directory, and the managed harness loads a matching skill when it is needed.
+
+## 3. Add the audience researcher
+
+```tsx
+// opencomputer/agents/audience-researcher/agent.ts
+import { useInput, useModel, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+  useTool("web-search");
+
+  return [
+    "Research the delegated audience question.",
+    "Return concise findings, source URLs, and uncertainties.",
+    input.text ? `Task: ${input.text}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+```
+
+The specialist has its own instructions and capability set. The campaign
+planner decides when to delegate to it.
+
+## 4. Compose the campaign planner
+
+```tsx
+// opencomputer/agents/campaign-planner/agent.ts
+import {
+  useConnection,
+  useInput,
+  useModel,
+  useSessionData,
+  useSubagent,
+  useTool,
+} from "@opencomputer/agent";
+import { exa, searchExa } from "./tools/exa-search";
+
+export default function Agent() {
+  const input = useInput();
+  const campaign = useSessionData<string>("campaign_name");
+  const audience = useSessionData<string>("audience");
+  const region = useSessionData<string>("region");
+
+  useModel("anthropic/claude-sonnet-4.6");
+  useConnection(exa);
+  useTool(searchExa);
+  useSubagent("audience-researcher");
+
+  return [
+    "Plan evidence-backed marketing campaigns.",
+    "Use the campaign-brief skill for campaign planning.",
+    "Use Exa for current claims and cite source URLs.",
+    "Delegate focused audience analysis to the audience researcher.",
+    campaign ? `Campaign: ${campaign}.` : undefined,
+    audience ? `Audience: ${audience}.` : undefined,
+    region ? `Region: ${region}.` : undefined,
+    input.text ? `Current request: ${input.text}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+```
+
+This render combines the core authoring features:
+
+- `useInput()` reads the latest turn.
+- `useModel()` selects the managed model.
+- `useConnection()` declares managed Exa egress.
+- `useTool()` exposes the Exa search operation.
+- `useSubagent()` enables focused delegation.
+- `useSessionData()` adds durable campaign context when present.
+- `skills/campaign-brief/SKILL.md` supplies the planning procedure.
+
+## 5. Register both agents
+
+```tsx
+// opencomputer/project.ts
+export default {
+  name: "Campaign workspace",
+  agents: ["campaign-planner", "audience-researcher"],
+};
+```
+
+## 6. Set the Exa secret
+
+Link the project, then store the key for the development environment:
+
+```bash
+npx opencomputer link
+npx opencomputer secrets set EXA_API_KEY
+```
+
+The CLI reads the value from a hidden prompt. Do not put the key in source,
+shell history, or agent instructions.
+
+## 7. Start a campaign session
+
+Run the development deployment and start a remote session:
+
+```bash
+npm run dev
+```
+
+In another terminal:
+
+```bash
+npx opencomputer session create \
+  "Create a launch campaign for our collaborative design tool. Research how distributed product teams describe handoff problems, then draft the brief." \
+  --remote \
+  --agent campaign-planner@development
+```
+
+Inspect or continue the session:
+
+```bash
+npx opencomputer session list
+npx opencomputer session inspect <session-id>
+npx opencomputer session send <session-id> \
+  "Focus on engineering managers in US companies with 50–500 employees."
+```
+
+The conversation remains durable across turns. When campaign metadata is
+available as session data, the same agent also includes it automatically on
+later renders.
+
+## Next steps
+
+- Refine the [campaign skill](/agents/skills) with voice and approval files.
+- Add more [tools](/agents/tools) for saving briefs or publishing drafts.
+- Review [Secrets and managed egress](/agents/secrets) before adding another API.
+- Connect the deployed agent to a [Slack channel](/agents/channels).

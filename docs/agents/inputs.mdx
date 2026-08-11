@@ -1,0 +1,109 @@
+---
+title: "Inputs"
+description: "Read text, structured payloads, and input sources with useInput"
+---
+
+`useInput()` reads the input that caused the current agent render. Use it to
+include the current request in the instructions or change behavior based on
+where the request came from.
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  return input.text
+    ? `Help the user with this request: ${input.text}`
+    : "Help the user with their request.";
+}
+```
+
+`useCurrentInput()` is an alias for `useInput()`.
+
+## Input shape
+
+```ts
+interface AgentInput {
+  readonly source:
+    | "user"
+    | "channel"
+    | "schedule"
+    | "webhook"
+    | "subagent"
+    | "system";
+  readonly text?: string;
+  readonly payload?: DataValue;
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `source` | How the work entered the session |
+| `text` | Optional human-readable message |
+| `payload` | Optional structured JSON value supplied by the source |
+
+`DataValue` means any JSON-compatible value: `null`, a boolean, number,
+string, array, or object. Both `text` and `payload` are optional, so check them
+before use.
+
+## Adapt to the source
+
+One agent can handle direct user messages, channels, schedules, webhooks, and
+subagent calls without separate definitions:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+
+  switch (input.source) {
+    case "channel":
+      return "Reply naturally and keep the answer suitable for a shared chat.";
+    case "schedule":
+      return "Run the scheduled review and summarize anything that changed.";
+    case "webhook":
+      return `Process this event: ${JSON.stringify(input.payload)}`;
+    case "subagent":
+      return "Complete the delegated task and return a concise result.";
+    default:
+      return `Help with: ${input.text ?? "the current request"}`;
+  }
+}
+```
+
+## Read structured payloads
+
+Narrow or validate a payload before reading application-specific fields:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+type IssueEvent = {
+  action?: string;
+  issue?: { number?: number; title?: string };
+};
+
+export default function Agent() {
+  const input = useInput();
+  const event = (input.payload ?? {}) as IssueEvent;
+
+  if (input.source === "webhook" && event.issue?.number) {
+    return `Triage issue #${event.issue.number}: ${event.issue.title ?? "Untitled"}`;
+  }
+
+  return "Ask for an issue number before starting triage.";
+}
+```
+
+For untrusted webhook payloads, validate the value in a tool before performing
+side effects.
+
+## Input is not a prompt UI
+
+`useInput()` only reads admitted input. It does not pause the session to ask a
+person a question. The durable conversation and later messages are managed by
+the [session](/agents/sessions).
+
+Input payload also differs from [session data](/agents/session-data): a payload
+belongs to the current input, while session data can persist across renders.

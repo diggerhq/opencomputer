@@ -33,12 +33,25 @@
               "agents/quickstart",
               "agents/projects",
               "agents/reactive-agents",
-              "agents/authoring-api",
+              "agents/hooks",
+              "agents/inputs",
+              "agents/models",
+              "agents/tools",
+              "agents/mcp",
+              "agents/skills",
+              "agents/subagents",
+              "agents/session-data",
               "agents/sessions",
               "agents/connections",
               "agents/secrets",
               "agents/logs",
               "agents/channels"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "agents/examples/exa-campaign-session"
             ]
           }
         ]
