@@ -151,6 +151,47 @@ describe("managed agents proxy", () => {
     expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
   });
 
+  it("proxies development lease heartbeats through the public API", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        agentId: "hello-agent",
+        status: "ready",
+        ready: true,
+        expiresAt: "2026-08-11T20:00:00.000Z",
+        microvmId: "private-runtime",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/development/leases",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agentId: "hello-agent" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      agentId: "hello-agent",
+      status: "ready",
+      ready: true,
+      expiresAt: "2026-08-11T20:00:00.000Z",
+    });
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "https://managedagents.test/v1/development/leases",
+    );
+  });
+
   it("returns agent display names separately from stable IDs", async () => {
     vi.stubGlobal(
       "fetch",
@@ -724,7 +765,9 @@ describe("managed agents proxy", () => {
       ],
     });
     expect(JSON.stringify(body)).not.toContain("never-return-this");
-    expect(JSON.stringify(body)).not.toContain("You are an OpenComputer agent.");
+    expect(JSON.stringify(body)).not.toContain(
+      "You are an OpenComputer agent.",
+    );
     expect(JSON.stringify(body)).not.toContain("platformInstructions");
   });
 

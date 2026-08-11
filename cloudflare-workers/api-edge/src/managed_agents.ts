@@ -329,6 +329,12 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/deployments") {
     return publicDeployment(body);
   }
+  if (
+    (method === "POST" || method === "DELETE") &&
+    suffix === "/development/leases"
+  ) {
+    return stripPrivateValues(body);
+  }
   if (method === "POST" && suffix === "/benchmarks/warm-pool") {
     return stripPrivateValues(body);
   }
@@ -589,6 +595,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/logs") return true;
   if (method === "POST" && suffix === "/deployments") return true;
+  if (
+    (method === "POST" || method === "DELETE") &&
+    suffix === "/development/leases"
+  ) {
+    return true;
+  }
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
   if (method === "POST" && suffix === "/channel-connections/claim") {
     return true;

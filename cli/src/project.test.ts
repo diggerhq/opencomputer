@@ -76,7 +76,7 @@ test("init creates a multi-agent-ready project and React hello world app", async
     const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
     assert.match(
       await readFile(resolve(agentRoot, "agent.ts"), "utf8"),
-      /useInput[\s\S]*useModel\("anthropic\/claude-sonnet-4\.6"\)/,
+      /useInput[\s\S]*useModel\("google\/gemini-3\.6-flash"\)/,
     );
     for (const removed of [
       "opencomputer.toml",
@@ -139,7 +139,7 @@ const docs = defineMcpServer({
 
 export default function Agent() {
   const input = useInput();
-  useModel("anthropic/claude-sonnet-4.6");
+  useModel("google/gemini-3.6-flash");
   useTool("search-docs");
   useSubagent("researcher");
   useConnection(github);
@@ -256,7 +256,9 @@ export default function Agent() {
 });
 
 test("the compiler rejects hard-coded sensitive connection headers", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-secret-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-egress-secret-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
@@ -323,7 +325,10 @@ export default function Agent() {
 
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { tools: string[]; toolModules: string[] };
     assert.ok(manifest.tools.includes("hacker_news"));
     assert.ok(manifest.toolModules.includes("../tools/hacker-news.js"));

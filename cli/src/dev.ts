@@ -15,6 +15,7 @@ import { buildAgentArtifact, readProjectAgents } from "./project.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
+const DEVELOPMENT_LEASE_HEARTBEAT_MS = 25_000;
 
 export async function publishDevelopment(
   client: Pick<OpenComputerClient, "registerDeployment">,
@@ -115,6 +116,8 @@ export async function runCloudDevelopment(
 
   let watcher: FSWatcher | undefined;
   let timer: NodeJS.Timeout | undefined;
+  let leaseTimer: NodeJS.Timeout | undefined;
+  let renewingLeases = false;
   let publishing = false;
   let pending = false;
   const lastDigests = new Map<string, string>();
@@ -164,6 +167,36 @@ export async function runCloudDevelopment(
     for (const result of initial) {
       lastDigests.set(result.deployment.agentId, result.built.digest);
     }
+    const developmentAgents = initial.map(
+      (result) => result.deployment.agentId,
+    );
+    const renewLeases = async (announce = false) => {
+      if (renewingLeases) return;
+      renewingLeases = true;
+      try {
+        const leases = await Promise.all(
+          developmentAgents.map((agentId) =>
+            client.renewDevelopmentLease(agentId),
+          ),
+        );
+        if (announce) {
+          process.stdout.write(
+            `Standby:    ${leases.map((lease) => `${lease.agentId} ${lease.ready ? "ready" : lease.status}`).join(", ")}\n`,
+          );
+        }
+      } catch (error) {
+        process.stderr.write(
+          `Standby unavailable; new sessions will start cold: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      } finally {
+        renewingLeases = false;
+      }
+    };
+    await renewLeases(true);
+    leaseTimer = setInterval(
+      () => void renewLeases(),
+      DEVELOPMENT_LEASE_HEARTBEAT_MS,
+    );
     process.stdout.write(
       `Development (Cloud)\n` +
         `Project:    ${binding.projectName} (${binding.projectId})\n` +
@@ -180,7 +213,13 @@ export async function runCloudDevelopment(
     await waitForShutdown();
   } finally {
     if (timer) clearTimeout(timer);
+    if (leaseTimer) clearInterval(leaseTimer);
     watcher?.close();
+    await Promise.allSettled(
+      [...lastDigests.keys()].map((agentId) =>
+        client.releaseDevelopmentLease(agentId),
+      ),
+    );
     await rm(stateFile, { force: true });
     await gateway.close();
   }

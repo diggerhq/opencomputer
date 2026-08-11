@@ -466,7 +466,7 @@ export async function initializeAgentProject(
 
 export default function Agent() {
   const input = useInput();
-  useModel("anthropic/claude-sonnet-4.6");
+  useModel("google/gemini-3.6-flash");
 
   return input.text
     ? "You are a helpful OpenComputer agent. Respond directly to: " + input.text
@@ -954,7 +954,10 @@ function connectionHeaderValue(
   expression: ts.Expression,
 ): HttpConnectionManifest["headers"][string] {
   if (ts.isStringLiteralLike(expression)) return expression.text;
-  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression)
+  ) {
     throw new Error(
       "Connection headers must be string literals, bearer(useSecret()), or secretHeader(useSecret())",
     );
@@ -985,8 +988,10 @@ function connectionHeaderValue(
       }
       const prefix = objectProperty(options, "prefix");
       const suffix = objectProperty(options, "suffix");
-      if (prefix) result.prefix = literalStringValue(prefix, "secretHeader prefix");
-      if (suffix) result.suffix = literalStringValue(suffix, "secretHeader suffix");
+      if (prefix)
+        result.prefix = literalStringValue(prefix, "secretHeader prefix");
+      if (suffix)
+        result.suffix = literalStringValue(suffix, "secretHeader suffix");
     }
     return result;
   }
@@ -1009,14 +1014,19 @@ function definedHttpConnections(
       if (!input || !ts.isObjectLiteralExpression(input)) {
         throw new Error("defineConnection() requires an object literal");
       }
-      const id = literalStringValue(objectProperty(input, "id"), "connection id");
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        "connection id",
+      );
       const originValue = literalStringValue(
         objectProperty(input, "origin"),
         `connection ${id} origin`,
       );
       const origin = new URL(originValue);
       if (origin.protocol !== "https:" || origin.pathname !== "/") {
-        throw new Error(`Connection ${id} must use an HTTPS origin without a path`);
+        throw new Error(
+          `Connection ${id} must use an HTTPS origin without a path`,
+        );
       }
       const headers: HttpConnectionManifest["headers"] = {};
       const headerExpression = objectProperty(input, "headers");
@@ -1028,18 +1038,26 @@ function definedHttpConnections(
           if (!ts.isPropertyAssignment(property)) {
             throw new Error(`Connection ${id} headers cannot use spreads`);
           }
-          const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
-            ? property.name.text
-            : undefined;
-          if (!name) throw new Error(`Connection ${id} has an invalid header name`);
+          const name =
+            ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+              ? property.name.text
+              : undefined;
+          if (!name)
+            throw new Error(`Connection ${id} has an invalid header name`);
           const value = connectionHeaderValue(property.initializer);
           if (
-            ["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(
-              name.toLowerCase(),
-            ) &&
+            [
+              "api-key",
+              "authorization",
+              "cookie",
+              "proxy-authorization",
+              "x-api-key",
+            ].includes(name.toLowerCase()) &&
             typeof value === "string"
           ) {
-            throw new Error(`Connection ${id} header ${name} must use useSecret()`);
+            throw new Error(
+              `Connection ${id} header ${name} must use useSecret()`,
+            );
           }
           headers[name] = value;
         }
@@ -1307,8 +1325,7 @@ the product or support surface presented to users.
     const ids = definedToolIds(candidate.source);
     const calls = [
       ...candidate.source.matchAll(/\bdefineTool(?:<[^>]+>)?\s*\(/g),
-    ]
-      .length;
+    ].length;
     if (ids.length !== calls) {
       throw new Error(
         `${candidate.filename} must give every defineTool() a literal string name`,
@@ -1348,16 +1365,25 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
-  const httpConnections = [agentSource, ...toolSources.map((item) => item.source)]
-    .flatMap((source, index) =>
-      definedHttpConnections(source, index === 0 ? "agent.ts" : toolSources[index - 1]!.filename),
-    );
+  const httpConnections = [
+    agentSource,
+    ...toolSources.map((item) => item.source),
+  ].flatMap((source, index) =>
+    definedHttpConnections(
+      source,
+      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename,
+    ),
+  );
   const duplicateConnection = httpConnections.find(
     (connection, index) =>
-      httpConnections.findIndex((candidate) => candidate.id === connection.id) !== index,
+      httpConnections.findIndex(
+        (candidate) => candidate.id === connection.id,
+      ) !== index,
   );
   if (duplicateConnection) {
-    throw new Error(`Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`);
+    throw new Error(
+      `Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`,
+    );
   }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(

@@ -316,12 +316,13 @@ export class OpenComputerClient {
       origin: string;
       headers: Record<
         string,
-        string | {
-          kind: "secret";
-          name: string;
-          prefix?: string;
-          suffix?: string;
-        }
+        | string
+        | {
+            kind: "secret";
+            name: string;
+            prefix?: string;
+            suffix?: string;
+          }
       >;
       methods?: string[];
       pathPrefix?: string;
@@ -337,6 +338,25 @@ export class OpenComputerClient {
       "/api/managed-agents/deployments",
       { method: "POST", body: JSON.stringify(input) },
     );
+  }
+
+  renewDevelopmentLease(agentId: string) {
+    return this.request<{
+      agentId: string;
+      status: "empty" | "filling" | "ready";
+      ready: boolean;
+      expiresAt: string;
+    }>("/api/managed-agents/development/leases", {
+      method: "POST",
+      body: JSON.stringify({ agentId }),
+    });
+  }
+
+  releaseDevelopmentLease(agentId: string) {
+    return this.request<void>("/api/managed-agents/development/leases", {
+      method: "DELETE",
+      body: JSON.stringify({ agentId }),
+    });
   }
 
   async connections(): Promise<ManagedConnection[]> {
