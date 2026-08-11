@@ -1,0 +1,90 @@
+name: Publish OpenComputer packages
+
+on:
+  pull_request:
+    paths:
+      - 'agent/**'
+      - 'cli/**'
+      - 'create-start/**'
+      - '.github/workflows/publish-opencomputer-packages.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - 'cli/**'
+      - 'create-start/**'
+      - '.github/workflows/publish-opencomputer-packages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-opencomputer-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Test, build, and publish packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: |
+            agent/package-lock.json
+            cli/package-lock.json
+            create-start/package-lock.json
+
+      - name: Install and build agent package
+        working-directory: agent
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and test CLI package
+        working-directory: cli
+        run: |
+          npm ci
+          npm test
+
+      - name: Install and test starter package
+        working-directory: create-start
+        run: |
+          npm ci
+          npm test
+
+      - name: Publish packages in dependency order
+        if: github.event_name != 'pull_request'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_if_needed() {
+            local directory="$1"
+            local package_name="$2"
+            local version
+            local lookup
+
+            version="$(node -p "require('./${directory}/package.json').version")"
+            if lookup="$(npm view "${package_name}@${version}" version 2>&1)"; then
+              echo "${package_name}@${version} is already published; skipping."
+            elif [[ "${lookup}" == *"E404"* ]]; then
+              echo "Publishing ${package_name}@${version}."
+              (cd "${directory}" && npm publish --provenance --access public)
+            else
+              echo "npm registry lookup failed for ${package_name}@${version}; refusing to publish." >&2
+              echo "${lookup}" >&2
+              return 1
+            fi
+          }
+
+          publish_if_needed agent @opencomputer/agent
+          publish_if_needed cli @opencomputer/cli
+          publish_if_needed create-start @opencomputer/create-start
