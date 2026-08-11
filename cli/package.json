@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build:server": "tsc -p tsconfig.json",
+    "build:server": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "build:ui": "tsc -p tsconfig.ui.json --noEmit && vite build",
     "build": "npm run clean && npm run build:server && npm run build:ui",
     "test": "npm run build && node --test dist/*.test.js",
