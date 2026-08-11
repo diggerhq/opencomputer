@@ -33,6 +33,7 @@
               "agents/quickstart",
               "agents/projects",
               "agents/reactive-agents",
+              "agents/authoring-api",
               "agents/sessions",
               "agents/connections",
               "agents/secrets",

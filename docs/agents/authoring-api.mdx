@@ -1,0 +1,329 @@
+---
+title: "Agent authoring API"
+description: "Reference for hooks, inputs, models, tools, MCP servers, skills, and session data"
+---
+
+The `@opencomputer/agent` package is the authoring API for serverless agents.
+An agent default-exports a synchronous function. OpenComputer renders that
+function before each model step and uses its return value as the agent's
+instructions.
+
+```tsx
+import { useInput, useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+  return `Help with this request: ${input.text ?? "No text was provided."}`;
+}
+```
+
+Hooks describe the current render. They do not call the model, execute tools,
+or perform I/O. Call hooks only while the agent function is rendering. Hooks
+may be conditional, which lets each model step expose only the capabilities it
+needs.
+
+## Hooks
+
+| Hook | Returns | Purpose |
+| --- | --- | --- |
+| `useInput()` | `Readonly<AgentInput>` | Read the input that caused the current render |
+| `useCurrentInput()` | `Readonly<AgentInput>` | Alias for `useInput()` |
+| `useModel(model)` | `void` | Select the model for the next model step |
+| `useTool(tool)` | `void` | Expose a named or code-defined tool |
+| `useSubagent(agent)` | `void` | Expose another agent in the project as a subagent |
+| `useConnection(connection)` | `void` | Require a managed service or HTTP connection |
+| `useMcpServer(server)` | `void` | Attach a managed HTTPS MCP server |
+| `useSessionData<T>(key)` | `T \| undefined` | Read a value from the current session-data snapshot |
+
+All hook values are scoped to the current render. For example, a tool attached
+inside an `if` block is available when that condition is true and absent when
+it is false.
+
+## Inputs
+
+`useInput()` returns an immutable value with this shape:
+
+```ts
+interface AgentInput {
+  readonly source:
+    | "user"
+    | "channel"
+    | "schedule"
+    | "webhook"
+    | "subagent"
+    | "system";
+  readonly text?: string;
+  readonly payload?: DataValue;
+}
+```
+
+- `source` identifies how the current work entered the session.
+- `text` contains the human-readable input when the source provides one.
+- `payload` contains optional structured JSON data from the input source.
+
+`DataValue` is any JSON-compatible value: `null`, a boolean, number, string,
+array, or object. Check optional fields before using them because an input does
+not have to include text or a structured payload.
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+
+  if (input.source === "webhook") {
+    return `Process this webhook payload: ${JSON.stringify(input.payload)}`;
+  }
+
+  if (input.source === "channel") {
+    return `Reply conversationally to: ${input.text ?? "the latest message"}`;
+  }
+
+  return "Help the user with their request.";
+}
+```
+
+`useInput()` reads admitted input; it does not pause the session to ask a
+person a question.
+
+## Models
+
+Select a model with its `provider/model` identifier:
+
+```tsx
+useModel("anthropic/claude-sonnet-4.6");
+```
+
+The equivalent object form separates the two parts:
+
+```tsx
+useModel({ provider: "anthropic", model: "claude-sonnet-4.6" });
+```
+
+Model credentials are resolved by OpenComputer's managed model gateway. They
+are not added to the agent bundle, runtime environment, or client application.
+
+## Tools
+
+`useTool()` accepts either a tool ID or a value returned by `defineTool()`:
+
+```tsx
+useTool("web-search");
+useTool(latestStories);
+```
+
+Define a TypeScript tool with a name, description, optional JSON Schema input
+and output, and a `run` function:
+
+```tsx
+import { defineTool } from "@opencomputer/agent";
+
+export const latestStories = defineTool({
+  name: "latest_hacker_news_stories",
+  description: "Fetch the current top Hacker News stories",
+  input: {
+    type: "object",
+    properties: {
+      limit: { type: "integer", minimum: 1, maximum: 20 },
+    },
+    additionalProperties: false,
+  },
+  output: {
+    type: "array",
+    items: { type: "object" },
+  },
+  async run({ input, signal, reportProgress }) {
+    await reportProgress({ status: "fetching" });
+    const limit = Number(input.limit ?? 10);
+    const ids = await fetch(
+      "https://hacker-news.firebaseio.com/v0/topstories.json",
+      { signal },
+    ).then((response) => response.json() as Promise<number[]>);
+    return ids.slice(0, limit).map((id) => ({ id }));
+  },
+});
+```
+
+### Tool definition
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | Tool ID; letters, numbers, underscores, and hyphens only |
+| `description` | `string` | yes | Tells the model when and how to use the tool |
+| `input` | JSON Schema object | no | Schema for arguments supplied to `run` |
+| `output` | JSON Schema object | no | Schema describing the returned value |
+| `run` | `(context) => DataValue \| Promise<DataValue>` | yes | Tool implementation executed in the managed runtime |
+
+### Tool execution context
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `input` | `Record<string, unknown>` | Arguments generated for the tool call |
+| `sessionId` | `string` | Current session ID |
+| `messageId` | `string` | Message that contains the tool call |
+| `agentId` | `string` | Agent executing the tool |
+| `signal` | `AbortSignal \| undefined` | Cancellation signal for abortable work |
+| `reportProgress(metadata)` | `(Record<string, DataValue>) => Promise<void>` | Emit structured progress metadata |
+
+Tool results must be JSON-compatible `DataValue` values. Tool code runs in the
+managed agent runtime, not in the browser. Put agent-specific tools under
+`opencomputer/agents/<agent-id>/tools/`, import them into `agent.ts`, and attach
+them with `useTool()`.
+
+## Subagents
+
+`useSubagent()` exposes another agent from the same project to the current
+agent:
+
+```tsx
+import { useInput, useSubagent } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.text?.includes("research")) useSubagent("researcher");
+  return "Delegate deep research when the researcher subagent is available.";
+}
+```
+
+The string is the agent ID declared in `opencomputer/project.ts`. Calls made to
+the subagent arrive there with `useInput().source === "subagent"`.
+
+## MCP servers
+
+Declare an HTTPS MCP server once, then attach it with `useMcpServer()`:
+
+```tsx
+import {
+  connection,
+  defineMcpServer,
+  useMcpServer,
+} from "@opencomputer/agent";
+
+const github = connection("github");
+const docs = defineMcpServer({
+  id: "company-docs",
+  url: "https://mcp.example.com/server",
+  connection: github,
+});
+
+export default function Agent() {
+  useMcpServer(docs);
+  return "Use the company documentation when it is relevant.";
+}
+```
+
+| `defineMcpServer` field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes | Stable server ID used by the deployment |
+| `url` | `string` | yes | HTTPS endpoint for the MCP server |
+| `connection` | connection reference | no | Managed connection used to authorize the server |
+
+`useMcpServer()` also accepts a declared server ID. Conditional attachment is
+useful when an MCP server should be visible only for relevant requests.
+
+## Connections and secrets
+
+`connection(id)` references a user-authorized service such as GitHub, Gmail,
+or Calendar. `defineConnection()` declares a secret-backed HTTP origin for
+tools. Attach either kind with `useConnection()`.
+
+```tsx
+import {
+  bearer,
+  defineConnection,
+  useConnection,
+  useSecret,
+} from "@opencomputer/agent";
+
+const api = defineConnection({
+  id: "customer-api",
+  origin: "https://api.example.com",
+  methods: ["GET", "POST"],
+  pathPrefix: "/v1/",
+  headers: {
+    Authorization: bearer(useSecret("CUSTOMER_API_TOKEN")),
+  },
+});
+
+export default function Agent() {
+  useConnection(api);
+  return "Use the customer API when needed.";
+}
+```
+
+Use `api.fetch("/v1/resource")` inside a tool to send a request through managed
+egress. See [Secrets and managed egress](/agents/secrets) for the declaration
+helpers, request restrictions, and CLI setup, and [Connections and
+MCP](/agents/connections) for user authorization flows.
+
+## Skills
+
+Skills are filesystem-based instruction bundles for the managed coding-agent
+harness. Add each skill under the agent that uses it:
+
+```text
+opencomputer/agents/<agent-id>/skills/<skill-name>/SKILL.md
+```
+
+The `skills/` directory is packaged into that agent's deployment. The runtime
+can load a skill when its description matches the task. Skills may include
+supporting files beside `SKILL.md`.
+
+Skills and tools serve different purposes:
+
+| Capability | Provides | Invoked as |
+| --- | --- | --- |
+| Skill | Instructions, workflows, and supporting resources | Loaded by the coding-agent harness |
+| Tool | Executable TypeScript with JSON Schema arguments | A model tool call |
+
+Skills do not need a hook. Their location inside the agent's `skills/`
+directory associates them with the deployment.
+
+## Session data
+
+`useSessionData<T>(key)` reads one JSON-compatible value from the durable data
+snapshot for the current session:
+
+```tsx
+import { useSessionData } from "@opencomputer/agent";
+
+export default function Agent() {
+  const tone = useSessionData<string>("preferred_tone");
+  const locale = useSessionData<string>("locale");
+  return [
+    "Help the user with their request.",
+    tone ? `Use a ${tone} tone.` : undefined,
+    locale ? `Use locale ${locale}.` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+```
+
+The hook returns `undefined` when the key is absent. Values must be
+JSON-compatible `DataValue` values. The authoring package currently exposes
+session data as a read-only snapshot; it does not provide a hook for writing
+session data.
+
+Session data is separate from `useInput().payload`: input payload belongs to
+the current admitted input, while session data persists with the session and
+can influence later renders.
+
+## Declaration helpers
+
+These exports create stable resource references used by hooks:
+
+| Helper | Result |
+| --- | --- |
+| `connection(id)` | Reference to a managed user connection |
+| `defineConnection(options)` | Secret-backed HTTP connection with a managed `fetch()` method |
+| `defineMcpServer(options)` | Managed HTTPS MCP server definition |
+| `defineTool(options)` | Executable TypeScript tool definition |
+| `useSecret(name)` | Reference to an uppercase project secret name |
+| `secretHeader(secret, options)` | Secret header with optional prefix and suffix |
+| `bearer(secret)` | Secret header prefixed with `Bearer ` |
+
+Despite its name, `useSecret()` creates a secret reference for a connection
+declaration; it does not read a secret value and does not expose one to agent
+code.

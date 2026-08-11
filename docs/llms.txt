@@ -8,6 +8,7 @@
 - [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
 - [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple agents and a React application.
 - [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, connections, and MCP servers from code.
+- [Agent authoring API](https://docs.opencomputer.dev/agents/authoring-api.md): Reference for hooks, inputs, models, tools, subagents, MCP servers, connections, skills, and session data.
 - [Sessions and playground](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
 - [Connections and MCP](https://docs.opencomputer.dev/agents/connections.md): Attach user-scoped services and managed MCP servers from code.
 - [Secrets and managed egress](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
