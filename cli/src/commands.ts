@@ -120,6 +120,7 @@ async function selectedProject(
   client: OpenComputerClient,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   reference?: string,
+  interactive = true,
 ): Promise<{ projectId: string; agentId: string }> {
   if (reference) {
     const project = (await client.projects()).find(
@@ -132,7 +133,7 @@ async function selectedProject(
   }
   const root = await findOpenComputerProjectRoot(process.cwd());
   const binding = await ensureProjectBinding(client, config, root, {
-    interactive: false,
+    interactive,
   });
   return { projectId: binding.projectId, agentId: binding.agentId };
 }
@@ -557,6 +558,22 @@ export async function runCommand(
     return;
   }
 
+  if (command === "link") {
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const root = await findOpenComputerProjectRoot(process.cwd());
+    const binding = await ensureProjectBinding(client, config, root, {
+      interactive: !globals.json,
+      select: true,
+    });
+    if (globals.json) printJSON(binding);
+    else {
+      process.stdout.write(
+        `Linked this app to ${binding.projectName} (${binding.projectId}).\n`,
+      );
+    }
+    return;
+  }
+
   if (command === "deploy") {
     const alias = option(args, "--alias") ?? "production";
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
@@ -623,7 +640,12 @@ export async function runCommand(
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
     const environment = environmentOption(option(args, "--environment"));
-    const project = await selectedProject(client, config, projectReference);
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -722,10 +744,16 @@ export async function runCommand(
     }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     if (!agentId && !sessionId) {
+      let insideProject = true;
       try {
-        agentId = (await selectedProject(client, config)).agentId;
+        await findOpenComputerProjectRoot(process.cwd());
       } catch {
-        // Outside an initialized app, unfiltered logs cover the account.
+        insideProject = false;
+      }
+      if (insideProject) {
+        agentId = (
+          await selectedProject(client, config, undefined, !globals.json)
+        ).agentId;
       }
     }
     let cursor = "";

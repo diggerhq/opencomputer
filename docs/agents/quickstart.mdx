@@ -27,7 +27,17 @@ npx opencomputer login
 The CLI opens the OpenComputer device-login flow and stores the login locally.
 The production API at `https://app.opencomputer.dev` is used by default.
 
-## 3. Start cloud development
+## 3. Link a cloud project
+
+```bash
+npx opencomputer link
+```
+
+Choose an existing project or create a new one. OpenComputer stores this local
+binding for subsequent development, secrets, and logs commands. You can skip
+this step: the first project-scoped command will show the same prompt.
+
+## 4. Start cloud development
 
 In the first terminal:
 
@@ -35,10 +45,10 @@ In the first terminal:
 npm run dev
 ```
 
-On the first run, choose an existing project or create a new one. The process
-stays open, watches `opencomputer/`, and syncs changes to `development`.
+The process stays open, watches `opencomputer/`, and syncs changes to
+`development`.
 
-## 4. Start React
+## 5. Start React
 
 In a second terminal:
 
@@ -56,7 +66,7 @@ bridge details from `.opencomputer/dev.json`; those details are intentionally
 not bundled into browser code.
 </Warning>
 
-## 5. Change the agent
+## 6. Change the agent
 
 Edit `opencomputer/agents/hello-world/agent.ts`:
 
@@ -74,7 +84,7 @@ export default function Agent() {
 Saving the file publishes a new development deployment. Refreshing or
 restarting the React app is not required for agent-only changes.
 
-## 6. Deploy to production
+## 7. Deploy to production
 
 ```bash
 npm run deploy -- --alias production

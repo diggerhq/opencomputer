@@ -39,7 +39,14 @@ placeholder capability directories.
 ## Create or select the cloud project
 
 The source scaffold and cloud project are separate. `npm create` writes local
-source; the first `npm run dev` asks where to sync it.
+source. Link it to a cloud project with:
+
+```bash
+npx opencomputer link
+```
+
+The command asks whether to create a project or select an existing one. If you
+skip it, the first project-scoped command shows the same prompt.
 
 For non-interactive use:
 
@@ -48,8 +55,8 @@ npx opencomputer dev --project <project-id-or-slug>
 npx opencomputer dev --create-project "Support agents"
 ```
 
-Later runs reuse `.opencomputer/project.json`. Delete or change that binding
-only when you intentionally want this source directory to target another
+Later commands reuse `.opencomputer/project.json`. Run `opencomputer link`
+again when you intentionally want this source directory to target another
 project.
 
 ## Add another agent
