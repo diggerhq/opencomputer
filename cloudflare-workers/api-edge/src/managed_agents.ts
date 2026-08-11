@@ -240,6 +240,8 @@ const PRIVATE_EVENT_KEYS = new Set([
   "runtime_id",
   "runtimeToken",
   "runtime_token",
+  "platformInstructions",
+  "platform_instructions",
 ]);
 
 function publicEventData(

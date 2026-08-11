@@ -657,10 +657,14 @@ describe("managed agents proxy", () => {
       "/api/managed-agents",
     );
     expect(secret.status).toBe(200);
-    expect(JSON.stringify(await secret.json())).not.toContain("never-return-this");
+    expect(JSON.stringify(await secret.json())).not.toContain(
+      "never-return-this",
+    );
 
     const logs = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/logs?agentId=agent-1"),
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/logs?agentId=agent-1",
+      ),
       environment,
       caller,
       "/api/managed-agents",
@@ -669,6 +673,59 @@ describe("managed agents proxy", () => {
     await expect(logs.json()).resolves.toMatchObject({
       logs: [{ event: "runtime.log", data: { message: "ready" } }],
     });
+  });
+
+  it("forwards redacted reactive render snapshots for the debug playground", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event_1",
+              seq: 4,
+              timestamp: "2026-08-10T00:00:00.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "agent.rendered",
+              data: {
+                instructions: "Help with the current request.",
+                platformInstructions: ["You are an OpenComputer agent."],
+                enabledTools: ["search_docs"],
+                runtimeToken: "never-return-this",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      events: [
+        {
+          type: "agent.rendered",
+          data: {
+            instructions: "Help with the current request.",
+            enabledTools: ["search_docs"],
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain("never-return-this");
+    expect(JSON.stringify(body)).not.toContain("You are an OpenComputer agent.");
+    expect(JSON.stringify(body)).not.toContain("platformInstructions");
   });
 
   it("redacts backend implementation errors", async () => {
