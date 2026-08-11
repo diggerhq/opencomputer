@@ -117,7 +117,7 @@ export async function runCloudDevelopment(
   let watcher: FSWatcher | undefined;
   let timer: NodeJS.Timeout | undefined;
   let leaseTimer: NodeJS.Timeout | undefined;
-  let renewingLeases = false;
+  let leaseRenewal: Promise<void> | undefined;
   let publishing = false;
   let pending = false;
   const lastDigests = new Map<string, string>();
@@ -170,51 +170,55 @@ export async function runCloudDevelopment(
     const developmentAgents = initial.map(
       (result) => result.deployment.agentId,
     );
-    const renewLeases = async (announce = false) => {
-      if (renewingLeases) return;
-      renewingLeases = true;
-      try {
-        const leases = await Promise.all(
-          developmentAgents.map((agentId) =>
-            client.renewDevelopmentLease(agentId),
-          ),
-        );
-        if (announce) {
-          process.stdout.write(
-            `Standby:    ${leases.map((lease) => `${lease.agentId} ${lease.ready ? "ready" : lease.status}`).join(", ")}\n`,
+    const renewLeases = (announce = false): Promise<void> => {
+      if (leaseRenewal) return leaseRenewal;
+      leaseRenewal = (async () => {
+        try {
+          const leases = await Promise.all(
+            developmentAgents.map((agentId) =>
+              client.renewDevelopmentLease(agentId),
+            ),
+          );
+          if (announce) {
+            process.stdout.write(
+              `Standby:    ${leases.map((lease) => `${lease.agentId} ${lease.ready ? "ready" : lease.status}`).join(", ")}\n`,
+            );
+          }
+        } catch (error) {
+          process.stderr.write(
+            `Standby unavailable; new sessions will start cold: ${error instanceof Error ? error.message : String(error)}\n`,
           );
         }
-      } catch (error) {
-        process.stderr.write(
-          `Standby unavailable; new sessions will start cold: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      } finally {
-        renewingLeases = false;
-      }
+      })().finally(() => {
+        leaseRenewal = undefined;
+      });
+      return leaseRenewal;
     };
-    await renewLeases(true);
-    leaseTimer = setInterval(
-      () => void renewLeases(),
-      DEVELOPMENT_LEASE_HEARTBEAT_MS,
-    );
     process.stdout.write(
       `Development (Cloud)\n` +
         `Project:    ${binding.projectName} (${binding.projectId})\n` +
         `Agents:     ${initial.map((result) => `${result.deployment.agentId}@development`).join(", ")}\n` +
         `Deployments:${initial.map((result) => ` ${result.deployment.id}`).join("\n            ")}\n` +
         `Watching:   ${projectRoot}\n` +
-        `React:      run npm run dev:web in another terminal\n`,
+        `React:      run npm run dev:web in another terminal\n` +
+        `Standby:    warming ${developmentAgents.join(", ")}…\n`,
     );
     watcher = watch(projectRoot, { recursive: true }, (_event, filename) => {
       if (!sourceChange(filename)) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void publish(), DEBOUNCE_MS);
     });
+    void renewLeases(true);
+    leaseTimer = setInterval(
+      () => void renewLeases(),
+      DEVELOPMENT_LEASE_HEARTBEAT_MS,
+    );
     await waitForShutdown();
   } finally {
     if (timer) clearTimeout(timer);
     if (leaseTimer) clearInterval(leaseTimer);
     watcher?.close();
+    await leaseRenewal?.catch(() => undefined);
     await Promise.allSettled(
       [...lastDigests.keys()].map((agentId) =>
         client.releaseDevelopmentLease(agentId),
