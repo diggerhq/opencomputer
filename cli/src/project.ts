@@ -501,12 +501,12 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.3.0",
+          "@opencomputer/agent": "^0.3.1",
           react: "^19.2.0",
           "react-dom": "^19.2.0",
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.7",
+          "@opencomputer/cli": "^0.4.8",
           "@types/node": "^24.0.0",
           "@types/react": "^19.2.0",
           "@types/react-dom": "^19.2.0",
