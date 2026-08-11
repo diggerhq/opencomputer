@@ -1,0 +1,89 @@
+---
+title: "Agent hooks"
+description: "Compose agent capabilities with reactive hooks"
+---
+
+An agent function returns instructions. Hooks give that agent the model,
+tools, services, and context it needs to follow those instructions.
+
+```tsx
+import { useInput, useModel, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useModel("anthropic/claude-sonnet-4.6");
+
+  if (input.text?.includes("latest")) {
+    useTool("web-search");
+  }
+
+  return "Answer directly. Use current sources when web search is available.";
+}
+```
+
+## How hooks work
+
+OpenComputer renders the exported function before each model step. Every hook
+called during that render contributes to the next step's configuration. Hooks
+describe capabilities; they do not call the model or run a tool themselves.
+
+Unlike React component hooks, OpenComputer resource hooks can be conditional.
+The example above exposes `web-search` only when the current input asks for
+recent information.
+
+Hooks can only run while OpenComputer is rendering an agent. Keep network
+requests and other asynchronous work inside [tools](/agents/tools), not in the
+agent function.
+
+## Built-in hooks
+
+| Hook | What it does | Guide |
+| --- | --- | --- |
+| `useInput()` | Reads the current input source, text, and structured payload | [Inputs](/agents/inputs) |
+| `useCurrentInput()` | Alias for `useInput()` | [Inputs](/agents/inputs) |
+| `useModel(model)` | Selects the model used for the next step | [Models](/agents/models) |
+| `useTool(tool)` | Exposes a named or code-defined tool | [Tools](/agents/tools) |
+| `useMcpServer(server)` | Exposes tools from a managed HTTPS MCP server | [MCP servers](/agents/mcp) |
+| `useSubagent(agent)` | Makes another project agent available for delegation | [Subagents](/agents/subagents) |
+| `useConnection(connection)` | Requires a managed user or HTTP connection | [Connections](/agents/connections) |
+| `useSessionData<T>(key)` | Reads a durable value associated with the session | [Session data](/agents/session-data) |
+
+[Skills](/agents/skills) are also agent capabilities, but they are discovered
+from the agent's `skills/` directory rather than attached with a hook.
+
+## Compose your own hooks
+
+Hooks are ordinary synchronous functions. Group related capabilities in a
+custom hook when several agents use the same setup:
+
+```tsx
+import {
+  connection,
+  useConnection,
+  useTool,
+} from "@opencomputer/agent";
+
+const github = connection("github");
+
+function useGitHubResearch() {
+  useConnection(github);
+  useTool("github-search");
+  return "Check GitHub before making claims about repositories or issues.";
+}
+
+export default function Agent() {
+  const githubInstructions = useGitHubResearch();
+  return `Research the request carefully. ${githubInstructions}`;
+}
+```
+
+Custom hooks keep agent functions readable and make capability bundles
+reusable. Prefix them with `use` so their purpose is obvious.
+
+## Next steps
+
+- [Read and route inputs](/agents/inputs)
+- [Choose a model](/agents/models)
+- [Give the agent tools](/agents/tools)
+- [Connect an MCP server](/agents/mcp)
+- [Add reusable skills](/agents/skills)

@@ -1,0 +1,80 @@
+---
+title: "Session data"
+description: "Read durable per-session values with useSessionData"
+---
+
+`useSessionData()` reads structured data associated with the current durable
+session. Use it for application context that should influence later renders,
+such as a campaign name, locale, audience, or workflow phase.
+
+```tsx
+import { useSessionData } from "@opencomputer/agent";
+
+export default function Agent() {
+  const campaign = useSessionData<string>("campaign_name");
+  const audience = useSessionData<string>("audience");
+
+  return [
+    "Help plan the campaign.",
+    campaign ? `Campaign: ${campaign}.` : undefined,
+    audience ? `Audience: ${audience}.` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+```
+
+## Read a value
+
+The key is a string. Pass a TypeScript type argument for the expected value:
+
+```tsx
+const locale = useSessionData<string>("locale");
+const approved = useSessionData<boolean>("brief_approved");
+const channels = useSessionData<readonly string[]>("channels");
+```
+
+The hook returns `undefined` when the key is absent. Handle that case rather
+than assuming every session has been initialized.
+
+Values must be JSON-compatible: `null`, booleans, numbers, strings, arrays,
+and objects containing those values.
+
+## Configure capabilities from session data
+
+Because session data is available during render, it can control instructions
+and resource hooks:
+
+```tsx
+import { useSessionData, useTool } from "@opencomputer/agent";
+import { publishCampaign } from "./tools/publish-campaign";
+
+export default function Agent() {
+  const approved = useSessionData<boolean>("brief_approved") ?? false;
+
+  if (approved) {
+    useTool(publishCampaign);
+  }
+
+  return approved
+    ? "The brief is approved. Publishing is available when the user asks."
+    : "Draft and revise the brief. Do not publish it yet.";
+}
+```
+
+## Session data versus input
+
+`useInput().payload` belongs to the current admitted input. Session data is
+associated with the durable session and can be read again on later renders.
+Use input for the event that just arrived and session data for context that
+outlives that event.
+
+## Current write behavior
+
+The current `@opencomputer/agent` API exposes session data as a read-only
+snapshot. It does not yet include a hook for setting or updating a value from
+agent code. Code should treat the returned value as immutable.
+
+See [Sessions and playground](/agents/sessions) for the durable conversation
+lifecycle and [Exa research session](/agents/examples/exa-research-session)
+for a starter that continues follow-up questions in one session.

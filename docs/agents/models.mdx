@@ -1,0 +1,77 @@
+---
+title: "Models"
+description: "Select a managed model with useModel"
+---
+
+`useModel()` selects the model that powers the next agent step. OpenComputer
+owns the provider connection, authentication, streaming, and managed model
+gateway.
+
+```tsx
+import { useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  return "You are a helpful assistant. Be concise and practical.";
+}
+```
+
+`useModel()` is a declaration. It returns nothing and does not make a model
+request itself.
+
+## Model identifiers
+
+Use a `provider/model` string:
+
+```tsx
+useModel("anthropic/claude-sonnet-4.6");
+```
+
+The object form is equivalent:
+
+```tsx
+useModel({
+  provider: "anthropic",
+  model: "claude-sonnet-4.6",
+});
+```
+
+Keep model selection in agent code so development and immutable deployments
+record the behavior together. Provider credentials are resolved by the
+managed gateway and are not added to source bundles or client applications.
+
+## Select a model conditionally
+
+Because the agent re-renders for each model step, selection can respond to the
+current input:
+
+```tsx
+import { useInput, useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  const needsDeepReview = input.text?.includes("deep review") ?? false;
+
+  useModel(
+    needsDeepReview
+      ? "anthropic/claude-sonnet-4.6"
+      : "anthropic/claude-haiku-4.5",
+  );
+
+  return needsDeepReview
+    ? "Review the request carefully and explain important tradeoffs."
+    : "Answer directly and briefly.";
+}
+```
+
+Select one model for the next step and keep the choice predictable: model
+changes affect cost, latency, context limits, and output behavior.
+
+## Keep credentials out of agent code
+
+Do not place provider API keys in `agent.ts`, tools, prompts, or the React
+application. OpenComputer's model gateway resolves the credential for the
+selected provider without exposing it to the agent.
+
+For credentials used by your own HTTP tools instead of model inference, use
+[Secrets and managed egress](/agents/secrets).

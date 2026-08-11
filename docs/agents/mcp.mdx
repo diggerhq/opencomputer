@@ -1,0 +1,97 @@
+---
+title: "MCP servers"
+description: "Attach managed HTTPS MCP servers with useMcpServer"
+---
+
+MCP (Model Context Protocol) connects an agent to tools hosted by an external
+service. Declare the server once with `defineMcpServer()`, then attach it to an
+agent render with `useMcpServer()`.
+
+## Connect a server
+
+```tsx
+import {
+  defineMcpServer,
+  useMcpServer,
+  useModel,
+} from "@opencomputer/agent";
+
+const docs = defineMcpServer({
+  id: "company-docs",
+  url: "https://mcp.example.com/server",
+});
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  useMcpServer(docs);
+  return "Answer questions using the company documentation when relevant.";
+}
+```
+
+Managed MCP URLs must use HTTPS. OpenComputer connects to the server and makes
+its tools available to the managed agent loop; agent code does not open or
+close the connection itself.
+
+## Definition fields
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `id` | yes | Stable ID for the server in the deployment |
+| `url` | yes | HTTPS MCP endpoint |
+| `connection` | no | Managed connection used to authorize the server |
+
+`useMcpServer()` accepts either a definition or an existing server ID.
+
+## Attach authorization
+
+Reference a managed user connection when the server requires authorization:
+
+```tsx
+import {
+  connection,
+  defineMcpServer,
+  useMcpServer,
+} from "@opencomputer/agent";
+
+const github = connection("github");
+const githubMcp = defineMcpServer({
+  id: "github",
+  url: "https://mcp.example.com/github",
+  connection: github,
+});
+
+export default function Agent() {
+  useMcpServer(githubMcp);
+  return "Use GitHub tools to investigate repository questions.";
+}
+```
+
+The connection declaration contains an identifier, not an OAuth token. Each
+user authorizes their own account through OpenComputer. See
+[Connections and MCP](/agents/connections) for authorization commands and
+missing-connection behavior.
+
+## Attach MCP conditionally
+
+An agent can expose a server only when the current request needs it:
+
+```tsx
+import { useInput, useMcpServer } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.text?.toLowerCase().includes("documentation")) {
+    useMcpServer(docs);
+  }
+  return "Use company docs when that capability is available.";
+}
+```
+
+Conditional attachment reduces the number of tools the model must choose from
+on unrelated requests.
+
+## MCP versus code-defined tools
+
+Use [code-defined tools](/agents/tools) when you own the operation or need
+custom validation and control. Use MCP when a service already publishes the
+tools you need or when several agents should consume the same remote tool set.

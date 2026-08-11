@@ -1,0 +1,132 @@
+---
+title: "Tools"
+description: "Define TypeScript tools and expose them with useTool"
+---
+
+A tool is TypeScript code the model may call while it works. Use tools for
+actions such as searching an API, looking up an order, or updating an external
+system. The model decides when a tool fits; your `run` function controls what
+happens.
+
+## Define your first tool
+
+Create a tool beside the agent, for example
+`opencomputer/agents/support/tools/lookup-order.ts`:
+
+```tsx
+import { defineTool } from "@opencomputer/agent";
+
+export const lookupOrder = defineTool({
+  name: "lookup_order",
+  description: "Look up an order by ID and return its current status",
+  input: {
+    type: "object",
+    properties: {
+      orderId: { type: "string", description: "The customer order ID" },
+    },
+    required: ["orderId"],
+    additionalProperties: false,
+  },
+  async run({ input }) {
+    const orderId = String(input.orderId);
+    return { orderId, status: "processing" };
+  },
+});
+```
+
+Then attach it from `agent.ts`:
+
+```tsx
+import { useModel, useTool } from "@opencomputer/agent";
+import { lookupOrder } from "./tools/lookup-order";
+
+export default function Agent() {
+  useModel("anthropic/claude-sonnet-4.6");
+  useTool(lookupOrder);
+  return "Help customers check orders. Ask for an order ID before lookup.";
+}
+```
+
+The model sees the tool's name, description, and input schema. When it calls
+the tool, OpenComputer runs `run()` in the managed agent runtime and returns
+the result to the model.
+
+## Tool definition
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `name` | yes | ID the model calls; letters, numbers, underscores, and hyphens only |
+| `description` | yes | Explains what the tool does and when to use it |
+| `input` | no | JSON Schema for tool arguments |
+| `output` | no | JSON Schema describing the result |
+| `run` | yes | Synchronous or asynchronous implementation |
+
+Descriptions are the model's documentation. Include the action, when it is
+appropriate, and any important precondition.
+
+## Execution context
+
+The `run` function receives:
+
+| Value | Purpose |
+| --- | --- |
+| `input` | Arguments created for the tool call |
+| `sessionId` | Current session ID |
+| `messageId` | Message containing the tool call |
+| `agentId` | Agent executing the call |
+| `signal` | Optional cancellation signal for abortable work |
+| `reportProgress(metadata)` | Emits JSON-compatible progress metadata |
+
+Use the cancellation signal with `fetch()` and report progress before slow
+steps:
+
+```tsx
+export const importCatalog = defineTool({
+  name: "import_catalog",
+  description: "Import the latest product catalog; use only when asked",
+  async run({ signal, reportProgress }) {
+    await reportProgress({ phase: "downloading" });
+    const response = await fetch("https://example.com/catalog.json", { signal });
+    await reportProgress({ phase: "processing" });
+    return { imported: response.ok };
+  },
+});
+```
+
+Tool results and progress metadata must be JSON-compatible values.
+
+## Conditional tools
+
+`useTool()` may be conditional. This keeps sensitive or specialized actions
+out of the tool set until they are relevant:
+
+```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+import { issueRefund } from "./tools/issue-refund";
+
+export default function Agent() {
+  const input = useInput();
+
+  if (input.text?.toLowerCase().includes("refund")) {
+    useTool(issueRefund);
+  }
+
+  return "Resolve the support request. Confirm the order before a refund.";
+}
+```
+
+`useTool()` also accepts a tool ID such as `useTool("web-search")` when the
+runtime already provides that tool.
+
+## Call external APIs safely
+
+Do not embed API keys in a tool or read them from the runtime environment.
+Declare an HTTP connection, store the value as an OpenComputer secret, and
+call the connection's managed `fetch()` method. See [Secrets and managed
+egress](/agents/secrets) for a complete example.
+
+## Tools versus skills and MCP
+
+- A tool executes TypeScript you own.
+- A [skill](/agents/skills) teaches the agent a reusable procedure.
+- An [MCP server](/agents/mcp) supplies a remote collection of tools.
