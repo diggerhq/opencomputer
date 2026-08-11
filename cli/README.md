@@ -8,6 +8,7 @@ npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
 npx opencomputer login
+npx opencomputer link
 ```
 
 The npm initializer delegates to `opencomputer init` and creates the same
@@ -24,8 +25,9 @@ npm run dev
 npm run dev:web
 ```
 
-The first `npm run dev` asks whether to create a project or select an existing
-project from the authenticated account. Later runs reuse that local binding.
+`opencomputer link` asks whether to create a project or select an existing
+project from the authenticated account. Later commands reuse that local binding.
+If you skip this step, the first project-scoped command prompts you to link.
 Use `opencomputer dev --project <id|slug>` for non-interactive selection or
 `opencomputer dev --create-project <name>` to create one explicitly.
 

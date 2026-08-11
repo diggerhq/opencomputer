@@ -71,7 +71,7 @@ test("first dev can select an existing project and later reuses its binding", as
   }
 });
 
-test("non-interactive dev requires an explicit project choice", async () => {
+test("non-interactive commands direct an unlinked app to link", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
   try {
     const initialized = await initializeAgentProject(root);
@@ -89,7 +89,7 @@ test("non-interactive dev requires an explicit project choice", async () => {
         initialized.agentRoot,
         { interactive: false },
       ),
-      /--project <id\|slug>/,
+      /opencomputer link/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

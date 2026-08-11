@@ -20,6 +20,7 @@ export interface ProjectBindingOptions {
   project?: string;
   createProjectName?: string;
   interactive?: boolean;
+  select?: boolean;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -131,7 +132,7 @@ export async function ensureProjectBinding(
   }
   const projectRoot = await findOpenComputerProjectRoot(agentRoot);
   const projects = await client.projects();
-  if (!options.project && !options.createProjectName) {
+  if (!options.project && !options.createProjectName && !options.select) {
     const existing = await readBinding(projectRoot, config.apiUrl);
     if (
       existing &&
@@ -158,7 +159,7 @@ export async function ensureProjectBinding(
   if (!project && !createName) {
     if (options.interactive === false || !process.stdin.isTTY || !process.stdout.isTTY) {
       throw new Error(
-        "This app is not connected to a cloud project. Run `opencomputer dev --project <id|slug>` or `opencomputer dev --create-project <name>`.",
+        "This app is not connected to a cloud project. Run `opencomputer link`.",
       );
     }
     const choice = await chooseProject(projects, basename(projectRoot));
