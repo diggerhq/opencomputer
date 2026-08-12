@@ -1,4 +1,5 @@
 import { SandboxAgent } from "./agent.js";
+import { prewarmConnections } from "./http2.js";
 import { Filesystem } from "./filesystem.js";
 import { Exec } from "./exec.js";
 import { Mounts } from "./mounts.js";
@@ -336,6 +337,12 @@ export class Sandbox {
   static async create(opts: SandboxOpts = {}): Promise<Sandbox> {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+    // Kick connection pre-warming on the first create (fire-and-forget, memoized
+    // — see http2.ts). A concurrent burst otherwise opens ~100 TLS connections
+    // inside the latency it is measuring: ~300ms, more than the entire
+    // server-side cost of a create. Deliberately NOT awaited: the first create
+    // should not wait on the pool, it just seeds it for the ones behind it.
+    void prewarmConnections(apiUrl.replace(/\/api$/, ""));
 
     const body: Record<string, unknown> = {
       templateID: opts.template ?? "base",

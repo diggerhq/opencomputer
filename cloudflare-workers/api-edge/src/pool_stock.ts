@@ -30,6 +30,12 @@ interface StockEntry {
 
 interface PoolStockEnv {
   SESSION_JWT_SECRET: string;
+  // Per-shard stock sizing, overridable per environment (wrangler.toml [vars]).
+  // Defaults below are the prod values; dev sets these DOWN because its cell
+  // holds ~30 boxes total, an order of magnitude under the 8×38 fleet target —
+  // see the sizing invariant in the block comment below.
+  POOL_STOCK_TARGET?: string;
+  POOL_STOCK_LOW_WATER?: string;
   // VmSession DOs are pre-woken here at stock-prep (see reserveOnce) instead of
   // on the create hot path — a burst-100 otherwise fires ~100 prewake
   // subrequests from the create isolate, saturating its subrequest budget.
@@ -53,11 +59,18 @@ const ENTRY_TTL_MS = 10 * 60_000;
 // Sizing below is PER SHARD; fleet stock = SHARDS × TARGET_STOCK = 304 — deep
 // enough that a sustained ~300-create drain (sequential or 100-way burst) is
 // served entirely from seasoned stock, never from mid-drain refill manufacture
-// (freshly-restored boxes are the p99 tail). CP pool (OPENSANDBOX_POOL_TARGET ×
-// workers) and refill pacing must stay ≥ this.
-const LOW_WATER = 18;
-const RESTOCK_BATCH = 38; // max boxes reserved per single edge-reserve call
-const TARGET_STOCK = 38; // per-shard fill level (× 8 shards = 304 fleet)
+// (freshly-restored boxes are the p99 tail).
+//
+// SIZING INVARIANT: SHARDS × TARGET_STOCK must be ≤ the cell's actual pool
+// (OPENSANDBOX_POOL_TARGET × workers). If it exceeds the pool, every shard
+// permanently believes it is below LOW_WATER, restocks on every claim, and the
+// shards compete for a supply that can never satisfy them — boxes concentrate
+// in whichever shards win, creates that hash to an empty shard fall through to
+// the ~10× slower CP path, and the measured burst latency becomes a function of
+// shard luck rather than of the system under test. Dev hit exactly this (30-box
+// cell against a 304 target), which is why these are env-overridable.
+const DEFAULT_LOW_WATER = 18;
+const DEFAULT_TARGET_STOCK = 38; // per-shard fill level (× 8 shards = 304 fleet)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
 const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls ≥ TARGET)
 // Self-decommission: a shard that hasn't served a claim in this long releases
@@ -71,6 +84,14 @@ const IDLE_DECOMMISSION_MS = 30 * 60_000;
 // token subject for reserve/release calls — those endpoints are org-agnostic,
 // but the middleware wants a parseable org UUID.
 const POOL_ORG_ID = "00000000-0000-4000-8000-000000000001";
+
+// Parse a positive integer from a wrangler [vars] string, falling back to the
+// prod default when unset/blank/garbage — a bad var must never zero the stock.
+function intFromEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 const b64url = (buf: ArrayBuffer | Uint8Array): string => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -159,11 +180,24 @@ export class PoolStock {
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
   private cell: { cellID: string; baseURL: string } | null = null;
+  // Resolved once per isolate from env (see the sizing invariant above).
+  private readonly targetStock: number;
+  private readonly lowWater: number;
+  private readonly restockBatch: number;
 
   constructor(
     private state: DurableObjectState,
     private env: PoolStockEnv,
   ) {
+    this.targetStock = intFromEnv(env.POOL_STOCK_TARGET, DEFAULT_TARGET_STOCK);
+    // Low-water must stay under target or a restock is triggered on every claim.
+    this.lowWater = Math.min(
+      this.targetStock - 1,
+      intFromEnv(env.POOL_STOCK_LOW_WATER, DEFAULT_LOW_WATER),
+    );
+    // One reserve call per restock pass was sized to cover the whole target
+    // (batch × RESTOCK_MAX_CALLS ≥ target); keep that relationship as target moves.
+    this.restockBatch = this.targetStock;
     this.state.blockConcurrencyWhile(async () => {
       this.stock = (await this.state.storage.get<StockEntry[]>("stock")) ?? [];
       this.cell = (await this.state.storage.get<{ cellID: string; baseURL: string }>("cell")) ?? null;
@@ -223,7 +257,7 @@ export class PoolStock {
     // Ensure the proactive top-up loop is running, and kick an immediate restock
     // if this claim dropped us below the low-water mark (don't wait for the tick).
     this.state.waitUntil(this.ensureAlarm());
-    if (cell && !this.restockInFlight && this.stock.length < LOW_WATER) {
+    if (cell && !this.restockInFlight && this.stock.length < this.lowWater) {
       this.state.waitUntil(this.restockToTarget(cell));
     }
 
@@ -254,7 +288,7 @@ export class PoolStock {
       };
       cell = body.cell ?? null;
       orgID = typeof body.orgID === "string" ? body.orgID : "";
-      count = Math.max(1, Math.min(Number(body.count) || 1, TARGET_STOCK));
+      count = Math.max(1, Math.min(Number(body.count) || 1, this.targetStock));
     } catch {
       /* fall through with defaults */
     }
@@ -276,7 +310,7 @@ export class PoolStock {
     this.persist();
 
     this.state.waitUntil(this.ensureAlarm());
-    if (cell && !this.restockInFlight && this.stock.length < LOW_WATER) {
+    if (cell && !this.restockInFlight && this.stock.length < this.lowWater) {
       this.state.waitUntil(this.restockToTarget(cell));
     }
 
@@ -338,11 +372,11 @@ export class PoolStock {
     // pool. This is how the pre-sharding legacy DO (which becomes shard 0 and
     // held the whole fleet's stock) sheds down to TARGET_STOCK so the other
     // shards can reserve those boxes; it also self-heals any future oversizing.
-    if (this.stock.length > TARGET_STOCK) {
-      const surplus = this.stock.splice(TARGET_STOCK);
+    if (this.stock.length > this.targetStock) {
+      const surplus = this.stock.splice(this.targetStock);
       await this.release(surplus);
     }
-    if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
+    if (this.stock.length < this.targetStock) await this.restockToTarget(cell);
     this.persist();
     // NOTE: deliberately NO periodic re-prewake of sitting stock here. Warming
     // every entry each tick costs 8 shards × TARGET_STOCK DO pokes every
@@ -384,7 +418,7 @@ export class PoolStock {
     this.restockInFlight = true;
     try {
       for (let call = 0; call < RESTOCK_MAX_CALLS; call++) {
-        const want = Math.min(RESTOCK_BATCH, TARGET_STOCK - this.stock.length);
+        const want = Math.min(this.restockBatch, this.targetStock - this.stock.length);
         if (want <= 0) return;
         const got = await this.reserveOnce(cell, want);
         if (got < want) return; // pool drained (or error) — don't spin
