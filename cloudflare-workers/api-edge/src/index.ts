@@ -1205,7 +1205,13 @@ interface MagazineBox {
   token: string;
   atMs: number;
 }
-const MAGAZINE_MAX = 24;
+// Must cover a full burst in ONE refill. The refill is single-flighted per
+// (cell,org), so a cap below the burst width serializes: with MAX=24 and 100
+// concurrent creates, waiters go through ~5 sequential refill rounds and the
+// ones that exhaust their 3 attempts fall through to the CP create — the slow
+// path (measured ~1.6s at 100-way). Sized to the leaderboard burst width; the
+// batch is still demand-sized (`want = waiters`), so a lone create asks for 1.
+const MAGAZINE_MAX = 100;
 const MAGAZINE_TTL_MS = 60_000;
 const magazines = new Map<string, MagazineBox[]>();
 const magazineInflight = new Map<string, Promise<void>>();
@@ -1223,37 +1229,107 @@ async function refillMagazine(
   key: string,
   want: number,
 ): Promise<void> {
+  // Fan out to every shard in parallel, but RESOLVE ON THE FIRST one that
+  // returns stock — do not await the slowest of eight.
+  //
+  // Measured on dev (N=20, 30-box pool), the two earlier shapes each got half
+  // of this right. A single-shard claim (`?nomag=1`) is fast per call (min
+  // 139-197ms) but misses often when that shard is empty (9-14 of 20 served).
+  // Awaiting all eight shards covered the pool (17 of 20 served) but made the
+  // FASTEST possible create 258-410ms, because every claim paid for the slowest
+  // shard. First-responder gives the single-shard latency and the all-shard
+  // coverage: the caller unblocks on whichever shard answers first, and the
+  // stragglers still land — they top the magazine up in the background, so
+  // their boxes serve the next create instead of being wasted.
+  const per = Math.max(1, Math.ceil(want / POOL_STOCK_SHARDS));
+  const start = Math.floor(Math.random() * POOL_STOCK_SHARDS);
+
+  // Deposit boxes into the magazine as each shard answers, whenever it answers.
+  const deposit = (data: { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number } | null): number => {
+    if (!data) return 0;
+    if (data.stock !== undefined) magazineLastStock.set(key, data.stock);
+    const boxes = data.boxes ?? [];
+    if (boxes.length === 0) return 0;
+    const arr = magazines.get(key) ?? [];
+    const at = Date.now();
+    for (const b of boxes) arr.push({ ...b, atMs: at });
+    magazines.set(key, arr);
+    return boxes.length;
+  };
+
+  const shardCall = async (i: number): Promise<number> => {
+    const shard = (start + i) % POOL_STOCK_SHARDS;
+    try {
+      const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
+        method: "POST",
+        body: JSON.stringify({
+          cell: { cellID: cell.cell_id, baseURL: cell.base_url },
+          orgID,
+          count: per,
+        }),
+      });
+      if (!r.ok) return 0;
+      return deposit((await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number });
+    } catch {
+      return 0;
+    }
+  };
+
+  // Settle as soon as one shard has produced stock. The losers keep running and
+  // deposit on their own — they are never awaited by this caller, so a slow or
+  // empty shard can't hold up the create. shardCall never rejects, so no
+  // unhandled rejection can escape the un-awaited tail.
+  const calls = Array.from({ length: POOL_STOCK_SHARDS }, (_, i) => shardCall(i));
+  await new Promise<void>((resolve) => {
+    let pending = calls.length;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    for (const c of calls) {
+      void c.then((n) => {
+        if (n > 0) finish(); // first shard with boxes unblocks the caller
+        if (--pending === 0) finish(); // all shards empty — fall through to CP
+      });
+    }
+  });
+}
+
+// claimDirectBox is the CONTROL arm for the magazine A/B (`?nomag=1`): exactly
+// one claim-batch(count:1) per request, no isolate-local inventory, no
+// single-flight. This is the pre-magazine shape — 100 concurrent creates issue
+// 100 parallel DO claims — so the two arms differ only in the batching strategy.
+async function claimDirectBox(
+  env: Env,
+  cell: CellRow,
+  orgID: string,
+): Promise<{ box: MagazineBox; amortized: boolean; stock: number } | null> {
   const body = JSON.stringify({
     cell: { cellID: cell.cell_id, baseURL: cell.base_url },
     orgID,
-    count: want,
+    count: 1,
   });
   let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
   const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
-  let got = 0;
-  // Keep pulling across shards until the batch is filled. A single shard can be
-  // short (small cell, or mid-burst depletion), and stopping at the first
-  // partial fill would drop the remaining waiters to the CP fallback.
-  for (let attempt = 0; attempt < POOL_STOCK_SHARDS && got < want; attempt++) {
-    const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
-      method: "POST",
-      body: got === 0 ? body : JSON.stringify({
-        cell: { cellID: cell.cell_id, baseURL: cell.base_url },
-        orgID,
-        count: want - got,
-      }),
-    });
-    shard = (shard + stride) % POOL_STOCK_SHARDS;
-    if (!r.ok) continue;
-    const data = (await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number };
-    magazineLastStock.set(key, data.stock ?? -1);
-    if (!data.boxes || data.boxes.length === 0) continue;
-    const now = Date.now();
-    const arr = magazines.get(key) ?? [];
-    for (const b of data.boxes) arr.push({ ...b, atMs: now });
-    magazines.set(key, arr);
-    got += data.boxes.length;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
+        method: "POST",
+        body,
+      });
+      shard = (shard + stride) % POOL_STOCK_SHARDS;
+      if (!r.ok) continue;
+      const data = (await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number };
+      const b = data.boxes?.[0];
+      if (!b) continue;
+      return { box: { ...b, atMs: Date.now() }, amortized: false, stock: data.stock ?? -1 };
+    } catch {
+      shard = (shard + stride) % POOL_STOCK_SHARDS;
+    }
   }
+  return null;
 }
 
 // claimMagazineBox returns a ready-to-serve box (token already minted) or null to
@@ -1503,7 +1579,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // the DO minted the token when it filled the batch). A miss single-flights
       // one /claim-batch sized to the number of creates currently waiting, so a
       // burst pays ~N/MAGAZINE_MAX DO calls instead of N.
-      const claimed = await claimMagazineBox(env, cell, caller.orgID);
+      // `?nomag=1` bypasses the isolate magazine and does the pre-magazine
+      // thing: one direct DO claim for this request. Kept so magazine-vs-direct
+      // can be A/B'd against a SINGLE deploy — otherwise the two arms differ by
+      // a deploy as well as by the variable, which is not a controlled test.
+      const claimed = req.url.includes("nomag=1")
+        ? await claimDirectBox(env, cell, caller.orgID)
+        : await claimMagazineBox(env, cell, caller.orgID);
       const box = claimed?.box ?? null;
       if (box && claimed) {
         mark("claim");
