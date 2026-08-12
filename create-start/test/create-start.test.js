@@ -5,114 +5,51 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-test("defaults to an agent-only project", async () => {
+test("forwards arguments to the CLI-owned initializer", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
   const capture = resolve(root, "args.json");
-  const cli = resolve(root, "cli.mjs");
+  const modulePath = resolve(root, "create-start.mjs");
   try {
     await writeFile(
-      cli,
+      modulePath,
       `import { writeFileSync } from "node:fs";
-writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
+export async function runCreateStart(args) {
+  writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(args));
+}
 `,
     );
     const result = spawnSync(
       process.execPath,
-      [resolve("index.js"), "my-agent"],
+      [resolve("index.js"), "my-agent", "--spa"],
       {
         cwd: resolve(import.meta.dirname, ".."),
         env: {
           ...process.env,
           CAPTURE_PATH: capture,
-          OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
+          OPENCOMPUTER_CREATE_START_MODULE_PATH: modulePath,
         },
       },
     );
     assert.equal(result.status, 0, result.stderr.toString());
     assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
-      "init",
       "my-agent",
-      "--agent-only",
+      "--spa",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("defaults to the current directory", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
-  const capture = resolve(root, "args.json");
-  const cli = resolve(root, "cli.mjs");
-  try {
-    await writeFile(
-      cli,
-      `import { writeFileSync } from "node:fs";
-writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
-`,
-    );
-    const result = spawnSync(process.execPath, [resolve("index.js")], {
-      cwd: resolve(import.meta.dirname, ".."),
-      env: {
-        ...process.env,
-        CAPTURE_PATH: capture,
-        OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
-      },
-    });
-    assert.equal(result.status, 0, result.stderr.toString());
-    assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
-      "init",
-      ".",
-      "--agent-only",
-    ]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("passes the agent-only choice to the CLI", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
-  const capture = resolve(root, "args.json");
-  const cli = resolve(root, "cli.mjs");
-  try {
-    await writeFile(
-      cli,
-      `import { writeFileSync } from "node:fs";
-writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
-`,
-    );
-    const result = spawnSync(
-      process.execPath,
-      [resolve("index.js"), "my-agent", "--agent-only"],
-      {
-        cwd: resolve(import.meta.dirname, ".."),
-        env: {
-          ...process.env,
-          CAPTURE_PATH: capture,
-          OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
-        },
-      },
-    );
-    assert.equal(result.status, 0, result.stderr.toString());
-    assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
-      "init",
-      "my-agent",
-      "--agent-only",
-    ]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("creates the published CLI hello-world application", async () => {
+test("creates an app through the local CLI module", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
   const app = resolve(root, "hello-agent");
-  const localCli = resolve(
+  const localModule = resolve(
     import.meta.dirname,
     "..",
     "..",
     "cli",
     "dist",
-    "index.js",
+    "create-start.js",
   );
   try {
     const result = spawnSync(
@@ -122,7 +59,7 @@ test("creates the published CLI hello-world application", async () => {
         cwd: resolve(import.meta.dirname, ".."),
         env: {
           ...process.env,
-          OPENCOMPUTER_CREATE_START_CLI_PATH: localCli,
+          OPENCOMPUTER_CREATE_START_MODULE_PATH: localModule,
         },
       },
     );

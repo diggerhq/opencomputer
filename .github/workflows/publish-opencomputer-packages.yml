@@ -7,6 +7,7 @@ on:
       - "react/**"
       - "cli/**"
       - "create-start/**"
+      - "scripts/check-opencomputer-package-contract.mjs"
       - ".github/workflows/publish-opencomputer-packages.yml"
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - "react/**"
       - "cli/**"
       - "create-start/**"
+      - "scripts/check-opencomputer-package-contract.mjs"
       - ".github/workflows/publish-opencomputer-packages.yml"
   workflow_dispatch:
 
@@ -41,7 +43,9 @@ jobs:
             agent/package-lock.json
             react/package-lock.json
             cli/package-lock.json
-            create-start/package-lock.json
+
+      - name: Verify package version contract
+        run: node scripts/check-opencomputer-package-contract.mjs
 
       - name: Install and build agent package
         working-directory: agent
@@ -63,8 +67,9 @@ jobs:
 
       - name: Install and test starter package
         working-directory: create-start
+        env:
+          OPENCOMPUTER_CREATE_START_MODULE_PATH: ${{ github.workspace }}/cli/dist/create-start.js
         run: |
-          npm ci
           npm test
 
       - name: Publish packages in dependency order
@@ -94,7 +99,28 @@ jobs:
             fi
           }
 
+          wait_for_package() {
+            local directory="$1"
+            local package_name="$2"
+            local version
+            version="$(node -p "require('./${directory}/package.json').version")"
+            for attempt in $(seq 1 30); do
+              if [[ "$(npm view "${package_name}@${version}" version 2>/dev/null || true)" == "${version}" ]]; then
+                echo "${package_name}@${version} is visible on npm."
+                return 0
+              fi
+              echo "Waiting for ${package_name}@${version} to propagate (${attempt}/30)…"
+              sleep 2
+            done
+            echo "${package_name}@${version} did not become visible on npm." >&2
+            return 1
+          }
+
           publish_if_needed agent @opencomputer/agent
+          wait_for_package agent @opencomputer/agent
           publish_if_needed react @opencomputer/react
+          wait_for_package react @opencomputer/react
           publish_if_needed cli @opencomputer/cli
+          wait_for_package cli @opencomputer/cli
+          export OPENCOMPUTER_CREATE_START_MODULE_PATH="${PWD}/cli/dist/create-start.js"
           publish_if_needed create-start @opencomputer/create-start
