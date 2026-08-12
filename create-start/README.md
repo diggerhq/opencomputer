@@ -10,9 +10,11 @@ npx opencomputer login
 npm run dev
 ```
 
-The generated project contains reactive agent definitions under
-`opencomputer/` and a React application under `src/`. The first development
-run lets you select an existing cloud project or create a new one.
+The initializer asks whether to create agent code only or include a React SPA.
+The optional app imports its hooks from `@opencomputer/react`. A single
+`npm run dev` syncs agents to Development (Cloud), prints the dashboard URL,
+and starts Vite when the SPA is included. The first run lets you select an
+existing cloud project or create a new one.
 
 Use `.` to initialize the current directory:
 

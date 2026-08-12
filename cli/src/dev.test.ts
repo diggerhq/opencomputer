@@ -4,8 +4,36 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { publishDevelopment, publishProjectDevelopment } from "./dev.js";
+import {
+  hasReactSpa,
+  projectDashboardURL,
+  publishDevelopment,
+  publishProjectDevelopment,
+} from "./dev.js";
 import { initializeAgentProject } from "./project.js";
+
+test("development derives the cloud dashboard project URL", () => {
+  assert.equal(
+    projectDashboardURL("https://mo-oc-dev.com/", "prj_hello/world"),
+    "https://mo-oc-dev.com/projects/prj_hello%2Fworld",
+  );
+});
+
+test("development detects whether the starter includes a React SPA", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-shape-"));
+  try {
+    const withSpa = await initializeAgentProject(resolve(parent, "with-spa"));
+    const agentOnly = await initializeAgentProject(
+      resolve(parent, "agent-only"),
+      undefined,
+      { spa: false },
+    );
+    assert.equal(await hasReactSpa(withSpa.root), true);
+    assert.equal(await hasReactSpa(agentOnly.root), false);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 
 test("development publish builds an immutable artifact under the development alias", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-"));

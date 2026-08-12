@@ -3,17 +3,19 @@ name: Publish OpenComputer packages
 on:
   pull_request:
     paths:
-      - 'agent/**'
-      - 'cli/**'
-      - 'create-start/**'
-      - '.github/workflows/publish-opencomputer-packages.yml'
+      - "agent/**"
+      - "react/**"
+      - "cli/**"
+      - "create-start/**"
+      - ".github/workflows/publish-opencomputer-packages.yml"
   push:
     branches: [main]
     paths:
-      - 'agent/**'
-      - 'cli/**'
-      - 'create-start/**'
-      - '.github/workflows/publish-opencomputer-packages.yml'
+      - "agent/**"
+      - "react/**"
+      - "cli/**"
+      - "create-start/**"
+      - ".github/workflows/publish-opencomputer-packages.yml"
   workflow_dispatch:
 
 concurrency:
@@ -32,11 +34,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: |
             agent/package-lock.json
+            react/package-lock.json
             cli/package-lock.json
             create-start/package-lock.json
 
@@ -51,6 +54,12 @@ jobs:
         run: |
           npm ci
           npm test
+
+      - name: Install and build React package
+        working-directory: react
+        run: |
+          npm ci
+          npm run build
 
       - name: Install and test starter package
         working-directory: create-start
@@ -86,5 +95,6 @@ jobs:
           }
 
           publish_if_needed agent @opencomputer/agent
+          publish_if_needed react @opencomputer/react
           publish_if_needed cli @opencomputer/cli
           publish_if_needed create-start @opencomputer/create-start

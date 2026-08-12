@@ -107,7 +107,7 @@ export default function ProjectsHome() {
               Create your first project
             </h2>
             <p className="text-muted-foreground mt-3 max-w-xl text-sm leading-6">
-              Start with one hello-world agent and a React app. Your
+              Start with one hello-world agent, with an optional React SPA. Your
               OpenComputer project is ready for more agents as it grows.
             </p>
             <pre className="bg-foreground text-background mt-5 overflow-x-auto rounded-lg px-4 py-3 text-sm leading-7">
@@ -172,8 +172,8 @@ export default function ProjectsHome() {
             <p className="text-muted-foreground mt-2 text-xs leading-5">
               Then run <code>cd my-agent</code>, <code>npm install</code>, and{' '}
               <code>npm run dev</code>. The project contains an{' '}
-              <code>opencomputer/</code> agent backend and a <code>src/</code>{' '}
-              React app.
+              <code>opencomputer/</code> agent backend and can include a{' '}
+              <code>src/</code> React app.
             </p>
           </div>
         </PanelContent>

@@ -17,6 +17,7 @@ npm install
 ```
 
 Use `.` instead of `my-agent` to initialize an empty current directory.
+The initializer asks whether to create agent code only or include a React SPA.
 
 ## 2. Log in
 
@@ -29,35 +30,22 @@ The production API at `https://app.opencomputer.dev` is used by default.
 
 ## 3. Start cloud development
 
-In the first terminal:
-
 ```bash
 npm run dev
 ```
 
 On the first run, choose an existing cloud project or create a new one. The
-process then stays open, watches `opencomputer/`, and syncs changes to
-`development`.
-
-## 4. Start React
-
-In a second terminal:
-
-```bash
-npm run dev:web
-```
-
-Open the Vite URL and send a message. The generated React hook creates a
-durable session, streams response events, and reuses that session for follow-up
-messages.
+process prints the project dashboard URL, watches `opencomputer/`, and syncs
+changes to `development`. If you included the SPA, the same command starts
+Vite; open its URL and send a message.
 
 <Warning>
-Keep `npm run dev` running while using `npm run dev:web`. Vite reads temporary
-bridge details from `.opencomputer/dev.json`; those details are intentionally
-not bundled into browser code.
+  Keep `npm run dev` running while using the React app. Vite reads temporary
+  bridge details from `.opencomputer/dev.json`; they are intentionally not
+  bundled into browser code.
 </Warning>
 
-## 5. Change the agent
+## 4. Change the agent
 
 Edit `opencomputer/agents/hello-world/agent.ts`:
 
@@ -75,7 +63,7 @@ export default function Agent() {
 Saving the file publishes a new development deployment. Refreshing or
 restarting the React app is not required for agent-only changes.
 
-## 6. Deploy to production
+## 5. Deploy to production
 
 ```bash
 npm run deploy -- --alias production

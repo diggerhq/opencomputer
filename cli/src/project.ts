@@ -428,6 +428,7 @@ export async function assertStarterTarget(directory: string): Promise<void> {
 export async function initializeAgentProject(
   directory: string,
   project?: { id: string; name: string; agentId: string },
+  options: { spa?: boolean } = {},
 ): Promise<{
   root: string;
   agentRoot: string;
@@ -435,6 +436,7 @@ export async function initializeAgentProject(
   files: string[];
 }> {
   const root = resolve(directory);
+  const spa = options.spa ?? true;
   const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
   await assertStarterTarget(root);
   await mkdir(agentRoot, { recursive: true });
@@ -475,7 +477,7 @@ export default function Agent() {
 `,
   );
   await updateGitignore(root);
-  await mkdir(resolve(root, "src"), { recursive: true });
+  if (spa) await mkdir(resolve(root, "src"), { recursive: true });
   await writeFile(
     resolve(root, "opencomputer", "project.ts"),
     `export default {
@@ -495,33 +497,42 @@ export default function Agent() {
         type: "module",
         scripts: {
           dev: "opencomputer dev",
-          "dev:web": "vite",
-          build: "tsc -b && vite build",
+          ...(spa ? { build: "tsc -b && vite build" } : {}),
           session: "opencomputer session",
           deploy: "opencomputer deploy",
         },
         dependencies: {
           "@opencomputer/agent": "^0.3.1",
-          react: "^19.2.0",
-          "react-dom": "^19.2.0",
+          ...(spa
+            ? {
+                "@opencomputer/react": "^0.1.0",
+                react: "^19.2.0",
+                "react-dom": "^19.2.0",
+              }
+            : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.8",
-          "@types/node": "^24.0.0",
-          "@types/react": "^19.2.0",
-          "@types/react-dom": "^19.2.0",
-          "@vitejs/plugin-react": "^6.0.0",
-          typescript: "^5.9.0",
-          vite: "^8.0.0",
+          "@opencomputer/cli": "^0.4.10",
+          ...(spa
+            ? {
+                "@types/node": "^24.0.0",
+                "@types/react": "^19.2.0",
+                "@types/react-dom": "^19.2.0",
+                "@vitejs/plugin-react": "^6.0.0",
+                typescript: "^5.9.0",
+                vite: "^8.0.0",
+              }
+            : {}),
         },
       },
       null,
       2,
     )}\n`,
   );
-  await writeFile(
-    resolve(root, "vite.config.ts"),
-    `import { readFileSync } from "node:fs";
+  if (spa)
+    await writeFile(
+      resolve(root, "vite.config.ts"),
+      `import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -533,7 +544,7 @@ function openComputerDev() {
     ) as { url: string; token: string; agent: string };
   } catch {
     throw new Error(
-      "OpenComputer is not running. Start npm run dev in another terminal first.",
+      "OpenComputer is not running. Start npm run dev first.",
     );
   }
 }
@@ -573,38 +584,40 @@ export default defineConfig(({ command }) => {
   };
 });
 `,
-  );
-  await writeFile(
-    resolve(root, "tsconfig.json"),
-    `${JSON.stringify(
-      {
-        compilerOptions: {
-          target: "ES2022",
-          useDefineForClassFields: true,
-          lib: ["ES2022", "DOM", "DOM.Iterable"],
-          allowJs: false,
-          skipLibCheck: true,
-          esModuleInterop: true,
-          allowSyntheticDefaultImports: true,
-          strict: true,
-          forceConsistentCasingInFileNames: true,
-          module: "ESNext",
-          moduleResolution: "Bundler",
-          resolveJsonModule: true,
-          isolatedModules: true,
-          noEmit: true,
-          jsx: "react-jsx",
-          types: ["node", "vite/client"],
+    );
+  if (spa)
+    await writeFile(
+      resolve(root, "tsconfig.json"),
+      `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            useDefineForClassFields: true,
+            lib: ["ES2022", "DOM", "DOM.Iterable"],
+            allowJs: false,
+            skipLibCheck: true,
+            esModuleInterop: true,
+            allowSyntheticDefaultImports: true,
+            strict: true,
+            forceConsistentCasingInFileNames: true,
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            resolveJsonModule: true,
+            isolatedModules: true,
+            noEmit: true,
+            jsx: "react-jsx",
+            types: ["node", "vite/client"],
+          },
+          include: ["src", "vite.config.ts"],
         },
-        include: ["src", "vite.config.ts"],
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  await writeFile(
-    resolve(root, "index.html"),
-    `<!doctype html>
+        null,
+        2,
+      )}\n`,
+    );
+  if (spa)
+    await writeFile(
+      resolve(root, "index.html"),
+      `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -618,148 +631,18 @@ export default defineConfig(({ command }) => {
   </body>
 </html>
 `,
-  );
-  await writeFile(
-    resolve(root, "src", "use-agent.ts"),
-    `import { useCallback, useRef, useState } from "react";
-
-export interface AgentMessage {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-}
-
-interface AgentEvent {
-  seq: number;
-  type: string;
-  data: Record<string, unknown>;
-}
+    );
+  if (spa)
+    await writeFile(
+      resolve(root, "src", "App.tsx"),
+      `import { useAgent } from "@opencomputer/react";
+import { FormEvent, useState } from "react";
 
 declare const __OPENCOMPUTER_AGENT__: string;
-const AGENT = __OPENCOMPUTER_AGENT__;
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(\`/api/opencomputer/managed-agents\${path}\`, {
-    ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
-  });
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(body?.error?.message ?? \`Agent request failed (\${response.status})\`);
-  }
-  return body as T;
-}
-
-export function useAgent() {
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [sessionId, setSessionId] = useState<string>();
-  const sessionRef = useRef<string | undefined>(undefined);
-  const cursorRef = useRef(0);
-  const [isRunning, setIsRunning] = useState(false);
-  const [error, setError] = useState<string>();
-
-  const send = useCallback(async (value: string) => {
-    const prompt = value.trim();
-    if (!prompt || isRunning) return;
-    const userMessage: AgentMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      text: prompt,
-    };
-    const assistantId = crypto.randomUUID();
-    setMessages((current) => [
-      ...current,
-      userMessage,
-      { id: assistantId, role: "assistant", text: "" },
-    ]);
-    setIsRunning(true);
-    setError(undefined);
-    try {
-      let activeSession = sessionRef.current;
-      if (!activeSession) {
-        const created = await request<{ session: { id: string } }>("/sessions", {
-          method: "POST",
-          body: JSON.stringify({ agentId: AGENT, source: "local-react" }),
-        });
-        activeSession = created.session.id;
-        sessionRef.current = activeSession;
-        setSessionId(activeSession);
-      } else {
-        await request(\`/sessions/\${encodeURIComponent(activeSession)}/resume\`, {
-          method: "POST",
-        });
-      }
-      let streamed = "";
-      const waitFor = async (terminal: (event: AgentEvent) => boolean) => {
-        for (;;) {
-          const result = await request<{ events: AgentEvent[] }>(
-            \`/sessions/\${encodeURIComponent(activeSession!)}/events?after=\${cursorRef.current}\`,
-          );
-          for (const event of result.events) {
-            cursorRef.current = Math.max(cursorRef.current, event.seq);
-          if (event.type === "message.delta") {
-            streamed += String(event.data.text ?? "");
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? { ...message, text: streamed }
-                  : message,
-              ),
-            );
-          } else if (event.type === "message.completed" && !streamed) {
-            const text = String(event.data.text ?? "");
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId ? { ...message, text } : message,
-              ),
-            );
-          }
-            if (terminal(event)) return event;
-          }
-          await new Promise((done) => setTimeout(done, 500));
-        }
-      };
-      await waitFor((event) => event.type === "runtime.connected");
-      await request(\`/sessions/\${encodeURIComponent(activeSession)}/turns\`, {
-        method: "POST",
-        body: JSON.stringify({ input: prompt, idempotencyKey: crypto.randomUUID() }),
-      });
-      const completed = await waitFor((event) =>
-        event.type === "turn.completed" || event.type === "turn.failed",
-      );
-      if (completed.type === "turn.failed") {
-        throw new Error(String(completed.data.message ?? "Agent failed"));
-      }
-      await request(\`/sessions/\${encodeURIComponent(activeSession)}/suspend\`, {
-        method: "POST",
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      setError(message);
-      setMessages((current) =>
-        current.map((item) =>
-          item.id === assistantId && !item.text
-            ? { ...item, text: "I couldn't complete that request." }
-            : item,
-        ),
-      );
-    } finally {
-      setIsRunning(false);
-    }
-  }, [isRunning]);
-
-  return { messages, send, isRunning, error };
-}
-`,
-  );
-  await writeFile(
-    resolve(root, "src", "App.tsx"),
-    `import { FormEvent, useState } from "react";
-import { useAgent } from "./use-agent";
 
 export default function App() {
   const [input, setInput] = useState("");
-  const { messages, send, isRunning, error } = useAgent();
+  const { messages, send, isRunning, error } = useAgent(__OPENCOMPUTER_AGENT__);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -808,10 +691,11 @@ export default function App() {
   );
 }
 `,
-  );
-  await writeFile(
-    resolve(root, "src", "main.tsx"),
-    `import { StrictMode } from "react";
+    );
+  if (spa)
+    await writeFile(
+      resolve(root, "src", "main.tsx"),
+      `import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
@@ -822,10 +706,11 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 `,
-  );
-  await writeFile(
-    resolve(root, "src", "styles.css"),
-    `@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap");
+    );
+  if (spa)
+    await writeFile(
+      resolve(root, "src", "styles.css"),
+      `@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap");
 
 :root { color: #1d1c19; background: #f4f1e9; font-family: "DM Sans", sans-serif; }
 * { box-sizing: border-box; }
@@ -852,15 +737,16 @@ input { min-width: 0; flex: 1; border: 0; outline: 0; padding: 10px; background:
 form button { border: 0; border-radius: 10px; background: #d85b35; color: white; padding: 10px 18px; font-weight: 600; cursor: pointer; }
 form button:disabled { cursor: default; opacity: .45; }
 `,
-  );
+    );
   await writeFile(
     resolve(root, "README.md"),
-    `# Hello World OpenComputer app
+    spa
+      ? `# Hello World OpenComputer app
 
 This project keeps agent definitions in \`opencomputer/\` and the React app in
 \`src/\`.
 
-Sync agent code to Development (Cloud) in one terminal:
+Sync agent code to Development (Cloud) and start the React app:
 
 \`\`\`bash
 npm run dev
@@ -868,27 +754,35 @@ npm run dev
 
 The first run asks you to create a cloud project or select an existing one.
 That choice is saved for later development runs.
+`
+      : `# Hello World OpenComputer agent
 
-Then start the React app in another:
+This project keeps agent definitions in \`opencomputer/\`.
+
+Sync agent code to Development (Cloud):
 
 \`\`\`bash
-npm run dev:web
+npm run dev
 \`\`\`
+
+The first run asks you to create a cloud project or select an existing one.
+That choice is saved for later development runs.
 `,
   );
 
-  const appFiles = [
-    "package.json",
-    "vite.config.ts",
-    "tsconfig.json",
-    "index.html",
-    "README.md",
-    ".gitignore",
-    "src/App.tsx",
-    "src/main.tsx",
-    "src/styles.css",
-    "src/use-agent.ts",
-  ];
+  const appFiles = spa
+    ? [
+        "package.json",
+        "vite.config.ts",
+        "tsconfig.json",
+        "index.html",
+        "README.md",
+        ".gitignore",
+        "src/App.tsx",
+        "src/main.tsx",
+        "src/styles.css",
+      ]
+    : ["package.json", "README.md", ".gitignore"];
   return {
     root,
     agentRoot,
@@ -954,7 +848,10 @@ function connectionHeaderValue(
   expression: ts.Expression,
 ): HttpConnectionManifest["headers"][string] {
   if (ts.isStringLiteralLike(expression)) return expression.text;
-  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression)
+  ) {
     throw new Error(
       "Connection headers must be string literals, bearer(useSecret()), or secretHeader(useSecret())",
     );
@@ -985,8 +882,10 @@ function connectionHeaderValue(
       }
       const prefix = objectProperty(options, "prefix");
       const suffix = objectProperty(options, "suffix");
-      if (prefix) result.prefix = literalStringValue(prefix, "secretHeader prefix");
-      if (suffix) result.suffix = literalStringValue(suffix, "secretHeader suffix");
+      if (prefix)
+        result.prefix = literalStringValue(prefix, "secretHeader prefix");
+      if (suffix)
+        result.suffix = literalStringValue(suffix, "secretHeader suffix");
     }
     return result;
   }
@@ -1009,14 +908,19 @@ function definedHttpConnections(
       if (!input || !ts.isObjectLiteralExpression(input)) {
         throw new Error("defineConnection() requires an object literal");
       }
-      const id = literalStringValue(objectProperty(input, "id"), "connection id");
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        "connection id",
+      );
       const originValue = literalStringValue(
         objectProperty(input, "origin"),
         `connection ${id} origin`,
       );
       const origin = new URL(originValue);
       if (origin.protocol !== "https:" || origin.pathname !== "/") {
-        throw new Error(`Connection ${id} must use an HTTPS origin without a path`);
+        throw new Error(
+          `Connection ${id} must use an HTTPS origin without a path`,
+        );
       }
       const headers: HttpConnectionManifest["headers"] = {};
       const headerExpression = objectProperty(input, "headers");
@@ -1028,18 +932,26 @@ function definedHttpConnections(
           if (!ts.isPropertyAssignment(property)) {
             throw new Error(`Connection ${id} headers cannot use spreads`);
           }
-          const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
-            ? property.name.text
-            : undefined;
-          if (!name) throw new Error(`Connection ${id} has an invalid header name`);
+          const name =
+            ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+              ? property.name.text
+              : undefined;
+          if (!name)
+            throw new Error(`Connection ${id} has an invalid header name`);
           const value = connectionHeaderValue(property.initializer);
           if (
-            ["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(
-              name.toLowerCase(),
-            ) &&
+            [
+              "api-key",
+              "authorization",
+              "cookie",
+              "proxy-authorization",
+              "x-api-key",
+            ].includes(name.toLowerCase()) &&
             typeof value === "string"
           ) {
-            throw new Error(`Connection ${id} header ${name} must use useSecret()`);
+            throw new Error(
+              `Connection ${id} header ${name} must use useSecret()`,
+            );
           }
           headers[name] = value;
         }
@@ -1307,8 +1219,7 @@ the product or support surface presented to users.
     const ids = definedToolIds(candidate.source);
     const calls = [
       ...candidate.source.matchAll(/\bdefineTool(?:<[^>]+>)?\s*\(/g),
-    ]
-      .length;
+    ].length;
     if (ids.length !== calls) {
       throw new Error(
         `${candidate.filename} must give every defineTool() a literal string name`,
@@ -1348,16 +1259,25 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
-  const httpConnections = [agentSource, ...toolSources.map((item) => item.source)]
-    .flatMap((source, index) =>
-      definedHttpConnections(source, index === 0 ? "agent.ts" : toolSources[index - 1]!.filename),
-    );
+  const httpConnections = [
+    agentSource,
+    ...toolSources.map((item) => item.source),
+  ].flatMap((source, index) =>
+    definedHttpConnections(
+      source,
+      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename,
+    ),
+  );
   const duplicateConnection = httpConnections.find(
     (connection, index) =>
-      httpConnections.findIndex((candidate) => candidate.id === connection.id) !== index,
+      httpConnections.findIndex(
+        (candidate) => candidate.id === connection.id,
+      ) !== index,
   );
   if (duplicateConnection) {
-    throw new Error(`Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`);
+    throw new Error(
+      `Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`,
+    );
   }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(

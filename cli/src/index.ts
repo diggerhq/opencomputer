@@ -47,7 +47,7 @@ Usage:
   opencomputer logout [--local]
   opencomputer whoami
   opencomputer agents
-  opencomputer init <directory|.>
+  opencomputer init <directory|.> [--spa|--agent-only]
   opencomputer link
   opencomputer dev [--project <id|slug> | --create-project <name>]
   opencomputer session [prompt]

@@ -41,9 +41,10 @@ test("init creates a multi-agent-ready project and React hello world app", async
       await readFile(resolve(root, "opencomputer", "project.ts"), "utf8"),
       /id:/,
     );
+    await assert.rejects(stat(resolve(root, "src", "use-agent.ts")));
     assert.match(
-      await readFile(resolve(root, "src", "use-agent.ts"), "utf8"),
-      /const AGENT = __OPENCOMPUTER_AGENT__[\s\S]*export function useAgent/,
+      await readFile(resolve(root, "src", "App.tsx"), "utf8"),
+      /import \{ useAgent \} from "@opencomputer\/react"[\s\S]*useAgent\(__OPENCOMPUTER_AGENT__\)/,
     );
     const packageJSON = JSON.parse(
       await readFile(resolve(root, "package.json"), "utf8"),
@@ -53,9 +54,10 @@ test("init creates a multi-agent-ready project and React hello world app", async
       devDependencies: Record<string, string>;
     };
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
-    assert.equal(packageJSON.scripts["dev:web"], "vite");
+    assert.equal(packageJSON.scripts["dev:web"], undefined);
     assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.3.1");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.8");
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.10");
     assert.ok(packageJSON.devDependencies["@types/node"]);
     const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
     assert.match(viteConfig, /command === "serve"/);
@@ -105,7 +107,45 @@ test("init creates a multi-agent-ready project and React hello world app", async
       "src/App.tsx",
       "src/main.tsx",
       "src/styles.css",
-      "src/use-agent.ts",
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("init can create an agent-only project", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-agent-only-"));
+  const root = resolve(parent, "hello-agent");
+  try {
+    const initialized = await initializeAgentProject(root, undefined, {
+      spa: false,
+    });
+    await stat(
+      resolve(root, "opencomputer", "agents", "hello-world", "agent.ts"),
+    );
+    await assert.rejects(stat(resolve(root, "src")));
+    await assert.rejects(stat(resolve(root, "vite.config.ts")));
+    const packageJSON = JSON.parse(
+      await readFile(resolve(root, "package.json"), "utf8"),
+    ) as {
+      scripts: Record<string, string>;
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    assert.deepEqual(packageJSON.scripts, {
+      dev: "opencomputer dev",
+      session: "opencomputer session",
+      deploy: "opencomputer deploy",
+    });
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
+    assert.equal(packageJSON.dependencies.react, undefined);
+    assert.equal(packageJSON.devDependencies.vite, undefined);
+    assert.deepEqual(initialized.files, [
+      "opencomputer/project.ts",
+      "opencomputer/agents/hello-world/agent.ts",
+      "package.json",
+      "README.md",
+      ".gitignore",
     ]);
   } finally {
     await rm(parent, { recursive: true, force: true });
@@ -256,7 +296,9 @@ export default function Agent() {
 });
 
 test("the compiler rejects hard-coded sensitive connection headers", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-secret-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-egress-secret-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
@@ -323,7 +365,10 @@ export default function Agent() {
 
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { tools: string[]; toolModules: string[] };
     assert.ok(manifest.tools.includes("hacker_news"));
     assert.ok(manifest.toolModules.includes("../tools/hacker-news.js"));
