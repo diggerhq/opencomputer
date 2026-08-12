@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-test("delegates the requested directory to opencomputer init", async () => {
+test("defaults to an agent-only project", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
   const capture = resolve(root, "args.json");
   const cli = resolve(root, "cli.mjs");
@@ -16,18 +16,23 @@ test("delegates the requested directory to opencomputer init", async () => {
 writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
 `,
     );
-    const result = spawnSync(process.execPath, [resolve("index.js"), "my-agent"], {
-      cwd: resolve(import.meta.dirname, ".."),
-      env: {
-        ...process.env,
-        CAPTURE_PATH: capture,
-        OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
+    const result = spawnSync(
+      process.execPath,
+      [resolve("index.js"), "my-agent"],
+      {
+        cwd: resolve(import.meta.dirname, ".."),
+        env: {
+          ...process.env,
+          CAPTURE_PATH: capture,
+          OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
+        },
       },
-    });
+    );
     assert.equal(result.status, 0, result.stderr.toString());
     assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
       "init",
       "my-agent",
+      "--agent-only",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -54,7 +59,45 @@ writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
       },
     });
     assert.equal(result.status, 0, result.stderr.toString());
-    assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), ["init", "."]);
+    assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
+      "init",
+      ".",
+      "--agent-only",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("passes the agent-only choice to the CLI", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
+  const capture = resolve(root, "args.json");
+  const cli = resolve(root, "cli.mjs");
+  try {
+    await writeFile(
+      cli,
+      `import { writeFileSync } from "node:fs";
+writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [resolve("index.js"), "my-agent", "--agent-only"],
+      {
+        cwd: resolve(import.meta.dirname, ".."),
+        env: {
+          ...process.env,
+          CAPTURE_PATH: capture,
+          OPENCOMPUTER_CREATE_START_CLI_PATH: cli,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr.toString());
+    assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
+      "init",
+      "my-agent",
+      "--agent-only",
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -63,10 +106,26 @@ writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
 test("creates the published CLI hello-world application", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "create-opencomputer-start-"));
   const app = resolve(root, "hello-agent");
+  const localCli = resolve(
+    import.meta.dirname,
+    "..",
+    "..",
+    "cli",
+    "dist",
+    "index.js",
+  );
   try {
-    const result = spawnSync(process.execPath, [resolve("index.js"), app], {
-      cwd: resolve(import.meta.dirname, ".."),
-    });
+    const result = spawnSync(
+      process.execPath,
+      [resolve("index.js"), app, "--spa"],
+      {
+        cwd: resolve(import.meta.dirname, ".."),
+        env: {
+          ...process.env,
+          OPENCOMPUTER_CREATE_START_CLI_PATH: localCli,
+        },
+      },
+    );
     assert.equal(result.status, 0, result.stderr.toString());
     assert.equal(
       (

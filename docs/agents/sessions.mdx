@@ -9,15 +9,16 @@ conversation without rebuilding its history locally.
 
 ## React
 
-The starter includes `src/use-agent.ts`. Its `useAgent()` hook exposes:
+When you select the React SPA, the starter imports `useAgent()` from
+`@opencomputer/react`. The hook exposes:
 
 - `messages` — accumulated user and assistant messages
 - `send(text)` — create a session if necessary and stream the next turn
 - `isRunning` — whether a turn is active
 - `error` — the latest request error
 
-The generated hook is ordinary application code. Extend it, replace its UI, or
-build additional hooks around the same session endpoints.
+The hook accepts an agent selector such as `hello-world@development`. Build
+additional UI and application hooks around its session state as needed.
 
 ## Agent playground
 

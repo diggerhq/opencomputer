@@ -1,5 +1,6 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { OpenComputerClient } from "./api.js";
@@ -72,15 +73,58 @@ function sourceChange(filename: string | Buffer | null): boolean {
   return !normalized.split("/").includes(".opencomputer");
 }
 
-function waitForShutdown(): Promise<void> {
+function waitForShutdown(web?: ChildProcess): Promise<void> {
   return new Promise((done) => {
-    const stop = () => {
+    const cleanup = () => {
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
+      web?.off("exit", webStopped);
+    };
+    const stop = () => {
+      cleanup();
+      done();
+    };
+    const webStopped = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      process.stderr.write(
+        `React dev server stopped${signal ? ` (${signal})` : ` (${String(code)})`}.\n`,
+      );
       done();
     };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
+    web?.once("exit", webStopped);
+  });
+}
+
+export function projectDashboardURL(apiUrl: string, projectId: string): string {
+  return `${apiUrl.replace(/\/+$/, "")}/projects/${encodeURIComponent(projectId)}`;
+}
+
+export async function hasReactSpa(projectRoot: string): Promise<boolean> {
+  try {
+    await Promise.all([
+      access(resolve(projectRoot, "vite.config.ts")),
+      access(resolve(projectRoot, "src", "main.tsx")),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function startReactDevServer(projectRoot: string): Promise<ChildProcess> {
+  const vite = resolve(projectRoot, "node_modules", "vite", "bin", "vite.js");
+  try {
+    await access(vite);
+  } catch {
+    throw new Error(
+      "This project includes a React SPA, but Vite is not installed. Run npm install first.",
+    );
+  }
+  return spawn(process.execPath, [vite], {
+    cwd: projectRoot,
+    stdio: "inherit",
   });
 }
 
@@ -98,7 +142,7 @@ export async function runCloudDevelopment(
     options,
   );
   const gateway = await startGateway(config);
-  const stateDirectory = resolve(root, ".opencomputer");
+  const stateDirectory = resolve(projectRoot, ".opencomputer");
   const stateFile = resolve(stateDirectory, "dev.json");
   await mkdir(stateDirectory, { recursive: true });
   await writeFile(
@@ -114,6 +158,7 @@ export async function runCloudDevelopment(
   );
 
   let watcher: FSWatcher | undefined;
+  let web: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
   let publishing = false;
   let pending = false;
@@ -164,23 +209,33 @@ export async function runCloudDevelopment(
     for (const result of initial) {
       lastDigests.set(result.deployment.agentId, result.built.digest);
     }
+    const spa = await hasReactSpa(projectRoot);
     process.stdout.write(
       `Development (Cloud)\n` +
         `Project:    ${binding.projectName} (${binding.projectId})\n` +
+        `Dashboard:  ${projectDashboardURL(config.apiUrl, binding.projectId)}\n` +
         `Agents:     ${initial.map((result) => `${result.deployment.agentId}@development`).join(", ")}\n` +
         `Deployments:${initial.map((result) => ` ${result.deployment.id}`).join("\n            ")}\n` +
         `Watching:   ${projectRoot}\n` +
-        `React:      run npm run dev:web in another terminal\n`,
+        (spa
+          ? `React:      starting local Vite app\n`
+          : `React:      not included\n`),
     );
-    watcher = watch(projectRoot, { recursive: true }, (_event, filename) => {
-      if (!sourceChange(filename)) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => void publish(), DEBOUNCE_MS);
-    });
-    await waitForShutdown();
+    if (spa) web = await startReactDevServer(projectRoot);
+    watcher = watch(
+      resolve(projectRoot, "opencomputer"),
+      { recursive: true },
+      (_event, filename) => {
+        if (!sourceChange(filename)) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => void publish(), DEBOUNCE_MS);
+      },
+    );
+    await waitForShutdown(web);
   } finally {
     if (timer) clearTimeout(timer);
     watcher?.close();
+    if (web?.exitCode === null && web.signalCode === null) web.kill("SIGTERM");
     await rm(stateFile, { force: true });
     await gateway.close();
   }

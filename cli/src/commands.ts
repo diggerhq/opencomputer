@@ -511,13 +511,20 @@ export async function runCommand(
   }
 
   if (command === "init") {
+    const spa = flag(args, "--spa");
+    const agentOnly = flag(args, "--agent-only");
+    if (spa && agentOnly) {
+      throw new Error("Choose either --spa or --agent-only");
+    }
     const directory = args.shift();
     if (!directory) {
       throw new Error("Usage: opencomputer init <directory|.>");
     }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     await assertStarterTarget(directory);
-    const initialized = await initializeAgentProject(directory);
+    const initialized = await initializeAgentProject(directory, undefined, {
+      spa: !agentOnly,
+    });
     if (globals.json) printJSON(initialized);
     else {
       const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
@@ -526,12 +533,11 @@ export async function runCommand(
           `Directory: ${initialized.root}\n` +
           `Project:   choose or create one on the first npm run dev\n` +
           `Agents:    opencomputer/\n` +
-          `React:     src/\n\n` +
+          (agentOnly ? `App:       agent only\n\n` : `React:     src/\n\n`) +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  npm run dev       # terminal 1: cloud agent sync\n` +
-          `  npm run dev:web   # terminal 2: React app\n`,
+          `  npm run dev       # cloud sync${agentOnly ? "" : " + React app"}\n`,
       );
     }
     return;

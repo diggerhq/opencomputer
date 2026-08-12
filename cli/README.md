@@ -1,7 +1,7 @@
 # @opencomputer/cli
 
-The agent-focused OpenComputer CLI creates, develops, and deploys projects that
-contain agent code and a React application.
+The agent-focused OpenComputer CLI creates, develops, and deploys agent
+projects with an optional React application.
 
 ```bash
 npm create @opencomputer/start@latest my-agent
@@ -11,18 +11,14 @@ npx opencomputer login
 npx opencomputer link
 ```
 
-The npm initializer delegates to `opencomputer init` and creates the same
-hello-world app. Agent definitions live
-under `opencomputer/agents/`; the generated React app lives under `src/`.
+The npm initializer asks whether to include a React SPA, then delegates to
+`opencomputer init`. Agent definitions live under `opencomputer/agents/`; the
+optional React app lives under `src/`.
 
-Use two terminals during development:
+Start cloud sync and the optional React app together:
 
 ```bash
-# terminal 1 — sync agents to Development (Cloud)
 npm run dev
-
-# terminal 2 — Vite React app
-npm run dev:web
 ```
 
 `opencomputer link` asks whether to create a project or select an existing
@@ -34,8 +30,9 @@ Use `opencomputer dev --project <id|slug>` for non-interactive selection or
 The production cloud API (`https://app.opencomputer.dev`) is the default.
 Override it only with `--api-url` or `OPENCOMPUTER_API_URL`.
 
-The React app uses the generated `useAgent` hook. Vite proxies agent requests
-through the CLI's authenticated bridge; agent execution remains in the cloud.
+The command prints the cloud dashboard URL. A React app imports `useAgent`
+from `@opencomputer/react`; Vite proxies requests through the CLI's
+authenticated bridge, while agent execution remains in the cloud.
 
 Deploy the same agent source when it is ready:
 
