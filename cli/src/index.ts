@@ -40,7 +40,7 @@ function takeFlag(args: string[], name: string): boolean {
 function help(): void {
   process.stdout.write(`${BANNER}
 
-OpenComputer — build, test, connect, and deploy agents as code
+OpenComputer — build, test, and deploy agents as code
 
 Usage:
   opencomputer login [--no-browser] [--force]
@@ -58,15 +58,10 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer connection add <gmail|calendar|github> [--alias <name>]
-  opencomputer connection list
-  opencomputer connection remove <alias|connection-id>
   opencomputer secrets set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
-  opencomputer channels list [--local|--remote]
-  opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]
   opencomputer run <agent> <prompt> [--keep]
 

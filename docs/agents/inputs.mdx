@@ -26,7 +26,6 @@ export default function Agent() {
 interface AgentInput {
   readonly source:
     | "user"
-    | "channel"
     | "schedule"
     | "webhook"
     | "subagent"
@@ -48,7 +47,7 @@ before use.
 
 ## Adapt to the source
 
-One agent can handle direct user messages, channels, schedules, webhooks, and
+One agent can handle direct user messages, schedules, webhooks, and
 subagent calls without separate definitions:
 
 ```tsx
@@ -58,8 +57,6 @@ export default function Agent() {
   const input = useInput();
 
   switch (input.source) {
-    case "channel":
-      return "Reply naturally and keep the answer suitable for a shared chat.";
     case "schedule":
       return "Run the scheduled review and summarize anything that changed.";
     case "webhook":

@@ -31,7 +31,7 @@ The key is a string. Pass a TypeScript type argument for the expected value:
 ```tsx
 const locale = useSessionData<string>("locale");
 const approved = useSessionData<boolean>("brief_approved");
-const channels = useSessionData<readonly string[]>("channels");
+const tags = useSessionData<readonly string[]>("tags");
 ```
 
 The hook returns `undefined` when the key is absent. Handle that case rather

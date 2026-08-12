@@ -45,7 +45,6 @@ agent function.
 | `useTool(tool)` | Exposes a named or code-defined tool | [Tools](/agents/tools) |
 | `useMcpServer(server)` | Exposes tools from a managed HTTPS MCP server | [MCP servers](/agents/mcp) |
 | `useSubagent(agent)` | Makes another project agent available for delegation | [Subagents](/agents/subagents) |
-| `useConnection(connection)` | Requires a managed user or HTTP connection | [Connections](/agents/connections) |
 | `useSessionData<T>(key)` | Reads a durable value associated with the session | [Session data](/agents/session-data) |
 
 [Skills](/agents/skills) are also agent capabilities, but they are discovered
@@ -57,16 +56,9 @@ Hooks are ordinary synchronous functions. Group related capabilities in a
 custom hook when several agents use the same setup:
 
 ```tsx
-import {
-  connection,
-  useConnection,
-  useTool,
-} from "@opencomputer/agent";
-
-const github = connection("github");
+import { useTool } from "@opencomputer/agent";
 
 function useGitHubResearch() {
-  useConnection(github);
   useTool("github-search");
   return "Check GitHub before making claims about repositories or issues.";
 }

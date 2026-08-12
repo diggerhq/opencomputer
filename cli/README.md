@@ -63,8 +63,8 @@ opencomputer secrets list --environment development
 opencomputer secrets remove GITHUB_TOKEN --environment development
 ```
 
-Agent code declares secret-backed destinations with `defineConnection()`,
-`useSecret()`, and `useConnection()`. Requests use the managed gateway, which
+Agent code declares secret-backed destinations with `defineConnection()` and
+`useSecret()`. Requests use the managed gateway, which
 injects a secret only for the declared origin, path, method, agent, and
 environment. The plaintext secret is not added to the deployment or runtime.
 

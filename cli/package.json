@@ -1,7 +1,7 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.4.11",
-  "description": "Build, test, connect, deploy, and share OpenComputer agents as code.",
+  "version": "0.5.0",
+  "description": "Build, test, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
     "opencomputer": "dist/index.js",

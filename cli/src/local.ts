@@ -4,7 +4,7 @@ import {
   type ToolPart,
 } from "@opencode-ai/sdk/v2";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import {
   createServer,
@@ -113,73 +113,7 @@ export async function startGateway(config: ResolvedConfig): Promise<{
       let target: string;
       let upstreamMethod = request.method;
       let upstreamBody: Buffer | string | undefined;
-      if (
-        request.method === "POST" &&
-        (url.pathname === "/google/fetch" || url.pathname === "/github/fetch")
-      ) {
-        const provider = url.pathname.startsWith("/github/")
-          ? "github"
-          : "google";
-        target = `${config.apiUrl}/api/managed-agents/connections/${provider}/fetch`;
-        upstreamBody = await readBody(request);
-      } else if (
-        request.method === "POST" &&
-        url.pathname === "/opencomputer/fetch"
-      ) {
-        const raw = await readBody(request);
-        let input: Record<string, unknown>;
-        try {
-          const parsed: unknown = JSON.parse(raw.toString("utf8"));
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error("invalid payload");
-          }
-          input = parsed as Record<string, unknown>;
-        } catch {
-          sendJSON(response, 400, {
-            error: { message: "Connection control payload must be valid JSON" },
-          });
-          return;
-        }
-        if (input.action === "list") {
-          target = `${config.apiUrl}/api/managed-agents/connections`;
-          upstreamMethod = "GET";
-        } else if (input.action === "request") {
-          const service = input.service;
-          if (
-            typeof service !== "string" ||
-            !["gmail", "calendar", "drive", "sheets", "github"].includes(
-              service,
-            )
-          ) {
-            sendJSON(response, 400, {
-              error: {
-                message:
-                  "Expected one of gmail, calendar, drive, sheets, or github",
-              },
-            });
-            return;
-          }
-          const requestedLabel =
-            typeof input.label === "string" && input.label.trim()
-              ? input.label.trim()
-              : undefined;
-          const label =
-            requestedLabel ??
-            (input.newAccount === true
-              ? `${service}-${randomUUID().slice(0, 8)}`
-              : "default");
-          target = `${config.apiUrl}/api/managed-agents/connections/link`;
-          upstreamMethod = "POST";
-          upstreamBody = JSON.stringify({ service, label });
-        } else {
-          sendJSON(response, 400, {
-            error: {
-              message: "Expected a list or request connection action",
-            },
-          });
-          return;
-        }
-      } else if (url.pathname.startsWith("/openrouter/")) {
+      if (url.pathname.startsWith("/openrouter/")) {
         target =
           `${config.apiUrl}/api/managed-agents/openrouter` +
           `${url.pathname.slice("/openrouter".length)}${url.search}`;

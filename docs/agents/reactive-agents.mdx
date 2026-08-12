@@ -27,12 +27,11 @@ needs it.
 | `useModel(model)` | Selects a model using `provider/model` notation |
 | `useTool(tool)` | Makes a named or code-defined tool available |
 | `useSubagent(agent)` | Makes another project agent available as a subagent |
-| `useConnection(connection)` | Declares a user-scoped service connection needed by this render |
 | `useMcpServer(server)` | Attaches a managed HTTPS MCP server |
 | `useSessionData(key)` | Reads a value previously stored in the current session |
 
 `useInput()` is not a human-in-the-loop prompt. It describes the input that
-caused the current render. Its `source` can be `user`, `channel`, `schedule`,
+caused the current render. Its `source` can be `user`, `schedule`,
 `webhook`, `subagent`, or `system`.
 
 ## Conditional configuration

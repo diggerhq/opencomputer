@@ -23,8 +23,8 @@ export default function Agent() {
 
 The exported function is a reactive description of the agent. OpenComputer
 renders it for the current input and uses its return value as instructions for
-the managed agent loop. Hooks attach the model, tools, connections, MCP
-servers, and subagents needed for that render.
+the managed agent loop. Hooks attach the model, tools, MCP servers, and
+subagents needed for that render.
 
 <CardGroup cols={2}>
   <Card title="Projects" icon="folder" href="/agents/projects">
@@ -70,18 +70,16 @@ same command also starts it locally.
 ## What is available today
 
 - TypeScript projects containing one or more agents
-- reactive instructions, model selection, tools, subagents, connections, MCP
+- reactive instructions, model selection, tools, subagents, MCP
   servers, input metadata, and session data reads
 - cloud development with file watching and automatic synchronization
 - an optional React client using `@opencomputer/react` for streaming and
   multi-turn session reuse
 - dashboard and CLI playground sessions
 - immutable deployments promoted through aliases such as `production`
-- user-scoped Gmail, Calendar, and GitHub connections
 - project-level secrets with optional agent overrides and managed egress
 - indexed runtime and egress logs available from the CLI
-- Slack channels connected to deployed agent aliases
 
 The dashboard is primarily an inspection and testing surface. Agent behavior
-belongs in the repository under `opencomputer/`; credentials and user account
-authorizations remain managed by OpenComputer.
+belongs in the repository under `opencomputer/`; credentials remain managed by
+OpenComputer.

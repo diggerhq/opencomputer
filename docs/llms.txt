@@ -1,13 +1,13 @@
 # OpenComputer Serverless Agents
 
-> Build, test, connect, and deploy serverless agents as code with OpenComputer.
+> Build, test, and deploy serverless agents as code with OpenComputer.
 
 ## Serverless Agents
 
-- [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, connect, and deploy agents as code.
+- [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, and deploy agents as code.
 - [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
 - [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple agents and a React application.
-- [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, connections, and MCP servers from code.
+- [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, and MCP servers from code.
 - [Agent hooks](https://docs.opencomputer.dev/agents/hooks.md): Compose agent capabilities with reactive hooks.
 - [Inputs](https://docs.opencomputer.dev/agents/inputs.md): Read text, structured payloads, and input sources with `useInput()`.
 - [Models](https://docs.opencomputer.dev/agents/models.md): Select a managed model with `useModel()`.
@@ -17,10 +17,8 @@
 - [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
 - [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
 - [Sessions and playground](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
-- [Connections and MCP](https://docs.opencomputer.dev/agents/connections.md): Attach user-scoped services and managed MCP servers from code.
 - [Secrets and managed egress](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
 - [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow runtime and managed-egress logs.
-- [Channels](https://docs.opencomputer.dev/agents/channels.md): Connect deployed agents to Slack.
 
 ## Examples
 
