@@ -1,10 +1,17 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Build, test, connect, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
-    "opencomputer": "dist/index.js"
+    "opencomputer": "dist/index.js",
+    "opencomputer-create": "dist/create-start-bin.js"
+  },
+  "exports": {
+    "./create-start": {
+      "types": "./dist/create-start.d.ts",
+      "import": "./dist/create-start.js"
+    }
   },
   "files": [
     "dist",
@@ -12,7 +19,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build:server": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
+    "build:server": "tsc -p tsconfig.json && node -e \"for (const f of ['dist/index.js','dist/create-start-bin.js']) require('node:fs').chmodSync(f, 0o755)\"",
     "build:ui": "tsc -p tsconfig.ui.json --noEmit && vite build",
     "build": "npm run clean && npm run build:server && npm run build:ui",
     "test": "npm run build && node --test dist/*.test.js",

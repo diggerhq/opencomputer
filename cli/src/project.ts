@@ -512,7 +512,7 @@ export default function Agent() {
             : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.10",
+          "@opencomputer/cli": "^0.4.11",
           ...(spa
             ? {
                 "@types/node": "^24.0.0",
