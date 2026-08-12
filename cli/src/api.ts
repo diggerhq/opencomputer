@@ -146,6 +146,7 @@ export class OpenComputerClient {
     path: string,
     init: RequestInit = {},
     authenticated = true,
+    timeoutMs = 30_000,
   ): Promise<T> {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has("content-type")) {
@@ -163,7 +164,7 @@ export class OpenComputerClient {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status === 204) return undefined as T;
     const body: unknown = await response.json().catch(() => undefined);
@@ -346,10 +347,15 @@ export class OpenComputerClient {
       status: "empty" | "filling" | "ready";
       ready: boolean;
       expiresAt: string;
-    }>("/api/managed-agents/development/leases", {
-      method: "POST",
-      body: JSON.stringify({ agentId }),
-    });
+    }>(
+      "/api/managed-agents/development/leases",
+      {
+        method: "POST",
+        body: JSON.stringify({ agentId }),
+      },
+      true,
+      90_000,
+    );
   }
 
   releaseDevelopmentLease(agentId: string) {

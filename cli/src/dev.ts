@@ -118,6 +118,7 @@ export async function runCloudDevelopment(
   let timer: NodeJS.Timeout | undefined;
   let leaseTimer: NodeJS.Timeout | undefined;
   let leaseRenewal: Promise<void> | undefined;
+  let lastLeaseSummary: string | undefined;
   let publishing = false;
   let pending = false;
   const lastDigests = new Map<string, string>();
@@ -179,11 +180,18 @@ export async function runCloudDevelopment(
               client.renewDevelopmentLease(agentId),
             ),
           );
-          if (announce) {
+          const summary = leases
+            .map(
+              (lease) =>
+                `${lease.agentId} ${lease.ready ? "ready" : lease.status}`,
+            )
+            .join(", ");
+          if (announce || summary !== lastLeaseSummary) {
             process.stdout.write(
-              `Standby:    ${leases.map((lease) => `${lease.agentId} ${lease.ready ? "ready" : lease.status}`).join(", ")}\n`,
+              `Standby:    ${summary}\n`,
             );
           }
+          lastLeaseSummary = summary;
         } catch (error) {
           process.stderr.write(
             `Standby unavailable; new sessions will start cold: ${error instanceof Error ? error.message : String(error)}\n`,
