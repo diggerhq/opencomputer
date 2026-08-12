@@ -38,25 +38,34 @@ close the connection itself.
 | --- | --- | --- |
 | `id` | yes | Stable ID for the server in the deployment |
 | `url` | yes | HTTPS MCP endpoint |
-| `connection` | no | Managed connection used to authorize the server |
+| `connection` | no | Secret-backed HTTP connection used to authorize the server |
 
 `useMcpServer()` accepts either a definition or an existing server ID.
 
 ## Attach authorization
 
-Reference a managed user connection when the server requires authorization:
+Reference a secret-backed HTTP connection when the server requires
+authorization:
 
 ```tsx
 import {
-  connection,
+  bearer,
+  defineConnection,
   defineMcpServer,
+  useSecret,
   useMcpServer,
 } from "@opencomputer/agent";
 
-const github = connection("github");
+const github = defineConnection({
+  id: "github-mcp-auth",
+  origin: "https://api.githubcopilot.com",
+  headers: {
+    Authorization: bearer(useSecret("GITHUB_PAT")),
+  },
+});
 const githubMcp = defineMcpServer({
   id: "github",
-  url: "https://mcp.example.com/github",
+  url: "https://api.githubcopilot.com/mcp/",
   connection: github,
 });
 
@@ -66,10 +75,9 @@ export default function Agent() {
 }
 ```
 
-The connection declaration contains an identifier, not an OAuth token. Each
-user authorizes their own account through OpenComputer. See
-[Connections and MCP](/agents/connections) for authorization commands and
-missing-connection behavior.
+The declaration contains only a secret reference. Set the secret with
+`opencomputer secrets set GITHUB_PAT`; its value is injected only into requests
+to the declared origin. See [Secrets and managed egress](/agents/secrets).
 
 ## Attach MCP conditionally
 

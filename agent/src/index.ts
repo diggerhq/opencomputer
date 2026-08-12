@@ -79,7 +79,6 @@ interface AgentHooks {
   useTool(tool: string | ResourceReference): void;
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
-  useConnection(connection: string | ResourceReference): void;
   useMcpServer(server: string | ResourceReference): void;
 }
 
@@ -99,10 +98,6 @@ function identifier(value: string, kind: string): string {
   const id = value.trim();
   if (!id) throw new Error(`${kind} requires a non-empty id`);
   return id;
-}
-
-export function connection(id: string): ConnectionReference {
-  return Object.freeze({ kind: "connection", id: identifier(id, "connection") });
 }
 
 export function useSecret(name: string): SecretReference {
@@ -258,7 +253,6 @@ export const useCurrentInput = useInput;
 export const useModel = (model: ModelSelection): void => hooks().useModel(model);
 export const useTool = (tool: string | ResourceReference): void => hooks().useTool(tool);
 export const useSubagent = (agent: string | ResourceReference): void => hooks().useSubagent(agent);
-export const useConnection = (value: string | ResourceReference): void => hooks().useConnection(value);
 export const useMcpServer = (server: string | ResourceReference): void => hooks().useMcpServer(server);
 export function useSessionData<T extends DataValue>(key: string): T | undefined {
   return hooks().useSessionData<T>(key);

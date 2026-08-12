@@ -42,10 +42,8 @@
               "agents/subagents",
               "agents/session-data",
               "agents/sessions",
-              "agents/connections",
               "agents/secrets",
-              "agents/logs",
-              "agents/channels"
+              "agents/logs"
             ]
           },
           {

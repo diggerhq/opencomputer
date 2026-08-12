@@ -23,12 +23,11 @@ describe that call; they do not perform I/O or run the durable agent loop.
   `provider/model` spelling.
 - `useTool()` and `useSubagent()` select declared capabilities.
 - `useSessionData()` reads the current durable session-data snapshot.
-- `useConnection()` declares a named managed connection requirement.
 - `useMcpServer()` conditionally selects a declared MCP server.
 
-Use `connection()` and `defineMcpServer()` for stable code declarations. Never
-put credentials in these declarations: OpenComputer resolves secrets through
-its managed gateway.
+Use `defineMcpServer()` for stable MCP declarations. Never put credentials
+directly in these declarations: OpenComputer resolves referenced secrets
+through its managed gateway.
 
 ## Secret-backed HTTP connections
 
@@ -41,7 +40,6 @@ import {
   bearer,
   defineConnection,
   defineTool,
-  useConnection,
   useSecret,
   useTool,
 } from "@opencomputer/agent";
@@ -66,7 +64,6 @@ const repository = defineTool({
 });
 
 export default function Agent() {
-  useConnection(github);
   useTool(repository);
   return "Use GitHub when the user asks about a repository.";
 }

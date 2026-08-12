@@ -90,104 +90,6 @@ export function agentIdFromName(value: string): string {
   return id;
 }
 
-function connectionControlToolSource(): string {
-  return `import { defineTool } from "@opencomputer/agent";
-
-async function connectionControl(
-  method: "GET" | "POST",
-  body?: unknown,
-): Promise<unknown> {
-  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
-  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
-  if (!base || !token) {
-    throw new Error("OpenComputer connections are unavailable");
-  }
-  const response = await fetch(
-    \`\${base.replace(/\\\/$/, "")}/opencomputer/fetch\`,
-    {
-      method: "POST",
-      headers: {
-        authorization: \`Bearer \${token}\`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        action: method === "GET" ? "list" : "request",
-        ...(body && typeof body === "object" ? body : {}),
-      }),
-    },
-  );
-  const responseText = await response.text();
-  let result: {
-    error?: { message?: string };
-    message?: string;
-    [key: string]: unknown;
-  } | undefined;
-  if (responseText) {
-    try {
-      const parsed: unknown = JSON.parse(responseText);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        result = parsed as {
-          error?: { message?: string };
-          message?: string;
-          [key: string]: unknown;
-        };
-      }
-    } catch {
-      // Preserve the response text below so the user sees the upstream error.
-    }
-  }
-  if (!response.ok) {
-    throw new Error(
-      result?.error?.message ??
-        result?.message ??
-        responseText ??
-        "Connection request failed",
-    );
-  }
-  if (!result) {
-    throw new Error("Connection service returned an empty response");
-  }
-  return result;
-}
-
-export const list = defineTool({
-  name: "opencomputer_connections_list",
-  description:
-    "List the connected accounts available to the current session identity. Use this to discover connection providers and aliases without exposing credentials.",
-  input: {
-    type: "object",
-    properties: {},
-    additionalProperties: false,
-  },
-  async run() {
-    return await connectionControl("GET");
-  },
-});
-
-export const request = defineTool({
-  name: "opencomputer_connections_request",
-  description:
-    "Ask the current user to connect an account. Use gmail for an email account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
-  input: {
-    type: "object",
-    properties: {
-      service: {
-        type: "string",
-        enum: ["gmail", "calendar", "drive", "sheets", "github"],
-      },
-      label: { type: "string" },
-      newAccount: { type: "boolean" },
-    },
-    required: ["service"],
-    additionalProperties: false,
-  },
-  async run({ input }) {
-    return await connectionControl("POST", input);
-  },
-});
-`;
-}
-
 export async function writeManifest(
   root: string,
   manifest: AgentManifest,
@@ -349,56 +251,6 @@ export async function readProjectAgents(
   );
 }
 
-export async function addSlackChannel(root: string): Promise<string[]> {
-  await mkdir(resolve(root, "channels"), { recursive: true });
-  await mkdir(resolve(root, "slack"), { recursive: true });
-  await writeFile(
-    resolve(root, "channels", "slack.ts"),
-    `export default {
-  type: "slack",
-  events: ["app_mention", "message.im"],
-};
-`,
-  );
-  const manifest = await readManifest(root);
-  await writeFile(
-    resolve(root, "slack", "manifest.json"),
-    `${JSON.stringify(
-      {
-        _metadata: { major_version: 1, minor_version: 1 },
-        display_information: {
-          name: manifest.name,
-          description: `Run the ${manifest.name} OpenComputer agent from Slack.`,
-          background_color: "#0B1220",
-        },
-        features: {
-          bot_user: { display_name: manifest.name, always_online: true },
-        },
-        oauth_config: {
-          scopes: {
-            bot: [
-              "app_mentions:read",
-              "assistant:write",
-              "chat:write",
-              "im:history",
-            ],
-          },
-        },
-        settings: {
-          event_subscriptions: {
-            bot_events: ["app_mention", "message.im"],
-          },
-          socket_mode_enabled: true,
-          token_rotation_enabled: false,
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  return ["channels/slack.ts", "slack/manifest.json"];
-}
-
 export async function assertStarterTarget(directory: string): Promise<void> {
   const root = resolve(directory);
   if (!(await exists(root))) {
@@ -502,7 +354,7 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.3.1",
+          "@opencomputer/agent": "^0.4.0",
           ...(spa
             ? {
                 "@opencomputer/react": "^0.1.0",
@@ -512,7 +364,7 @@ export default function Agent() {
             : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.4.11",
+          "@opencomputer/cli": "^0.5.0",
           ...(spa
             ? {
                 "@types/node": "^24.0.0",
@@ -1006,7 +858,6 @@ function id(value, kind) {
   if (!normalized) throw new Error(kind + " requires a non-empty id");
   return normalized;
 }
-export const connection = (value) => Object.freeze({ kind: "connection", id: id(value, "connection") });
 export const useSecret = (value) => {
   const name = id(value, "useSecret");
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
@@ -1063,7 +914,6 @@ export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
-export const useConnection = (value) => hooks().useConnection(value);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
 `;
@@ -1094,14 +944,6 @@ the product or support surface presented to users.
   issue trackers, or support channels.
 - Use the question tool when structured clarification is useful. OpenComputer
   delivers it through the current chat and resumes when the user replies.
-- Before saying an external account is unavailable, use the built-in
-  OpenComputer connection tools to list or request the required connection.
-- When the user asks for another account of the same service, request a new
-  account instead of returning the existing default connection.
-- If a connection request reports private-message delivery, tell the user to
-  check their private messages. If it returns an authorization URL, show it.
-- If a connection tool fails, report its exact error. Do not invent alternate
-  controls or third-party support instructions.
 
 `,
   );
@@ -1195,12 +1037,7 @@ the product or support surface presented to users.
     resolve(runtime, "opencomputer-agent.js"),
     agentApiRuntimeSource(),
   );
-  const toolSources: Array<{ filename: string; source: string }> = [
-    {
-      filename: "opencomputer-connections.ts",
-      source: connectionControlToolSource(),
-    },
-  ];
+  const toolSources: Array<{ filename: string; source: string }> = [];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
     const entries = await readdir(sourceTools, { withFileTypes: true });
@@ -1294,13 +1131,7 @@ the product or support surface presented to users.
         ].sort(),
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
-        connections: [
-          ...new Set([
-            ...literalHookIds(agentSource, "connection"),
-            ...literalHookIds(agentSource, "useConnection"),
-            ...httpConnections.map((connection) => connection.id),
-          ]),
-        ].sort(),
+        connections: httpConnections.map((connection) => connection.id).sort(),
         httpConnections,
         mcpServers: [
           ...new Set([
@@ -1314,21 +1145,6 @@ the product or support surface presented to users.
     )}\n`,
   );
   return runtime;
-}
-
-async function collectNames(root: string, type: "channels" | "connections") {
-  try {
-    return (
-      await readdir(resolve(root, type), {
-        withFileTypes: true,
-      })
-    )
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name.replace(/\.[^.]+$/, "").toLowerCase())
-      .sort();
-  } catch {
-    return [];
-  }
 }
 
 async function collectFiles(
@@ -1358,28 +1174,22 @@ export async function buildAgentArtifact(
   const startedAt = performance.now();
   const manifest = await readManifest(root);
   const runtime = await prepareAgent(root);
-  const channels = await collectNames(root, "channels");
   const reactive = JSON.parse(
     await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
   ) as { connections?: string[]; httpConnections?: HttpConnectionManifest[] };
-  const connections = [
-    ...new Set([
-      ...(await collectNames(root, "connections")),
-      ...(reactive.connections ?? []),
-    ]),
-  ].sort();
+  const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
-      channels,
+      channels: [],
       files: await collectFiles(runtime),
     }),
   );
   return {
     agentId: agentId ?? manifest.id,
     name: manifest.name,
-    channels,
+    channels: [],
     connections,
     httpConnections,
     body,

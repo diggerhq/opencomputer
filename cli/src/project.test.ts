@@ -55,9 +55,9 @@ test("init creates a multi-agent-ready project and React hello world app", async
     };
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
     assert.equal(packageJSON.scripts["dev:web"], undefined);
-    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.3.1");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.4.0");
     assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.4.11");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.5.0");
     assert.ok(packageJSON.devDependencies["@types/node"]);
     const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
     assert.match(viteConfig, /command === "serve"/);
@@ -89,7 +89,6 @@ test("init creates a multi-agent-ready project and React hello world app", async
       "tools",
       "connections",
       "skills",
-      "channels",
       "workspace",
       "evals",
     ]) {
@@ -160,9 +159,7 @@ test("the code-first compiler records hook resources without config files", asyn
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
       `import {
-  connection,
   defineMcpServer,
-  useConnection,
   useInput,
   useMcpServer,
   useModel,
@@ -170,11 +167,9 @@ test("the code-first compiler records hook resources without config files", asyn
   useTool,
 } from "@opencomputer/agent";
 
-const github = connection("github");
 const docs = defineMcpServer({
   id: "docs",
   url: "https://mcp.example.com",
-  connection: github,
 });
 
 export default function Agent() {
@@ -182,7 +177,6 @@ export default function Agent() {
   useModel("anthropic/claude-sonnet-4.6");
   useTool("search-docs");
   useSubagent("researcher");
-  useConnection(github);
   if (input.text?.includes("docs")) useMcpServer(docs);
   return "Help with the request.";
 }
@@ -207,14 +201,10 @@ export default function Agent() {
     assert.deepEqual(manifest, {
       version: 2,
       entry: "../agent.js",
-      tools: [
-        "opencomputer_connections_list",
-        "opencomputer_connections_request",
-        "search-docs",
-      ],
-      toolModules: ["../tools/opencomputer-connections.js"],
+      tools: ["search-docs"],
+      toolModules: [],
       subagents: ["researcher"],
-      connections: ["github"],
+      connections: [],
       httpConnections: [],
       mcpServers: ["docs"],
     });
@@ -256,11 +246,10 @@ export const repository = defineTool({
     );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
-      `import { useConnection, useTool } from "@opencomputer/agent";
-import { github, repository } from "./tools/github.js";
+      `import { useTool } from "@opencomputer/agent";
+import { repository } from "./tools/github.js";
 
 export default function Agent() {
-  useConnection(github);
   useTool(repository);
   return "Use GitHub when needed.";
 }
@@ -327,7 +316,7 @@ export default function Agent() {
   }
 });
 
-test("the compiler packages OpenComputer tools for native OpenCode 2 registration", async () => {
+test("the compiler packages code-defined tools for native OpenCode 2 registration", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-v2-tools-"));
   const root = resolve(parent, "app");
   try {

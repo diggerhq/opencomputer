@@ -1,6 +1,6 @@
 ---
 title: "Sessions and playground"
-description: "Create durable conversations from React, the dashboard, channels, or the CLI"
+description: "Create durable conversations from React, the dashboard, or the CLI"
 ---
 
 A session is a durable conversation with a deployed agent. Each turn appends
@@ -27,8 +27,8 @@ agent and environment independently, then create a new session or resume a
 previous playground session.
 
 Playground sessions stay in the playground list. Sessions started through an
-API or channel appear under **Sessions**, where their durable turn history can
-be inspected.
+API appear under **Sessions**, where their durable turn history can be
+inspected.
 
 ## CLI
 
@@ -55,15 +55,6 @@ the command exits.
 
 ## Input sources
 
-Inside an agent, `useInput().source` identifies how the current work arrived:
-
-```tsx
-const input = useInput();
-
-if (input.source === "channel") {
-  return "Respond naturally for a shared chat channel.";
-}
-```
-
-This lets the same agent adapt to React, playground, API, channel, schedule,
-webhook, subagent, and system inputs without separate agent definitions.
+Inside an agent, `useInput().source` identifies how the current work arrived.
+This lets the same agent adapt to React, playground, API, schedule, webhook,
+subagent, and system inputs without separate agent definitions.

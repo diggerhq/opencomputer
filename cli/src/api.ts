@@ -37,34 +37,6 @@ export interface ManagedAgentDeployment {
   createdAt: string;
 }
 
-export interface ManagedConnection {
-  id: string;
-  kind?: "channel" | "tool";
-  provider: string;
-  label: string;
-  agentId?: string;
-  alias?: string;
-  externalAccountId?: string;
-  displayName?: string;
-  scopes?: string[];
-  status: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface ManagedSlackConnection {
-  id: string;
-  agentId: string;
-  alias: string;
-  appId?: string;
-  teamId?: string;
-  teamName?: string;
-  botUserId?: string;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface ManagedAgentEvent {
   id: string;
   seq: number;
@@ -336,102 +308,6 @@ export class OpenComputerClient {
     return this.request<ManagedAgentDeployment>(
       "/api/managed-agents/deployments",
       { method: "POST", body: JSON.stringify(input) },
-    );
-  }
-
-  async connections(): Promise<ManagedConnection[]> {
-    const result = await this.request<{ connections: ManagedConnection[] }>(
-      "/api/managed-agents/connections",
-    );
-    return result.connections;
-  }
-
-  disconnectConnection(connectionId: string) {
-    return this.request<ManagedConnection>(
-      `/api/managed-agents/connections/${encodeURIComponent(connectionId)}`,
-      { method: "DELETE" },
-    );
-  }
-
-  linkManagedConnection(service: string, label: string) {
-    return this.request<{
-      connectionId: string;
-      label: string;
-      service: string;
-      toolkit: string;
-      status: "connected" | "pending";
-      connectedAccountId?: string;
-      authorizationUrl?: string;
-      expiresAt?: string;
-    }>("/api/managed-agents/connections/link", {
-      method: "POST",
-      body: JSON.stringify({ service, label }),
-    });
-  }
-
-  managedConnection(connectionId: string, service: string) {
-    const provider = service === "github" ? "github" : "google";
-    return this.request<{
-      connectionId: string;
-      label: string;
-      service: string;
-      toolkit: string;
-      status: "connected" | "pending";
-      connectedAccountId?: string;
-      authorizationUrl?: string;
-      expiresAt?: string;
-    }>(
-      `/api/managed-agents/connections/${provider}/status?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
-    );
-  }
-
-  disconnectManagedConnection(connectionId: string, service: string) {
-    const provider = service === "github" ? "github" : "google";
-    return this.request<{
-      connectionId: string;
-      label: string;
-      service: string;
-      toolkit: string;
-      status: "disconnected";
-      connectedAccountId?: string;
-    }>(
-      `/api/managed-agents/connections/${provider}?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
-      { method: "DELETE" },
-    );
-  }
-
-  createSlackConnection(agentId: string) {
-    return this.request<{
-      connection: ManagedSlackConnection;
-      webhookUrl: string;
-    }>("/api/managed-agents/channels/slack/connections", {
-      method: "POST",
-      body: JSON.stringify({ agentId }),
-    });
-  }
-
-  async channelConnections(): Promise<ManagedSlackConnection[]> {
-    const result = await this.request<{
-      channels?: ManagedSlackConnection[];
-      connections?: ManagedSlackConnection[];
-    }>("/api/managed-agents/channels");
-    return result.channels ?? result.connections ?? [];
-  }
-
-  completeSlackConnection(connectionId: string, botToken: string) {
-    return this.request<ManagedSlackConnection>(
-      `/api/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ botToken }),
-      },
-    );
-  }
-
-  disconnectSlack(connectionId: string) {
-    return this.request<ManagedSlackConnection>(
-      `/api/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
-      { method: "DELETE" },
     );
   }
 
