@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { displayManagedAgentName, managedAgentRenderDebug } from './api'
+import {
+  displayManagedAgentName,
+  managedAgentRenderDebug,
+  nextAgentEventDeadline,
+} from './api'
+
+describe('nextAgentEventDeadline', () => {
+  it('refreshes the inactivity deadline only when progress arrives', () => {
+    expect(nextAgentEventDeadline(10_000, 3_000, 0, 9_000)).toBe(10_000)
+    expect(nextAgentEventDeadline(10_000, 3_000, 1, 9_000)).toBe(12_000)
+  })
+})
 
 describe('displayManagedAgentName', () => {
   it('hides UUID-shaped legacy names without hiding readable stable names', () => {
