@@ -17,6 +17,10 @@ import { decodeResult, encodeExec, type ExecResult } from "./protocol";
 // per-op cost otherwise; the colo/connect one-shot logs stay on).
 const DIAG = false;
 
+// Reserved request id for host↔DO liveness frames in both directions. run()
+// mints ids from 1 (`nextRequestId++ >>> 0 || 1`), so 0 can never collide.
+const PING_REQUEST_ID = 0;
+
 interface PendingCommand {
   resolve: (result: ExecResult) => void;
   reject: (error: Error) => void;
@@ -217,13 +221,29 @@ export class VmSession extends DurableObject {
     return result;
   }
 
-  webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): void {
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     if (!(message instanceof ArrayBuffer)) return;
     let result: ExecResult;
     try {
       result = decodeResult(message);
     } catch (error) {
       console.error("invalid VM frame", error);
+      return;
+    }
+    // requestId 0 is the host's app-level liveness ping (never a real exec —
+    // run() mints ids from 1). Answering it is the ONLY way the host can tell
+    // "this DO still holds the socket" from "Cloudflare's edge is answering
+    // control-frame pings for a DO that lost it"; an unanswered ping is what
+    // makes the host drop a zombie channel and redial instead of leaving every
+    // exec on this box to fall back to the tunnel.
+    if (result.requestId === PING_REQUEST_ID) {
+      try {
+        socket.send(encodeExec({ requestId: PING_REQUEST_ID, command: "", cwd: "", timeoutMs: 0, env: {} }));
+      } catch (e) {
+        // Only the failure is worth a log line: a healthy fleet pings every 20s
+        // per box, so logging the answer would drown the tail.
+        console.log(`ping: reply failed ${String(e)}`);
+      }
       return;
     }
     const pending = this.pending.get(result.requestId);

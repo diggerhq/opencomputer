@@ -1077,17 +1077,40 @@ func (s *Store) CompleteMigration(ctx context.Context, sandboxID, newWorkerID st
 	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
 	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
 	// The migration DID succeed (QEMU is running on the target), so force the update.
+	//
+	// 'pooled'/'edge_reserved' are here because a warm-pool box gets drained off
+	// an evacuating worker exactly like a customer box, but SetMigrating only
+	// promotes from 'running', so it never enters 'migrating'. Omitting them
+	// matched zero rows: the VM moved while PG kept pointing at the OLD worker,
+	// and the box's first customer exec routed to a worker that no longer had it
+	// ("auto-resume failed … sandbox not found" — 13% of a dev burst-30).
+	// Their status must be PRESERVED, not forced to 'running': an unclaimed pool
+	// box promoted to 'running' would bill, count against quota, and escape the
+	// pool accounting.
 	var orgID uuid.UUID
+	var newStatus string
 	err = tx.QueryRow(ctx,
-		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
-		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')
-		 RETURNING org_id`,
-		newWorkerID, sandboxID).Scan(&orgID)
+		`UPDATE sandbox_sessions
+		 SET worker_id = $1,
+		     migrating_to_worker = '',
+		     status     = CASE WHEN status IN ('pooled', 'edge_reserved') THEN status ELSE 'running' END,
+		     stopped_at = CASE WHEN status IN ('pooled', 'edge_reserved') THEN stopped_at ELSE NULL END,
+		     error_msg  = NULL
+		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped', 'pooled', 'edge_reserved')
+		 RETURNING org_id, status`,
+		newWorkerID, sandboxID).Scan(&orgID, &newStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no session found for %s in migrating/running/stopped state", sandboxID)
+			return fmt.Errorf("no session found for %s in migrating/running/stopped/pooled/edge_reserved state", sandboxID)
 		}
 		return err
+	}
+	// A pool box moving between workers is internal plumbing, not a customer
+	// lifecycle event: no org owns it yet, so emitting sandbox.migrated would
+	// bill an event to the synthetic pool org and surface on a webhook for a
+	// sandbox the customer has never seen.
+	if newStatus == "pooled" || newStatus == "edge_reserved" {
+		return tx.Commit(ctx)
 	}
 	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
 		ID:        fmt.Sprintf("%s:sandbox.migrated:%s", sandboxID, newWorkerID),

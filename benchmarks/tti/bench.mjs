@@ -51,6 +51,15 @@ const ITERATIONS = parseInt(flag('iterations', 'ITERATIONS', '100'), 10);
 const CONCURRENCY = parseInt(flag('concurrency', 'CONCURRENCY', '100'), 10);
 const STAGGER_DELAY_MS = parseInt(flag('stagger-delay-ms', 'STAGGER_DELAY_MS', '200'), 10);
 const JSON_OUT = flag('json', 'JSON_OUT', '');
+// 0 = leaderboard-faithful (modes run back-to-back). See the run loop.
+const SETTLE_MS = parseInt(flag('settle-ms', 'SETTLE_MS', '0'), 10);
+// Untimed throwaway iterations before measuring. DEFAULT 0 = leaderboard-faithful.
+// Diagnostic: a burst run as a process's FIRST act has all 100 requests pay cold
+// TLS + cold edge auth/create-context caches + the SDK's own connection prewarm
+// at once, which shows up as a flat floor (measured: min 996ms / median 1.15s on
+// a full pool). Warming first separates that client/isolate cold-start from real
+// server latency. Numbers produced with warmup>0 are NOT leaderboard-faithful.
+const WARMUP = parseInt(flag('warmup', 'WARMUP', '0'), 10);
 
 // Per-op timeouts, matching the leaderboard's tti-task.ts.
 const CREATE_TIMEOUT_MS = 120_000;
@@ -75,6 +84,32 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// Destroy accounting. The leaderboard swallows destroy failures, and so do we
+// (a failed destroy must never change a TTI number) — but silently dropping
+// them hid a real effect: a run whose boxes don't return to the pool drains it,
+// and the NEXT mode then measures pool-refill latency instead of create latency.
+// That is exactly how a 3-mode run reported 64ms sequential and 2.47s burst.
+// Counted here so the summary can say so out loud.
+const destroyStats = { ok: 0, retried: 0, failed: 0, lastError: '' };
+
+/** Destroy with one retry. Never throws — timing must not depend on teardown. */
+async function destroyQuietly(sandbox) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await withTimeout(sandbox.destroy(), DESTROY_TIMEOUT_MS, 'destroy timed out');
+      if (attempt > 0) destroyStats.retried++;
+      destroyStats.ok++;
+      return;
+    } catch (err) {
+      destroyStats.lastError = String(err?.message ?? err);
+      // Brief backoff: a destroy that timed out under burst usually succeeds
+      // once the wave clears, and a returned box is worth more than a fast exit.
+      if (attempt === 0) await sleep(1000);
+    }
+  }
+  destroyStats.failed++;
+}
+
 /** One TTI iteration: create -> node -v (exit 0) -> destroy (untimed). */
 async function ttiTask() {
   const compute = opencomputer({ apiKey: API_KEY, apiUrl: API_URL });
@@ -91,7 +126,7 @@ async function ttiTask() {
     }
     return performance.now() - start;
   } finally {
-    await withTimeout(sandbox.destroy(), DESTROY_TIMEOUT_MS, 'destroy timed out').catch(() => {});
+    await destroyQuietly(sandbox);
   }
 }
 
@@ -232,11 +267,36 @@ for (const m of toRun) {
 
 console.log(`OpenComputer TTI bench → ${API_URL}  (key ${API_KEY.slice(0, 6)}…)  modes=[${toRun.join(', ')}]`);
 
+if (WARMUP > 0) {
+  // Sequential and untimed: the point is to establish connections and populate
+  // the edge's per-isolate caches, not to measure anything.
+  process.stdout.write(`\n-- warmup: ${WARMUP} untimed iterations (diagnostic, not leaderboard-faithful) --\n`);
+  for (let i = 0; i < WARMUP; i++) {
+    await ttiTask().catch(() => {});
+  }
+  process.stdout.write('-- warmup done --\n');
+}
+
 const results = [];
-for (const m of toRun) {
-  results.push(await runMode(m, MODES[m]));
+for (let i = 0; i < toRun.length; i++) {
+  // Between-mode settle. DEFAULT 0 = leaderboard-faithful: the public runner
+  // goes mode-to-mode back-to-back, so if 200 preceding creates drain the hot
+  // pool, burst legitimately measures pool-refill and our Friday score eats it.
+  // Set SETTLE_MS>0 to isolate a single mode's true latency for diagnosis —
+  // those numbers are NOT what the leaderboard would post.
+  if (i > 0 && SETTLE_MS > 0) {
+    process.stdout.write(`\n-- settling ${SETTLE_MS / 1000}s for pool refill before ${toRun[i]} --\n`);
+    await sleep(SETTLE_MS);
+  }
+  results.push(await runMode(toRun[i], MODES[toRun[i]]));
 }
 printSummary(results);
+
+console.log(
+  `\ndestroys: ok=${destroyStats.ok} retried=${destroyStats.retried} failed=${destroyStats.failed}` +
+    (destroyStats.failed > 0 ? `  last error: ${destroyStats.lastError}` : '') +
+    (SETTLE_MS > 0 ? `\nNOTE: settle=${SETTLE_MS / 1000}s between modes — diagnostic only, not leaderboard-faithful.` : ''),
+);
 
 if (JSON_OUT) {
   const fs = await import('node:fs');

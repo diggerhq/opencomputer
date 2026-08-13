@@ -2690,11 +2690,27 @@ func shellSafeArgv(command string) []string {
 	return fields
 }
 
+// execTimingMinMs is the worker-side per-exec logging threshold. Any exec whose
+// total server-side time meets it logs a `ready`/`rpc` breakdown, which is the
+// only way to tell guest-side execution apart from the waits the worker imposes
+// before the command ever reaches the agent (restore, memory hotplug, redial).
+// Set OPENSANDBOX_EXEC_TIMING_MIN_MS=0 to log every exec while investigating.
+var execTimingMinMs = func() int64 {
+	if v := os.Getenv("OPENSANDBOX_EXEC_TIMING_MIN_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return int64(n)
+		}
+	}
+	return 200
+}()
+
 func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error) {
+	tExec := time.Now()
 	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
+	readyMs := time.Since(tExec).Milliseconds()
 
 	timeout := int32(cfg.Timeout)
 	if timeout <= 0 {
@@ -2725,16 +2741,27 @@ func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessC
 		Cwd:            cfg.Cwd,
 		TimeoutSeconds: timeout,
 	}
+	tRPC := time.Now()
 	resp, err := vm.agent.Exec(ctx, req)
+	redialed := false
 	if err != nil && IsTransportError(err) {
 		// Same recovery path as SyncFS: the gRPC client conn can be in a
 		// transient-failure state immediately after fork (waitForAgentSocket
 		// passes with one ping, but the next RPC races with conn state).
 		// Redial and retry once.
 		log.Printf("qemu: Exec %s: transport error (%v), redialing agent", sandboxID, err)
+		redialed = true
 		if rdErr := vm.agent.Redial(); rdErr == nil {
 			resp, err = vm.agent.Exec(ctx, req)
 		}
+	}
+	rpcMs := time.Since(tRPC).Milliseconds()
+	// ready = everything the worker made the command wait for before it reached
+	// the agent (restore, virtio-mem hotplug); rpc = vsock round trip + the
+	// command actually running in the guest. A slow exec is one or the other,
+	// and until now the worker logged neither.
+	if totalMs := readyMs + rpcMs; totalMs >= execTimingMinMs {
+		log.Printf("qemu: exec %s: %dms (ready=%dms rpc=%dms redial=%v)", sandboxID, totalMs, readyMs, rpcMs, redialed)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("exec in %s: %w", sandboxID, err)
@@ -4854,8 +4881,16 @@ func (m *Manager) getReadyVM(ctx context.Context, id string) (*VMInstance, error
 	// running immediately can hit memory that's allocated-but-not-backed.
 	// Bounded wait so we never hang if hotplug stalls.
 	if vm.memoryReady != nil {
+		tMem := time.Now()
 		select {
 		case <-vm.memoryReady:
+			// Prime suspect for the first-exec penalty: a claimed pool box is grown
+			// to its requested memory asynchronously, so the FIRST exec after a
+			// claim blocks here while every later exec finds the channel already
+			// closed. Logged above the threshold so a burst shows it directly.
+			if ms := time.Since(tMem).Milliseconds(); ms >= execTimingMinMs {
+				log.Printf("qemu: sandbox %s: waited %dms for memory hotplug", id, ms)
+			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(5 * time.Second):

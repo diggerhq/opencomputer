@@ -562,6 +562,23 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 	// dialer is unconfigured; the box still execs fine over the tunnel.
 	s.doDialers.start(sb.ID, req.VmdoConnectToken)
 
+	// A pool box dialed its DO at manufacture and may have been parked for
+	// minutes since — long enough for the DO to lose the socket while the host,
+	// whose control-frame pongs come from Cloudflare's edge, still believes it
+	// is connected. start() above is a no-op in exactly that case, so prove the
+	// channel and redial if it can't be proven. Without this a stale box serves
+	// EVERY exec over the tunnel (dev: 8/16 pooled boxes, all three execs).
+	s.doDialers.verify(sb.ID)
+
+	// Warm the exec session on the CUSTOMER's side of the claim. Worth ~20ms:
+	// first exec on a claimed box measures ~20-25ms against ~4ms warm. (The
+	// ~240ms this was originally built for turned out to be the stale channel
+	// above, not the guest.) Detached, so it overlaps the client's create→exec
+	// gap and can never extend claim latency.
+	if w, ok := s.manager.(claimWarmer); ok {
+		w.WarmClaimed(sb.ID)
+	}
+
 	log.Printf("grpc: claimed pool box %s (template=%s)", sb.ID, sb.Template)
 	return &pb.ClaimSandboxResponse{
 		SandboxId:     sb.ID,
@@ -923,6 +940,13 @@ type pausableManager interface {
 // it; other backends just skip warming.
 type guestWarmer interface {
 	WarmGuest(ctx context.Context, sandboxID string)
+}
+
+// claimWarmer re-warms a box's exec session after it is bound to a customer.
+// Separate from guestWarmer because it fires post-claim and detaches itself —
+// see Manager.WarmClaimed for why manufacture-time warming isn't sufficient.
+type claimWarmer interface {
+	WarmClaimed(sandboxID string)
 }
 
 // hotPoolEnabled leaves manufactured pool boxes RUNNING (billing-suppressed)
@@ -1719,6 +1743,13 @@ func (s *GRPCServer) LiveMigrate(ctx context.Context, req *pb.LiveMigrateRequest
 	if err := s.migrator.LiveMigrate(ctx, req.SandboxId, req.IncomingAddr); err != nil {
 		return nil, fmt.Errorf("live migrate: %w", err)
 	}
+	// The VM now lives on the target, but this host still holds the box's DO
+	// WebSocket — and the DO keeps exactly one, so the departed source would go
+	// on receiving its execs and answering "sandbox not found". Drop it: the box
+	// re-dials from its new home when the CP claims/creates there (that path
+	// carries the connect token; this RPC does not), and until then exec falls
+	// back to the tunnel, which is correct just slower.
+	s.doDialers.stop(req.SandboxId)
 	return &pb.LiveMigrateResponse{}, nil
 }
 

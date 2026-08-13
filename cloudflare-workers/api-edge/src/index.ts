@@ -4005,8 +4005,20 @@ export default {
       // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
       // wherever the DO auth can be verified at all).
       if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
+        const tExec = Date.now();
         const doResp = await tryVmDoExec(req, env, caller, id, authMs);
         if (doResp) return doResp;
+        // Fell back to the tunnel. The DO path self-reports via Server-Timing but
+        // the tunnel path was silent, so an exec's route could only be inferred —
+        // which is exactly why the burst investigation kept mis-attributing the
+        // slow band. Stamp the fallback so a client can classify every exec:
+        // `vmdo;dur=0` = tunnel, its absence + `do;dur=N` = DO fast path.
+        // `fb` is how long the (failed) DO attempt cost before we gave up.
+        const fbMs = Date.now() - tExec;
+        const tun = await proxyToCellSDK(req, env, ctx, caller, id);
+        const h = new Headers(tun.headers);
+        h.set("server-timing", `${h.get("server-timing") ?? ""}${h.get("server-timing") ? ", " : ""}vmdo;dur=0, fb;dur=${fbMs}`);
+        return new Response(tun.body, { status: tun.status, statusText: tun.statusText, headers: h });
       }
       return proxyToCellSDK(req, env, ctx, caller, id);
     }

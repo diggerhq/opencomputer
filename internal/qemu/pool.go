@@ -44,17 +44,54 @@ func (m *Manager) WarmGuest(ctx context.Context, sandboxID string) {
 	}
 	cmd := os.Getenv("OPENSANDBOX_POOL_WARMUP_CMD")
 	if cmd == "" {
-		cmd = "node -v; python3 --version"
+		// Measured 2026-08-12: guest page cache is NOT the first-exec cost — a
+		// cold `node -v` costs ~1ms more than a warm one. The real ~240ms is
+		// per-exec-session setup, and it is paid by whichever exec runs first
+		// WHATEVER it runs (a bare `sh -c :` first cost 522ms; the `node -v`
+		// right after it cost 123ms = fully-warm). So warm with the cheapest
+		// possible command: we are establishing the session, not faulting pages.
+		cmd = ":"
 	}
 	execCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	if _, e := vm.agent.Exec(execCtx, &pb.ExecRequest{
-		Command:   "/bin/sh",
-		Args:      []string{"-c", cmd + " >/dev/null 2>&1 || true"},
-		RunAsRoot: true,
+		Command: "/bin/sh",
+		Args:    []string{"-c", cmd + " >/dev/null 2>&1 || true"},
+		// NOT RunAsRoot: customer commands run as the sandbox user, so warming as
+		// root would establish the wrong session if any of the setup is per-user.
+		RunAsRoot: false,
 	}); e != nil {
 		log.Printf("qemu: warm-guest %s: %v (best-effort)", sandboxID, e)
 	}
+}
+
+// WarmClaimed re-warms a box's exec session AFTER ClaimPooled has bound it to a
+// customer. Manufacture-time WarmGuest is not enough: prod journals show it runs
+// on every manufacture and never errors (348/342 per worker in 6h, zero error
+// lines), yet the first customer exec still pays ~240ms. ClaimPooled re-applies
+// env/secrets/network via PrepareResume in between, which appears to invalidate
+// whatever the manufacture-time warm established — so the warm has to happen on
+// the customer's side of the claim.
+//
+// Fire-and-forget on its own context: this must never extend claim latency (the
+// caller's ctx dies with the gRPC request), and a failed warm just means the
+// customer's first exec pays what it pays today.
+func (m *Manager) WarmClaimed(sandboxID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		// Deliberately Exec, not WarmGuest: WarmGuest talks to vm.agent directly,
+		// so it skips getReadyVM — and getReadyVM's virtio-mem hotplug wait is the
+		// prime suspect for the first-exec penalty (a claimed box is grown to its
+		// requested memory asynchronously, so only the first exec blocks on it).
+		// A warm that bypasses the wait pre-pays nothing. This takes the exact
+		// path a customer's first exec takes, including that gate.
+		// /bin/true, not ":" — shellSafeArgv sends a metacharacter-free command
+		// straight to execve, and ":" only exists as a shell builtin.
+		if _, err := m.Exec(ctx, sandboxID, types.ProcessConfig{Command: "/bin/true", Timeout: 5}); err != nil {
+			log.Printf("qemu: warm-claimed %s: %v (best-effort)", sandboxID, err)
+		}
+	}()
 }
 
 // ClaimPooled binds a parked pool box (manufactured via Create + Pause +

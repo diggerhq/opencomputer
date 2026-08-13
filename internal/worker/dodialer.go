@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -40,11 +41,33 @@ import (
 // a failure.
 
 const (
-	// Keepalive matches the POC's validated cadence: an app-level ping every
-	// 30s, and terminate+reconnect if no pong lands within ~2.5 intervals. A
-	// silent half-open (DO evicted, FIN lost) otherwise looks OPEN forever.
+	// WebSocket control-frame keepalive. This keeps intermediaries from reaping
+	// an idle connection, but it CANNOT prove the Durable Object still holds the
+	// socket: Cloudflare's edge terminates control frames and pongs on the DO's
+	// behalf. A box whose DO lost the socket therefore looks perfectly healthy
+	// here forever — measured on dev, where 8/16 pooled boxes served every exec
+	// over the tunnel while the host logged no error, no redial, no close.
+	// Liveness is proven by the app-level ping below; this is just hygiene.
 	doPingPeriod = 30 * time.Second
 	doPongWait   = 75 * time.Second
+
+	// App-level liveness. The host sends a requestId=0 frame; only the DO can
+	// decode it and answer, so a pong proves the socket is still bound to a live
+	// VmSession — the one thing the control-frame pong cannot tell us. No pong
+	// within the wait means the channel is a zombie: drop it and redial, so a
+	// pool box that has been parked for minutes still has a channel the edge
+	// agrees is connected when it is finally claimed.
+	doAppPingPeriod = 20 * time.Second
+	doAppPongWait   = 50 * time.Second
+
+	// How long a claim-time probe waits for the pong before condemning the
+	// channel. A healthy DO answers in a single edge round trip; anything
+	// slower is better spent redialing than hoping.
+	doVerifyGrace = 400 * time.Millisecond
+
+	// pingRequestID is reserved for liveness in both directions and is never a
+	// real exec: the DO mints request ids from 1 (`nextRequestId++ >>> 0 || 1`).
+	pingRequestID = 0
 
 	doHandshakeTimeout = 10 * time.Second
 	doDialBackoffMin   = 250 * time.Millisecond
@@ -119,6 +142,24 @@ func (r *doDialerRegistry) start(sandboxID, token string) {
 	d.run()
 }
 
+// verify proves a sandbox's channel is live end-to-end and repairs it if not.
+// Detached: it must never sit on the claim path. Call it wherever a box is
+// about to serve customer traffic after an idle spell — start() alone is not
+// enough, because it is a no-op for an existing dialer and the dialer cannot
+// tell a live channel from a zombie without asking the DO.
+func (r *doDialerRegistry) verify(sandboxID string) {
+	if !r.enabled() {
+		return
+	}
+	r.mu.Lock()
+	d := r.dialers[sandboxID]
+	r.mu.Unlock()
+	if d == nil {
+		return
+	}
+	go d.verifyLive(doVerifyGrace)
+}
+
 // stop tears the dialer down deterministically so a reaped/hibernated box can't
 // keep serving a stale channel. Idempotent.
 func (r *doDialerRegistry) stop(sandboxID string) {
@@ -145,11 +186,83 @@ type doDialer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// startedAt is when this dialer was created (i.e. claim time for a pool box),
+	// so serveOnce can report how long the channel took to become usable.
+	startedAt time.Time
+
+	// Live connection state, published by serveOnce so verifyLive can probe the
+	// channel from outside the serve loop (claim time). writeMu is the same
+	// mutex serveOnce serializes data writes with — gorilla allows one writer.
+	connMu  sync.Mutex
+	conn    *websocket.Conn
+	writeMu *sync.Mutex
+	// lastPong is the unix-nano time of the most recent app-level pong.
+	lastPong atomic.Int64
+}
+
+// setConn publishes (or clears) the live connection for out-of-loop probes.
+func (d *doDialer) setConn(conn *websocket.Conn, writeMu *sync.Mutex) {
+	d.connMu.Lock()
+	d.conn, d.writeMu = conn, writeMu
+	d.connMu.Unlock()
+}
+
+// sendAppPing writes a liveness frame. Returns false if there is no connection
+// or the write fails.
+func (d *doDialer) sendAppPing() bool {
+	d.connMu.Lock()
+	conn, writeMu := d.conn, d.writeMu
+	d.connMu.Unlock()
+	if conn == nil || writeMu == nil {
+		return false
+	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return conn.WriteMessage(websocket.BinaryMessage, encodeExecResult(pingRequestID, 0, 0, "", "", "")) == nil
+}
+
+// dropConn closes the current connection so the blocked ReadMessage unwinds and
+// loop() redials. Safe to call concurrently; a nil conn is a no-op.
+func (d *doDialer) dropConn() {
+	d.connMu.Lock()
+	conn := d.conn
+	d.connMu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+// verifyLive proves the channel end-to-end and repairs it if it can't. Called at
+// claim, when the box is about to serve its first customer exec and a channel
+// dialed at manufacture may have gone stale under it. Blocking for `grace` at
+// most; callers run it detached so claim latency is untouched. A failed probe
+// only costs a redial (~280ms), which the DO's own connect/reconnect grace
+// absorbs — far cheaper than the tunnel fallback it replaces.
+func (d *doDialer) verifyLive(grace time.Duration) {
+	before := d.lastPong.Load()
+	if !d.sendAppPing() {
+		d.dropConn() // no usable conn — force the loop to redial now
+		return
+	}
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if d.lastPong.Load() != before {
+			return // DO answered — channel is genuinely live
+		}
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	log.Printf("vmdo: %s failed liveness probe — dropping stale channel", d.sandboxID)
+	d.dropConn()
 }
 
 func newDoDialer(url, token, sandboxID string, execFn doExecFn) *doDialer {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &doDialer{url: url, token: token, sandboxID: sandboxID, execFn: execFn, ctx: ctx, cancel: cancel}
+	return &doDialer{url: url, token: token, sandboxID: sandboxID, execFn: execFn, ctx: ctx, cancel: cancel, startedAt: time.Now()}
 }
 
 func (d *doDialer) run() {
@@ -212,7 +325,12 @@ func (d *doDialer) serveOnce() (connected bool) {
 		return false
 	}
 	defer conn.Close()
-	log.Printf("vmdo: connected %s", d.sandboxID)
+	// Report time-from-start, not just "connected": every exec that arrives in
+	// this window takes the tunnel (~300ms) instead of the DO path (~15ms), and
+	// on a claimed box that window sits directly in front of the customer's
+	// FIRST exec. This is the number that says whether the channel needs to be
+	// pre-connected at stock-prep instead of at claim.
+	log.Printf("vmdo: connected %s after %dms", d.sandboxID, time.Since(d.startedAt).Milliseconds())
 
 	// Read deadline is the pong watchdog: every pong (and every inbound frame)
 	// pushes it out; if pongs stop landing it fires and ReadMessage errors,
@@ -227,6 +345,12 @@ func (d *doDialer) serveOnce() (connected bool) {
 	// gorilla documents as safe alongside other methods.
 	var writeMu sync.Mutex
 
+	// Publish the connection so verifyLive can probe it at claim time, and seed
+	// the pong clock so a fresh channel isn't immediately judged stale.
+	d.lastPong.Store(time.Now().UnixNano())
+	d.setConn(conn, &writeMu)
+	defer d.setConn(nil, nil)
+
 	pingCtx, stopPing := context.WithCancel(d.ctx)
 	defer stopPing()
 	go func() {
@@ -238,6 +362,28 @@ func (d *doDialer) serveOnce() (connected bool) {
 				return
 			case <-ticker.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// App-level liveness: the only signal that distinguishes "the DO holds this
+	// socket" from "Cloudflare's edge is answering pings for a DO that doesn't".
+	go func() {
+		ticker := time.NewTicker(doAppPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingCtx.Done():
+				return
+			case <-ticker.C:
+				if !d.sendAppPing() {
+					return
+				}
+				if age := time.Since(time.Unix(0, d.lastPong.Load())); age > doAppPongWait {
+					log.Printf("vmdo: %s no app-pong for %s — reconnecting stale channel", d.sandboxID, age.Truncate(time.Second))
+					_ = conn.Close() // unwinds ReadMessage → loop() redials
 					return
 				}
 			}
@@ -266,6 +412,10 @@ func (d *doDialer) serveOnce() (connected bool) {
 		req, derr := decodeExecRequest(data)
 		if derr != nil {
 			log.Printf("vmdo: bad exec frame %s: %v", d.sandboxID, derr)
+			continue
+		}
+		if req.requestID == pingRequestID {
+			d.lastPong.Store(time.Now().UnixNano()) // the DO answered — channel proven live
 			continue
 		}
 		go d.handleExec(conn, &writeMu, req)
@@ -398,7 +548,13 @@ func decodeExecRequest(buf []byte) (execRequest, error) {
 			i = m
 		}
 	}
-	if r.requestID == 0 || r.command == "" {
+	// requestID 0 is the reserved liveness pong (empty command by construction) —
+	// it is a valid frame, not a malformed exec, and the caller dispatches on it
+	// before ever looking at the command.
+	if r.requestID == pingRequestID {
+		return r, nil
+	}
+	if r.command == "" {
 		return r, fmt.Errorf("request_id and command are required")
 	}
 	return r, nil
