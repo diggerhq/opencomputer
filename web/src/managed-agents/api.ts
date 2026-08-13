@@ -431,6 +431,15 @@ async function sleep(milliseconds: number) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+export function nextAgentEventDeadline(
+  deadline: number,
+  timeoutMs: number,
+  receivedEvents: number,
+  now = Date.now(),
+) {
+  return receivedEvents > 0 ? now + timeoutMs : deadline
+}
+
 async function waitForAgentEvent(
   sessionId: string,
   after: number,
@@ -439,7 +448,7 @@ async function waitForAgentEvent(
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  const deadline = Date.now() + timeoutMs
+  let deadline = Date.now() + timeoutMs
   let cursor = after
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -465,6 +474,9 @@ async function waitForAgentEvent(
       }
       if (terminal(event)) return { event, cursor }
     }
+    // Treat timeoutMs as an inactivity deadline. Multi-step agents can run for
+    // longer than one fixed window while continuing to stream useful progress.
+    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length)
     await sleep(600)
   }
   throw new Error('Timed out waiting for the agent.')
