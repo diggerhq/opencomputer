@@ -39,11 +39,14 @@ subagents needed for that render.
   <Card title="Sessions" icon="comments" href="/agents/sessions">
     Stream responses and inspect durable conversations.
   </Card>
+  <Card title="Capabilities" icon="shapes" href="/agents/capabilities">
+    Choose between tools, MCP servers, skills, and subagents.
+  </Card>
   <Card title="Secrets" icon="key" href="/agents/secrets">
     Declare secret-backed connections without exposing credentials to agents.
   </Card>
   <Card title="Logs" icon="terminal" href="/agents/logs">
-    Follow runtime and managed-egress activity from the CLI.
+    Follow agent and outbound-request activity from the CLI.
   </Card>
 </CardGroup>
 
@@ -77,9 +80,9 @@ same command also starts it locally.
   multi-turn session reuse
 - dashboard and CLI playground sessions
 - immutable deployments promoted through aliases such as `production`
-- project-level secrets with optional agent overrides and managed egress
+- project-level secrets with optional agent overrides and constrained outbound requests
 - indexed runtime and egress logs available from the CLI
 
-The dashboard is primarily an inspection and testing surface. Agent behavior
-belongs in the repository under `opencomputer/`; credentials remain managed by
-OpenComputer.
+Agent behavior belongs in the repository under `opencomputer/`. The dashboard
+is primarily for selecting environments, testing agents, and inspecting what
+was deployed.

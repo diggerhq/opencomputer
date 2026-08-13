@@ -1,11 +1,11 @@
 ---
 title: "Logs"
-description: "Inspect runtime output and managed-egress activity from the OpenComputer CLI"
+description: "Inspect agent output and outbound-request activity from the OpenComputer CLI"
 ---
 
-OpenComputer collects runtime stdout and stderr together with managed-egress
-events. Logs are indexed by project, environment, agent, and session so you can
-inspect failures without opening the agent sandbox.
+OpenComputer collects agent output together with outbound-request events. Logs
+are indexed by project, environment, agent, and session so you can
+inspect failures from the project or CLI.
 
 ## Read the current agent's logs
 
@@ -41,8 +41,7 @@ the applicable agent or session identifiers.
 
 ## Secret safety
 
-Managed-egress logs describe the connection, method, destination path, status,
+Outbound-request logs describe the connection, method, destination path, status,
 and timing. They do not contain injected secret values or secret-bearing
-headers. Runtime request headers that could override managed credentials are
-discarded by the gateway.
-
+headers. Request headers that could override managed credentials are discarded
+before the outbound request is sent.

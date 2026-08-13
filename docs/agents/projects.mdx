@@ -14,6 +14,7 @@ The starter is intentionally small:
 ```text
 my-agent/
 ├── opencomputer/
+│   ├── .env.example
 │   ├── project.ts
 │   └── agents/
 │       └── hello-world/
@@ -22,14 +23,14 @@ my-agent/
 │           └── skills/      # optional
 ├── src/
 │   ├── App.tsx
-│   ├── main.tsx
-│   └── use-agent.ts
+│   └── main.tsx
 ├── package.json
 └── vite.config.ts
 ```
 
 - `opencomputer/project.ts` declares project metadata and agent IDs.
 - `opencomputer/agents/<id>/agent.ts` defines one agent.
+- `opencomputer/.env.local` optionally holds ignored development secrets.
 - `src/` is a normal React application.
 - `.opencomputer/` is ignored local state created by the CLI.
 
@@ -96,7 +97,8 @@ The current project dashboard provides:
 - **Agent playground** for creating and resuming test sessions
 - **Deployments** for immutable version history and active aliases
 - **Sessions** created through the dashboard, React client, or API
-- **Channels** connected to a deployed agent alias
+- **Secrets** for write-only project and agent credentials
 
 Project and agent behavior remains code-owned. The dashboard is for selection,
-inspection, testing, and credential-backed setup flows.
+inspection, and testing. Use `opencomputer logs` to diagnose agent and
+outbound-request failures.

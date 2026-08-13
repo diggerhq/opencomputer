@@ -1,0 +1,67 @@
+---
+title: "Cloud development"
+description: "Sync agent code to Development while your application runs locally"
+---
+
+OpenComputer's development loop keeps agent execution in the cloud while your
+source files and optional React application stay on your machine.
+
+```bash
+npm run dev
+```
+
+The command performs four jobs:
+
+1. Links the source directory to a cloud project.
+2. Builds and publishes every configured agent to `development`.
+3. Watches `opencomputer/` and publishes changes automatically.
+4. Starts Vite when the project includes the React application.
+
+It also prints the project dashboard URL so you can test the same development
+deployment in the [agent playground](/agents/playground).
+
+## Select a project
+
+On the first run, select an existing project or create one. The choice is saved
+locally and reused by later commands.
+
+```bash
+npx opencomputer link
+```
+
+Use an explicit project in scripts or other non-interactive environments:
+
+```bash
+npx opencomputer dev --project <project-id-or-slug>
+npx opencomputer dev --create-project "Support agents"
+```
+
+## Work with the React application
+
+When a React application is present, the same `npm run dev` process starts both
+cloud synchronization and Vite. Keep it running while using the application;
+the development bridge exists only for the lifetime of that process.
+
+New sessions use the latest synchronized development deployment. Existing
+sessions keep the deployment they started with, so create a new session when
+testing a source change.
+
+## Synchronize development secrets
+
+Put agent credentials in `opencomputer/.env.local`. OpenComputer considers only
+names referenced by `useSecret()` and infers their allowed destinations from
+`defineConnection()` declarations.
+
+```dotenv
+GITHUB_TOKEN=github_pat_...
+```
+
+The CLI asks before the first upload and then watches for changes. Unreferenced
+variables are skipped, and removing a local value does not delete its cloud
+counterpart. See [Secrets and outbound requests](/agents/secrets).
+
+## Development and production stay separate
+
+Saving source advances only `development`. Production remains on its current
+immutable deployment until you explicitly deploy it. See
+[Deployments and environments](/agents/deployments).

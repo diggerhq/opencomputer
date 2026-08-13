@@ -1,0 +1,47 @@
+---
+title: "Deployments and environments"
+description: "Understand development, production, immutable deployments, and aliases"
+---
+
+A deployment is an immutable build of one agent. An alias gives a stable name
+to the deployment clients should run.
+
+Every project starts with two working environments:
+
+| Environment | Alias | How it changes |
+| --- | --- | --- |
+| Development | `development` | `npm run dev` publishes source changes |
+| Production | `production` | An explicit deploy advances it |
+
+Sessions keep the deployment they started with. Publishing another version
+does not change the code underneath an existing session.
+
+## Deploy to production
+
+From the project directory:
+
+```bash
+npm run deploy -- --alias production
+```
+
+The CLI builds the current source, creates an immutable deployment, and moves
+the `production` alias to it. Development remains available for further work.
+
+## Select an agent and environment
+
+Clients identify an agent with `agent-id@alias`:
+
+```text
+support@development
+support@production
+```
+
+The project dashboard's environment selector changes which deployment you are
+inspecting. The playground has a separate agent selector when a project
+contains more than one agent.
+
+## Review history
+
+Open the project's **Deployments** page to inspect immutable versions, their
+aliases, and creation times. Use the deployment ID when correlating a session
+with [logs](/agents/logs) or the [debug inspector](/agents/playground).

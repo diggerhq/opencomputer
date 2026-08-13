@@ -1,0 +1,42 @@
+---
+title: "Playground and debugging"
+description: "Test deployments and inspect what the agent received for each turn"
+---
+
+The agent playground is the fastest way to test a cloud deployment without
+building a client. Open a project, choose an environment and agent, then create
+a session.
+
+## Select the correct target
+
+The project header selects `development` or `production`. Projects with
+multiple agents have a separate agent selector in the playground. A session
+keeps the deployment selected when it starts.
+
+Create a new session after changing the target when you want an isolated test.
+Resume an existing session when you want to verify multi-turn behavior.
+
+## Use the debug inspector
+
+The inspector shows the information needed to explain a turn:
+
+- deployment and session identifiers
+- rendered agent instructions
+- selected model
+- tools and MCP capabilities available to that render
+- tool activity and errors
+
+OpenComputer's private platform instructions and credentials are intentionally
+not shown. The inspector describes your deployed agent configuration, not the
+internal execution implementation.
+
+## Follow runtime logs
+
+Use the CLI when a failure needs more detail:
+
+```bash
+npx opencomputer logs --follow
+npx opencomputer logs --session <session-id>
+```
+
+See [Logs](/agents/logs) for filters and JSON output.

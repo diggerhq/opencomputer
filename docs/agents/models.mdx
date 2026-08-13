@@ -4,8 +4,7 @@ description: "Select a managed model with useModel"
 ---
 
 `useModel()` selects the model that powers the next agent step. OpenComputer
-owns the provider connection, authentication, streaming, and managed model
-gateway.
+handles provider authentication and response streaming.
 
 ```tsx
 import { useModel } from "@opencomputer/agent";
@@ -37,8 +36,8 @@ useModel({
 ```
 
 Keep model selection in agent code so development and immutable deployments
-record the behavior together. Provider credentials are resolved by the
-managed gateway and are not added to source bundles or client applications.
+record the behavior together. Provider credentials are not added to source
+bundles or client applications.
 
 ## Select a model conditionally
 
@@ -70,8 +69,8 @@ changes affect cost, latency, context limits, and output behavior.
 ## Keep credentials out of agent code
 
 Do not place provider API keys in `agent.ts`, tools, prompts, or the React
-application. OpenComputer's model gateway resolves the credential for the
-selected provider without exposing it to the agent.
+application. OpenComputer authenticates the selected provider without adding
+the credential to agent code.
 
 For credentials used by your own HTTP tools instead of model inference, use
-[Secrets and managed egress](/agents/secrets).
+[Secrets and outbound requests](/agents/secrets).

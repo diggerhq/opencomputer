@@ -16,13 +16,13 @@ conversation and can refine an earlier answer without starting over.
 1. The React application sends a question to an OpenComputer session.
 2. The agent uses its `exa_search` tool when the question needs current web
    research.
-3. OpenComputer sends the search through a managed Exa connection and injects
-   the write-only `EXA_API_KEY` without exposing it to the agent or browser.
+3. The declared Exa connection sends the request with the write-only
+   `EXA_API_KEY` without adding it to agent source or browser code.
 4. The agent reads the results and streams an answer with clickable source
    URLs back to the application.
 
 The starter also includes an agent-specific skill that guides the research
-workflow and a reusable React hook for streaming messages and continuing the
+workflow and uses `@opencomputer/react` to stream messages and continue the
 same session.
 
 ## Start with the example
@@ -36,4 +36,5 @@ same session.
 </Card>
 
 The repository README covers installation, setting the Exa secret, running the
-agent and React development processes, and deploying the finished application.
+combined cloud-agent and React development process, and deploying the finished
+application.

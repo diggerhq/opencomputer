@@ -5,7 +5,7 @@ description: "Package reusable instructions and supporting resources with an age
 
 A skill is a reusable instruction bundle that teaches an agent how to perform
 a task. A tool executes code; a skill provides a procedure, checklist, or
-domain playbook the managed coding-agent harness can load when relevant.
+domain playbook the agent can load when relevant.
 
 ## Create a skill
 
@@ -38,14 +38,13 @@ description: Create a sourced campaign brief. Use when planning a new campaign o
 5. Read `CHECKLIST.md` before returning the final brief.
 ```
 
-The description should say both what the skill does and when it applies. It is
-the information the harness uses to decide whether to load the instructions.
+The description should say both what the skill does and when it applies. The
+agent uses it to decide whether to load the instructions.
 
 ## Use the skill
 
-Skills do not need a hook in the current authoring API. OpenComputer packages
-the entire `skills/` directory with that agent, and the managed harness can
-load a matching skill during the session.
+Skills do not need a hook. OpenComputer packages the entire `skills/` directory
+with that agent, which can load a matching skill during the session.
 
 Tell the agent when the skill should guide its work:
 
