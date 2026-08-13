@@ -160,15 +160,6 @@ WORKER_ENV = "dev"
 # Dev override of the per-org paused-sandbox cap (prod defaults to 100) so the
 # promotion path can be exercised without pausing hundreds of boxes.
 PAUSED_CAP = "10"
-# PoolStock sizing, scaled to THIS cell's pool. The DO defaults (38 per shard ×
-# 8 shards = 304) are sized for prod's 320-box pool; dev's cell holds ~30, so the
-# defaults put every shard permanently below low-water, restocking on every claim
-# and competing for a supply that can never satisfy them — creates that hash to a
-# starved shard fall through to the ~10× slower CP path and dev burst numbers
-# stop measuring anything real. 8 × 3 = 24 keeps the fleet target under the 30
-# available with headroom. See the SIZING INVARIANT in src/pool_stock.ts.
-POOL_STOCK_TARGET = "3"
-POOL_STOCK_LOW_WATER = "2"
 # Cells eligible for new-org home assignment are NOT configured here anymore —
 # it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.
