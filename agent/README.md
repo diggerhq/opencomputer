@@ -49,6 +49,12 @@ const github = defineConnection({
   origin: "https://api.github.com",
   methods: ["GET"],
   pathPrefix: "/repos/",
+  redirectOrigins: [
+    {
+      origin: "https://codeload.github.com",
+      pathPrefix: "/opencomputer/",
+    },
+  ],
   headers: {
     Authorization: bearer(useSecret("GITHUB_TOKEN")),
   },
@@ -72,7 +78,9 @@ export default function Agent() {
 `defineConnection().fetch()` sends a relative request through OpenComputer's
 managed egress gateway. The gateway checks the deployment, agent, environment,
 origin, path, and method before resolving and injecting the secret. Redirects
-are not followed by the gateway.
+are denied unless the connection declares a matching `redirectOrigins` entry.
+The gateway follows at most one redirect for `GET` or `HEAD` and never forwards
+the original request headers or managed secrets to the redirect destination.
 
 Hooks may only be called while the managed runtime is rendering an agent.
 
