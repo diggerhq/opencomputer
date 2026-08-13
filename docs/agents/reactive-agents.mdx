@@ -31,8 +31,8 @@ needs it.
 | `useSessionData(key)` | Reads a value previously stored in the current session |
 
 `useInput()` is not a human-in-the-loop prompt. It describes the input that
-caused the current render. Its `source` can be `user`, `schedule`,
-`webhook`, `subagent`, or `system`.
+caused the current render. See [Inputs](/agents/inputs) for its text, payload,
+and source metadata.
 
 ## Conditional configuration
 
@@ -105,8 +105,8 @@ runs in the managed agent runtime, not in the browser.
 
 ## Skills
 
-Skills are reusable instruction bundles for the coding-agent harness. Add a
-skill only when an agent needs one:
+Skills are reusable instruction bundles. Add a skill only when an agent needs
+one:
 
 ```text
 opencomputer/agents/hello-world/skills/code-review/SKILL.md
@@ -131,8 +131,8 @@ An object form is also supported:
 useModel({ provider: "anthropic", model: "claude-sonnet-4.6" });
 ```
 
-Provider credentials are resolved by the managed model gateway and are not
-placed in the agent sandbox or React application.
+Provider credentials are managed by OpenComputer and are not placed in agent
+source or the React application.
 
 Continue with [Agent hooks](/agents/hooks), then use the focused guides for
 [inputs](/agents/inputs), [models](/agents/models), [tools](/agents/tools),

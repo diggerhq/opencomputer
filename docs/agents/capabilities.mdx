@@ -1,0 +1,50 @@
+---
+title: "Agent capabilities"
+description: "Choose between tools, MCP servers, skills, subagents, and outbound connections"
+---
+
+Capabilities give an agent something beyond its instructions and model. Choose
+the narrowest capability that fits the job.
+
+| Capability | Use it for | Where the work happens | How it is attached |
+| --- | --- | --- | --- |
+| Code-defined tool | One typed operation you implement | Your TypeScript `run()` function | `useTool(tool)` |
+| MCP server | A service that already publishes a collection of tools | The remote MCP server | `useMcpServer(server)` |
+| Skill | A reusable procedure, checklist, or supporting files | The agent follows the loaded instructions | Place it under `skills/` |
+| Subagent | Delegating a focused task to another project agent | The delegated agent | `useSubagent(agentId)` |
+| HTTP connection | A constrained authenticated outbound request | OpenComputer sends the declared request | Call `defineConnection().fetch()` inside a tool |
+
+`useModel()` selects the model for a render, but it does not add an executable
+capability.
+
+## Tool or MCP server?
+
+Use a [code-defined tool](/agents/tools) when you own the operation, want a
+small schema, or need application-specific validation. Use an
+[MCP server](/agents/mcp) when another service already hosts the tools.
+
+Both ultimately give the model callable tools. A code-defined tool exposes the
+single operation you register; an MCP server exposes the tools it advertises.
+
+## Tool or skill?
+
+A tool performs an operation and returns structured data. A
+[skill](/agents/skills) teaches the agent how to approach a category of work.
+Many agents use both: the skill describes the workflow while tools perform the
+individual actions.
+
+## Tool or subagent?
+
+Use a tool for a bounded operation such as fetching an order. Use a
+[subagent](/agents/subagents) when the task benefits from its own instructions,
+model selection, capabilities, and working context.
+
+## Connections are not managed accounts
+
+`defineConnection()` declares a secret-backed HTTP destination. It is not an
+OAuth account selector and does not itself give the model a tool. Call it from
+a code-defined tool, or attach it to an MCP definition when that server accepts
+the corresponding header-based authorization.
+
+See [Secrets and outbound requests](/agents/secrets) for the complete security
+model.

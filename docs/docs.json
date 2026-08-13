@@ -27,12 +27,27 @@
         "tab": "Serverless Agents",
         "groups": [
           {
-            "group": "Serverless Agents",
+            "group": "Getting started",
             "pages": [
               "agents/overview",
               "agents/quickstart",
               "agents/projects",
+              "agents/development",
+              "agents/deployments"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
               "agents/reactive-agents",
+              "agents/sessions",
+              "agents/capabilities",
+              "agents/secrets"
+            ]
+          },
+          {
+            "group": "Agent API",
+            "pages": [
               "agents/hooks",
               "agents/inputs",
               "agents/models",
@@ -41,8 +56,13 @@
               "agents/skills",
               "agents/subagents",
               "agents/session-data",
-              "agents/sessions",
-              "agents/secrets",
+              "agents/react"
+            ]
+          },
+          {
+            "group": "Test and operate",
+            "pages": [
+              "agents/playground",
               "agents/logs"
             ]
           },

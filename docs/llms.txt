@@ -7,7 +7,12 @@
 - [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, and deploy agents as code.
 - [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
 - [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple agents and a React application.
+- [Cloud development](https://docs.opencomputer.dev/agents/development.md): Sync agent code to Development while your application runs locally.
+- [Deployments and environments](https://docs.opencomputer.dev/agents/deployments.md): Understand development, production, immutable deployments, and aliases.
 - [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, and MCP servers from code.
+- [Sessions and turns](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
+- [Agent capabilities](https://docs.opencomputer.dev/agents/capabilities.md): Choose between tools, MCP servers, skills, subagents, and outbound connections.
+- [Secrets and outbound requests](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
 - [Agent hooks](https://docs.opencomputer.dev/agents/hooks.md): Compose agent capabilities with reactive hooks.
 - [Inputs](https://docs.opencomputer.dev/agents/inputs.md): Read text, structured payloads, and input sources with `useInput()`.
 - [Models](https://docs.opencomputer.dev/agents/models.md): Select a managed model with `useModel()`.
@@ -16,9 +21,9 @@
 - [Skills](https://docs.opencomputer.dev/agents/skills.md): Package reusable instructions and supporting resources with an agent.
 - [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
 - [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
-- [Sessions and playground](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
-- [Secrets and managed egress](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
-- [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow runtime and managed-egress logs.
+- [React integration](https://docs.opencomputer.dev/agents/react.md): Stream agent sessions from a React application with `useAgent()`.
+- [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect each agent turn.
+- [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow agent and outbound-request logs.
 
 ## Examples
 

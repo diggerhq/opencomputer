@@ -1,0 +1,72 @@
+---
+title: "React integration"
+description: "Stream agent sessions from a React application with useAgent"
+---
+
+Projects created with the React option use `@opencomputer/react`. The package
+owns session creation, multi-turn reuse, and streamed assistant messages.
+
+```tsx
+import { useAgent } from "@opencomputer/react";
+
+export default function Chat() {
+  const { messages, send, sessionId, isRunning, error } = useAgent(
+    "hello-world@development",
+  );
+
+  return (
+    <main>
+      {messages.map((message) => (
+        <p key={message.id}>
+          <strong>{message.role}:</strong> {message.text}
+        </p>
+      ))}
+      <button
+        disabled={isRunning}
+        onClick={() => void send("Hello")}
+      >
+        Send
+      </button>
+      {sessionId ? <small>Session: {sessionId}</small> : null}
+      {error ? <p role="alert">{error}</p> : null}
+    </main>
+  );
+}
+```
+
+## Hook result
+
+| Value | Purpose |
+| --- | --- |
+| `messages` | User and assistant messages accumulated by this hook instance |
+| `send(text)` | Starts or continues the session and streams the response |
+| `sessionId` | Current cloud session after the first message |
+| `isRunning` | Whether a turn is active |
+| `error` | Most recent request error |
+
+## Select the target
+
+Pass `agent-id@alias` to choose the agent and environment:
+
+```tsx
+useAgent("support@development");
+useAgent("support@production");
+```
+
+An options object can also set the input source, API base path, or fetch
+implementation:
+
+```tsx
+useAgent({
+  agent: "support@development",
+  source: "customer-portal",
+});
+```
+
+## Development
+
+Keep `npm run dev` running while using the local application. It starts Vite
+and provides the authenticated development bridge; credentials are not bundled
+into browser code.
+
+For the durable conversation model, see [Sessions and turns](/agents/sessions).

@@ -24,12 +24,7 @@ export default function Agent() {
 
 ```ts
 interface AgentInput {
-  readonly source:
-    | "user"
-    | "schedule"
-    | "webhook"
-    | "subagent"
-    | "system";
+  readonly source: InputSource;
   readonly text?: string;
   readonly payload?: DataValue;
 }
@@ -47,8 +42,7 @@ before use.
 
 ## Adapt to the source
 
-One agent can handle direct user messages, schedules, webhooks, and
-subagent calls without separate definitions:
+The current direct and delegated flows can share one agent definition:
 
 ```tsx
 import { useInput } from "@opencomputer/agent";
@@ -56,16 +50,9 @@ import { useInput } from "@opencomputer/agent";
 export default function Agent() {
   const input = useInput();
 
-  switch (input.source) {
-    case "schedule":
-      return "Run the scheduled review and summarize anything that changed.";
-    case "webhook":
-      return `Process this event: ${JSON.stringify(input.payload)}`;
-    case "subagent":
-      return "Complete the delegated task and return a concise result.";
-    default:
-      return `Help with: ${input.text ?? "the current request"}`;
-  }
+  return input.source === "subagent"
+    ? "Complete the delegated task and return a concise result."
+    : `Help with: ${input.text ?? "the current request"}`;
 }
 ```
 
@@ -76,25 +63,24 @@ Narrow or validate a payload before reading application-specific fields:
 ```tsx
 import { useInput } from "@opencomputer/agent";
 
-type IssueEvent = {
-  action?: string;
-  issue?: { number?: number; title?: string };
+type ResearchRequest = {
+  topic?: string;
+  depth?: "brief" | "deep";
 };
 
 export default function Agent() {
   const input = useInput();
-  const event = (input.payload ?? {}) as IssueEvent;
+  const request = (input.payload ?? {}) as ResearchRequest;
 
-  if (input.source === "webhook" && event.issue?.number) {
-    return `Triage issue #${event.issue.number}: ${event.issue.title ?? "Untitled"}`;
+  if (request.topic) {
+    return `Research ${request.topic} at ${request.depth ?? "brief"} depth.`;
   }
 
-  return "Ask for an issue number before starting triage.";
+  return "Ask for a research topic before starting.";
 }
 ```
 
-For untrusted webhook payloads, validate the value in a tool before performing
-side effects.
+Validate untrusted payloads in a tool before performing side effects.
 
 ## Input is not a prompt UI
 
