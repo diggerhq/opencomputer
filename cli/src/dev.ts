@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { parseEnv } from "node:util";
 
 import type { OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
@@ -16,6 +19,187 @@ import { buildAgentArtifact, readProjectAgents } from "./project.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
+
+type DevelopmentResults = Awaited<
+  ReturnType<typeof publishProjectDevelopment>
+>;
+
+interface SecretSyncState {
+  version: 1;
+  apiUrl: string;
+  projectId: string;
+  hashes: Record<string, string>;
+}
+
+function secretSyncStatePath(projectRoot: string): string {
+  return resolve(projectRoot, ".opencomputer", "dev-secrets.json");
+}
+
+async function readSecretSyncState(
+  projectRoot: string,
+  config: ResolvedConfig,
+  binding: ProjectBinding,
+): Promise<SecretSyncState> {
+  try {
+    const value = JSON.parse(
+      await readFile(secretSyncStatePath(projectRoot), "utf8"),
+    ) as Partial<SecretSyncState>;
+    if (
+      value.version === 1 &&
+      value.apiUrl === config.apiUrl &&
+      value.projectId === binding.projectId &&
+      value.hashes &&
+      typeof value.hashes === "object"
+    ) {
+      return value as SecretSyncState;
+    }
+  } catch {
+    // A missing or invalid state file requires fresh consent.
+  }
+  return {
+    version: 1,
+    apiUrl: config.apiUrl,
+    projectId: binding.projectId,
+    hashes: {},
+  };
+}
+
+function secretOrigins(results: DevelopmentResults): Map<string, string[]> {
+  const origins = new Map<string, Set<string>>();
+  for (const { built } of results) {
+    for (const connection of built.httpConnections) {
+      for (const header of Object.values(connection.headers)) {
+        if (typeof header === "string") continue;
+        const current = origins.get(header.name) ?? new Set<string>();
+        current.add(connection.origin);
+        origins.set(header.name, current);
+      }
+    }
+  }
+  return new Map(
+    [...origins].map(([name, values]) => [name, [...values].sort()]),
+  );
+}
+
+function secretHash(value: string, origins: string[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ value, origins }))
+    .digest("hex");
+}
+
+async function confirmNewSecrets(
+  secrets: Array<{ name: string; origins: string[] }>,
+): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  process.stdout.write("\nSecrets found in opencomputer/.env.local:\n\n");
+  for (const secret of secrets) {
+    process.stdout.write(
+      `  ${secret.name.padEnd(28)} → ${secret.origins.map((origin) => new URL(origin).host).join(", ")}\n`,
+    );
+  }
+  const terminal = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = (
+      await terminal.question("\nSync these development secrets? [Y/n] ")
+    )
+      .trim()
+      .toLowerCase();
+    return answer === "" || answer === "y" || answer === "yes";
+  } finally {
+    terminal.close();
+  }
+}
+
+export async function syncDevelopmentSecrets(
+  client: Pick<OpenComputerClient, "putSecret">,
+  config: ResolvedConfig,
+  projectRoot: string,
+  binding: ProjectBinding,
+  results: DevelopmentResults,
+  options: {
+    confirm?: (
+      secrets: Array<{ name: string; origins: string[] }>,
+    ) => Promise<boolean>;
+  } = {},
+): Promise<string[]> {
+  const path = resolve(projectRoot, "opencomputer", ".env.local");
+  let values: Record<string, string | undefined>;
+  try {
+    values = parseEnv(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const origins = secretOrigins(results);
+  const referenced = [...origins]
+    .filter(([name]) => typeof values[name] === "string" && values[name] !== "")
+    .map(([name, allowedOrigins]) => ({
+      name,
+      value: values[name]!,
+      origins: allowedOrigins,
+    }));
+  const unmatched = Object.keys(values)
+    .filter(
+      (name) =>
+        typeof values[name] === "string" &&
+        values[name] !== "" &&
+        !origins.has(name),
+    )
+    .sort();
+  for (const name of unmatched) {
+    process.stderr.write(
+      `Skipped ${name}: it is not referenced by a defineConnection() declaration.\n`,
+    );
+  }
+  if (!referenced.length) return [];
+
+  const state = await readSecretSyncState(projectRoot, config, binding);
+  const pending = referenced.filter(
+    (secret) =>
+      state.hashes[secret.name] !== secretHash(secret.value, secret.origins),
+  );
+  if (!pending.length) return [];
+  const newSecrets = pending.filter((secret) => !(secret.name in state.hashes));
+  if (newSecrets.length) {
+    const confirmed = await (options.confirm ?? confirmNewSecrets)(newSecrets);
+    if (!confirmed) {
+      process.stderr.write(
+        "Development secret sync skipped. Use `opencomputer secrets set` or restart dev to approve it.\n",
+      );
+      return [];
+    }
+  }
+
+  const synced: string[] = [];
+  for (const secret of pending) {
+    await client.putSecret({
+      projectId: binding.projectId,
+      name: secret.name,
+      value: secret.value,
+      environment: "development",
+      allowedOrigins: secret.origins,
+    });
+    state.hashes[secret.name] = secretHash(secret.value, secret.origins);
+    synced.push(secret.name);
+    process.stdout.write(
+      `Synced development secret ${secret.name} for ${secret.origins.join(", ")}\n`,
+    );
+  }
+  await mkdir(resolve(projectRoot, ".opencomputer"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await writeFile(
+    secretSyncStatePath(projectRoot),
+    `${JSON.stringify(state, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  return synced;
+}
 
 export async function publishDevelopment(
   client: Pick<OpenComputerClient, "registerDeployment">,
@@ -71,6 +255,11 @@ function sourceChange(filename: string | Buffer | null): boolean {
   if (!filename) return true;
   const normalized = filename.toString().replaceAll("\\", "/");
   return !normalized.split("/").includes(".opencomputer");
+}
+
+function secretFileChange(filename: string | Buffer | null): boolean {
+  if (!filename) return false;
+  return filename.toString().replaceAll("\\", "/") === ".env.local";
 }
 
 function waitForShutdown(web?: ChildProcess): Promise<void> {
@@ -163,6 +352,27 @@ export async function runCloudDevelopment(
   let publishing = false;
   let pending = false;
   const lastDigests = new Map<string, string>();
+  let latestResults: DevelopmentResults = [];
+  let secretSync = Promise.resolve();
+
+  const syncSecrets = () => {
+    secretSync = secretSync
+      .then(async () => {
+        await syncDevelopmentSecrets(
+          client,
+          config,
+          projectRoot,
+          binding,
+          latestResults,
+        );
+      })
+      .catch((error) => {
+        process.stderr.write(
+          `Secret sync failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+    return secretSync;
+  };
 
   const publish = async () => {
     if (publishing) {
@@ -179,6 +389,7 @@ export async function runCloudDevelopment(
             projectRoot,
             binding,
           );
+          latestResults = results;
           for (const result of results) {
             if (
               result.built.digest !== lastDigests.get(result.deployment.agentId)
@@ -189,6 +400,7 @@ export async function runCloudDevelopment(
               );
             }
           }
+          await syncSecrets();
         } catch (error) {
           process.stderr.write(
             `Sync failed: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -206,9 +418,11 @@ export async function runCloudDevelopment(
       projectRoot,
       binding,
     );
+    latestResults = initial;
     for (const result of initial) {
       lastDigests.set(result.deployment.agentId, result.built.digest);
     }
+    await syncSecrets();
     const spa = await hasReactSpa(projectRoot);
     process.stdout.write(
       `Development (Cloud)\n` +
@@ -226,6 +440,11 @@ export async function runCloudDevelopment(
       resolve(projectRoot, "opencomputer"),
       { recursive: true },
       (_event, filename) => {
+        if (secretFileChange(filename)) {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => void syncSecrets(), DEBOUNCE_MS);
+          return;
+        }
         if (!sourceChange(filename)) return;
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => void publish(), DEBOUNCE_MS);

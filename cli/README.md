@@ -50,6 +50,11 @@ Secret values are read from a hidden prompt, or from standard input in CI.
 They are write-only: list output contains names, scope, environment, and
 allowed origins, never values.
 
+During development, put agent secrets in `opencomputer/.env.local`. The CLI
+syncs only names referenced by `useSecret()` and limits each value to origins
+declared by `defineConnection()`. It asks before the first upload, watches for
+changes, and skips unrelated variables rather than granting wildcard access.
+
 ```bash
 # Project-level development secret. Allowed origins are inferred from code.
 opencomputer secrets set GITHUB_TOKEN

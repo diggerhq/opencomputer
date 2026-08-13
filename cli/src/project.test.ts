@@ -68,7 +68,11 @@ test("init creates a multi-agent-ready project and React hello world app", async
     );
     assert.match(
       await readFile(resolve(root, "README.md"), "utf8"),
-      /Sync agent code to Development \(Cloud\)/,
+      /Sync agent code to Development \(Cloud\)[\s\S]*opencomputer\/\.env\.local/,
+    );
+    assert.match(
+      await readFile(resolve(root, "opencomputer", ".env.example"), "utf8"),
+      /useSecret\(\)/,
     );
     assert.equal(
       await readFile(resolve(root, "NOTES.md"), "utf8"),
@@ -96,6 +100,7 @@ test("init creates a multi-agent-ready project and React hello world app", async
     }
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
+      "opencomputer/.env.example",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "vite.config.ts",
@@ -141,6 +146,7 @@ test("init can create an agent-only project", async () => {
     assert.equal(packageJSON.devDependencies.vite, undefined);
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
+      "opencomputer/.env.example",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "README.md",
