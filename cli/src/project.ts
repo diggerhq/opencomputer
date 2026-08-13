@@ -329,6 +329,12 @@ export default function Agent() {
 `,
   );
   await updateGitignore(root);
+  await writeFile(
+    resolve(root, "opencomputer", ".env.example"),
+    `# Development agent secrets belong in .env.local beside this file.
+# Add only names referenced by useSecret() in a defineConnection() declaration.
+`,
+  );
   if (spa) await mkdir(resolve(root, "src"), { recursive: true });
   await writeFile(
     resolve(root, "opencomputer", "project.ts"),
@@ -606,6 +612,10 @@ npm run dev
 
 The first run asks you to create a cloud project or select an existing one.
 That choice is saved for later development runs.
+
+Development secrets can be placed in \`opencomputer/.env.local\`. Only values
+referenced by \`useSecret()\` are synchronized, and their allowed origins are
+inferred from \`defineConnection()\` declarations.
 `
       : `# Hello World OpenComputer agent
 
@@ -619,6 +629,10 @@ npm run dev
 
 The first run asks you to create a cloud project or select an existing one.
 That choice is saved for later development runs.
+
+Development secrets can be placed in \`opencomputer/.env.local\`. Only values
+referenced by \`useSecret()\` are synchronized, and their allowed origins are
+inferred from \`defineConnection()\` declarations.
 `,
   );
 
@@ -641,6 +655,7 @@ That choice is saved for later development runs.
     manifest,
     files: [
       "opencomputer/project.ts",
+      "opencomputer/.env.example",
       "opencomputer/agents/hello-world/agent.ts",
       ...appFiles,
     ],
