@@ -1,10 +1,18 @@
 export type DataValue =
-  | null | boolean | number | string
+  | null
+  | boolean
+  | number
+  | string
   | readonly DataValue[]
   | { readonly [key: string]: DataValue };
 
 export type InputSource =
-  | "user" | "channel" | "schedule" | "webhook" | "subagent" | "system";
+  | "user"
+  | "channel"
+  | "schedule"
+  | "webhook"
+  | "subagent"
+  | "system";
 
 export interface AgentInput {
   readonly source: InputSource;
@@ -36,7 +44,13 @@ export interface HttpConnectionDefinition extends ConnectionReference {
   readonly headers: Readonly<Record<string, string | SecretHeaderReference>>;
   readonly methods?: readonly string[];
   readonly pathPrefix?: string;
+  readonly redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
   fetch(path: string, init?: RequestInit): Promise<Response>;
+}
+
+export interface HttpConnectionRedirectOrigin {
+  readonly origin: string;
+  readonly pathPrefix?: string;
 }
 
 export interface McpServerDefinition extends ResourceReference {
@@ -57,13 +71,12 @@ export interface ToolExecutionContext {
   readonly messageId: string;
   readonly agentId: string;
   readonly signal?: AbortSignal;
-  reportProgress(
-    metadata: Readonly<Record<string, DataValue>>,
-  ): Promise<void>;
+  reportProgress(metadata: Readonly<Record<string, DataValue>>): Promise<void>;
 }
 
-export interface ToolDefinition<Output extends DataValue = DataValue>
-  extends ResourceReference {
+export interface ToolDefinition<
+  Output extends DataValue = DataValue,
+> extends ResourceReference {
   readonly kind: "tool";
   readonly version: 1;
   readonly name: string;
@@ -87,9 +100,7 @@ function hooks(): AgentHooks {
     Symbol.for("opencomputer.agent-hooks")
   ];
   if (!value) {
-    throw new Error(
-      "OpenComputer hooks can only run while rendering an agent",
-    );
+    throw new Error("OpenComputer hooks can only run while rendering an agent");
   }
   return value as AgentHooks;
 }
@@ -127,6 +138,7 @@ export function defineConnection(input: {
   headers?: Readonly<Record<string, string | SecretHeaderReference>>;
   methods?: readonly string[];
   pathPrefix?: string;
+  redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
 }): HttpConnectionDefinition {
   const id = identifier(input.id, "defineConnection");
   const origin = new URL(input.origin);
@@ -135,13 +147,45 @@ export function defineConnection(input: {
   }
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     if (
-      ["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(
-        name.toLowerCase(),
-      ) &&
+      [
+        "api-key",
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-api-key",
+      ].includes(name.toLowerCase()) &&
       typeof value === "string"
     ) {
       throw new Error(`${name} must use useSecret()`);
     }
+  }
+  if ((input.redirectOrigins?.length ?? 0) > 16) {
+    throw new Error("Connections may declare at most 16 redirect origins");
+  }
+  const redirectOrigins = input.redirectOrigins?.map((input) => {
+    const redirectOrigin = new URL(input.origin);
+    if (redirectOrigin.protocol !== "https:" || redirectOrigin.pathname !== "/") {
+      throw new Error(
+        "Connection redirect origins must be HTTPS origins without a path",
+      );
+    }
+    if (input.pathPrefix !== undefined && !input.pathPrefix.startsWith("/")) {
+      throw new Error("Connection redirect path prefixes must start with /");
+    }
+    return Object.freeze({
+      origin: redirectOrigin.origin,
+      ...(input.pathPrefix ? { pathPrefix: input.pathPrefix } : {}),
+    });
+  });
+  if (
+    redirectOrigins &&
+    new Set(
+      redirectOrigins.map(
+        ({ origin, pathPrefix }) => `${origin}\n${pathPrefix ?? ""}`,
+      ),
+    ).size !== redirectOrigins.length
+  ) {
+    throw new Error("Connection redirect origin policies must be unique");
   }
   const definition = {
     kind: "connection" as const,
@@ -149,9 +193,16 @@ export function defineConnection(input: {
     origin: origin.origin,
     headers: Object.freeze({ ...(input.headers ?? {}) }),
     ...(input.methods
-      ? { methods: Object.freeze(input.methods.map((method) => method.toUpperCase())) }
+      ? {
+          methods: Object.freeze(
+            input.methods.map((method) => method.toUpperCase()),
+          ),
+        }
       : {}),
     ...(input.pathPrefix ? { pathPrefix: input.pathPrefix } : {}),
+    ...(redirectOrigins
+      ? { redirectOrigins: Object.freeze(redirectOrigins) }
+      : {}),
     async fetch(path: string, init: RequestInit = {}): Promise<Response> {
       const runtime = globalThis as typeof globalThis & {
         process?: { env?: Record<string, string | undefined> };
@@ -176,7 +227,9 @@ export function defineConnection(input: {
                 );
               })();
       if (body !== undefined && body.length > 5 * 1024 * 1024) {
-        throw new Error("Managed connection request bodies cannot exceed 5 MiB");
+        throw new Error(
+          "Managed connection request bodies cannot exceed 5 MiB",
+        );
       }
       return fetch(
         `${base.replace(/\/$/, "")}/${encodeURIComponent(id)}/fetch`,
@@ -250,10 +303,16 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
 
 export const useInput = (): Readonly<AgentInput> => hooks().useInput();
 export const useCurrentInput = useInput;
-export const useModel = (model: ModelSelection): void => hooks().useModel(model);
-export const useTool = (tool: string | ResourceReference): void => hooks().useTool(tool);
-export const useSubagent = (agent: string | ResourceReference): void => hooks().useSubagent(agent);
-export const useMcpServer = (server: string | ResourceReference): void => hooks().useMcpServer(server);
-export function useSessionData<T extends DataValue>(key: string): T | undefined {
+export const useModel = (model: ModelSelection): void =>
+  hooks().useModel(model);
+export const useTool = (tool: string | ResourceReference): void =>
+  hooks().useTool(tool);
+export const useSubagent = (agent: string | ResourceReference): void =>
+  hooks().useSubagent(agent);
+export const useMcpServer = (server: string | ResourceReference): void =>
+  hooks().useMcpServer(server);
+export function useSessionData<T extends DataValue>(
+  key: string,
+): T | undefined {
   return hooks().useSessionData<T>(key);
 }

@@ -72,6 +72,9 @@ function secretOrigins(results: DevelopmentResults): Map<string, string[]> {
         if (typeof header === "string") continue;
         const current = origins.get(header.name) ?? new Set<string>();
         current.add(connection.origin);
+        for (const redirect of connection.redirectOrigins ?? []) {
+          current.add(redirect.origin);
+        }
         origins.set(header.name, current);
       }
     }

@@ -203,6 +203,11 @@ export default function Agent() {
       connections: string[];
       httpConnections: unknown[];
       mcpServers: string[];
+      mcpServerDefinitions: Array<{
+        id: string;
+        url: string;
+        connection?: string;
+      }>;
     };
     assert.deepEqual(manifest, {
       version: 2,
@@ -213,6 +218,9 @@ export default function Agent() {
       connections: [],
       httpConnections: [],
       mcpServers: ["docs"],
+      mcpServerDefinitions: [
+        { id: "docs", url: "https://mcp.example.com/" },
+      ],
     });
     await assert.rejects(
       stat(resolve(initialized.agentRoot, "opencomputer.toml")),
@@ -237,6 +245,12 @@ export const github = defineConnection({
   origin: "https://api.github.com",
   methods: ["GET"],
   pathPrefix: "/repos/",
+  redirectOrigins: [
+    {
+      origin: "https://codeload.github.com",
+      pathPrefix: "/opencomputer/example/",
+    },
+  ],
   headers: { Authorization: bearer(useSecret("GITHUB_TOKEN")) },
 });
 
@@ -274,6 +288,12 @@ export default function Agent() {
         origin: "https://api.github.com",
         methods: ["GET"],
         pathPrefix: "/repos/",
+        redirectOrigins: [
+          {
+            origin: "https://codeload.github.com",
+            pathPrefix: "/opencomputer/example/",
+          },
+        ],
         headers: {
           Authorization: {
             kind: "secret",
@@ -285,6 +305,48 @@ export default function Agent() {
     ]);
     assert.ok(built.connections.includes("github-api"));
     assert.doesNotMatch(built.body.toString("utf8"), /actual-secret-value/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler records managed MCP server definitions", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-mcp-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { bearer, defineConnection, defineMcpServer, useMcpServer, useSecret } from "@opencomputer/agent";
+
+const unleash = defineConnection({
+  id: "unleash-api",
+  origin: "https://example.getunleash.io",
+  pathPrefix: "/api/admin/mcp",
+  headers: { Authorization: bearer(useSecret("UNLEASH_TOKEN")) },
+});
+const server = defineMcpServer({
+  id: "unleash",
+  url: "https://example.getunleash.io/api/admin/mcp",
+  connection: unleash,
+});
+export default function Agent() {
+  useMcpServer(server);
+  return "Use Unleash.";
+}
+`,
+    );
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { mcpServerDefinitions: unknown[] };
+    assert.deepEqual(manifest.mcpServerDefinitions, [
+      {
+        id: "unleash",
+        url: "https://example.getunleash.io/api/admin/mcp",
+        connection: "unleash-api",
+      },
+    ]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

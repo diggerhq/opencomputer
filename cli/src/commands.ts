@@ -640,7 +640,12 @@ export async function runCommand(
               (value) => typeof value !== "string" && value.name === name,
             ),
           )
-          .map((connection) => connection.origin);
+          .flatMap((connection) => [
+            connection.origin,
+            ...(connection.redirectOrigins ?? []).map(
+              (redirect) => redirect.origin,
+            ),
+          ]);
       }
       allowedOrigins = [...new Set(allowedOrigins)];
       if (!allowedOrigins.length) {

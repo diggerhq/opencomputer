@@ -288,15 +288,17 @@ export class OpenComputerClient {
       origin: string;
       headers: Record<
         string,
-        string | {
-          kind: "secret";
-          name: string;
-          prefix?: string;
-          suffix?: string;
-        }
+        | string
+        | {
+            kind: "secret";
+            name: string;
+            prefix?: string;
+            suffix?: string;
+          }
       >;
       methods?: string[];
       pathPrefix?: string;
+      redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
     source: {
       digest: string;

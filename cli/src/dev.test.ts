@@ -141,6 +141,7 @@ test("development syncs declared .env.local secrets to inferred origins", async 
 const github = defineConnection({
   id: "github-api",
   origin: "https://api.github.com",
+  redirectOrigins: [{ origin: "https://codeload.github.com" }],
   headers: { Authorization: bearer(useSecret("GITHUB_TOKEN")) },
 });
 
@@ -230,7 +231,10 @@ export default function Agent() { useTool(repository); return "Use GitHub."; }
         name: "GITHUB_TOKEN",
         value: "first-secret",
         environment: "development",
-        allowedOrigins: ["https://api.github.com"],
+        allowedOrigins: [
+          "https://api.github.com",
+          "https://codeload.github.com",
+        ],
       },
     ]);
     await syncDevelopmentSecrets(

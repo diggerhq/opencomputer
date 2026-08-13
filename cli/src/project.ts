@@ -37,6 +37,13 @@ export interface HttpConnectionManifest {
   >;
   methods?: string[];
   pathPrefix?: string;
+  redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
+}
+
+export interface McpServerManifest {
+  id: string;
+  url: string;
+  connection?: string;
 }
 
 export interface ProjectAgentSource {
@@ -667,14 +674,106 @@ function literalHookIds(source: string, hook: string): string[] {
   return [...source.matchAll(pattern)].map((match) => match[1]!).sort();
 }
 
-function definedMcpServerIds(source: string): string[] {
-  return [
-    ...source.matchAll(
-      /\bdefineMcpServer\s*\(\s*\{[\s\S]*?\bid\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-    ),
-  ]
-    .map((match) => match[1]!)
-    .sort();
+function definedConnectionBindings(
+  source: string,
+  path: string,
+): Map<string, HttpConnectionManifest> {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const definitions = new Map(
+    definedHttpConnections(source, path).map((definition) => [
+      definition.id,
+      definition,
+    ]),
+  );
+  const bindings = new Map<string, HttpConnectionManifest>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === "defineConnection"
+    ) {
+      const input = node.initializer.arguments[0];
+      if (input && ts.isObjectLiteralExpression(input)) {
+        const id = literalStringValue(
+          objectProperty(input, "id"),
+          "connection id",
+        );
+        const definition = definitions.get(id);
+        if (definition) bindings.set(node.name.text, definition);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return bindings;
+}
+
+function definedMcpServers(
+  source: string,
+  path: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): McpServerManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const definitions: McpServerManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineMcpServer"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error("defineMcpServer() requires an object literal");
+      }
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        "MCP server id",
+      );
+      const value = literalStringValue(
+        objectProperty(input, "url"),
+        `MCP server ${id} URL`,
+      );
+      const url = new URL(value);
+      if (url.protocol !== "https:") {
+        throw new Error(`MCP server ${id} must use HTTPS`);
+      }
+      const connectionExpression = objectProperty(input, "connection");
+      let connection: HttpConnectionManifest | undefined;
+      if (connectionExpression) {
+        if (!ts.isIdentifier(connectionExpression)) {
+          throw new Error(
+            `MCP server ${id} connection must reference a defineConnection() binding`,
+          );
+        }
+        connection = connectionBindings.get(connectionExpression.text);
+        if (!connection) {
+          throw new Error(
+            `MCP server ${id} references unknown connection ${connectionExpression.text}`,
+          );
+        }
+        if (
+          url.origin !== connection.origin ||
+          (connection.pathPrefix &&
+            !url.pathname.startsWith(connection.pathPrefix))
+        ) {
+          throw new Error(
+            `MCP server ${id} URL is outside connection ${connection.id}`,
+          );
+        }
+      }
+      definitions.push({
+        id,
+        url: url.toString(),
+        ...(connection ? { connection: connection.id } : {}),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return definitions.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function objectProperty(
@@ -844,6 +943,68 @@ function definedHttpConnections(
           `connection ${id} pathPrefix`,
         );
       }
+      const redirectOrigins = objectProperty(input, "redirectOrigins");
+      if (redirectOrigins) {
+        if (!ts.isArrayLiteralExpression(redirectOrigins)) {
+          throw new Error(
+            `Connection ${id} redirectOrigins must be an array literal`,
+          );
+        }
+        if (redirectOrigins.elements.length > 16) {
+          throw new Error(
+            `Connection ${id} may declare at most 16 redirect origins`,
+          );
+        }
+        const policies = new Set<string>();
+        definition.redirectOrigins = redirectOrigins.elements.map(
+          (element, index) => {
+            if (!ts.isObjectLiteralExpression(element)) {
+              throw new Error(
+                `Connection ${id} redirect origin ${index} must be an object literal`,
+              );
+            }
+            const value = literalStringValue(
+              objectProperty(element, "origin"),
+              `connection ${id} redirect origin ${index}`,
+            );
+            const redirectOrigin = new URL(value);
+            if (
+              redirectOrigin.protocol !== "https:" ||
+              redirectOrigin.pathname !== "/"
+            ) {
+              throw new Error(
+                `Connection ${id} redirect origin ${index} must be an HTTPS origin without a path`,
+              );
+            }
+            const redirectPathPrefix = objectProperty(element, "pathPrefix");
+            const parsedPathPrefix = redirectPathPrefix
+              ? literalStringValue(
+                  redirectPathPrefix,
+                  `connection ${id} redirect origin ${index} pathPrefix`,
+                )
+              : undefined;
+            if (
+              parsedPathPrefix !== undefined &&
+              !parsedPathPrefix.startsWith("/")
+            ) {
+              throw new Error(
+                `Connection ${id} redirect origin ${index} pathPrefix must start with /`,
+              );
+            }
+            const policyKey = `${redirectOrigin.origin}\n${parsedPathPrefix ?? ""}`;
+            if (policies.has(policyKey)) {
+              throw new Error(
+                `Connection ${id} redirect origin policies must be unique`,
+              );
+            }
+            policies.add(policyKey);
+            return {
+              origin: redirectOrigin.origin,
+              ...(parsedPathPrefix ? { pathPrefix: parsedPathPrefix } : {}),
+            };
+          },
+        );
+      }
       definitions.push(definition);
     }
     ts.forEachChild(node, visit);
@@ -887,12 +1048,21 @@ export const defineConnection = (input) => {
   for (const [name, value] of Object.entries(input.headers || {})) {
     if (["api-key", "authorization", "cookie", "proxy-authorization", "x-api-key"].includes(name.toLowerCase()) && typeof value === "string") throw new Error(name + " must use useSecret()");
   }
+  const redirectOrigins = (input.redirectOrigins || []).map((input) => {
+    const redirectOrigin = new URL(input.origin);
+    if (redirectOrigin.protocol !== "https:" || redirectOrigin.pathname !== "/") throw new Error("Connection redirect origins must be HTTPS origins without a path");
+    if (input.pathPrefix != null && !input.pathPrefix.startsWith("/")) throw new Error("Connection redirect path prefixes must start with /");
+    return Object.freeze({ origin: redirectOrigin.origin, ...(input.pathPrefix ? { pathPrefix: input.pathPrefix } : {}) });
+  });
+  if (redirectOrigins.length > 16) throw new Error("Connections may declare at most 16 redirect origins");
+  if (new Set(redirectOrigins.map(({ origin, pathPrefix }) => origin + "\\n" + (pathPrefix || ""))).size !== redirectOrigins.length) throw new Error("Connection redirect origin policies must be unique");
   return Object.freeze({
     kind: "connection",
     ...input,
     id: connectionId,
     origin: origin.origin,
     headers: Object.freeze({ ...(input.headers || {}) }),
+    ...(redirectOrigins.length ? { redirectOrigins: Object.freeze(redirectOrigins) } : {}),
     async fetch(path, init = {}) {
       const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
       const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
@@ -1131,6 +1301,42 @@ the product or support surface presented to users.
       `Connection id ${JSON.stringify(duplicateConnection.id)} is defined more than once`,
     );
   }
+  const connectionBindings = new Map<string, HttpConnectionManifest>();
+  for (const [index, source] of [
+    agentSource,
+    ...toolSources.map((item) => item.source),
+  ].entries()) {
+    const filename =
+      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename;
+    for (const [name, definition] of definedConnectionBindings(
+      source,
+      filename,
+    )) {
+      const existing = connectionBindings.get(name);
+      if (existing && existing.id !== definition.id) {
+        throw new Error(
+          `Connection binding ${JSON.stringify(name)} is defined more than once`,
+        );
+      }
+      connectionBindings.set(name, definition);
+    }
+  }
+  const mcpServerDefinitions = definedMcpServers(
+    agentSource,
+    "agent.ts",
+    connectionBindings,
+  );
+  const duplicateMcpServer = mcpServerDefinitions.find(
+    (server, index) =>
+      mcpServerDefinitions.findIndex(
+        (candidate) => candidate.id === server.id,
+      ) !== index,
+  );
+  if (duplicateMcpServer) {
+    throw new Error(
+      `MCP server id ${JSON.stringify(duplicateMcpServer.id)} is defined more than once`,
+    );
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -1150,10 +1356,11 @@ the product or support surface presented to users.
         httpConnections,
         mcpServers: [
           ...new Set([
-            ...definedMcpServerIds(agentSource),
+            ...mcpServerDefinitions.map((server) => server.id),
             ...literalHookIds(agentSource, "useMcpServer"),
           ]),
         ].sort(),
+        mcpServerDefinitions,
       },
       null,
       2,
