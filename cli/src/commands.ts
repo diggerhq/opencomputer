@@ -22,6 +22,7 @@ import {
   parseSessionCommand,
   resolveProjectAgent,
 } from "./session-command.js";
+import { formatSessionEvent } from "./session-prompt.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -204,6 +205,20 @@ function printToolProgress(event: ManagedAgentEvent): void {
   );
 }
 
+function printSessionProgress(
+  event: ManagedAgentEvent,
+  json: boolean,
+  verbose: boolean,
+): void {
+  if (json) return;
+  if (verbose) {
+    const formatted = formatSessionEvent(event);
+    if (formatted) process.stderr.write(`${formatted}\n`);
+    return;
+  }
+  printToolProgress(event);
+}
+
 function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -356,6 +371,7 @@ async function runAgent(
   prompt: string,
   keep: boolean,
   json: boolean,
+  verbose: boolean,
 ): Promise<unknown> {
   const created = await client.createSession(agent);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -364,7 +380,7 @@ async function runAgent(
     created.session.id,
     0,
     (event) => event.type === "runtime.connected",
-    () => undefined,
+    (event) => printSessionProgress(event, json, verbose),
     90_000,
   );
   const turn = await client.createTurn(created.session.id, prompt);
@@ -388,7 +404,7 @@ async function runAgent(
       ) {
         completedText = event.data.text;
       } else {
-        if (!json) printToolProgress(event);
+        printSessionProgress(event, json, verbose);
       }
     },
     180_000,
@@ -575,7 +591,14 @@ export async function runCommand(
     if (!agent || !prompt) {
       throw new Error("Usage: opencomputer run <agent> <prompt>");
     }
-    const result = await runAgent(client, agent, prompt, keep, globals.json);
+    const result = await runAgent(
+      client,
+      agent,
+      prompt,
+      keep,
+      globals.json,
+      globals.verbose === true,
+    );
     if (globals.json) printJSON(result);
     return;
   }
@@ -783,6 +806,7 @@ export async function runCommand(
           prompt,
           session.keep,
           globals.json,
+          globals.verbose === true,
         );
         if (globals.json) printJSON(result);
         return;

@@ -51,6 +51,13 @@ The environment remains Development:
 npm run session -- --agent reviewer "Review this change"
 ```
 
+Add `--verbose` to stream non-message lifecycle, runtime, tool, egress, usage,
+and turn events. Assistant message text continues to stream normally:
+
+```bash
+npm run session -- --verbose --agent reviewer "Review this change"
+```
+
 Or manage the durable session lifecycle explicitly:
 
 ```bash
