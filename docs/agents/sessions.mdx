@@ -44,6 +44,13 @@ npm run session
 The session command always uses the current project's bound Development
 deployment. It does not select between local and remote runtimes.
 
+Projects with multiple agents may select another member of the bound project.
+The environment remains Development:
+
+```bash
+npm run session -- --agent reviewer "Review this change"
+```
+
 Or manage the durable session lifecycle explicitly:
 
 ```bash

@@ -50,8 +50,8 @@ Usage:
   opencomputer init <directory|.> [--spa|--agent-only]
   opencomputer link
   opencomputer dev [--project <id|slug> | --create-project <name>]
-  opencomputer session [prompt] [--keep]
-  opencomputer session create [prompt] [--keep]
+  opencomputer session [prompt] [--agent <project-agent>] [--keep]
+  opencomputer session create [prompt] [--agent <project-agent>] [--keep]
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>

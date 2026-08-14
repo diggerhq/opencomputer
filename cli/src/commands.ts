@@ -20,6 +20,7 @@ import {
 import {
   developmentAgentReference,
   parseSessionCommand,
+  resolveProjectAgent,
 } from "./session-command.js";
 
 export interface GlobalOptions {
@@ -124,6 +125,21 @@ async function selectedProject(
     interactive,
   });
   return { projectId: binding.projectId, agentId: binding.agentId };
+}
+
+async function selectedSessionAgent(
+  client: OpenComputerClient,
+  project: { projectId: string; agentId: string },
+  selector?: string,
+): Promise<string> {
+  if (!selector) return project.agentId;
+  const current = (await client.projects()).find(
+    (candidate) => candidate.id === project.projectId,
+  );
+  if (!current) {
+    throw new Error("The bound project is no longer available.");
+  }
+  return resolveProjectAgent(current.agents, selector);
 }
 
 function printLog(entry: ManagedAgentLog, json: boolean): void {
@@ -754,7 +770,12 @@ export async function runCommand(
         undefined,
         !globals.json,
       );
-      const agent = developmentAgentReference(project.agentId);
+      const agentId = await selectedSessionAgent(
+        client,
+        project,
+        session.agent,
+      );
+      const agent = developmentAgentReference(agentId);
       if (prompt) {
         const result = await runAgent(
           client,
