@@ -7,8 +7,8 @@ projects with an optional React application.
 npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
-npx opencomputer login
-npx opencomputer link
+npx --package @opencomputer/cli opencomputer login
+npx --package @opencomputer/cli opencomputer link
 ```
 
 The npm initializer asks whether to include a React SPA, then delegates to

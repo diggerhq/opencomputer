@@ -43,7 +43,7 @@ The source scaffold and cloud project are separate. `npm create` writes local
 source. Link it to a cloud project with:
 
 ```bash
-npx opencomputer link
+npx --package @opencomputer/cli opencomputer link
 ```
 
 The command asks whether to create a project or select an existing one. If you
@@ -52,8 +52,8 @@ skip it, the first project-scoped command shows the same prompt.
 For non-interactive use:
 
 ```bash
-npx opencomputer dev --project <project-id-or-slug>
-npx opencomputer dev --create-project "Support agents"
+npx --package @opencomputer/cli opencomputer dev --project <project-id-or-slug>
+npx --package @opencomputer/cli opencomputer dev --create-project "Support agents"
 ```
 
 Later commands reuse `.opencomputer/project.json`. Run `opencomputer link`

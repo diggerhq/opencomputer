@@ -35,22 +35,32 @@ debug inspector.
 
 ## CLI
 
-Start an interactive session against the development agent:
+Start a session against the development agent:
 
 ```bash
 npm run session
 ```
 
-Or manage remote sessions explicitly:
+The session command always uses the current project's bound Development
+deployment. It does not select between local and remote runtimes.
+
+Or manage the durable session lifecycle explicitly:
 
 ```bash
-npx opencomputer session create "Draft a response" --remote \
-  --agent hello-world@development
-npx opencomputer session list
-npx opencomputer session inspect <session-id>
-npx opencomputer session attach <session-id>
-npx opencomputer session send <session-id> "Continue"
-npx opencomputer session end <session-id>
+npm run session -- create "Draft a response"
+npm run session -- list
+npm run session -- inspect <session-id>
+npm run session -- attach <session-id>
+npm run session -- send <session-id> "Continue"
+npm run session -- end <session-id>
+```
+
+Project scripts resolve the `opencomputer` binary from the installed
+`@opencomputer/cli` package. For a one-off invocation outside those scripts,
+select the scoped package explicitly:
+
+```bash
+npx --package @opencomputer/cli opencomputer session "Draft a response"
 ```
 
 Use `--keep` on supported commands when the session should remain active after
