@@ -26,14 +26,14 @@ On the first run, select an existing project or create one. The choice is saved
 locally and reused by later commands.
 
 ```bash
-npx opencomputer link
+npx --package @opencomputer/cli opencomputer link
 ```
 
 Use an explicit project in scripts or other non-interactive environments:
 
 ```bash
-npx opencomputer dev --project <project-id-or-slug>
-npx opencomputer dev --create-project "Support agents"
+npx --package @opencomputer/cli opencomputer dev --project <project-id-or-slug>
+npx --package @opencomputer/cli opencomputer dev --create-project "Support agents"
 ```
 
 ## Work with the React application

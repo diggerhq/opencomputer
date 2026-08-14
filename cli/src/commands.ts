@@ -11,14 +11,18 @@ import {
   ensureProjectBinding,
   findOpenComputerProjectRoot,
 } from "./binding.js";
-import { runLocalAgent } from "./local.js";
 import {
   assertStarterTarget,
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
-  readManifest,
 } from "./project.js";
+import {
+  developmentAgentReference,
+  parseSessionCommand,
+  resolveProjectAgent,
+} from "./session-command.js";
+import { formatSessionEvent } from "./session-prompt.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -124,6 +128,21 @@ async function selectedProject(
   return { projectId: binding.projectId, agentId: binding.agentId };
 }
 
+async function selectedSessionAgent(
+  client: OpenComputerClient,
+  project: { projectId: string; agentId: string },
+  selector?: string,
+): Promise<string> {
+  if (!selector) return project.agentId;
+  const current = (await client.projects()).find(
+    (candidate) => candidate.id === project.projectId,
+  );
+  if (!current) {
+    throw new Error("The bound project is no longer available.");
+  }
+  return resolveProjectAgent(current.agents, selector);
+}
+
 function printLog(entry: ManagedAgentLog, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(entry)}\n`);
@@ -150,13 +169,6 @@ async function requireAgentRoot(): Promise<string> {
     );
   }
   return root;
-}
-
-async function inferAgentReference(alias: string): Promise<string | undefined> {
-  const root = await findAgentRoot();
-  if (!root) return undefined;
-  const manifest = await readManifest(root);
-  return `${manifest.id}@${alias}`;
 }
 
 function printSession(session: ManagedSessionSnapshot): void {
@@ -191,6 +203,20 @@ function printToolProgress(event: ManagedAgentEvent): void {
   process.stderr.write(
     `tool: ${tool} ${event.type === "tool.completed" ? "completed" : "failed"}\n`,
   );
+}
+
+function printSessionProgress(
+  event: ManagedAgentEvent,
+  json: boolean,
+  verbose: boolean,
+): void {
+  if (json) return;
+  if (verbose) {
+    const formatted = formatSessionEvent(event);
+    if (formatted) process.stderr.write(`${formatted}\n`);
+    return;
+  }
+  printToolProgress(event);
 }
 
 function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
@@ -345,6 +371,7 @@ async function runAgent(
   prompt: string,
   keep: boolean,
   json: boolean,
+  verbose: boolean,
 ): Promise<unknown> {
   const created = await client.createSession(agent);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -353,7 +380,7 @@ async function runAgent(
     created.session.id,
     0,
     (event) => event.type === "runtime.connected",
-    () => undefined,
+    (event) => printSessionProgress(event, json, verbose),
     90_000,
   );
   const turn = await client.createTurn(created.session.id, prompt);
@@ -377,7 +404,7 @@ async function runAgent(
       ) {
         completedText = event.data.text;
       } else {
-        if (!json) printToolProgress(event);
+        printSessionProgress(event, json, verbose);
       }
     },
     180_000,
@@ -564,7 +591,14 @@ export async function runCommand(
     if (!agent || !prompt) {
       throw new Error("Usage: opencomputer run <agent> <prompt>");
     }
-    const result = await runAgent(client, agent, prompt, keep, globals.json);
+    const result = await runAgent(
+      client,
+      agent,
+      prompt,
+      keep,
+      globals.json,
+      globals.verbose === true,
+    );
     if (globals.json) printJSON(result);
     return;
   }
@@ -740,56 +774,39 @@ export async function runCommand(
   }
 
   if (command === "session") {
-    const local = flag(args, "--local");
-    const remote = flag(args, "--remote");
-    const keep = flag(args, "--keep");
-    const agentOption = option(args, "--agent");
-    const alias = option(args, "--alias") ?? "production";
-    if (local && (remote || agentOption)) {
-      throw new Error("--local cannot be combined with --remote or --agent.");
-    }
-    const knownActions = new Set([
-      "create",
-      "list",
-      "inspect",
-      "attach",
-      "send",
-      "end",
-    ]);
-    const shorthand = args[0];
-    const action =
-      shorthand && knownActions.has(shorthand) ? args.shift()! : "create";
-    const useRemote = remote || Boolean(agentOption) || action !== "create";
-    if (!useRemote) {
-      const prompt = args.join(" ").trim();
-      await runLocalAgent(prompt ? ["run", prompt] : ["shell"], config, {
-        verbose: globals.verbose,
-      });
-      return;
-    }
-    if (action === "list") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const session = parseSessionCommand(args);
+    const sessionArgs = session.args;
+    if (session.action === "list") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       const sessions = await client.sessions();
       if (globals.json) printJSON(sessions);
       else if (!sessions.length) process.stdout.write("No sessions.\n");
       else sessions.forEach(printSession);
       return;
     }
-    if (action === "create") {
-      const prompt = args.join(" ").trim();
-      const agent = agentOption ?? (await inferAgentReference(alias));
-      if (!agent) {
-        throw new Error(
-          "No agent repository found. Pass --agent <agent>@<alias>.",
-        );
-      }
+    if (session.action === "create") {
+      const prompt = sessionArgs.join(" ").trim();
+      const project = await selectedProject(
+        client,
+        config,
+        undefined,
+        !globals.json,
+      );
+      const agentId = await selectedSessionAgent(
+        client,
+        project,
+        session.agent,
+      );
+      const agent = developmentAgentReference(agentId);
       if (prompt) {
         const result = await runAgent(
           client,
           agent,
           prompt,
-          keep,
+          session.keep,
           globals.json,
+          globals.verbose === true,
         );
         if (globals.json) printJSON(result);
         return;
@@ -803,14 +820,14 @@ export async function runCommand(
         () => undefined,
         90_000,
       );
-      if (!keep) {
+      if (!session.keep) {
         await client.suspendSession(created.session.id).catch(() => undefined);
       }
       const result = {
         sessionId: created.session.id,
         agentId: created.deployment?.agentId ?? agent,
         deploymentId: created.deployment?.id,
-        status: keep ? "running" : "suspended",
+        status: session.keep ? "running" : "suspended",
         cursor: connected.cursor,
       };
       if (globals.json) printJSON(result);
@@ -824,26 +841,28 @@ export async function runCommand(
       }
       return;
     }
-    const sessionId = args.shift();
+    const sessionId = sessionArgs.shift();
     if (!sessionId) throw new Error("A session ID is required.");
-    if (action === "inspect") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "inspect") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       printJSON(await client.session(sessionId));
       return;
     }
-    if (action === "attach") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "attach") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       await attachSession(client, sessionId, globals.json);
       return;
     }
-    if (action === "send") {
-      const prompt = args.join(" ").trim();
+    if (session.action === "send") {
+      const prompt = sessionArgs.join(" ").trim();
       if (!prompt) throw new Error("A prompt is required.");
       const result = await sendAgentTurn(
         client,
         sessionId,
         prompt,
-        keep,
+        session.keep,
         globals.json,
       );
       if (globals.json) {
@@ -851,8 +870,9 @@ export async function runCommand(
       }
       return;
     }
-    if (action === "end") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "end") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       await client.terminateSession(sessionId).catch(() => undefined);
       const ended = await client.endSession(sessionId);
       if (globals.json) printJSON(ended);

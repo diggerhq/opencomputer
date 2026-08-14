@@ -7,7 +7,7 @@ contains one or more agents plus the React app used to interact with them.
 npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
-npx opencomputer login
+npx --package @opencomputer/cli opencomputer login
 ```
 
 Sync agent code to Development (Cloud) in one terminal:
