@@ -275,7 +275,7 @@ export function ManagedSlackWizard({
           </span>
           <div className="min-w-0">
             <p className="text-sm font-medium">
-              {connection?.appName || channelName || agentName}
+              {channelName || connection?.appName || agentName}
             </p>
             <p className="text-muted-foreground truncate text-xs">
               {channelId ? `${channelId} · ` : ''}
