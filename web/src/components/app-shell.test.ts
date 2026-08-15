@@ -21,6 +21,7 @@ describe('managed agents navigation', () => {
       'Deployments',
       'Sessions',
       'Channels',
+      'Outboxes',
       'Schedules',
       'Secrets',
       'Debug playground',
