@@ -85,6 +85,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[a-z][a-z0-9_]{0,63}$/.test(backendError.code)
       ? backendError.code
       : "agent_request_failed";
+  const backendMessage =
+    typeof backendError?.message === "string" ? backendError.message : "";
   let message = "The agent request could not be completed.";
   if (upstream.status === 400) {
     message =
@@ -96,7 +98,24 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    message = "The agent request conflicts with the current state.";
+    if (backendCode === "destination_verification_failed") {
+      if (backendMessage === "Invite the Slack app to this conversation first") {
+        message = backendMessage;
+      } else if (backendMessage === "Slack conversation is archived") {
+        message = "That Slack conversation is archived.";
+      } else if (backendMessage.includes("channel_not_found")) {
+        message =
+          "Slack could not find that conversation. Check its ID and invite the app first.";
+      } else if (backendMessage.includes("missing_scope")) {
+        message =
+          "The Slack app is missing a required permission. Reinstall it from the current manifest.";
+      } else {
+        message =
+          "Slack could not verify that conversation. Check its ID and app membership.";
+      }
+    } else {
+      message = "The agent request conflicts with the current state.";
+    }
   } else if (upstream.status === 429) {
     message = "Too many agent requests. Try again shortly.";
   } else if (upstream.status >= 500) {

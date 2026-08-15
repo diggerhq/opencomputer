@@ -459,6 +459,49 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("returns actionable Slack destination verification errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "destination_verification_failed",
+              message: "Slack conversations.info failed: channel_not_found",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channels/slack/connections/channel_slack/destinations/pull-request-reviews",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ conversationId: "C012ABCDEF" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "destination_verification_failed",
+        message:
+          "Slack could not find that conversation. Check its ID and invite the app first.",
+      },
+    });
+  });
+
   it("does not expose arbitrary private backend routes", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
