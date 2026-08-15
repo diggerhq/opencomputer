@@ -57,15 +57,30 @@ const itemColumns: Column<ManagedAgentOutboxItem>[] = [
 export function ManagedAgentOutboxes({
   agentId,
   environment,
+  deployed,
 }: {
   agentId: string
   environment: 'development' | 'production'
+  deployed: boolean
 }) {
   const outboxes = useQuery({
     queryKey: ['managed-agent-outboxes', agentId, environment],
     queryFn: () => getManagedAgentOutboxes(agentId, environment),
+    enabled: deployed,
     refetchInterval: 3_000,
   })
+
+  if (!deployed) {
+    return (
+      <Panel>
+        <EmptyState
+          icon={Send}
+          title={`No active ${environment} deployment`}
+          description="Deploy this project to the environment before publishing outbox items."
+        />
+      </Panel>
+    )
+  }
 
   if (outboxes.isError) {
     return (

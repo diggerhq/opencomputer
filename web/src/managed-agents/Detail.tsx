@@ -1001,7 +1001,11 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'outboxes' && project && agent ? (
-        <ManagedAgentOutboxes agentId={agent.id} environment={environment} />
+        <ManagedAgentOutboxes
+          agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
       ) : null}
 
       {activeTab === 'schedules' && project ? (
