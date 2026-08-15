@@ -153,8 +153,11 @@ const eventsResponseSchema = z.object({
 
 const turnSchema = z.object({
   turnId: z.string(),
+  status: z.string(),
   duplicate: z.boolean(),
 })
+
+export type ManagedAgentInputMode = 'queue' | 'steer' | 'interrupt'
 
 const sessionSchema = z.object({
   id: z.string(),
@@ -170,6 +173,10 @@ const sessionSchema = z.object({
       z.object({
         id: z.string(),
         input: z.string(),
+        mode: z
+          .enum(['queue', 'steer', 'interrupt'])
+          .optional()
+          .default('queue'),
         status: z.string(),
         createdAt: z.string(),
         updatedAt: z.string(),
@@ -413,6 +420,36 @@ export async function getManagedAgentSessionEvents(sessionId: string) {
   ).events
 }
 
+export async function admitManagedAgentInput(
+  sessionId: string,
+  input: string,
+  mode: ManagedAgentInputMode,
+  signal?: AbortSignal,
+) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        input,
+        mode,
+        idempotencyKey: crypto.randomUUID(),
+      }),
+      signal,
+    },
+    turnSchema,
+  )
+}
+
+async function suspendManagedAgentIfIdle(sessionId: string) {
+  const session = await getManagedAgentSession(sessionId).catch(() => undefined)
+  if (session?.status !== 'idle') return
+  await apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
+    { method: 'POST' },
+  ).catch(() => undefined)
+}
+
 export function managedAgentRenderDebug(event: ManagedAgentEvent) {
   if (event.type !== 'agent.rendered') return undefined
   const parsed = renderDebugSchema.safeParse(event.data)
@@ -511,23 +548,20 @@ export async function runManagedAgent(
       90_000,
       options.signal,
     )
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-        signal: options.signal,
-      },
-      turnSchema,
+    const turn = await admitManagedAgentInput(
+      sessionId,
+      input,
+      'queue',
+      options.signal,
     )
     const completed = await waitForAgentEvent(
       sessionId,
       connected.cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       onEvent,
       180_000,
       options.signal,
@@ -541,10 +575,7 @@ export async function runManagedAgent(
     }
     return { sessionId, turnId: turn.turnId }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }
 
@@ -577,23 +608,15 @@ export async function continueManagedAgentSession(
     cursor = connected.cursor
   }
   try {
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-        signal,
-      },
-      turnSchema,
-    )
+    const turn = await admitManagedAgentInput(sessionId, input, 'queue', signal)
     const completed = await waitForAgentEvent(
       sessionId,
       cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       onEvent,
       180_000,
       signal,
@@ -607,10 +630,7 @@ export async function continueManagedAgentSession(
     }
     return { sessionId, turnId: turn.turnId }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }
 
@@ -632,24 +652,17 @@ export async function invokeManagedAgent(agentId: string, input: string) {
       () => undefined,
       90_000,
     )
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      },
-      turnSchema,
-    )
+    const turn = await admitManagedAgentInput(sessionId, input, 'queue')
     let streamedText = ''
     let completedText = ''
     const completed = await waitForAgentEvent(
       sessionId,
       connected.cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       (event) => {
         if (event.type === 'message.delta') {
           streamedText +=
@@ -676,9 +689,6 @@ export async function invokeManagedAgent(agentId: string, input: string) {
       output: streamedText || completedText || 'Done.',
     }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }

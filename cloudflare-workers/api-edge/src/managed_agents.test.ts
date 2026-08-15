@@ -766,6 +766,50 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toMatch(/blue|lambda|microvm/i);
   });
 
+  it("forwards explicit running-session input modes", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json(
+        { turnId: "turn-2", status: "running", duplicate: false },
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: "focus on the failing test",
+            mode: "steer",
+            idempotencyKey: "admission-1",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(202);
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(await new Response(init.body).json()).toMatchObject({
+      input: "focus on the failing test",
+      mode: "steer",
+      idempotencyKey: "admission-1",
+    });
+    expect(await response.json()).toEqual({
+      turnId: "turn-2",
+      status: "running",
+      duplicate: false,
+    });
+  });
+
   it("removes backend artifact and runtime fields from successful responses", async () => {
     vi.stubGlobal(
       "fetch",
