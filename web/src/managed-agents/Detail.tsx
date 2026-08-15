@@ -58,6 +58,11 @@ import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
+import {
+  playgroundSessionIdFromSearch,
+  playgroundSessionSearch,
+  sessionsForEnvironment,
+} from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
 
@@ -273,14 +278,17 @@ function PlaygroundChat({
   agentId,
   session,
   events,
+  onSessionFinished,
 }: {
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
+  onSessionFinished?: (sessionId: string) => void
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
   const [liveSessionId, setLiveSessionId] = useState(session?.id)
+  const liveSessionIdRef = useRef(session?.id)
   const timelineRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
@@ -293,6 +301,7 @@ function PlaygroundChat({
     () =>
       new ManagedAgentChatTransport(agentId, session?.id, (sessionId) => {
         setLiveSessionId(sessionId)
+        liveSessionIdRef.current = sessionId
       }),
     [agentId, session?.id],
   )
@@ -310,12 +319,14 @@ function PlaygroundChat({
     onError: (chatError) => notifyError("Couldn't run this agent.", chatError),
     onFinish: () => {
       void queryClient.invalidateQueries({
-        queryKey: ['managed-agent-sessions', agentId],
+        queryKey: ['managed-agent-sessions'],
       })
-      if (liveSessionId) {
+      const completedSessionId = liveSessionIdRef.current
+      if (completedSessionId) {
         void queryClient.invalidateQueries({
-          queryKey: ['managed-agent-session-events', liveSessionId],
+          queryKey: ['managed-agent-session-events', completedSessionId],
         })
+        onSessionFinished?.(completedSessionId)
       }
     },
   })
@@ -498,7 +509,7 @@ export default function ManagedAgentDetail({
     searchParams.get('environment') === 'production'
       ? 'production'
       : 'development'
-  const [selectedPlaygroundId, setSelectedPlaygroundId] = useState<string>()
+  const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
 
   const agents = useQuery({
@@ -545,26 +556,36 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
   })
-  const selectedPlayground = sessions.data?.find(
-    (session) => session.id === selectedPlaygroundId,
-  )
-  const selectedPlaygroundEvents = useQuery({
-    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
-    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
-    enabled: Boolean(selectedPlaygroundId),
-  })
-
-  const environmentSessions = (sessions.data ?? []).filter(
-    (session) =>
-      !projectEnvironment?.activeDeploymentId ||
-      session.deploymentId === projectEnvironment.activeDeploymentId,
-  )
+  const environmentSessions = project
+    ? sessionsForEnvironment(
+        sessions.data ?? [],
+        project.deployments,
+        agentId,
+        environment,
+      )
+    : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
   const externalSessions = environmentSessions.filter(
     (session) => session.source !== 'playground',
   )
+  const selectedPlayground = playgroundSessions.find(
+    (session) => session.id === requestedPlaygroundId,
+  )
+  const selectedPlaygroundId = selectedPlayground?.id
+  const selectedPlaygroundEvents = useQuery({
+    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
+    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
+    enabled: Boolean(selectedPlaygroundId),
+  })
+
+  const selectPlaygroundSession = (sessionId?: string) => {
+    void navigate({
+      pathname: location.pathname,
+      search: playgroundSessionSearch(location.search, sessionId),
+    })
+  }
   const activeAliasChannel = (channels.data ?? []).find(
     (channel) =>
       channel.agentId === agentId &&
@@ -687,15 +708,18 @@ export default function ManagedAgentDetail({
             aria-label="Playground agent"
             value={agentId}
             onChange={(event) => {
-              setSelectedPlaygroundId(undefined)
               setNewSessionKey(crypto.randomUUID())
-              void navigate({
-                pathname: location.pathname,
-                search: projectContextSearch(
+              const search = new URLSearchParams(
+                projectContextSearch(
                   location.search,
                   event.target.value,
                   environment,
                 ),
+              )
+              search.delete('session')
+              void navigate({
+                pathname: location.pathname,
+                search: search.toString(),
               })
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
@@ -784,7 +808,7 @@ export default function ManagedAgentDetail({
                   variant="ghost"
                   aria-label="New playground session"
                   onClick={() => {
-                    setSelectedPlaygroundId(undefined)
+                    selectPlaygroundSession()
                     setNewSessionKey(crypto.randomUUID())
                   }}
                 >
@@ -809,7 +833,7 @@ export default function ManagedAgentDetail({
                   <button
                     key={session.id}
                     type="button"
-                    onClick={() => setSelectedPlaygroundId(session.id)}
+                    onClick={() => selectPlaygroundSession(session.id)}
                     className={cn(
                       'hover:bg-muted/70 mb-1 w-full rounded-md px-3 py-2 text-left transition-colors',
                       selectedPlaygroundId === session.id && 'bg-muted',
@@ -822,6 +846,9 @@ export default function ManagedAgentDetail({
                       {session.turns.length}{' '}
                       {session.turns.length === 1 ? 'turn' : 'turns'} ·{' '}
                       {formatDate(session.updatedAt)}
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 block truncate font-mono text-[10px]">
+                      deployment {session.deploymentId.slice(0, 12)}
                     </span>
                   </button>
                 ))}
@@ -837,6 +864,7 @@ export default function ManagedAgentDetail({
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
+                onSessionFinished={selectPlaygroundSession}
               />
             )}
           </div>
