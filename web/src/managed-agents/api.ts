@@ -147,6 +147,12 @@ const outboxItemSchema = z.object({
   id: z.string(),
   outboxId: z.string(),
   eventType: z.string(),
+  sessionId: z.string().optional(),
+  contentPreview: z.object({
+    title: z.string().optional(),
+    body: z.string().optional(),
+    url: z.string().optional(),
+  }),
   status: z.string(),
   destination: z.string().optional(),
   attemptCount: z.number(),

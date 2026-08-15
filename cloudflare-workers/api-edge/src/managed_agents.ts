@@ -238,10 +238,17 @@ function publicChannel(value: unknown): Record<string, unknown> {
 
 function publicOutboxItem(value: unknown): Record<string, unknown> {
   const item = record(value) ?? {};
+  const content = record(item.contentPreview) ?? {};
   return {
     id: item.id,
     outboxId: item.outboxId,
     eventType: item.eventType,
+    sessionId: item.sessionId,
+    contentPreview: {
+      ...(typeof content.title === "string" ? { title: content.title } : {}),
+      ...(typeof content.body === "string" ? { body: content.body } : {}),
+      ...(typeof content.url === "string" ? { url: content.url } : {}),
+    },
     status: item.status,
     destination: item.destination,
     attemptCount: item.attemptCount,
