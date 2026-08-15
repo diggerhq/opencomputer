@@ -21,7 +21,6 @@ import {
   Loader2,
   Plus,
   Send,
-  Square,
   TerminalSquare,
   Wrench,
 } from 'lucide-react'
@@ -41,6 +40,7 @@ import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
+  admitManagedAgentInput,
   displayManagedAgentName,
   getManagedAgentDeployment,
   getManagedAgentDeployments,
@@ -49,6 +49,7 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
+  type ManagedAgentInputMode,
   type ManagedAgentSession,
   type ManagedAgentSummary,
   type ManagedProjectOverview,
@@ -58,6 +59,11 @@ import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
+import {
+  playgroundSessionIdFromSearch,
+  playgroundSessionSearch,
+  sessionsForEnvironment,
+} from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
@@ -275,14 +281,20 @@ function PlaygroundChat({
   agentId,
   session,
   events,
+  onSessionFinished,
 }: {
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
+  onSessionFinished?: (sessionId: string) => void
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
+  const [inputMode, setInputMode] = useState<ManagedAgentInputMode>('queue')
+  const [admitting, setAdmitting] = useState(false)
+  const [admissionNotice, setAdmissionNotice] = useState<string>()
   const [liveSessionId, setLiveSessionId] = useState(session?.id)
+  const liveSessionIdRef = useRef(session?.id)
   const timelineRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
@@ -295,6 +307,7 @@ function PlaygroundChat({
     () =>
       new ManagedAgentChatTransport(agentId, session?.id, (sessionId) => {
         setLiveSessionId(sessionId)
+        liveSessionIdRef.current = sessionId
       }),
     [agentId, session?.id],
   )
@@ -304,7 +317,7 @@ function PlaygroundChat({
     enabled: Boolean(liveSessionId),
     refetchInterval: 1_000,
   })
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, error } = useChat({
     id: session?.id ?? `new-${agentId}`,
     messages: initialMessages,
     transport,
@@ -312,16 +325,22 @@ function PlaygroundChat({
     onError: (chatError) => notifyError("Couldn't run this agent.", chatError),
     onFinish: () => {
       void queryClient.invalidateQueries({
-        queryKey: ['managed-agent-sessions', agentId],
+        queryKey: ['managed-agent-sessions'],
       })
-      if (liveSessionId) {
+      const completedSessionId = liveSessionIdRef.current
+      if (completedSessionId) {
         void queryClient.invalidateQueries({
-          queryKey: ['managed-agent-session-events', liveSessionId],
+          queryKey: ['managed-agent-session-events', completedSessionId],
         })
+        onSessionFinished?.(completedSessionId)
       }
     },
   })
   const running = status === 'submitted' || status === 'streaming'
+  const agentWorking =
+    running ||
+    session?.status === 'running' ||
+    session?.status === 'waiting_runtime'
 
   useLayoutEffect(() => {
     const timeline = timelineRef.current
@@ -335,9 +354,44 @@ function PlaygroundChat({
 
   const send = () => {
     const input = prompt.trim()
-    if (!input || running) return
+    if (!input || admitting) return
+    if (agentWorking) {
+      const sessionId = liveSessionIdRef.current
+      if (!sessionId) {
+        notifyError(
+          "Couldn't direct this run.",
+          new Error('The durable session has not been created yet.'),
+        )
+        return
+      }
+      setAdmitting(true)
+      setAdmissionNotice(undefined)
+      void admitManagedAgentInput(sessionId, input, inputMode)
+        .then(() => {
+          setPrompt('')
+          setAdmissionNotice(
+            inputMode === 'queue'
+              ? 'Queued after the active work.'
+              : inputMode === 'steer'
+                ? 'Steering will apply at the next safe boundary.'
+                : 'Active work was interrupted and the replacement was admitted.',
+          )
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-sessions'],
+          })
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-session-events', sessionId],
+          })
+        })
+        .catch((admissionError: unknown) =>
+          notifyError("Couldn't direct this run.", admissionError),
+        )
+        .finally(() => setAdmitting(false))
+      return
+    }
     followOutputRef.current = true
     setPrompt('')
+    setAdmissionNotice(undefined)
     void sendMessage({ text: input })
     requestAnimationFrame(() =>
       composerRef.current?.querySelector('textarea')?.focus(),
@@ -356,7 +410,7 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {running ? (
+          {agentWorking ? (
             <div className="text-muted-foreground flex items-center gap-2 text-xs">
               <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
               Agent is working
@@ -432,6 +486,11 @@ function PlaygroundChat({
           {error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
+          {admissionNotice ? (
+            <p className="text-muted-foreground mb-2 text-xs">
+              {admissionNotice}
+            </p>
+          ) : null}
           <div
             ref={composerRef}
             className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
@@ -447,10 +506,36 @@ function PlaygroundChat({
               <p className="text-muted-foreground text-[10px]">
                 Enter to send · Shift + Enter for a new line
               </p>
-              {running ? (
-                <Button variant="outline" size="sm" onClick={() => void stop()}>
-                  <Square className="fill-current" /> Stop
-                </Button>
+              {agentWorking ? (
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Running session input mode"
+                    value={inputMode}
+                    onChange={(event) =>
+                      setInputMode(event.target.value as ManagedAgentInputMode)
+                    }
+                    className="border-input bg-background h-8 rounded-md border px-2 text-xs outline-none"
+                  >
+                    <option value="queue">Queue after current</option>
+                    <option value="steer">Steer active work</option>
+                    <option value="interrupt">Interrupt and replace</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant={
+                      inputMode === 'interrupt' ? 'destructive' : 'default'
+                    }
+                    disabled={!prompt.trim() || admitting}
+                    onClick={send}
+                  >
+                    {admitting ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Send />
+                    )}
+                    {inputMode === 'interrupt' ? 'Interrupt' : 'Send'}
+                  </Button>
+                </div>
               ) : (
                 <Button size="sm" disabled={!prompt.trim()} onClick={send}>
                   <Send /> Send
@@ -501,7 +586,7 @@ export default function ManagedAgentDetail({
     searchParams.get('environment') === 'production'
       ? 'production'
       : 'development'
-  const [selectedPlaygroundId, setSelectedPlaygroundId] = useState<string>()
+  const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
 
   const agents = useQuery({
@@ -548,26 +633,36 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
   })
-  const selectedPlayground = sessions.data?.find(
-    (session) => session.id === selectedPlaygroundId,
-  )
-  const selectedPlaygroundEvents = useQuery({
-    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
-    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
-    enabled: Boolean(selectedPlaygroundId),
-  })
-
-  const environmentSessions = (sessions.data ?? []).filter(
-    (session) =>
-      !projectEnvironment?.activeDeploymentId ||
-      session.deploymentId === projectEnvironment.activeDeploymentId,
-  )
+  const environmentSessions = project
+    ? sessionsForEnvironment(
+        sessions.data ?? [],
+        project.deployments,
+        agentId,
+        environment,
+      )
+    : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
   const externalSessions = environmentSessions.filter(
     (session) => session.source !== 'playground',
   )
+  const selectedPlayground = playgroundSessions.find(
+    (session) => session.id === requestedPlaygroundId,
+  )
+  const selectedPlaygroundId = selectedPlayground?.id
+  const selectedPlaygroundEvents = useQuery({
+    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
+    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
+    enabled: Boolean(selectedPlaygroundId),
+  })
+
+  const selectPlaygroundSession = (sessionId?: string) => {
+    void navigate({
+      pathname: location.pathname,
+      search: playgroundSessionSearch(location.search, sessionId),
+    })
+  }
   const activeAliasChannels = (channels.data ?? []).filter(
     (channel) =>
       channel.agentId === agentId &&
@@ -694,15 +789,18 @@ export default function ManagedAgentDetail({
             aria-label="Playground agent"
             value={agentId}
             onChange={(event) => {
-              setSelectedPlaygroundId(undefined)
               setNewSessionKey(crypto.randomUUID())
-              void navigate({
-                pathname: location.pathname,
-                search: projectContextSearch(
+              const search = new URLSearchParams(
+                projectContextSearch(
                   location.search,
                   event.target.value,
                   environment,
                 ),
+              )
+              search.delete('session')
+              void navigate({
+                pathname: location.pathname,
+                search: search.toString(),
               })
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
@@ -796,7 +894,7 @@ export default function ManagedAgentDetail({
                   variant="ghost"
                   aria-label="New playground session"
                   onClick={() => {
-                    setSelectedPlaygroundId(undefined)
+                    selectPlaygroundSession()
                     setNewSessionKey(crypto.randomUUID())
                   }}
                 >
@@ -821,7 +919,7 @@ export default function ManagedAgentDetail({
                   <button
                     key={session.id}
                     type="button"
-                    onClick={() => setSelectedPlaygroundId(session.id)}
+                    onClick={() => selectPlaygroundSession(session.id)}
                     className={cn(
                       'hover:bg-muted/70 mb-1 w-full rounded-md px-3 py-2 text-left transition-colors',
                       selectedPlaygroundId === session.id && 'bg-muted',
@@ -834,6 +932,9 @@ export default function ManagedAgentDetail({
                       {session.turns.length}{' '}
                       {session.turns.length === 1 ? 'turn' : 'turns'} ·{' '}
                       {formatDate(session.updatedAt)}
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 block truncate font-mono text-[10px]">
+                      deployment {session.deploymentId.slice(0, 12)}
                     </span>
                   </button>
                 ))}
@@ -849,6 +950,7 @@ export default function ManagedAgentDetail({
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
+                onSessionFinished={selectPlaygroundSession}
               />
             )}
           </div>
