@@ -21,7 +21,6 @@ import {
   Loader2,
   Plus,
   Send,
-  Square,
   TerminalSquare,
   Wrench,
 } from 'lucide-react'
@@ -41,6 +40,7 @@ import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
+  admitManagedAgentInput,
   displayManagedAgentName,
   getManagedAgentDeployment,
   getManagedAgentDeployments,
@@ -49,6 +49,7 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
+  type ManagedAgentInputMode,
   type ManagedAgentSession,
   type ManagedAgentSummary,
   type ManagedProjectOverview,
@@ -287,6 +288,9 @@ function PlaygroundChat({
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
+  const [inputMode, setInputMode] = useState<ManagedAgentInputMode>('queue')
+  const [admitting, setAdmitting] = useState(false)
+  const [admissionNotice, setAdmissionNotice] = useState<string>()
   const [liveSessionId, setLiveSessionId] = useState(session?.id)
   const liveSessionIdRef = useRef(session?.id)
   const timelineRef = useRef<HTMLDivElement>(null)
@@ -311,7 +315,7 @@ function PlaygroundChat({
     enabled: Boolean(liveSessionId),
     refetchInterval: 1_000,
   })
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, error } = useChat({
     id: session?.id ?? `new-${agentId}`,
     messages: initialMessages,
     transport,
@@ -331,6 +335,10 @@ function PlaygroundChat({
     },
   })
   const running = status === 'submitted' || status === 'streaming'
+  const agentWorking =
+    running ||
+    session?.status === 'running' ||
+    session?.status === 'waiting_runtime'
 
   useLayoutEffect(() => {
     const timeline = timelineRef.current
@@ -344,9 +352,44 @@ function PlaygroundChat({
 
   const send = () => {
     const input = prompt.trim()
-    if (!input || running) return
+    if (!input || admitting) return
+    if (agentWorking) {
+      const sessionId = liveSessionIdRef.current
+      if (!sessionId) {
+        notifyError(
+          "Couldn't direct this run.",
+          new Error('The durable session has not been created yet.'),
+        )
+        return
+      }
+      setAdmitting(true)
+      setAdmissionNotice(undefined)
+      void admitManagedAgentInput(sessionId, input, inputMode)
+        .then(() => {
+          setPrompt('')
+          setAdmissionNotice(
+            inputMode === 'queue'
+              ? 'Queued after the active work.'
+              : inputMode === 'steer'
+                ? 'Steering will apply at the next safe boundary.'
+                : 'Active work was interrupted and the replacement was admitted.',
+          )
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-sessions'],
+          })
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-session-events', sessionId],
+          })
+        })
+        .catch((admissionError: unknown) =>
+          notifyError("Couldn't direct this run.", admissionError),
+        )
+        .finally(() => setAdmitting(false))
+      return
+    }
     followOutputRef.current = true
     setPrompt('')
+    setAdmissionNotice(undefined)
     void sendMessage({ text: input })
     requestAnimationFrame(() =>
       composerRef.current?.querySelector('textarea')?.focus(),
@@ -365,7 +408,7 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {running ? (
+          {agentWorking ? (
             <div className="text-muted-foreground flex items-center gap-2 text-xs">
               <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
               Agent is working
@@ -441,6 +484,11 @@ function PlaygroundChat({
           {error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
+          {admissionNotice ? (
+            <p className="text-muted-foreground mb-2 text-xs">
+              {admissionNotice}
+            </p>
+          ) : null}
           <div
             ref={composerRef}
             className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
@@ -456,10 +504,36 @@ function PlaygroundChat({
               <p className="text-muted-foreground text-[10px]">
                 Enter to send · Shift + Enter for a new line
               </p>
-              {running ? (
-                <Button variant="outline" size="sm" onClick={() => void stop()}>
-                  <Square className="fill-current" /> Stop
-                </Button>
+              {agentWorking ? (
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Running session input mode"
+                    value={inputMode}
+                    onChange={(event) =>
+                      setInputMode(event.target.value as ManagedAgentInputMode)
+                    }
+                    className="border-input bg-background h-8 rounded-md border px-2 text-xs outline-none"
+                  >
+                    <option value="queue">Queue after current</option>
+                    <option value="steer">Steer active work</option>
+                    <option value="interrupt">Interrupt and replace</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant={
+                      inputMode === 'interrupt' ? 'destructive' : 'default'
+                    }
+                    disabled={!prompt.trim() || admitting}
+                    onClick={send}
+                  >
+                    {admitting ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Send />
+                    )}
+                    {inputMode === 'interrupt' ? 'Interrupt' : 'Send'}
+                  </Button>
+                </div>
               ) : (
                 <Button size="sm" disabled={!prompt.trim()} onClick={send}>
                   <Send /> Send
