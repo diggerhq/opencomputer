@@ -387,6 +387,89 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("lists one environment's outboxes without private delivery details", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      Response.json({
+        agentId: "reviewer-agent",
+        environment: "development",
+        deploymentId: "reviewer-agent:digest",
+        accountId: "private_org",
+        outboxes: [
+          {
+            id: "review-requests",
+            channelId: "team-slack",
+            channelName: "Team Slack",
+            destination: "pull-request-reviews",
+            readiness: "ready",
+            targetDisplayName: "#pull-request-reviews",
+            connectionId: "private_connection",
+            items: [
+              {
+                id: "outbox_item",
+                outboxId: "review-requests",
+                eventType: "pull-request.ready",
+                status: "failed",
+                attemptCount: 1,
+                error: "Slack chat.postMessage failed: internal_detail",
+                createdAt: "2026-08-15T00:00:00.000Z",
+                updatedAt: "2026-08-15T00:01:00.000Z",
+                externalMessageId: "private_message",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/outboxes?agentId=reviewer-agent&environment=development",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        href:
+          "https://managedagents.test/v1/outboxes?agentId=reviewer-agent&environment=development",
+      }),
+      expect.anything(),
+    );
+    expect(await response.json()).toEqual({
+      agentId: "reviewer-agent",
+      environment: "development",
+      deploymentId: "reviewer-agent:digest",
+      outboxes: [
+        {
+          id: "review-requests",
+          channelId: "team-slack",
+          channelName: "Team Slack",
+          destination: "pull-request-reviews",
+          readiness: "ready",
+          targetDisplayName: "#pull-request-reviews",
+          items: [
+            {
+              id: "outbox_item",
+              outboxId: "review-requests",
+              eventType: "pull-request.ready",
+              status: "failed",
+              attemptCount: 1,
+              error: "Delivery failed.",
+              createdAt: "2026-08-15T00:00:00.000Z",
+              updatedAt: "2026-08-15T00:01:00.000Z",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("returns a public per-agent Slack manifest", async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       Response.json({

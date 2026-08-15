@@ -143,6 +143,39 @@ const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
 
+const outboxItemSchema = z.object({
+  id: z.string(),
+  outboxId: z.string(),
+  eventType: z.string(),
+  status: z.string(),
+  destination: z.string().optional(),
+  attemptCount: z.number(),
+  error: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const outboxSchema = z.object({
+  id: z.string(),
+  channelId: z.string(),
+  channelName: z.string(),
+  destination: z.string(),
+  readiness: z.enum([
+    'ready',
+    'channel_not_connected',
+    'destination_not_bound',
+  ]),
+  targetDisplayName: z.string().optional(),
+  items: z.array(outboxItemSchema),
+})
+
+const outboxesResponseSchema = z.object({
+  agentId: z.string(),
+  environment: z.enum(['development', 'production']),
+  deploymentId: z.string(),
+  outboxes: z.array(outboxSchema),
+})
+
 const slackManifestResponseSchema = z.object({
   connection: channelSchema,
   manifest: z.record(z.string(), z.unknown()),
@@ -235,6 +268,8 @@ export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
+export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
+export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
@@ -373,6 +408,18 @@ export async function getManagedAgentChannels() {
       channelsResponseSchema,
     )
   ).channels
+}
+
+export async function getManagedAgentOutboxes(
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ agentId, environment })
+  return apiFetch(
+    `/managed-agents/outboxes?${query.toString()}`,
+    undefined,
+    outboxesResponseSchema,
+  )
 }
 
 export async function startManagedAgentSlack(

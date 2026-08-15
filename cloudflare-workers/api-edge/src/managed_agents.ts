@@ -236,6 +236,36 @@ function publicChannel(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicOutboxItem(value: unknown): Record<string, unknown> {
+  const item = record(value) ?? {};
+  return {
+    id: item.id,
+    outboxId: item.outboxId,
+    eventType: item.eventType,
+    status: item.status,
+    destination: item.destination,
+    attemptCount: item.attemptCount,
+    ...(item.error ? { error: "Delivery failed." } : {}),
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function publicOutbox(value: unknown): Record<string, unknown> {
+  const outbox = record(value) ?? {};
+  return {
+    id: outbox.id,
+    channelId: outbox.channelId,
+    channelName: outbox.channelName,
+    destination: outbox.destination,
+    readiness: outbox.readiness,
+    targetDisplayName: outbox.targetDisplayName,
+    items: Array.isArray(outbox.items)
+      ? outbox.items.map(publicOutboxItem)
+      : [],
+  };
+}
+
 function stripPrivateValues(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripPrivateValues);
   const source = record(value);
@@ -386,6 +416,16 @@ function publicSuccessBody(
     return {
       channels: Array.isArray(body.connections)
         ? body.connections.map(publicChannel)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/outboxes") {
+    return {
+      agentId: body.agentId,
+      environment: body.environment,
+      deploymentId: body.deploymentId,
+      outboxes: Array.isArray(body.outboxes)
+        ? body.outboxes.map(publicOutbox)
         : [],
     };
   }
@@ -624,6 +664,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && suffix === "/outboxes") return true;
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||

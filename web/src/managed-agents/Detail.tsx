@@ -60,12 +60,14 @@ import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
+import { ManagedAgentOutboxes } from './Outboxes'
 
 type DetailTab =
   | 'playground'
   | 'deployments'
   | 'sessions'
   | 'channels'
+  | 'outboxes'
   | 'schedules'
   | 'secrets'
 
@@ -486,6 +488,7 @@ export default function ManagedAgentDetail({
     'deployments',
     'sessions',
     'channels',
+    'outboxes',
     'schedules',
     'secrets',
   ])
@@ -643,6 +646,7 @@ export default function ManagedAgentDetail({
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
     { id: 'channels', label: 'Channels' },
+    ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
   ]
@@ -994,6 +998,10 @@ export default function ManagedAgentDetail({
             </PanelContent>
           )}
         </Panel>
+      ) : null}
+
+      {activeTab === 'outboxes' && project && agent ? (
+        <ManagedAgentOutboxes agentId={agent.id} environment={environment} />
       ) : null}
 
       {activeTab === 'schedules' && project ? (
