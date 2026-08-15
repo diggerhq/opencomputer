@@ -132,6 +132,9 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(deployment.projectDeployment
+      ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
+      : {}),
   };
 }
 
@@ -197,6 +200,7 @@ function publicChannel(value: unknown): Record<string, unknown> {
   return {
     id: channel.id,
     channel: "slack",
+    channelId: channel.channelId,
     agentId: channel.agentId,
     alias: channel.alias,
     appName: channel.appName,
@@ -207,6 +211,9 @@ function publicChannel(value: unknown): Record<string, unknown> {
     status: channel.status,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
+    ...(Array.isArray(channel.destinations)
+      ? { destinations: channel.destinations.map(stripPrivateValues) }
+      : {}),
   };
 }
 
@@ -564,6 +571,9 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      ...(body.projectDeployment && typeof body.projectDeployment === "object"
+        ? { projectDeployment: body.projectDeployment }
+        : {}),
       artifact,
     }),
     redirect: "manual",

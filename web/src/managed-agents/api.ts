@@ -18,6 +18,28 @@ const deploymentSchema = z.object({
   channels: z.array(z.string()),
   connections: z.array(z.string()),
   createdAt: z.string(),
+  projectDeployment: z
+    .object({
+      id: z.string(),
+      digest: z.string(),
+      localAgentId: z.string(),
+      resources: z.object({
+        channels: z.array(
+          z.object({
+            id: z.string(),
+            type: z.literal('slack'),
+            destinations: z.record(
+              z.string(),
+              z.object({
+                type: z.literal('conversation'),
+                visibility: z.enum(['public', 'private']),
+              }),
+            ),
+          }),
+        ),
+      }),
+    })
+    .optional(),
 })
 
 const deploymentsResponseSchema = z.object({
@@ -76,6 +98,7 @@ const connectionSchema = z.object({
 const channelSchema = z.object({
   id: z.string(),
   channel: z.string(),
+  channelId: z.string().optional().default('slack'),
   agentId: z.string(),
   alias: z.string(),
   appName: z.string().nullish(),
@@ -88,6 +111,17 @@ const channelSchema = z.object({
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  destinations: z
+    .array(
+      z.object({
+        name: z.string(),
+        conversationId: z.string(),
+        displayName: z.string(),
+        verifiedAt: z.string(),
+      }),
+    )
+    .optional()
+    .default([]),
 })
 
 const connectionsResponseSchema = z.object({
@@ -344,14 +378,33 @@ export async function startManagedAgentSlack(
   agentId: string,
   name: string,
   reconnect = false,
+  channelId?: string,
 ) {
   return apiFetch(
     '/managed-agents/channels/slack/connections',
     {
       method: 'POST',
-      body: JSON.stringify({ agentId, name, reconnect }),
+      body: JSON.stringify({ agentId, name, reconnect, channelId }),
     },
     slackManifestResponseSchema,
+  )
+}
+
+export async function bindManagedAgentSlackDestination(
+  connectionId: string,
+  destination: string,
+  conversationId: string,
+) {
+  return apiFetch(
+    `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}/destinations/${encodeURIComponent(destination)}`,
+    { method: 'PUT', body: JSON.stringify({ conversationId }) },
+    z.object({
+      connectionId: z.string(),
+      destination: z.string(),
+      conversationId: z.string(),
+      displayName: z.string(),
+      verifiedAt: z.string(),
+    }),
   )
 }
 

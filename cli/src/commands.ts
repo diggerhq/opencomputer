@@ -6,7 +6,7 @@ import {
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { resolveConfig } from "./config.js";
-import { runCloudDevelopment } from "./dev.js";
+import { publishProjectDeployment, runCloudDevelopment } from "./dev.js";
 import {
   ensureProjectBinding,
   findOpenComputerProjectRoot,
@@ -555,31 +555,36 @@ export async function runCommand(
   if (command === "deploy") {
     const alias = option(args, "--alias") ?? "production";
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const built = await buildAgentArtifact(await requireAgentRoot());
-    process.stderr.write(
-      `Built ${built.agentId} in ${String(built.elapsedMs)}ms\n`,
-    );
-    const deployment = await client.registerDeployment({
-      agentId: built.agentId,
-      name: built.name,
-      alias,
-      channels: built.channels,
-      connections: built.connections,
-      httpConnections: built.httpConnections,
-      source: {
-        digest: built.digest,
-        size: built.body.byteLength,
-        contentType: "application/vnd.opencomputer.agent+json",
-        body: built.body.toString("utf8"),
-      },
-    });
-    if (globals.json) printJSON(deployment);
-    else {
-      process.stdout.write(
-        `Deployed ${deployment.agentId}@${deployment.alias}\n` +
-          `Deployment: ${deployment.id}\n` +
-          `Source ID:  opencomputer.toml\n`,
+    const root = await findOpenComputerProjectRoot(process.cwd());
+    if (!root) {
+      throw new Error(
+        "No OpenComputer project found. Run `opencomputer init <directory>` first.",
       );
+    }
+    const binding = await ensureProjectBinding(client, config, root, {
+      interactive: !globals.json,
+      select: true,
+    });
+    const results = await publishProjectDeployment(
+      client,
+      root,
+      binding,
+      alias,
+    );
+    for (const { built } of results) {
+      process.stderr.write(
+        `Built ${built.agentId} in ${String(built.elapsedMs)}ms\n`,
+      );
+    }
+    if (globals.json) printJSON(results.map(({ deployment }) => deployment));
+    else {
+      for (const { deployment } of results) {
+        process.stdout.write(
+          `Deployed ${deployment.agentId}@${deployment.alias}\n` +
+            `Deployment: ${deployment.id}\n` +
+            `Source ID:  opencomputer.toml\n`,
+        );
+      }
     }
     return;
   }

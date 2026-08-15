@@ -571,6 +571,10 @@ export default function ManagedAgentDetail({
       channel.alias === (activeDeployment.data?.alias ?? agent?.activeAlias) &&
       channel.status !== 'disconnected',
   )
+  const declaredChannel =
+    activeDeployment.data?.projectDeployment?.resources.channels.find(
+      (channel) => channel.id === activeAliasChannel?.channelId,
+    ) ?? activeDeployment.data?.projectDeployment?.resources.channels[0]
 
   const sessionColumns: Column<ManagedAgentSession>[] = [
     {
@@ -960,6 +964,8 @@ export default function ManagedAgentDetail({
               alias={activeDeployment.data.alias}
               agentName={displayManagedAgentName(agent)}
               connection={activeAliasChannel}
+              channelId={declaredChannel?.id}
+              destinations={Object.keys(declaredChannel?.destinations ?? {})}
             />
           ) : (
             <PanelContent className="text-muted-foreground text-sm">

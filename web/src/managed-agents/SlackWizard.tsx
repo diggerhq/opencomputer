@@ -25,6 +25,7 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
 import {
   completeManagedAgentSlack,
+  bindManagedAgentSlackDestination,
   disconnectManagedAgentSlack,
   startManagedAgentSlack,
   type ManagedAgentChannel,
@@ -34,6 +35,60 @@ import {
 type Step = 'create' | 'details' | 'install' | 'done'
 const CREATE_STEPS = ['Create app', 'Details', 'Install', 'Verify']
 const EDIT_STEPS = ['Credentials', 'Token', 'Verify']
+
+function SlackDestinationSetup({
+  connection,
+  destination,
+  onSaved,
+}: {
+  connection: ManagedAgentChannel
+  destination: string
+  onSaved: () => void
+}) {
+  const existing = connection.destinations.find(
+    (binding) => binding.name === destination,
+  )
+  const [conversationId, setConversationId] = useState(
+    existing?.conversationId ?? '',
+  )
+  const bind = useMutation({
+    mutationFn: () =>
+      bindManagedAgentSlackDestination(
+        connection.id,
+        destination,
+        conversationId.trim(),
+      ),
+    onSuccess: onSaved,
+    onError: (error) =>
+      notifyError("Couldn't verify that Slack conversation.", error),
+  })
+  return (
+    <div className="space-y-2 border-t px-5 py-4">
+      <p className="text-sm font-medium">{destination}</p>
+      <p className="text-muted-foreground text-xs">
+        {existing
+          ? `Mapped to ${existing.displayName}`
+          : 'Invite the app to a Slack conversation, then paste its ID.'}
+      </p>
+      <div className="flex gap-2">
+        <Input
+          aria-label={`${destination} Slack conversation ID`}
+          value={conversationId}
+          onChange={(event) => setConversationId(event.target.value)}
+          placeholder="C012ABCDEF"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!conversationId.trim() || bind.isPending}
+          onClick={() => bind.mutate()}
+        >
+          {bind.isPending ? 'Verifying…' : existing ? 'Update' : 'Verify'}
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 function WizardSteps({ current, steps }: { current: number; steps: string[] }) {
   return (
@@ -74,11 +129,15 @@ export function ManagedSlackWizard({
   alias,
   agentName,
   connection,
+  channelId,
+  destinations = [],
 }: {
   agentId: string
   alias: string
   agentName: string
   connection?: ManagedAgentChannel
+  channelId?: string
+  destinations?: string[]
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -98,7 +157,12 @@ export function ManagedSlackWizard({
 
   const start = useMutation({
     mutationFn: () =>
-      startManagedAgentSlack(`${agentId}@${alias}`, appName.trim(), false),
+      startManagedAgentSlack(
+        `${agentId}@${alias}`,
+        appName.trim(),
+        false,
+        channelId,
+      ),
     onSuccess: (result) => {
       setManifest(result)
       void invalidate()
@@ -245,6 +309,17 @@ export function ManagedSlackWizard({
           ) : null}
         </div>
       </div>
+
+      {connection?.status === 'connected'
+        ? destinations.map((destination) => (
+            <SlackDestinationSetup
+              key={destination}
+              connection={connection}
+              destination={destination}
+              onSaved={() => void invalidate()}
+            />
+          ))
+        : null}
 
       <Dialog
         open={open}

@@ -15,7 +15,13 @@ import {
   type ProjectBindingOptions,
 } from "./binding.js";
 import { startGateway } from "./local.js";
-import { buildAgentArtifact, readProjectAgents } from "./project.js";
+import {
+  buildAgentArtifact,
+  readProjectAgents,
+  readProjectResources,
+  type BuiltAgentArtifact,
+  type ProjectResourceManifest,
+} from "./project.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
@@ -208,15 +214,43 @@ export async function publishDevelopment(
   client: Pick<OpenComputerClient, "registerDeployment">,
   root: string,
   agentId?: string,
+  projectDeployment?: {
+    id: string;
+    digest: string;
+    localAgentId: string;
+    agents: Array<{ localId: string; agentId: string; artifactDigest: string }>;
+    resources: ProjectResourceManifest;
+  },
 ) {
   const built = await buildAgentArtifact(root, agentId);
+  return registerBuiltDeployment(
+    client,
+    built,
+    DEVELOPMENT_ALIAS,
+    projectDeployment,
+  );
+}
+
+async function registerBuiltDeployment(
+  client: Pick<OpenComputerClient, "registerDeployment">,
+  built: BuiltAgentArtifact,
+  alias: string,
+  projectDeployment?: {
+    id: string;
+    digest: string;
+    localAgentId: string;
+    agents: Array<{ localId: string; agentId: string; artifactDigest: string }>;
+    resources: ProjectResourceManifest;
+  },
+) {
   const deployment = await client.registerDeployment({
     agentId: built.agentId,
     name: built.name,
-    alias: DEVELOPMENT_ALIAS,
+    alias,
     channels: built.channels,
     connections: built.connections,
     httpConnections: built.httpConnections,
+    ...(projectDeployment ? { projectDeployment } : {}),
     source: {
       digest: built.digest,
       size: built.body.byteLength,
@@ -240,15 +274,59 @@ export async function publishProjectDevelopment(
   projectRoot: string,
   binding: ProjectBinding,
 ) {
+  return publishProjectDeployment(
+    client,
+    projectRoot,
+    binding,
+    DEVELOPMENT_ALIAS,
+  );
+}
+
+export async function publishProjectDeployment(
+  client: Pick<OpenComputerClient, "registerDeployment">,
+  projectRoot: string,
+  binding: ProjectBinding,
+  alias: string,
+) {
   const agents = await readProjectAgents(projectRoot);
-  const results = [];
+  const resources = await readProjectResources(projectRoot);
+  const builtAgents = [];
   for (const [index, agent] of agents.entries()) {
-    results.push(
-      await publishDevelopment(
-        client,
+    builtAgents.push({
+      source: agent,
+      built: await buildAgentArtifact(
         agent.root,
         cloudAgentId(binding, agent.localId, index),
       ),
+    });
+  }
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        resources: resources.digest,
+        agents: builtAgents.map(({ source, built }) => ({
+          id: source.localId,
+          artifact: built.digest,
+        })),
+      }),
+    )
+    .digest("hex");
+  const id = `project:${binding.projectId}:${digest}`;
+  const roster = builtAgents.map(({ source, built }) => ({
+    localId: source.localId,
+    agentId: built.agentId,
+    artifactDigest: built.digest,
+  }));
+  const results = [];
+  for (const { source, built } of builtAgents) {
+    results.push(
+      await registerBuiltDeployment(client, built, alias, {
+        id,
+        digest,
+        localAgentId: source.localId,
+        agents: roster,
+        resources: resources.manifest,
+      }),
     );
   }
   return results;
