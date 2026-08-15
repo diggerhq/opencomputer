@@ -28,6 +28,7 @@ const deploymentSchema = z.object({
           z.object({
             id: z.string(),
             type: z.literal('slack'),
+            displayName: z.string().optional(),
             destinations: z.record(
               z.string(),
               z.object({

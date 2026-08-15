@@ -128,6 +128,7 @@ export function ManagedSlackWizard({
   agentId,
   alias,
   agentName,
+  channelName,
   connection,
   channelId,
   destinations = [],
@@ -135,6 +136,7 @@ export function ManagedSlackWizard({
   agentId: string
   alias: string
   agentName: string
+  channelName?: string
   connection?: ManagedAgentChannel
   channelId?: string
   destinations?: string[]
@@ -266,13 +268,19 @@ export function ManagedSlackWizard({
           </span>
           <div className="min-w-0">
             <p className="text-sm font-medium">
-              {connection?.appName || agentName}
+              {connection?.appName || channelName || agentName}
             </p>
             <p className="text-muted-foreground truncate text-xs">
+              {channelId ? `${channelId} · ` : ''}
               {connection?.status === 'connected'
                 ? `Slack · ${connection.teamName || 'Connected workspace'}`
                 : `Connect a dedicated Slack app to @${alias}`}
             </p>
+            {destinations.length ? (
+              <p className="text-muted-foreground mt-1 truncate text-xs">
+                Destinations: {destinations.join(', ')}
+              </p>
+            ) : null}
             {connection?.status === 'connected' ? (
               <p className="text-muted-foreground mt-1 text-xs">
                 {connection.verificationError
