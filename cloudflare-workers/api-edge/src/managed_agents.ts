@@ -85,6 +85,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[a-z][a-z0-9_]{0,63}$/.test(backendError.code)
       ? backendError.code
       : "agent_request_failed";
+  const backendMessage =
+    typeof backendError?.message === "string" ? backendError.message : "";
   let message = "The agent request could not be completed.";
   if (upstream.status === 400) {
     message =
@@ -96,7 +98,24 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    message = "The agent request conflicts with the current state.";
+    if (backendCode === "destination_verification_failed") {
+      if (backendMessage === "Invite the Slack app to this conversation first") {
+        message = backendMessage;
+      } else if (backendMessage === "Slack conversation is archived") {
+        message = "That Slack conversation is archived.";
+      } else if (backendMessage.includes("channel_not_found")) {
+        message =
+          "Slack could not find that conversation. Check its ID and invite the app first.";
+      } else if (backendMessage.includes("missing_scope")) {
+        message =
+          "The Slack app is missing a required permission. Reinstall it from the current manifest.";
+      } else {
+        message =
+          "Slack could not verify that conversation. Check its ID and app membership.";
+      }
+    } else {
+      message = "The agent request conflicts with the current state.";
+    }
   } else if (upstream.status === 429) {
     message = "Too many agent requests. Try again shortly.";
   } else if (upstream.status >= 500) {
@@ -132,6 +151,9 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(deployment.projectDeployment
+      ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
+      : {}),
   };
 }
 
@@ -197,6 +219,7 @@ function publicChannel(value: unknown): Record<string, unknown> {
   return {
     id: channel.id,
     channel: "slack",
+    channelId: channel.channelId,
     agentId: channel.agentId,
     alias: channel.alias,
     appName: channel.appName,
@@ -207,6 +230,46 @@ function publicChannel(value: unknown): Record<string, unknown> {
     status: channel.status,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
+    ...(Array.isArray(channel.destinations)
+      ? { destinations: channel.destinations.map(stripPrivateValues) }
+      : {}),
+  };
+}
+
+function publicOutboxItem(value: unknown): Record<string, unknown> {
+  const item = record(value) ?? {};
+  const content = record(item.contentPreview) ?? {};
+  return {
+    id: item.id,
+    outboxId: item.outboxId,
+    eventType: item.eventType,
+    sessionId: item.sessionId,
+    contentPreview: {
+      ...(typeof content.title === "string" ? { title: content.title } : {}),
+      ...(typeof content.body === "string" ? { body: content.body } : {}),
+      ...(typeof content.url === "string" ? { url: content.url } : {}),
+    },
+    status: item.status,
+    destination: item.destination,
+    attemptCount: item.attemptCount,
+    ...(item.error ? { error: "Delivery failed." } : {}),
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function publicOutbox(value: unknown): Record<string, unknown> {
+  const outbox = record(value) ?? {};
+  return {
+    id: outbox.id,
+    channelId: outbox.channelId,
+    channelName: outbox.channelName,
+    destination: outbox.destination,
+    readiness: outbox.readiness,
+    targetDisplayName: outbox.targetDisplayName,
+    items: Array.isArray(outbox.items)
+      ? outbox.items.map(publicOutboxItem)
+      : [],
   };
 }
 
@@ -360,6 +423,16 @@ function publicSuccessBody(
     return {
       channels: Array.isArray(body.connections)
         ? body.connections.map(publicChannel)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/outboxes") {
+    return {
+      agentId: body.agentId,
+      environment: body.environment,
+      deploymentId: body.deploymentId,
+      outboxes: Array.isArray(body.outboxes)
+        ? body.outboxes.map(publicOutbox)
         : [],
     };
   }
@@ -564,6 +637,9 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      ...(body.projectDeployment && typeof body.projectDeployment === "object"
+        ? { projectDeployment: body.projectDeployment }
+        : {}),
       artifact,
     }),
     redirect: "manual",
@@ -595,6 +671,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && suffix === "/outboxes") return true;
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||

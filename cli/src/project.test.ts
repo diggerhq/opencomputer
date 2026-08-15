@@ -16,6 +16,7 @@ import {
   findAgentRoot,
   initializeAgentProject,
   prepareAgent,
+  readProjectResources,
 } from "./project.js";
 
 test("init creates a multi-agent-ready project and React hello world app", async () => {
@@ -55,7 +56,7 @@ test("init creates a multi-agent-ready project and React hello world app", async
     };
     assert.equal(packageJSON.scripts.dev, "opencomputer dev");
     assert.equal(packageJSON.scripts["dev:web"], undefined);
-    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.4.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.5.0");
     assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.5.0");
     assert.ok(packageJSON.devDependencies["@types/node"]);
@@ -112,6 +113,102 @@ test("init creates a multi-agent-ready project and React hello world app", async
       "src/main.tsx",
       "src/styles.css",
     ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler normalizes project channels, registrations, and outboxes", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-channels-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root, undefined, {
+      spa: false,
+    });
+    const opencomputer = resolve(root, "opencomputer");
+    await mkdir(resolve(opencomputer, "channels"), { recursive: true });
+    await mkdir(resolve(opencomputer, "outboxes"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "outboxes"), { recursive: true });
+    await writeFile(
+      resolve(opencomputer, "channels", "team-slack.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({
+  id: "team-slack",
+  type: "slack",
+  scopes: { bot: ["chat:write", "channels:read", "app_mentions:read"] },
+  events: ["app_mention"],
+  destinations: {
+    "pull-request-reviews": { type: "conversation", visibility: "public" },
+  },
+  routing: { whenAmbiguous: "ask" },
+});
+`,
+    );
+    await writeFile(
+      resolve(opencomputer, "outboxes", "review-requests.ts"),
+      `import { defineOutbox } from "@opencomputer/agent";
+import teamSlack from "../channels/team-slack.js";
+export default defineOutbox({
+  id: "review-requests",
+  delivery: { channel: teamSlack, destination: "pull-request-reviews" },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "channels", "team-slack.ts"),
+      `import { registerChannel } from "@opencomputer/agent";
+import teamSlack from "../../../channels/team-slack.js";
+export default registerChannel(teamSlack, { on: ["mention"] });
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "outboxes", "review-requests.ts"),
+      `import { registerOutbox } from "@opencomputer/agent";
+import reviewRequests from "../../../outboxes/review-requests.js";
+export default registerOutbox(reviewRequests);
+`,
+    );
+
+    const built = await readProjectResources(root);
+    assert.match(built.digest, /^[a-f0-9]{64}$/);
+    assert.deepEqual(built.manifest, {
+      version: 1,
+      channels: [
+        {
+          id: "team-slack",
+          type: "slack",
+          scopes: {
+            bot: ["app_mentions:read", "channels:read", "chat:write"],
+          },
+          events: ["app_mention"],
+          destinations: {
+            "pull-request-reviews": {
+              type: "conversation",
+              visibility: "public",
+            },
+          },
+          routing: { whenAmbiguous: "ask" },
+        },
+      ],
+      channelRegistrations: [
+        {
+          agentId: "hello-world",
+          channelId: "team-slack",
+          triggers: ["mention"],
+        },
+      ],
+      outboxes: [
+        {
+          id: "review-requests",
+          channelId: "team-slack",
+          destination: "pull-request-reviews",
+        },
+      ],
+      outboxRegistrations: [
+        { agentId: "hello-world", outboxId: "review-requests" },
+      ],
+    });
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -348,6 +445,71 @@ export default function Agent() {
       },
     ]);
   } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("packaged tools can publish to a registered outbox by id", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-outbox-publish-"));
+  const root = resolve(parent, "app");
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OPENCOMPUTER_OUTBOX_URL;
+  const originalToken = process.env.OPENCOMPUTER_OUTBOX_TOKEN;
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "notify.ts"),
+      `import { defineTool, publishOutbox } from "@opencomputer/agent";
+export const notify = defineTool({
+  name: "notify_reviewer",
+  description: "Notify a pull request reviewer",
+  async run() {
+    return publishOutbox("review-requests", {
+      type: "pull-request.ready",
+      idempotencyKey: "example/repo#42",
+      content: { title: "Review requested", url: "https://example.com/pull/42" },
+    });
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { notify } from "./tools/notify.js";
+export default function Agent() { useTool(notify); return "Notify reviewers."; }
+`,
+    );
+
+    const runtimeRoot = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtimeRoot, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { tools: string[] };
+    assert.ok(manifest.tools.includes("notify_reviewer"));
+    process.env.OPENCOMPUTER_OUTBOX_URL = "http://outbox.test/outboxes";
+    process.env.OPENCOMPUTER_OUTBOX_TOKEN = "runtime-token";
+    let request: { url: string; init?: RequestInit } | undefined;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      request = { url: String(url), init };
+      return Response.json({ id: "item-1", status: "pending", duplicate: false }, { status: 202 });
+    }) as typeof fetch;
+    const runtime = await import(
+      `${pathToFileURL(resolve(runtimeRoot, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    ) as { publishOutbox(id: string, input: unknown): Promise<unknown> };
+    await runtime.publishOutbox("review-requests", {
+      type: "pull-request.ready",
+      idempotencyKey: "example/repo#42",
+      content: { title: "Review requested" },
+    });
+    assert.equal(request?.url, "http://outbox.test/outboxes/review-requests/items");
+    assert.equal(new Headers(request?.init?.headers).get("authorization"), "Bearer runtime-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OPENCOMPUTER_OUTBOX_URL;
+    else process.env.OPENCOMPUTER_OUTBOX_URL = originalUrl;
+    if (originalToken === undefined) delete process.env.OPENCOMPUTER_OUTBOX_TOKEN;
+    else process.env.OPENCOMPUTER_OUTBOX_TOKEN = originalToken;
     await rm(parent, { recursive: true, force: true });
   }
 });

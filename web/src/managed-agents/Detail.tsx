@@ -66,12 +66,14 @@ import {
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
+import { ManagedAgentOutboxes } from './Outboxes'
 
 type DetailTab =
   | 'playground'
   | 'deployments'
   | 'sessions'
   | 'channels'
+  | 'outboxes'
   | 'schedules'
   | 'secrets'
 
@@ -571,6 +573,7 @@ export default function ManagedAgentDetail({
     'deployments',
     'sessions',
     'channels',
+    'outboxes',
     'schedules',
     'secrets',
   ])
@@ -660,12 +663,15 @@ export default function ManagedAgentDetail({
       search: playgroundSessionSearch(location.search, sessionId),
     })
   }
-  const activeAliasChannel = (channels.data ?? []).find(
+  const activeAliasChannels = (channels.data ?? []).filter(
     (channel) =>
       channel.agentId === agentId &&
       channel.alias === (activeDeployment.data?.alias ?? agent?.activeAlias) &&
       channel.status !== 'disconnected',
   )
+  const activeAliasChannel = activeAliasChannels[0]
+  const declaredChannels =
+    activeDeployment.data?.projectDeployment?.resources.channels ?? []
 
   const sessionColumns: Column<ManagedAgentSession>[] = [
     {
@@ -735,6 +741,7 @@ export default function ManagedAgentDetail({
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
     { id: 'channels', label: 'Channels' },
+    ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
   ]
@@ -829,7 +836,12 @@ export default function ManagedAgentDetail({
           <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
             <span>{agent?.deploymentCount ?? 0} deployments</span>
             <span>
-              {activeAliasChannel?.status === 'connected' ? 1 : 0} channels
+              {
+                activeAliasChannels.filter(
+                  (channel) => channel.status === 'connected',
+                ).length
+              }{' '}
+              channels
             </span>
           </div>
         </div>
@@ -1057,18 +1069,46 @@ export default function ManagedAgentDetail({
             </div>
           </PanelHeader>
           {agent && activeDeployment.data ? (
-            <ManagedSlackWizard
-              agentId={agent.id}
-              alias={activeDeployment.data.alias}
-              agentName={displayManagedAgentName(agent)}
-              connection={activeAliasChannel}
-            />
+            declaredChannels.length ? (
+              declaredChannels.map((declaredChannel) => (
+                <ManagedSlackWizard
+                  key={declaredChannel.id}
+                  agentId={agent.id}
+                  alias={activeDeployment.data.alias}
+                  agentName={displayManagedAgentName(agent)}
+                  channelName={
+                    declaredChannel.displayName ?? declaredChannel.id
+                  }
+                  connection={activeAliasChannels.find(
+                    (channel) => channel.channelId === declaredChannel.id,
+                  )}
+                  channelId={declaredChannel.id}
+                  destinations={Object.keys(declaredChannel.destinations)}
+                />
+              ))
+            ) : (
+              <ManagedSlackWizard
+                agentId={agent.id}
+                alias={activeDeployment.data.alias}
+                agentName={displayManagedAgentName(agent)}
+                connection={activeAliasChannel}
+              />
+            )
           ) : (
             <PanelContent className="text-muted-foreground text-sm">
               Loading channels…
             </PanelContent>
           )}
         </Panel>
+      ) : null}
+
+      {activeTab === 'outboxes' && project && agent ? (
+        <ManagedAgentOutboxes
+          projectId={project.project.id}
+          agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
       ) : null}
 
       {activeTab === 'schedules' && project ? (

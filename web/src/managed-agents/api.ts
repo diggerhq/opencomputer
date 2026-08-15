@@ -18,6 +18,29 @@ const deploymentSchema = z.object({
   channels: z.array(z.string()),
   connections: z.array(z.string()),
   createdAt: z.string(),
+  projectDeployment: z
+    .object({
+      id: z.string(),
+      digest: z.string(),
+      localAgentId: z.string(),
+      resources: z.object({
+        channels: z.array(
+          z.object({
+            id: z.string(),
+            type: z.literal('slack'),
+            displayName: z.string().optional(),
+            destinations: z.record(
+              z.string(),
+              z.object({
+                type: z.literal('conversation'),
+                visibility: z.enum(['public', 'private']),
+              }),
+            ),
+          }),
+        ),
+      }),
+    })
+    .optional(),
 })
 
 const deploymentsResponseSchema = z.object({
@@ -76,6 +99,7 @@ const connectionSchema = z.object({
 const channelSchema = z.object({
   id: z.string(),
   channel: z.string(),
+  channelId: z.string().optional().default('slack'),
   agentId: z.string(),
   alias: z.string(),
   appName: z.string().nullish(),
@@ -88,6 +112,17 @@ const channelSchema = z.object({
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  destinations: z
+    .array(
+      z.object({
+        name: z.string(),
+        conversationId: z.string(),
+        displayName: z.string(),
+        verifiedAt: z.string(),
+      }),
+    )
+    .optional()
+    .default([]),
 })
 
 const connectionsResponseSchema = z.object({
@@ -106,6 +141,45 @@ const connectionLinkSchema = z.object({
 
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
+})
+
+const outboxItemSchema = z.object({
+  id: z.string(),
+  outboxId: z.string(),
+  eventType: z.string(),
+  sessionId: z.string().optional(),
+  contentPreview: z.object({
+    title: z.string().optional(),
+    body: z.string().optional(),
+    url: z.string().optional(),
+  }),
+  status: z.string(),
+  destination: z.string().optional(),
+  attemptCount: z.number(),
+  error: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const outboxSchema = z.object({
+  id: z.string(),
+  channelId: z.string(),
+  channelName: z.string(),
+  destination: z.string(),
+  readiness: z.enum([
+    'ready',
+    'channel_not_connected',
+    'destination_not_bound',
+  ]),
+  targetDisplayName: z.string().optional(),
+  items: z.array(outboxItemSchema),
+})
+
+const outboxesResponseSchema = z.object({
+  agentId: z.string(),
+  environment: z.enum(['development', 'production']),
+  deploymentId: z.string(),
+  outboxes: z.array(outboxSchema),
 })
 
 const slackManifestResponseSchema = z.object({
@@ -207,6 +281,8 @@ export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
+export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
+export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
@@ -347,18 +423,49 @@ export async function getManagedAgentChannels() {
   ).channels
 }
 
+export async function getManagedAgentOutboxes(
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ agentId, environment })
+  return apiFetch(
+    `/managed-agents/outboxes?${query.toString()}`,
+    undefined,
+    outboxesResponseSchema,
+  )
+}
+
 export async function startManagedAgentSlack(
   agentId: string,
   name: string,
   reconnect = false,
+  channelId?: string,
 ) {
   return apiFetch(
     '/managed-agents/channels/slack/connections',
     {
       method: 'POST',
-      body: JSON.stringify({ agentId, name, reconnect }),
+      body: JSON.stringify({ agentId, name, reconnect, channelId }),
     },
     slackManifestResponseSchema,
+  )
+}
+
+export async function bindManagedAgentSlackDestination(
+  connectionId: string,
+  destination: string,
+  conversationId: string,
+) {
+  return apiFetch(
+    `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}/destinations/${encodeURIComponent(destination)}`,
+    { method: 'PUT', body: JSON.stringify({ conversationId }) },
+    z.object({
+      connectionId: z.string(),
+      destination: z.string(),
+      conversationId: z.string(),
+      displayName: z.string(),
+      verifiedAt: z.string(),
+    }),
   )
 }
 

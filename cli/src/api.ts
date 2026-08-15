@@ -1,4 +1,5 @@
 import type { ResolvedConfig } from "./config.js";
+import type { ProjectResourceManifest } from "./project.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -34,6 +35,8 @@ export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
   alias: string;
+  projectDeploymentId?: string;
+  localAgentId?: string;
   createdAt: string;
 }
 
@@ -300,6 +303,13 @@ export class OpenComputerClient {
       pathPrefix?: string;
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
+    projectDeployment?: {
+      id: string;
+      digest: string;
+      localAgentId: string;
+      agents: Array<{ localId: string; agentId: string; artifactDigest: string }>;
+      resources: ProjectResourceManifest;
+    };
     source: {
       digest: string;
       size: number;
