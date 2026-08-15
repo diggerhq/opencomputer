@@ -20,7 +20,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
-import { notifyError } from '@/lib/errors'
+import { notifyError, notifySuccess } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
 import {
@@ -58,16 +58,23 @@ function SlackDestinationSetup({
         destination,
         conversationId.trim(),
       ),
-    onSuccess: onSaved,
+    onSuccess: (binding) => {
+      notifySuccess(
+        `${destination} mapped to ${binding.displayName}.`,
+        'Slack notifications can now use this destination.',
+      )
+      onSaved()
+    },
     onError: (error) =>
       notifyError("Couldn't verify that Slack conversation.", error),
   })
+  const confirmed = bind.data ?? existing
   return (
     <div className="space-y-2 border-t px-5 py-4">
       <p className="text-sm font-medium">{destination}</p>
       <p className="text-muted-foreground text-xs">
-        {existing
-          ? `Mapped to ${existing.displayName}`
+        {confirmed
+          ? `Mapped to ${confirmed.displayName}`
           : 'Invite the app to a Slack conversation, then paste its ID.'}
       </p>
       <div className="flex gap-2">
@@ -83,7 +90,7 @@ function SlackDestinationSetup({
           disabled={!conversationId.trim() || bind.isPending}
           onClick={() => bind.mutate()}
         >
-          {bind.isPending ? 'Verifying…' : existing ? 'Update' : 'Verify'}
+          {bind.isPending ? 'Verifying…' : confirmed ? 'Update' : 'Verify'}
         </Button>
       </div>
     </div>
