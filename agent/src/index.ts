@@ -119,6 +119,56 @@ export interface OutboxRegistrationDefinition extends ResourceReference {
   readonly outboxId: string;
 }
 
+function outboxEventType(value: string): string {
+  const type = value.trim();
+  if (!/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(type)) {
+    throw new Error("Outbox event types must use lowercase dot notation");
+  }
+  return type;
+}
+
+export async function publishOutbox(
+  outbox: string | ResourceReference,
+  input: OutboxPublishInput,
+): Promise<OutboxPublishResult> {
+  const id = resourceIdentifier(
+    typeof outbox === "string" ? outbox : outbox.id,
+    "publishOutbox",
+  );
+  const type = outboxEventType(input.type);
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) {
+    throw new Error("Outbox idempotency keys must contain 1 to 256 characters");
+  }
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const base = runtime.process?.env?.OPENCOMPUTER_OUTBOX_URL;
+  const token = runtime.process?.env?.OPENCOMPUTER_OUTBOX_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer outbox delivery is unavailable");
+  }
+  const response = await fetch(
+    `${base.replace(/\/$/, "")}/${encodeURIComponent(id)}/items`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        type,
+        content: input.content,
+        idempotencyKey,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Outbox publish failed with status ${response.status}`);
+  }
+  return (await response.json()) as OutboxPublishResult;
+}
+
 export type ModelSelection =
   | string
   | { readonly provider: string; readonly model: string };
@@ -450,41 +500,7 @@ export function defineOutbox(input: {
     id,
     delivery,
     async publish(input: OutboxPublishInput): Promise<OutboxPublishResult> {
-      const type = input.type.trim();
-      const idempotencyKey = input.idempotencyKey.trim();
-      if (!/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(type)) {
-        throw new Error("Outbox event types must use lowercase dot notation");
-      }
-      if (!idempotencyKey || idempotencyKey.length > 256) {
-        throw new Error("Outbox idempotency keys must contain 1 to 256 characters");
-      }
-      const runtime = globalThis as typeof globalThis & {
-        process?: { env?: Record<string, string | undefined> };
-      };
-      const base = runtime.process?.env?.OPENCOMPUTER_OUTBOX_URL;
-      const token = runtime.process?.env?.OPENCOMPUTER_OUTBOX_TOKEN;
-      if (!base || !token) {
-        throw new Error("OpenComputer outbox delivery is unavailable");
-      }
-      const response = await fetch(
-        `${base.replace(/\/$/, "")}/${encodeURIComponent(id)}/items`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            type,
-            content: input.content,
-            idempotencyKey,
-          }),
-        },
-      );
-      if (!response.ok) {
-        throw new Error(`Outbox publish failed with status ${response.status}`);
-      }
-      return (await response.json()) as OutboxPublishResult;
+      return publishOutbox(id, input);
     },
   });
 }

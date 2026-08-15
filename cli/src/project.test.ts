@@ -449,6 +449,71 @@ export default function Agent() {
   }
 });
 
+test("packaged tools can publish to a registered outbox by id", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-outbox-publish-"));
+  const root = resolve(parent, "app");
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OPENCOMPUTER_OUTBOX_URL;
+  const originalToken = process.env.OPENCOMPUTER_OUTBOX_TOKEN;
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "notify.ts"),
+      `import { defineTool, publishOutbox } from "@opencomputer/agent";
+export const notify = defineTool({
+  name: "notify_reviewer",
+  description: "Notify a pull request reviewer",
+  async run() {
+    return publishOutbox("review-requests", {
+      type: "pull-request.ready",
+      idempotencyKey: "example/repo#42",
+      content: { title: "Review requested", url: "https://example.com/pull/42" },
+    });
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { notify } from "./tools/notify.js";
+export default function Agent() { useTool(notify); return "Notify reviewers."; }
+`,
+    );
+
+    const runtimeRoot = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtimeRoot, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { tools: string[] };
+    assert.ok(manifest.tools.includes("notify_reviewer"));
+    process.env.OPENCOMPUTER_OUTBOX_URL = "http://outbox.test/outboxes";
+    process.env.OPENCOMPUTER_OUTBOX_TOKEN = "runtime-token";
+    let request: { url: string; init?: RequestInit } | undefined;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      request = { url: String(url), init };
+      return Response.json({ id: "item-1", status: "pending", duplicate: false }, { status: 202 });
+    }) as typeof fetch;
+    const runtime = await import(
+      `${pathToFileURL(resolve(runtimeRoot, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    ) as { publishOutbox(id: string, input: unknown): Promise<unknown> };
+    await runtime.publishOutbox("review-requests", {
+      type: "pull-request.ready",
+      idempotencyKey: "example/repo#42",
+      content: { title: "Review requested" },
+    });
+    assert.equal(request?.url, "http://outbox.test/outboxes/review-requests/items");
+    assert.equal(new Headers(request?.init?.headers).get("authorization"), "Bearer runtime-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OPENCOMPUTER_OUTBOX_URL;
+    else process.env.OPENCOMPUTER_OUTBOX_URL = originalUrl;
+    if (originalToken === undefined) delete process.env.OPENCOMPUTER_OUTBOX_TOKEN;
+    else process.env.OPENCOMPUTER_OUTBOX_TOKEN = originalToken;
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler rejects hard-coded sensitive connection headers", async () => {
   const parent = await mkdtemp(
     resolve(tmpdir(), "opencomputer-egress-secret-"),

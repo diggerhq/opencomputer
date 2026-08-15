@@ -1491,6 +1491,23 @@ export const defineTool = (input) => {
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
   return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
 };
+export const publishOutbox = async (outbox, input) => {
+  const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
+  const type = String(input.type).trim();
+  if (!/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(type)) throw new Error("Outbox event types must use lowercase dot notation");
+  const idempotencyKey = String(input.idempotencyKey).trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) throw new Error("Outbox idempotency keys must contain 1 to 256 characters");
+  const base = globalThis.process?.env?.OPENCOMPUTER_OUTBOX_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_OUTBOX_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer outbox delivery is unavailable");
+  const response = await fetch(base.replace(/\\\/$/, "") + "/" + encodeURIComponent(outboxId) + "/items", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ type, content: input.content, idempotencyKey }),
+  });
+  if (!response.ok) throw new Error("Outbox publish failed with status " + response.status);
+  return await response.json();
+};
 export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
