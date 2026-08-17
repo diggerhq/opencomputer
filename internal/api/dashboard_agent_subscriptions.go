@@ -212,10 +212,10 @@ func (s *Server) dashboardSubscribeAgentFeature(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "checkout create failed"})
 		}
 		return c.JSON(http.StatusOK, map[string]any{
-			"status":      "checkout_required",
+			"status":       "checkout_required",
 			"checkout_url": url,
-			"feature":     feature,
-			"agent_id":    agentID,
+			"feature":      feature,
+			"agent_id":     agentID,
 		})
 	}
 
@@ -224,8 +224,8 @@ func (s *Server) dashboardSubscribeAgentFeature(c echo.Context) error {
 	if err != nil {
 		log.Printf("billing: direct subscribe failed: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error":   "subscribe failed",
-			"detail":  err.Error(),
+			"error":  "subscribe failed",
+			"detail": err.Error(),
 		})
 	}
 
@@ -450,10 +450,10 @@ func (s *Server) apiAgentEntitlement(c echo.Context) error {
 	if priceID == "" {
 		// Feature ungated on this deployment.
 		return c.JSON(http.StatusOK, map[string]any{
-			"entitled":   true,
-			"reason":     "ungated",
-			"feature":    feature,
-			"agent_id":   agentID,
+			"entitled": true,
+			"reason":   "ungated",
+			"feature":  feature,
+			"agent_id": agentID,
 		})
 	}
 
@@ -480,12 +480,12 @@ func (s *Server) apiAgentEntitlement(c echo.Context) error {
 		})
 	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"entitled":              true,
-		"feature":               feature,
-		"agent_id":              agentID,
-		"status":                sub.Status,
-		"current_period_end":    sub.CurrentPeriodEnd,
-		"cancel_at_period_end":  sub.CancelAtPeriodEnd,
+		"entitled":             true,
+		"feature":              feature,
+		"agent_id":             agentID,
+		"status":               sub.Status,
+		"current_period_end":   sub.CurrentPeriodEnd,
+		"cancel_at_period_end": sub.CancelAtPeriodEnd,
 	})
 }
 
@@ -516,4 +516,3 @@ func priceMonthlyCentsForFeature(feature string) int64 {
 	}
 	return 0
 }
-

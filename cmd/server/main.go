@@ -222,6 +222,26 @@ func main() {
 		log.Printf("opensandbox: sandbox domain configured (%s)", cfg.SandboxDomain)
 	}
 
+	// MaxWorkers == 0 means "this cell provisions no workers", and is decided
+	// here rather than inside the scaler. Both readings of 0 collapse at this
+	// layer — config.envOrDefaultInt has already substituted the default (10)
+	// for an unset OPENSANDBOX_MAX_WORKERS — so a 0 arriving here can only be
+	// an operator asking for zero. Inside ScalerConfig the two are
+	// indistinguishable (Go's zero value), which is why NewScaler coerces 0 up
+	// to 10 and why setting MAX_WORKERS=0 alone used to keep provisioning.
+	//
+	// This gates two separate things: the compute pool below, and the
+	// registry-backed capacity reporter. The reporter matters as much as the
+	// pool — it derives available_workers by counting registered workers, so on
+	// a cell that has none it publishes 0 forever, and the edge reads that as
+	// "cell full" and refuses to route. A workerless cell needs its capacity to
+	// come from whatever actually serves creates there.
+	workersDisabled := cfg.Mode == "server" && cfg.MaxWorkersPerRegion == 0
+	if workersDisabled {
+		log.Println("opensandbox: OPENSANDBOX_MAX_WORKERS=0 — worker autoscaling disabled, this cell provisions no workers")
+	}
+	opts.WorkersDisabled = workersDisabled
+
 	// Initialize Redis worker registry in server mode. The scaler reference
 	// is hoisted to outer scope so the API server can be wired with it later
 	// for the migrate endpoint (see server.SetMigrator below).
@@ -282,36 +302,16 @@ func main() {
 			log.Println("opensandbox: sandbox API proxy enabled (data-plane requests proxied to workers)")
 		}
 
-		// CF-parallel event forwarder. Drains events:{cell_id} from Redis and
-		// POSTs HMAC-signed batches to the events-ingest Worker. Inert when
-		// CFEventEndpoint is empty — old NATS path keeps running independently.
-		if cfg.CFEventEndpoint != "" && cfg.CFEventSecret != "" && cfg.CellID != "" {
-			cfClient := controlplane.NewCFEventClient(cfg.CFEventEndpoint, cfg.CFEventSecret, cfg.CellID)
-			fwd, err := controlplane.NewEventForwarder(controlplane.EventForwarderConfig{
-				Redis:  redisRegistry.RedisClient(),
-				CellID: cfg.CellID,
-				Client: cfClient,
-			})
-			if err != nil {
-				log.Fatalf("event_forwarder: %v", err)
-			}
-			if err := fwd.Start(context.Background()); err != nil {
-				log.Fatalf("event_forwarder start: %v", err)
-			}
-			defer func() {
-				stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer stopCancel()
-				_ = fwd.Stop(stopCtx)
-			}()
-			log.Printf("opensandbox: CF event forwarder started (endpoint=%s cell=%s)", cfg.CFEventEndpoint, cfg.CellID)
-		} else if cfg.Mode == "server" {
-			log.Printf("opensandbox: CF event forwarder NOT started (CFEventEndpoint/Secret/CellID unset)")
-		}
-
 		// Capacity reporter — periodically pushes a cell_capacity event onto the
 		// same events:{cell_id} stream the forwarder drains. Feeds the edge's
 		// pickCell() cascade via D1. Inert when CellID is empty.
-		if cfg.CellID != "" {
+		//
+		// Skipped when this cell provisions no workers: counting an empty
+		// registry would publish available_workers=0 on a cell that is serving
+		// creates fine, and two reporters on one stream would alternate and
+		// flap it in and out of the edge's routing set. The backend that owns
+		// the sandboxes reports instead (see microvmBackend.Capacity).
+		if cfg.CellID != "" && !workersDisabled {
 			cr, err := controlplane.NewCapacityReporter(controlplane.CapacityReporterConfig{
 				Redis:    redisRegistry.RedisClient(),
 				Registry: redisRegistry,
@@ -337,6 +337,47 @@ func main() {
 		}
 	}
 
+	// Billing does not depend on there being QEMU workers, so the Redis client
+	// and the event forwarder must not either. Both used to live inside the
+	// mode=="server" block above, next to the worker registry that supplies the
+	// client. A MicroVM cell has no workers to register and so never entered
+	// that block: its usage ticks reached local SQLite and stopped there, with
+	// every log line still reporting billing was running.
+	if opts.RedisClient == nil && cfg.RedisURL != "" {
+		redisOpts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("opensandbox: invalid OPENSANDBOX_REDIS_URL: %v", err)
+		}
+		opts.RedisClient = redis.NewClient(redisOpts)
+		log.Println("opensandbox: Redis client connected (no worker registry — event stream only)")
+	}
+
+	// CF-parallel event forwarder. Drains events:{cell_id} from Redis and POSTs
+	// HMAC-signed batches to the events-ingest Worker. Inert when the CF
+	// endpoint is unset.
+	if cfg.CFEventEndpoint != "" && cfg.CFEventSecret != "" && cfg.CellID != "" && opts.RedisClient != nil {
+		cfClient := controlplane.NewCFEventClient(cfg.CFEventEndpoint, cfg.CFEventSecret, cfg.CellID)
+		fwd, err := controlplane.NewEventForwarder(controlplane.EventForwarderConfig{
+			Redis:  opts.RedisClient,
+			CellID: cfg.CellID,
+			Client: cfClient,
+		})
+		if err != nil {
+			log.Fatalf("event_forwarder: %v", err)
+		}
+		if err := fwd.Start(context.Background()); err != nil {
+			log.Fatalf("event_forwarder start: %v", err)
+		}
+		defer func() {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer stopCancel()
+			_ = fwd.Stop(stopCtx)
+		}()
+		log.Printf("opensandbox: CF event forwarder started (endpoint=%s cell=%s)", cfg.CFEventEndpoint, cfg.CellID)
+	} else if cfg.Mode == "server" {
+		log.Printf("opensandbox: CF event forwarder NOT started (CFEventEndpoint/Secret/CellID unset)")
+	}
+
 	// Hoisted at function scope so the per-sandbox autoscaler (created
 	// later, after the API server) can consult IsLeader() each tick — keeps
 	// a single elector authoritative across both the cluster scaler and the
@@ -344,8 +385,14 @@ func main() {
 	// (combined / dev mode) — autoscaler then runs unconditionally.
 	var leaderElector *controlplane.LeaderElector
 
-	// Initialize compute pool + autoscaler (server mode)
-	if cfg.Mode == "server" && redisRegistry != nil {
+	// Initialize compute pool + autoscaler (server mode).
+	//
+	// Skipping the pool entirely, rather than capping the scaler at zero, is
+	// what a MicroVM cell needs: AWS holds the VMs, so there is no worker to
+	// launch, drain, roll, or migrate to, and a scaler with nothing to manage
+	// would still contend for the leader lock and log decisions about an empty
+	// fleet forever.
+	if cfg.Mode == "server" && redisRegistry != nil && !workersDisabled {
 		// Build the WorkerSpec: cloud-neutral config that the CP supplies to
 		// whichever pool is selected. The pool combines this with cloud-specific
 		// cloud-init to launch new workers.
@@ -658,7 +705,7 @@ func main() {
 				for _, w := range redisRegistry.GetAllWorkers() {
 					liveWorkers[w.ID] = true
 				}
-				orphans, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers)
+				orphans, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers, api.ManagedWorkerIDPrefixes())
 				if err != nil {
 					log.Printf("maintenance: orphan reconciliation error: %v", err)
 					observability.CaptureError(err, "area", "maintenance", "op", "mark_orphaned_sandboxes")

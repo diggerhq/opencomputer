@@ -12,7 +12,7 @@ func TestValidateTags_OK(t *testing.T) {
 		"env":           "prod",
 		"team":          "payments",
 		"team:payments": "yes", // `:` allowed in keys per design
-		"empty":         "",     // empty values allowed
+		"empty":         "",    // empty values allowed
 	})
 	if err != nil {
 		t.Fatalf("expected valid, got %v", err)

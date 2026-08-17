@@ -90,3 +90,7 @@ cloudflare-workers/api-edge/wrangler.ci.toml
 
 # Wrangler local build/cache/state (never source)
 .wrangler/
+
+# stray binaries from `go build ./cmd/...` without -o
+/microvm-hooks
+/microvm-harness

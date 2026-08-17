@@ -191,4 +191,3 @@ func (s *Server) dashboardAgentsProxy(c echo.Context) error {
 		}
 	}
 }
-

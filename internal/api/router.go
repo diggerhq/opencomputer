@@ -62,6 +62,7 @@ type Server struct {
 	workos             *auth.WorkOSMiddleware            // nil if WorkOS not configured
 	dashboardAuthMode  string                            // "workos" or "single-tenant"; empty disables dashboard APIs
 	workerRegistry     *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	workersDisabled    bool                              // OPENSANDBOX_MAX_WORKERS=0: this cell provisions no workers
 	checkpointStore    *storage.CheckpointStore          // nil if hibernation not configured
 	sandboxDomain      string                            // base domain for sandbox subdomains
 	cfClient           *cloudflare.Client                // nil if Cloudflare not configured
@@ -72,7 +73,11 @@ type Server struct {
 	stripeClient       *billing.StripeClient             // nil if Stripe not configured
 	redisClient        *redis.Client                     // nil if Redis not configured (for health checks)
 	adminEvents        *AdminEventBus                    // real-time event bus for admin dashboard
-	ready              int32                             // atomic: 1 = ready, 0 = not ready
+	microvm            *microvmBackend                   // managed-host backend; nil unless enabled (see microvm_backend.go)
+	// backends is the dispatch set for placement and routing (see backend.go).
+	// The worker path is deliberately absent — it is reached by falling through.
+	backends []Backend
+	ready    int32 // atomic: 1 = ready, 0 = not ready
 
 	// Axiom log query (sandbox session logs read API).
 	// Empty token = endpoint returns 503.
@@ -161,11 +166,15 @@ type ServerOpts struct {
 	DashboardAuthMode     string                            // "workos" or "single-tenant"
 	SingleTenantPrincipal *auth.SingleTenantPrincipal       // required for single-tenant dashboard auth
 	WorkerRegistry        *controlplane.RedisWorkerRegistry // nil in combined/worker mode
-	CheckpointStore       *storage.CheckpointStore          // nil if hibernation not configured
-	CFClient              *cloudflare.Client                // nil if Cloudflare not configured
-	SandboxAPIProxy       *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
-	StripeClient          *billing.StripeClient             // nil if Stripe not configured
-	RedisClient           *redis.Client                     // nil if Redis not configured (for health checks)
+	// WorkersDisabled marks a cell that provisions no workers
+	// (OPENSANDBOX_MAX_WORKERS=0). The registry can still be non-nil there, so
+	// this — not the registry — is what decides who reports cell capacity.
+	WorkersDisabled bool
+	CheckpointStore *storage.CheckpointStore // nil if hibernation not configured
+	CFClient        *cloudflare.Client       // nil if Cloudflare not configured
+	SandboxAPIProxy *proxy.SandboxAPIProxy   // nil except in server mode (proxies data-plane to workers)
+	StripeClient    *billing.StripeClient    // nil if Stripe not configured
+	RedisClient     *redis.Client            // nil if Redis not configured (for health checks)
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -213,6 +222,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.router = opts.Router
 		s.dashboardAuthMode = opts.DashboardAuthMode
 		s.workerRegistry = opts.WorkerRegistry
+		s.workersDisabled = opts.WorkersDisabled
 		s.checkpointStore = opts.CheckpointStore
 		s.sandboxDomain = opts.SandboxDomain
 		s.cfClient = opts.CFClient
@@ -528,14 +538,41 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 			return pxy(c)
 		}
 
-		// Exec
-		api.POST("/sandboxes/:id/exec", pxy)
-		api.GET("/sandboxes/:id/exec", pxy)
+		// Data-plane dispatch: a sandbox held by a registered backend is served
+		// in-process; everything else is proxied to the worker that holds it.
+		//
+		// One table, one wrapper. Previously each route was wrapped by hand, which
+		// meant a new data-plane route defaulted to the proxy — and the proxy does
+		// not merely fail for a backend-held sandbox, it resolves the route through
+		// the worker registry, concludes the worker was lost, and writes the
+		// session to `error`. A forgotten route killed healthy sandboxes on their
+		// first request.
+		dataPlane := []struct {
+			method, path string
+			local        echo.HandlerFunc
+		}{
+			{http.MethodPost, "/sandboxes/:id/exec", s.createExecSession},
+			{http.MethodGet, "/sandboxes/:id/exec", s.listExecSessions},
+			{http.MethodGet, "/sandboxes/:id/exec/:sessionID/result", s.execResult},
+			{http.MethodPost, "/sandboxes/:id/exec/:sessionID/kill", s.killExecSession},
+			{http.MethodPost, "/sandboxes/:id/exec/run", s.execRun},
+			{http.MethodPost, "/sandboxes/:id/exec/run-async", s.execRunAsyncRoute},
+
+			{http.MethodGet, "/sandboxes/:id/files", s.readFile},
+			{http.MethodPut, "/sandboxes/:id/files", s.writeFile},
+			{http.MethodGet, "/sandboxes/:id/files/list", s.listDir},
+			{http.MethodPost, "/sandboxes/:id/files/mkdir", s.makeDir},
+			{http.MethodDelete, "/sandboxes/:id/files", s.removeFile},
+		}
+		for _, r := range dataPlane {
+			api.Add(r.method, r.path, s.dispatchDataPlane(r.local, pxy))
+		}
+
+		// Streaming and agent routes stay on the proxy: the backends that serve
+		// in-process do not implement PTY, agent sessions, or bidi streaming, so
+		// routing them here would answer a request no manager can serve. They
+		// reach the worker path exactly as before.
 		api.GET("/sandboxes/:id/exec/:sessionID", wsHandler)
-		api.GET("/sandboxes/:id/exec/:sessionID/result", pxy)
-		api.POST("/sandboxes/:id/exec/:sessionID/kill", pxy)
-		api.POST("/sandboxes/:id/exec/run", pxy)
-		api.POST("/sandboxes/:id/exec/run-async", pxy)
 
 		// Agent
 		api.POST("/sandboxes/:id/agent", pxy)
@@ -544,13 +581,6 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		api.POST("/sandboxes/:id/agent/:sid/prompt", pxy)
 		api.POST("/sandboxes/:id/agent/:sid/interrupt", pxy)
 		api.POST("/sandboxes/:id/agent/:sid/kill", pxy)
-
-		// Filesystem
-		api.GET("/sandboxes/:id/files", pxy)
-		api.PUT("/sandboxes/:id/files", pxy)
-		api.GET("/sandboxes/:id/files/list", pxy)
-		api.POST("/sandboxes/:id/files/mkdir", pxy)
-		api.DELETE("/sandboxes/:id/files", pxy)
 
 		// Mounts (FUSE)
 		api.POST("/sandboxes/:id/mounts", pxy)
@@ -770,6 +800,54 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Serve web dashboard SPA at root (catch-all after API/auth routes)
 	s.serveDashboardUI(e, frontendURL)
 
+	// AWS Lambda MicroVM backend. Disabled by default: this returns nil and no
+	// AWS call is ever made, so the QEMU fleet is unaffected. When it IS enabled
+	// but misconfigured, fail loudly rather than silently serving QEMU from a
+	// cell the operator believes is running MicroVMs.
+	if mvm, err := newMicrovmBackend(context.Background()); err != nil {
+		log.Fatalf("opensandbox: microvm backend: %v", err)
+	} else if mvm != nil {
+		s.microvm = mvm
+		// Registering it is what makes every claim/route site find it. Before
+		// this the sites each hardcoded their own check, and any new one
+		// silently defaulted to the worker path.
+		s.registerBackend(mvm)
+		// Rebuild the sandbox→MicroVM map before serving. A restart otherwise
+		// leaves live sandboxes unroutable and their boxes unreapable.
+		mvm.Restore(context.Background(), s.store)
+		// Nothing else will ever notice a MicroVM dying — no worker reports in
+		// for these — so sweep on a ticker for the lifetime of the process.
+		mvm.StartReconciler(context.Background(), s.store)
+		// Billing: no worker exists to emit usage ticks for these sandboxes, so
+		// the control plane emits them itself over the same interface.
+		mvm.StartUsageTicker(context.Background(), s.sandboxDBs)
+		// ...and drains them to the cell stream. The ticker alone writes to
+		// local SQLite; without this half nothing ever reads it, and the
+		// sandboxes run free while every log line says billing is working.
+		mvm.StartEventPublisher(context.Background(), s.sandboxDBs, s.redisClient, s.cellID, s.store)
+		// Capacity, but only when no registry-backed reporter is publishing it
+		// already — two writers on one stream would alternate between MicroVM
+		// depth and worker counts, flapping the cell in and out of the edge's
+		// routing set. Keyed on workersDisabled rather than a nil registry: a
+		// MicroVM cell in server mode still HAS a registry (worker_id lookups,
+		// lifecycle publishing), it just never has workers in it, and gating on
+		// the registry left the worker-counting reporter running to publish
+		// available_workers=0 forever.
+		if s.workerRegistry == nil || s.workersDisabled {
+			mvm.StartCapacityReporter(context.Background(), s.redisClient, s.cellID)
+		}
+	}
+
+	// The QEMU fleet, registered last so it is the fall-through rather than the
+	// preference: a cell running both serves creates from the backend that holds
+	// its own warm stock, and reaches the fleet only when that one declines.
+	//
+	// Registration order is placement policy — claimBackend takes the first
+	// Placer — so moving this line changes which runtime serves every create.
+	if wb := newWorkerBackend(s.workerRegistry); wb != nil && !s.workersDisabled {
+		s.registerBackend(wb)
+	}
+
 	return s
 }
 
@@ -887,12 +965,26 @@ func (s *Server) Start(addr string) error {
 
 // Shutdown gracefully drains in-flight requests and stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Drain every backend before the HTTP server goes away. Warm stock we
+	// abandon keeps billing compute and holding capacity until its lifetime
+	// cap, so a redeploying control plane would leak a full pool per rollout.
+	s.closeBackends()
 	return s.echo.Shutdown(ctx)
 }
 
 // Close immediately shuts down the server (no drain).
 func (s *Server) Close() error {
+	s.closeBackends()
 	return s.echo.Close()
+}
+
+// closeBackends releases every registered runtime. Iterating the registry
+// rather than naming one is the point: a backend added later is drained without
+// anyone remembering to add a line here.
+func (s *Server) closeBackends() {
+	for _, b := range s.backends {
+		b.Close()
+	}
 }
 
 // Echo returns the underlying echo instance for reuse (e.g., worker HTTP server).

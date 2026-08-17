@@ -34,6 +34,20 @@ type SandboxEventEnvelope struct {
 // fields blank, which the CF ingest treats as "unknown — log only, no debit."
 type MetadataResolver func(sandboxID string) (orgID, plan string, ok bool)
 
+// WorkerIDResolver returns the worker id that currently owns a sandbox.
+//
+// A QEMU worker owns every sandbox in its SandboxDBs, so it leaves this nil and
+// the publisher stamps its own id. The control plane's MicroVM backend does
+// not: AWS holds the VMs and each carries its own `microvm:<id>` owner, so it
+// resolves per sandbox.
+//
+// This is not cosmetic. events-ingest drops a usage_tick whose worker_id
+// disagrees with sandboxes_index.worker_id — that guard is what stops a
+// migration source or an abandoned `-incoming` receiver from double-billing a
+// box something else already bills. Stamping one id for differently-owned
+// sandboxes would trip it and silently lose the ticks.
+type WorkerIDResolver func(sandboxID string) (workerID string, ok bool)
+
 // RedisEventPublisher polls per-sandbox SQLite every poll interval for unsynced
 // events and XADDs them to events:{cell_id} with MaxLen approx 100k. Marks
 // events synced on successful XADD.
@@ -41,9 +55,10 @@ type MetadataResolver func(sandboxID string) (orgID, plan string, ok bool)
 // Runs parallel to the legacy NATS publisher during cutover — see
 // docs/dev-cutover-runbook.md.
 type RedisEventPublisher struct {
-	rdb        *redis.Client
-	sandboxDBs *sandbox.SandboxDBManager
-	resolver   MetadataResolver
+	rdb            *redis.Client
+	sandboxDBs     *sandbox.SandboxDBManager
+	resolver       MetadataResolver
+	workerResolver WorkerIDResolver
 
 	cellID    string
 	workerID  string
@@ -60,21 +75,27 @@ type RedisEventPublisher struct {
 
 // RedisEventPublisherConfig configures the publisher.
 type RedisEventPublisherConfig struct {
-	RedisURL     string
-	SandboxDBs   *sandbox.SandboxDBManager
-	Resolver     MetadataResolver // optional — if nil, org_id/plan fields are blank
-	CellID       string
-	WorkerID     string
-	MaxLen       int64
-	PollInterval time.Duration // default 2s
-	BatchSize    int           // GetAllUnsyncedEventsFlat limitPerDB; default 100
+	RedisURL string
+	// Client, when set, is used instead of dialing RedisURL. The control plane
+	// already holds a configured client (TLS, auth, pool); re-deriving one from
+	// a URL would be a second place for that config to drift. The publisher
+	// never closes a client it did not open.
+	Client           *redis.Client
+	SandboxDBs       *sandbox.SandboxDBManager
+	Resolver         MetadataResolver // optional — if nil, org_id/plan fields are blank
+	WorkerIDResolver WorkerIDResolver // optional — if nil, every envelope carries WorkerID
+	CellID           string
+	WorkerID         string
+	MaxLen           int64
+	PollInterval     time.Duration // default 2s
+	BatchSize        int           // GetAllUnsyncedEventsFlat limitPerDB; default 100
 }
 
-// NewRedisEventPublisher constructs a publisher. CellID, WorkerID,
-// SandboxDBs and RedisURL are required.
+// NewRedisEventPublisher constructs a publisher. CellID, WorkerID, SandboxDBs
+// and one of RedisURL / Client are required.
 func NewRedisEventPublisher(cfg RedisEventPublisherConfig) (*RedisEventPublisher, error) {
-	if cfg.RedisURL == "" {
-		return nil, errors.New("redis_event_publisher: RedisURL required")
+	if cfg.RedisURL == "" && cfg.Client == nil {
+		return nil, errors.New("redis_event_publisher: RedisURL or Client required")
 	}
 	if cfg.CellID == "" {
 		return nil, errors.New("redis_event_publisher: CellID required")
@@ -86,22 +107,25 @@ func NewRedisEventPublisher(cfg RedisEventPublisherConfig) (*RedisEventPublisher
 		return nil, errors.New("redis_event_publisher: SandboxDBs required")
 	}
 
-	opts, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid redis URL: %w", err)
-	}
-	opts.PoolSize = 3
-	opts.MinIdleConns = 1
-	opts.ConnMaxIdleTime = 5 * time.Minute
-	opts.ConnMaxLifetime = 30 * time.Minute
-	opts.MaxRetries = 3
+	rdb := cfg.Client
+	if rdb == nil {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid redis URL: %w", err)
+		}
+		opts.PoolSize = 3
+		opts.MinIdleConns = 1
+		opts.ConnMaxIdleTime = 5 * time.Minute
+		opts.ConnMaxLifetime = 30 * time.Minute
+		opts.MaxRetries = 3
 
-	rdb := redis.NewClient(opts)
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer pingCancel()
-	if err := rdb.Ping(pingCtx).Err(); err != nil {
-		rdb.Close()
-		return nil, fmt.Errorf("redis ping failed: %w", err)
+		rdb = redis.NewClient(opts)
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer pingCancel()
+		if err := rdb.Ping(pingCtx).Err(); err != nil {
+			rdb.Close()
+			return nil, fmt.Errorf("redis ping failed: %w", err)
+		}
 	}
 
 	if cfg.PollInterval <= 0 {
@@ -115,9 +139,11 @@ func NewRedisEventPublisher(cfg RedisEventPublisherConfig) (*RedisEventPublisher
 	}
 
 	return &RedisEventPublisher{
-		rdb:          rdb,
-		sandboxDBs:   cfg.SandboxDBs,
-		resolver:     cfg.Resolver,
+		rdb:            rdb,
+		sandboxDBs:     cfg.SandboxDBs,
+		resolver:       cfg.Resolver,
+		workerResolver: cfg.WorkerIDResolver,
+
 		cellID:       cfg.CellID,
 		workerID:     cfg.WorkerID,
 		streamKey:    "events:" + cfg.CellID,
@@ -162,6 +188,20 @@ func (p *RedisEventPublisher) run(ctx context.Context) {
 	}
 }
 
+// workerIDFor returns the owner to stamp on a sandbox's envelopes, falling back
+// to the publisher's own id when no resolver is configured or the sandbox is
+// unknown to it. Falling back rather than dropping is deliberate: an unstamped
+// envelope still bills (events-ingest skips the ownership check when either
+// side is blank), while a dropped one is revenue lost silently.
+func (p *RedisEventPublisher) workerIDFor(sandboxID string) string {
+	if p.workerResolver != nil {
+		if id, ok := p.workerResolver(sandboxID); ok && id != "" {
+			return id
+		}
+	}
+	return p.workerID
+}
+
 // FlushSandbox synchronously publishes all unsynced events for a single
 // sandbox. Used as the SandboxDBManager.OnRemove hook so terminal events
 // (stopped, hibernated) make it to Redis before the per-sandbox SQLite file
@@ -198,6 +238,8 @@ func (p *RedisEventPublisher) FlushSandbox(ctx context.Context, sandboxID string
 		}
 	}
 
+	workerID := p.workerIDFor(sandboxID)
+
 	var syncedIDs []int64
 	for _, e := range events {
 		ts, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
@@ -220,7 +262,7 @@ func (p *RedisEventPublisher) FlushSandbox(ctx context.Context, sandboxID string
 			SandboxID: sandboxID,
 			OrgID:     orgID,
 			Plan:      plan,
-			WorkerID:  p.workerID,
+			WorkerID:  workerID,
 			CellID:    p.cellID,
 			Payload:   json.RawMessage(e.Payload),
 			Timestamp: ts,
@@ -271,7 +313,7 @@ func (p *RedisEventPublisher) flush(ctx context.Context) {
 			ID:        fmt.Sprintf("%s:%d:%d", se.SandboxID, se.Generation, se.Event.ID),
 			Type:      se.Event.Type,
 			SandboxID: se.SandboxID,
-			WorkerID:  p.workerID,
+			WorkerID:  p.workerIDFor(se.SandboxID),
 			CellID:    p.cellID,
 			Payload:   json.RawMessage(se.Event.Payload),
 			Timestamp: se.Timestamp,

@@ -21,7 +21,7 @@ import (
 // new route.
 
 const (
-	usageDefaultWindow = 30 * 24 * time.Hour
+	usageDefaultWindow  = 30 * 24 * time.Hour
 	usageHandlerTimeout = 10 * time.Second
 )
 

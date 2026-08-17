@@ -19,9 +19,10 @@ import (
 // the cell_capacity events emitted by controlplane.CapacityReporter.
 //
 // Event types:
-//   checkpoint_ready    — checkpoint upload finished; UPSERT row in D1
-//   checkpoint_failed   — async checkpoint failed; UPSERT failed row in D1
-//   checkpoint_deleted  — checkpoint dropped from cell PG; DELETE row in D1
+//
+//	checkpoint_ready    — checkpoint upload finished; UPSERT row in D1
+//	checkpoint_failed   — async checkpoint failed; UPSERT failed row in D1
+//	checkpoint_deleted  — checkpoint dropped from cell PG; DELETE row in D1
 //
 // Best-effort: failure to XADD is logged but doesn't fail the caller. The
 // dashboard cross-cell view runs ~seconds behind cell PG truth as a result;
@@ -149,8 +150,9 @@ func (s *Server) publishImageCacheReadyFrom(ctx context.Context, ic *db.ImageCac
 // Images view in sync without proxying per-cell at request time.
 //
 // Event types:
-//   image_cache_ready    — image is in ready state; UPSERT into D1 images_index
-//   image_cache_deleted  — image dropped from cell PG; DELETE from D1
+//
+//	image_cache_ready    — image is in ready state; UPSERT into D1 images_index
+//	image_cache_deleted  — image dropped from cell PG; DELETE from D1
 func (s *Server) publishImageCacheEvent(
 	ctx context.Context,
 	eventType string,
