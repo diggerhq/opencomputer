@@ -42,6 +42,8 @@
               "agents/reactive-agents",
               "agents/sessions",
               "agents/capabilities",
+              "agents/channels",
+              "agents/outboxes",
               "agents/secrets"
             ]
           },
