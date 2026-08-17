@@ -208,7 +208,54 @@ export default registerOutbox(reviewRequests);
       outboxRegistrations: [
         { agentId: "hello-world", outboxId: "review-requests" },
       ],
+      schedules: [],
     });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler normalizes code-defined agent schedules", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-schedules-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root, undefined, { spa: false });
+    await mkdir(resolve(initialized.agentRoot, "schedules"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "schedules", "weekday-hygiene.ts"),
+      `import { defineSchedule } from "@opencomputer/agent";
+export default defineSchedule({
+  id: "weekday-hygiene",
+  cron: "0 9 * * 1-5",
+  timezone: "America/Los_Angeles",
+  enabled: ["development", "production"],
+  overlap: "skip",
+  dispatch: {
+    text: "Run feature flag hygiene.",
+    payload: { repository: "acme/widgets", dryRun: false, labels: ["cleanup"] },
+  },
+});
+`,
+    );
+    const built = await readProjectResources(root);
+    assert.deepEqual(built.manifest.schedules, [
+      {
+        id: "weekday-hygiene",
+        agentId: "hello-world",
+        cron: "0 9 * * 1-5",
+        timezone: "America/Los_Angeles",
+        enabled: ["development", "production"],
+        overlap: "skip",
+        dispatch: {
+          text: "Run feature flag hygiene.",
+          payload: {
+            repository: "acme/widgets",
+            dryRun: false,
+            labels: ["cleanup"],
+          },
+        },
+      },
+    ]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

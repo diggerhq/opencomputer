@@ -38,6 +38,23 @@ const deploymentSchema = z.object({
             ),
           }),
         ),
+        schedules: z
+          .array(
+            z.object({
+              id: z.string(),
+              agentId: z.string(),
+              cron: z.string(),
+              timezone: z.string(),
+              enabled: z.array(z.enum(['development', 'production'])),
+              overlap: z.enum(['skip', 'allow']),
+              dispatch: z.object({
+                text: z.string().optional(),
+                payload: z.unknown().optional(),
+              }),
+            }),
+          )
+          .optional()
+          .default([]),
       }),
     })
     .optional(),
@@ -182,6 +199,45 @@ const outboxesResponseSchema = z.object({
   outboxes: z.array(outboxSchema),
 })
 
+const scheduleSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  deploymentId: z.string(),
+  cron: z.string(),
+  timezone: z.string(),
+  overlap: z.enum(['skip', 'allow']),
+  dispatch: z.object({
+    text: z.string().optional(),
+    payload: z.unknown().optional(),
+  }),
+  nextRunAt: z.string(),
+  lastRunAt: z.string().optional(),
+  status: z.enum(['active', 'manual', 'paused']),
+})
+
+const scheduleRunSchema = z.object({
+  id: z.string(),
+  scheduleId: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  deploymentId: z.string(),
+  scheduledAt: z.string(),
+  manual: z.boolean(),
+  attempt: z.number(),
+  outcome: z.enum(['pending', 'enacted', 'skipped', 'failed']),
+  sessionId: z.string().optional(),
+  error: z.string().optional(),
+  createdAt: z.string(),
+})
+
+const schedulesResponseSchema = z.object({ schedules: z.array(scheduleSchema) })
+const scheduleRunsResponseSchema = z.object({
+  runs: z.array(scheduleRunSchema),
+})
+const scheduleRunResponseSchema = z.object({ run: scheduleRunSchema })
+
 const slackManifestResponseSchema = z.object({
   connection: channelSchema,
   manifest: z.record(z.string(), z.unknown()),
@@ -238,7 +294,10 @@ const sessionSchema = z.object({
   agentId: z.string(),
   deploymentId: z.string(),
   status: z.string(),
-  source: z.enum(['api', 'channel', 'playground']).optional().default('api'),
+  source: z
+    .enum(['api', 'channel', 'playground', 'schedule'])
+    .optional()
+    .default('api'),
   microvmState: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -283,6 +342,8 @@ export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
 export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
 export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
+export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
+export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
@@ -433,6 +494,52 @@ export async function getManagedAgentOutboxes(
     undefined,
     outboxesResponseSchema,
   )
+}
+
+export async function getManagedAgentSchedules(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedules?${query.toString()}`,
+      undefined,
+      schedulesResponseSchema,
+    )
+  ).schedules
+}
+
+export async function getManagedAgentScheduleRuns(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedule-runs?${query.toString()}`,
+      undefined,
+      scheduleRunsResponseSchema,
+    )
+  ).runs
+}
+
+export async function runManagedAgentSchedule(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+  scheduleId: string,
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedules/${encodeURIComponent(scheduleId)}/run?${query.toString()}`,
+      { method: 'POST' },
+      scheduleRunResponseSchema,
+    )
+  ).run
 }
 
 export async function startManagedAgentSlack(

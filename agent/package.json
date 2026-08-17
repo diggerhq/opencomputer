@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/agent",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Reactive agent authoring API for OpenComputer.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,17 +11,29 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build"
   },
-  "engines": { "node": ">=22.0.0" },
-  "publishConfig": { "access": "public" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/diggerhq/opencomputer.git",
     "directory": "agent"
   },
-  "devDependencies": { "typescript": "^5.9.0" }
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "croner": "^9.1.0"
+  }
 }

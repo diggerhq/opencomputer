@@ -1,3 +1,5 @@
+import { Cron } from "croner";
+
 export type DataValue =
   | null
   | boolean
@@ -14,11 +16,26 @@ export type InputSource =
   | "subagent"
   | "system";
 
-export interface AgentInput {
-  readonly source: InputSource;
+export interface ScheduleRunContext {
+  readonly id: string;
+  readonly runId: string;
+  readonly scheduledAt: string;
+  readonly timezone: string;
+  readonly attempt: number;
+  readonly manual: boolean;
+}
+
+interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
 }
+
+export type AgentInput =
+  | (BasicAgentInput & { readonly source: Exclude<InputSource, "schedule"> })
+  | (BasicAgentInput & {
+      readonly source: "schedule";
+      readonly schedule: Readonly<ScheduleRunContext>;
+    });
 
 export interface ResourceReference {
   readonly id: string;
@@ -117,6 +134,21 @@ export interface OutboxRegistrationDefinition extends ResourceReference {
   readonly kind: "outbox-registration";
   readonly version: 1;
   readonly outboxId: string;
+}
+
+export type ScheduleEnvironment = "development" | "production";
+
+export interface ScheduleDefinition extends ResourceReference {
+  readonly kind: "schedule";
+  readonly version: 1;
+  readonly cron: string;
+  readonly timezone: string;
+  readonly enabled: readonly ScheduleEnvironment[];
+  readonly overlap: "skip" | "allow";
+  readonly dispatch: {
+    readonly text?: string;
+    readonly payload?: DataValue;
+  };
 }
 
 function outboxEventType(value: string): string {
@@ -399,6 +431,79 @@ function resourceIdentifier(value: string, kind: string): string {
     );
   }
   return id;
+}
+
+function schedulePayload(value: DataValue | undefined): DataValue | undefined {
+  if (value === undefined) return undefined;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error("Schedule payloads must be JSON-compatible");
+  }
+  if (serialized === undefined || serialized.length > 32 * 1024) {
+    throw new Error("Schedule payloads must be JSON-compatible and at most 32 KiB");
+  }
+  return JSON.parse(serialized) as DataValue;
+}
+
+export function defineSchedule(input: {
+  id: string;
+  cron: string;
+  timezone?: string;
+  enabled?: readonly ScheduleEnvironment[];
+  overlap?: "skip" | "allow";
+  dispatch: {
+    text?: string;
+    payload?: DataValue;
+  };
+}): ScheduleDefinition {
+  const id = resourceIdentifier(input.id, "defineSchedule");
+  const cron = input.cron.trim().replace(/\s+/g, " ");
+  if (cron.split(" ").length !== 5) {
+    throw new Error("Schedule cron expressions must contain exactly five fields");
+  }
+  const timezone = input.timezone?.trim() || "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+  } catch {
+    throw new Error(`Schedule ${id} has an invalid IANA timezone`);
+  }
+  try {
+    new Cron(cron, { timezone, paused: true });
+  } catch {
+    throw new Error(`Schedule ${id} has an invalid cron expression`);
+  }
+  const enabled = [...new Set(input.enabled ?? ["production"])] as ScheduleEnvironment[];
+  if (
+    !enabled.length ||
+    enabled.some(
+      (environment) =>
+        environment !== "development" && environment !== "production",
+    )
+  ) {
+    throw new Error(
+      "Schedule enabled environments must contain development or production",
+    );
+  }
+  const text = input.dispatch.text?.trim();
+  const payload = schedulePayload(input.dispatch.payload);
+  if (!text && payload === undefined) {
+    throw new Error("Schedule dispatch requires text or payload");
+  }
+  return Object.freeze({
+    kind: "schedule" as const,
+    version: 1 as const,
+    id,
+    cron,
+    timezone,
+    enabled: Object.freeze(enabled),
+    overlap: input.overlap ?? "skip",
+    dispatch: Object.freeze({
+      ...(text ? { text } : {}),
+      ...(payload === undefined ? {} : { payload }),
+    }),
+  });
 }
 
 export function defineChannel(input: {

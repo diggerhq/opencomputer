@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
+import { Cron } from "croner";
 import ts from "typescript";
 
 export interface AgentManifest {
@@ -78,12 +79,26 @@ export interface OutboxRegistrationManifest {
   outboxId: string;
 }
 
+export interface ScheduleDefinitionManifest {
+  id: string;
+  agentId: string;
+  cron: string;
+  timezone: string;
+  enabled: Array<"development" | "production">;
+  overlap: "skip" | "allow";
+  dispatch: {
+    text?: string;
+    payload?: unknown;
+  };
+}
+
 export interface ProjectResourceManifest {
   version: 1;
   channels: ChannelDefinitionManifest[];
   channelRegistrations: ChannelRegistrationManifest[];
   outboxes: OutboxDefinitionManifest[];
   outboxRegistrations: OutboxRegistrationManifest[];
+  schedules: ScheduleDefinitionManifest[];
 }
 
 export interface BuiltProjectResources {
@@ -1123,6 +1138,133 @@ function outboxRegistration(
   return { agentId, outboxId };
 }
 
+function staticJsonValue(expression: ts.Expression, label: string): unknown {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
+  if (ts.isNumericLiteral(expression)) return Number(expression.text);
+  if (
+    ts.isPrefixUnaryExpression(expression) &&
+    expression.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(expression.operand)
+  ) {
+    return -Number(expression.operand.text);
+  }
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (expression.kind === ts.SyntaxKind.NullKeyword) return null;
+  if (ts.isArrayLiteralExpression(expression)) {
+    return expression.elements.map((element) => {
+      if (ts.isSpreadElement(element)) {
+        throw new Error(`${label} cannot use spreads`);
+      }
+      return staticJsonValue(element, label);
+    });
+  }
+  if (ts.isObjectLiteralExpression(expression)) {
+    const value: Record<string, unknown> = {};
+    for (const property of expression.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        throw new Error(`${label} cannot use methods or spreads`);
+      }
+      value[staticPropertyName(property.name, label)] = staticJsonValue(
+        property.initializer,
+        label,
+      );
+    }
+    return value;
+  }
+  throw new Error(`${label} must be a static JSON value`);
+}
+
+function scheduleDefinition(
+  source: string,
+  path: string,
+  agentId: string,
+): ScheduleDefinitionManifest {
+  const call = defaultExportCall(source, path, "defineSchedule");
+  const input = call.arguments[0];
+  if (!input || !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${path} defineSchedule() requires an object literal`);
+  }
+  const id = literalStringValue(objectProperty(input, "id"), `${path} schedule id`);
+  if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
+    throw new Error(`${path} filename must match its valid schedule id`);
+  }
+  const cron = literalStringValue(objectProperty(input, "cron"), `${path} cron`)
+    .trim()
+    .replace(/\s+/g, " ");
+  if (cron.split(" ").length !== 5) {
+    throw new Error(`${path} cron must contain exactly five fields`);
+  }
+  const timezoneExpression = objectProperty(input, "timezone");
+  const timezone = timezoneExpression
+    ? literalStringValue(timezoneExpression, `${path} timezone`)
+    : "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+  } catch {
+    throw new Error(`${path} timezone must be a valid IANA timezone`);
+  }
+  try {
+    new Cron(cron, { timezone, paused: true });
+  } catch {
+    throw new Error(`${path} cron is invalid`);
+  }
+  const enabledExpression = objectProperty(input, "enabled");
+  const enabled = [
+    ...new Set(
+      enabledExpression
+        ? literalStringArray(enabledExpression, `${path} enabled environments`)
+        : ["production"],
+    ),
+  ].sort();
+  if (
+    !enabled.length ||
+    enabled.some(
+      (environment) =>
+        environment !== "development" && environment !== "production",
+    )
+  ) {
+    throw new Error(`${path} enabled environments are invalid`);
+  }
+  const overlapExpression = objectProperty(input, "overlap");
+  const overlap = overlapExpression
+    ? literalStringValue(overlapExpression, `${path} overlap`)
+    : "skip";
+  if (overlap !== "skip" && overlap !== "allow") {
+    throw new Error(`${path} overlap must be "skip" or "allow"`);
+  }
+  const dispatchExpression = objectProperty(input, "dispatch");
+  if (!dispatchExpression || !ts.isObjectLiteralExpression(dispatchExpression)) {
+    throw new Error(`${path} dispatch must be an object literal`);
+  }
+  const textExpression = objectProperty(dispatchExpression, "text");
+  const text = textExpression
+    ? literalStringValue(textExpression, `${path} dispatch text`).trim()
+    : undefined;
+  const payloadExpression = objectProperty(dispatchExpression, "payload");
+  const payload = payloadExpression
+    ? staticJsonValue(payloadExpression, `${path} dispatch payload`)
+    : undefined;
+  if (!text && payload === undefined) {
+    throw new Error(`${path} dispatch requires text or payload`);
+  }
+  if (payload !== undefined && JSON.stringify(payload).length > 32 * 1024) {
+    throw new Error(`${path} dispatch payload cannot exceed 32 KiB`);
+  }
+  return {
+    id,
+    agentId,
+    cron,
+    timezone,
+    enabled: enabled as ScheduleDefinitionManifest["enabled"],
+    overlap,
+    dispatch: {
+      ...(text ? { text } : {}),
+      ...(payload === undefined ? {} : { payload }),
+    },
+  };
+}
+
 async function typescriptFiles(directory: string): Promise<string[]> {
   if (!(await exists(directory))) return [];
   return (await readdir(directory, { withFileTypes: true }))
@@ -1156,6 +1298,7 @@ export async function readProjectResources(
   const agents = await readProjectAgents(projectRoot);
   const channelRegistrations: ChannelRegistrationManifest[] = [];
   const outboxRegistrations: OutboxRegistrationManifest[] = [];
+  const schedules: ScheduleDefinitionManifest[] = [];
   for (const agent of agents) {
     for (const path of await typescriptFiles(resolve(agent.root, "channels"))) {
       channelRegistrations.push(
@@ -1177,6 +1320,15 @@ export async function readProjectResources(
         ),
       );
     }
+    for (const path of await typescriptFiles(resolve(agent.root, "schedules"))) {
+      schedules.push(
+        scheduleDefinition(await readFile(path, "utf8"), path, agent.localId),
+      );
+    }
+  }
+  const scheduleKeys = schedules.map(({ agentId, id }) => `${agentId}:${id}`);
+  if (new Set(scheduleKeys).size !== scheduleKeys.length) {
+    throw new Error("Agent schedule IDs must be unique within each agent");
   }
   const manifest: ProjectResourceManifest = {
     version: 1,
@@ -1187,6 +1339,9 @@ export async function readProjectResources(
     outboxes: outboxDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
     outboxRegistrations: outboxRegistrations.sort((left, right) =>
       `${left.outboxId}:${left.agentId}`.localeCompare(`${right.outboxId}:${right.agentId}`),
+    ),
+    schedules: schedules.sort((left, right) =>
+      `${left.agentId}:${left.id}`.localeCompare(`${right.agentId}:${right.id}`),
     ),
   };
   const serialized = JSON.stringify(manifest);

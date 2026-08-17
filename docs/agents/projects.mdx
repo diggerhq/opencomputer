@@ -20,7 +20,8 @@ my-agent/
 │       └── hello-world/
 │           ├── agent.ts
 │           ├── tools/       # optional
-│           └── skills/      # optional
+│           ├── skills/      # optional
+│           └── schedules/   # optional
 ├── src/
 │   ├── App.tsx
 │   └── main.tsx
@@ -97,6 +98,7 @@ The current project dashboard provides:
 - **Agent playground** for creating and resuming test sessions
 - **Deployments** for immutable version history and active aliases
 - **Sessions** created through the dashboard, React client, or API
+- **Schedules** deployed from each agent's source directory
 - **Secrets** for write-only project and agent credentials
 
 Project and agent behavior remains code-owned. The dashboard is for selection,

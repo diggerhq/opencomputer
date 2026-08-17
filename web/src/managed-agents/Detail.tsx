@@ -67,6 +67,7 @@ import {
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
+import { ManagedAgentSchedules } from './Schedules'
 
 type DetailTab =
   | 'playground'
@@ -1111,11 +1112,12 @@ export default function ManagedAgentDetail({
         />
       ) : null}
 
-      {activeTab === 'schedules' && project ? (
-        <ProjectResourcePanel
-          title="Schedules"
-          description="Functions in this project that run on a cron schedule."
-          values={project.schedules}
+      {activeTab === 'schedules' && project && agent ? (
+        <ManagedAgentSchedules
+          projectId={project.project.id}
+          agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
         />
       ) : null}
 
@@ -1127,35 +1129,5 @@ export default function ManagedAgentDetail({
         />
       ) : null}
     </div>
-  )
-}
-
-function ProjectResourcePanel({
-  title,
-  description,
-  values,
-}: {
-  title: string
-  description: string
-  values: unknown[]
-}) {
-  return (
-    <Panel>
-      <PanelHeader>
-        <div>
-          <PanelTitle>{title}</PanelTitle>
-          <PanelDescription className="mt-1">{description}</PanelDescription>
-        </div>
-      </PanelHeader>
-      <PanelContent>
-        {values.length ? (
-          <pre className="bg-muted overflow-x-auto rounded-md border p-4 text-xs leading-5">
-            {JSON.stringify(values.length === 1 ? values[0] : values, null, 2)}
-          </pre>
-        ) : (
-          <p className="text-muted-foreground text-sm">Nothing here yet.</p>
-        )}
-      </PanelContent>
-    </Panel>
   )
 }
