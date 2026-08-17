@@ -28,6 +28,7 @@ export { PoolStock } from "./pool_stock";
 // VM WebSockets.
 import { coloGet, coloPut } from "./colo_cache";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
+import { reconcileEvalRuns } from "./evals";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
   receiveAgentSecurityNotification,
@@ -3830,6 +3831,10 @@ export default {
     // Cross-cell paused-cap enforcement runs regardless of billing config.
     ctx.waitUntil(
       runPausedCapEnforcer(env).catch((err) => console.error("paused-cap: run failed", err)),
+    );
+    // Resume any in-flight eval runs (backstop for the request-time kick). Billing-independent.
+    ctx.waitUntil(
+      reconcileEvalRuns(env).catch((err) => console.error("evals: reconcile failed", err)),
     );
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(

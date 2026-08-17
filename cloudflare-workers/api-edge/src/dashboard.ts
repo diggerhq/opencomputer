@@ -31,6 +31,7 @@ import {
   acknowledgeAgentSecurityNotification,
   listAgentSecurityNotifications,
 } from "./agent_security_notifications";
+import { handleEvals } from "./evals";
 import { createAPIKey } from "./api_keys";
 import { proxyManagedAgents } from "./managed_agents";
 
@@ -162,7 +163,7 @@ async function mintCellCapToken(secret: string, orgID: string, cellID: string, p
 // OC_ORG_TOKEN_SECRET (shared with sessions-api). /v3 trusts it and sets owner =
 // the asserted org — same "act for org X" shape as the cell cap-token, so no
 // osb_ key reaches the browser and /v3 never custodies a customer key.
-async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
+export async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload: Record<string, unknown> = {
@@ -943,7 +944,7 @@ async function proxyToBrowserAPI(
 export async function handleDashboard(
   req: Request,
   env: DashboardEnv,
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
   path: string,
 ): Promise<Response> {
   const caller = await authDashboard(req, env);
@@ -969,6 +970,11 @@ export async function handleDashboard(
   // workspace; org-scoping is a later refinement.)
   if (sub === "/v3" || sub.startsWith("/v3/")) {
     return proxyToV3(req, env, caller, sub);
+  }
+
+  // ── Evals (edge-owned, D1-backed; the runner drives /v3 to run the agent) ──
+  if (sub === "/evals" || sub.startsWith("/evals/")) {
+    return handleEvals(req, env, caller, ctx, sub, method);
   }
 
   // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
