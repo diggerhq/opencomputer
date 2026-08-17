@@ -483,6 +483,110 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("lists schedules and exposes only a public run failure", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          accountId: "private_org",
+          schedules: [
+            {
+              id: "weekday-hygiene",
+              projectId: "prj_test",
+              environment: "development",
+              agentId: "hygiene-agent",
+              deploymentId: "hygiene-agent:digest",
+              cron: "0 9 * * 1-5",
+              timezone: "America/Los_Angeles",
+              overlap: "skip",
+              dispatch: { text: "Review flags", payload: { mode: "async" } },
+              nextRunAt: "2026-08-17T16:00:00.000Z",
+              status: "manual",
+              userId: "private_user",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            run: {
+              id: "run_test",
+              scheduleId: "weekday-hygiene",
+              projectId: "prj_test",
+              environment: "development",
+              deploymentId: "hygiene-agent:digest",
+              scheduledAt: "2026-08-16T20:00:00.000Z",
+              manual: true,
+              attempt: 1,
+              outcome: "failed",
+              error: "Runtime secret and topology details",
+              createdAt: "2026-08-16T20:00:00.000Z",
+            },
+          },
+          { status: 201 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const schedules = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/schedules?projectId=prj_test&agentId=hygiene-agent&environment=development",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(await schedules.json()).toEqual({
+      schedules: [
+        {
+          id: "weekday-hygiene",
+          projectId: "prj_test",
+          environment: "development",
+          agentId: "hygiene-agent",
+          deploymentId: "hygiene-agent:digest",
+          cron: "0 9 * * 1-5",
+          timezone: "America/Los_Angeles",
+          overlap: "skip",
+          dispatch: { text: "Review flags", payload: { mode: "async" } },
+          nextRunAt: "2026-08-17T16:00:00.000Z",
+          status: "manual",
+        },
+      ],
+    });
+
+    const run = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/schedules/weekday-hygiene/run?projectId=prj_test&agentId=hygiene-agent&environment=development",
+        { method: "POST" },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(run.status).toBe(201);
+    expect(await run.json()).toEqual({
+      run: {
+        id: "run_test",
+        scheduleId: "weekday-hygiene",
+        projectId: "prj_test",
+        environment: "development",
+        deploymentId: "hygiene-agent:digest",
+        scheduledAt: "2026-08-16T20:00:00.000Z",
+        manual: true,
+        attempt: 1,
+        outcome: "failed",
+        error: "The scheduled run could not be started.",
+        createdAt: "2026-08-16T20:00:00.000Z",
+      },
+    });
+  });
+
   it("returns a public per-agent Slack manifest", async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       Response.json({

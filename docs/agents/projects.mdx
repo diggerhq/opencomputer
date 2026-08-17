@@ -24,7 +24,8 @@ my-agent/
 │           ├── channels/    # optional inbound registrations
 │           ├── outboxes/    # optional publish registrations
 │           ├── tools/       # optional
-│           └── skills/      # optional
+│           ├── skills/      # optional
+│           └── schedules/   # optional
 ├── src/
 │   ├── App.tsx
 │   └── main.tsx
@@ -103,6 +104,7 @@ The current project dashboard provides:
 - **Agent playground** for creating and resuming test sessions
 - **Deployments** for immutable version history and active aliases
 - **Sessions** created through the dashboard, React client, or API
+- **Schedules** deployed from each agent's source directory
 - **Channels** for environment-specific Slack installation and destination
   binding
 - **Outboxes** for inspecting proactive notification delivery

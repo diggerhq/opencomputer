@@ -273,6 +273,42 @@ function publicOutbox(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicSchedule(value: unknown): Record<string, unknown> {
+  const schedule = record(value) ?? {};
+  return {
+    id: schedule.id,
+    projectId: schedule.projectId,
+    environment: schedule.environment,
+    agentId: schedule.agentId,
+    deploymentId: schedule.deploymentId,
+    cron: schedule.cron,
+    timezone: schedule.timezone,
+    overlap: schedule.overlap,
+    dispatch: stripPrivateValues(schedule.dispatch),
+    nextRunAt: schedule.nextRunAt,
+    lastRunAt: schedule.lastRunAt,
+    status: schedule.status,
+  };
+}
+
+function publicScheduleRun(value: unknown): Record<string, unknown> {
+  const run = record(value) ?? {};
+  return {
+    id: run.id,
+    scheduleId: run.scheduleId,
+    projectId: run.projectId,
+    environment: run.environment,
+    deploymentId: run.deploymentId,
+    scheduledAt: run.scheduledAt,
+    manual: run.manual,
+    attempt: run.attempt,
+    outcome: run.outcome,
+    sessionId: run.sessionId,
+    ...(run.error ? { error: "The scheduled run could not be started." } : {}),
+    createdAt: run.createdAt,
+  };
+}
+
 function stripPrivateValues(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripPrivateValues);
   const source = record(value);
@@ -435,6 +471,21 @@ function publicSuccessBody(
         ? body.outboxes.map(publicOutbox)
         : [],
     };
+  }
+  if (method === "GET" && suffix === "/schedules") {
+    return {
+      schedules: Array.isArray(body.schedules)
+        ? body.schedules.map(publicSchedule)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/schedule-runs") {
+    return {
+      runs: Array.isArray(body.runs) ? body.runs.map(publicScheduleRun) : [],
+    };
+  }
+  if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix)) {
+    return { run: publicScheduleRun(body.run) };
   }
   if (method === "POST" && suffix === "/channels/slack/connections") {
     return {
@@ -672,6 +723,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && suffix === "/outboxes") return true;
+  if (method === "GET" && suffix === "/schedules") return true;
+  if (method === "GET" && suffix === "/schedule-runs") return true;
+  if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix)) return true;
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||

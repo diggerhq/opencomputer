@@ -5,6 +5,7 @@ import {
   Moon,
   Clock,
   Loader2,
+  Play,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -27,8 +28,10 @@ const STATUS: Record<string, Meta> = {
   running: { tone: 'running', label: 'Running', icon: CircleCheck },
   ready: { tone: 'running', label: 'Ready', icon: CircleCheck },
   active: { tone: 'running', label: 'Active', icon: CircleCheck },
+  manual: { tone: 'hibernated', label: 'Manual only', icon: Play },
   connected: { tone: 'running', label: 'Connected', icon: CircleCheck },
   success: { tone: 'running', label: 'Success', icon: CircleCheck },
+  enacted: { tone: 'running', label: 'Session started', icon: CircleCheck },
   resolved: { tone: 'running', label: 'Resolved', icon: CircleCheck },
   stopped: { tone: 'stopped', label: 'Stopped', icon: CircleSlash },
   disconnected: {
