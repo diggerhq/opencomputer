@@ -1,0 +1,103 @@
+---
+title: "Outboxes"
+description: "Publish durable notifications from agents to Slack"
+---
+
+An outbox is a code-defined, durable route for proactive notifications. The
+agent publishes provider-neutral content; OpenComputer stores it first and
+delivers it asynchronously through the configured channel destination.
+
+## Define an outbox
+
+Create a project-level outbox under `opencomputer/outboxes/`:
+
+```tsx opencomputer/outboxes/review-requests.ts
+import { defineOutbox } from "@opencomputer/agent";
+import teamSlack from "../channels/team-slack.js";
+
+export default defineOutbox({
+  id: "review-requests",
+  delivery: {
+    channel: teamSlack,
+    destination: "pull-request-reviews",
+  },
+});
+```
+
+The referenced destination must exist on the channel. The filename must match
+the outbox `id`.
+
+An outbox currently has one exact route: one channel resource and one named
+destination. It does not select a fallback destination or fan a publication
+out to several providers.
+
+## Authorize an agent
+
+Register the outbox under every agent that may publish through it:
+
+```tsx opencomputer/agents/reviewer/outboxes/review-requests.ts
+import { registerOutbox } from "@opencomputer/agent";
+import reviewRequests from "../../../outboxes/review-requests.js";
+
+export default registerOutbox(reviewRequests);
+```
+
+Inbound channel registration and outbound outbox registration are independent.
+For example, a scheduled agent can publish to Slack without receiving Slack
+mentions.
+
+## Publish a notification
+
+Publish from a code-defined tool or another effectful agent operation:
+
+```tsx
+import { defineTool, publishOutbox } from "@opencomputer/agent";
+
+export const notifyReviewer = defineTool({
+  name: "notify_reviewer",
+  description: "Notify the team that a pull request is ready",
+  async run() {
+    return publishOutbox("review-requests", {
+      type: "pull-request.review-requested",
+      content: {
+        title: "Pull request ready for review",
+        body: "A reviewer was requested on GitHub.",
+        url: "https://github.com/acme/widgets/pull/42",
+      },
+      idempotencyKey: "acme/widgets#42:review-requested",
+    });
+  },
+});
+```
+
+`type` is a lowercase dot-notation event name. `content` must be
+JSON-compatible. `idempotencyKey` identifies this publication within the
+project environment and outbox; reuse it when retrying the same logical event.
+
+Publishing returns after the item is durably stored. Slack delivery continues
+outside the agent runtime, so a transient Slack failure does not extend or
+repeat the producing turn.
+
+## Inspect delivery
+
+Select an environment and open **Outboxes** in the project dashboard. The list
+shows each declared outbox, its exact channel and destination, binding
+readiness, recent items, delivery status, source session when recorded, and
+redacted errors.
+
+Delivery records are isolated by environment. A Development publication cannot
+use Production credentials or appear in Production history.
+
+## Current limits
+
+- An outbox delivers to one Slack conversation.
+- One publish does not fan out to Slack, Discord, SMS, or several Slack
+  conversations. Define and publish to separate outboxes when you need separate
+  routes.
+- Outboxes do not resolve GitHub users to Slack users and cannot send a direct
+  message to a reviewer.
+- The initial Slack renderer supports provider-neutral text-oriented content;
+  Slack-specific Block Kit definitions are not part of the authoring API.
+
+See [Slack channels](/agents/channels) for app installation, scopes, and
+destination binding.

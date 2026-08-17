@@ -43,6 +43,8 @@
               "agents/sessions",
               "agents/schedules",
               "agents/capabilities",
+              "agents/channels",
+              "agents/outboxes",
               "agents/secrets"
             ]
           },
