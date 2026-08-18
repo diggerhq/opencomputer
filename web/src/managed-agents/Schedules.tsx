@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { notifyError } from '@/lib/errors'
+import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   getManagedAgentScheduleRuns,
   getManagedAgentSchedules,
@@ -61,7 +61,18 @@ export function ManagedAgentSchedules({
   const runNow = useMutation({
     mutationFn: (scheduleId: string) =>
       runManagedAgentSchedule(projectId, agentId, environment, scheduleId),
-    onSuccess: async () => {
+    onSuccess: async (run) => {
+      if (run.outcome === 'enacted') {
+        notifySuccess(
+          'Schedule run started.',
+          run.sessionId ? `Session ${run.sessionId}` : undefined,
+        )
+      } else {
+        notifyError(
+          `Schedule run ${run.outcome}.`,
+          run.error ? new Error(run.error) : undefined,
+        )
+      }
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: [
