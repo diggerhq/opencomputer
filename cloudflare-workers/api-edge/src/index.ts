@@ -43,6 +43,7 @@ import {
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
+import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -4084,6 +4085,14 @@ export default {
     // Cross-cell paused-cap enforcement runs regardless of billing config.
     ctx.waitUntil(
       runPausedCapEnforcer(env).catch((err) => console.error("paused-cap: run failed", err)),
+    );
+    // Telemetry retention, also regardless of billing config. D1 caps a database
+    // at 10 GB with no way to raise it, and when events/usage_samples reach it
+    // EVERY insert fails — including the capacity heartbeat, which freezes
+    // cells.capacity_updated_at and takes every create in the region down with
+    // "no cells available with capacity". See retention.ts.
+    ctx.waitUntil(
+      runRetentionSweep(env).catch((err) => console.error("retention: run failed", err)),
     );
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(

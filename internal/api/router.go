@@ -825,6 +825,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// local SQLite; without this half nothing ever reads it, and the
 		// sandboxes run free while every log line says billing is working.
 		mvm.StartEventPublisher(context.Background(), s.sandboxDBs, s.redisClient, s.cellID, s.store)
+		// Release suspended boxes once their archive is durable. Without this a
+		// hibernation holds regional memory quota — the ceiling on warm-pool
+		// depth — for the whole life of the box rather than the 10 minutes it
+		// is actually useful as a fast-wake cache.
+		mvm.StartHibernationExpiry(context.Background(), s.store)
 		// Capacity, but only when no registry-backed reporter is publishing it
 		// already — two writers on one stream would alternate between MicroVM
 		// depth and worker counts, flapping the cell in and out of the edge's
@@ -847,6 +852,12 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if wb := newWorkerBackend(s.workerRegistry); wb != nil && !s.workersDisabled {
 		s.registerBackend(wb)
 	}
+
+	// Free hibernation archives no wake can reach. Deliberately outside the
+	// backend blocks above: this is about blobs, not runtimes, and the archives
+	// that piled up were written by the QEMU path. Gating it on a backend would
+	// have left the leak running on the cells that caused it.
+	s.StartHibernationReclaim(context.Background())
 
 	return s
 }

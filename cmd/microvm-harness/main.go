@@ -37,8 +37,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awsTypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
 	"github.com/gorilla/websocket"
 	"github.com/opensandbox/opensandbox/internal/awsvm"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -51,15 +53,17 @@ const (
 
 func main() {
 	var (
-		image    = flag.String("image", os.Getenv("MICROVM_IMAGE_ARN"), "MicroVM image ARN or name (required)")
-		role     = flag.String("role", os.Getenv("MICROVM_EXECUTION_ROLE_ARN"), "execution role ARN assumed by the guest")
-		region   = flag.String("region", envOr("AWS_REGION", "us-east-1"), "AWS region")
-		stock    = flag.Int("stock", 5, "warm pool depth to fill before claiming")
-		burst    = flag.Int("burst", 5, "how many sandboxes to claim+exec simultaneously")
-		command  = flag.String("cmd", "node -v", "command to exec in each sandbox")
-		fillWait = flag.Duration("fill-timeout", 5*time.Minute, "how long to wait for the pool to fill")
-		keep     = flag.Bool("keep", false, "leave MicroVMs running on exit (for manual poking)")
-		probe    = flag.Bool("probe", false, "instead of exec, probe plain HTTP /healthz on the hook port to isolate proxy reachability from gRPC")
+		image     = flag.String("image", os.Getenv("MICROVM_IMAGE_ARN"), "MicroVM image ARN or name (required)")
+		role      = flag.String("role", os.Getenv("MICROVM_EXECUTION_ROLE_ARN"), "execution role ARN assumed by the guest")
+		region    = flag.String("region", envOr("AWS_REGION", "us-east-1"), "AWS region")
+		stock     = flag.Int("stock", 5, "warm pool depth to fill before claiming")
+		burst     = flag.Int("burst", 5, "how many sandboxes to claim+exec simultaneously")
+		command   = flag.String("cmd", "node -v", "command to exec in each sandbox")
+		fillWait  = flag.Duration("fill-timeout", 5*time.Minute, "how long to wait for the pool to fill")
+		keep      = flag.Bool("keep", false, "leave MicroVMs running on exit (for manual poking)")
+		lifecycle = flag.Int("lifecycle-mb", 0, "run the hibernate/wake lifecycle sim with an N-MB workspace")
+		resumeB   = flag.Bool("resume-bench", false, "measure suspend/resume: how long a hibernated box takes to become usable again")
+		probe     = flag.Bool("probe", false, "instead of exec, probe plain HTTP /healthz on the hook port to isolate proxy reachability from gRPC")
 		// Defaults to the hook port: Lambda forwards only there, and the hook
 		// server bridges to the agent. 8081 is kept reachable via this flag
 		// purely to re-demonstrate that a direct agent port returns 502.
@@ -121,6 +125,29 @@ func main() {
 
 	if *probe {
 		probeProxy(ctx, awsCfg, *region, *image, pool)
+		pool.Drain()
+		return
+	}
+
+	if *lifecycle > 0 {
+		st, sErr := storage.NewCheckpointStore(storage.S3Config{
+			Endpoint:        os.Getenv("OPENSANDBOX_S3_ENDPOINT"),
+			Bucket:          os.Getenv("OPENSANDBOX_S3_BUCKET"),
+			Region:          envOr("OPENSANDBOX_S3_REGION", "auto"),
+			AccessKeyID:     os.Getenv("OPENSANDBOX_S3_ACCESS_KEY"),
+			SecretAccessKey: os.Getenv("OPENSANDBOX_S3_SECRET_KEY"),
+			ForcePathStyle:  true,
+		})
+		if sErr != nil {
+			log.Fatalf("checkpoint store: %v", sErr)
+		}
+		runLifecycleSim(ctx, client, pool, mgr, st, *lifecycle)
+		pool.Drain()
+		return
+	}
+
+	if *resumeB {
+		runResumeBench(ctx, client, pool, mgr, *burst, *command)
 		pool.Drain()
 		return
 	}
@@ -434,4 +461,238 @@ func trim(s string) string {
 		s = s[:60] + "…"
 	}
 	return strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+}
+
+// ── suspend/resume ──────────────────────────────────────────────────────────
+
+// resumeResult is one box's wake timings.
+//
+// The three are separated because only the last one is what a customer feels.
+// ResumeMicrovm returning is not the same as the box being RUNNING, and RUNNING
+// is not the same as the agent answering — a wake design that quotes the API
+// call latency would understate the real number by whatever the tail costs.
+type resumeResult struct {
+	suspend   time.Duration // SuspendMicrovm call
+	resumeAPI time.Duration // ResumeMicrovm call returns
+	toRunning time.Duration // ...until GetMicrovm reports RUNNING
+	toExec    time.Duration // ...until an exec actually succeeds
+	err       error
+}
+
+// runResumeBench measures the cost of the fast-wake tier: claim boxes, warm
+// them, suspend them, then wake them and time how long until each is usable.
+//
+// This is the number the hibernation design turns on. If resume is close to a
+// cold create (~1.5s) there is little reason to hold a suspended box at all —
+// it consumes regional memory quota, which is the ceiling on pool depth — and
+// the tier should be dropped in favour of always exporting to blob. If resume
+// is much faster, the tier earns its quota.
+func runResumeBench(ctx context.Context, client *awsvm.Client, pool *awsvm.Pool, mgr *awsvm.Manager, n int, command string) {
+	log.Printf("resume-bench: claiming %d box(es)", n)
+	type box struct {
+		sandboxID string
+		microvmID string
+	}
+	boxes := make([]box, 0, n)
+	for i := 0; i < n; i++ {
+		e, ok := pool.Claim()
+		if !ok {
+			log.Printf("resume-bench: pool exhausted at %d", i)
+			break
+		}
+		sid := fmt.Sprintf("sb-resume-%d", i)
+		mgr.TrackClaimed(sid, e, types.SandboxConfig{SandboxID: sid})
+		boxes = append(boxes, box{sandboxID: sid, microvmID: e.MicrovmID})
+	}
+	if len(boxes) == 0 {
+		log.Printf("resume-bench: nothing claimed")
+		return
+	}
+
+	// Warm each channel first. Measuring a resume through a cold agent tunnel
+	// would fold the tunnel setup into the wake number and overstate it.
+	for _, b := range boxes {
+		if _, err := mgr.Exec(ctx, b.sandboxID, types.ProcessConfig{Command: "sh", Args: []string{"-c", command}}); err != nil {
+			log.Printf("resume-bench: warm exec %s: %v", b.sandboxID, err)
+		}
+	}
+
+	results := make([]resumeResult, len(boxes))
+	for i, b := range boxes {
+		var r resumeResult
+
+		t := time.Now()
+		if err := client.Suspend(ctx, b.microvmID); err != nil {
+			r.err = fmt.Errorf("suspend: %w", err)
+			results[i] = r
+			continue
+		}
+		r.suspend = time.Since(t)
+
+		// Wait for it to actually reach SUSPENDED, or we would be timing a
+		// resume against a box that never finished suspending.
+		for wait := time.Now(); time.Since(wait) < 60*time.Second; {
+			bx, err := client.Get(ctx, b.microvmID)
+			if err == nil && bx.State == awsTypes.MicrovmStateSuspended {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		t = time.Now()
+		if err := client.Resume(ctx, b.microvmID); err != nil {
+			r.err = fmt.Errorf("resume: %w", err)
+			results[i] = r
+			continue
+		}
+		r.resumeAPI = time.Since(t)
+
+		for wait := time.Now(); time.Since(wait) < 60*time.Second; {
+			bx, err := client.Get(ctx, b.microvmID)
+			if err == nil && bx.State == awsTypes.MicrovmStateRunning {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		r.toRunning = time.Since(t)
+
+		for wait := time.Now(); time.Since(wait) < 90*time.Second; {
+			if _, err := mgr.Exec(ctx, b.sandboxID, types.ProcessConfig{Command: "sh", Args: []string{"-c", "echo woke"}}); err == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		r.toExec = time.Since(t)
+		results[i] = r
+		log.Printf("  %s suspend=%s resumeAPI=%s toRunning=%s toExec=%s",
+			b.sandboxID, r.suspend.Round(time.Millisecond), r.resumeAPI.Round(time.Millisecond),
+			r.toRunning.Round(time.Millisecond), r.toExec.Round(time.Millisecond))
+	}
+
+	var suspends, apis, runnings, execs []time.Duration
+	for _, r := range results {
+		if r.err != nil {
+			log.Printf("resume-bench: %v", r.err)
+			continue
+		}
+		suspends = append(suspends, r.suspend)
+		apis = append(apis, r.resumeAPI)
+		runnings = append(runnings, r.toRunning)
+		execs = append(execs, r.toExec)
+	}
+	log.Printf("── resume-bench (n=%d) ──", len(execs))
+	printStats("SuspendMicrovm call", suspends)
+	printStats("ResumeMicrovm call", apis)
+	printStats("resume -> RUNNING", runnings)
+	printStats("resume -> exec OK", execs)
+
+	for _, b := range boxes {
+		_ = mgr.Kill(context.WithoutCancel(ctx), b.sandboxID)
+	}
+}
+
+// ── hibernate/wake lifecycle ────────────────────────────────────────────────
+
+// runLifecycleSim measures the full hibernation cycle against real MicroVMs:
+// claim a box, write a workspace of a known size, hibernate it (export+upload+
+// suspend), then wake it both ways and check the files actually came back.
+//
+// It exists to settle the one number the hibernation design still turns on:
+// what a blob restore costs. Resume measured ~1.04s and a pooled claim ~0ms, so
+// if restore is cheap the suspended tier is buying almost nothing and can be
+// dropped; if it is expensive the tier earns the regional memory quota it
+// holds. No amount of reasoning settles that — only the archive round trip on
+// a realistic workspace does.
+func runLifecycleSim(ctx context.Context, client *awsvm.Client, pool *awsvm.Pool, mgr *awsvm.Manager,
+	store *storage.CheckpointStore, sizeMB int) {
+
+	e, ok := pool.Claim()
+	if !ok {
+		log.Printf("lifecycle: pool empty")
+		return
+	}
+	sid := "sb-lifecycle"
+	mgr.TrackClaimed(sid, e, types.SandboxConfig{SandboxID: sid})
+	defer func() { _ = mgr.Kill(context.WithoutCancel(ctx), sid) }()
+
+	// A known payload, so the restore can be verified rather than assumed. A
+	// wake that silently returns an empty workspace is the failure this whole
+	// design exists to prevent, and it would look identical to success.
+	log.Printf("lifecycle: seeding %dMB workspace", sizeMB)
+	seed := time.Now()
+	if _, err := mgr.Exec(ctx, sid, types.ProcessConfig{Command: "sh", Args: []string{"-c",
+		fmt.Sprintf("mkdir -p %s/data && head -c %d /dev/urandom > %s/data/blob.bin && "+
+			"echo canary-12345 > %s/data/canary.txt && sha256sum %s/data/blob.bin | cut -d' ' -f1",
+			workspaceGuestDir, sizeMB<<20, workspaceGuestDir, workspaceGuestDir, workspaceGuestDir)},
+	}); err != nil {
+		log.Printf("lifecycle: seed failed: %v", err)
+		return
+	}
+	log.Printf("  seeded in %s", time.Since(seed).Round(time.Millisecond))
+
+	// Hibernate: tar + upload + suspend.
+	t := time.Now()
+	res, err := mgr.Hibernate(ctx, sid, store)
+	if err != nil {
+		log.Printf("lifecycle: hibernate failed: %v", err)
+		return
+	}
+	hibDur := time.Since(t)
+	log.Printf("  hibernate (tar+upload+suspend): %s  archive=%dB key=%s",
+		hibDur.Round(time.Millisecond), res.SizeBytes, res.HibernationKey)
+
+	// Wake A — the box is still suspended, so this is the fast tier.
+	t = time.Now()
+	if _, err := mgr.Wake(ctx, sid, res.HibernationKey, store, 0); err != nil {
+		log.Printf("lifecycle: fast wake failed: %v", err)
+		return
+	}
+	fastWake := time.Since(t)
+	verify(ctx, mgr, sid, "fast wake")
+	log.Printf("  WAKE (resume, box alive): %s", fastWake.Round(time.Millisecond))
+
+	// Now retire the box the way the expiry sweep would, and wake from blob
+	// alone. This is the tier a sandbox lands in after the dwell.
+	if err := client.Terminate(ctx, e.MicrovmID); err != nil {
+		log.Printf("lifecycle: terminate for deep-wake test: %v", err)
+		return
+	}
+	mgr.Forget(sid)
+
+	t = time.Now()
+	if _, err := mgr.Wake(ctx, sid, res.HibernationKey, store, 0); err != nil {
+		log.Printf("lifecycle: deep wake failed: %v", err)
+		return
+	}
+	deepWake := time.Since(t)
+	ok2 := verify(ctx, mgr, sid, "deep wake")
+	log.Printf("  WAKE (restore from blob): %s  filesIntact=%v", deepWake.Round(time.Millisecond), ok2)
+
+	log.Printf("── lifecycle (%dMB workspace) ──", sizeMB)
+	log.Printf("  hibernate      %s", hibDur.Round(time.Millisecond))
+	log.Printf("  wake resume    %s", fastWake.Round(time.Millisecond))
+	log.Printf("  wake restore   %s", deepWake.Round(time.Millisecond))
+	log.Printf("  delta          %s  (what the suspended tier buys)", (deepWake - fastWake).Round(time.Millisecond))
+}
+
+// workspaceGuestDir mirrors awsvm's workspaceDir; the harness cannot import an
+// unexported constant, and hardcoding it here means a divergence shows up as a
+// failed verification rather than a silent no-op.
+const workspaceGuestDir = "/home/sandbox"
+
+// verify checks the canary survived the round trip. Size alone proves nothing:
+// an empty archive restores "successfully" and reports a plausible duration.
+func verify(ctx context.Context, mgr *awsvm.Manager, sid, label string) bool {
+	res, err := mgr.Exec(ctx, sid, types.ProcessConfig{Command: "sh", Args: []string{"-c",
+		fmt.Sprintf("cat %s/data/canary.txt 2>/dev/null; stat -c %%s %s/data/blob.bin 2>/dev/null",
+			workspaceGuestDir, workspaceGuestDir)}})
+	if err != nil {
+		log.Printf("  %s: verify exec failed: %v", label, err)
+		return false
+	}
+	if !strings.Contains(res.Stdout, "canary-12345") {
+		log.Printf("  %s: CANARY MISSING — workspace did not survive: %q", label, trim(res.Stdout))
+		return false
+	}
+	return true
 }

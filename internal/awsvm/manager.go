@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -205,9 +206,15 @@ func (m *Manager) Get(ctx context.Context, id string) (*types.Sandbox, error) {
 	}, nil
 }
 
-// statusFor maps MicroVM lifecycle onto our sandbox status. SUSPENDED reads as
-// hibernated: state is preserved and auto-resume brings it back on demand,
-// which is exactly our paused-hibernation contract.
+// statusFor maps MicroVM lifecycle onto our sandbox status.
+//
+// SUSPENDED reads as RUNNING, not hibernated: the box is alive and auto-resume
+// brings it back on the next request, so callers must keep treating it as
+// serving. Reporting it as hibernated would make the reconciler's liveness
+// check close a row whose box is fine.
+//
+// Only TERMINATING/TERMINATED read as stopped. That distinction is what the
+// reconciler keys on to decide whether a row still has a host behind it.
 func statusFor(b *Box) types.SandboxStatus {
 	switch {
 	case b == nil:
@@ -454,34 +461,130 @@ func (m *Manager) ContainerAddr(ctx context.Context, sandboxID string, port int)
 
 // ── Hibernation ─────────────────────────────────────────────────────────────
 
-// Hibernate suspends the MicroVM. AWS snapshots memory and disk itself, so
-// there is no checkpoint to upload and no key to hand back — which is why
-// SizeBytes is 0 and the store argument is ignored.
-func (m *Manager) Hibernate(ctx context.Context, sandboxID string, _ *storage.CheckpointStore) (*sandbox.HibernateResult, error) {
+// Hibernate captures the workspace to blob storage, then suspends the box.
+//
+// The order is the whole design. Exporting BEFORE suspending means the archive
+// is produced by a running box, so no ResumeMicrovm is ever needed to make one
+// — which matters because Resume is rate-limited at 5/s and boxes created
+// together expire together. Once the blob exists the suspended box is a pure
+// latency cache: it can be terminated at any moment without losing anything but
+// wake speed, which is what lets the expiry sweep free regional memory quota
+// aggressively.
+//
+// Suspending first and exporting later would invert all of that: every
+// promotion would need a Resume, and there would be a window where the box is
+// suspended and no durable copy exists yet — a wake during that window has
+// nothing to restore from.
+func (m *Manager) Hibernate(ctx context.Context, sandboxID string, store *storage.CheckpointStore) (*sandbox.HibernateResult, error) {
 	e, err := m.lookup(sandboxID)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.client.Suspend(ctx, e.microvmID); err != nil {
+	if store == nil {
+		return nil, fmt.Errorf("awsvm: hibernate %s: no checkpoint store configured", sandboxID)
+	}
+
+	rc, _, err := m.ExportWorkspace(ctx, sandboxID)
+	if err != nil {
 		return nil, err
 	}
-	return &sandbox.HibernateResult{SandboxID: sandboxID, HibernationKey: e.microvmID}, nil
+	defer rc.Close()
+
+	// Spool to disk: the store uploads from a path, not a stream.
+	local, size, err := stageArchive(rc, m.dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("awsvm: hibernate %s: stage archive: %w", sandboxID, err)
+	}
+	defer os.Remove(local)
+
+	key := hibernationKey(sandboxID)
+	uploaded, err := store.Upload(ctx, key, local)
+	if err != nil {
+		return nil, fmt.Errorf("awsvm: hibernate %s: upload: %w", sandboxID, err)
+	}
+	if uploaded > 0 {
+		size = uploaded
+	}
+
+	// Only now is it safe to stop serving. A failure above leaves the box
+	// running and the sandbox usable, which is the right way to fail.
+	if err := m.client.Suspend(ctx, e.microvmID); err != nil {
+		return nil, fmt.Errorf("awsvm: hibernate %s: suspend: %w", sandboxID, err)
+	}
+	return &sandbox.HibernateResult{SandboxID: sandboxID, HibernationKey: key, SizeBytes: size}, nil
 }
 
-// Wake resumes a suspended MicroVM. Callers that are about to send a request
-// could skip this and let auto-resume cover it, but waking explicitly keeps the
-// control plane's state machine honest about when the box became RUNNING.
-func (m *Manager) Wake(ctx context.Context, sandboxID string, _ string, _ *storage.CheckpointStore, _ int) (*types.Sandbox, error) {
-	e, err := m.lookup(sandboxID)
-	if err != nil {
-		return nil, err
+// Wake takes the fastest path that is still correct.
+//
+//	box SUSPENDED   Resume in place, ~1s, processes intact
+//	box gone        launch a replacement and restore the archive into it
+//
+// Callers do not choose: which tier a sandbox is in depends on how long it sat
+// and how quota pressure fell, neither of which the caller knows. Returning the
+// best available answer means a wake degrades in latency rather than failing.
+func (m *Manager) Wake(ctx context.Context, sandboxID, hibernationKey string, store *storage.CheckpointStore, _ int) (*types.Sandbox, error) {
+	// Still tracked and alive? Resume is strictly cheaper than a restore, and
+	// it keeps whatever the customer left running.
+	if e, err := m.lookup(sandboxID); err == nil {
+		if box, gErr := m.client.Get(ctx, e.microvmID); gErr == nil && box.Alive() {
+			if err := m.client.Resume(ctx, e.microvmID); err != nil {
+				return nil, fmt.Errorf("awsvm: wake %s: resume: %w", sandboxID, err)
+			}
+			// The cached gRPC channel did not survive the suspend: the proxy
+			// drops it, and reusing it fails the next call with an abnormal
+			// websocket close rather than anything that reads like "reconnect".
+			// Dropping it here makes the next use dial fresh.
+			m.agents.drop(sandboxID)
+			return &types.Sandbox{
+				ID: sandboxID, Template: e.template, Status: types.SandboxStatusRunning,
+				StartedAt: e.startedAt, CpuCount: e.cpuCount, MemoryMB: e.memoryMB,
+			}, nil
+		}
 	}
-	if err := m.client.Resume(ctx, e.microvmID); err != nil {
+
+	// The box is gone, so the archive is the sandbox now.
+	if store == nil || hibernationKey == "" {
+		return nil, fmt.Errorf("awsvm: wake %s: host is gone and no archive was recorded", sandboxID)
+	}
+	return m.restoreFromArchive(ctx, sandboxID, hibernationKey, store)
+}
+
+// restoreFromArchive launches a replacement box and unpacks the workspace into
+// it. Deliberately separate from Wake so the expensive path is legible.
+func (m *Manager) restoreFromArchive(ctx context.Context, sandboxID, key string, store *storage.CheckpointStore) (*types.Sandbox, error) {
+	rc, err := store.Download(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("awsvm: wake %s: download archive: %w", sandboxID, err)
+	}
+	defer rc.Close()
+
+	box, err := m.client.Run(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("awsvm: wake %s: launch replacement: %w", sandboxID, err)
+	}
+	ready, err := m.client.WaitRunning(ctx, box.ID, 60*time.Second)
+	if err != nil {
+		// Do not leak a box we cannot use: it bills and holds quota until the cap.
+		go func() { _ = m.client.Terminate(context.WithoutCancel(ctx), box.ID) }()
+		return nil, fmt.Errorf("awsvm: wake %s: replacement never became ready: %w", sandboxID, err)
+	}
+
+	cfg := types.SandboxConfig{SandboxID: sandboxID}
+	if e, lErr := m.lookup(sandboxID); lErr == nil {
+		cfg.MemoryMB, cfg.CpuCount = e.memoryMB, e.cpuCount
+	}
+	// Drop before tracking: the pooled connection is keyed by sandbox id, and
+	// this sandbox now lives on a different host entirely.
+	m.agents.drop(sandboxID)
+	m.Track(sandboxID, ready, cfg)
+
+	if err := m.ImportWorkspace(ctx, sandboxID, rc); err != nil {
+		go func() { _ = m.client.Terminate(context.WithoutCancel(ctx), ready.ID) }()
 		return nil, err
 	}
 	return &types.Sandbox{
-		ID: sandboxID, Template: e.template, Status: types.SandboxStatusRunning,
-		StartedAt: e.startedAt, CpuCount: e.cpuCount, MemoryMB: e.memoryMB,
+		ID: sandboxID, Status: types.SandboxStatusRunning, StartedAt: ready.StartedAt,
+		CpuCount: cfg.CpuCount, MemoryMB: cfg.MemoryMB,
 	}, nil
 }
 
@@ -620,4 +723,20 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 
 func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
 	return nil, unsupported("ForkFromCheckpoint")
+}
+
+// Forget drops a sandbox from the in-memory map without touching AWS.
+//
+// For a hibernation that has been retired to blob-only: the box is already
+// terminated, and leaving the binding behind would make Route claim the sandbox
+// is served in-process, sending the next request to a host that no longer
+// exists instead of down the restore path.
+func (m *Manager) Forget(sandboxID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.byID, sandboxID)
+	m.mu.Unlock()
+	m.agents.drop(sandboxID)
 }

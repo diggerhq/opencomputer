@@ -202,6 +202,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{52, "migrations/052_paused_hibernation_mode.up.sql"},
 		{53, "migrations/053_default_org_concurrency_50.up.sql"},
 		{54, "migrations/054_sandbox_pool.up.sql"},
+		{55, "migrations/055_hibernation_blob_reclaim.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -1935,12 +1936,143 @@ func (s *Store) GetActiveHibernation(ctx context.Context, sandboxID string) (*Sa
 }
 
 // MarkHibernationRestored marks the active hibernation for a sandbox as restored.
+//
+// This does not delete the archive, and deliberately so: the wake has just
+// finished and the sandbox is live, so the blob delete does not belong on the
+// wake's critical path. The row becomes reclaimable instead and the sweep in
+// internal/api/hibernation_reclaim.go frees the object out of band. Note that
+// from this moment the archive is already unreachable — GetActiveHibernation
+// matches only restored_at IS NULL — so nothing is keeping it alive but the
+// sweep's grace period.
 func (s *Store) MarkHibernationRestored(ctx context.Context, sandboxID string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE sandbox_hibernations SET restored_at = now()
 		 WHERE sandbox_id = $1 AND restored_at IS NULL AND expired_at IS NULL`,
 		sandboxID)
 	return err
+}
+
+// ReclaimableHibernation is a hibernation archive that no wake can reach,
+// queued for deletion from blob storage.
+type ReclaimableHibernation struct {
+	ID             uuid.UUID
+	SandboxID      string
+	HibernationKey string
+	SizeBytes      int64
+	// Reason is why this archive is dead, for the sweep's log. Operators
+	// reading "reclaimed 4000 archives" need to know which leak produced them.
+	Reason string
+}
+
+// reclaimTerminalStatuses lists the session statuses that mean a sandbox is
+// gone for good, so its archive can never be woken into anything.
+//
+// Kept as an explicit allow-list rather than "anything that is not hibernated":
+// this drives deletion, and an unrecognised status must fall through to "leave
+// it alone", not to "delete it". A sandbox that is paused, migrating, or in
+// some status added after this was written keeps its archive.
+//
+// TestReclaimTerminalStatusesMatchIsTerminal pins this against
+// isTerminalSessionStatus so the two cannot drift apart.
+var reclaimTerminalStatuses = []string{"stopped", "error", "failed", "terminated"}
+
+// ListReclaimableHibernations returns archives that are safe to delete from
+// blob storage, oldest first, bounded by limit.
+//
+// Three ways an archive dies, and none of them freed anything before this:
+//
+//   - restored: a wake consumed it. GetActiveHibernation filters on
+//     restored_at IS NULL, so the object is already unreachable by every code
+//     path — it is not a recovery copy.
+//   - expired: superseded by a newer hibernation. CreateHibernation hands the
+//     old key back for an inline delete, but that delete is best-effort and
+//     silent on failure, so this catches whatever it dropped.
+//   - orphaned: the sandbox reached a terminal status, or its session row is
+//     gone entirely. Nothing will ever wake it.
+//
+// The grace period is the safety margin. It is measured from hibernated_at
+// rather than from the event that killed the archive, because the risk being
+// bought off is an upload still in flight for a row this sweep is about to
+// delete underneath. Anything younger than the grace is left for a later tick.
+//
+// What is deliberately NOT selected: a row that is unrestored, unexpired, and
+// belongs to a live hibernated sandbox. That is the set a wake can still use,
+// and it is the whole reason this query is an allow-list of dead states rather
+// than a deny-list of live ones.
+func (s *Store) ListReclaimableHibernations(ctx context.Context, grace time.Duration, limit int) ([]ReclaimableHibernation, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	cutoff := time.Now().Add(-grace)
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT h.id, h.sandbox_id, h.hibernation_key, h.size_bytes,
+		        CASE
+		          WHEN h.restored_at IS NOT NULL THEN 'restored'
+		          WHEN h.expired_at IS NOT NULL  THEN 'superseded'
+		          WHEN s.sandbox_id IS NULL      THEN 'orphaned'
+		          ELSE 'terminal'
+		        END AS reason
+		   FROM sandbox_hibernations h
+		   LEFT JOIN sandbox_sessions s ON s.sandbox_id = h.sandbox_id
+		  WHERE h.blob_deleted_at IS NULL
+		    AND h.hibernated_at < $1
+		    AND (
+		          h.restored_at IS NOT NULL
+		       OR h.expired_at IS NOT NULL
+		       OR s.sandbox_id IS NULL
+		       OR s.status = ANY($2)
+		    )
+		  ORDER BY h.hibernated_at
+		  LIMIT $3`,
+		cutoff, reclaimTerminalStatuses, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list reclaimable hibernations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReclaimableHibernation
+	for rows.Next() {
+		var r ReclaimableHibernation
+		if err := rows.Scan(&r.ID, &r.SandboxID, &r.HibernationKey, &r.SizeBytes, &r.Reason); err != nil {
+			return nil, fmt.Errorf("scan reclaimable hibernation: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkHibernationBlobDeleted records that the archive is gone from blob
+// storage, which takes the row out of the sweep for good.
+//
+// Only ever called after a successful delete. Stamping it optimistically would
+// make a failed delete indistinguishable from a completed one and strand the
+// object forever — exactly the leak this whole path exists to fix.
+func (s *Store) MarkHibernationBlobDeleted(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_hibernations SET blob_deleted_at = now() WHERE id = $1`, id)
+	return err
+}
+
+// CountReclaimableHibernations reports how much is still queued for reclaim, so
+// the sweep can log a backlog that shrinks instead of a rate with no
+// denominator.
+func (s *Store) CountReclaimableHibernations(ctx context.Context, grace time.Duration) (count int64, bytes int64, err error) {
+	cutoff := time.Now().Add(-grace)
+	err = s.pool.QueryRow(ctx,
+		`SELECT count(*), COALESCE(SUM(h.size_bytes), 0)
+		   FROM sandbox_hibernations h
+		   LEFT JOIN sandbox_sessions s ON s.sandbox_id = h.sandbox_id
+		  WHERE h.blob_deleted_at IS NULL
+		    AND h.hibernated_at < $1
+		    AND (
+		          h.restored_at IS NOT NULL
+		       OR h.expired_at IS NOT NULL
+		       OR s.sandbox_id IS NULL
+		       OR s.status = ANY($2)
+		    )`,
+		cutoff, reclaimTerminalStatuses).Scan(&count, &bytes)
+	return count, bytes, err
 }
 
 // MarkHibernationUploaded records that the async S3 archive upload completed
@@ -3607,5 +3739,67 @@ func (s *Store) UpdateAgentSubscriptionFromStripe(
 		 WHERE stripe_subscription_id = $1`,
 		stripeSubscriptionID, status, currentPeriodEnd, cancelAtPeriodEnd, canceledAt,
 	)
+	return err
+}
+
+// RetirableHibernation is a suspended sandbox whose host can be released.
+type RetirableHibernation struct {
+	SandboxID  string
+	WorkerID   string
+	UploadedAt *time.Time
+}
+
+// ListRetirableHibernations returns hibernated sandboxes whose archive is
+// safely uploaded and whose dwell has elapsed, so their host can be terminated.
+//
+// The uploaded_at IS NOT NULL condition is the safety of the whole scheme, not
+// an optimization. Between hibernating and the upload landing, the suspended
+// box is the ONLY copy of that sandbox — the blob is a partial object nothing
+// can restore from. Terminating on a timer alone would destroy customer data
+// for any workspace slower to upload than the dwell, and the bigger the
+// workspace the likelier it is to lose it.
+//
+// Deliberately no timeout on that condition: a stuck upload holds its box
+// indefinitely, which costs quota and is strictly preferable to the alternative.
+func (s *Store) ListRetirableHibernations(ctx context.Context, prefixes []string, hibernatedBefore time.Time) ([]RetirableHibernation, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT ss.sandbox_id, ss.worker_id, sh.uploaded_at
+		   FROM sandbox_sessions ss
+		   JOIN sandbox_hibernations sh ON sh.sandbox_id = ss.sandbox_id
+		  WHERE ss.worker_id LIKE ANY($1)
+		    AND ss.status = 'hibernated'
+		    AND coalesce(ss.hibernation_mode, '') <> 'deep'
+		    AND sh.expired_at IS NULL
+		    AND sh.restored_at IS NULL
+		    AND sh.uploaded_at IS NOT NULL
+		    AND sh.hibernated_at < $2
+		  ORDER BY sh.hibernated_at`,
+		likePatterns(prefixes), hibernatedBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RetirableHibernation
+	for rows.Next() {
+		var r RetirableHibernation
+		if err := rows.Scan(&r.SandboxID, &r.WorkerID, &r.UploadedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetHibernationMode records which tier a hibernated sandbox is in: 'paused'
+// while a suspended host still backs it, 'deep' once only the archive remains.
+// Wake reads this to know whether a resume is even possible.
+func (s *Store) SetHibernationMode(ctx context.Context, sandboxID, mode string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET hibernation_mode = $1 WHERE sandbox_id = $2`,
+		mode, sandboxID)
 	return err
 }

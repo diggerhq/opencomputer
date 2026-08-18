@@ -107,15 +107,45 @@ func newMicrovmBackend(ctx context.Context) (*microvmBackend, error) {
 		return nil, fmt.Errorf("microvm: load AWS config: %w", err)
 	}
 
+	// Idle policy. Measured on dev: with idle=60s and suspended=300s, a sandbox
+	// was TERMINATED — disk and all — roughly six minutes after its last
+	// request. The old defaults (900/1800) put that at 45 minutes of inactivity,
+	// which silently destroys any sandbox a customer steps away from.
+	//
+	//   idle      seconds without inbound proxy traffic before AWS suspends.
+	//             A persistent agent tunnel does NOT count as traffic — only
+	//             requests through the proxy do, which is why an open connection
+	//             does not keep a box alive.
+	//   suspended seconds a box may stay suspended before AWS TERMINATES it.
+	//             This, not the 8h ceiling, is what actually bounds a parked
+	//             sandbox, and when it fires the disk goes with it.
+	//   resume    whether an inbound request wakes a suspended box. With this
+	//             off, nothing can reach a box during its suspended window, so
+	//             the window always runs out and the sandbox is destroyed.
+	//
+	// Default idle deliberately exceeds the pool's MaxBoxAge (7h) so stock never
+	// drifts into SUSPENDED while waiting — the pool's docstring requires that,
+	// and the previous 900s default did not deliver it. Auto-resume defaults ON
+	// so that anything which does suspend is recoverable rather than doomed.
+	idleSec := envInt("OPENSANDBOX_MICROVM_IDLE_SECONDS", 28_800)
+	// Default to the hard ceiling rather than 1800: AWS terminates a suspended
+	// box when this fires, taking its disk with it, so a 30-minute default made
+	// "hibernate" mean "deleted in half an hour". At the ceiling this timer
+	// never fires before the 8h total cap does, which leaves the cap as the
+	// single deadline to reason about — and the one the blob promotion works
+	// against.
+	suspendedSec := envInt("OPENSANDBOX_MICROVM_SUSPENDED_SECONDS", 28_800)
+	autoResume := os.Getenv("OPENSANDBOX_MICROVM_AUTO_RESUME") != "0"
 	client := awsvm.NewClient(awsCfg, awsvm.Config{
-		Region:           region,
-		ImageIdentifier:  image,
-		ExecutionRoleArn: os.Getenv("OPENSANDBOX_MICROVM_EXECUTION_ROLE_ARN"),
-		// Idle-suspend stays off for pooled stock: a box that suspends itself
-		// while waiting turns the next claim into a ResumeMicrovm, which is
-		// rate-limited at 5/s — exactly the cost the pool exists to avoid.
-		AutoResume: false,
+		Region:                   region,
+		ImageIdentifier:          image,
+		ExecutionRoleArn:         os.Getenv("OPENSANDBOX_MICROVM_EXECUTION_ROLE_ARN"),
+		MaxIdleDurationSeconds:   int32(idleSec),
+		SuspendedDurationSeconds: int32(suspendedSec),
+		AutoResume:               autoResume,
 	})
+	log.Printf("microvm: idle policy — suspend after %ds idle, terminate after %ds suspended, auto-resume=%v",
+		idleSec, suspendedSec, autoResume)
 
 	pool := awsvm.NewPool(client, awsvm.PoolConfig{
 		TargetStock: envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20),
@@ -293,9 +323,17 @@ func (b *microvmBackend) reconcileOnce(ctx context.Context, store *db.Store) {
 		if !ok {
 			continue
 		}
-		// Already tracked and healthy — nothing to do. Skipping avoids a
+		// Already tracked AND still alive — nothing to do. Skipping avoids a
 		// GetMicrovm per sandbox per tick once the map is warm.
-		if _, err := b.manager.Get(ctx, r.SandboxID); err == nil {
+		//
+		// The status matters, not just the error: Get returns a nil error with
+		// status stopped for a box AWS has terminated. Reading only the error
+		// meant this shortcut fired for exactly the sandboxes the sweep exists
+		// to close, so dead boxes kept their rows at 'running' indefinitely —
+		// holding concurrency quota and reporting healthy — while the usage
+		// ticker logged "not alive, reaper should drain it" for a reaper that
+		// could never see them.
+		if sb, err := b.manager.Get(ctx, r.SandboxID); err == nil && sb.Status == types.SandboxStatusRunning {
 			continue
 		}
 		box, err := b.client.Get(ctx, microvmID)
