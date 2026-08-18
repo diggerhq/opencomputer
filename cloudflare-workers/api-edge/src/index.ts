@@ -131,6 +131,7 @@ export interface FinalizeMsg {
   baseURL: string;
   plan: string;
   billingProvider: string;
+  runtime: string;
   sandboxID: string;
   workerID: string;
   bodyText: string;
@@ -170,13 +171,18 @@ async function cachedCapToken(
   cellID: string,
   plan: string,
   billingProvider: string,
+  runtime: string,
   userID: string | null,
 ): Promise<string> {
-  const key = `${orgID}|${cellID}|${plan}|${billingProvider}|${userID ?? ""}`;
+  // runtime is in the cache key deliberately. It is the org's sandbox backend
+  // assignment, and leaving it out would mean a D1 change did not take effect
+  // until the entry aged out — an org would keep landing on the old runtime for
+  // up to a minute after being reassigned, with nothing to explain why.
+  const key = `${orgID}|${cellID}|${plan}|${billingProvider}|${runtime}|${userID ?? ""}`;
   const hit = capTokenCache.get(key);
   const nowMs = Date.now();
   if (hit && nowMs - hit.mintedAtMs < 60_000) return hit.token;
-  const token = await mintCapToken(secret, orgID, cellID, plan, billingProvider, userID);
+  const token = await mintCapToken(secret, orgID, cellID, plan, billingProvider, runtime, userID);
   if (capTokenCache.size >= CACHE_MAX) capTokenCache.clear();
   capTokenCache.set(key, { token, mintedAtMs: nowMs });
   return token;
@@ -188,6 +194,7 @@ async function mintCapToken(
   cellID: string,
   plan: string,
   billingProvider: string,
+  runtime: string,
   userID: string | null,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -204,6 +211,11 @@ async function mintCapToken(
   // Only set when known; empty lets the cell keep its existing cell-PG value
   // (so a wake/preview token never clobbers an autumn flag set at create time).
   if (billingProvider) payload.billing_provider = billingProvider;
+  // Which sandbox runtime this org's creates belong on (orgs.runtime). Omitted
+  // when unset, and the cell reads absent as "the QEMU fleet" — so an org with
+  // no assignment, and every token minted before this field existed, resolves
+  // to the backend with the full feature set rather than a specialised one.
+  if (runtime) payload.runtime = runtime;
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
   const signingInput =
@@ -614,7 +626,7 @@ async function loadCreateContextCold(
       if (ctx) {
         ctx.waitUntil(
           env.OPENCOMPUTER_DB.prepare(
-            "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
+            "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
           )
             .bind(orgID)
             .first<OrgPolicy>()
@@ -683,7 +695,7 @@ async function loadCreateContextCold(
   if (!orgWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare(
-        "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
+        "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
       ).bind(orgID),
     );
     kinds.push("org");
@@ -925,6 +937,10 @@ interface OrgPolicy {
   max_concurrent_sandboxes: number;
   max_disk_mb: number;
   billing_provider: string;
+  // Which sandbox runtime this org's creates belong on. NULL/"" is the QEMU
+  // fleet — so every org that predates this column keeps its current runtime
+  // and opting one in is a single-row change.
+  runtime: string | null;
 }
 
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
@@ -934,7 +950,7 @@ async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null>
   const cached = orgPolicyCache.get(orgID);
   if (cached && nowMs - cached.cachedAtMs < ORG_POLICY_TTL_MS) return cached.policy;
   const policy = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
+    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<OrgPolicy>();
@@ -1415,6 +1431,7 @@ async function finalizeEdgeClaim(
   cell: CellRow,
   plan: string,
   billingProvider: string,
+  runtime: string,
   sandboxID: string,
   workerID: string,
   bodyText: string,
@@ -1428,7 +1445,7 @@ async function finalizeEdgeClaim(
     // Minted HERE (off the response path) rather than on the create hot path —
     // only this finalize call ever consumes it on the edge-claim route, and the
     // HMAC sign was one of the larger CPU items at burst-100 concurrency.
-    const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, caller.userID);
+    const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, runtime, caller.userID);
     let body: Record<string, unknown> = {};
     try {
       body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
@@ -1631,6 +1648,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
             baseURL: cell.base_url,
             plan,
             billingProvider: org.billing_provider,
+            runtime: org.runtime ?? "",
             sandboxID: box.id,
             workerID: box.workerID,
             bodyText,
@@ -1639,11 +1657,11 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
             env.FINALIZE_QUEUE.send(msg).catch((e) => {
               // Enqueue failed — finalize inline so the box still binds.
               console.error(`edge-claim: finalize enqueue failed for ${box.id}, running inline:`, e);
-              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText);
+              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, org.runtime ?? "", box.id, box.workerID, bodyText);
             }),
           );
         } else {
-          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, box.id, box.workerID, bodyText));
+          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, org.runtime ?? "", box.id, box.workerID, bodyText));
         }
         if (env.DIAG === "1") console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
@@ -1658,7 +1676,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
 
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
-  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
+  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -1902,7 +1920,10 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", caller.userID);
+  // "" runtime: this token is for data-plane sub-ops on an EXISTING sandbox,
+  // whose backend is already fixed by its persisted worker_id. Runtime only
+  // decides placement, and placement has already happened.
+  const token = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -2042,7 +2063,7 @@ async function proxyToCellAuthed(
     : await pickCell(env, org.home_cell, null);
   if (!cell) return json({ error: "no cell available to serve request" }, 503);
 
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", "", caller.userID);
   const url = new URL(req.url);
   const target = cell.base_url.replace(/\/$/, "") + (opts.pathOverride ?? url.pathname) + url.search;
 
@@ -3501,7 +3522,7 @@ async function runPausedCapEnforcer(env: Env): Promise<void> {
     let promoted = 0;
     for (const v of victims.results ?? []) {
       try {
-        const token = await mintCapToken(env.SESSION_JWT_SECRET, org.org_id, v.cell_id, "", "", null);
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, org.org_id, v.cell_id, "", "", "", null);
         const resp = await fetch(
           v.base_url.replace(/\/$/, "") + `/internal/sandboxes/${v.id}/deep-hibernate`,
           { method: "POST", headers: { authorization: "Bearer " + token } },
@@ -3919,7 +3940,7 @@ export default {
         const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
-        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, org.billing_provider, caller.userID);
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
         const fcResp = await fetch(cell.base_url.replace(/\/$/, "") + path, {
           method: "POST",
           headers: { authorization: "Bearer " + token, "content-type": "application/json" },
@@ -4121,6 +4142,7 @@ export default {
             { cell_id: b.cellID, base_url: b.baseURL } as CellRow,
             b.plan,
             b.billingProvider,
+            b.runtime ?? "",
             b.sandboxID,
             b.workerID,
             b.bodyText,

@@ -189,7 +189,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 	// condition is backend registration, not the worker registry: a cell served
 	// by a backend has no registry and no local manager, so gating on the
 	// registry made every create there fail with "server-only mode".
-	if _, ok := s.claimBackend(); ok {
+	if s.canPlace(uuid.UUID(orgID), runtimeFor(c), cfg) {
 		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg, secretStoreID)
 	}
 
@@ -856,7 +856,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// start the host, promote. runCreate owns that order; the closures below own
 	// what each step means here. Before this the sequence was inline and the
 	// persist-before-activate constraint was a comment.
-	backend, ok := s.claimBackend()
+	orgRuntime := runtimeFor(c)
+	backend, ok := s.claimBackend(placement{
+		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+	})
 	if !ok {
 		// No registered backend can accept a sandbox. A cell in this state can
 		// still serve the ones it already has, so this is a capacity answer.
@@ -881,7 +884,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	var host activated
 	workerID, err := runCreate(ctx, sandboxID, createSteps{
 		claim: func(ctx context.Context) (string, error) {
-			return backend.Claim(ctx, placement{sandboxID: sandboxID, region: region, cfg: cfg})
+			return backend.Claim(ctx, placement{
+				sandboxID: sandboxID, region: region,
+				orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+			})
 		},
 
 		persistRequired: backend.RequiresPersistedRow(),
@@ -2028,6 +2034,15 @@ func (s *Server) hibernateSandbox(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
 
+	// A backend that parks its own sandboxes gets first refusal, BEFORE the
+	// registry branch below. Order is not cosmetic: a backend-served cell still
+	// has a worker registry — it is what answers worker_id lookups — but no
+	// workers in it, so falling through would dispatch every hibernate to a
+	// fleet that does not exist and fail with "no workers available".
+	if h, sess, ok := s.hibernatorForSandbox(ctx, id); ok {
+		return s.hibernateViaBackend(c, id, h, sess)
+	}
+
 	// Server mode: dispatch to worker via gRPC
 	if s.workerRegistry != nil {
 		return s.hibernateSandboxRemote(c, id)
@@ -2250,6 +2265,16 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	// cell-PG orgs table this used to read is gone, and D1 is authoritative.
 	// halt_reconciler still enforces against running sandboxes; this wake
 	// path is reached only after the edge has gated on D1.is_halted.
+
+	// A backend that revives its own sandboxes gets first refusal, for the same
+	// reason as hibernate: the registry is non-nil on such a cell but empty, so
+	// falling through answers "no workers available" for a sandbox this process
+	// can wake itself. It also covers both tiers — the backend decides whether
+	// to resume a suspended host or rebuild from the archive — so the paused
+	// branch below stays QEMU's alone.
+	if h, sess, ok := s.hibernatorForSandbox(ctx, id); ok {
+		return s.wakeViaBackend(c, id, h, sess, req)
+	}
 
 	// Server mode: pick any worker, dispatch via gRPC
 	if s.workerRegistry != nil {

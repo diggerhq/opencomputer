@@ -454,6 +454,14 @@ func main() {
 			cacheDir := filepath.Join(cfg.DataDir, "checkpoints")
 			if err := checkpointStore.SetCacheDir(cacheDir); err != nil {
 				log.Printf("opensandbox-worker: warning: checkpoint cache disabled: %v", err)
+			} else {
+				// Evict on a timer, not only when something is being cached.
+				// Demand-driven eviction latches: past the routing-exclusion
+				// threshold a worker receives no new sandboxes, so nothing
+				// downloads a checkpoint, so eviction is never invoked and the
+				// disk never comes back down. The worker stays out of the fleet
+				// holding space it would have released on request.
+				checkpointStore.StartEvictionSweeper(context.Background())
 			}
 		}
 	}

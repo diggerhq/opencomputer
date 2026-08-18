@@ -172,6 +172,18 @@ func (w *workerBackend) selectWorker(ctx context.Context, region string) (*contr
 	}
 }
 
+// Accepts takes every create not explicitly assigned elsewhere.
+//
+// The empty runtime is the load-bearing case: an org with no D1 assignment, a
+// capability token minted before the field existed, and a create that never
+// passed the edge all arrive here. That is deliberate — this is the runtime
+// with the full feature set (checkpoints, fork, PTY, custom templates, resize),
+// so it is the only safe answer to "we do not know". A newer runtime declines
+// what it cannot serve; this one has nowhere to pass a create on to.
+func (w *workerBackend) Accepts(p placement) bool {
+	return p.runtime == "" || p.runtime == runtimeQEMU
+}
+
 // Claim chooses a worker. No side effects on the fleet: the VM is not started
 // until Activate, so a failure here costs nothing but the selection attempt.
 func (w *workerBackend) Claim(ctx context.Context, p placement) (string, error) {

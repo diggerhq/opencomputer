@@ -173,12 +173,12 @@ func (p *mockPool) DestroyMachine(_ context.Context, machineID string) error {
 	return nil
 }
 
-func (p *mockPool) DrainMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StartMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StopMachine(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) HealthCheck(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)      { return 0, nil }
-func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error)   { return nil, nil }
+func (p *mockPool) DrainMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StartMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StopMachine(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) HealthCheck(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)    { return 0, nil }
+func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error) { return nil, nil }
 func (p *mockPool) SupportedRegions(_ context.Context) ([]string, error) {
 	return []string{"us-east-1"}, nil
 }
@@ -1979,4 +1979,74 @@ func TestInMemoryScalerState_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// An empty worker is never evacuable, and must never be chosen.
+//
+// Evacuation moves sandboxes off a worker, so a worker holding none cannot be
+// relieved by it. Before the Current==0 guard this was not merely wasteful: the
+// candidate list is sorted LIGHTEST FIRST, so an empty worker sorted to the
+// front and won selection on every tick. It then took the global evacuation
+// lock, ran a batch with nothing in it, and starved the worker that was
+// actually hot.
+//
+// The disk case below is the one seen in production: a worker sitting in disk
+// pressure caused entirely by the checkpoint cache, with zero sandboxes on it.
+func TestEvacuationSkipsWorkersWithNoSandboxes(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	// Empty but over the disk threshold — cache, not sandbox load.
+	reg.addWorker(&WorkerInfo{
+		ID: "empty-hot", MachineID: "osb-worker-empty", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 10, MemPct: 10, DiskPct: 79,
+	})
+	// Genuinely hot, with sandboxes that could actually move.
+	reg.addWorker(&WorkerInfo{
+		ID: "real-hot", MachineID: "osb-worker-real", Region: "us-east-1",
+		Capacity: 50, Current: 40, CPUPct: 85, MemPct: 50, DiskPct: 30,
+	})
+	// Somewhere to migrate to.
+	reg.addWorker(&WorkerInfo{
+		ID: "cold", MachineID: "osb-worker-cold", Region: "us-east-1",
+		Capacity: 50, Current: 5, CPUPct: 20, MemPct: 20, DiskPct: 20,
+	})
+
+	s := newTestScaler(reg, pool)
+	s.evacuateHotWorkers(context.Background(), "us-east-1", reg.GetWorkersByRegion("us-east-1"))
+
+	if _, ok := s.state.GetLastEvacuation("empty-hot"); ok {
+		t.Error("evacuated a worker with zero sandboxes — a no-op that holds the global " +
+			"evacuation lock and starves genuinely hot workers")
+	}
+	if _, ok := s.state.GetLastEvacuation("real-hot"); !ok {
+		t.Error("the worker with sandboxes to move was not evacuated — the empty worker " +
+			"won selection by sorting lightest-first")
+	}
+}
+
+// A fleet where every over-threshold worker is empty must resolve to doing
+// nothing at all, and must not leave the evacuation lock held — the next tick
+// has to be able to act the moment a real candidate appears.
+func TestAllEmptyHotWorkersLeaveTheLockFree(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "empty-a", MachineID: "osb-worker-a", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 10, MemPct: 10, DiskPct: 79,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "empty-b", MachineID: "osb-worker-b", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 90, MemPct: 10, DiskPct: 20,
+	})
+
+	s := newTestScaler(reg, pool)
+	s.evacuateHotWorkers(context.Background(), "us-east-1", reg.GetWorkersByRegion("us-east-1"))
+
+	if !s.state.TryAcquireEvacuationLock() {
+		t.Fatal("evacuation lock still held after a tick that evacuated nothing — " +
+			"the next genuinely hot worker would be skipped")
+	}
+	s.state.ReleaseEvacuationLock()
 }

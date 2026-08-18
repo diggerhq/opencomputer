@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/labstack/echo/v4"
 
+	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/pkg/types"
@@ -94,6 +97,22 @@ func ManagedWorkerIDPrefixes() []string {
 	return out
 }
 
+// Runtime identifiers, as stored in D1 orgs.runtime and carried on the
+// capability token the edge mints for every create.
+//
+// Deliberately NOT Backend.Name(), which is documented as a label for logs and
+// telemetry. These strings are persisted config and production routing: renaming
+// a backend for readability must never repoint customer traffic.
+//
+// The empty string is the QEMU fleet, and that is the whole safety property of
+// this design — an org with no runtime set, a cap token minted before this
+// existed, or a create that never passed the edge all resolve to the runtime
+// with the full feature set.
+const (
+	runtimeQEMU    = "qemu"
+	runtimeMicrovm = "microvm"
+)
+
 // Placer is a Backend that can accept new sandboxes.
 //
 // Split from Backend because the two capabilities are genuinely independent: a
@@ -105,10 +124,39 @@ func ManagedWorkerIDPrefixes() []string {
 type Placer interface {
 	Backend
 
+	// Accepts reports whether this backend will take a particular sandbox,
+	// asked BEFORE Claim and before any side effect.
+	//
+	// This is the only place a create can change runtimes. Once Claim returns,
+	// the sandbox belongs to that backend for its whole life: every later
+	// route, hibernate, wake, and reap resolves through OwnsWorkerID on the
+	// persisted worker_id, and nothing migrates a sandbox between runtimes.
+	// That is deliberate — two runtimes with different snapshot formats, CPU
+	// architectures, and lifetime ceilings cannot hand a sandbox back and
+	// forth, and a system that tried would fail in ways no one could reason
+	// about.
+	//
+	// So Accepts answers two questions that both have to be settled up front:
+	// whether this backend is allowed to serve the org, and whether it can
+	// honour the request at all. Declining is normal and cheap; the caller
+	// simply offers the sandbox to the next registered Placer.
+	//
+	// Note what this does NOT do: it is never consulted after a create.
+	// Narrowing the rules — removing an org from an allowlist, say — changes
+	// where NEW sandboxes land and must never strand the ones already running.
+	Accepts(p placement) bool
+
 	// Claim places a new sandbox and returns the worker_id to persist. An
 	// error is terminal for the create — the caller must not fall through to
 	// another path, because a backend that could not place a sandbox has
 	// already decided the answer.
+	//
+	// Terminal rather than "try the next backend" on purpose. A silent
+	// failover would mean a create that asked for one runtime and quietly got
+	// another: benchmark numbers that measure the wrong thing, and capability
+	// promises made by a backend that never saw the request. Accepts is where
+	// a backend declines; Claim failing means the answer was yes and the
+	// placement still did not work.
 	Claim(ctx context.Context, p placement) (workerID string, err error)
 
 	// Activate starts the host chosen by Claim. It runs AFTER the pending row
@@ -140,6 +188,56 @@ type Placer interface {
 	Release(ctx context.Context, sandboxID, workerID string)
 }
 
+// Hibernator is a Backend that parks and revives a sandbox in process.
+//
+// Optional in the same way Placer is, and for the same reason: the capability
+// is genuinely independent of serving sandboxes. The QEMU fleet deliberately
+// does NOT implement it. Its hibernate and wake dispatch over gRPC to one
+// specific worker, and which one is not a detail — a wake prefers the worker
+// that hibernated the sandbox because the qcow2 files are still on its disk,
+// and refuses a cross-worker wake while the archive upload is unfinished. That
+// is placement logic with physics behind it, and this interface has no
+// vocabulary for it. Those paths stay on the worker registry
+// (hibernateSandboxRemote / wakeSandboxRemote), untouched.
+//
+// What this interface is for is the other shape: a backend whose sandboxes the
+// control plane manages directly, where hibernate is a call into a local
+// manager rather than a hop to a host that owns the disk.
+type Hibernator interface {
+	Backend
+
+	// Hibernate parks the sandbox and reports where its archive landed, so the
+	// caller can record it. It does not write to the database — who owns the
+	// row is the caller's decision, not the runtime's.
+	Hibernate(ctx context.Context, sandboxID string) (*sandbox.HibernateResult, error)
+
+	// Wake revives the sandbox and returns the worker_id now serving it.
+	//
+	// Returning the id is the whole point rather than an afterthought: a
+	// restore from the archive lands on a NEW host, so the persisted row must
+	// follow it. A wake that revived the sandbox but left worker_id pointing at
+	// the dead host would leave every later route, ownership check, and reap
+	// looking in the wrong place — the sandbox would be alive and unreachable.
+	Wake(ctx context.Context, sandboxID, hibernationKey string, timeoutSeconds int) (workerID string, err error)
+}
+
+// hibernatorFor resolves the backend that can park or revive a sandbox, keyed
+// on the worker_id persisted for it.
+//
+// Deliberately OwnsWorkerID and not Route. Route asks the live routing map,
+// which is exactly the wrong question here: a deep-hibernated sandbox has no
+// host at all — the retirement sweep terminated it and called Forget — so Route
+// answers "not mine" for precisely the sandboxes a wake exists to serve.
+// OwnsWorkerID answers from what is in the database, which outlives the host.
+func (s *Server) hibernatorFor(workerID string) (Hibernator, bool) {
+	b, ok := s.backendForWorkerID(workerID)
+	if !ok {
+		return nil, false
+	}
+	h, ok := b.(Hibernator)
+	return h, ok
+}
+
 // placement is the request-scoped input to Claim.
 //
 // Region is here rather than on the backend because it is a property of the
@@ -149,7 +247,18 @@ type Placer interface {
 type placement struct {
 	sandboxID string
 	region    string
-	cfg       types.SandboxConfig
+	// orgID is who the sandbox is for.
+	orgID uuid.UUID
+	// runtime is which backend the org is assigned to, from D1 orgs.runtime by
+	// way of the capability token. Empty means the QEMU fleet.
+	//
+	// It rides on the token rather than being read from config or a database
+	// here for one reason: which runtime serves an org is a property OF THE ORG,
+	// not of the cell that happens to serve it. Per-cell configuration for a
+	// per-org fact needs every cell kept in sync by hand, and a cell that missed
+	// an update silently serves that org on the wrong runtime.
+	runtime string
+	cfg     types.SandboxConfig
 }
 
 // activation is everything needed to start a host Claim already chose.
@@ -244,13 +353,58 @@ func (s *Server) backendForWorkerID(workerID string) (Backend, bool) {
 // poll, persistence, token minting, and response shaping in one function on
 // the path that serves all current traffic. That split is worth doing
 // deliberately, not as a side effect of introducing the seam.
-func (s *Server) claimBackend() (Placer, bool) {
+// claimBackend picks the runtime that will serve a create: the first
+// registered Placer that accepts it.
+//
+// Registration order is the policy. A backend registered earlier gets first
+// refusal, so a runtime with its own warm stock is offered every create before
+// the fleet, and the fleet serves whatever it declines. Moving a
+// registerBackend call changes which runtime serves production traffic.
+//
+// First-accept rather than best-match: there is no scoring here, and there
+// should not be. Placement has to be decidable from the request alone, because
+// the decision is permanent — see Accepts.
+func (s *Server) claimBackend(p placement) (Placer, bool) {
 	for _, b := range s.backends {
-		if p, ok := b.(Placer); ok {
-			return p, true
+		placer, ok := b.(Placer)
+		if !ok {
+			continue
 		}
+		if !placer.Accepts(p) {
+			continue
+		}
+		return placer, true
 	}
 	return nil, false
+}
+
+// orgRuntime reads the runtime this org is assigned to off the capability
+// token the edge minted for this request.
+//
+// Empty whenever there is no token — combined mode, and any path that did not
+// come through the edge. That resolves to the QEMU fleet, which is the only
+// safe default: a create whose runtime we cannot establish must land on the
+// backend that can serve anything, never on a specialised one.
+func runtimeFor(c echo.Context) string {
+	claims, _ := c.Get(capClaimsKey).(*auth.CapabilityClaims)
+	if claims == nil {
+		return ""
+	}
+	return claims.Runtime
+}
+
+// canPlace reports whether any registered backend would take a create for this
+// org, used only to choose between the shared create flow and legacy combined
+// mode.
+//
+// Region is deliberately absent: it is resolved further down createSandboxRemote
+// (template lookup can override it), so it is not known here. That is safe
+// today because no backend gates on region, and the authoritative decision is
+// made in createSandboxRemote with the complete placement. A backend that ever
+// does gate on region must not rely on this pre-check.
+func (s *Server) canPlace(orgID uuid.UUID, runtime string, cfg types.SandboxConfig) bool {
+	_, ok := s.claimBackend(placement{orgID: orgID, runtime: runtime, cfg: cfg})
+	return ok
 }
 
 // dispatchDataPlane picks between serving a request in-process and proxying it

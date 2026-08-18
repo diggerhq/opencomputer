@@ -92,7 +92,6 @@ func (b *microvmBackend) expireHibernations(ctx context.Context, store *db.Store
 	}
 }
 
-
 // safeToRetire reports whether a suspended box can be terminated.
 //
 // Separate from the query on purpose. The SQL already filters on uploaded_at,

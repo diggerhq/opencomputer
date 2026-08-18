@@ -1,0 +1,24 @@
+-- orgs.runtime — which sandbox backend an org's creates land on.
+--
+-- Values: NULL / '' = the QEMU worker fleet (the default and the safe answer),
+--         'qemu'    = the same, stated explicitly,
+--         'microvm' = the AWS Lambda MicroVM backend.
+--
+-- Why this lives in D1 rather than cell configuration: which runtime serves an
+-- org is a property OF THE ORG. Expressing it as per-cell config (an env var on
+-- each control plane) means every cell that could serve that org has to be kept
+-- in sync by hand, and a cell that missed the update serves them on the wrong
+-- runtime with no error raised anywhere. One row here is authoritative for
+-- every cell at once.
+--
+-- The edge reads this alongside plan and billing_provider when it mints the
+-- capability token for a create, and the cell reads it off the token — so this
+-- costs no extra query on the create path. Absent means the fleet, which is why
+-- adding the column changes nothing for the orgs already in this table: they
+-- keep the runtime with the full feature set (checkpoints, fork, PTY, custom
+-- templates), and a runtime is opted into one row at a time.
+--
+-- NOTE: placement is permanent. This decides where an org's NEW sandboxes land;
+-- sandboxes already running keep their backend, resolved from their persisted
+-- worker_id. Changing this value never moves or strands an existing sandbox.
+ALTER TABLE orgs ADD COLUMN runtime TEXT;

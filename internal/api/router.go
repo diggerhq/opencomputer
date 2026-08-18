@@ -804,7 +804,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// AWS call is ever made, so the QEMU fleet is unaffected. When it IS enabled
 	// but misconfigured, fail loudly rather than silently serving QEMU from a
 	// cell the operator believes is running MicroVMs.
-	if mvm, err := newMicrovmBackend(context.Background()); err != nil {
+	if mvm, err := newMicrovmBackend(context.Background(), s.checkpointStore); err != nil {
 		log.Fatalf("opensandbox: microvm backend: %v", err)
 	} else if mvm != nil {
 		s.microvm = mvm
@@ -852,12 +852,6 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if wb := newWorkerBackend(s.workerRegistry); wb != nil && !s.workersDisabled {
 		s.registerBackend(wb)
 	}
-
-	// Free hibernation archives no wake can reach. Deliberately outside the
-	// backend blocks above: this is about blobs, not runtimes, and the archives
-	// that piled up were written by the QEMU path. Gating it on a backend would
-	// have left the leak running on the cells that caused it.
-	s.StartHibernationReclaim(context.Background())
 
 	return s
 }

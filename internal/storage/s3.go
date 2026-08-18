@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/blobstore"
+	"github.com/opensandbox/opensandbox/internal/diskpolicy"
 	"golang.org/x/sys/unix"
 )
 
@@ -381,12 +382,82 @@ func (s *CheckpointStore) downloadFromS3(ctx context.Context, key string) (io.Re
 	return body, nil
 }
 
-// evictIfNeeded removes the oldest cached checkpoints when the filesystem
-// is low on space. Policy: keep 20% of total filesystem space free for
-// active sandboxes (workspaces, container layers, temp files).
+// cacheReserveBytes is how much of the volume must stay free for the cache to
+// consider itself within budget: everything above diskpolicy.CacheEvictPct
+// full.
+//
+// Pulled out as a pure function so the arithmetic has a test. It replaced a
+// literal `totalBytes / 5` — a 20% reserve that let the cache fill to 80% of
+// the volume, which is above every threshold the scaler reacts to.
+func cacheReserveBytes(totalBytes uint64) uint64 {
+	return uint64(float64(totalBytes) * (100 - diskpolicy.CacheEvictPct) / 100)
+}
+
+// cacheSweepInterval paces the background eviction sweep.
+//
+// The common tick costs one statfs and returns, so this can be frequent. It
+// needs to be well inside the time the scaler takes to react — a sweep that ran
+// hourly would let a worker sit in disk pressure for most of an hour with
+// reclaimable space on it.
+const cacheSweepInterval = time.Minute
+
+// StartEvictionSweeper evicts on a timer for the life of the process.
+//
+// This exists because eviction used to be reachable ONLY from cacheFromFile and
+// downloadAndCache — that is, only while something was being written into the
+// cache. That coupling turns disk pressure into a latch:
+//
+//	worker crosses RoutingExcludePct → stops receiving sandboxes
+//	 → nothing downloads checkpoints  → evictIfNeeded is never called
+//	 → the cache never shrinks        → the worker never comes back
+//
+// Exclusion removes the very traffic that was the only trigger for the cleanup
+// that would end the exclusion. A worker in that state stays out of the fleet
+// until someone restarts it, holding hundreds of gigabytes it would happily
+// have released if anything had asked.
+//
+// A timer asks.
+func (s *CheckpointStore) StartEvictionSweeper(ctx context.Context) {
+	if s == nil || s.cacheDir == "" {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cacheSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.evictIfNeeded()
+			}
+		}
+	}()
+	log.Printf("checkpoint-cache: eviction sweeper started (every %s, target %.0f%% full)",
+		cacheSweepInterval, diskpolicy.CacheEvictPct)
+}
+
+// evictIfNeeded removes the oldest cached checkpoints once the filesystem is
+// fuller than diskpolicy.CacheEvictPct.
+//
+// That threshold is deliberately the FIRST rung of the disk-pressure ladder,
+// below every scaler reaction. The cache is elastic and sandboxes are not, so
+// the elastic thing yields first: everything held here is a latency
+// optimisation, and paying a cold restore on the next fork is far cheaper than
+// launching a worker or live-migrating a customer's VM to reclaim the same
+// bytes.
+//
+// It previously kept a flat 20% reserve — evicting only above 80% full — while
+// the scaler began scaling up at 60% and evacuating at 70%. In that band the
+// scaler was reacting to pressure it could not relieve, because evacuating a
+// sandbox frees its directory and never touches this cache.
 func (s *CheckpointStore) evictIfNeeded() {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+
+	if s.cacheDir == "" {
+		return
+	}
 
 	var stat unix.Statfs_t
 	if err := unix.Statfs(s.cacheDir, &stat); err != nil {
@@ -396,7 +467,8 @@ func (s *CheckpointStore) evictIfNeeded() {
 
 	totalBytes := stat.Blocks * uint64(stat.Bsize)
 	availBytes := stat.Bavail * uint64(stat.Bsize)
-	reserveBytes := totalBytes / 5 // 20% reserve
+
+	reserveBytes := cacheReserveBytes(totalBytes)
 
 	if availBytes > reserveBytes {
 		return

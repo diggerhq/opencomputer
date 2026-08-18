@@ -19,6 +19,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/worker"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	"github.com/redis/go-redis/v9"
@@ -52,6 +53,11 @@ type microvmBackend struct {
 	client  *awsvm.Client
 	pool    *awsvm.Pool
 	manager *awsvm.Manager
+
+	// checkpointStore is where a hibernated sandbox's workspace archive lives.
+	// Required for Hibernate/Wake and nothing else — without it this backend
+	// still serves sandboxes, it just cannot park them.
+	checkpointStore *storage.CheckpointStore
 
 	// usageTicker emits the billing ticks these sandboxes would otherwise never
 	// produce. On the QEMU fleet the worker runs one; there is no worker here,
@@ -88,7 +94,7 @@ func microvmEnabled() bool {
 // if disabled. An error here is fatal to startup by design — a cell configured
 // for MicroVMs that silently fell back to QEMU would be far more confusing than
 // a refusal to boot.
-func newMicrovmBackend(ctx context.Context) (*microvmBackend, error) {
+func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointStore) (*microvmBackend, error) {
 	if !microvmEnabled() {
 		return nil, nil
 	}
@@ -158,11 +164,12 @@ func newMicrovmBackend(ctx context.Context) (*microvmBackend, error) {
 		region, image, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
 
 	return &microvmBackend{
-		client:    client,
-		pool:      pool,
-		manager:   awsvm.NewManager(client, os.TempDir()),
-		coldSlots: make(chan struct{}, maxColdCreates),
-		stopPool:  stop,
+		client:          client,
+		pool:            pool,
+		manager:         awsvm.NewManager(client, os.TempDir()),
+		checkpointStore: checkpointStore,
+		coldSlots:       make(chan struct{}, maxColdCreates),
+		stopPool:        stop,
 	}, nil
 }
 
@@ -713,6 +720,93 @@ func (b *microvmBackend) Release(ctx context.Context, sandboxID, _ string) {
 	if err := b.manager.Kill(ctx, sandboxID); err != nil {
 		log.Printf("microvm: release %s: %v", sandboxID, err)
 	}
+}
+
+// Accepts takes creates for orgs assigned to this runtime, and only those.
+//
+// This is the only moment placement can be decided — a sandbox never moves
+// runtimes after Claim (see Placer.Accepts). Two independent reasons to decline:
+//
+//   - the org is not assigned here. Assignment lives in D1 orgs.runtime and
+//     arrives on the capability token, so an org reaches this backend only by
+//     an explicit row. Everyone else — including every org that predates this
+//     field — falls through to the QEMU fleet exactly as before.
+//   - the request needs something this runtime cannot do. A custom template is
+//     a QEMU checkpoint; there is no such artifact here, where a template is a
+//     container image. Accepting one would build the sandbox from the wrong
+//     image and report success.
+//
+// Declining is not an error. The create is offered to the next registered
+// Placer, which is the fleet.
+//
+// OPERATIONAL CONSTRAINT: an org pinned to this runtime must only be routed to
+// cells that run this backend. Declining assumes something to decline TO, and
+// the reverse holds as well — a microvm-pinned org landing on a cell without
+// this backend finds no Placer at all and gets a 503 rather than being quietly
+// served by QEMU. That is the intended failure: silently serving the other
+// runtime is what this design exists to prevent.
+//
+// Accepts must stay a pure function of the request. Putting mutable runtime
+// state here — pool depth, quota, health — would create a decision that is true
+// when asked and false when acted on, and Claim is terminal, so there is no
+// second chance. Capacity belongs in Claim, where failing may mean failing.
+func (b *microvmBackend) Accepts(p placement) bool {
+	if b == nil {
+		return false
+	}
+	if p.runtime != runtimeMicrovm {
+		return false
+	}
+	// Custom templates resolve to checkpoint artifacts this runtime cannot
+	// restore. The named default is fine — it maps to the image.
+	if p.cfg.Template != "" && p.cfg.Template != "default" && p.cfg.Template != poolTemplateName() {
+		return false
+	}
+	return true
+}
+
+// Hibernate parks a sandbox: its workspace goes to blob storage and the host is
+// suspended. See internal/awsvm/workspace.go for why only /home/sandbox travels
+// — AWS exposes no snapshot export, so the archive is ordinary files rather
+// than machine state.
+func (b *microvmBackend) Hibernate(ctx context.Context, sandboxID string) (*sandbox.HibernateResult, error) {
+	if b == nil || b.manager == nil {
+		return nil, fmt.Errorf("microvm: hibernate %s: backend not available", sandboxID)
+	}
+	if b.checkpointStore == nil {
+		// Explicit rather than a nil-pointer panic deeper in: a cell without a
+		// blob store can run sandboxes perfectly well and simply cannot park
+		// them, and the operator needs to be told which of the two it is.
+		return nil, fmt.Errorf("microvm: hibernate %s: no checkpoint store configured", sandboxID)
+	}
+	return b.manager.Hibernate(ctx, sandboxID, b.checkpointStore)
+}
+
+// Wake revives a sandbox and reports the worker_id now serving it.
+//
+// The manager decides how: a still-suspended host is resumed in place, and one
+// that is gone is rebuilt from the archive. Both land here, and only the second
+// changes hosts — which is exactly why the id is returned rather than assumed.
+// A restore mints a NEW MicroVM, and a caller that kept the old worker_id would
+// leave a live sandbox that nothing can route to.
+func (b *microvmBackend) Wake(ctx context.Context, sandboxID, hibernationKey string, timeoutSeconds int) (string, error) {
+	if b == nil || b.manager == nil {
+		return "", fmt.Errorf("microvm: wake %s: backend not available", sandboxID)
+	}
+	if b.checkpointStore == nil {
+		return "", fmt.Errorf("microvm: wake %s: no checkpoint store configured", sandboxID)
+	}
+	if _, err := b.manager.Wake(ctx, sandboxID, hibernationKey, b.checkpointStore, timeoutSeconds); err != nil {
+		return "", err
+	}
+	microvmID, ok := b.manager.MicrovmIDFor(sandboxID)
+	if !ok {
+		// Wake reported success but left nothing tracked, so there is no id to
+		// persist. Failing here is the honest answer: reporting success would
+		// write a stale worker_id and strand a running sandbox.
+		return "", fmt.Errorf("microvm: wake %s: no host tracked after wake", sandboxID)
+	}
+	return microvmWorkerID(microvmID), nil
 }
 
 func (b *microvmBackend) Reconcile(ctx context.Context, store *db.Store) {

@@ -149,6 +149,18 @@ type CapabilityClaims struct {
 	// orgs are autumn (metered, no free-tier ceiling) vs legacy, without a
 	// separate sync. Empty on older tokens / paths — the cell leaves it untouched.
 	BillingProvider string `json:"billing_provider,omitempty"`
+	// Runtime mirrors orgs.runtime from D1 ("" | "qemu" | "microvm") and tells
+	// the cell which sandbox backend this org's creates belong on.
+	//
+	// Carried here rather than configured per-cell because which runtime serves
+	// an org is a property OF THE ORG: per-cell config for a per-org fact means
+	// every cell kept in sync by hand, and a cell that missed an update serves
+	// that org on the wrong runtime with no error anywhere.
+	//
+	// Empty means the QEMU fleet, which is what makes this safe to deploy: every
+	// org that predates the field, and every token minted before it existed,
+	// resolves to the runtime with the full feature set.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 // CapabilityIssuer is the Issuer string on capability tokens — lets the CP
@@ -160,7 +172,7 @@ const CapabilityIssuer = "opensandbox-edge"
 // be empty when the caller doesn't have it handy — the cell will then
 // fall back to a PG lookup, which is a small performance hit but never
 // incorrect.
-func (j *JWTIssuer) IssueCapabilityToken(orgID, cellID, plan, billingProvider string, userID *string, ttl time.Duration) (string, error) {
+func (j *JWTIssuer) IssueCapabilityToken(orgID, cellID, plan, billingProvider, runtime string, userID *string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := CapabilityClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -173,6 +185,7 @@ func (j *JWTIssuer) IssueCapabilityToken(orgID, cellID, plan, billingProvider st
 		CellID:          cellID,
 		UserID:          userID,
 		Plan:            plan,
+		Runtime:         runtime,
 		BillingProvider: billingProvider,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

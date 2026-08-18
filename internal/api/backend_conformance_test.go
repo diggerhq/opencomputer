@@ -227,6 +227,11 @@ type fakeBackend struct {
 // fakePlacer is a fakeBackend that can also accept new sandboxes.
 type fakePlacer struct{ *fakeBackend }
 
+// Accepts everything: these fakes exist to exercise registration order and
+// routing, not placement policy, and a fake that declined would silently make
+// every ordering assertion vacuous.
+func (f *fakePlacer) Accepts(placement) bool { return true }
+
 func (f *fakePlacer) RequiresPersistedRow() bool { return false }
 
 func (f *fakePlacer) Release(context.Context, string, string) {}
@@ -270,7 +275,7 @@ func TestRegistryDispatchesToTheHoldingBackend(t *testing.T) {
 	}
 	// "first" is registered ahead of "second" but cannot place, so creates must
 	// skip it rather than being diverted to a backend that would fail them.
-	claim, ok := s.claimBackend()
+	claim, ok := s.claimBackend(placement{})
 	if !ok || claim.Name() != "second" {
 		t.Fatalf("claimBackend picked %v, want the first backend that can place", claim)
 	}
@@ -286,7 +291,7 @@ func TestNoBackendsRoutesNothing(t *testing.T) {
 	if _, _, ok := s.backendFor(context.Background(), "sb-1"); ok {
 		t.Fatal("empty registry claimed a sandbox")
 	}
-	if _, ok := s.claimBackend(); ok {
+	if _, ok := s.claimBackend(placement{}); ok {
 		t.Fatal("empty registry offered to serve a create")
 	}
 	if mgr, ok := s.execManagerFor("sb-1"); ok || mgr != nil {
