@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -185,8 +185,11 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Server mode with worker registry: dispatch to remote worker via gRPC
-	if s.workerRegistry != nil {
+	// Any registered backend serves the create through the shared flow. The
+	// condition is backend registration, not the worker registry: a cell served
+	// by a backend has no registry and no local manager, so gating on the
+	// registry made every create there fail with "server-only mode".
+	if s.canPlace(uuid.UUID(orgID), runtimeFor(c), cfg) {
 		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg, secretStoreID)
 	}
 
@@ -796,30 +799,6 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		region = "iad"
 	}
 
-	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
-	if err != nil {
-		// No worker immediately available — poll for up to 30s
-		// (scaler may be launching a new worker)
-		deadline := time.After(30 * time.Second)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for err != nil {
-			select {
-			case <-deadline:
-				return c.JSON(http.StatusServiceUnavailable, map[string]string{
-					"error": "no workers available in region " + region + " (waited 30s)",
-				})
-			case <-ctx.Done():
-				return c.JSON(http.StatusServiceUnavailable, map[string]string{
-					"error": "request cancelled while waiting for capacity",
-				})
-			case <-ticker.C:
-				worker, grpcClient, err = s.workerRegistry.GetLeastLoadedWorker(region)
-			}
-		}
-		log.Printf("sandbox: worker became available after queuing (region=%s)", region)
-	}
-
 	// Resolve template (org-scoped lookup with public fallback).
 	// Edge-first when s.edge is configured (post-migration 041), local PG
 	// otherwise. Same return shape so the rest of the create flow doesn't
@@ -864,182 +843,149 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if poolTemplate == "" {
 			poolTemplate = poolTemplateName()
 		}
+		// This is the fleet's own warm pool, which lives in PG and is claimed by
+		// resume+rebind on a worker. A backend that keeps its own warm stock
+		// serves it from inside Claim instead, so there is nothing to branch on
+		// here — the create below is the same call either way.
 		if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
 			return resp
 		}
 	}
 
-	// Dispatch via persistent gRPC connection.
-	// Worker uses local cache for checkpoint forks (300ms) and downloads from S3
-	// only on cold starts. The pre-fix 60s budget was tight for cold forks of
-	// multi-GB checkpoints — under any blob-side contention or rebase work,
-	// the call could time out before the worker finished. Bumped to a generous
-	// flat 5min so cold forks of large checkpoints land cleanly. The happy
-	// path is unchanged: this RPC returns as soon as the VM is up, so warm
-	// forks still complete in well under a second.
-	grpcTimeout := 5 * time.Minute
-	grpcCtx, cancel := context.WithTimeout(ctx, grpcTimeout)
-	defer cancel()
+	// Everything below is runtime-independent: choose a host, write the row,
+	// start the host, promote. runCreate owns that order; the closures below own
+	// what each step means here. Before this the sequence was inline and the
+	// persist-before-activate constraint was a comment.
+	orgRuntime := runtimeFor(c)
+	backend, ok := s.claimBackend(placement{
+		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+	})
+	if !ok {
+		// No registered backend can accept a sandbox. A cell in this state can
+		// still serve the ones it already has, so this is a capacity answer.
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "out of capacity: no sandbox capacity is currently available in this region",
+		})
+	}
 
-	// Save requested resource limits — create with defaults (golden snapshot),
-	// then scale up after creation. This avoids needing a golden per CPU config.
-	requestedMemoryMB := cfg.MemoryMB
-	requestedCpuCount := cfg.CpuCount
-
-	// Pre-generate sandbox ID so we can create the session in PG before the
-	// gRPC call. The worker's RecordScaleEvent needs the org_id from the
-	// session row, which must exist before the worker looks it up.
+	// Pre-generate the sandbox id: the row must carry it before the host boots,
+	// because the host looks its org up by this id while starting.
 	sandboxID := "sb-" + uuid.New().String()[:8]
 
-	// Register inline webhooks at the edge (Svix) BEFORE the session row and the
-	// worker boot, so the endpoint exists well before `created` is relayed. On
-	// this remote path `created` is emitted only at the pending→running promotion
-	// (i.e. on successful create), so a failed create relays no `created` at all.
+	// Register inline webhooks at the edge (Svix) BEFORE the row and the boot, so
+	// the endpoint exists well before `created` is relayed. On this path `created`
+	// is emitted only at the pending→running promotion, so a failed create relays
+	// no `created` at all.
 	var inlineWebhooks []types.SandboxWebhookResult
 	if hasOrg && len(cfg.Webhooks) > 0 {
 		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
 	}
 
-	// Create session with "pending" status before dispatching to worker.
-	if s.store != nil && hasOrg {
-		template := cfg.Template
-		if template == "" {
-			template = "default"
-		}
-		cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
-		metadataJSON, _ := json.Marshal(cfg.Metadata)
-		// Log + report (Sentry) any session-insert failure loudly. The old
-		// `_, _ =` swallow produced D1-only sandboxes: the edge wrote the
-		// sandboxes_index row, the cell PG row never materialized, and every
-		// subsequent kill/hibernate/exec returned "sandbox not found" via
-		// GetSandboxSession. Continuing past the error keeps the user-visible
-		// create path 200 (the gRPC call below still creates the VM), but the
-		// failure now surfaces in logs and Sentry so we can chase root causes
-		// instead of silently producing orphans.
-		if _, insErr := s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, worker.ID, cfgJSON, metadataJSON, "pending", secretStoreID); insErr != nil {
-			log.Printf("sandbox: PG session insert failed for %s: %v — sandbox will be D1-only until reconciled", sandboxID, insErr)
-			observability.CaptureError(insErr, "area", "sandbox_create", "op", "pg_session_insert", "sandbox_id", sandboxID, "org_id", uuid.UUID(orgID).String())
-		}
-		if worker.GoldenVersion != "" {
-			_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, worker.GoldenVersion)
-		}
-		if templateID != nil {
-			_ = s.store.UpdateSandboxSessionTemplate(ctx, sandboxID, *templateID)
-		}
-	}
+	var host activated
+	workerID, err := runCreate(ctx, sandboxID, createSteps{
+		claim: func(ctx context.Context) (string, error) {
+			return backend.Claim(ctx, placement{
+				sandboxID: sandboxID, region: region,
+				orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+			})
+		},
 
-	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
-		SandboxId:            sandboxID,
-		Template:             cfg.Template,
-		Timeout:              int32(cfg.Timeout),
-		Envs:                 cfg.Envs,
-		NetworkEnabled:       cfg.IsNetworkEnabled(),
-		Port:                 int32(cfg.Port),
-		TemplateRootfsKey:    templateRootfsKey,
-		TemplateWorkspaceKey: templateWorkspaceKey,
-		EgressAllowlist:      cfg.EgressAllowlist,
-		SecretAllowedHosts:   flattenSecretAllowedHosts(cfg.SecretAllowedHosts),
-		SecretEnvs:           cfg.SecretEnvs,
-		DiskMb:               int32(cfg.DiskMB),
-		VmdoConnectToken:     auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
+		persistRequired: backend.RequiresPersistedRow(),
+
+		persist: func(ctx context.Context, workerID string) error {
+			if s.store == nil || !hasOrg {
+				return nil
+			}
+			template := cfg.Template
+			if template == "" {
+				template = "default"
+			}
+			cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
+			metadataJSON, _ := json.Marshal(cfg.Metadata)
+			// A failure here used to be swallowed, which produced D1-only
+			// sandboxes: the edge wrote its index row, the cell row never
+			// materialized, and every later kill/hibernate/exec answered
+			// "sandbox not found". It is reported now even where it is survivable.
+			if _, err := s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c),
+				template, region, workerID, cfgJSON, metadataJSON, "pending", secretStoreID); err != nil {
+				observability.CaptureError(err, "area", "sandbox_create", "op", "pg_session_insert",
+					"sandbox_id", sandboxID, "org_id", uuid.UUID(orgID).String())
+				return err
+			}
+			if templateID != nil {
+				_ = s.store.UpdateSandboxSessionTemplate(ctx, sandboxID, *templateID)
+			}
+			return nil
+		},
+
+		activate: func(ctx context.Context, workerID string) error {
+			var err error
+			host, err = backend.Activate(ctx, activation{
+				sandboxID:            sandboxID,
+				workerID:             workerID,
+				cfg:                  cfg,
+				templateRootfsKey:    templateRootfsKey,
+				templateWorkspaceKey: templateWorkspaceKey,
+				connectToken:         auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
+			})
+			return err
+		},
+
+		promote: func(ctx context.Context, workerID string) error {
+			if s.store == nil {
+				return nil
+			}
+			// Stamp the image the host actually built on BEFORE the status
+			// flip, so the golden does not ride on that write succeeding.
+			// Nothing backfills a blank golden — there is no sweep for it — so
+			// a row that misses this stamp is unmigratable for the life of the
+			// sandbox, and a live-migrate has no base to rebase against.
+			if host.goldenVersion != "" {
+				_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, host.goldenVersion)
+			}
+			return s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "running", nil)
+		},
+
+		cleanup: func(ctx context.Context, workerID string, cause error) {
+			// Give the host back first. The row can be corrected later; a host
+			// nothing is tracking cannot be, and it bills the whole time.
+			backend.Release(ctx, sandboxID, workerID)
+			if s.store != nil {
+				msg := cause.Error()
+				_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "failed", &msg)
+			}
+			// Inline webhooks were registered at the edge; a sandbox that never
+			// started emits no events, so those endpoints simply sit idle.
+		},
 	})
 	if err != nil {
-		// Mark session as failed so it doesn't count as active.
-		if s.store != nil {
-			errMsg := err.Error()
-			_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "failed", &errMsg)
-		}
-		// Inline webhooks were registered at the edge (Svix); a sandbox that never
-		// started simply emits no events, so the endpoints sit idle. Edge-side
-		// orphan cleanup is a future nicety, not worth a synchronous edge call on
-		// the create-failure path.
-		// A worker that is restarting/unreachable is transient — return a
-		// retryable 503 (with Retry-After) instead of a raw 500 so callers retry
-		// and the edge can reselect a worker.
-		if isTransientWorkerErr(err) {
-			c.Response().Header().Set("Retry-After", "2")
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"error": "worker temporarily unavailable, please retry: " + err.Error(),
-				"code":  "worker_unavailable",
-			})
-		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "worker create failed: " + err.Error(),
-		})
+		return respondCreateErr(c, err)
 	}
 
-	// Creation succeeded — promote session to running.
-	if s.store != nil {
-		_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "running", nil)
-		// Stamp the authoritative golden the worker actually created this box on,
-		// so a later live-migrate can pick the right rebase base. Falls back to
-		// the registry heartbeat's golden for pre-golden workers. EVERY box must
-		// end up with a golden_version — a blank one is unmigratable.
-		golden := grpcResp.GetGoldenVersion()
-		if golden == "" {
-			golden = worker.GoldenVersion
-		}
-		if golden != "" {
-			_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, golden)
-		}
-	}
-
-	// Preview-URL auth: validate the payload, hash the token, persist it on
-	// the freshly-promoted session row. Done after the running-promotion so
-	// SetSandboxPreviewAuth's row-state check finds the right row. The
-	// plaintext is returned exactly once in the response below.
+	// Preview-URL auth: validate, hash, and persist on the promoted row — after
+	// promotion so the row-state check finds the right row. The plaintext is
+	// returned exactly once, below.
 	var previewAuthPlaintext string
 	if cfg.PreviewAuth != nil {
 		pt, hash, scheme, vStatus, vErr := previewauth.ProcessRequest(cfg.PreviewAuth.Scheme, cfg.PreviewAuth.Token)
 		if vErr != nil {
-			log.Printf("sandbox: %s preview auth setup failed: %v", grpcResp.SandboxId, vErr)
+			log.Printf("sandbox: %s preview auth setup failed: %v", sandboxID, vErr)
 			if vStatus >= 400 && vStatus < 500 {
 				return c.JSON(vStatus, map[string]string{"error": vErr.Error()})
 			}
 		} else if hash != "" && s.store != nil {
-			if pErr := s.store.SetSandboxPreviewAuth(ctx, grpcResp.SandboxId, hash, scheme); pErr != nil {
-				log.Printf("sandbox: %s SetSandboxPreviewAuth failed: %v", grpcResp.SandboxId, pErr)
+			if pErr := s.store.SetSandboxPreviewAuth(ctx, sandboxID, hash, scheme); pErr != nil {
+				log.Printf("sandbox: %s SetSandboxPreviewAuth failed: %v", sandboxID, pErr)
 			} else {
 				previewAuthPlaintext = pt
 			}
 		}
 	}
 
-	// Scale to requested resources after creation (virtio-mem hotplug + cgroup).
-	// Golden snapshot has fixed CPU/RAM — we create with defaults then scale up.
-	if requestedMemoryMB > 0 || requestedCpuCount > 0 {
-		scaleMB := requestedMemoryMB
-		if scaleMB <= 0 {
-			scaleMB = 1024
-		}
-		cpuCount := requestedCpuCount
-		if cpuCount <= 0 {
-			cpuCount = scaleMB / 4096 // 1 vCPU per 4GB
-			if cpuCount < 1 {
-				cpuCount = 1
-			}
-		}
-		maxMemBytes := int64(scaleMB) * 1024 * 1024
-		cpuPeriod := int64(100000)
-		cpuMax := int64(cpuCount) * cpuPeriod
-
-		scaleCtx, scaleCancel := context.WithTimeout(ctx, 10*time.Second)
-		_, scaleErr := grpcClient.SetSandboxLimits(scaleCtx, &pb.SetSandboxLimitsRequest{
-			SandboxId:      grpcResp.SandboxId,
-			MaxMemoryBytes: maxMemBytes,
-			CpuMaxUsec:     cpuMax,
-			CpuPeriodUsec:  cpuPeriod,
-		})
-		scaleCancel()
-		if scaleErr != nil {
-			log.Printf("sandbox: post-create scale failed for %s: %v (continuing with defaults)", grpcResp.SandboxId, scaleErr)
-		}
-	}
-
-	// Issue sandbox-scoped JWT (24h TTL — independent of sandbox idle timeout)
+	// Issue sandbox-scoped JWT (24h TTL — independent of the sandbox idle timeout).
 	var token string
 	if s.jwtIssuer != nil {
-		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, 24*time.Hour)
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, workerID, 24*time.Hour)
 		if err != nil {
 			log.Printf("sandbox: failed to issue JWT: %v", err)
 		} else {
@@ -1047,14 +993,16 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 	}
 
-	s.emitEvent("create", grpcResp.SandboxId, worker.ID, fmt.Sprintf("created on %s", worker.ID[len(worker.ID)-8:]))
+	// Reason text reaches customers through webhooks, so it says what happened
+	// rather than what ran it.
+	s.emitEvent("create", sandboxID, workerID, "sandbox started")
 
 	resp := map[string]interface{}{
-		"sandboxID": grpcResp.SandboxId,
+		"sandboxID": sandboxID,
 		"token":     token,
-		"status":    grpcResp.Status,
+		"status":    host.status,
 		"region":    region,
-		"workerID":  worker.ID,
+		"workerID":  workerID,
 	}
 	if s.sandboxDomain != "" {
 		resp["sandboxDomain"] = s.sandboxDomain
@@ -1171,6 +1119,25 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 func (s *Server) killSandboxByID(c echo.Context, sandboxID string) error {
 	deleteSecretStore := shouldDeleteAttachedSecretStore(c)
+
+	// A sandbox held by a registered backend is torn down there, not dispatched
+	// to a worker. Checked before the worker registry because these rows carry a
+	// synthetic worker_id no registry can resolve — without this the host is
+	// never released and bills compute until its hard duration cap.
+	if backend, mgr, ok := s.backendFor(c.Request().Context(), sandboxID); ok {
+		if err := mgr.Kill(c.Request().Context(), sandboxID); err != nil {
+			log.Printf("%s: terminate %s failed: %v", backend.Name(), sandboxID, err)
+			return respondManagerErr(c, err)
+		}
+		if s.store != nil {
+			msg := "destroyed by request"
+			_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", &msg)
+		}
+		// Reason text reaches customers through webhooks — it says what
+		// happened, not what ran it.
+		s.emitEvent("destroy", sandboxID, "", "sandbox stopped")
+		return c.NoContent(http.StatusNoContent)
+	}
 
 	// Server mode with worker registry: dispatch destroy via gRPC
 	if s.workerRegistry != nil {
@@ -2067,6 +2034,15 @@ func (s *Server) hibernateSandbox(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
 
+	// A backend that parks its own sandboxes gets first refusal, BEFORE the
+	// registry branch below. Order is not cosmetic: a backend-served cell still
+	// has a worker registry — it is what answers worker_id lookups — but no
+	// workers in it, so falling through would dispatch every hibernate to a
+	// fleet that does not exist and fail with "no workers available".
+	if h, sess, ok := s.hibernatorForSandbox(ctx, id); ok {
+		return s.hibernateViaBackend(c, id, h, sess)
+	}
+
 	// Server mode: dispatch to worker via gRPC
 	if s.workerRegistry != nil {
 		return s.hibernateSandboxRemote(c, id)
@@ -2289,6 +2265,16 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	// cell-PG orgs table this used to read is gone, and D1 is authoritative.
 	// halt_reconciler still enforces against running sandboxes; this wake
 	// path is reached only after the edge has gated on D1.is_halted.
+
+	// A backend that revives its own sandboxes gets first refusal, for the same
+	// reason as hibernate: the registry is non-nil on such a cell but empty, so
+	// falling through answers "no workers available" for a sandbox this process
+	// can wake itself. It also covers both tiers — the backend decides whether
+	// to resume a suspended host or rebuild from the archive — so the paused
+	// branch below stays QEMU's alone.
+	if h, sess, ok := s.hibernatorForSandbox(ctx, id); ok {
+		return s.wakeViaBackend(c, id, h, sess, req)
+	}
 
 	// Server mode: pick any worker, dispatch via gRPC
 	if s.workerRegistry != nil {

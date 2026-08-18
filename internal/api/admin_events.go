@@ -22,9 +22,9 @@ type AdminEvent struct {
 
 // AdminEventBus broadcasts events to connected SSE clients.
 type AdminEventBus struct {
-	mu       sync.RWMutex
-	clients  map[chan AdminEvent]struct{}
-	history  []AdminEvent // last 200 events
+	mu      sync.RWMutex
+	clients map[chan AdminEvent]struct{}
+	history []AdminEvent // last 200 events
 }
 
 // NewAdminEventBus creates a new event bus.

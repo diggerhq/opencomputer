@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	defaultSignedURLExpiry = 3600     // 1 hour in seconds
-	maxSignedURLExpiry     = 86400    // 24 hours in seconds
+	defaultSignedURLExpiry = 3600  // 1 hour in seconds
+	maxSignedURLExpiry     = 86400 // 24 hours in seconds
 )
 
 // signedURLSecret returns the HMAC secret or an error if not configured.

@@ -11,7 +11,8 @@ import (
 )
 
 func (s *Server) readFile(c echo.Context) error {
-	if s.manager == nil {
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -28,7 +29,7 @@ func (s *Server) readFile(c echo.Context) error {
 
 	routeOp := func(ctx context.Context) error {
 		var err error
-		reader, totalSize, err = s.manager.ReadFileStream(ctx, id, path)
+		reader, totalSize, err = mgr.ReadFileStream(ctx, id, path)
 		return err
 	}
 
@@ -58,7 +59,8 @@ func (s *Server) readFile(c echo.Context) error {
 }
 
 func (s *Server) writeFile(c echo.Context) error {
-	if s.manager == nil {
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -71,7 +73,7 @@ func (s *Server) writeFile(c echo.Context) error {
 	}
 
 	routeOp := func(ctx context.Context) error {
-		_, err := s.manager.WriteFileStream(ctx, id, path, 0644, c.Request().Body)
+		_, err := mgr.WriteFileStream(ctx, id, path, 0644, c.Request().Body)
 		return err
 	}
 
@@ -93,7 +95,8 @@ func (s *Server) writeFile(c echo.Context) error {
 }
 
 func (s *Server) listDir(c echo.Context) error {
-	if s.manager == nil {
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -107,7 +110,7 @@ func (s *Server) listDir(c echo.Context) error {
 
 	routeOp := func(ctx context.Context) error {
 		var err error
-		entries, err = s.manager.ListDir(ctx, id, path)
+		entries, err = mgr.ListDir(ctx, id, path)
 		return err
 	}
 
@@ -129,7 +132,8 @@ func (s *Server) listDir(c echo.Context) error {
 }
 
 func (s *Server) makeDir(c echo.Context) error {
-	if s.manager == nil {
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -142,7 +146,7 @@ func (s *Server) makeDir(c echo.Context) error {
 	}
 
 	routeOp := func(ctx context.Context) error {
-		return s.manager.MakeDir(ctx, id, path)
+		return mgr.MakeDir(ctx, id, path)
 	}
 
 	if s.router != nil {
@@ -163,7 +167,8 @@ func (s *Server) makeDir(c echo.Context) error {
 }
 
 func (s *Server) removeFile(c echo.Context) error {
-	if s.manager == nil {
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -176,7 +181,7 @@ func (s *Server) removeFile(c echo.Context) error {
 	}
 
 	routeOp := func(ctx context.Context) error {
-		return s.manager.Remove(ctx, id, path)
+		return mgr.Remove(ctx, id, path)
 	}
 
 	if s.router != nil {

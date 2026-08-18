@@ -83,11 +83,11 @@ func (s *Server) billingGet(c echo.Context) error {
 	// the Stripe Billing Portal instead of re-computing cost locally against a
 	// hardcoded rate table that would diverge for grandfathered orgs.
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"plan":                       org.Plan,
-		"stripeCreditCents":          stripeCreditCents,
-		"maxConcurrentSandboxes":     org.MaxConcurrentSandboxes,
-		"hasPaymentMethod":           org.StripeCustomerID != nil,
-		"freeCreditsRemainingCents":  org.FreeCreditsRemainingCents,
+		"plan":                      org.Plan,
+		"stripeCreditCents":         stripeCreditCents,
+		"maxConcurrentSandboxes":    org.MaxConcurrentSandboxes,
+		"hasPaymentMethod":          org.StripeCustomerID != nil,
+		"freeCreditsRemainingCents": org.FreeCreditsRemainingCents,
 	})
 }
 
@@ -185,15 +185,15 @@ func (s *Server) billingInvoices(c echo.Context) error {
 	}
 
 	type inv struct {
-		ID          string  `json:"id"`
-		Number      string  `json:"number"`
-		Status      string  `json:"status"`
-		AmountDue   int64   `json:"amountDue"`
-		AmountPaid  int64   `json:"amountPaid"`
-		Currency    string  `json:"currency"`
-		Created     int64   `json:"created"`
-		HostedURL   string  `json:"hostedUrl"`
-		PDFURL      string  `json:"pdfUrl"`
+		ID         string `json:"id"`
+		Number     string `json:"number"`
+		Status     string `json:"status"`
+		AmountDue  int64  `json:"amountDue"`
+		AmountPaid int64  `json:"amountPaid"`
+		Currency   string `json:"currency"`
+		Created    int64  `json:"created"`
+		HostedURL  string `json:"hostedUrl"`
+		PDFURL     string `json:"pdfUrl"`
 	}
 	var result []inv
 	for _, i := range invoices {

@@ -206,8 +206,13 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// Reuse the normal remote-create path — picks a worker, dispatches via
-	// gRPC, persists the session, writes the {sandboxID, token, status, ...}
+	// Reuse the normal remote-create path — chooses a backend and a host,
+	// persists the session, boots it, writes the {sandboxID, token, status, ...}
 	// response body.
+	//
+	// This handler is where the edge actually lands, which is why placement must
+	// not be duplicated here: a claim that lived only on the public path was
+	// dead code in production, and every customer create 503'd for 30s while a
+	// full pool sat idle. Both handlers now share one create.
 	return s.createSandboxRemote(c, c.Request().Context(), cfg, orgID, true, secretStoreID)
 }

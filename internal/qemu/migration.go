@@ -328,6 +328,17 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 	log.Printf("qemu: live migration %s → %s complete (%dms)",
 		sandboxID, incomingAddr, time.Since(t0).Milliseconds())
 
+	// The pre-copied disks have served their purpose: the destination pulled
+	// them during PrepareMigrationIncoming and the VM is now running there.
+	// Nothing reads them again.
+	//
+	// Every cleanup path in this file used to be os.RemoveAll on local staging
+	// dirs, so the uploaded copies were never freed at all — 2.6 TB of them on
+	// prod by 2026-08-17. Keys are per-sandbox rather than per-migration, so a
+	// re-migration overwrites and the leak is bounded at one disk set per
+	// sandbox ever migrated, but it never returns to zero on its own.
+	mc.deleteMigrationBlobs(sandboxID)
+
 	// Source cleanup: quit QEMU, release network
 	_ = vm.qmp.Quit()
 	vm.qmp.Close()
@@ -897,6 +908,42 @@ func (m *Manager) LiveMigrate(ctx context.Context, sandboxID, incomingAddr strin
 }
 
 // uploadFile uploads a local file to S3.
+// migrationBlobKeys lists every object a pre-copy can produce for a sandbox.
+//
+// Built from the sandbox id rather than threaded through from the upload
+// because there are two pre-copy shapes — the merged single-disk path and the
+// split rootfs+workspace path, the latter compressed — and a cleanup that only
+// knew about the variant it was told about would silently leave the others
+// behind. Deleting a key that was never written is a no-op on object storage,
+// so over-listing is free and under-listing leaks.
+func migrationBlobKeys(sandboxID string) []string {
+	return []string{
+		fmt.Sprintf("migrations/%s/rootfs.qcow2", sandboxID),
+		fmt.Sprintf("migrations/%s/workspace.qcow2.zst", sandboxID),
+		fmt.Sprintf("migrations/%s/workspace.qcow2", sandboxID),
+	}
+}
+
+// deleteMigrationBlobs removes a sandbox's pre-copied disks from blob storage.
+//
+// Best-effort by design: the migration itself has already succeeded by the time
+// this runs, so a failure here is a storage cost, not a correctness problem,
+// and it must not turn a completed migration into a reported failure. Whatever
+// this drops — including the blobs of migrations that failed before reaching
+// cleanup — is swept up later by the orphan reconciler.
+func (mc *MigrationCoordinator) deleteMigrationBlobs(sandboxID string) {
+	if mc.checkpointStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, key := range migrationBlobKeys(sandboxID) {
+		if err := mc.checkpointStore.Delete(ctx, key); err != nil {
+			log.Printf("qemu: migration %s: delete pre-copy blob %s: %v", sandboxID, key, err)
+		}
+	}
+}
+
 func (mc *MigrationCoordinator) uploadFile(ctx context.Context, localPath, s3Key string) (int64, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {

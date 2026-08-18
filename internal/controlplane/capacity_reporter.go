@@ -62,10 +62,49 @@ type capacityPayload struct {
 	RunningSandboxes int `json:"running_sandboxes"`
 }
 
+// CapacitySource supplies the three placement numbers for a cell.
+//
+// Behind an interface because "capacity" is not inherently a worker count —
+// that is just how a QEMU cell measures it. A cell backed by AWS Lambda
+// MicroVMs has no workers at all, and with the registry hardcoded here it could
+// never emit cell_capacity, so the edge's isHealthy() gate (which requires
+// available_workers > 0) refused to route to it — including an explicit
+// cellId pin. The cell was unreachable, not unhealthy.
+//
+// available is the one that matters to placement: the edge treats > 0 as "this
+// cell can accept a create" and ignores the other two.
+type CapacitySource interface {
+	Capacity() (healthy, available, running int)
+}
+
+// workerRegistryCapacity is the QEMU cell's answer: count workers whose REAL
+// memory usage is under the pressure threshold. Unchanged from when this logic
+// lived inline in emit().
+type workerRegistryCapacity struct{ registry *RedisWorkerRegistry }
+
+// WorkerRegistryCapacity adapts a worker registry to a CapacitySource.
+func WorkerRegistryCapacity(r *RedisWorkerRegistry) CapacitySource {
+	return workerRegistryCapacity{registry: r}
+}
+
+func (w workerRegistryCapacity) Capacity() (healthy, available, running int) {
+	for _, wk := range w.registry.GetAllWorkers() {
+		if wk == nil || wk.Draining {
+			continue
+		}
+		healthy++
+		running += wk.Current
+		if wk.MemPct < memPressureThresholdPct {
+			available++
+		}
+	}
+	return healthy, available, running
+}
+
 // CapacityReporter periodically XADDs cell_capacity events.
 type CapacityReporter struct {
 	rdb       *redis.Client
-	registry  *RedisWorkerRegistry
+	source    CapacitySource
 	cellID    string
 	streamKey string
 	interval  time.Duration
@@ -77,8 +116,11 @@ type CapacityReporter struct {
 
 // CapacityReporterConfig configures the reporter.
 type CapacityReporterConfig struct {
-	Redis    *redis.Client
+	Redis *redis.Client
+	// Registry is the QEMU shorthand for Source. Exactly one of the two must be
+	// set; Registry wins when both are, so existing callers keep their meaning.
 	Registry *RedisWorkerRegistry
+	Source   CapacitySource
 	CellID   string
 	Interval time.Duration // default 30s
 }
@@ -89,8 +131,12 @@ func NewCapacityReporter(cfg CapacityReporterConfig) (*CapacityReporter, error) 
 	if cfg.Redis == nil {
 		return nil, errors.New("capacity_reporter: Redis required")
 	}
-	if cfg.Registry == nil {
-		return nil, errors.New("capacity_reporter: Registry required")
+	source := cfg.Source
+	if cfg.Registry != nil {
+		source = WorkerRegistryCapacity(cfg.Registry)
+	}
+	if source == nil {
+		return nil, errors.New("capacity_reporter: Registry or Source required")
 	}
 	if cfg.CellID == "" {
 		return nil, errors.New("capacity_reporter: CellID required")
@@ -101,7 +147,7 @@ func NewCapacityReporter(cfg CapacityReporterConfig) (*CapacityReporter, error) 
 	}
 	return &CapacityReporter{
 		rdb:       cfg.Redis,
-		registry:  cfg.Registry,
+		source:    source,
 		cellID:    cfg.CellID,
 		streamKey: "events:" + cfg.CellID,
 		interval:  iv,
@@ -142,18 +188,7 @@ func (r *CapacityReporter) runLoop(ctx context.Context) {
 }
 
 func (r *CapacityReporter) emit(ctx context.Context) {
-	workers := r.registry.GetAllWorkers()
-	var healthy, available, running int
-	for _, w := range workers {
-		if w == nil || w.Draining {
-			continue
-		}
-		healthy++
-		running += w.Current
-		if w.MemPct < memPressureThresholdPct {
-			available++
-		}
-	}
+	healthy, available, running := r.source.Capacity()
 
 	payload, err := json.Marshal(capacityPayload{
 		HealthyWorkers:   healthy,

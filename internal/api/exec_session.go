@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -230,6 +231,14 @@ func (s *Server) execRun(c echo.Context) error {
 		})
 	}
 
+	// MicroVM-backed sandboxes are served in-process, checked before the worker
+	// dispatch below for the same reason as in execRunAsyncRoute: their
+	// worker_id names no registered worker, so execRunRemote can only fail with
+	// "no gRPC connection to worker microvm:<id>".
+	if mgr, ok := s.execManagerFor(id); ok {
+		return s.execRunMicrovm(c, mgr, id, req)
+	}
+
 	// Server mode: route exec to the worker that owns this sandbox via gRPC
 	if s.workerRegistry != nil {
 		return s.execRunRemote(c, id, req)
@@ -238,7 +247,11 @@ func (s *Server) execRun(c echo.Context) error {
 	// POST /exec/run is the synchronous one-shot endpoint, kept for SDK versions
 	// that predate the async flow. Newer SDKs POST /exec/run-async, which returns
 	// a handle immediately and is polled via /result (see execRunAsyncRoute).
-	if s.manager == nil {
+	// managerFor, not s.manager: on a control plane serving a registered backend
+	// s.manager is nil, and reading it directly answers "not available in
+	// server-only mode" for a sandbox that is running fine.
+	mgr := s.managerFor(c)
+	if mgr == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -246,7 +259,7 @@ func (s *Server) execRun(c echo.Context) error {
 
 	routeOp := func(ctx context.Context) error {
 		var err error
-		result, err = s.manager.Exec(ctx, id, req)
+		result, err = mgr.Exec(ctx, id, req)
 		return err
 	}
 
@@ -329,10 +342,41 @@ func (s *Server) execRunAsyncRoute(c echo.Context) error {
 	if req.Command == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
 	}
+	// MicroVM-backed sandboxes are served in-process by the awsvm manager
+	// instead of being dispatched to a worker. Checked before the
+	// execSessionManager guard because that manager is part of the worker path
+	// and is legitimately nil on a MicroVM-only cell.
+	if mgr, ok := s.execManagerFor(id); ok {
+		return s.execRunMicrovm(c, mgr, id, req)
+	}
 	if s.execSessionManager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 	return s.execRunAsync(c, id, req)
+}
+
+// execRunMicrovm runs a command on a MicroVM-backed sandbox and answers inline.
+//
+// The async/poll ladder exists because the worker path could not answer within
+// one request. Here it can: the agent tunnel is already open, so a command is a
+// single ~83ms round trip. Returning the completed ExecRunResult directly lets
+// the SDK short-circuit its poll loop — the same contract as the worker path's
+// inline-hold fast path, reached without the hold.
+func (s *Server) execRunMicrovm(c echo.Context, mgr sandbox.Manager, sandboxID string, req types.ProcessConfig) error {
+	res, err := mgr.Exec(c.Request().Context(), sandboxID, req)
+	if err != nil {
+		log.Printf("microvm: exec %s failed: %v", sandboxID, err)
+		return respondManagerErr(c, err)
+	}
+	if s.router != nil {
+		s.router.Touch(sandboxID) // keep the idle timer honest, as the worker path does
+	}
+	return c.JSON(http.StatusOK, types.ExecRunResult{
+		Running:  false,
+		ExitCode: &res.ExitCode,
+		Stdout:   res.Stdout,
+		Stderr:   res.Stderr,
+	})
 }
 
 // execRunRemote routes an exec/run request to the worker via gRPC.

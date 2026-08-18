@@ -17,32 +17,38 @@ import (
 	"github.com/opensandbox/opensandbox/internal/alert"
 	"github.com/opensandbox/opensandbox/internal/compute"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/diskpolicy"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
 const (
-	scaleUpThreshold   = 0.50 // Scale up when utilization > 50% (gives ~3 min runway for new worker to boot)
-	scaleDownThreshold = 0.20 // Scale down when utilization < 20%
-	maxWorkersPerRegion = 10  // Hard cap to prevent runaway launches
+	scaleUpThreshold    = 0.50             // Scale up when utilization > 50% (gives ~3 min runway for new worker to boot)
+	scaleDownThreshold  = 0.20             // Scale down when utilization < 20%
+	maxWorkersPerRegion = 10               // Hard cap to prevent runaway launches
 	pendingWorkerTTL    = 10 * time.Minute // How long to wait for a launched worker to register
 
 	// Resource-based scaling thresholds (applied per-worker, trigger on ANY worker exceeding)
-	resourceCPUThreshold  = 70.0 // Scale up if any worker CPU > 70%
-	resourceMemThreshold  = 70.0 // Scale up if any worker memory > 70%
-	resourceDiskThreshold = 60.0 // Scale up if any worker disk > 60%
+	resourceCPUThreshold = 70.0 // Scale up if any worker CPU > 70%
+	resourceMemThreshold = 70.0 // Scale up if any worker memory > 70%
+	// Disk rungs come from the shared ladder (internal/diskpolicy) rather than
+	// being written here. The checkpoint cache has to release space BEFORE any
+	// of these fire, and it lives in a package this one does not import — two
+	// independent numbers is exactly how the 60-80% band opened up, where the
+	// scaler acted on pressure only the cache could relieve.
+	resourceDiskThreshold = diskpolicy.ScaleUpPct
 
 	// Evacuation thresholds (per-worker, triggers live migration of sandboxes OFF the hot worker)
 	evacuationCPUThreshold  = 80.0
 	evacuationMemThreshold  = 80.0
-	evacuationDiskThreshold = 70.0
+	evacuationDiskThreshold = diskpolicy.EvacuatePct
 
 	// Emergency thresholds — above these, hibernate sandboxes to free resources immediately
 	// (no migration target needed, just dump to S3 and delete local files)
 	emergencyCPUThreshold  = 95.0
 	emergencyMemThreshold  = 95.0
-	emergencyDiskThreshold = 90.0
-	evacuationBatchSize    = 3                  // sandboxes to migrate per eval cycle per worker
-	evacuationCooldown     = 60 * time.Second   // per-worker cooldown between evacuation batches
+	emergencyDiskThreshold = diskpolicy.EmergencyPct
+	evacuationBatchSize    = 3                // sandboxes to migrate per eval cycle per worker
+	evacuationCooldown     = 60 * time.Second // per-worker cooldown between evacuation batches
 	// drainTimeout caps total wall-clock time for a single drain. With
 	// per-target serialization (one in-flight migration per target), a
 	// drain bottlenecked on a single target processes sandboxes serially
@@ -52,7 +58,7 @@ const (
 	// of a full drain. Bumping to 6h leaves headroom for large workloads;
 	// genuine stuck drains are caught by per-migration timeouts + the
 	// natural-expiry fallback in drainWorker.
-	drainTimeout           = 6 * time.Hour
+	drainTimeout = 6 * time.Hour
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -86,14 +92,14 @@ type OrphanCleaner interface {
 type ScalerConfig struct {
 	Pool        compute.Pool
 	Registry    ScalerRegistry
-	Store       *db.Store     // for updating session worker_id after migration
+	Store       *db.Store        // for updating session worker_id after migration
 	StateStore  ScalerStateStore // optional: persists scaler state to Redis (nil = in-memory)
 	WorkerImage string
 	Cooldown    time.Duration // minimum time between scale-up actions per region
 	Interval    time.Duration // how often to evaluate scaling (0 = default 30s)
-	MinWorkers     int        // minimum total workers per region (0 = default 1). Always kept running.
-	MaxWorkers     int        // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
-	IdleReserve    int        // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
+	MinWorkers  int           // minimum total workers per region (0 = default 1). Always kept running.
+	MaxWorkers  int           // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
+	IdleReserve int           // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
 
 	// Event emit for D1 sandboxes_index sync. After a scaler-triggered
 	// migration succeeds (rolling replace, evacuation), XADD a "migrated"
@@ -140,17 +146,17 @@ type Scaler struct {
 	image       string
 	cooldown    time.Duration
 	interval    time.Duration
-	minWorkers   int
-	maxWorkers   int
-	idleReserve  int
+	minWorkers  int
+	maxWorkers  int
+	idleReserve int
 
-	rdb     *redis.Client
-	cellID  string
+	rdb    *redis.Client
+	cellID string
 
-	mu       sync.Mutex     // protects stop/cancel
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	running  bool
+	mu      sync.Mutex // protects stop/cancel
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running bool
 
 	machineSizes []string // ranked list of provider-specific sizes for scale-up fallback
 
@@ -743,6 +749,23 @@ func (s *Scaler) evacuateHotWorkers(_ context.Context, region string, workers []
 			continue
 		}
 		if s.state.IsDraining(w.MachineID) {
+			continue
+		}
+		// Nothing to evacuate. Evacuation moves sandboxes off a worker, so a
+		// worker holding none cannot be relieved by it — and this loop feeds a
+		// lightest-first sort, so an empty worker sorts to the FRONT and is
+		// selected every single time. It then takes the global evacuation lock,
+		// runs a no-op batch, and starves whichever worker was genuinely hot.
+		//
+		// Pressure on an empty worker is real but is not sandbox pressure: it
+		// is the checkpoint cache, logs, or orphaned files. Logged rather than
+		// dropped silently, because that distinction is exactly what made the
+		// cache-eviction latch invisible — the scaler appeared to be working on
+		// the problem while doing nothing that could ever fix it.
+		if w.Current == 0 {
+			log.Printf("scaler: worker %s over threshold (cpu=%.1f%% mem=%.1f%% disk=%.1f%%) but holds NO sandboxes — "+
+				"not evacuable; pressure is host-side (cache/logs/orphans), not sandbox load",
+				w.ID, w.CPUPct, w.MemPct, w.DiskPct)
 			continue
 		}
 		if last, ok := s.state.GetLastEvacuation(w.ID); ok && time.Since(last) < evacuationCooldown {

@@ -1261,7 +1261,21 @@ func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration
 // of worker IDs currently registered. Without the returned IDs the maintenance
 // loop's PG sweep would never reach D1 sandboxes_index, which is exactly
 // the post-cutover ghost-row bug.
-func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) ([]OrphanedSandbox, error) {
+// likePatterns turns worker_id prefixes into SQL LIKE patterns. A nil result
+// would make `LIKE ANY` match nothing, so callers with no managed backends get
+// a pattern that cannot match a real worker_id rather than an empty array.
+func likePatterns(prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return []string{"\x00-no-managed-backends"}
+	}
+	out := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		out = append(out, p+"%")
+	}
+	return out
+}
+
+func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool, managedPrefixes []string) ([]OrphanedSandbox, error) {
 	// Include 'pending' as well as 'running': a create that never reached
 	// running (still 'pending') on a worker that has since disappeared must also
 	// be closed, since its scale_event is open and would keep billing. 'pending'
@@ -1272,9 +1286,18 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 		// bound (RAM-resident QEMU pause), so if its worker is dead the box must be
 		// reaped too. Without this, a worker holding only paused boxes would never
 		// be seen as "dead" and its boxes would stay stuck 'hibernated' forever.
+		// Managed-host rows are excluded: their worker_id is synthetic because
+		// the host is managed for us and no worker exists to register. They are
+		// absent from liveWorkers by construction, so this sweep would mark
+		// every one of them 'error / worker lost' within a tick of being
+		// created. Their liveness is reconciled against their own backend
+		// instead. The prefixes come from the registered backends, so a new
+		// runtime is covered without editing this query.
 		`SELECT DISTINCT worker_id FROM sandbox_sessions
-		  WHERE status IN ('running', 'pending')
-		     OR (status = 'hibernated' AND hibernation_mode = 'paused')`)
+		  WHERE NOT (worker_id LIKE ANY($1))
+		    AND (status IN ('running', 'pending')
+		         OR (status = 'hibernated' AND hibernation_mode = 'paused'))`,
+		likePatterns(managedPrefixes))
 	if err != nil {
 		return nil, err
 	}
@@ -1306,9 +1329,10 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 			// (mode != 'paused') have a durable S3 checkpoint and are left alone.
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
 			 WHERE worker_id = $1
+			   AND NOT (worker_id LIKE ANY($2))
 			   AND (status IN ('running', 'pending')
 			        OR (status = 'hibernated' AND hibernation_mode = 'paused'))
-			 RETURNING sandbox_id, org_id, worker_id`, workerID)
+			 RETURNING sandbox_id, org_id, worker_id`, workerID, likePatterns(managedPrefixes))
 		if err != nil {
 			tx.Rollback(ctx)
 			continue
@@ -1508,6 +1532,56 @@ type WorkerSandboxRef struct {
 // when a worker rejoins after a gap, we look up what cell PG thinks is *running*
 // on that worker, ask the worker what it actually has, and close any cell-PG row
 // the worker doesn't claim. Bounded to 1000 rows so a runaway query never blows.
+// MicrovmSessionRef is a persisted MicroVM-backed sandbox: our sandbox id plus
+// the encoded worker_id that carries the AWS MicroVM id.
+type MicrovmSessionRef struct {
+	SandboxID string
+	WorkerID  string
+	// Config is the persisted SandboxConfig JSON. Carried here because the
+	// restore path has to re-derive the sandbox's size from it: usage ticks
+	// price on memory/cpu, so a restore that dropped them would silently
+	// re-meter every surviving sandbox at the backend's default.
+	Config []byte
+}
+
+// ListMicrovmSessions returns running MicroVM-backed sandboxes.
+//
+// These rows carry worker_id "microvm:<microvmID>" rather than a real worker,
+// because AWS holds the VM and there is no worker to name. Encoding the MicroVM
+// id there — instead of adding a column — is what lets a restarting control
+// plane rebuild its in-memory sandbox→MicroVM map. Without it those sandboxes
+// survive in the database but become unroutable, and nothing ever reaps the
+// boxes, which then bill compute until the 8h service cap.
+func (s *Store) ListMicrovmSessions(ctx context.Context, prefixes []string) ([]MicrovmSessionRef, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		// Prefixes come from the registered backends rather than literals here,
+		// so adding a runtime cannot leave this predicate behind — the failure
+		// that would look like sandboxes surviving a restart unroutable, with
+		// their hosts running and nothing able to reap them.
+		`SELECT sandbox_id, worker_id, config FROM sandbox_sessions
+		 WHERE worker_id LIKE ANY($1) AND status = 'running'
+		 ORDER BY started_at DESC
+		 LIMIT 1000`, likePatterns(prefixes))
+	if err != nil {
+		return nil, fmt.Errorf("list microvm sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MicrovmSessionRef
+	for rows.Next() {
+		var sandboxID, workerID string
+		var config []byte
+		if err := rows.Scan(&sandboxID, &workerID, &config); err != nil {
+			return nil, err
+		}
+		out = append(out, MicrovmSessionRef{SandboxID: sandboxID, WorkerID: workerID, Config: config})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListSandboxesByWorkerStatus(ctx context.Context, workerID, status string) ([]WorkerSandboxRef, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT sandbox_id, org_id FROM sandbox_sessions
@@ -1861,6 +1935,18 @@ func (s *Store) GetActiveHibernation(ctx context.Context, sandboxID string) (*Sa
 }
 
 // MarkHibernationRestored marks the active hibernation for a sandbox as restored.
+//
+// KNOWN LEAK: this does not free the archive, and nothing else does either.
+// From the moment restored_at is set the object is unreachable —
+// GetActiveHibernation matches only restored_at IS NULL — so it is not a
+// recovery copy, it is a permanent orphan in blob storage. Measured on prod
+// 2026-08-17: ~10 TB across ~6.7k restored rows, on a bucket growing
+// ~600 GB/day.
+//
+// Left in place deliberately for now. Reclaiming it means deleting customer
+// data on a predicate that has never run against real data, and the archives
+// share the checkpoints/ prefix with user checkpoints. That is a separate
+// change with its own soak, not a rider on this one.
 func (s *Store) MarkHibernationRestored(ctx context.Context, sandboxID string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE sandbox_hibernations SET restored_at = now()
@@ -3533,5 +3619,67 @@ func (s *Store) UpdateAgentSubscriptionFromStripe(
 		 WHERE stripe_subscription_id = $1`,
 		stripeSubscriptionID, status, currentPeriodEnd, cancelAtPeriodEnd, canceledAt,
 	)
+	return err
+}
+
+// RetirableHibernation is a suspended sandbox whose host can be released.
+type RetirableHibernation struct {
+	SandboxID  string
+	WorkerID   string
+	UploadedAt *time.Time
+}
+
+// ListRetirableHibernations returns hibernated sandboxes whose archive is
+// safely uploaded and whose dwell has elapsed, so their host can be terminated.
+//
+// The uploaded_at IS NOT NULL condition is the safety of the whole scheme, not
+// an optimization. Between hibernating and the upload landing, the suspended
+// box is the ONLY copy of that sandbox — the blob is a partial object nothing
+// can restore from. Terminating on a timer alone would destroy customer data
+// for any workspace slower to upload than the dwell, and the bigger the
+// workspace the likelier it is to lose it.
+//
+// Deliberately no timeout on that condition: a stuck upload holds its box
+// indefinitely, which costs quota and is strictly preferable to the alternative.
+func (s *Store) ListRetirableHibernations(ctx context.Context, prefixes []string, hibernatedBefore time.Time) ([]RetirableHibernation, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT ss.sandbox_id, ss.worker_id, sh.uploaded_at
+		   FROM sandbox_sessions ss
+		   JOIN sandbox_hibernations sh ON sh.sandbox_id = ss.sandbox_id
+		  WHERE ss.worker_id LIKE ANY($1)
+		    AND ss.status = 'hibernated'
+		    AND coalesce(ss.hibernation_mode, '') <> 'deep'
+		    AND sh.expired_at IS NULL
+		    AND sh.restored_at IS NULL
+		    AND sh.uploaded_at IS NOT NULL
+		    AND sh.hibernated_at < $2
+		  ORDER BY sh.hibernated_at`,
+		likePatterns(prefixes), hibernatedBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RetirableHibernation
+	for rows.Next() {
+		var r RetirableHibernation
+		if err := rows.Scan(&r.SandboxID, &r.WorkerID, &r.UploadedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetHibernationMode records which tier a hibernated sandbox is in: 'paused'
+// while a suspended host still backs it, 'deep' once only the archive remains.
+// Wake reads this to know whether a resume is even possible.
+func (s *Store) SetHibernationMode(ctx context.Context, sandboxID, mode string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET hibernation_mode = $1 WHERE sandbox_id = $2`,
+		mode, sandboxID)
 	return err
 }

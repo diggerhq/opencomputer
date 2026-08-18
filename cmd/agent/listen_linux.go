@@ -15,6 +15,26 @@ import (
 // listenVsock creates the main agent listener.
 // Tries virtio-serial first (QEMU), then vsock (Firecracker), then Unix socket (testing).
 func listenVsock() (net.Listener, error) {
+	// TCP first, and only when explicitly asked for. On AWS Lambda MicroVMs
+	// there is no virtio-serial and no vsock: the only way in is Lambda's HTTPS
+	// proxy, which forwards to a guest TCP port when the caller presents a JWE
+	// in X-aws-proxy-auth and the port in X-aws-proxy-port. Listening on TCP is
+	// what lets the whole agent protocol — exec, files, PTY, streaming — carry
+	// over to that backend unchanged.
+	//
+	// Env-gated rather than auto-detected on purpose: a TCP listener on a QEMU
+	// box would be reachable from the guest's own network namespace, which the
+	// virtio-serial/vsock channels deliberately are not. Opt in only where the
+	// platform leaves no alternative.
+	if addr := os.Getenv("OSB_AGENT_LISTEN_TCP"); addr != "" {
+		lis, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("agent: tcp listen %s: %w", addr, err)
+		}
+		log.Printf("agent: listening on tcp %s (OSB_AGENT_LISTEN_TCP)", addr)
+		return lis, nil
+	}
+
 	// Try virtio-serial first — survives QEMU live migration.
 	// The device path depends on the virtio device index (vportNpM where N is
 	// the virtio-serial controller index). Check common paths.

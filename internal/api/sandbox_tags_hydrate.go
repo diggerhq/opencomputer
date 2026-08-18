@@ -114,4 +114,3 @@ func (s *Server) withTagsHydratedList(c echo.Context, sandboxes interface{}) int
 	}
 	return arr
 }
-

@@ -386,4 +386,3 @@ func (s *Server) fanoutSecretRefresh(parentCtx context.Context, storeID uuid.UUI
 	}
 	return refreshed, failures
 }
-
