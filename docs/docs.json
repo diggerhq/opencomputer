@@ -72,7 +72,7 @@
           {
             "group": "Examples",
             "pages": [
-              "agents/examples/exa-research-session"
+              "agents/examples/gtm-engineer"
             ]
           }
         ]
@@ -368,6 +368,12 @@
       }
     }
   },
+  "redirects": [
+    {
+      "source": "/agents/examples/exa-research-session",
+      "destination": "/agents/examples/gtm-engineer"
+    }
+  ],
   "appearance": {
     "default": "light"
   },

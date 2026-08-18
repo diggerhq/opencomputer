@@ -27,4 +27,4 @@
 
 ## Examples
 
-- [Exa research session](https://docs.opencomputer.dev/agents/examples/exa-research-session.md): Start from a React web-research agent with live Exa results, source links, and durable follow-up questions.
+- [GTM engineer](https://docs.opencomputer.dev/agents/examples/gtm-engineer.md): Start from a scheduled go-to-market agent that researches opportunities with Exa and keeps every action in dry-run mode.

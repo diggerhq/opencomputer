@@ -1,0 +1,44 @@
+---
+title: "GTM engineer"
+description: "A scheduled go-to-market agent that researches opportunities with Exa and keeps every action in dry-run mode"
+---
+
+The GTM engineer example is an agent-only go-to-market (GTM) demo built with
+OpenComputer and Exa. It researches social opportunities, social-content and
+blog ideas, public-evidence outreach prospects, and campaign strategy from the
+OpenComputer debug playground or code-defined schedules.
+
+The example is intentionally read-only. It can research and draft selected
+ideas, but it has no tools for publishing, messaging, CRM updates, enrollment,
+or writing analytics data.
+
+## How it works
+
+1. A user message or schedule starts a durable OpenComputer session with a
+   workflow payload.
+2. The agent uses its `exa_search` tool to find current public evidence for the
+   requested workflow.
+3. The declared Exa connection sends requests with the write-only
+   `EXA_API_KEY` without adding it to agent source.
+4. The agent returns a ranked shortlist with source URLs and waits for a user
+   to select items before it drafts anything.
+5. Selection authorizes drafting only; the agent cannot publish or contact
+   anyone.
+
+The repository includes five schedules for social discovery, content
+research, blog research, outreach research, and strategy review. Development
+schedules are manual-only, while production schedules recur at their defined
+cadences and skip overlapping runs.
+
+## Start with the example
+
+<Card
+  title="OpenComputer GTM engineer"
+  icon="github"
+  href="https://github.com/diggerhq/opencomputer-example-gtm"
+>
+  Clone the complete GTM agent and its schedule definitions from GitHub.
+</Card>
+
+The repository README covers installation, setting the Exa secret, testing in
+the debug playground, running schedule payloads, and deploying the agent.
