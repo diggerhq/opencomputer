@@ -99,6 +99,19 @@ const secretSchema = z.object({
 
 const secretsResponseSchema = z.object({ secrets: z.array(secretSchema) })
 
+const runtimeVariableSchema = z.object({
+  name: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const runtimeVariablesResponseSchema = z.object({
+  variables: z.array(runtimeVariableSchema),
+})
+
 const connectionSchema = z.object({
   id: z.string(),
   kind: z.enum(['tool', 'channel']),
@@ -435,6 +448,54 @@ export async function deleteManagedProjectSecret(input: {
   if (input.agentId) query.set('agentId', input.agentId)
   return apiFetch<void>(
     `/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function getAgentRuntimeVariables(
+  projectId: string,
+  environment: 'development' | 'production',
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/runtime-variables?environment=${encodeURIComponent(environment)}`,
+      undefined,
+      runtimeVariablesResponseSchema,
+    )
+  ).variables
+}
+
+export async function putAgentRuntimeVariable(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+  value: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        environment: input.environment,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        value: input.value,
+      }),
+    },
+    runtimeVariableSchema,
+  )
+}
+
+export async function deleteAgentRuntimeVariable(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  if (input.agentId) query.set('agentId', input.agentId)
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}?${query.toString()}`,
     { method: 'DELETE' },
   )
 }

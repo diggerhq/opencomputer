@@ -13,8 +13,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  deleteAgentRuntimeVariable,
   deleteManagedProjectSecret,
+  getAgentRuntimeVariables,
   getManagedProjectSecrets,
+  putAgentRuntimeVariable,
   putManagedProjectSecret,
 } from './api'
 
@@ -91,7 +94,7 @@ export function ManagedProjectSecrets({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <Panel>
         <PanelHeader>
           <div>
@@ -150,7 +153,8 @@ export function ManagedProjectSecrets({
             </div>
             <div className="space-y-2">
               <Label htmlFor="secret-origins">
-                Allowed origins <span className="text-muted-foreground">(optional)</span>
+                Allowed origins{' '}
+                <span className="text-muted-foreground">(optional)</span>
               </Label>
               <Input
                 id="secret-origins"
@@ -164,7 +168,7 @@ export function ManagedProjectSecrets({
                 allowed. Leave blank to allow every public HTTPS host.
               </p>
               {!origins.trim() ? (
-                <p className="text-amber-700 text-xs dark:text-amber-400">
+                <p className="text-xs text-amber-700 dark:text-amber-400">
                   All hosts — not recommended. Prefer limiting this secret to
                   the external APIs that need it.
                 </p>
@@ -266,6 +270,223 @@ export function ManagedProjectSecrets({
           </PanelContent>
         )}
       </Panel>
+      <AgentRuntimeVariables
+        projectId={projectId}
+        agents={agents}
+        environment={environment}
+      />
     </div>
+  )
+}
+
+function AgentRuntimeVariables({
+  projectId,
+  agents,
+  environment,
+}: {
+  projectId: string
+  agents: Array<{ id: string; name: string }>
+  environment: Environment
+}) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState('')
+  const [value, setValue] = useState('')
+  const [agentId, setAgentId] = useState('')
+  const queryKey = ['agent-runtime-variables', projectId, environment]
+  const variables = useQuery({
+    queryKey,
+    queryFn: () => getAgentRuntimeVariables(projectId, environment),
+  })
+  const save = useMutation({
+    mutationFn: putAgentRuntimeVariable,
+    onSuccess: async () => {
+      setName('')
+      setValue('')
+      await queryClient.invalidateQueries({ queryKey })
+      notifySuccess(
+        'Runtime variable saved.',
+        'Newly started agent runtimes will receive it.',
+      )
+    },
+    onError: (error) =>
+      notifyError("Couldn't save the runtime variable.", error),
+  })
+  const remove = useMutation({
+    mutationFn: deleteAgentRuntimeVariable,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey })
+      notifySuccess('Runtime variable removed.')
+    },
+    onError: (error) =>
+      notifyError("Couldn't remove the runtime variable.", error),
+  })
+  const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]))
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const normalizedName = name.trim().toUpperCase()
+    if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(normalizedName)) {
+      notifyError(
+        'Use an uppercase variable name containing only letters, numbers, and underscores.',
+      )
+      return
+    }
+    save.mutate({
+      projectId,
+      environment,
+      ...(agentId ? { agentId } : {}),
+      name: normalizedName,
+      value,
+    })
+  }
+
+  return (
+    <section className="space-y-4">
+      <Panel>
+        <PanelHeader>
+          <div>
+            <PanelTitle>Agent runtime variables</PanelTitle>
+            <PanelDescription className="mt-1 max-w-3xl">
+              Environment variables injected directly into agent code, tools,
+              commands, and subprocesses. Values are encrypted and masked here,
+              but the running agent can read them through process.env.
+            </PanelDescription>
+          </div>
+          <span className="bg-muted rounded-md px-2 py-1 text-xs capitalize">
+            {environment}
+          </span>
+        </PanelHeader>
+        <PanelContent>
+          <form onSubmit={submit} className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="runtime-variable-name">Name</Label>
+              <Input
+                id="runtime-variable-name"
+                value={name}
+                onChange={(event) => setName(event.target.value.toUpperCase())}
+                placeholder="DATABASE_URL"
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="runtime-variable-scope">Scope</Label>
+              <select
+                id="runtime-variable-scope"
+                value={agentId}
+                onChange={(event) => setAgentId(event.target.value)}
+                className="border-input bg-background h-8 w-full rounded-md border px-2.5 text-sm outline-none"
+              >
+                <option value="">Entire project</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    Agent: {agent.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2 lg:col-span-2">
+              <Label htmlFor="runtime-variable-value">Value</Label>
+              <Input
+                id="runtime-variable-value"
+                type="password"
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                placeholder="Enter a new value"
+                autoComplete="new-password"
+              />
+              <p className="text-muted-foreground text-xs">
+                Existing values cannot be viewed. Saving the same name and scope
+                replaces its value. Restart the agent runtime to apply changes.
+              </p>
+            </div>
+            <div className="lg:col-span-2">
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <KeyRound />
+                )}
+                Save runtime variable
+              </Button>
+            </div>
+          </form>
+        </PanelContent>
+      </Panel>
+
+      <Panel className="overflow-hidden">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Configured runtime variables</PanelTitle>
+            <PanelDescription className="mt-1">
+              Values stay masked in OpenComputer but are available inside the
+              agent runtime.
+            </PanelDescription>
+          </div>
+        </PanelHeader>
+        {variables.isLoading ? (
+          <PanelContent className="text-muted-foreground flex items-center gap-2 text-sm">
+            <Loader2 className="size-4 animate-spin" /> Loading runtime
+            variables…
+          </PanelContent>
+        ) : variables.isError ? (
+          <PanelContent className="space-y-3">
+            <p className="text-muted-foreground text-sm">
+              Runtime variables are temporarily unavailable.
+            </p>
+            <Button variant="outline" onClick={() => void variables.refetch()}>
+              Try again
+            </Button>
+          </PanelContent>
+        ) : variables.data?.length ? (
+          <div className="divide-y">
+            {variables.data.map((variable) => (
+              <div
+                key={`${variable.environment}:${variable.agentId ?? 'project'}:${variable.name}`}
+                className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)_auto] md:items-center"
+              >
+                <div>
+                  <p className="font-mono text-sm font-medium">
+                    {variable.name}
+                  </p>
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    Updated {new Date(variable.updatedAt).toLocaleString()}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-xs">Scope</p>
+                  <p className="mt-1 text-sm">
+                    {variable.agentId
+                      ? (agentNames.get(variable.agentId) ?? variable.agentId)
+                      : 'Entire project'}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  disabled={remove.isPending}
+                  onClick={() =>
+                    remove.mutate({
+                      projectId,
+                      environment: variable.environment,
+                      ...(variable.agentId
+                        ? { agentId: variable.agentId }
+                        : {}),
+                      name: variable.name,
+                    })
+                  }
+                >
+                  <Trash2 /> Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <PanelContent className="text-muted-foreground text-sm">
+            No runtime variables configured for {environment}.
+          </PanelContent>
+        )}
+      </Panel>
+    </section>
   )
 }
