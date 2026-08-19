@@ -25,16 +25,28 @@ export interface ScheduleRunContext {
   readonly manual: boolean;
 }
 
+export interface WebhookRequestContext {
+  readonly id: string;
+  readonly requestId: string;
+  readonly receivedAt: string;
+}
+
 interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
 }
 
 export type AgentInput =
-  | (BasicAgentInput & { readonly source: Exclude<InputSource, "schedule"> })
+  | (BasicAgentInput & {
+      readonly source: Exclude<InputSource, "schedule" | "webhook">;
+    })
   | (BasicAgentInput & {
       readonly source: "schedule";
       readonly schedule: Readonly<ScheduleRunContext>;
+    })
+  | (BasicAgentInput & {
+      readonly source: "webhook";
+      readonly webhook: Readonly<WebhookRequestContext>;
     });
 
 export interface ResourceReference {
@@ -306,7 +318,10 @@ export function defineConnection(input: {
   }
   const redirectOrigins = input.redirectOrigins?.map((input) => {
     const redirectOrigin = new URL(input.origin);
-    if (redirectOrigin.protocol !== "https:" || redirectOrigin.pathname !== "/") {
+    if (
+      redirectOrigin.protocol !== "https:" ||
+      redirectOrigin.pathname !== "/"
+    ) {
       throw new Error(
         "Connection redirect origins must be HTTPS origins without a path",
       );
@@ -442,7 +457,9 @@ function schedulePayload(value: DataValue | undefined): DataValue | undefined {
     throw new Error("Schedule payloads must be JSON-compatible");
   }
   if (serialized === undefined || serialized.length > 32 * 1024) {
-    throw new Error("Schedule payloads must be JSON-compatible and at most 32 KiB");
+    throw new Error(
+      "Schedule payloads must be JSON-compatible and at most 32 KiB",
+    );
   }
   return JSON.parse(serialized) as DataValue;
 }
@@ -461,7 +478,9 @@ export function defineSchedule(input: {
   const id = resourceIdentifier(input.id, "defineSchedule");
   const cron = input.cron.trim().replace(/\s+/g, " ");
   if (cron.split(" ").length !== 5) {
-    throw new Error("Schedule cron expressions must contain exactly five fields");
+    throw new Error(
+      "Schedule cron expressions must contain exactly five fields",
+    );
   }
   const timezone = input.timezone?.trim() || "UTC";
   try {
@@ -474,7 +493,9 @@ export function defineSchedule(input: {
   } catch {
     throw new Error(`Schedule ${id} has an invalid cron expression`);
   }
-  const enabled = [...new Set(input.enabled ?? ["production"])] as ScheduleEnvironment[];
+  const enabled = [
+    ...new Set(input.enabled ?? ["production"]),
+  ] as ScheduleEnvironment[];
   if (
     !enabled.length ||
     enabled.some(
@@ -517,7 +538,10 @@ export function defineChannel(input: {
 }): SlackChannelDefinition {
   const id = resourceIdentifier(input.id, "defineChannel");
   const scopes = [...new Set(input.scopes.bot.map((scope) => scope.trim()))];
-  if (!scopes.length || scopes.some((scope) => !SLACK_SCOPE_PATTERN.test(scope))) {
+  if (
+    !scopes.length ||
+    scopes.some((scope) => !SLACK_SCOPE_PATTERN.test(scope))
+  ) {
     throw new Error("Slack bot scopes must be non-empty Slack scope names");
   }
   const events = [...new Set(input.events ?? [])];
@@ -527,16 +551,23 @@ export function defineChannel(input: {
       throw new Error(`Slack event ${event} requires bot scope ${required}`);
     }
   }
-  const destinations: Record<string, Readonly<ChannelDestinationDefinition>> = {};
+  const destinations: Record<
+    string,
+    Readonly<ChannelDestinationDefinition>
+  > = {};
   for (const [name, destination] of Object.entries(input.destinations ?? {})) {
     const destinationId = resourceIdentifier(name, "Channel destination");
     const required =
       destination.visibility === "private" ? "groups:read" : "channels:read";
     if (!scopes.includes(required)) {
-      throw new Error(`Slack destination ${destinationId} requires bot scope ${required}`);
+      throw new Error(
+        `Slack destination ${destinationId} requires bot scope ${required}`,
+      );
     }
     if (!scopes.includes("chat:write")) {
-      throw new Error(`Slack destination ${destinationId} requires bot scope chat:write`);
+      throw new Error(
+        `Slack destination ${destinationId} requires bot scope chat:write`,
+      );
     }
     destinations[destinationId] = Object.freeze({ ...destination });
   }
@@ -545,11 +576,15 @@ export function defineChannel(input: {
     version: 1 as const,
     id,
     type: input.type,
-    ...(input.displayName?.trim() ? { displayName: input.displayName.trim() } : {}),
+    ...(input.displayName?.trim()
+      ? { displayName: input.displayName.trim() }
+      : {}),
     scopes: Object.freeze({ bot: Object.freeze(scopes) }),
     events: Object.freeze(events),
     destinations: Object.freeze(destinations),
-    routing: Object.freeze({ whenAmbiguous: input.routing?.whenAmbiguous ?? "ask" }),
+    routing: Object.freeze({
+      whenAmbiguous: input.routing?.whenAmbiguous ?? "ask",
+    }),
   });
 }
 

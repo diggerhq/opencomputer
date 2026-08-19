@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
@@ -33,6 +34,82 @@ describe("managed agents proxy", () => {
       user_id: "user_test",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("forwards webhook text and payload without requiring a user API key", async () => {
+    const fetchSpy = vi.fn(
+      async (_target: URL | RequestInfo, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer webhook-secret",
+        );
+        expect(new Headers(init?.headers).get("idempotency-key")).toBe(
+          "delivery-1",
+        );
+        expect(await new Response(init?.body).json()).toEqual({
+          text: "Run the review",
+          payload: { mode: "hygiene", repository: "acme/api" },
+        });
+        return Response.json({
+          request: {
+            id: "whr_request",
+            webhookId: "wh_0123456789abcdef0123456789abcdef",
+            projectId: "prj_test",
+            environment: "development",
+            agentId: "reviewer",
+            sessionId: "session_test",
+            outcome: "accepted",
+            createdAt: "2026-08-18T00:00:00.000Z",
+            updatedAt: "2026-08-18T00:00:01.000Z",
+            internal: "private",
+          },
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer webhook-secret",
+            "content-type": "application/json",
+            "idempotency-key": "delivery-1",
+          },
+          body: JSON.stringify({
+            text: "Run the review",
+            payload: { mode: "hygiene", repository: "acme/api" },
+          }),
+        },
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+
+    expect(response.status).toBe(202);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = await response.json();
+    expect(body).toMatchObject({
+      request: { sessionId: "session_test", outcome: "accepted" },
+      duplicate: false,
+      sessionUrl:
+        "https://app.opencomputer.dev/projects/prj_test/sessions/session_test?agent=reviewer&environment=development",
+    });
+    expect(JSON.stringify(body)).not.toContain("internal");
+  });
+
+  it("rejects webhook calls without bearer credentials", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef",
+        { method: "POST", body: "{}" },
+      ),
+      {},
+    );
+    expect(response.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("does not consume a channel connection grant on link preview", async () => {

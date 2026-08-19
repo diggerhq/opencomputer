@@ -66,6 +66,7 @@ import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
+import { ManagedAgentWebhooks } from './Webhooks'
 import { AgentMarkdown } from './AgentMarkdown'
 
 type DetailTab =
@@ -75,6 +76,7 @@ type DetailTab =
   | 'channels'
   | 'outboxes'
   | 'schedules'
+  | 'webhooks'
   | 'secrets'
 
 function formatDate(value: string) {
@@ -479,6 +481,7 @@ export default function ManagedAgentDetail({
     'channels',
     'outboxes',
     'schedules',
+    'webhooks',
     'secrets',
   ])
   const activeTab = project
@@ -647,6 +650,7 @@ export default function ManagedAgentDetail({
     { id: 'channels', label: 'Channels' },
     ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
+    ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
   ]
 
@@ -680,17 +684,17 @@ export default function ManagedAgentDetail({
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
 
-      {project && activeTab === 'playground' ? (
+      {project ? (
         <div className="flex shrink-0 items-center gap-3">
           <label
-            htmlFor="playground-agent"
+            htmlFor="project-agent"
             className="text-muted-foreground text-xs font-medium"
           >
             Agent
           </label>
           <select
-            id="playground-agent"
-            aria-label="Playground agent"
+            id="project-agent"
+            aria-label="Project agent"
             value={agentId}
             onChange={(event) => {
               setNewSessionKey(crypto.randomUUID())
@@ -1019,6 +1023,16 @@ export default function ManagedAgentDetail({
         <ManagedAgentSchedules
           projectId={project.project.id}
           agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
+      {activeTab === 'webhooks' && project && agent ? (
+        <ManagedAgentWebhooks
+          projectId={project.project.id}
+          agentId={agent.id}
+          agentName={displayManagedAgentName(agent)}
           environment={environment}
           deployed={Boolean(projectEnvironment?.activeDeploymentId)}
         />

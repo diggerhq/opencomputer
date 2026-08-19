@@ -77,6 +77,11 @@ export function managedAgentsNav(options: {
             icon: CalendarClock,
           },
           {
+            to: `${projectPath}/webhooks`,
+            label: 'Webhooks',
+            icon: Webhook,
+          },
+          {
             to: `${projectPath}/secrets`,
             label: 'Secrets',
             icon: KeySquare,

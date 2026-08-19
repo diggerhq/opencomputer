@@ -798,6 +798,108 @@ export async function runCommand(
     throw new Error("Use `opencomputer env set|list|remove <name>`.");
   }
 
+  if (command === "webhooks") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const agentOption = option(args, "--agent");
+    const environment = environmentOption(option(args, "--environment"));
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
+    const agentId = await selectedSessionAgent(
+      client,
+      project,
+      !agentOption || agentOption === "current" ? undefined : agentOption,
+    );
+    if (action === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const webhooks = await client.webhooks({
+        projectId: project.projectId,
+        environment,
+        agentId,
+      });
+      if (globals.json) printJSON(webhooks);
+      else if (!webhooks.length) process.stdout.write("No webhooks.\n");
+      else {
+        for (const webhook of webhooks) {
+          process.stdout.write(
+            `${webhook.id}  ${webhook.enabled ? "enabled " : "disabled"}  ` +
+              `${webhook.name}  ${webhook.invocationUrl}\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (action === "create") {
+      const name = args.shift()?.trim();
+      if (!name || args.length) {
+        throw new Error("Use `opencomputer webhooks create <name>`.");
+      }
+      const webhook = await client.createWebhook({
+        projectId: project.projectId,
+        name,
+        environment,
+        agentId,
+      });
+      if (globals.json) printJSON(webhook);
+      else {
+        process.stdout.write(
+          `Created ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
+            `URL: ${webhook.invocationUrl}\n` +
+            `Token: ${webhook.token ?? "unavailable"}\n` +
+            "Save this token now. It will not be shown again.\n",
+        );
+      }
+      return;
+    }
+    const webhookId = args.shift();
+    if (!webhookId || args.length) {
+      throw new Error(
+        "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+      );
+    }
+    if (action === "enable" || action === "disable") {
+      const webhook = await client.updateWebhook({
+        projectId: project.projectId,
+        webhookId,
+        enabled: action === "enable",
+      });
+      if (globals.json) printJSON(webhook);
+      else
+        process.stdout.write(
+          `${action === "enable" ? "Enabled" : "Disabled"} ${webhook.name}.\n`,
+        );
+      return;
+    }
+    if (action === "rotate-token") {
+      const webhook = await client.rotateWebhookToken({
+        projectId: project.projectId,
+        webhookId,
+      });
+      if (globals.json) printJSON(webhook);
+      else {
+        process.stdout.write(
+          `Rotated the token for ${webhook.name}.\n` +
+            `Token: ${webhook.token ?? "unavailable"}\n` +
+            "Save this token now. The previous token no longer works.\n",
+        );
+      }
+      return;
+    }
+    if (action === "remove" || action === "delete") {
+      await client.deleteWebhook({ projectId: project.projectId, webhookId });
+      if (globals.json) printJSON({ deleted: true, webhookId });
+      else process.stdout.write(`Removed webhook ${webhookId}.\n`);
+      return;
+    }
+    throw new Error(
+      "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+    );
+  }
+
   if (command === "logs") {
     const follow = flag(args, "--follow");
     let agentId = option(args, "--agent");

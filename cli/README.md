@@ -44,6 +44,22 @@ opencomputer run hello-world "Say hello"
 The CLI calls the public OpenComputer API and uses OpenComputer authentication.
 It does not require a separate backend account, key, or CLI.
 
+## Agent webhooks
+
+Create an environment-scoped webhook that starts a fresh session for the
+selected agent. The bearer token is displayed only when created or rotated:
+
+```bash
+opencomputer webhooks create daily-hygiene --agent current --environment production
+opencomputer webhooks list --agent current --environment production
+opencomputer webhooks disable <webhook-id>
+opencomputer webhooks rotate-token <webhook-id>
+opencomputer webhooks remove <webhook-id>
+```
+
+Invoke the URL with a JSON object containing `text`, `payload`, or both. The
+structured payload is available to agent code as `input.payload`.
+
 ## Secrets and managed egress
 
 Secret values are read from a hidden prompt, or from standard input in CI.
