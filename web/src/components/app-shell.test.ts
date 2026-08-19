@@ -23,6 +23,7 @@ describe('managed agents navigation', () => {
       'Channels',
       'Outboxes',
       'Schedules',
+      'Webhooks',
       'Secrets',
       'Debug playground',
     ])

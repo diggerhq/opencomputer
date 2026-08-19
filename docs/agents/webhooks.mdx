@@ -1,0 +1,93 @@
+---
+title: "Agent webhooks"
+description: "Start an agent session from an external service"
+---
+
+Agent webhooks are stable, authenticated ingress points for an agent. Each
+webhook targets one project agent and one environment. Calling it starts a
+fresh durable session against the deployment active in that environment.
+
+Webhooks are operational configuration, so create them in the dashboard or
+CLI rather than in agent source. Advancing a deployment does not change the
+webhook URL.
+
+## Create a webhook
+
+Open an agent's **Webhooks** tab, select Development or Production, and choose
+**Create webhook**. The dashboard shows the bearer token once. Store it in the
+calling service's secret store.
+
+The CLI supports the same lifecycle:
+
+```bash
+opencomputer webhooks create daily-hygiene \
+  --agent current \
+  --environment production
+
+opencomputer webhooks list --agent current --environment production
+opencomputer webhooks disable <webhook-id>
+opencomputer webhooks enable <webhook-id>
+opencomputer webhooks rotate-token <webhook-id>
+opencomputer webhooks remove <webhook-id>
+```
+
+Rotation invalidates the previous token immediately. List output never
+contains a token.
+
+## Invoke it
+
+Send `POST` with `application/json` and the token as a bearer credential:
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_...' \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: delivery-123' \
+  -d '{
+    "text": "Run the feature-flag hygiene review.",
+    "payload": {
+      "mode": "hygiene",
+      "repository": "acme/widgets"
+    }
+  }'
+```
+
+At least one of `text` or `payload` is required. `text` becomes the initial
+turn prompt. `payload` remains structured JSON available to the agent. The
+response is HTTP 202 with the request, session ID, and dashboard session URL;
+the agent continues asynchronously.
+
+Use a unique `Idempotency-Key` for each upstream delivery. Retrying the same
+body with the same key returns the original request and session instead of
+starting another one.
+
+## Read webhook input
+
+Use `useInput()` as with other session sources:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  const payload =
+    input.payload &&
+    typeof input.payload === "object" &&
+    !Array.isArray(input.payload)
+      ? input.payload
+      : {};
+
+  if (payload.mode === "hygiene") {
+    return `Run the configured hygiene workflow for ${payload.repository}.`;
+  }
+
+  return input.text ?? "Ask the caller what workflow to run.";
+}
+```
+
+Use payload fields such as `mode` for business behavior. `input.source` is
+`"webhook"` and `input.webhook` contains the webhook ID, request ID, and receive
+time for provenance and correlation.
+
+Development and Production webhooks have separate URLs, tokens, and sessions.
+Disable or remove a webhook when its caller should no longer start sessions.

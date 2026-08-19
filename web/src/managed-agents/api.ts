@@ -251,6 +251,23 @@ const scheduleRunsResponseSchema = z.object({
 })
 const scheduleRunResponseSchema = z.object({ run: scheduleRunSchema })
 
+const webhookSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  invocationUrl: z.string().url(),
+  token: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastInvokedAt: z.string().optional(),
+})
+
+const webhooksResponseSchema = z.object({ webhooks: z.array(webhookSchema) })
+const webhookResponseSchema = z.object({ webhook: webhookSchema })
+
 const slackManifestResponseSchema = z.object({
   connection: channelSchema,
   manifest: z.record(z.string(), z.unknown()),
@@ -308,7 +325,7 @@ const sessionSchema = z.object({
   deploymentId: z.string(),
   status: z.string(),
   source: z
-    .enum(['api', 'channel', 'playground', 'schedule'])
+    .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
     .optional()
     .default('api'),
   microvmState: z.string().optional(),
@@ -357,6 +374,7 @@ export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
 export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
 export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
+export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
@@ -601,6 +619,80 @@ export async function runManagedAgentSchedule(
       scheduleRunResponseSchema,
     )
   ).run
+}
+
+export async function getManagedAgentWebhooks(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks?${query.toString()}`,
+      undefined,
+      webhooksResponseSchema,
+    )
+  ).webhooks
+}
+
+export async function createManagedAgentWebhook(input: {
+  projectId: string
+  agentId: string
+  environment: 'development' | 'production'
+  name: string
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          agentId: input.agentId,
+          environment: input.environment,
+          name: input.name,
+        }),
+      },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function updateManagedAgentWebhook(input: {
+  projectId: string
+  webhookId: string
+  enabled: boolean
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
+      { method: 'PATCH', body: JSON.stringify({ enabled: input.enabled }) },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function rotateManagedAgentWebhookToken(
+  projectId: string,
+  webhookId: string,
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(webhookId)}/rotate-token`,
+      { method: 'POST' },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function deleteManagedAgentWebhook(
+  projectId: string,
+  webhookId: string,
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(webhookId)}`,
+    { method: 'DELETE' },
+  )
 }
 
 export async function startManagedAgentSlack(
