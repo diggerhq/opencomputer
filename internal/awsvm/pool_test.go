@@ -21,13 +21,23 @@ type poolAPI struct {
 	gets       int
 	tokens     int
 	terminates []string
+	// runErr, when set, makes every RunMicrovm fail with it — for exercising
+	// the launch loop's reaction to a standing AWS-side rejection.
+	runErr error
+	// terminateFailures throttles that many TerminateMicrovm calls before
+	// letting one through, reproducing a quota-pressed account.
+	terminateFailures int
 }
 
 func (f *poolAPI) RunMicrovm(_ context.Context, _ *lambdamicrovms.RunMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error) {
 	f.mu.Lock()
 	f.runs++
 	id := fmt.Sprintf("mvm-%d", f.runs)
+	runErr := f.runErr
 	f.mu.Unlock()
+	if runErr != nil {
+		return nil, runErr
+	}
 	return &lambdamicrovms.RunMicrovmOutput{
 		MicrovmId: aws.String(id),
 		Endpoint:  aws.String(id + ".microvm.aws.dev"),
@@ -64,6 +74,14 @@ func (f *poolAPI) CreateMicrovmAuthToken(_ context.Context, in *lambdamicrovms.C
 
 func (f *poolAPI) TerminateMicrovm(_ context.Context, in *lambdamicrovms.TerminateMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error) {
 	f.mu.Lock()
+	// Throttle the first terminateFailures calls, as a quota-pressed account
+	// does. Only successes are recorded, so a test asserting on terminates is
+	// asserting the box actually went away.
+	if f.terminateFailures > 0 {
+		f.terminateFailures--
+		f.mu.Unlock()
+		return nil, &types.ThrottlingException{}
+	}
 	f.terminates = append(f.terminates, aws.ToString(in.MicrovmIdentifier))
 	f.mu.Unlock()
 	return &lambdamicrovms.TerminateMicrovmOutput{}, nil
@@ -240,5 +258,84 @@ func TestZeroTargetStockKeepsPoolEmpty(t *testing.T) {
 	}
 	if _, ok := p.Claim(); ok {
 		t.Fatal("claimed a box from a pool configured to hold none")
+	}
+}
+
+// A quota-exhausted account must not be retried at tick rate. RunMicrovm fails
+// instantly with 402, so inflight drops straight back and the next tick launches
+// again — an unbounded failure storm that cannot possibly succeed, since quota
+// only frees on the scale of minutes. Observed on prod as ~4 failed launches per
+// second, indefinitely, on the same 2-vCPU host that serves customer creates.
+func TestQuotaExhaustionPausesLaunches(t *testing.T) {
+	p, f := testPool(t, PoolConfig{TargetStock: 5, LaunchInterval: 5 * time.Millisecond})
+	f.mu.Lock()
+	f.runErr = &types.ServiceQuotaExceededException{}
+	f.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go p.Run(ctx)
+	// Long enough for ~60 ticks. Pre-fix this produced ~60 RunMicrovm calls.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	runs, _, _ := f.counts()
+	if runs > 5 {
+		t.Fatalf("quota-exhausted pool kept launching: %d RunMicrovm calls in 300ms (want it to stand down after the first)", runs)
+	}
+	if runs == 0 {
+		t.Fatal("pool never attempted a launch, so the test proves nothing")
+	}
+	if !p.launchSuppressed() {
+		t.Fatal("launches not suppressed after a quota rejection")
+	}
+}
+
+// A throttled terminate must not be dropped. TerminateMicrovm is quota'd at
+// 10/s, so draining a full pool reliably trips it — and the old code logged the
+// throttle and moved on, abandoning the box. An abandoned box keeps billing and
+// keeps holding regional memory quota until the 8h cap, which is precisely what
+// starved the pool at 129/200 while the launch loop failed 4x/s on 402s.
+func TestDrainRetriesThrottledTerminates(t *testing.T) {
+	p, f := testPool(t, PoolConfig{TargetStock: 2})
+	for i := 0; i < 2; i++ {
+		if err := p.launchOne(context.Background()); err != nil {
+			t.Fatalf("launchOne: %v", err)
+		}
+	}
+	// Every box gets throttled twice before AWS accepts the terminate.
+	f.mu.Lock()
+	f.terminateFailures = 4
+	f.mu.Unlock()
+
+	p.Drain()
+
+	if _, _, terms := f.counts(); terms != 2 {
+		t.Fatalf("drain confirmed %d terminate(s) through throttling, want 2 — the rest leaked", terms)
+	}
+	if got := p.Depth(); got != 0 {
+		t.Fatalf("depth after drain = %d, want 0", got)
+	}
+}
+
+// Stock and tracked sandboxes are the pool's "owned" set; the orphan sweep
+// subtracts them from what AWS reports. If StockIDs under-reports, the sweep
+// would consider live warm stock unowned and terminate it.
+func TestStockIDsReportsEveryParkedBox(t *testing.T) {
+	p, _ := testPool(t, PoolConfig{TargetStock: 3})
+	for i := 0; i < 3; i++ {
+		if err := p.launchOne(context.Background()); err != nil {
+			t.Fatalf("launchOne: %v", err)
+		}
+	}
+	ids := p.StockIDs()
+	if len(ids) != 3 {
+		t.Fatalf("StockIDs returned %d id(s), want 3 — a missing id would let the sweep reap live stock", len(ids))
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, e := range p.stock {
+		if _, ok := ids[e.MicrovmID]; !ok {
+			t.Fatalf("stocked box %s missing from StockIDs", e.MicrovmID)
+		}
 	}
 }

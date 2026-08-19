@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/opensandbox/opensandbox/internal/awsvm"
 )
+
+// createTimingLogThreshold is the total above which runCreate logs its per-step
+// breakdown. A warm pooled claim lands well under this, so steady state stays
+// silent and only creates worth explaining show up.
+const createTimingLogThreshold = 50 * time.Millisecond
 
 // create_flow.go — the order a sandbox comes into existence, independent of the
 // runtime that hosts it.
@@ -62,13 +68,33 @@ type createSteps struct {
 // persist, and one that could not activate must not promote. Both mistakes
 // produce a row the system believes in and no host behind it.
 func runCreate(ctx context.Context, sandboxID string, steps createSteps) (workerID string, err error) {
+	// Per-step timings. The four steps have wildly different costs depending on
+	// backend — a pooled MicroVM claim is an in-memory pop while persist is two
+	// Postgres writes — and the request log only reports the total, which left
+	// a 200ms create unattributable. Logged above a threshold so the normal
+	// path stays quiet.
+	start := time.Now()
+	var claimMs, persistMs, activateMs, promoteMs int64
+	defer func() {
+		total := time.Since(start)
+		if total >= createTimingLogThreshold {
+			log.Printf("create: %s timings total=%dms claim=%dms persist=%dms activate=%dms promote=%dms",
+				sandboxID, total.Milliseconds(), claimMs, persistMs, activateMs, promoteMs)
+		}
+	}()
+
+	t := time.Now()
 	workerID, err = steps.claim(ctx)
+	claimMs = time.Since(t).Milliseconds()
 	if err != nil {
 		return "", err
 	}
 
 	if steps.persist != nil {
-		if err := steps.persist(ctx, workerID); err != nil {
+		t = time.Now()
+		err := steps.persist(ctx, workerID)
+		persistMs = time.Since(t).Milliseconds()
+		if err != nil {
 			if steps.persistRequired {
 				// Nothing else knows this host exists, so continuing would hand
 				// out a sandbox no sweep can ever reclaim.
@@ -87,7 +113,10 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 	}
 
 	if steps.activate != nil {
-		if err := steps.activate(ctx, workerID); err != nil {
+		t = time.Now()
+		err := steps.activate(ctx, workerID)
+		activateMs = time.Since(t).Milliseconds()
+		if err != nil {
 			if steps.cleanup != nil {
 				steps.cleanup(ctx, workerID, err)
 			}
@@ -96,7 +125,10 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 	}
 
 	if steps.promote != nil {
-		if err := steps.promote(ctx, workerID); err != nil {
+		t = time.Now()
+		err := steps.promote(ctx, workerID)
+		promoteMs = time.Since(t).Milliseconds()
+		if err != nil {
 			// The sandbox is up; only the row lags. Same reasoning as persist.
 			log.Printf("create: promote failed for %s on %s: %v", sandboxID, workerID, err)
 		}

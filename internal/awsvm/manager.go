@@ -92,29 +92,44 @@ func (m *Manager) TrackClaimed(sandboxID string, e *StockEntry, cfg types.Sandbo
 	}
 }
 
-// Default sizing for a MicroVM whose SandboxConfig does not state one.
+// What a MicroVM actually gets, regardless of what the create asked for.
 //
-// These are NOT cosmetic: the usage ticker reads memoryMB/cpuCount off List()
-// and puts them in every usage_tick, which is what pro-tier metering prices on.
-// Left at zero — which is what a create without an explicit size, or a Restore
-// after a control-plane restart, would otherwise produce — every sandbox meters
-// as if it consumed nothing.
+// These are NOT cosmetic and they are NOT defaults: the usage ticker reads
+// memoryMB/cpuCount off List() and puts them in every usage_tick, which is what
+// pro-tier metering prices on. Whatever is recorded here is what the customer
+// is billed for.
 //
 // 2048 MiB matches the image's minimumMemoryInMiB, and Lambda gives a full vCPU
 // at that baseline (peak scales to 4x).
 const (
-	defaultMicrovmMemoryMB = 2048
-	defaultMicrovmCPUCount = 1
+	deliveredMicrovmMemoryMB = 2048
+	deliveredMicrovmCPUCount = 1
 )
 
+// deliveredSize reports what the platform actually provides, which on this
+// backend has nothing to do with what was requested.
+//
+// RunMicrovmInput has no memory or vCPU field — sizing is a property of the
+// IMAGE, and the seven-operation API has no way to change it before or after
+// launch. So a create asking for 8 GB gets the image baseline either way.
+//
+// This used to record the REQUESTED size, which was never sent to AWS but was
+// still what the meter charged for: ask for 8 GB, receive the baseline, pay for
+// 8 GB. A silent overcharge that scaled with the size of the ask. Metering the
+// delivered size is the only honest reading, and the mismatch is logged rather
+// than swallowed so an operator can see demand the image cannot satisfy.
+func deliveredSize(sandboxID string, requestedMemoryMB, requestedCPUCount int) (memoryMB, cpuCount int) {
+	if requestedMemoryMB > deliveredMicrovmMemoryMB || requestedCPUCount > deliveredMicrovmCPUCount {
+		log.Printf("awsvm: %s requested %dMB/%dcpu but this backend delivers %dMB/%dcpu — "+
+			"metering the delivered size (the platform has no sizing knob)",
+			sandboxID, requestedMemoryMB, requestedCPUCount,
+			deliveredMicrovmMemoryMB, deliveredMicrovmCPUCount)
+	}
+	return deliveredMicrovmMemoryMB, deliveredMicrovmCPUCount
+}
+
 func (m *Manager) Track(sandboxID string, box *Box, cfg types.SandboxConfig) {
-	memoryMB, cpuCount := cfg.MemoryMB, cfg.CpuCount
-	if memoryMB <= 0 {
-		memoryMB = defaultMicrovmMemoryMB
-	}
-	if cpuCount <= 0 {
-		cpuCount = defaultMicrovmCPUCount
-	}
+	memoryMB, cpuCount := deliveredSize(sandboxID, cfg.MemoryMB, cfg.CpuCount)
 	m.mu.Lock()
 	m.byID[sandboxID] = &entry{
 		sandboxID: sandboxID,
@@ -185,6 +200,19 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		CpuCount:  cfg.CpuCount,
 		MemoryMB:  cfg.MemoryMB,
 	}, nil
+}
+
+// TrackedMicrovmIDs returns every MicroVM this manager is routing a sandbox to.
+// The orphan sweep subtracts these (plus warm stock) from what AWS reports, so
+// whatever is left over is genuinely owned by nobody.
+func (m *Manager) TrackedMicrovmIDs() map[string]struct{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make(map[string]struct{}, len(m.byID))
+	for _, e := range m.byID {
+		ids[e.microvmID] = struct{}{}
+	}
+	return ids
 }
 
 func (m *Manager) Get(ctx context.Context, id string) (*types.Sandbox, error) {
@@ -598,8 +626,30 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	return nil
 }
 
+// UpdateSandboxSecret injects or replaces a secret in a running sandbox.
+//
+// The QEMU backend routes this through its in-guest secrets proxy, which does
+// not exist here — there is no worker host to run one. The agent's SetEnvs
+// reaches the same place over the tunnel every exec already uses, so the value
+// lands in the environment new processes inherit.
+//
+// Note the narrower promise than QEMU's proxy: processes ALREADY running keep
+// the old environment, because a process's environment cannot be rewritten from
+// outside. Anything that needs the new value must be restarted.
 func (m *Manager) UpdateSandboxSecret(ctx context.Context, sandboxID, secretName, value string) (bool, error) {
-	return false, unsupported("UpdateSandboxSecret")
+	if secretName == "" {
+		return false, fmt.Errorf("awsvm: %s: empty secret name", sandboxID)
+	}
+	a, err := m.agent(sandboxID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := a.client.SetEnvs(ctx, &pb.SetEnvsRequest{
+		Envs: map[string]string{secretName: value},
+	}); err != nil {
+		return false, fmt.Errorf("awsvm: %s: set secret %s: %w", sandboxID, secretName, err)
+	}
+	return true, nil
 }
 
 // ReadFileStream streams a file out of the guest.
@@ -701,12 +751,89 @@ func (m *Manager) WriteFileStream(ctx context.Context, sandboxID, path string, m
 	return resp.BytesWritten, nil
 }
 
+// RebootSandbox restarts a sandbox on a clean host, preserving its workspace.
+//
+// There is no reboot API — the seven MicroVM operations are Run, Get, Suspend,
+// Resume, Terminate, List and CreateAuthToken. So a reboot is assembled from
+// the pieces hibernate already uses: capture the workspace, throw the host
+// away, launch a replacement from the image, and unpack into it.
+//
+// That is a stronger guarantee than a soft reboot, not a weaker one. The
+// replacement boots from the image snapshot, so the kernel, the process table
+// and anything a runaway process dirtied outside the workspace are all genuinely
+// new — where a soft reboot leaves the same disk in place.
+//
+// The cost is real and worth stating: this is a full export/import round trip
+// (~3.3s floor plus workspace size), not the sub-second restart a QEMU reboot
+// gives. And what survives is /home/sandbox — anything installed elsewhere came
+// from the image and comes back from the image, but anything installed
+// elsewhere AT RUNTIME does not.
 func (m *Manager) RebootSandbox(ctx context.Context, sandboxID string) error {
-	return unsupported("RebootSandbox")
+	e, err := m.lookup(sandboxID)
+	if err != nil {
+		return err
+	}
+
+	rc, _, err := m.ExportWorkspace(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("awsvm: reboot %s: capture workspace: %w", sandboxID, err)
+	}
+	defer rc.Close()
+
+	// Launch the replacement BEFORE terminating the old host. If Run fails —
+	// quota, throttling, a bad image — the sandbox is still alive and the reboot
+	// simply did not happen, which is far better than a customer left with
+	// neither host nor a way back.
+	box, err := m.client.Run(ctx, "")
+	if err != nil {
+		return fmt.Errorf("awsvm: reboot %s: launch replacement: %w", sandboxID, err)
+	}
+	ready, err := m.client.WaitRunning(ctx, box.ID, 60*time.Second)
+	if err != nil {
+		go func() { _ = m.client.Terminate(context.WithoutCancel(ctx), box.ID) }()
+		return fmt.Errorf("awsvm: reboot %s: replacement never became ready: %w", sandboxID, err)
+	}
+
+	oldID := e.microvmID
+	// Drop before tracking: the pooled gRPC connection is keyed by sandbox id
+	// and the sandbox now lives on a different host entirely.
+	m.agents.drop(sandboxID)
+	m.Track(sandboxID, ready, types.SandboxConfig{
+		SandboxID: sandboxID, Template: e.template,
+		MemoryMB: e.memoryMB, CpuCount: e.cpuCount,
+	})
+
+	if err := m.ImportWorkspace(ctx, sandboxID, rc); err != nil {
+		// The replacement is unusable. Terminate it and put the tracking back on
+		// the original, which is still running — the customer keeps the sandbox
+		// they had rather than losing it to a failed reboot.
+		go func() { _ = m.client.Terminate(context.WithoutCancel(ctx), ready.ID) }()
+		m.agents.drop(sandboxID)
+		m.Track(sandboxID, &Box{ID: oldID, Endpoint: e.endpoint, StartedAt: e.startedAt}, types.SandboxConfig{
+			SandboxID: sandboxID, Template: e.template,
+			MemoryMB: e.memoryMB, CpuCount: e.cpuCount,
+		})
+		return fmt.Errorf("awsvm: reboot %s: restore workspace: %w", sandboxID, err)
+	}
+
+	// Only now is the old host redundant.
+	go func() { _ = m.client.Terminate(context.WithoutCancel(ctx), oldID) }()
+	log.Printf("awsvm: reboot %s: %s -> %s (workspace preserved)", sandboxID, oldID, ready.ID)
+	return nil
 }
 
+// PowerCycleSandbox is a reboot on this backend.
+//
+// On QEMU the two differ: reboot asks the guest to restart, power-cycle kills
+// QEMU and starts it again. Here even the gentler path already replaces the
+// host, so there is no harsher one to escalate to — and pretending otherwise by
+// leaving this unsupported would make callers implement a fallback that does
+// exactly what this does.
+//
+// Returns 0 for the pid the QEMU implementation reports; there is no host
+// process here to name.
 func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (int, error) {
-	return 0, unsupported("PowerCycleSandbox")
+	return 0, m.RebootSandbox(ctx, sandboxID)
 }
 
 func (m *Manager) TemplateCachePath(templateID, filename string) string { return "" }

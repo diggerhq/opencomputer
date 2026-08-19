@@ -2,6 +2,7 @@ package awsvm
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -125,6 +126,13 @@ type Pool struct {
 
 	mu    sync.Mutex
 	stock []*StockEntry
+	// backoffUntil suppresses launches after the account hits its regional
+	// memory quota. Without it the ticker keeps firing doomed RunMicrovm calls
+	// — a 402 fails instantly, so inflight drops straight back and the next
+	// tick launches again, producing a permanent LaunchInterval-rate storm of
+	// failures (measured on prod: ~4/s indefinitely, each with SDK retries
+	// behind it, on a 2-vCPU control plane that also serves creates).
+	backoffUntil time.Time
 	// inflight counts launches that have called RunMicrovm but are still
 	// waiting to reach RUNNING. Without it the ticker sees a low Depth() and
 	// keeps launching, overshooting the target by however many boxes fit in one
@@ -192,9 +200,21 @@ func (p *Pool) Run(ctx context.Context) {
 			// for the box to reach RUNNING. Doing that inline would pace the
 			// pool at boot time rather than at the quota, turning a parallel
 			// fill into a serial one.
+			if p.launchSuppressed() {
+				continue
+			}
 			if p.committed() < p.cfg.TargetStock {
 				go func() {
 					if err := p.launchOne(ctx); err != nil {
+						// Quota exhaustion is a standing condition, not a
+						// transient one: capacity frees up when boxes age out
+						// or are terminated, on a scale of minutes. Retrying at
+						// tick rate cannot fix it and merely burns CPU and API
+						// budget, so stand down and re-probe once per cooldown.
+						if errors.Is(err, ErrQuotaExceeded) {
+							p.suppressLaunches(quotaCooldown, err)
+							return
+						}
 						log.Printf("awsvm: pool launch failed: %v", err)
 					}
 				}()
@@ -203,6 +223,35 @@ func (p *Pool) Run(ctx context.Context) {
 			p.refreshTokens(ctx)
 			p.retireAged(ctx)
 		}
+	}
+}
+
+// quotaCooldown is how long the pool stops launching after the account reports
+// its regional memory quota exhausted. Long enough that a full pool's worth of
+// failures collapses into one probe per minute; short enough that capacity
+// freed by retirement is picked up promptly.
+const quotaCooldown = time.Minute
+
+// launchSuppressed reports whether launches are standing down after a quota
+// rejection. One probe per cooldown still gets through, so the pool refills on
+// its own once capacity returns — no operator action, no restart.
+func (p *Pool) launchSuppressed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return time.Now().Before(p.backoffUntil)
+}
+
+// suppressLaunches stands the launch loop down for d. Logged once per cooldown
+// rather than once per attempt: the old behaviour buried every other log line
+// on the cell under identical quota errors.
+func (p *Pool) suppressLaunches(d time.Duration, cause error) {
+	p.mu.Lock()
+	already := time.Now().Before(p.backoffUntil)
+	p.backoffUntil = time.Now().Add(d)
+	depth := len(p.stock)
+	p.mu.Unlock()
+	if !already {
+		log.Printf("awsvm: pool launches paused for %s — %v (depth=%d/%d)", d, cause, depth, p.cfg.TargetStock)
 	}
 }
 
@@ -357,12 +406,53 @@ func (p *Pool) terminate(e *StockEntry) {
 	p.terminateID(e.MicrovmID)
 }
 
+// terminateInterval paces TerminateMicrovm starts. The quota is 10/s; 8/s
+// leaves room for the reconciler and customer destroys, which draw on the same
+// bucket. Without pacing, draining a full pool fires every terminate at once
+// and most of them come back throttled.
+const terminateInterval = 125 * time.Millisecond
+
+// terminateAttempts bounds retries of a throttled terminate. Giving up leaks
+// the box for up to the 8h service cap — it keeps billing and, worse, keeps
+// holding the regional memory quota that caps pool depth. So a terminate is
+// worth retrying properly rather than logging and walking away.
+const terminateAttempts = 6
+
 func (p *Pool) terminateID(id string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if err := p.client.Terminate(ctx, id); err != nil {
-		log.Printf("awsvm: pool terminate %s: %v", id, err)
+	backoff := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		err := p.client.Terminate(ctx, id)
+		if err == nil {
+			return
+		}
+		// Only throttling is worth retrying: a box that is already gone, or an
+		// id we are not allowed to touch, will fail identically every time.
+		if !errors.Is(err, ErrThrottled) || attempt >= terminateAttempts {
+			log.Printf("awsvm: pool terminate %s (attempt %d): %v", id, attempt, err)
+			return
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			log.Printf("awsvm: pool terminate %s abandoned after %d attempt(s) — box will hold quota until the age cap", id, attempt)
+			return
+		}
+		backoff *= 2
 	}
+}
+
+// StockIDs returns the MicrovmIDs currently parked in stock. Used by the orphan
+// sweep to tell a box we are deliberately holding from one nothing owns.
+func (p *Pool) StockIDs() map[string]struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ids := make(map[string]struct{}, len(p.stock))
+	for _, e := range p.stock {
+		ids[e.MicrovmID] = struct{}{}
+	}
+	return ids
 }
 
 // Drain terminates all stock. Called on shutdown so a restarting filler does not
@@ -374,8 +464,16 @@ func (p *Pool) Drain() {
 	p.stock = nil
 	p.mu.Unlock()
 
+	// Paced, not a fan-out. Firing every terminate at once against a 10/s quota
+	// means most come back throttled, and a throttled terminate used to be
+	// logged and dropped — which is how a restart stranded most of a pool.
+	// Starts are paced; each terminate then runs concurrently so its retries
+	// don't serialize behind the next box.
+	tick := time.NewTicker(terminateInterval)
+	defer tick.Stop()
 	var wg sync.WaitGroup
 	for _, e := range stock {
+		<-tick.C
 		wg.Add(1)
 		go func(e *StockEntry) {
 			defer wg.Done()

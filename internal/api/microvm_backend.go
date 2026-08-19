@@ -305,6 +305,7 @@ func (b *microvmBackend) StartReconciler(ctx context.Context, store *db.Store) {
 				return
 			case <-t.C:
 				b.reconcileOnce(ctx, store)
+				b.sweepOrphans(ctx)
 			}
 		}
 	}()
@@ -371,6 +372,114 @@ func (b *microvmBackend) reconcileOnce(ctx context.Context, store *db.Store) {
 	if restored > 0 || closed > 0 {
 		log.Printf("microvm: reconciled — adopted %d sandbox(es), closed %d dead row(s)", restored, closed)
 	}
+}
+
+// orphanMinAge is how old a MicroVM must be before the sweep will consider it
+// abandoned. A box is invisible to us for a real window during its own creation
+// — launched but not yet stocked, or claimed but not yet tracked — and reaping
+// one mid-flight would kill a sandbox a customer is actively waiting on. Well
+// above the worst-case launch (~1.5s) plus a claim.
+const orphanMinAge = 20 * time.Minute
+
+// orphanReapCap bounds one sweep. A sweep that suddenly wants to terminate
+// hundreds of boxes is far more likely to be wrong about ownership than to have
+// found hundreds of real orphans, so it stops and says so instead. Mirrors
+// foreignReapCap on the QEMU side.
+const orphanReapCap = 25
+
+// sweepOrphans terminates MicroVMs that exist in AWS but that nothing here owns.
+//
+// This is the leak reconcileOnce structurally cannot see: that pass walks
+// persisted rows and asks AWS about each one, so it only ever finds boxes we
+// still have a record of. A box whose row was deleted — or that was launched
+// into stock and abandoned when a terminate came back throttled, or when the
+// process died before Drain ran — is referenced by nothing and is therefore
+// invisible to every existing sweep. It keeps billing, and keeps holding the
+// regional memory quota that caps pool depth, until the 8h service cap.
+//
+// SAFETY: this account is shared with dev, and a terminate is irreversible. The
+// sweep therefore refuses to act on anything it cannot positively attribute:
+// it only considers boxes built from the exact image this cell launches, and
+// only those old enough that no in-flight create could still be adopting them.
+// Even then it defaults to REPORT-ONLY — set OPENSANDBOX_MICROVM_ORPHAN_REAP=1
+// to let it terminate. Run it in report mode first and read the log: if it
+// names boxes that belong to another environment, the image guard is not
+// enough discrimination for this account and the boxes need real tagging
+// before this is armed.
+func (b *microvmBackend) sweepOrphans(ctx context.Context) {
+	if b == nil || b.client == nil {
+		return
+	}
+	boxes, err := b.client.List(ctx)
+	if err != nil {
+		log.Printf("microvm: orphan sweep list failed: %v", err)
+		return
+	}
+
+	known := b.pool.StockIDs()
+	for id := range b.manager.TrackedMicrovmIDs() {
+		known[id] = struct{}{}
+	}
+
+	ourImage := b.client.Config().ImageIdentifier
+	armed := envInt("OPENSANDBOX_MICROVM_ORPHAN_REAP", 0) == 1
+
+	var orphans []string
+	var skippedYoung, skippedForeign int
+	for _, box := range boxes {
+		if !box.Alive() {
+			continue // already terminating; nothing to reclaim
+		}
+		if _, ok := known[box.ID]; ok {
+			continue
+		}
+		// Never reap a box we did not build. Without this the sweep would
+		// happily terminate another environment's pool out from under it.
+		if ourImage != "" && box.ImageArn != "" && box.ImageArn != ourImage {
+			skippedForeign++
+			continue
+		}
+		// An unset StartedAt must protect the box, not expose it. The API does
+		// not always populate it (observed empty on real Get responses), and
+		// time.Since(zero) is enormous — so a naive age comparison reads
+		// "ancient" for exactly the boxes whose age we failed to learn, turning
+		// the guard inside out and making unknown boxes the most eligible.
+		if box.StartedAt.IsZero() || time.Since(box.StartedAt) < orphanMinAge {
+			skippedYoung++
+			continue
+		}
+		orphans = append(orphans, box.ID)
+	}
+
+	if len(orphans) == 0 {
+		if skippedYoung > 0 || skippedForeign > 0 {
+			log.Printf("microvm: orphan sweep clean (skipped %d too-young, %d foreign-image)", skippedYoung, skippedForeign)
+		}
+		return
+	}
+
+	capped := orphans
+	if len(capped) > orphanReapCap {
+		capped = capped[:orphanReapCap]
+		log.Printf("microvm: orphan sweep found %d orphan(s) — capped at %d this pass; if that count is real it will drain over subsequent passes, and if it is not, the cap just prevented a mass mistake",
+			len(orphans), orphanReapCap)
+	}
+
+	if !armed {
+		log.Printf("microvm: orphan sweep REPORT-ONLY — %d unowned box(es) holding quota: %v (set OPENSANDBOX_MICROVM_ORPHAN_REAP=1 to reclaim)",
+			len(orphans), capped)
+		return
+	}
+
+	var reaped int
+	for _, id := range capped {
+		if err := b.client.Terminate(ctx, id); err != nil {
+			log.Printf("microvm: orphan sweep terminate %s: %v", id, err)
+			continue
+		}
+		reaped++
+	}
+	log.Printf("microvm: orphan sweep reclaimed %d of %d unowned box(es)", reaped, len(orphans))
 }
 
 // Kill terminates a MicroVM-backed sandbox. Reports whether this backend owned
