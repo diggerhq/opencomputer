@@ -930,6 +930,10 @@ async function handlePreviewURL(
 // ── route handlers ───────────────────────────────────────────────────────
 
 // OrgPolicy is the subset of the D1 `orgs` row the create/fork paths gate on.
+// Mirrors runtimeMicrovm in internal/api/backend.go — the value stored in
+// orgs.runtime that routes an org's creates to the AWS MicroVM backend.
+const RUNTIME_MICROVM = "microvm";
+
 interface OrgPolicy {
   home_cell: string;
   plan: string;
@@ -1822,6 +1826,16 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // path can't be used to exec on another org's sandbox. See vm_session.ts.
 async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
   if (!env.VM_SESSIONS) return null; // binding absent mid-cutover → tunnel
+  // MicroVM-backed orgs never have a live VmSession: the host dialer that opens
+  // the channel is a QEMU-worker component (internal/worker/dodialer.go), and a
+  // MicroVM box has no worker behind it. So the DO can only ever answer "not
+  // connected" — but it answers that only AFTER its 400ms entry grace
+  // (vm_session.ts), which exists to absorb a hibernated-DO wake race that this
+  // backend cannot have. Measured on prod: that grace was ~437ms of every
+  // MicroVM exec — 79% of benchmark TTI, against a control plane that served
+  // the exec itself in 10ms. Skip straight to the tunnel.
+  const orgPolicy = await loadOrgPolicy(env, caller.orgID);
+  if (orgPolicy?.runtime === RUNTIME_MICROVM) return null;
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;

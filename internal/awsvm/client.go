@@ -308,7 +308,10 @@ func (c *Client) Terminate(ctx context.Context, id string) error {
 	if _, err := c.api.TerminateMicrovm(ctx, &lambdamicrovms.TerminateMicrovmInput{
 		MicrovmIdentifier: aws.String(id),
 	}); err != nil {
-		return fmt.Errorf("awsvm: terminate microvm %s: %w", id, err)
+		// Classified so callers can distinguish throttling — which is worth
+		// retrying, because an abandoned terminate leaks the box's quota until
+		// the 8h cap — from a terminal failure, which is not.
+		return fmt.Errorf("awsvm: terminate microvm %s: %w", id, classifyLaunchError(err))
 	}
 	c.forgetToken(id)
 	return nil
