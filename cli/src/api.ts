@@ -57,6 +57,15 @@ export interface ManagedSecretMetadata {
   updatedAt: string;
 }
 
+export interface AgentRuntimeVariableMetadata {
+  name: string;
+  projectId: string;
+  environment: "development" | "production";
+  agentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ManagedAgentLog {
   id: string;
   cursor: string;
@@ -258,6 +267,57 @@ export class OpenComputerClient {
     if (input.agentId) query.set("agentId", input.agentId);
     return this.request<void>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async runtimeVariables(input: {
+    projectId: string;
+    environment?: "development" | "production";
+    agentId?: string;
+  }): Promise<AgentRuntimeVariableMetadata[]> {
+    const query = new URLSearchParams();
+    if (input.environment) query.set("environment", input.environment);
+    if (input.agentId) query.set("agentId", input.agentId);
+    const suffix = query.size ? `?${query.toString()}` : "";
+    const result = await this.request<{
+      variables: AgentRuntimeVariableMetadata[];
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables${suffix}`,
+    );
+    return result.variables;
+  }
+
+  putRuntimeVariable(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    return this.request<AgentRuntimeVariableMetadata>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          value: input.value,
+          environment: input.environment,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+        }),
+      },
+    );
+  }
+
+  deleteRuntimeVariable(input: {
+    projectId: string;
+    name: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    const query = new URLSearchParams({ environment: input.environment });
+    if (input.agentId) query.set("agentId", input.agentId);
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}?${query.toString()}`,
       { method: "DELETE" },
     );
   }

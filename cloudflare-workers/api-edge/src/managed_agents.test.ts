@@ -443,8 +443,7 @@ describe("managed agents proxy", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        href:
-          "https://managedagents.test/v1/outboxes?agentId=reviewer-agent&environment=development",
+        href: "https://managedagents.test/v1/outboxes?agentId=reviewer-agent&environment=development",
       }),
       expect.anything(),
     );
@@ -918,6 +917,48 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("forwards runtime variable metadata without returning its value", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        name: "DATABASE_URL",
+        value: "postgres://must-not-leak",
+        projectId: "prj_1",
+        environment: "production",
+        createdAt: "2026-08-18T00:00:00.000Z",
+        updatedAt: "2026-08-18T00:00:00.000Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/runtime-variables/DATABASE_URL",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            value: "postgres://must-not-leak",
+            environment: "production",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      name: "DATABASE_URL",
+      environment: "production",
+    });
+    expect(JSON.stringify(body)).not.toContain("postgres://must-not-leak");
+  });
+
   it("forwards redacted reactive render snapshots for the debug playground", async () => {
     vi.stubGlobal(
       "fetch",
@@ -967,7 +1008,9 @@ describe("managed agents proxy", () => {
       ],
     });
     expect(JSON.stringify(body)).not.toContain("never-return-this");
-    expect(JSON.stringify(body)).not.toContain("You are an OpenComputer agent.");
+    expect(JSON.stringify(body)).not.toContain(
+      "You are an OpenComputer agent.",
+    );
     expect(JSON.stringify(body)).not.toContain("platformInstructions");
   });
 

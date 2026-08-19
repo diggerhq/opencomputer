@@ -76,7 +76,9 @@ async function readSecretValue(): Promise<string> {
     for await (const chunk of process.stdin) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+    const value = Buffer.concat(chunks)
+      .toString("utf8")
+      .replace(/\r?\n$/, "");
     if (!value) throw new Error("Secret value was empty");
     return value;
   }
@@ -663,9 +665,7 @@ export async function runCommand(
     }
     const name = args.shift();
     if (!name) {
-      throw new Error(
-        "Use `opencomputer secrets set|list|remove <name>`.",
-      );
+      throw new Error("Use `opencomputer secrets set|list|remove <name>`.");
     }
     if (action === "set") {
       const explicitOrigins = options(args, "--allow-origin");
@@ -722,6 +722,80 @@ export async function runCommand(
       return;
     }
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
+  }
+
+  if (command === "env") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const agentOption = option(args, "--agent");
+    const environment = environmentOption(option(args, "--environment"));
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
+    const agentId = agentOption
+      ? agentOption === "current"
+        ? project.agentId
+        : agentOption
+      : undefined;
+    if (action === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const variables = await client.runtimeVariables({
+        projectId: project.projectId,
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json) printJSON(variables);
+      else if (!variables.length)
+        process.stdout.write("No runtime variables.\n");
+      else {
+        for (const variable of variables) {
+          process.stdout.write(
+            `${variable.name.padEnd(28)} ${variable.environment.padEnd(12)} ` +
+              `${variable.agentId ?? "project"}\n`,
+          );
+        }
+      }
+      return;
+    }
+    const name = args.shift()?.trim().toUpperCase();
+    if (!name) {
+      throw new Error("Use `opencomputer env set|list|remove <name>`.");
+    }
+    if (action === "set") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const variable = await client.putRuntimeVariable({
+        projectId: project.projectId,
+        name,
+        value: await readSecretValue(),
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json) printJSON(variable);
+      else {
+        process.stdout.write(
+          `Set ${variable.name} for ${variable.agentId ?? "project"} ` +
+            `(${variable.environment}). Restart the agent runtime to apply it.\n`,
+        );
+      }
+      return;
+    }
+    if (action === "remove" || action === "delete") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      await client.deleteRuntimeVariable({
+        projectId: project.projectId,
+        name,
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json)
+        printJSON({ removed: true, name, environment, agentId });
+      else process.stdout.write(`Removed runtime variable ${name}.\n`);
+      return;
+    }
+    throw new Error("Use `opencomputer env set|list|remove <name>`.");
   }
 
   if (command === "logs") {

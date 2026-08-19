@@ -68,6 +68,17 @@ opencomputer secrets list --environment development
 opencomputer secrets remove GITHUB_TOKEN --environment development
 ```
 
+For values that agent code and commands must read directly from the process
+environment, use encrypted agent runtime variables. They require no source
+declaration and apply to newly started runtimes:
+
+```bash
+opencomputer env set DATABASE_URL
+opencomputer env set DATABASE_URL --agent current --environment production
+opencomputer env list --environment development
+opencomputer env remove DATABASE_URL --environment development
+```
+
 Agent code declares secret-backed destinations with `defineConnection()` and
 `useSecret()`. Requests use the managed gateway, which
 injects a secret only for the declared origin, path, method, agent, and

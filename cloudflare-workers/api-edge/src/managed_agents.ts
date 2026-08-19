@@ -320,6 +320,20 @@ function stripPrivateValues(value: unknown): unknown {
   );
 }
 
+function publicRuntimeVariable(value: unknown): Record<string, unknown> {
+  const variable = record(value) ?? {};
+  return {
+    name: variable.name,
+    projectId: variable.projectId,
+    environment: variable.environment,
+    ...(typeof variable.agentId === "string"
+      ? { agentId: variable.agentId }
+      : {}),
+    createdAt: variable.createdAt,
+    updatedAt: variable.updatedAt,
+  };
+}
+
 const PRIVATE_EVENT_KEYS = new Set([
   "accountId",
   "account_id",
@@ -399,6 +413,14 @@ function publicSuccessBody(
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
   ) {
     return stripPrivateValues(body);
+  }
+  if (
+    (method === "GET" || method === "PUT") &&
+    /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return Array.isArray(body.variables)
+      ? { variables: body.variables.map(publicRuntimeVariable) }
+      : publicRuntimeVariable(body);
   }
   if (method === "GET" && suffix === "/logs") {
     return stripPrivateValues(body);
@@ -711,6 +733,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
   ) {
     return true;
   }
