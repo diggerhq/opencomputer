@@ -39,17 +39,25 @@ function formatDate(value?: string) {
 }
 
 function curlCommand(webhook: ManagedAgentWebhook) {
-  return `curl -X POST '${webhook.invocationUrl}' \\\n+  -H 'Authorization: Bearer ${webhook.token ?? '<token>'}' \\\n+  -H 'Content-Type: application/json' \\\n+  -H 'Idempotency-Key: <unique-request-id>' \\\n+  -d '{"text":"Run this workflow","payload":{"mode":"default"}}'`
+  return [
+    `curl -X POST '${webhook.invocationUrl}' \\`,
+    `  -H 'Authorization: Bearer ${webhook.token ?? '<token>'}' \\`,
+    "  -H 'Content-Type: application/json' \\",
+    "  -H 'Idempotency-Key: <unique-request-id>' \\",
+    `  -d '{"text":"Run this workflow","payload":{"mode":"default"}}'`,
+  ].join('\n')
 }
 
 export function ManagedAgentWebhooks({
   projectId,
   agentId,
+  agentName,
   environment,
   deployed,
 }: {
   projectId: string
   agentId: string
+  agentName: string
   environment: 'development' | 'production'
   deployed: boolean
 }) {
@@ -240,7 +248,8 @@ export function ManagedAgentWebhooks({
           <DialogHeader>
             <DialogTitle>Create webhook</DialogTitle>
             <DialogDescription>
-              Give this ingress point a name. Its bearer token is shown once.
+              This webhook will trigger {agentName} in {environment}. Give the
+              ingress point a name; its bearer token is shown once.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

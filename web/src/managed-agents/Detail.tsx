@@ -684,17 +684,17 @@ export default function ManagedAgentDetail({
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
 
-      {project && activeTab === 'playground' ? (
+      {project ? (
         <div className="flex shrink-0 items-center gap-3">
           <label
-            htmlFor="playground-agent"
+            htmlFor="project-agent"
             className="text-muted-foreground text-xs font-medium"
           >
             Agent
           </label>
           <select
-            id="playground-agent"
-            aria-label="Playground agent"
+            id="project-agent"
+            aria-label="Project agent"
             value={agentId}
             onChange={(event) => {
               setNewSessionKey(crypto.randomUUID())
@@ -1032,6 +1032,7 @@ export default function ManagedAgentDetail({
         <ManagedAgentWebhooks
           projectId={project.project.id}
           agentId={agent.id}
+          agentName={displayManagedAgentName(agent)}
           environment={environment}
           deployed={Boolean(projectEnvironment?.activeDeploymentId)}
         />
