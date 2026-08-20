@@ -104,6 +104,13 @@ name = "VM_SESSIONS"
 class_name = "VmSession"
 script_name = "opensandbox-vmdo-dev"
 
+# MicroVM exec data plane. Same worker, same reasoning; the DO dials the box's
+# agent endpoint directly so exec never traverses the control plane.
+[[durable_objects.bindings]]
+name = "MICROVM_SESSIONS"
+class_name = "MicrovmSession"
+script_name = "opensandbox-vmdo-dev"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
@@ -160,6 +167,51 @@ WORKER_ENV = "dev"
 # Dev override of the per-org paused-sandbox cap (prod defaults to 100) so the
 # promotion path can be exercised without pausing hundreds of boxes.
 PAUSED_CAP = "10"
+# PoolStock sizing, scaled to THIS cell's pool. The DO defaults (38 per shard ×
+# 8 shards = 304) are sized for prod's 320-box pool. Oversizing starves every
+# shard below low-water, restocking on every claim and competing for a supply
+# that can never satisfy them; undersizing caps how much of a burst the edge can
+# absorb, because anything past SHARDS × TARGET falls through to the ~10× slower
+# CP path. See the SIZING INVARIANT in src/pool_stock.ts.
+#
+# 8 × 18 = 144 against dev's 150-box MicroVM pool. Sized for the burst-100
+# benchmark with ~44 boxes of headroom, and that headroom is the whole point:
+# 8 × 14 = 112 against a 130-box pool looked like it covered a burst-100 and did
+# not. Measured, twice: shards probed SEQUENTIALLY reported 12-13 of 14 each
+# (~104 staged, apparently enough), yet 51 then 65 of 100 concurrent creates
+# missed the magazine and fell through to a cold MicroVM launch — which then
+# serialized behind the RunMicrovm 5/s quota into a 25s tail.
+#
+# The reason a 4-box margin is not a margin: `magazines` in index.ts is an
+# ISOLATE-LOCAL map. A 100-wide burst lands across several isolates, each with
+# its own magazine, its own waiter count, and its own refill fan-out, all
+# drawing on the same staged stock without coordinating. Whichever isolate
+# refills last finds the shards drained, and behind them the pool has almost no
+# free stock to backfill because the rest is already held as reservations. So
+# the stock has to cover the burst with enough slack to survive an uneven split
+# across SHARDS × isolates, not merely equal it.
+#
+# Why the pool can afford 150: a claimed box comes OUT of staged stock rather
+# than being added alongside it, so peak footprint during the burst is the pool
+# itself (~150), not pool + 100. Refill afterwards is what pushes toward
+# pool + burst, and OPENSANDBOX_MICROVM_MAX_TOTAL_BOXES caps that at 230 —
+# under the ~256-box ceiling the 1024GB regional quota actually allows (charged
+# at roughly 4GB per box, not the image's 2048MiB minimum; measured by stalling
+# the fleet at 262).
+#
+# Was 8 × 3 = 24, and the old value's reasoning does NOT carry over. On QEMU the
+# ~30 was a fleet property: boxes live on provisioned workers, so growing the
+# pool means growing the fleet. A MicroVM pool is just a dial — boxes launch in
+# ~1.5s and depth is OPENSANDBOX_MICROVM_POOL_TARGET — so what actually bounds
+# it is the AWS regional memory quota (~500 boxes at the 2048MB delivered size,
+# shared with everything else in the account), not any fleet.
+#
+# What survives is only this: the edge reserves OUT of pool stock, so targeting
+# more than the pool maintains starves every shard. Raise the pool first, then
+# this. Measured before the change: burst-30 returned exactly 24 fast (90ms
+# median) and dropped the remaining 6 to the CP.
+POOL_STOCK_TARGET = "18"
+POOL_STOCK_LOW_WATER = "9"
 # Cells eligible for new-org home assignment are NOT configured here anymore —
 # it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.

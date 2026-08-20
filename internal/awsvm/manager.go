@@ -59,6 +59,10 @@ type Manager struct {
 	agents  *agentPool
 	dataDir string
 
+	// term paces destroys against the TerminateMicrovm quota. See terminator.go
+	// for why a direct call on this path leaked a box on every throttle.
+	term *terminator
+
 	mu   sync.RWMutex
 	byID map[string]*entry
 }
@@ -75,6 +79,7 @@ func NewManager(client *Client, dataDir string) *Manager {
 		client:  client,
 		agents:  newAgentPool(),
 		dataDir: dataDir,
+		term:    newTerminator(client),
 		byID:    make(map[string]*entry),
 	}
 }
@@ -87,8 +92,25 @@ func NewManager(client *Client, dataDir string) *Manager {
 // than paying the ~1.4s dial. This is the claim path: still zero AWS calls.
 func (m *Manager) TrackClaimed(sandboxID string, e *StockEntry, cfg types.SandboxConfig) {
 	m.Track(sandboxID, &Box{ID: e.MicrovmID, Endpoint: e.Endpoint}, cfg)
+	// Whether the warm tunnel actually reached the customer. This is the single
+	// biggest term in benchmark TTI — TTI measures the FIRST exec, and a cold
+	// dial costs ~330ms against an 82ms warm call — so it is worth one line.
+	log.Printf("awsvm: TrackClaimed %s (box %s) warm_tunnel=%v", sandboxID, e.MicrovmID, e.agent != nil)
 	if e.agent != nil {
 		m.agents.put(sandboxID, e.agent)
+		// TRANSFER OWNERSHIP. The pool and the manager would otherwise hold the
+		// same *agentConn, and Pool.terminate closes e.agent — so any pool-side
+		// path that retires this entry (expireReservations, aged-stock retire,
+		// overshoot shed) would close the tunnel of a box a customer is already
+		// using. The binding survives that, so the sandbox keeps routing and
+		// every exec fails instantly with "grpc: the client connection is
+		// closing" until the box is destroyed. Observed on dev: exec dead in
+		// ~5ms from localhost, no network involved.
+		//
+		// Clearing the pool's reference is the whole fix: the manager now owns
+		// the channel and closes it in agents.drop (destroy/Forget), and
+		// terminate's nil check makes the pool a no-op on an adopted entry.
+		e.agent = nil
 	}
 }
 
@@ -215,6 +237,27 @@ func (m *Manager) TrackedMicrovmIDs() map[string]struct{} {
 	return ids
 }
 
+// TrackedBindings returns every sandbox id this manager is routing, mapped to
+// the MicroVM behind it.
+//
+// TrackedMicrovmIDs answers "which boxes are spoken for", which is what the
+// orphan sweep needs. This answers the other direction — "which bindings do we
+// hold" — which is what a reconciler needs to find bindings whose sandbox no
+// longer exists. Those are invisible to any pass driven by the sessions table,
+// because such a pass can only visit sandboxes that still have a row.
+func (m *Manager) TrackedBindings() map[string]string {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.byID))
+	for id, e := range m.byID {
+		out[id] = e.microvmID
+	}
+	return out
+}
+
 func (m *Manager) Get(ctx context.Context, id string) (*types.Sandbox, error) {
 	e, err := m.lookup(id)
 	if err != nil {
@@ -260,13 +303,22 @@ func (m *Manager) Kill(ctx context.Context, id string) error {
 		return nil // already gone; destroy is idempotent
 	}
 	m.agents.drop(id)
-	if err := m.client.Terminate(ctx, e.microvmID); err != nil {
-		return err
-	}
+	// Forget the binding first, then hand the box to the paced queue. Order
+	// matters: the sandbox is gone from the caller's perspective the moment this
+	// returns, and leaving it routable while the terminate drains would let an
+	// exec land on a box already condemned.
 	m.mu.Lock()
 	delete(m.byID, id)
 	m.mu.Unlock()
-	return nil
+
+	// A throttled terminate used to surface as a 500 AND leave the box running —
+	// a leak on the customer-facing delete path, which is where a share of the
+	// orphan population came from. Queued, it retries at the quota instead.
+	if m.term.enqueue(e.microvmID) {
+		return nil
+	}
+	// Queue full: better to pay the call inline than lose the box.
+	return m.client.Terminate(ctx, e.microvmID)
 }
 
 func (m *Manager) List(ctx context.Context) ([]types.Sandbox, error) {
@@ -313,6 +365,25 @@ func (m *Manager) IsSandboxAlive(ctx context.Context, id string) (bool, error) {
 }
 
 func (m *Manager) Close() { m.agents.closeAll() }
+
+// DetachAgent surrenders a sandbox's agent channel without closing it. Only the
+// edge-release path should use this: it is handing a still-good tunnel back to
+// the pool rather than throwing it away. Every other unbind wants Forget.
+func (m *Manager) DetachAgent(sandboxID string) *agentConn {
+	if m == nil {
+		return nil
+	}
+	return m.agents.detach(sandboxID)
+}
+
+// WarmAgents re-establishes idle agent channels for the given sandboxes. See
+// agentPool.warm — intended for edge reservations awaiting a customer.
+func (m *Manager) WarmAgents(sandboxIDs map[string]struct{}) int {
+	if m == nil || len(sandboxIDs) == 0 {
+		return 0
+	}
+	return m.agents.warm(sandboxIDs)
+}
 
 // ── Execution ───────────────────────────────────────────────────────────────
 
@@ -866,4 +937,32 @@ func (m *Manager) Forget(sandboxID string) {
 	delete(m.byID, sandboxID)
 	m.mu.Unlock()
 	m.agents.drop(sandboxID)
+}
+
+// DirectInfo returns everything a caller OUTSIDE this process needs to reach a
+// sandbox's agent itself: the MicroVM's public endpoint, a proxy auth token,
+// and the guest port that token is scoped to.
+//
+// This is the seam for taking the control plane out of the exec data path. The
+// endpoint is a public TLS host and the token is a plain header credential — the
+// same one dialAgent presents on the WebSocket upgrade — so a caller that
+// speaks the tunnel protocol gets an identical channel without relaying through
+// here. Tokens are cached and port-scoped by AuthToken, so this is cheap to call
+// and cannot widen access beyond the agent port.
+func (m *Manager) DirectInfo(ctx context.Context, sandboxID string) (endpoint, token string, port int32, err error) {
+	e, err := m.lookup(sandboxID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	tok, err := m.client.AuthToken(ctx, e.microvmID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return e.endpoint, tok, m.client.Config().AgentPort, nil
+}
+
+// PingAgents keeps the given sandboxes' boxes out of AWS's idle policy. See the
+// keepalive block in agent.go for why an open connection is not enough.
+func (m *Manager) PingAgents(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed int) {
+	return m.agents.pingTracked(ctx, sandboxIDs)
 }

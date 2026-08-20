@@ -26,10 +26,32 @@ interface StockEntry {
   region: string;
   sandboxDomain: string;
   atMs: number;
+  // MicroVM reach-info, when the cell supplies it. Present means exec can go
+  // straight from the edge to the box's agent; absent means this cell routes
+  // through a worker and exec uses the control-plane path.
+  endpoint?: string;
+  token?: string;
+  port?: number;
 }
 
 interface PoolStockEnv {
   SESSION_JWT_SECRET: string;
+  // Per-shard stock sizing, overridable per environment (wrangler.toml [vars]).
+  // Defaults below are the prod values; dev sets these DOWN because its cell
+  // holds ~30 boxes total, an order of magnitude under the 8×38 fleet target —
+  // see the sizing invariant in the block comment below.
+  POOL_STOCK_TARGET?: string;
+  POOL_STOCK_LOW_WATER?: string;
+  // VmSession DOs are pre-woken here at stock-prep (see reserveOnce) instead of
+  // on the create hot path — a burst-100 otherwise fires ~100 prewake
+  // subrequests from the create isolate, saturating its subrequest budget.
+  // Optional so the binding can be absent mid-cutover (prewake just skips).
+  VM_SESSIONS?: DurableObjectNamespace;
+  // MicroVM exec data plane. Warmed here at stock-prep for the same reason
+  // VM_SESSIONS is: doing it on the create path would fan out a subrequest per
+  // box from the create isolate, and — more importantly — would lose the race
+  // against the customer's first exec.
+  MICROVM_SESSIONS?: DurableObjectNamespace;
 }
 
 // Stock tuning. TARGET_STOCK mirrors ~the whole per-cell hot pool so every
@@ -48,11 +70,18 @@ const ENTRY_TTL_MS = 10 * 60_000;
 // Sizing below is PER SHARD; fleet stock = SHARDS × TARGET_STOCK = 304 — deep
 // enough that a sustained ~300-create drain (sequential or 100-way burst) is
 // served entirely from seasoned stock, never from mid-drain refill manufacture
-// (freshly-restored boxes are the p99 tail). CP pool (OPENSANDBOX_POOL_TARGET ×
-// workers) and refill pacing must stay ≥ this.
-const LOW_WATER = 18;
-const RESTOCK_BATCH = 38; // max boxes reserved per single edge-reserve call
-const TARGET_STOCK = 38; // per-shard fill level (× 8 shards = 304 fleet)
+// (freshly-restored boxes are the p99 tail).
+//
+// SIZING INVARIANT: SHARDS × TARGET_STOCK must be ≤ the cell's actual pool
+// (OPENSANDBOX_POOL_TARGET × workers). If it exceeds the pool, every shard
+// permanently believes it is below LOW_WATER, restocks on every claim, and the
+// shards compete for a supply that can never satisfy them — boxes concentrate
+// in whichever shards win, creates that hash to an empty shard fall through to
+// the ~10× slower CP path, and the measured burst latency becomes a function of
+// shard luck rather than of the system under test. Dev hit exactly this (30-box
+// cell against a 304 target), which is why these are env-overridable.
+const DEFAULT_LOW_WATER = 18;
+const DEFAULT_TARGET_STOCK = 38; // per-shard fill level (× 8 shards = 304 fleet)
 const ALARM_INTERVAL_MS = 10_000; // proactive top-up cadence
 const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls ≥ TARGET)
 // Self-decommission: a shard that hasn't served a claim in this long releases
@@ -67,6 +96,14 @@ const IDLE_DECOMMISSION_MS = 30 * 60_000;
 // but the middleware wants a parseable org UUID.
 const POOL_ORG_ID = "00000000-0000-4000-8000-000000000001";
 
+// Parse a positive integer from a wrangler [vars] string, falling back to the
+// prod default when unset/blank/garbage — a bad var must never zero the stock.
+function intFromEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 const b64url = (buf: ArrayBuffer | Uint8Array): string => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = "";
@@ -77,6 +114,52 @@ const b64url = (buf: ArrayBuffer | Uint8Array): string => {
 // Minimal cap-token mint for the DO's own cell calls (reserve/release).
 // Duplicates index.ts's mintCapToken rather than importing it — the DO must
 // not pull in the Worker's module graph (circular import, isolate bloat).
+// Cached HMAC key for sandbox-token minting (see mintSandboxTokenDO).
+let doSignKey: Promise<CryptoKey> | null = null;
+function doHmacKey(secret: string): Promise<CryptoKey> {
+  if (!doSignKey) {
+    doSignKey = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+  }
+  return doSignKey;
+}
+
+// The JWT header is constant — encode it once per isolate instead of
+// JSON.stringify + base64 on every mint.
+const JWT_HEADER_B64 = b64url(new TextEncoder().encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+
+// mintSandboxTokenDO mints the customer-facing sandbox token INSIDE this DO, so
+// a batch claim returns ready-to-serve tokens and the create isolate performs no
+// HMAC at all. Byte-identical to index.ts's mintSandboxToken (same secret, same
+// claims) — the create path just hands this through. Duplicated rather than
+// imported: the DO must not pull in the Worker's module graph.
+async function mintSandboxTokenDO(
+  secret: string,
+  orgID: string,
+  sandboxID: string,
+  workerID: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const payload = {
+    sub: orgID,
+    iat: now,
+    exp: now + 24 * 3600,
+    iss: "opensandbox",
+    org_id: orgID,
+    sandbox_id: sandboxID,
+    worker_id: workerID,
+  };
+  const signingInput = JWT_HEADER_B64 + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const sig = await crypto.subtle.sign("HMAC", await doHmacKey(secret), enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
 async function mintPoolCapToken(secret: string, cellID: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const enc = new TextEncoder();
@@ -104,18 +187,39 @@ export class PoolStock {
   // One-shot colo self-identification (diagnostics): placement is sticky at
   // first-touch; a stock DO cross-colo from the claiming edge adds per-claim RTT.
   private coloLogged = false;
+  // Resolved once per isolate alongside coloLogged; reported on every claim so
+  // the create path can see whether its stock DO is even in the same colo.
+  private colo = "?";
   // Last cell seen on a /claim, persisted so the proactive alarm can restock
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
   private cell: { cellID: string; baseURL: string } | null = null;
+  // The control-plane process that issued the stock we are holding, when that
+  // cell's reservations are process-local (see edge_claim.go processEpoch).
+  // Persisted alongside the stock because it is only meaningful paired with it.
+  private epoch: string | null = null;
+  // Resolved once per isolate from env (see the sizing invariant above).
+  private readonly targetStock: number;
+  private readonly lowWater: number;
+  private readonly restockBatch: number;
 
   constructor(
     private state: DurableObjectState,
     private env: PoolStockEnv,
   ) {
+    this.targetStock = intFromEnv(env.POOL_STOCK_TARGET, DEFAULT_TARGET_STOCK);
+    // Low-water must stay under target or a restock is triggered on every claim.
+    this.lowWater = Math.min(
+      this.targetStock - 1,
+      intFromEnv(env.POOL_STOCK_LOW_WATER, DEFAULT_LOW_WATER),
+    );
+    // One reserve call per restock pass was sized to cover the whole target
+    // (batch × RESTOCK_MAX_CALLS ≥ target); keep that relationship as target moves.
+    this.restockBatch = this.targetStock;
     this.state.blockConcurrencyWhile(async () => {
       this.stock = (await this.state.storage.get<StockEntry[]>("stock")) ?? [];
       this.cell = (await this.state.storage.get<{ cellID: string; baseURL: string }>("cell")) ?? null;
+      this.epoch = (await this.state.storage.get<string>("epoch")) ?? null;
     });
   }
 
@@ -123,6 +227,9 @@ export class PoolStock {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/claim") {
       return this.claim(req);
+    }
+    if (req.method === "POST" && url.pathname === "/claim-batch") {
+      return this.claimBatch(req);
     }
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({ stock: this.stock.length, restocking: this.restockInFlight });
@@ -161,7 +268,8 @@ export class PoolStock {
       this.state.waitUntil(this.release(stale));
     }
 
-    const entry = this.stock.shift(); // FIFO — oldest first keeps the stock young
+    // FIFO — oldest first keeps the stock young.
+    const entry = this.stock.shift();
     this.lastClaimMs = Date.now();
     void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
     this.persist();
@@ -169,14 +277,101 @@ export class PoolStock {
     // Ensure the proactive top-up loop is running, and kick an immediate restock
     // if this claim dropped us below the low-water mark (don't wait for the tick).
     this.state.waitUntil(this.ensureAlarm());
-    if (cell && !this.restockInFlight && this.stock.length < LOW_WATER) {
+    if (cell && !this.restockInFlight && this.stock.length < this.lowWater) {
       this.state.waitUntil(this.restockToTarget(cell));
     }
 
     if (!entry) {
       return new Response(JSON.stringify({ error: "stock empty" }), { status: 404 });
     }
-    return Response.json(entry);
+    // `stock` = entries left in this shard after the pop (telemetry #7): lets the
+    // create path surface shard depletion via Server-Timing.
+    return Response.json({ ...entry, stock: this.stock.length });
+  }
+
+  // claimBatch pops up to `count` entries in ONE call and returns them with
+  // their sandbox tokens already minted. This is the magazine refill (see
+  // index.ts): instead of a burst doing one DO subrequest + one HMAC per create
+  // on the saturated create isolate, one call serves ~N creates from isolate
+  // memory with zero further subrequests and zero edge crypto. Popped entries
+  // are TOKENED, so — exactly like /claim — they must never return to the pool;
+  // an isolate that dies holding them leaves them to the cell's reaper.
+  private async claimBatch(req: Request): Promise<Response> {
+    // Split the create path's `claim;dur` into DO work vs the network to get
+    // here. Both halves have completely different fixes — token minting and
+    // stock bookkeeping are ours to cut, cross-colo RTT is a placement problem —
+    // and from the edge they are indistinguishable.
+    const tDo = Date.now();
+    if (!this.coloLogged) {
+      this.coloLogged = true;
+      void fetch("https://www.cloudflare.com/cdn-cgi/trace")
+        .then(async (r) => {
+          this.colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+          console.log(`pool-stock colo=${this.colo}`);
+        })
+        .catch(() => {});
+    }
+    let cell: { cellID: string; baseURL: string } | null = null;
+    let orgID = "";
+    let count = 1;
+    try {
+      const body = (await req.json()) as {
+        cell?: { cellID: string; baseURL: string };
+        orgID?: string;
+        count?: number;
+      };
+      cell = body.cell ?? null;
+      orgID = typeof body.orgID === "string" ? body.orgID : "";
+      count = Math.max(1, Math.min(Number(body.count) || 1, this.targetStock));
+    } catch {
+      /* fall through with defaults */
+    }
+    if (!orgID) return new Response(JSON.stringify({ error: "orgID required" }), { status: 400 });
+    if (cell) this.rememberCell(cell);
+
+    // Same inline stale-expiry as claim(), synchronous over the in-memory array
+    // so a concurrent claim can't double-pop across an await.
+    const now = Date.now();
+    const fresh: StockEntry[] = [];
+    const stale: StockEntry[] = [];
+    for (const e of this.stock) (now - e.atMs < ENTRY_TTL_MS ? fresh : stale).push(e);
+    this.stock = fresh;
+    if (stale.length > 0) this.state.waitUntil(this.release(stale));
+
+    // FIFO — oldest first keeps the stock young.
+    const entries = this.stock.splice(0, count);
+    this.lastClaimMs = Date.now();
+    void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
+    this.persist();
+
+    this.state.waitUntil(this.ensureAlarm());
+    if (cell && !this.restockInFlight && this.stock.length < this.lowWater) {
+      this.state.waitUntil(this.restockToTarget(cell));
+    }
+
+    // Mint every token here (one isolate, N signs) rather than N times on the
+    // create isolate. Parallel — crypto.subtle.sign is async.
+    const boxes = await Promise.all(
+      entries.map(async (e) => ({
+        id: e.id,
+        workerID: e.workerID,
+        region: e.region,
+        sandboxDomain: e.sandboxDomain,
+        token: await mintSandboxTokenDO(this.env.SESSION_JWT_SECRET, orgID, e.id, e.workerID),
+        // How to reach the box's agent directly. Named apart from `token` above,
+        // which is the CUSTOMER's sandbox token — these are the AWS proxy's
+        // port-scoped credential and are never handed to a customer.
+        //
+        // Carried out with the box so the create isolate can cache them
+        // colo-locally: that is what lets a later exec dial the agent itself
+        // instead of asking the control plane in westus2 for reach-info it has
+        // already been told once. Absent for backends with no in-memory stock.
+        agentEndpoint: e.endpoint,
+        agentToken: e.token,
+        agentPort: e.port,
+      })),
+    );
+    return Response.json({ boxes, stock: this.stock.length, t: Date.now() - tDo, colo: this.colo });
   }
 
   // rememberCell persists the cell coordinates so the alarm can restock even on
@@ -223,14 +418,76 @@ export class PoolStock {
     // pool. This is how the pre-sharding legacy DO (which becomes shard 0 and
     // held the whole fleet's stock) sheds down to TARGET_STOCK so the other
     // shards can reserve those boxes; it also self-heals any future oversizing.
-    if (this.stock.length > TARGET_STOCK) {
-      const surplus = this.stock.splice(TARGET_STOCK);
+    if (this.stock.length > this.targetStock) {
+      const surplus = this.stock.splice(this.targetStock);
       await this.release(surplus);
     }
-    if (this.stock.length < TARGET_STOCK) await this.restockToTarget(cell);
+    if (this.stock.length < this.targetStock) await this.restockToTarget(cell);
     this.persist();
-    // Keep the loop alive — stock stays full and fresh between bursts.
+    // NOTE: deliberately NO periodic re-prewake of sitting stock here. Warming
+    // every entry each tick costs 8 shards × TARGET_STOCK DO pokes every
+    // ALARM_INTERVAL — sustained background load on the vm-do worker plus
+    // waitUntil work competing with this DO's own claim serving — and prod
+    // measurement showed the burst gate is edge-isolate admission, not DO
+    // coldness (exec held ~48ms with 100% VM-DO). Fresh boxes are warmed once in
+    // reserveOnce; a box that re-hibernates while it sits wakes on the host dial
+    // or first exec, as it always did.
     await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+  }
+
+  // prewakeBox wakes one box's VmSession DO isolate (best-effort, off any hot
+  // path). Called from reserveOnce when a box enters the stock.
+  private prewakeBox(sandboxID: string): void {
+    const vs = this.env.VM_SESSIONS;
+    if (!vs) return;
+    this.state.waitUntil(
+      vs.get(vs.idFromName(sandboxID)).fetch("https://do/status").then(() => {}).catch(() => {}),
+    );
+  }
+
+  // warmMicrovmBox hands a box's reach-info to its MicrovmSession DO and has it
+  // open the agent tunnel, best-effort and off every hot path.
+  //
+  // Doing this at stock-prep rather than at create is the whole point. The
+  // WebSocket 101 comes from the AWS proxy, which only connects to the guest
+  // port when payload first arrives — so the ~1.1s cost of actually reaching the
+  // agent lands on whoever sends first. Warming at create loses that race (the
+  // customer's exec arrives one RTT after the 201), and warming lazily on first
+  // exec IS the race. Here there is no race: the box sits in stock for minutes.
+  private warmMicrovmBox(b: { sandboxID: string; endpoint?: string; token?: string; port?: number }): void {
+    const ns = this.env.MICROVM_SESSIONS;
+    if (!ns || !b.endpoint || !b.token || !b.port) return;
+    this.state.waitUntil(
+      ns
+        .get(ns.idFromName(b.sandboxID), { locationHint: "enam" })
+        .fetch("https://do/attach", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ endpoint: b.endpoint, token: b.token, port: b.port, dial: true }),
+        })
+        .then(() => {})
+        .catch(() => {}),
+    );
+  }
+
+  // coolMicrovmBox drops a DO's channel when its box leaves this stock without
+  // ever reaching a customer.
+  //
+  // Not just tidiness: the box goes back to anonymous pool stock and will be
+  // reissued under a DIFFERENT sandbox id, so a DO still holding a live tunnel
+  // under the OLD id is a channel into a box that now belongs to someone else.
+  // The id stops resolving in D1, which is the real guard, but leaving an armed
+  // channel behind it is not a thing to rely on.
+  private coolMicrovmBox(sandboxID: string): void {
+    const ns = this.env.MICROVM_SESSIONS;
+    if (!ns) return;
+    this.state.waitUntil(
+      ns
+        .get(ns.idFromName(sandboxID), { locationHint: "enam" })
+        .fetch("https://do/detach", { method: "POST" })
+        .then(() => {})
+        .catch(() => {}),
+    );
   }
 
   private persist(): void {
@@ -241,6 +498,7 @@ export class PoolStock {
     // the `edge_reserved` CAS and fails cleanly. Rare + already-handled, and
     // the claim hop is the entire cost of an edge create, so the ~10ms wins.
     void this.state.storage.put("stock", this.stock, { allowUnconfirmed: true });
+    void this.state.storage.put("epoch", this.epoch, { allowUnconfirmed: true });
   }
 
   // restockToTarget fills the stock up to TARGET_STOCK by issuing up to
@@ -252,7 +510,7 @@ export class PoolStock {
     this.restockInFlight = true;
     try {
       for (let call = 0; call < RESTOCK_MAX_CALLS; call++) {
-        const want = Math.min(RESTOCK_BATCH, TARGET_STOCK - this.stock.length);
+        const want = Math.min(this.restockBatch, this.targetStock - this.stock.length);
         if (want <= 0) return;
         const got = await this.reserveOnce(cell, want);
         if (got < want) return; // pool drained (or error) — don't spin
@@ -279,8 +537,32 @@ export class PoolStock {
       const data = (await r.json()) as {
         region: string;
         sandboxDomain: string;
-        boxes: Array<{ sandboxID: string; workerID: string }>;
+        epoch?: string;
+        // endpoint/token/port are present only for cells whose backend can be
+        // reached directly (MicroVM); worker-backed cells omit them.
+        boxes: Array<{ sandboxID: string; workerID: string; endpoint?: string; token?: string; port?: number }>;
       };
+      // Epoch fence. A cell that stamps an epoch is telling us its edge
+      // reservations live in that process's memory, not in Postgres — so when
+      // the value changes, every id we are holding was minted by a control
+      // plane that no longer exists. Those boxes have no manager binding: a
+      // create served from them 201s and the customer's first exec 500s,
+      // because routing goes through a sandbox→box map that died with the
+      // process. Drop the lot rather than serve one.
+      //
+      // Not released back to the pool — the new process has no record of these
+      // ids, so an edge-release would be a no-op round trip. The cell's own
+      // reaper owns the boxes now.
+      //
+      // Absent epoch = a Postgres-backed cell, whose reservations are rows and
+      // survive a restart. No fence, and no behaviour change for those cells.
+      if (data.epoch && this.epoch && data.epoch !== this.epoch && this.stock.length > 0) {
+        console.log(
+          `pool-stock ${cell.cellID}: control-plane epoch changed (${this.epoch} → ${data.epoch}) — dropping ${this.stock.length} stale entr(ies)`,
+        );
+        this.stock = [];
+      }
+      if (data.epoch) this.epoch = data.epoch;
       const now = Date.now();
       const have = new Set(this.stock.map((e) => e.id));
       let added = 0;
@@ -294,8 +576,18 @@ export class PoolStock {
           region: data.region,
           sandboxDomain: data.sandboxDomain,
           atMs: now,
+          endpoint: b.endpoint,
+          token: b.token,
+          port: b.port,
         });
         added++;
+        // Open and guest-attach this box's agent tunnel NOW, while it is still
+        // stock and nobody is waiting on it.
+        this.warmMicrovmBox(b);
+        // Pre-wake the box's VmSession DO now (stock-prep), off any hot path, so
+        // the create burst doesn't fan out ~100 prewake subrequests from the
+        // create isolate. The alarm (prewakeStock) keeps it warm while it sits.
+        this.prewakeBox(b.sandboxID);
       }
       this.persist();
       return added;
@@ -306,6 +598,9 @@ export class PoolStock {
   }
 
   private async release(entries: StockEntry[]): Promise<void> {
+    // Tear down any agent tunnel first — this box is about to be reissued under
+    // a different sandbox id. See coolMicrovmBox.
+    for (const e of entries) if (e.endpoint) this.coolMicrovmBox(e.id);
     // Group by cell (entries could straddle a base_url change).
     const byCell = new Map<string, { cellID: string; ids: string[] }>();
     for (const e of entries) {

@@ -60,6 +60,23 @@ type createSteps struct {
 	promote func(ctx context.Context, workerID string) error
 	// cleanup runs when activate fails, with the cause. Nil skips it.
 	cleanup func(ctx context.Context, workerID string, cause error)
+	// deferPersist moves persist+promote off the request, running them after
+	// the caller already has its answer.
+	//
+	// Only safe for a backend whose claim has ALREADY made the sandbox usable
+	// in-process — the MicroVM backend binds sandbox→box and adopts the warm
+	// tunnel inside Claim, so exec, destroy and routing all work the instant
+	// Claim returns. The row is bookkeeping consumed by restart recovery and
+	// billing, neither of which cares about a few hundred milliseconds.
+	//
+	// Measured: those two writes were 230ms of a 450ms create — over half the
+	// customer-visible latency spent on a row nobody reads during the request.
+	//
+	// The safety net is what makes this defensible rather than reckless: a
+	// write that fails leaves a box the runtime still knows about, which the
+	// reconciler adopts from AWS and the orphan sweep reclaims if it does not.
+	// Without both of those this would be a quota leak generator.
+	deferPersist bool
 }
 
 // runCreate executes the steps in the one order that is correct.
@@ -88,6 +105,25 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 	claimMs = time.Since(t).Milliseconds()
 	if err != nil {
 		return "", err
+	}
+
+	// Deferred-persist backends run activate on the request and everything
+	// durable behind it. Activate stays inline because it is the step that can
+	// still fail the create; the writes cannot, by construction.
+	if steps.deferPersist {
+		if steps.activate != nil {
+			t = time.Now()
+			aerr := steps.activate(ctx, workerID)
+			activateMs = time.Since(t).Milliseconds()
+			if aerr != nil {
+				if steps.cleanup != nil {
+					steps.cleanup(ctx, workerID, aerr)
+				}
+				return "", fmt.Errorf("create: activate %s on %s: %w", sandboxID, workerID, aerr)
+			}
+		}
+		go persistAfterResponse(sandboxID, workerID, steps)
+		return workerID, nil
 	}
 
 	if steps.persist != nil {
@@ -134,6 +170,44 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 		}
 	}
 	return workerID, nil
+}
+
+// persistDeferTimeout bounds the background write. Generous — the customer is
+// not waiting — but finite, so a wedged database cannot accumulate goroutines
+// for every create the cell serves.
+const persistDeferTimeout = 30 * time.Second
+
+// persistAfterResponse writes the session row once the customer already has
+// their sandbox. Runs on its own context: the request's is cancelled the moment
+// the response is flushed, which would abort every one of these writes.
+//
+// Failures are logged, not retried here. The reconciler adopts a live box whose
+// row is missing, and the orphan sweep reclaims one nothing adopts — retrying
+// against a database that just failed is less reliable than the sweep that
+// exists for precisely this case.
+func persistAfterResponse(sandboxID, workerID string, steps createSteps) {
+	ctx, cancel := context.WithTimeout(context.Background(), persistDeferTimeout)
+	defer cancel()
+
+	start := time.Now()
+	if steps.persist != nil {
+		if err := steps.persist(ctx, workerID); err != nil {
+			log.Printf("create: deferred persist failed for %s on %s: %v — reconciler will settle it",
+				sandboxID, workerID, err)
+			// Skip promote: flipping a row to running that was never inserted
+			// is a no-op at best and a confusing partial write at worst.
+			return
+		}
+	}
+	if steps.promote != nil {
+		if err := steps.promote(ctx, workerID); err != nil {
+			log.Printf("create: deferred promote failed for %s on %s: %v", sandboxID, workerID, err)
+			return
+		}
+	}
+	if d := time.Since(start); d >= createTimingLogThreshold {
+		log.Printf("create: %s deferred writes took %dms (off the request path)", sandboxID, d.Milliseconds())
+	}
 }
 
 // respondCreateErr answers a failed create, separating "we are full" from "we

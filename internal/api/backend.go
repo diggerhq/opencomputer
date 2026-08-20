@@ -177,6 +177,16 @@ type Placer interface {
 	// rows, where an unwritten row is a host nothing will ever reclaim.
 	RequiresPersistedRow() bool
 
+	// DefersPersist reports whether the session row may be written after the
+	// create has already been answered.
+	//
+	// True only when Claim itself leaves the sandbox fully serviceable in this
+	// process — bound, routable, and warm — so nothing in the request path
+	// reads the row it is skipping. A backend that resolves a sandbox by
+	// querying the database must answer false, or its own next request races
+	// a write that has not landed.
+	DefersPersist() bool
+
 	// Release gives back a claim that will not be activated, after a create
 	// fails between the two calls.
 	//

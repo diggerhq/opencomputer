@@ -20,6 +20,9 @@
 //   GET  /health
 
 export { CreditAccount } from "../../shared/credit_account";
+// Shared with the vm-do worker's MicrovmSession: the same minimal HTTP/2 client,
+// used here only by the dev-only direct-exec probe.
+import { H2Grpc, encodeExecRequest, decodeExecResponse } from "../../shared/h2grpc";
 export { PoolStock } from "./pool_stock";
 // VmSession (VM-DO exec data plane) lives in its own worker
 // (cloudflare-workers/vm-do) and is bound cross-script via VM_SESSIONS —
@@ -113,6 +116,9 @@ export interface Env extends DashboardEnv {
   // The host's /connect is authed by a per-sandbox HMAC over SESSION_JWT_SECRET
   // (see the /internal/vms/:id/connect route) — no dedicated secret.
   VM_SESSIONS: DurableObjectNamespace;
+  // MicroVM exec data plane — the DO dials the box's agent directly, so exec
+  // never touches the control plane. See vm-do/src/microvm_session.ts.
+  MICROVM_SESSIONS: DurableObjectNamespace;
   // Off-isolate edge-claim finalize. finalizeEdgeClaim (CP claim-finalize fetch +
   // D1 index insert) was the dominant burst-create cost: run per create in
   // waitUntil, ~100 of them accumulate on the create isolate and saturate its
@@ -397,6 +403,20 @@ const sandboxRouteCache = new Map<string, { cellID: string; orgID: string }>();
 // entry can linger — same semantics as the isolate Map (the cell 404s). 15 min
 // bounds colo-level lingering.
 const ROUTE_COLO_TTL_SEC = 900;
+
+// How long a box's agent reach-info stays cached. The AWS proxy credential is
+// minted for 60 minutes and a CLAIMED box is out of the pool, so nothing
+// re-mints it — the cache must expire comfortably before the credential does,
+// or execs would dial with a dead token and fall back for the rest of the hour.
+// 30 minutes leaves a wide margin; past it, tryMicrovmDirectExec re-fetches from
+// the cell and re-caches.
+const MVM_REACH_TTL_SEC = 1800;
+
+interface MvmReach {
+  endpoint: string;
+  token: string;
+  port: number;
+}
 
 // resolveSandboxRoute returns a sandbox's { cellID, orgID } from the route cache,
 // falling back to the colo-shared tier (colo_cache.ts) and then a single D1 read
@@ -1130,17 +1150,108 @@ function indexSandboxFromSSE(
 // the cell, never a laptop). g1's shards 1-7 were armed from off-metro and
 // pinned cross-country; g2 exists to re-place them. Old-gen shards strand their
 // reservations at most ENTRY_TTL + the cell's 15-min reaper.
+// g3: measured 2026-08-20 from an IAD sandbox, g2's shards answered from LAX and
+// SJC with doin=0 — every claim was a ~78ms cross-country round trip and the
+// entire cost of a ~92ms create. locationHint below could not save them because
+// placement is fixed at creation and these objects predate it. Shard 0 is folded
+// into the gen scheme here too: it had kept the bare cellID name so the
+// pre-sharding DO would drain as a first-class shard, but that cutover is long
+// done, and the bare name was permanently unplaceable — a guaranteed 1-in-8
+// cross-country claim no gen bump could ever fix.
 const POOL_STOCK_SHARDS = 8;
-const POOL_STOCK_SHARD_GEN = "g2";
+const POOL_STOCK_SHARD_GEN = "g3";
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
-  const name = shard === 0 ? cellID : `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
+  const name = `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
   // Deterministic placement hint: pin the stock DO to eastern North America
   // (covers eastus2 / the IAD leaderboard runner) so a claim never eats a
   // cross-colo hop even if the first touch comes from an off-metro edge. A
   // no-op for DOs already placed; guards future/new shards from the
   // first-touch-colo placement trap that previously cost ~70ms/claim.
   return env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name), { locationHint: "enam" });
+}
+
+// ---------------------------------------------------------------------------
+// Pool claim: one DO pop per create.
+//
+// There used to be a third tier here — an isolate-local "magazine" that batched
+// a refill across shards and served subsequent creates from memory. It is gone.
+// The idea was sound (amortize the DO subrequest + HMAC over a burst) but it
+// could not be made correct: a magazine lives in isolate-local memory, so a
+// burst that fragments across isolates leaves each one holding stock no other
+// create can reach, and Cloudflare may evict the isolate at any time. Sizing it
+// was a forced choice between over-fetching (boxes strand until the cell's
+// 15-min reaper) and under-fetching (misses fall through to a 9-17s cold
+// launch). Measured on dev at 100-way: of 104 boxes staged in the shards, 48
+// served creates, 24 were still in the shards, and ~32 were simply gone.
+//
+// It was also solving the wrong problem. The magazine bought back a ~10ms
+// server-side claim while every create and exec was paying ~165ms to cross the
+// continent to a control plane in westus2 for boxes in us-east-1. Removing a
+// tier of cache is worth more than tuning one: what remains has a single owner
+// (the DO) and one expiry (ENTRY_TTL), so a box cannot be in two places.
+interface PoolBox {
+  id: string;
+  workerID: string;
+  region: string;
+  sandboxDomain: string;
+  token: string;
+  // How to reach the box's agent, when the backend keeps its own stock and so
+  // already knows. `token` above is the CUSTOMER's sandbox token; these are the
+  // AWS proxy's port-scoped credential and never leave the edge. Cached at
+  // create so the first exec can dial the guest without asking westus2.
+  agentEndpoint?: string;
+  agentToken?: string;
+  agentPort?: number;
+}
+
+// claimPoolBox pops one ready-to-serve box (token already minted in the DO).
+// Returns null to fall through to the CP create.
+//
+// One /claim-batch(count:1) against a random shard. When the shards are evenly
+// stocked — the steady state, since each targets POOL_STOCK_TARGET — the first
+// call hits and a create costs exactly one DO round trip. The walk below is the
+// uneven-drain path, not the common one.
+async function claimPoolBox(
+  env: Env,
+  cell: CellRow,
+  orgID: string,
+): Promise<{ box: PoolBox; stock: number; doMs: number; doColo: string } | null> {
+  const body = JSON.stringify({
+    cell: { cellID: cell.cell_id, baseURL: cell.base_url },
+    orgID,
+    count: 1,
+  });
+  let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
+  // Odd stride only, so the walk is a full cycle of the 8 shards rather than a
+  // sub-orbit. An even stride shares a factor with POOL_STOCK_SHARDS and can
+  // only ever reach half of them (stride 2 visits 4, stride 4 visits 2), so a
+  // create could exhaust its attempts against shards that are empty while the
+  // ones holding stock were unreachable by construction.
+  const stride = 1 + 2 * Math.floor(Math.random() * (POOL_STOCK_SHARDS / 2));
+  // Walk every shard before giving up. Measured on dev: with a 3-attempt walk,
+  // 56 of 100 concurrent creates fell through to the control plane while the
+  // shards still held 22-81 boxes. Falling back to a cold MicroVM launch while
+  // warm stock is sitting one shard away is the expensive mistake here: those
+  // creates then serialize behind the RunMicrovm 5/s quota, which is what turns
+  // a burst into a 25s tail.
+  for (let attempt = 0; attempt < POOL_STOCK_SHARDS; attempt++) {
+    try {
+      const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
+        method: "POST",
+        body,
+      });
+      shard = (shard + stride) % POOL_STOCK_SHARDS;
+      if (!r.ok) continue;
+      const data = (await r.json()) as { boxes?: PoolBox[]; stock?: number; t?: number; colo?: string };
+      const b = data.boxes?.[0];
+      if (!b) continue;
+      return { box: b, stock: data.stock ?? -1, doMs: data.t ?? -1, doColo: data.colo ?? "?" };
+    } catch {
+      shard = (shard + stride) % POOL_STOCK_SHARDS;
+    }
+  }
+  return null;
 }
 
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
@@ -1340,25 +1451,20 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // shard (404) gets one retry on a different shard before the CP fallback.
       const claimBody = JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } });
       mark("cap");
-      // Sample up to 3 distinct shards (random walk with a random stride
-      // coprime-ish to 8) — at full stock the first hit ends it; under sparse
-      // stock (small cells, mid-battery drain) 3 samples cut the false-fallback
-      // rate from ~(empty/8)² to ~(empty/8)³ for ~10ms per extra probe.
-      let box: { id: string; workerID: string; region: string; sandboxDomain: string } | null = null;
-      let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
-      const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
-      for (let attempt = 0; attempt < 3 && !box; attempt++) {
-        const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim", {
-          method: "POST",
-          body: claimBody,
-        });
-        shard = (shard + stride) % POOL_STOCK_SHARDS;
-        if (!r.ok) continue;
-        box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
-      }
-      if (box) {
+      // One DO pop. The token was minted in the DO when it filled its stock, so
+      // a hit costs one subrequest and no crypto on this isolate.
+      const claimed = await claimPoolBox(env, cell, caller.orgID);
+      const box = claimed?.box ?? null;
+      if (box && claimed) {
         mark("claim");
-        const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
+        // Telemetry: stock left in the shard that served this claim. `dur` is a
+        // value here, not a duration.
+        phases.push(`stock;dur=${claimed.stock}`);
+        // `claim` above is DO work + network to the DO. This is the DO's half,
+        // so the remainder is the hop — see claimBatch. `doclo` is a colo name,
+        // not a duration; Server-Timing has nowhere else to put it.
+        phases.push(`doin;dur=${claimed.doMs}`, `doclo;desc=${claimed.doColo}`);
+        const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
         // Seed the colo-shared route so the first exec — which usually lands on
@@ -1366,6 +1472,32 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // race-safe here: the client can't send that exec until the 201 crosses
         // the network (≥ one RTT), and the put lands in ~5ms.
         ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+        // Same trick for the box's agent reach-info, which the claim response
+        // carries because the pool already knew it. This is what lets the first
+        // exec dial the guest itself — see tryMicrovmDirectExec. Without it that
+        // exec's only source is the control plane in westus2, a cross-country
+        // round trip measured at 67-401ms, which would cost more than the whole
+        // exec it is trying to enable.
+        if (box.agentEndpoint && box.agentToken && box.agentPort) {
+          const reach = { endpoint: box.agentEndpoint, token: box.agentToken, port: box.agentPort };
+          ctx.waitUntil(coloPut("mvmreach", box.id, reach, MVM_REACH_TTL_SEC));
+          // Open and immediately drop a tunnel to the box, purely to warm this
+          // colo's outbound connection to its host.
+          //
+          // The dial cost is sharply bimodal — ~50ms or ~260ms, measured across
+          // several runs — and the slow half is a cold TLS handshake to a host
+          // this edge has never contacted. It used to be hidden because the
+          // MicrovmSession DO had dialled the box at stock time, so the
+          // connection was already warm; dialling from the edge instead moved
+          // that cost onto the customer's first exec. Paying it here, on
+          // waitUntil, puts it back where nobody is waiting.
+          ctx.waitUntil(warmEdgeTunnel(reach));
+        }
+        // NOTE: the MicroVM exec channel is deliberately NOT warmed here. It is
+        // warmed at stock-prep in pool_stock.ts, where the box sits idle for
+        // minutes — warming from this path both loses the race against the
+        // customer's first exec and fans out a DO subrequest per create under
+        // burst. See PoolStock.warmMicrovmBox.
         mark("mintseed");
         const resp: Record<string, unknown> = {
           sandboxID: box.id,
@@ -1425,9 +1557,15 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     }
   }
 
+  // Reaching here means edge-claim was skipped or missed. Marked separately so a
+  // fallback create's header shows whether it paid for a failed claim attempt
+  // (DO round-trip + retry) before falling through, or never tried at all.
+  mark("claimmiss");
+
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
   const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
+  mark("capmint");
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -1457,8 +1595,14 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   } catch (e) {
     return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
   }
+  // The edge→cell leg, isolated. This is the fork in the road for the fallback
+  // create: `cell` covers network RTT to the cell plus everything the CP does,
+  // and the CP logs its own handler time, so `cell` minus that is the tunnel.
+  // Everything before it is edge compute + D1.
+  mark("cell");
 
   const cpText = await cpResp.text();
+  mark("cellbody");
   if (cpResp.status >= 200 && cpResp.status < 300) {
     let parsed: SandboxCreateResult = {};
     try {
@@ -1481,10 +1625,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       ),
     );
   }
-  // Pass the CP's response through verbatim (status + body).
+  if (env.DIAG === "1") console.log(`create-timing fallback ${cell.cell_id} ${phases.join(" ")}`);
+  // Pass the CP's response through verbatim (status + body), plus the phase
+  // breakdown — the edge-claim path above already returns one, and a fallback
+  // create with no header is exactly the case that needed attributing.
   return new Response(cpText, {
     status: cpResp.status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
   });
 }
 
@@ -1571,7 +1718,7 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // short-circuits without polling — one edge→DO→host→agent hop. Authz mirrors
 // proxyToCellSDK exactly (same route lookup + org-ownership check) so the DO
 // path can't be used to exec on another org's sandbox. See vm_session.ts.
-async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
+async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
   if (!env.VM_SESSIONS) return null; // binding absent mid-cutover → tunnel
   // MicroVM-backed orgs never have a live VmSession: the host dialer that opens
   // the channel is a QEMU-worker component (internal/worker/dodialer.go), and a
@@ -1582,7 +1729,7 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
   // MicroVM exec — 79% of benchmark TTI, against a control plane that served
   // the exec itself in 10ms. Skip straight to the tunnel.
   const orgPolicy = await loadOrgPolicy(env, caller.orgID);
-  if (orgPolicy?.runtime === RUNTIME_MICROVM) return null;
+  if (orgPolicy?.runtime === RUNTIME_MICROVM) return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs);
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;
@@ -1648,6 +1795,338 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
   return null;
 }
 
+/**
+ * tryMicrovmDirectExec routes POST /:id/exec/run-async straight from this
+ * Worker to the sandbox's in-guest agent, and returns null to fall back to the
+ * control-plane tunnel whenever it cannot.
+ *
+ * WHY THERE IS NO DURABLE OBJECT HERE ANY MORE
+ *
+ * This used to go through a MicrovmSession DO that held the agent tunnel open
+ * so execs could share it. Measured on dev from an IAD client, that reuse never
+ * paid for itself, because every sandbox gets its own object and the benchmark
+ * shape uses it once:
+ *
+ *   first exec, unshared boxes    DO 137ms median / 389ms p90
+ *                                 direct 90ms median / 345ms p90
+ *   2nd-4th exec, same box        DO 49-74ms   direct 44-47ms
+ *
+ * Direct won or tied everywhere. The DO's hop plus its per-sandbox cold start
+ * cost more than the dial it was avoiding. The machinery it was built on — the
+ * hand-rolled HTTP/2 client in shared/h2grpc.ts — is what this path runs on, so
+ * what went away is the wrapper, not the mechanism.
+ *
+ * The RPC itself is the steady part of all this: unary measured 15-23ms on
+ * every sample in every run. Everything above that is connection setup, which
+ * is where the remaining work is.
+ *
+ * SCOPE: one-shot Exec only. Streaming, PTY and file transfer stay on the
+ * control-plane path via the null return.
+ */
+async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
+  const tRoute = Date.now();
+  const route = await resolveSandboxRoute(env, id);
+  const routeMs = Date.now() - tRoute;
+  if (!route) return json({ error: "sandbox not found" }, 404);
+  // Authorization mirrors proxyToCellSDK: this path talks to the box with a
+  // credential the caller never sees, so org ownership has to be proven here.
+  if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse((await req.clone().text()) || "{}") as Record<string, unknown>;
+  } catch {
+    return json({ error: "invalid body" }, 400);
+  }
+  // The SDK sends a single shell string; the agent's Exec takes an argv. Match
+  // what the control plane does for this backend rather than word-splitting
+  // here, where quoting and redirection would be silently mangled.
+  const cmd = typeof body.cmd === "string" ? body.cmd : typeof body.command === "string" ? body.command : "";
+  if (!cmd) return null;
+  const execReq = {
+    command: "/bin/sh",
+    args: ["-lc", cmd],
+    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+    env: (body.env as Record<string, string> | undefined) ?? undefined,
+    timeoutSeconds: typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : undefined,
+  };
+
+  const tReach = Date.now();
+  let reach = await coloGet<MvmReach>("mvmreach", id);
+  let reachFromCell = false;
+  if (!reach) {
+    // Cache miss: a box claimed before this deployed, an expired credential, or
+    // a colo that never saw the create. Ask the cell — expensive (it is in
+    // westus2) but self-healing, because we cache what it returns.
+    reach = await fetchMvmReach(env, caller, route.cellID, id);
+    reachFromCell = true;
+    if (!reach) return null; // not a MicroVM box, or the cell won't say — tunnel
+  }
+  const reachMs = Date.now() - tReach;
+
+  const run = async (r: MvmReach): Promise<Response> => {
+    const conn = await dialAgent(r);
+    try {
+      const res = await conn.unary("/agent.SandboxAgent/Exec", encodeExecRequest(execReq), MVM_EXEC_TIMEOUT_MS);
+      return json(decodeExecResponse(res));
+    } finally {
+      conn.close();
+    }
+  };
+
+  const tExec = Date.now();
+  try {
+    let resp: Response;
+    try {
+      resp = await run(reach);
+    } catch (e) {
+      // A cached credential that has aged out fails here and nowhere else, and
+      // it fails for every exec until the entry expires. Re-fetch once so the
+      // box heals immediately instead of an hour later. Only worth doing when
+      // the credential could be stale — a fresh one from the cell just failed
+      // for a different reason.
+      if (reachFromCell) throw e;
+      const fresh = await fetchMvmReach(env, caller, route.cellID, id);
+      if (!fresh) throw e;
+      resp = await run(fresh);
+      reach = fresh;
+    }
+    const execMs = Date.now() - tExec;
+    // Cache whatever actually worked. On a hit this is a cheap refresh; on a
+    // miss it is the whole point — the next exec in this colo skips westus2.
+    ctx.waitUntil(coloPut("mvmreach", id, reach, MVM_REACH_TTL_SEC));
+    return new Response(resp.body, {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}`,
+      },
+    });
+  } catch (e) {
+    // Every failure lands here and the answer to all of them is the same: the
+    // tunnel still works. Logged rather than distinguished, because a path that
+    // silently degrades is worse than one that is loudly slow.
+    console.log(`microvm-direct-exec ${id}: ${e} — tunnel fallback`);
+    return null;
+  }
+}
+
+// Bounded well under the SDK's own patience: a command that outlives this is
+// one the caller has already re-run through the tunnel.
+const MVM_EXEC_TIMEOUT_MS = 10_000;
+
+/**
+ * warmEdgeTunnel dials the box and drops the connection straight away, so the
+ * handshake is already done when the customer's first exec dials for real.
+ *
+ * Errors are swallowed on purpose: this is speculative work off the create
+ * path, and a box that refuses now simply means the first exec pays what it
+ * would have paid anyway.
+ */
+async function warmEdgeTunnel(r: MvmReach): Promise<void> {
+  try {
+    const conn = await dialAgent(r);
+    conn.close();
+  } catch {
+    /* first exec dials cold, exactly as it would have */
+  }
+}
+
+// Last dial's split, in module scope so the exec that caused it can report the
+// two halves without threading a result object through. Single-threaded isolate,
+// and the value is read immediately after the await that sets it.
+let lastUpgradeMs = 0;
+let lastReadyMs = 0;
+
+/**
+ * dialAgent opens one agent tunnel and returns an HTTP/2 client on it.
+ *
+ * The two legs are timed apart because they fail differently and fix
+ * differently. `upgrade` is DNS + TCP + TLS + the 101, i.e. this colo's
+ * connection to the box's host — a warm pooled connection makes it ~free.
+ * `ready` is the guest's first SETTINGS frame, which the AWS proxy cannot
+ * produce until it has connected to the guest port. A slow dial is one or the
+ * other, never both, and knowing which is the whole diagnosis.
+ */
+async function dialAgent(r: MvmReach): Promise<H2Grpc> {
+  const host = r.endpoint.replace(/^https?:\/\//, "").split("/")[0];
+  const tUp = Date.now();
+  const up = await fetch(`https://${host}/osb/agent-grpc`, {
+    signal: AbortSignal.timeout(5000),
+    headers: {
+      Upgrade: "websocket",
+      "X-aws-proxy-auth": r.token,
+      "X-aws-proxy-port": String(r.port),
+    },
+  });
+  const ws = (up as unknown as { webSocket: WebSocket | null }).webSocket;
+  if (!ws) throw new Error(`agent tunnel upgrade failed (http ${up.status})`);
+  lastUpgradeMs = Date.now() - tUp;
+  ws.accept();
+  const tReady = Date.now();
+  const conn = new H2Grpc(ws, host);
+  // Wait for the GUEST, not just the AWS proxy: the 101 comes from the proxy,
+  // which only connects to the guest port once payload arrives. Its SETTINGS
+  // frame is the first proof the agent is actually there.
+  await Promise.race([
+    conn.ready,
+    new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), 8000)),
+  ]);
+  lastReadyMs = Date.now() - tReady;
+  return conn;
+}
+
+/**
+ * fetchMvmReach asks the owning cell how to reach a sandbox's box.
+ *
+ * The slow path on purpose: the cell is in Azure westus2 and this is measured
+ * at 67-401ms from an IAD edge. It exists so a cache miss still works, not so
+ * it can be on the hot path — the create seeds the cache precisely to avoid it.
+ * Returns null for a sandbox whose backend has no such endpoint.
+ */
+async function fetchMvmReach(env: Env, caller: Caller, cellID: string, id: string): Promise<MvmReach | null> {
+  const cell = await lookupCell(env, cellID);
+  if (!cell) return null;
+  const org = await loadOrgPolicy(env, caller.orgID);
+  const capToken = await cachedCapToken(
+    env.SESSION_JWT_SECRET, caller.orgID, cellID, "",
+    org?.billing_provider ?? "", org?.runtime ?? "", caller.userID,
+  );
+  const resp = await fetch(`${cell.base_url.replace(/\/$/, "")}/internal/microvm/direct/${id}`, {
+    headers: { authorization: "Bearer " + capToken },
+  });
+  if (!resp.ok) return null;
+  const info = await resp.json<MvmReach>();
+  return info?.endpoint && info?.token && info?.port ? info : null;
+}
+
+/**
+ * directExecProbe runs one exec straight from this Worker to the box's agent,
+ * with no Durable Object anywhere in the path, and reports each leg separately.
+ *
+ * It exists to settle whether MicrovmSession earns its place on the exec path.
+ * The DO's value is holding the tunnel open between execs; its cost is a hop
+ * plus a cold start per sandbox. Only a measurement of the no-DO path makes
+ * those comparable, and this is that measurement.
+ *
+ * Dev-only, and deliberately not wired into any customer route.
+ */
+async function directExecProbe(req: Request, env: Env, id: string): Promise<Response> {
+  const caller = await authenticate(req, env);
+  if (!caller) return json({ error: "unauthorized" }, 401);
+  const route = await resolveSandboxRoute(env, id);
+  if (!route || route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+
+  let cmd = "node -v";
+  try {
+    const b = (await req.json()) as { cmd?: string };
+    if (typeof b?.cmd === "string" && b.cmd) cmd = b.cmd;
+  } catch {
+    /* default command */
+  }
+
+  // Leg 1: reach-info. Cross-country to the control plane in westus2, and NOT
+  // part of what a real direct path would cost — see the route comment.
+  const tCreds = Date.now();
+  const cell = await lookupCell(env, route.cellID);
+  if (!cell) return json({ error: "cell not registered" }, 503);
+  const org = await loadOrgPolicy(env, caller.orgID);
+  const capToken = await cachedCapToken(
+    env.SESSION_JWT_SECRET, caller.orgID, route.cellID, "",
+    org?.billing_provider ?? "", org?.runtime ?? "", caller.userID,
+  );
+  const infoResp = await fetch(`${cell.base_url.replace(/\/$/, "")}/internal/microvm/direct/${id}`, {
+    headers: { authorization: "Bearer " + capToken },
+  });
+  if (!infoResp.ok) return json({ error: `reach-info ${infoResp.status}` }, 502);
+  const info = await infoResp.json<{ endpoint: string; token: string; port: number; path?: string }>();
+  const credsMs = Date.now() - tCreds;
+
+  // Leg 2: open the agent tunnel from here.
+  const tDial = Date.now();
+  const host = info.endpoint.replace(/^https?:\/\//, "").split("/")[0];
+  let conn: H2Grpc;
+  try {
+    const up = await fetch(`https://${host}${info.path ?? "/osb/agent-grpc"}`, {
+      signal: AbortSignal.timeout(5000),
+      headers: {
+        Upgrade: "websocket",
+        "X-aws-proxy-auth": info.token,
+        "X-aws-proxy-port": String(info.port),
+      },
+    });
+    const ws = (up as unknown as { webSocket: WebSocket | null }).webSocket;
+    if (!ws) return json({ error: `tunnel upgrade failed (${up.status})` }, 502);
+    ws.accept();
+    conn = new H2Grpc(ws, host);
+    await Promise.race([
+      conn.ready,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), 8000)),
+    ]);
+  } catch (e) {
+    return json({ error: `dial: ${e}` }, 502);
+  }
+  const dialMs = Date.now() - tDial;
+
+  // Leg 3: the RPC itself.
+  const tUnary = Date.now();
+  try {
+    const res = await conn.unary(
+      "/agent.SandboxAgent/Exec",
+      encodeExecRequest({ command: "/bin/sh", args: ["-lc", cmd] }),
+      10_000,
+    );
+    const unaryMs = Date.now() - tUnary;
+    return new Response(JSON.stringify(decodeExecResponse(res)), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        // creds is listed but is the excluded leg; direct = dial + unary.
+        "server-timing": `creds;dur=${credsMs}, dial;dur=${dialMs}, unary;dur=${unaryMs}, direct;dur=${dialMs + unaryMs}`,
+      },
+    });
+  } catch (e) {
+    return json({ error: `unary: ${e}` }, 502);
+  }
+}
+
+// attachMicrovmSession teaches a DO how to reach its box. Temporary shape: the
+// control plane is asked for endpoint+token on demand. The pool already holds
+// both (awsvm.StockEntry), so the durable version delivers them with the box at
+// claim time and this call disappears.
+async function attachMicrovmSession(
+  env: Env,
+  caller: Caller,
+  cellID: string,
+  id: string,
+  stub: DurableObjectStub,
+  dial = false,
+): Promise<boolean> {
+  const cell = await lookupCell(env, cellID);
+  if (!cell) return false;
+  const org = await loadOrgPolicy(env, caller.orgID);
+  const capToken = await cachedCapToken(
+    env.SESSION_JWT_SECRET,
+    caller.orgID,
+    cellID,
+    "",
+    org?.billing_provider ?? "",
+    org?.runtime ?? "",
+    caller.userID,
+  );
+  const resp = await fetch(`${cell.base_url.replace(/\/$/, "")}/internal/microvm/direct/${id}`, {
+    headers: { authorization: "Bearer " + capToken },
+  });
+  if (!resp.ok) return false;
+  const info = await resp.json<{ endpoint: string; token: string; port: number }>();
+  const att = await stub.fetch("https://do/attach", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...info, dial }),
+  });
+  return att.ok;
+}
+
 // Proxy the request to the owning cell's CP. Used for SDK runtime calls
 // (`/api/sandboxes/:id/exec`, `/files`, `/pty`, etc.). The caller has been
 // authenticated at the edge against D1; we mint a short-lived IdentityToken
@@ -1655,10 +2134,26 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
 // and stream the response back. Pre-fix this was a 307 redirect, which broke
 // when the SDK's API key didn't exist in cell PG (api_keys are global in D1
 // now, not mirrored per-cell).
-async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string): Promise<Response> {
+
+async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, vmdoMs = 0): Promise<Response> {
+  // Step timing for the data-plane path. Measured on dev, an exec through here
+  // cost ~718-851ms end to end while the network legs account for only ~200ms
+  // (client↔CP 118ms + CP↔box 81ms), so ~500ms was unattributed. Nothing on
+  // this path emitted server-timing, which is why it stayed invisible.
+  const t0 = Date.now();
+  let tPrev = t0;
+  const phases: string[] = [];
+  if (authMs > 0) phases.push(`auth;dur=${authMs}`);
+  if (vmdoMs > 0) phases.push(`vmdo;dur=${vmdoMs}`);
+  const mark = (name: string): void => {
+    const now = Date.now();
+    phases.push(`${name};dur=${now - tPrev}`);
+    tPrev = now;
+  };
   // Route cache first — the sandbox→cell mapping is immutable, and the D1 read
   // it replaces is a blocking per-sub-op cost (2-3× per SDK runCommand).
   const route = await resolveSandboxRoute(env, id);
+  mark("route");
   if (!route) return json({ error: "sandbox not found" }, 404);
   // Authorization: the sandbox must belong to the caller's org. Without this,
   // any authenticated org could exec/files/pty/delete/hibernate/wake another
@@ -1666,6 +2161,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // we don't leak which sandbox ids exist.
   if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
   const cell = await lookupCell(env, route.cellID);
+  mark("cell");
   if (!cell) return json({ error: `cell ${route.cellID} not registered` }, 503);
 
   const url = new URL(req.url);
@@ -1676,6 +2172,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Reuse the per-isolate org-policy cache instead of a separate per-request
   // SELECT plan — under a burst these are all the same org.
   const orgPol = await loadOrgPolicy(env, caller.orgID);
+  mark("pol");
   // Mint a cap-token (iss=opensandbox-edge, signed with SESSION_JWT_SECRET).
   // The cell's PGAPIKeyMiddleware accepts cap-tokens too (alongside identity
   // tokens and API keys), so the same handler chain that runs for SDK
@@ -1685,6 +2182,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // whose backend is already fixed by its persisted worker_id. Runtime only
   // decides placement, and placement has already happened.
   const token = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", "", caller.userID);
+  mark("tok");
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -1712,6 +2210,21 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   if (req.method === "DELETE" && path === `/api/sandboxes/${id}`) {
     postUpdate = { status: "stopped", setStopped: true, mode: null };
     sandboxRouteCache.delete(id); // route is dead once the sandbox is destroyed
+    // Tell the box's session DO to stop keeping itself warm. Without this its
+    // alarm keeps re-dialing a terminated endpoint until the failure counter
+    // gives up — bounded, but pointless work against AWS for every destroy.
+    // MicroVM only: other runtimes have no MicrovmSession, and asking for one
+    // by id would instantiate a Durable Object just to tear it down.
+    if (env.MICROVM_SESSIONS && orgPol?.runtime === RUNTIME_MICROVM) {
+      const ns = env.MICROVM_SESSIONS;
+      ctx.waitUntil(
+        ns
+          .get(ns.idFromName(id), { locationHint: "enam" })
+          .fetch("https://do/detach", { method: "POST" })
+          .then(() => undefined)
+          .catch(() => undefined),
+      );
+    }
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/hibernate`) {
     postUpdate = { status: "hibernated", setStopped: false, mode: "paused" };
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/wake`) {
@@ -1759,6 +2272,11 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Otherwise the dashboard accumulates phantoms — D1 rows stuck at
   // "running" after the actual sandbox stopped.
   const resp = await fetch(target, init);
+  mark("origin");
+  // Copy through so the step breakdown rides along with the cell's own answer.
+  // Response headers are immutable, hence the rewrap.
+  const timed = new Response(resp.body, resp);
+  timed.headers.set("server-timing", phases.join(", "));
   if (postUpdate && resp.status >= 200 && resp.status < 300) {
     const nowSec = Math.floor(Date.now() / 1000);
     let stmt: D1PreparedStatement;
@@ -1789,7 +2307,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
       }),
     );
   }
-  return resp;
+  return timed;
 }
 
 // proxyToCellAuthed forwards an authenticated SDK/CLI request to a cell with an
@@ -3365,6 +3883,24 @@ export default {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return autumnSetProviderInternal(req, env);
     }
+    // Dev-only: measure what an exec would cost if the edge dialled the box
+    // ITSELF instead of going through a MicrovmSession DO.
+    //
+    // The DO exists to hold the agent tunnel open across execs. Measured on dev
+    // from an IAD client, that reuse is not paying for itself: the hop to the DO
+    // plus its per-sandbox cold start costs ~77ms median, against the 22-102ms
+    // dial it avoids — and it avoids it only about half the time, because every
+    // sandbox gets its own object and uses it once. This route measures the
+    // other side of that trade with the DO fully out of the path.
+    //
+    // creds;dur is reported separately and must NOT be counted against the
+    // direct path: it is a round trip to the control plane in Azure westus2,
+    // cross-country from this edge, and a real direct path would take the same
+    // endpoint+token from the colo cache the create already passes through.
+    if (path.startsWith("/internal/direct-exec-probe/") && req.method === "POST") {
+      if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
+      return directExecProbe(req, env, path.slice("/internal/direct-exec-probe/".length));
+    }
     // Dev-only: force an autumn-meter run (the cron is */5). 404 in prod so only
     // the scheduled trigger moves money there. Deterministic testing aid.
     if (path === "/internal/run-autumn-meter" && req.method === "POST") {
@@ -3790,11 +4326,16 @@ export default {
       // channel isn't live (DO 409) — so this is safe even before/while workers
       // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
       // wherever the DO auth can be verified at all).
+      let vmdoMs = 0;
       if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
-        const doResp = await tryVmDoExec(req, env, caller, id, authMs);
+        const tVmdo = Date.now();
+        const doResp = await tryVmDoExec(req, env, ctx, caller, id, authMs);
+        vmdoMs = Date.now() - tVmdo;
         if (doResp) return doResp;
       }
-      return proxyToCellSDK(req, env, ctx, caller, id);
+      // vmdo = time spent deciding NOT to use the VM-DO path. For MicroVM orgs
+      // that decision needs an org-policy lookup, so it is not free.
+      return proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs);
     }
 
     // Generic /api/* fallback for SDK/CLI routes without a dedicated D1-native

@@ -234,6 +234,11 @@ func (f *fakePlacer) Accepts(placement) bool { return true }
 
 func (f *fakePlacer) RequiresPersistedRow() bool { return false }
 
+// DefersPersist false: these fakes assert on registration and routing order,
+// and deferring the write would move a step out of the sequence the ordering
+// tests exist to pin.
+func (f *fakePlacer) DefersPersist() bool { return false }
+
 func (f *fakePlacer) Release(context.Context, string, string) {}
 
 func (f *fakePlacer) Claim(context.Context, placement) (string, error) {

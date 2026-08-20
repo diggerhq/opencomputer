@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -62,6 +63,10 @@ type agentConn struct {
 // agentTunnelPath is the guest WebSocket endpoint carrying gRPC. Must match
 // cmd/microvm-hooks.
 const agentTunnelPath = "/osb/agent-grpc"
+
+// AgentTunnelPath exposes the tunnel path to callers outside this package that
+// dial the same endpoint themselves — see Manager.DirectInfo.
+const AgentTunnelPath = agentTunnelPath
 
 // dialAgent opens a gRPC channel to the agent behind a MicroVM endpoint.
 //
@@ -204,11 +209,30 @@ func newAgentPool() *agentPool {
 func (p *agentPool) get(sandboxID, endpoint string, port int32, token tokenProvider) (*agentConn, error) {
 	p.mu.Lock()
 	if c, ok := p.conns[sandboxID]; ok {
+		// A cached channel is only useful if it is still usable. Serving one
+		// that has been shut down is a permanent, silent break: every exec on
+		// that sandbox returns "grpc: the client connection is closing" in
+		// milliseconds and nothing ever re-dials, because this map hit is what
+		// suppresses the dial. Shutdown is terminal in gRPC — it never
+		// reconnects — so drop it and fall through to a fresh dial. Any other
+		// state (Idle, Connecting, TransientFailure) does recover on its own
+		// and must be left alone, or a blip would churn channels under load.
+		if c.conn == nil || c.conn.GetState() == connectivity.Shutdown {
+			delete(p.conns, sandboxID)
+			p.mu.Unlock()
+			_ = c.Close()
+		} else {
+			p.mu.Unlock()
+			return c, nil
+		}
+	} else {
 		p.mu.Unlock()
-		return c, nil
 	}
-	p.mu.Unlock()
 
+	// Reaching here on a claimed box means the pre-dialled tunnel did not
+	// survive to the first exec, which is exactly the ~330ms TTI penalty we are
+	// hunting. Logged so the cold path is visible instead of merely slow.
+	log.Printf("awsvm: agent COLD DIAL for %s (%s) — no warm tunnel in pool", sandboxID, endpoint)
 	c, err := dialAgent(endpoint, port, token)
 	if err != nil {
 		return nil, err
@@ -251,6 +275,50 @@ func (p *agentPool) drop(sandboxID string) {
 	}
 }
 
+// warm reconnects the channels of the given sandboxes if they have gone idle.
+// Returns how many needed it.
+//
+// Used for boxes reserved to the edge but not yet claimed by a customer: they
+// are warm stock, so keeping their tunnel established is the whole point, and
+// none of the idle-suspend reasoning that justifies PermitWithoutStream:false
+// applies to a box with no customer on it yet.
+//
+// Connect() rather than a probe RPC: it restores the transport without touching
+// the guest, so nothing that watches for sandbox activity can mistake it for
+// any.
+func (p *agentPool) warm(sandboxIDs map[string]struct{}) int {
+	p.mu.Lock()
+	conns := make([]*agentConn, 0, len(sandboxIDs))
+	for id := range sandboxIDs {
+		if c, ok := p.conns[id]; ok && c.conn != nil {
+			conns = append(conns, c)
+		}
+	}
+	p.mu.Unlock()
+
+	n := 0
+	for _, c := range conns {
+		switch c.conn.GetState() {
+		case connectivity.Ready, connectivity.Connecting, connectivity.Shutdown:
+		default: // Idle, TransientFailure
+			c.conn.Connect()
+			n++
+		}
+	}
+	return n
+}
+
+// detach removes a sandbox's channel WITHOUT closing it, handing ownership to
+// the caller. drop() is the closing variant; this exists for the one case where
+// the channel outlives the binding — an edge reservation returning to stock.
+func (p *agentPool) detach(sandboxID string) *agentConn {
+	p.mu.Lock()
+	c := p.conns[sandboxID]
+	delete(p.conns, sandboxID)
+	p.mu.Unlock()
+	return c
+}
+
 func (p *agentPool) closeAll() {
 	p.mu.Lock()
 	conns := p.conns
@@ -259,4 +327,110 @@ func (p *agentPool) closeAll() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+}
+
+// --- keepalive ---
+//
+// Pool boxes are idle by definition: they exist so that nobody has to wait for
+// one. But AWS SUSPENDS an idle MicroVM, and the next payload pays the resume —
+// measured at ~1s on the first exec against a box that has been sitting, and
+// paid identically by the control-plane path and by the edge's direct path,
+// because it is the platform waking the VM rather than anything in our
+// transport. An overnight gap suspends the entire pool.
+//
+// A Ping is real guest traffic, so it resets the idle timer in a way that a
+// merely-open connection does not. It also keeps the AWS proxy's own connection
+// to the guest port attached, which is the OTHER thing a first payload pays for
+// (the WebSocket 101 comes from the proxy; the proxy only dials the guest when
+// payload first arrives).
+
+const (
+	pingConcurrency = 16
+	pingTimeout     = 5 * time.Second
+)
+
+func (a *agentConn) ping(ctx context.Context) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	_, err := a.client.Ping(ctx, &pb.PingRequest{})
+	return err
+}
+
+// warmShellTimeout bounds the manufacture-time warm-up. Generous, because it
+// runs on a box nobody is waiting for and the whole point is to absorb a slow
+// first shell rather than skip it.
+const warmShellTimeout = 20 * time.Second
+
+// warmShell runs one throwaway command so the customer's first exec doesn't
+// have to be the one that pays for a cold box.
+//
+// Every exec arrives as `/bin/sh -lc <cmd>`, and on a box that has never run one
+// the login shell has to fault in the shell itself and source the whole profile
+// chain. Measured on dev across 6 fresh boxes: the FIRST exec costs 928ms median
+// even when the command is `true`, while the second is 143ms — and `node -v`
+// against a warm shell is 144ms, indistinguishable. So the ~800ms is entirely
+// first-shell startup, not the command, and it is paid exactly once per box.
+//
+// Paying it here means it lands on a pool box during manufacture instead of on
+// a customer's first command. `node --version` is folded in because it is the
+// default template's runtime and costs another ~100ms cold; the `|| true` keeps
+// this correct on an image without node, where warming the shell is still the
+// point.
+func (a *agentConn) warmShell(ctx context.Context) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	_, err := a.client.Exec(ctx, &pb.ExecRequest{
+		Command:        "/bin/sh",
+		Args:           []string{"-lc", "node --version >/dev/null 2>&1 || true"},
+		TimeoutSeconds: int32(warmShellTimeout / time.Second),
+	})
+	return err
+}
+
+// pingAll pings every channel, bounded so a large pool cannot open hundreds of
+// concurrent RPCs on a maintenance tick. Failures are counted, not returned: a
+// box that does not answer is the tick's problem to report, not to fix.
+func pingAll(ctx context.Context, conns []*agentConn) (ok, failed int) {
+	if len(conns) == 0 {
+		return 0, 0
+	}
+	sem := make(chan struct{}, pingConcurrency)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, c := range conns {
+		wg.Add(1)
+		go func(c *agentConn) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			defer cancel()
+			err := c.ping(pctx)
+			mu.Lock()
+			if err != nil {
+				failed++
+			} else {
+				ok++
+			}
+			mu.Unlock()
+		}(c)
+	}
+	wg.Wait()
+	return ok, failed
+}
+
+// pingTracked pings the channels held for the given sandbox ids (edge
+// reservations, which are the boxes customers actually claim).
+func (p *agentPool) pingTracked(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed int) {
+	p.mu.Lock()
+	conns := make([]*agentConn, 0, len(sandboxIDs))
+	for id := range sandboxIDs {
+		if c, found := p.conns[id]; found && c.conn != nil {
+			conns = append(conns, c)
+		}
+	}
+	p.mu.Unlock()
+	return pingAll(ctx, conns)
 }

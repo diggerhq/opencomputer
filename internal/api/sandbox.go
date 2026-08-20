@@ -891,6 +891,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		},
 
 		persistRequired: backend.RequiresPersistedRow(),
+		deferPersist:    backend.DefersPersist(),
 
 		persist: func(ctx context.Context, workerID string) error {
 			if s.store == nil || !hasOrg {

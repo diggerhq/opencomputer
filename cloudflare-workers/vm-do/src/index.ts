@@ -14,6 +14,10 @@
 // /internal/vms/:id/connect and routes /exec) — this worker has no routes and
 // its own fetch handler serves nothing.
 export { VmSession } from "./vm_session";
+// MicrovmSession is the AWS MicroVM counterpart: same persistent-channel idea,
+// but it dials OUT to the box because that runtime has no host process of ours
+// to dial in. See microvm_session.ts.
+export { MicrovmSession } from "./microvm_session";
 
 export default {
   async fetch(): Promise<Response> {

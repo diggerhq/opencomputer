@@ -17,6 +17,14 @@ account_id = "1241f114453e32d292197e3fb36210b2"
 name = "VM_SESSIONS"
 class_name = "VmSession"
 
+[[durable_objects.bindings]]
+name = "MICROVM_SESSIONS"
+class_name = "MicrovmSession"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["VmSession"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MicrovmSession"]
