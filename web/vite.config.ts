@@ -32,6 +32,26 @@ const managedProxy: Record<string, ProxyOptions> = managedTarget
       },
     }
   : {}
+
+// Dev-only prod-shell bypass. Cookie auth can't bridge localhost -> the prod
+// edge (the WorkOS callback lands on the prod domain), but the vite proxy can
+// attach an existing prod session server-side: set OC_SESSION_COOKIE to the
+// value of your `oc_session` cookie from app.opencomputer.dev (devtools ->
+// Application -> Cookies) and point OC_API_TARGET at https://app.opencomputer.dev.
+// The cookie lives only in the Node dev server, never in the browser bundle.
+const sessionCookie = process.env.OC_SESSION_COOKIE
+const shellProxyOptions: ProxyOptions = sessionCookie
+  ? {
+      target,
+      ws: true,
+      changeOrigin: true,
+      configure: (proxy) => {
+        proxy.on('proxyReq', (proxyReq) => {
+          proxyReq.setHeader('cookie', `oc_session=${sessionCookie}`)
+        })
+      },
+    }
+  : { target, ws: true }
 const injectKey: ProxyOptions['configure'] = (proxy) => {
   proxy.on('proxyReq', (proxyReq) => {
     if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
@@ -74,7 +94,7 @@ export default defineConfig({
       '/auth': target,
       // Trailing slash so the SPA route `/api-keys` isn't proxied to the
       // backend; all real API paths live under `/api/dashboard/`.
-      '/api/': { target, ws: true },
+      '/api/': shellProxyOptions,
       '/webhooks': target,
     },
   },
