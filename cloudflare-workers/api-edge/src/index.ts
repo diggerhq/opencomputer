@@ -4326,6 +4326,27 @@ export default {
     if (m) {
       const id = m[1];
       const rest = m[2]; // undefined for /api/sandboxes/:id, "/exec/run" etc otherwise
+      const tSubEntry = Date.now();
+      // Uniform client→handler / in-handler split for /:id/* responses, whichever
+      // sub-path served them. Each exec path emits its own disjoint mark set
+      // (microvm-direct: reach/exec/up/ready; VM-DO: do/doin/agent; tunnel:
+      // origin), so a harness that knows one set reads the others as absent and
+      // silently drops those requests from its breakdown — while the client's
+      // total minus the in-handler marks stays an unattributable lump. That is
+      // exactly the blind spot that made create's burst regression unreadable
+      // until `pre`/`hdl` landed (see createSandbox). `path` names the winner so
+      // a fallback is counted rather than inferred.
+      const stampSub = (resp: Response, servedBy: string): Response => {
+        // A WebSocket upgrade (pty) can't be reconstructed — pass it through.
+        if (resp.status === 101 || (resp as unknown as { webSocket?: unknown }).webSocket) return resp;
+        const extra = [`path;desc=${servedBy}`, `hdl;dur=${Date.now() - tSubEntry}`];
+        const clientSentMs = Number(req.headers.get("x-client-sent") ?? "");
+        if (Number.isFinite(clientSentMs) && clientSentMs > 0) extra.unshift(`pre;dur=${tSubEntry - clientSentMs}`);
+        const out = new Response(resp.body, resp);
+        const prev = out.headers.get("server-timing");
+        out.headers.set("server-timing", prev ? `${prev}, ${extra.join(", ")}` : extra.join(", "));
+        return out;
+      };
       if (!rest) {
         if (req.method === "GET") return getSandbox(req, env, id);
         if (req.method === "DELETE") {
@@ -4353,11 +4374,16 @@ export default {
         const tVmdo = Date.now();
         const doResp = await tryVmDoExec(req, env, ctx, caller, id, authMs);
         vmdoMs = Date.now() - tVmdo;
-        if (doResp) return doResp;
+        // Name the winner from the marks it emitted rather than plumbing a label
+        // back out of two functions that already disagree about their shape.
+        if (doResp) {
+          const st = doResp.headers.get("server-timing") ?? "";
+          return stampSub(doResp, st.includes("reach;") ? "mvm-direct" : st.includes("do;") ? "vmdo" : "fast");
+        }
       }
       // vmdo = time spent deciding NOT to use the VM-DO path. For MicroVM orgs
       // that decision needs an org-policy lookup, so it is not free.
-      return proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs);
+      return stampSub(await proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs), "tunnel");
     }
 
     // Generic /api/* fallback for SDK/CLI routes without a dedicated D1-native
