@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // create_flow_test.go — the create sequence, which until now was a comment.
@@ -149,5 +150,78 @@ func TestRunCreateSkipsNilActivate(t *testing.T) {
 	}
 	if got := r.seq(); got != "claim,persist,promote" {
 		t.Fatalf("sequence was %q, want the activate step skipped", got)
+	}
+}
+
+// The whole point of deferPersist is that the customer is not waiting on the
+// database. Blocking the write and asserting the create still returns proves
+// that directly — if persist were inline this test would deadlock until the
+// timeout, which is exactly the 230ms we are removing from every create.
+func TestDeferPersistAnswersBeforeTheWriteCompletes(t *testing.T) {
+	release := make(chan struct{})
+	persistStarted := make(chan struct{})
+	promoted := make(chan struct{})
+
+	steps := createSteps{
+		claim:        func(context.Context) (string, error) { return "vmhost:mvm-1", nil },
+		deferPersist: true,
+		persist: func(context.Context, string) error {
+			close(persistStarted)
+			<-release
+			return nil
+		},
+		promote: func(context.Context, string) error { close(promoted); return nil },
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		id, err := runCreate(context.Background(), "sb-1", steps)
+		if err != nil {
+			t.Errorf("runCreate: %v", err)
+		}
+		done <- id
+	}()
+
+	select {
+	case id := <-done:
+		if id != "vmhost:mvm-1" {
+			t.Fatalf("workerID = %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("create blocked on the deferred write — it is still on the request path")
+	}
+
+	// And the write really does happen, rather than being dropped.
+	select {
+	case <-persistStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deferred persist never started")
+	}
+	close(release)
+	select {
+	case <-promoted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deferred promote never ran after persist succeeded")
+	}
+}
+
+// A failed deferred persist must not promote: flipping a row to running that
+// was never inserted is a partial write nothing else expects. The box is still
+// recoverable — the reconciler adopts it from AWS — but the row must not lie.
+func TestDeferPersistSkipsPromoteWhenPersistFails(t *testing.T) {
+	promoteCalled := make(chan struct{}, 1)
+	steps := createSteps{
+		claim:        func(context.Context) (string, error) { return "vmhost:mvm-2", nil },
+		deferPersist: true,
+		persist:      func(context.Context, string) error { return errors.New("db down") },
+		promote:      func(context.Context, string) error { promoteCalled <- struct{}{}; return nil },
+	}
+	if _, err := runCreate(context.Background(), "sb-2", steps); err != nil {
+		t.Fatalf("create must succeed even when the deferred write will fail: %v", err)
+	}
+	select {
+	case <-promoteCalled:
+		t.Fatal("promoted a row that was never inserted")
+	case <-time.After(300 * time.Millisecond):
 	}
 }

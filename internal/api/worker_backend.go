@@ -223,6 +223,12 @@ func (w *workerBackend) dropPending(sandboxID string) {
 // blip.
 func (w *workerBackend) RequiresPersistedRow() bool { return false }
 
+// DefersPersist is false. The worker path resolves a sandbox by reading its
+// session row (worker_id, org, status) on the very next request, so answering
+// a create before that row exists would make the SDK's own follow-up call race
+// a write in flight.
+func (w *workerBackend) DefersPersist() bool { return false }
+
 // Release forgets the selection. Nothing was started — Claim only picked a
 // worker — so there is no host to reclaim, and the worker's own capacity
 // accounting needs no correction.

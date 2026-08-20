@@ -2,6 +2,7 @@ package awsvm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -185,5 +186,100 @@ func TestAgentURLNormalisesScheme(t *testing.T) {
 		if got := AgentURL(in); got != want {
 			t.Errorf("AgentURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// shortenListBackoff collapses the retry ladder so a test can assert on attempt
+// counts without waiting out the production delays.
+func shortenListBackoff(t *testing.T) {
+	t.Helper()
+	prev := listBackoff
+	listBackoff = time.Millisecond
+	t.Cleanup(func() { listBackoff = prev })
+}
+
+// throttleAPI fails the first `failures` ListMicrovms calls with the error the
+// account actually returns under load, then succeeds.
+type throttleAPI struct {
+	fakeAPI
+	failures int
+	calls    int
+	err      error
+}
+
+func (f *throttleAPI) ListMicrovms(ctx context.Context, in *lambdamicrovms.ListMicrovmsInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.ListMicrovmsOutput, error) {
+	f.calls++
+	if f.calls <= f.failures {
+		return nil, f.err
+	}
+	return f.fakeAPI.ListMicrovms(ctx, in, opts...)
+}
+
+// List is the only way the control plane sees a box with no database row, so a
+// List that gives up silently turns the orphan sweep into a no-op and leaked
+// hosts bill and hold regional quota forever. On a busy account this call is
+// throttled harder than the rest of the API — observed failing on most passes
+// with the SDK's own "exceeded maximum number of attempts, 3" — so it has to be
+// more patient than the SDK default.
+func TestListRetriesThrottledPages(t *testing.T) {
+	shortenListBackoff(t)
+	f := &throttleAPI{
+		failures: 3,
+		err:      &types.ThrottlingException{},
+	}
+	f.listPages = [][]types.MicrovmItem{{{MicrovmId: aws.String("mvm-1")}}}
+	c := NewClientWithAPI(f, Config{ImageIdentifier: "arn:image"})
+
+	boxes, err := c.List(context.Background())
+	if err != nil {
+		t.Fatalf("List gave up on a throttle the sweep depends on: %v", err)
+	}
+	if len(boxes) != 1 {
+		t.Fatalf("List returned %d boxes, want 1", len(boxes))
+	}
+	if f.calls != 4 {
+		t.Fatalf("made %d calls, want 4 (3 throttled + 1 success)", f.calls)
+	}
+}
+
+// Retrying a permissions or validation failure just delays the same answer.
+// Worse, it would hold the reconcile tick for the full backoff ladder every
+// pass, so the sweep runs less often precisely when it is already broken.
+func TestListDoesNotRetryNonThrottleErrors(t *testing.T) {
+	f := &throttleAPI{
+		failures: 99,
+		err:      errors.New("AccessDeniedException: not authorized"),
+	}
+	f.listPages = [][]types.MicrovmItem{{}}
+	c := NewClientWithAPI(f, Config{ImageIdentifier: "arn:image"})
+
+	if _, err := c.List(context.Background()); err == nil {
+		t.Fatal("List hid a non-throttle failure")
+	}
+	if f.calls != 1 {
+		t.Fatalf("made %d calls for a permanent error, want 1", f.calls)
+	}
+}
+
+// A throttle that never clears must still terminate, and must report the cause
+// rather than an empty inventory — an empty list would read as "no orphans".
+func TestListGivesUpAfterListAttempts(t *testing.T) {
+	shortenListBackoff(t)
+	f := &throttleAPI{
+		failures: 99,
+		err:      &types.ThrottlingException{},
+	}
+	f.listPages = [][]types.MicrovmItem{{}}
+	c := NewClientWithAPI(f, Config{ImageIdentifier: "arn:image"})
+
+	boxes, err := c.List(context.Background())
+	if err == nil {
+		t.Fatal("List reported success while permanently throttled — the sweep would read an empty inventory as 'no orphans'")
+	}
+	if boxes != nil {
+		t.Fatalf("List returned %d boxes alongside an error", len(boxes))
+	}
+	if f.calls != listAttempts {
+		t.Fatalf("made %d attempts, want listAttempts=%d", f.calls, listAttempts)
 	}
 }

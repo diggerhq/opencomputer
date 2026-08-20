@@ -180,6 +180,10 @@ export class PoolStock {
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
   private cell: { cellID: string; baseURL: string } | null = null;
+  // The control-plane process that issued the stock we are holding, when that
+  // cell's reservations are process-local (see edge_claim.go processEpoch).
+  // Persisted alongside the stock because it is only meaningful paired with it.
+  private epoch: string | null = null;
   // Resolved once per isolate from env (see the sizing invariant above).
   private readonly targetStock: number;
   private readonly lowWater: number;
@@ -201,6 +205,7 @@ export class PoolStock {
     this.state.blockConcurrencyWhile(async () => {
       this.stock = (await this.state.storage.get<StockEntry[]>("stock")) ?? [];
       this.cell = (await this.state.storage.get<{ cellID: string; baseURL: string }>("cell")) ?? null;
+      this.epoch = (await this.state.storage.get<string>("epoch")) ?? null;
     });
   }
 
@@ -249,7 +254,8 @@ export class PoolStock {
       this.state.waitUntil(this.release(stale));
     }
 
-    const entry = this.stock.shift(); // FIFO — oldest first keeps the stock young
+    // FIFO — oldest first keeps the stock young.
+    const entry = this.stock.shift();
     this.lastClaimMs = Date.now();
     void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
     this.persist();
@@ -304,7 +310,8 @@ export class PoolStock {
     this.stock = fresh;
     if (stale.length > 0) this.state.waitUntil(this.release(stale));
 
-    const entries = this.stock.splice(0, Math.min(count, this.stock.length));
+    // FIFO — oldest first keeps the stock young.
+    const entries = this.stock.splice(0, count);
     this.lastClaimMs = Date.now();
     void this.state.storage.put("lastClaim", this.lastClaimMs, { allowUnconfirmed: true });
     this.persist();
@@ -407,6 +414,7 @@ export class PoolStock {
     // the `edge_reserved` CAS and fails cleanly. Rare + already-handled, and
     // the claim hop is the entire cost of an edge create, so the ~10ms wins.
     void this.state.storage.put("stock", this.stock, { allowUnconfirmed: true });
+    void this.state.storage.put("epoch", this.epoch, { allowUnconfirmed: true });
   }
 
   // restockToTarget fills the stock up to TARGET_STOCK by issuing up to
@@ -445,8 +453,30 @@ export class PoolStock {
       const data = (await r.json()) as {
         region: string;
         sandboxDomain: string;
+        epoch?: string;
         boxes: Array<{ sandboxID: string; workerID: string }>;
       };
+      // Epoch fence. A cell that stamps an epoch is telling us its edge
+      // reservations live in that process's memory, not in Postgres — so when
+      // the value changes, every id we are holding was minted by a control
+      // plane that no longer exists. Those boxes have no manager binding: a
+      // create served from them 201s and the customer's first exec 500s,
+      // because routing goes through a sandbox→box map that died with the
+      // process. Drop the lot rather than serve one.
+      //
+      // Not released back to the pool — the new process has no record of these
+      // ids, so an edge-release would be a no-op round trip. The cell's own
+      // reaper owns the boxes now.
+      //
+      // Absent epoch = a Postgres-backed cell, whose reservations are rows and
+      // survive a restart. No fence, and no behaviour change for those cells.
+      if (data.epoch && this.epoch && data.epoch !== this.epoch && this.stock.length > 0) {
+        console.log(
+          `pool-stock ${cell.cellID}: control-plane epoch changed (${this.epoch} → ${data.epoch}) — dropping ${this.stock.length} stale entr(ies)`,
+        );
+        this.stock = [];
+      }
+      if (data.epoch) this.epoch = data.epoch;
       const now = Date.now();
       const have = new Set(this.stock.map((e) => e.id));
       let added = 0;

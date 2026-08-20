@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc/connectivity"
 )
 
 // pool.go — a warm pool of RUNNING MicroVMs.
@@ -62,6 +64,75 @@ type PoolConfig struct {
 	// PreDialTimeout bounds establishing a stocked box's agent tunnel. Exceeding
 	// it costs only a cold first exec on that box, never the box itself.
 	PreDialTimeout time.Duration
+
+	// MaxTotalBoxes caps pool stock PLUS everything claimed out of it, against
+	// the regional memory quota. 0 disables the cap.
+	//
+	// TargetStock alone is not a safety property. It bounds what the pool holds,
+	// not what exists: a claimed box leaves the stock, the filler sees a hole and
+	// launches a replacement, so pool + live sandboxes grows without limit as
+	// load rises. That is exactly how a 200-box pool alongside 300 live sandboxes
+	// put this account over its 1024GB ceiling and turned every create into
+	// ServiceQuotaExceeded — the filler was chasing its target while blind to the
+	// boxes doing the actual work.
+	//
+	// With a budget set, the pool becomes something a burst can DRAIN rather than
+	// a floor it fights: claims consume stock, refill waits until those boxes are
+	// released, and the total never exceeds what the region will allow.
+	MaxTotalBoxes int
+
+	// InUse reports boxes alive outside the pool — claimed sandboxes still doing
+	// work. Supplied by the owner because the pool deliberately forgets a box the
+	// moment it is claimed; the manager is what tracks it afterwards.
+	//
+	// Nil means "nothing else exists", which is only true in tests.
+	InUse func() int
+
+	// RefillDelay is how long the filler stands down after finding itself at
+	// MaxTotalBoxes.
+	//
+	// Standing down matters because the budget check alone only skips a tick.
+	// At the ceiling that re-probes every LaunchInterval, so the instant any box
+	// is released the pool launches a replacement and is immediately at the
+	// ceiling again — it tracks the budget exactly, and every one of those
+	// launches is a RunMicrovm call competing with the customer creates that are
+	// cold precisely because the pool is empty. Measured on dev: 366 boxes
+	// manufactured in 30 minutes against 28 "regional MicroVM quota exhausted"
+	// creates, the pool and its own customers bidding for the same quota.
+	//
+	// A cooldown makes the pool yield instead. It re-probes once per delay, so
+	// releases accumulate into real headroom before the filler spends quota on
+	// them, and a burst's cold creates get the regional quota to themselves.
+	// Time-bounded rather than event-driven on purpose: a delay armed by every
+	// claim would be pushed forward indefinitely by sustained traffic and the
+	// pool would never refill at all.
+	RefillDelay time.Duration
+
+	// OnExpire is called after a stale edge reservation has been terminated.
+	//
+	// Reserving for the edge binds a sandbox id to the box BEFORE any customer
+	// claims it, so that routing and the warm tunnel resolve the instant the
+	// edge answers a create. When the reservation dies instead of being claimed,
+	// that binding has to die with it — otherwise the control plane keeps
+	// routing a live sandbox id to a terminated box, and every operation on it
+	// fails somewhere deep in the agent tunnel rather than with "not found".
+	//
+	// Called without the pool lock held, so implementations may take their own.
+	OnExpire func(microvmID string)
+
+	// OnMaintain runs on each maintenance tick, after the pool has warmed its
+	// own stock.
+	//
+	// It exists because the pool cannot warm the boxes that matter most. An
+	// edge reservation moves its agent channel to the manager (TrackClaimed) and
+	// leaves p.stock, so a box staged in a PoolStock shard — the exact box the
+	// next create will be handed — is invisible to warmTunnels. Those sit for
+	// minutes with no traffic, their tunnels lapse, and the cost lands on the
+	// customer's first exec, which is what TTI measures. Only the owner knows
+	// which sandbox ids are reserved-but-unclaimed, so it does that warming.
+	//
+	// Called without the pool lock held.
+	OnMaintain func()
 }
 
 func (c *PoolConfig) applyDefaults() {
@@ -92,6 +163,9 @@ func (c *PoolConfig) applyDefaults() {
 	if c.PreDialTimeout <= 0 {
 		c.PreDialTimeout = 30 * time.Second
 	}
+	if c.RefillDelay <= 0 {
+		c.RefillDelay = time.Minute
+	}
 }
 
 // StockEntry is one ready-to-claim box. Everything a caller needs to talk to it
@@ -113,6 +187,23 @@ type StockEntry struct {
 	launchedAt    time.Time
 }
 
+// reservation is a stocked box promised to the edge, with the moment it was
+// promised so the reaper can tell a claim that is in flight from one that is
+// never coming.
+type reservation struct {
+	entry *StockEntry
+	at    time.Time
+}
+
+// reservationTTL bounds how long the edge may hold a box without binding it.
+// Short enough that a dead DO does not quietly shrink the pool, but it MUST
+// comfortably exceed the PoolStock DO's own ENTRY_TTL_MS (10 minutes), because
+// a reservation the DO still counts as stock is one it will happily hand to a
+// customer. Expiring first would mean the edge answering a create with a box
+// this pool had already terminated — a 201 for a sandbox that does not exist.
+// 15 minutes matches the QEMU edge_reserved reaper for the same reason.
+const reservationTTL = 15 * time.Minute
+
 // Pool keeps TargetStock boxes launched, tokened and fresh.
 type Pool struct {
 	client *Client
@@ -126,6 +217,19 @@ type Pool struct {
 
 	mu    sync.Mutex
 	stock []*StockEntry
+	// budgetLoggedAt rate-limits the at-budget notice; see overBudget.
+	budgetLoggedAt time.Time
+	// reserved holds boxes promised to the edge's PoolStock DO but not yet
+	// bound to a sandbox. They stay HERE rather than moving to the DO because
+	// the pre-dialled tunnel is a live gRPC channel in this process — it cannot
+	// be serialized to a Durable Object. The DO holds only the identity; the
+	// control plane keeps the thing that makes a claim fast.
+	//
+	// A reservation is deliberately not a claim: nothing is bound, no sandbox
+	// id exists yet, and an unclaimed one returns to stock. That is what makes
+	// an edge that dies mid-create cost a box for one reaper interval instead
+	// of until the 8h cap.
+	reserved map[string]*reservation
 	// backoffUntil suppresses launches after the account hits its regional
 	// memory quota. Without it the ticker keeps firing doomed RunMicrovm calls
 	// — a 402 fails instantly, so inflight drops straight back and the next
@@ -166,6 +270,150 @@ func (p *Pool) Claim() (*StockEntry, bool) {
 	return nil, false
 }
 
+// Reserve promises up to n boxes to the edge and returns them. The caller gets
+// identity only — MicrovmID, Endpoint, Token — which is all the DO needs to
+// hand a box to a customer; the tunnel stays here.
+//
+// Returns fewer than n (possibly none) when stock is short. That is not an
+// error: the edge falls back to asking the control plane, which is the same
+// path it uses when the DO is cold.
+func (p *Pool) Reserve(n int) []*StockEntry {
+	if n <= 0 {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.reserved == nil {
+		p.reserved = make(map[string]*reservation)
+	}
+	now := time.Now()
+	out := make([]*StockEntry, 0, n)
+	for len(out) < n {
+		if len(p.stock) == 0 {
+			break
+		}
+		e := p.stock[len(p.stock)-1]
+		p.stock = p.stock[:len(p.stock)-1]
+		// Same age rule as Claim: never promise a box Lambda is about to
+		// terminate underneath the customer.
+		if time.Since(e.launchedAt) >= p.cfg.MaxBoxAge {
+			go p.terminate(e)
+			continue
+		}
+		p.reserved[e.MicrovmID] = &reservation{entry: e, at: now}
+		out = append(out, e)
+	}
+	return out
+}
+
+// ClaimReserved binds a previously reserved box, returning the full entry so the
+// caller can adopt its tunnel. Reports false if the reservation is unknown —
+// already claimed, expired back to stock, or never made — which the caller must
+// treat as a miss rather than a failure, because the edge can legitimately race
+// the reaper.
+func (p *Pool) ClaimReserved(microvmID string) (*StockEntry, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r, ok := p.reserved[microvmID]
+	if !ok {
+		return nil, false
+	}
+	delete(p.reserved, microvmID)
+	return r.entry, true
+}
+
+// ReleaseReserved returns an unclaimed reservation to stock — the edge deciding
+// it does not need the box after all. Cheaper than letting it expire, and the
+// box keeps its warm tunnel.
+func (p *Pool) ReleaseReserved(microvmID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r, ok := p.reserved[microvmID]
+	if !ok {
+		return false
+	}
+	delete(p.reserved, microvmID)
+	p.stock = append(p.stock, r.entry)
+	return true
+}
+
+// AttachAgent gives a stocked box back its agent channel.
+//
+// Pairs with Manager.DetachAgent on the release path. TrackClaimed transfers a
+// reservation's tunnel to the manager, so a reservation the edge hands back has
+// none — and re-dialling it costs the next customer ~470ms on their first exec
+// (measured: 549ms cold vs 76ms warm). Since the release path knows the channel
+// is still good and that no customer ever held it, moving it back is strictly
+// better than closing it and dialling again.
+//
+// warmTunnels re-dials anything that still ends up tunnel-less; this just keeps
+// the common case from needing it, because the 30s maintenance tick loses the
+// race when the DO releases a batch and immediately re-reserves it.
+func (p *Pool) AttachAgent(microvmID string, a *agentConn) {
+	if a == nil {
+		return
+	}
+	p.mu.Lock()
+	for _, e := range p.stock {
+		if e.MicrovmID == microvmID && e.agent == nil {
+			e.agent = a
+			p.mu.Unlock()
+			return
+		}
+	}
+	p.mu.Unlock()
+	// Left stock between the release and here — don't leak the channel.
+	_ = a.Close()
+}
+
+// expireReservations TERMINATES promises the edge never redeemed. It does not
+// return them to stock, and that distinction is a security boundary rather than
+// a cleanup preference.
+//
+// A reservation carries a pre-minted auth token, handed to the DO. When a
+// reservation goes stale we cannot tell "the DO died before handing this out"
+// from "the DO gave it to a customer and the finalize was lost" — and in the
+// second case the customer holds a live token for that box. Re-pooling it would
+// hand a second customer a box the first can still reach: cross-tenant access.
+// Burning a warm box is the cheap outcome; the other one is a breach.
+//
+// This mirrors the QEMU edge-claim reaper, which destroys stale edge_reserved
+// rows for exactly this reason (see edge_claim.go). ReleaseReserved is the safe
+// counterpart: there the edge is positively asserting it never handed the box
+// out, which is knowledge this path does not have.
+func (p *Pool) expireReservations() int {
+	p.mu.Lock()
+	stale := make([]*StockEntry, 0)
+	for id, r := range p.reserved {
+		if time.Since(r.at) < reservationTTL {
+			continue
+		}
+		delete(p.reserved, id)
+		stale = append(stale, r.entry)
+	}
+	p.mu.Unlock()
+
+	for _, e := range stale {
+		go p.terminate(e)
+		// Drop the sandbox binding the reserve made, so nothing keeps routing a
+		// live id to a box that no longer exists. Ordering does not matter — the
+		// box is doomed either way — but this must not run under p.mu, because
+		// the callback reaches back into the backend.
+		if p.cfg.OnExpire != nil {
+			p.cfg.OnExpire(e.MicrovmID)
+		}
+	}
+	return len(stale)
+}
+
+// ReservedDepth reports outstanding reservations, for telemetry and for the
+// sizing invariant.
+func (p *Pool) ReservedDepth() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.reserved)
+}
+
 // Depth reports current stock, for telemetry and for the sizing invariant: the
 // edge's shards must not target more stock in aggregate than the pool can hold,
 // or shards starve while hoarding — the same failure that cost us 1045ms vs
@@ -203,6 +451,22 @@ func (p *Pool) Run(ctx context.Context) {
 			if p.launchSuppressed() {
 				continue
 			}
+			// Budget before target: when a burst has drained the pool into live
+			// sandboxes, the right move is to WAIT for them rather than launch
+			// replacements alongside them. Refilling here is what doubles the
+			// footprint and trips the regional quota.
+			if p.overBudget() {
+				// Stand down rather than re-probe at tick rate. Skipping the tick
+				// alone leaves the filler glued to the ceiling: it wakes every
+				// LaunchInterval, and the moment a single box is released it spends
+				// a RunMicrovm on a replacement and is at the ceiling again. Those
+				// launches contend for the same regional quota as the customer
+				// creates that went cold because the pool was drained, so the pool
+				// competes with the burst it exists to absorb. Backing off lets
+				// releases pool up into real headroom first.
+				p.standDown(p.cfg.RefillDelay)
+				continue
+			}
 			if p.committed() < p.cfg.TargetStock {
 				go func() {
 					if err := p.launchOne(ctx); err != nil {
@@ -222,6 +486,13 @@ func (p *Pool) Run(ctx context.Context) {
 		case <-maintain.C:
 			p.refreshTokens(ctx)
 			p.retireAged(ctx)
+			p.warmTunnels(ctx)
+			if p.cfg.OnMaintain != nil {
+				p.cfg.OnMaintain()
+			}
+			if n := p.expireReservations(); n > 0 {
+				log.Printf("awsvm: pool re-pooled %d unclaimed edge reservation(s)", n)
+			}
 		}
 	}
 }
@@ -239,6 +510,22 @@ func (p *Pool) launchSuppressed() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return time.Now().Before(p.backoffUntil)
+}
+
+// standDown pauses launches for d without logging, for callers that have
+// already said why. Never shortens an existing pause: a quota backoff and a
+// budget backoff can be armed in the same window, and the longer one is the one
+// that reflects a condition we know has not cleared.
+func (p *Pool) standDown(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	until := time.Now().Add(d)
+	p.mu.Lock()
+	if until.After(p.backoffUntil) {
+		p.backoffUntil = until
+	}
+	p.mu.Unlock()
 }
 
 // suppressLaunches stands the launch loop down for d. Logged once per cooldown
@@ -259,10 +546,48 @@ func (p *Pool) suppressLaunches(d time.Duration, cause error) {
 // committed is stock plus launches still in flight — what the pool will have
 // once everything settles, and therefore the right number to compare against
 // the target when deciding whether to launch more.
+// overBudget reports whether pool stock plus everything claimed out of it has
+// reached MaxTotalBoxes, in which case the filler must stand down.
+//
+// Logged at most once per cooldown rather than per tick: hitting the budget is a
+// normal steady state during a burst, not an incident, and a line every
+// LaunchInterval would bury the log in it.
+func (p *Pool) overBudget() bool {
+	if p.cfg.MaxTotalBoxes <= 0 {
+		return false
+	}
+	inUse := 0
+	if p.cfg.InUse != nil {
+		inUse = p.cfg.InUse()
+	}
+	total := p.committed() + inUse
+	if total < p.cfg.MaxTotalBoxes {
+		return false
+	}
+	// Gate on the refill delay rather than a fixed minute so the notice tracks
+	// however long the filler is actually standing down, and at 9/10 of it so a
+	// once-per-delay caller cannot alias against the window and go silent.
+	p.mu.Lock()
+	quiet := time.Since(p.budgetLoggedAt) < p.cfg.RefillDelay*9/10
+	if !quiet {
+		p.budgetLoggedAt = time.Now()
+	}
+	p.mu.Unlock()
+	if !quiet {
+		log.Printf("awsvm: pool at box budget (%d in use + %d committed >= %d) — refill paused %s to leave regional quota for creates",
+			inUse, p.committed(), p.cfg.MaxTotalBoxes, p.cfg.RefillDelay)
+	}
+	return true
+}
+
 func (p *Pool) committed() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.stock) + p.inflight
+	// Reservations count: they are boxes we own and will hand out. Omitting
+	// them would make the filler see a hole that isn't there and launch
+	// replacements for boxes already promised, overshooting the target by
+	// however many creates the edge has in flight.
+	return len(p.stock) + p.inflight + len(p.reserved)
 }
 
 func (p *Pool) launchOne(ctx context.Context) error {
@@ -397,6 +722,99 @@ func (p *Pool) retireAged(ctx context.Context) {
 	}
 }
 
+// warmTunnels keeps every stocked box's agent channel in READY, so the first
+// exec after a claim does not pay to re-establish it.
+//
+// Pre-dialling at manufacture is not enough on its own. dialAgent sets
+// PermitWithoutStream:false — deliberately, so an idle CUSTOMER sandbox is
+// allowed to suspend instead of being held RUNNING by keepalive pings — which
+// means a box waiting in stock sends no traffic at all and the proxy drops its
+// WebSocket tunnel. gRPC keeps the ClientConn, so nothing looks broken and no
+// re-dial is logged; the cost simply lands on the customer's first RPC as a
+// silent tunnel re-handshake. Measured on dev: first exec 383ms vs 75ms warm,
+// and TTI is defined by exactly that first call.
+//
+// Reconnecting is done with conn.Connect() rather than a probe RPC: it restores
+// the transport without touching the guest, so this cannot be mistaken for
+// sandbox activity by anything that watches for it. Only stock is warmed —
+// claimed boxes keep the existing idle-and-suspend behaviour untouched.
+func (p *Pool) warmTunnels(ctx context.Context) {
+	p.mu.Lock()
+	conns := make([]*agentConn, 0, len(p.stock))
+	var missing []*StockEntry
+	for _, e := range p.stock {
+		if e.agent != nil {
+			conns = append(conns, e.agent)
+			continue
+		}
+		// No tunnel at all. The common cause is a round trip through the edge:
+		// TrackClaimed transfers ownership of the channel to the manager (and
+		// clears this field, so the pool can never close a live customer's
+		// tunnel), then EdgeRelease hands the unused reservation back to stock —
+		// and what returns has no tunnel and no way to get one. Measured on dev:
+		// ~130 boxes released across 8 batches produced 134 reserves with
+		// warm_tunnel=false against 136 with it, i.e. half of all creates were
+		// paying a cold dial on their first exec.
+		//
+		// Re-dialling here rather than in ReleaseReserved is deliberate: stock
+		// with no tunnel is wrong however it got that way, so healing it in the
+		// maintenance tick covers every cause, including ones we have not found.
+		if len(missing) < warmDialPerTick {
+			missing = append(missing, e)
+		}
+	}
+	p.mu.Unlock()
+
+	if p.preDial != nil {
+		for _, e := range missing {
+			dialCtx, cancel := context.WithTimeout(ctx, p.cfg.PreDialTimeout)
+			a, err := p.preDial(dialCtx, e.MicrovmID, e.Endpoint)
+			cancel()
+			if err != nil {
+				continue // still usable cold; try again next tick
+			}
+			// Re-check under the lock: the entry may have been reserved or
+			// terminated while we dialled, and installing a tunnel on an entry
+			// that has left stock would leak the channel.
+			p.mu.Lock()
+			stillStocked := false
+			for _, s := range p.stock {
+				if s == e && s.agent == nil {
+					s.agent = a
+					stillStocked = true
+					break
+				}
+			}
+			p.mu.Unlock()
+			if !stillStocked {
+				_ = a.Close()
+			}
+		}
+		if len(missing) > 0 {
+			log.Printf("awsvm: pool re-dialled tunnels for %d tunnel-less stocked box(es)", len(missing))
+		}
+	}
+
+	rewarmed := 0
+	for _, a := range conns {
+		if a.conn == nil {
+			continue
+		}
+		switch a.conn.GetState() {
+		case connectivity.Ready, connectivity.Connecting:
+			// Already warm, or already on its way.
+		case connectivity.Shutdown:
+			// Terminal — the entry is dead stock; retireAged/terminate owns it.
+		default: // Idle, TransientFailure
+			a.conn.Connect()
+			rewarmed++
+		}
+	}
+	if rewarmed > 0 {
+		log.Printf("awsvm: pool re-warmed %d idle agent tunnel(s) of %d stocked", rewarmed, len(conns))
+	}
+}
+
 func (p *Pool) terminate(e *StockEntry) {
 	// Close the pre-dialled tunnel too, or retiring stock leaks a goroutine and
 	// a socket per box.
@@ -410,6 +828,12 @@ func (p *Pool) terminate(e *StockEntry) {
 // leaves room for the reconciler and customer destroys, which draw on the same
 // bucket. Without pacing, draining a full pool fires every terminate at once
 // and most of them come back throttled.
+// warmDialPerTick bounds how many tunnel-less stock boxes are re-dialled per
+// maintenance tick. Each dial is a real WebSocket+TLS handshake to the proxy, so
+// healing a fully cold pool all at once would burst hundreds of them; spreading
+// the work costs a few ticks and keeps the pool's own traffic predictable.
+const warmDialPerTick = 32
+
 const terminateInterval = 125 * time.Millisecond
 
 // terminateAttempts bounds retries of a throttled terminate. Giving up leaks
@@ -448,9 +872,16 @@ func (p *Pool) terminateID(id string) {
 func (p *Pool) StockIDs() map[string]struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ids := make(map[string]struct{}, len(p.stock))
+	ids := make(map[string]struct{}, len(p.stock)+len(p.reserved))
 	for _, e := range p.stock {
 		ids[e.MicrovmID] = struct{}{}
+	}
+	// Reserved boxes are owned, just spoken for. Leaving them out would make
+	// the orphan sweep classify every in-flight edge claim as abandoned and
+	// terminate boxes out from under customers mid-create — the worst possible
+	// bug in this file.
+	for id := range p.reserved {
+		ids[id] = struct{}{}
 	}
 	return ids
 }
@@ -462,6 +893,13 @@ func (p *Pool) Drain() {
 	p.mu.Lock()
 	stock := p.stock
 	p.stock = nil
+	// Reserved boxes are ours too. A shutdown that drained only stock would
+	// abandon every outstanding reservation to the 8h cap — the same leak this
+	// function exists to prevent, just through a different door.
+	for id, r := range p.reserved {
+		stock = append(stock, r.entry)
+		delete(p.reserved, id)
+	}
 	p.mu.Unlock()
 
 	// Paced, not a fan-out. Firing every terminate at once against a 10/s quota

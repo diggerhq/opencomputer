@@ -1197,144 +1197,63 @@ function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectSt
 }
 
 // ---------------------------------------------------------------------------
-// Magazine: isolate-local inventory of pre-claimed, pre-tokened pool boxes.
+// Pool claim: one DO pop per create.
 //
-// Every create used to cost one PoolStock DO subrequest + one HMAC on the create
-// isolate. Prod attribution showed the burst-100 gate is isolate admission/CPU
-// (create wall ~420ms against ~10ms of server-side claim), so the win is to stop
-// doing per-create work at all: one /claim-batch call fetches N boxes WITH their
-// tokens already minted in the DO, and the next N-1 creates are pure memory —
-// zero subrequests, zero crypto. Classic magazine/thread-local free-list.
+// There used to be a third tier here — an isolate-local "magazine" that batched
+// a refill across shards and served subsequent creates from memory. It is gone.
+// The idea was sound (amortize the DO subrequest + HMAC over a burst) but it
+// could not be made correct: a magazine lives in isolate-local memory, so a
+// burst that fragments across isolates leaves each one holding stock no other
+// create can reach, and Cloudflare may evict the isolate at any time. Sizing it
+// was a forced choice between over-fetching (boxes strand until the cell's
+// 15-min reaper) and under-fetching (misses fall through to a 9-17s cold
+// launch). Measured on dev at 100-way: of 104 boxes staged in the shards, 48
+// served creates, 24 were still in the shards, and ~32 were simply gone.
 //
-// Sizing is ADAPTIVE so this never wastes boxes on low traffic: the refill asks
-// for exactly as many creates as are currently waiting (clamped to
-// MAGAZINE_MAX). A lone create asks for 1 — byte-identical to the old behaviour.
-// A 100-way burst asks for MAGAZINE_MAX and serves the rest from memory.
-//
-// Safety: a magazine is keyed by cell AND org, and its boxes are already tokened
-// for that org, so a box can only ever be handed to the org it was minted for —
-// no cross-tenant exposure. pop() is atomic w.r.t. other tasks (single-threaded
-// JS), so two concurrent creates can never take the same box. The residual cost
-// is waste: boxes held by an isolate that gets evicted are stranded until the
-// cell's reaper reclaims them, which is why the TTL is short and the batch is
-// sized to demand rather than a fixed constant.
-interface MagazineBox {
+// It was also solving the wrong problem. The magazine bought back a ~10ms
+// server-side claim while every create and exec was paying ~165ms to cross the
+// continent to a control plane in westus2 for boxes in us-east-1. Removing a
+// tier of cache is worth more than tuning one: what remains has a single owner
+// (the DO) and one expiry (ENTRY_TTL), so a box cannot be in two places.
+interface PoolBox {
   id: string;
   workerID: string;
   region: string;
   sandboxDomain: string;
   token: string;
-  atMs: number;
 }
-// Must cover a full burst in ONE refill. The refill is single-flighted per
-// (cell,org), so a cap below the burst width serializes: with MAX=24 and 100
-// concurrent creates, waiters go through ~5 sequential refill rounds and the
-// ones that exhaust their 3 attempts fall through to the CP create — the slow
-// path (measured ~1.6s at 100-way). Sized to the leaderboard burst width; the
-// batch is still demand-sized (`want = waiters`), so a lone create asks for 1.
-const MAGAZINE_MAX = 100;
-const MAGAZINE_TTL_MS = 60_000;
-const magazines = new Map<string, MagazineBox[]>();
-const magazineInflight = new Map<string, Promise<void>>();
-const magazineWaiters = new Map<string, number>();
-// Stock depth reported by the most recent refill (telemetry only).
-const magazineLastStock = new Map<string, number>();
 
-// refillMagazine pulls one batch into this isolate's magazine, walking shards the
-// same way a single claim does (random start + stride, 3 tries) so a drained or
-// unlucky shard falls through instead of failing the create.
-async function refillMagazine(
+// claimPoolBox pops one ready-to-serve box (token already minted in the DO).
+// Returns null to fall through to the CP create.
+//
+// One /claim-batch(count:1) against a random shard. When the shards are evenly
+// stocked — the steady state, since each targets POOL_STOCK_TARGET — the first
+// call hits and a create costs exactly one DO round trip. The walk below is the
+// uneven-drain path, not the common one.
+async function claimPoolBox(
   env: Env,
   cell: CellRow,
   orgID: string,
-  key: string,
-  want: number,
-): Promise<void> {
-  // Fan out to every shard in parallel, but RESOLVE ON THE FIRST one that
-  // returns stock — do not await the slowest of eight.
-  //
-  // Measured on dev (N=20, 30-box pool), the two earlier shapes each got half
-  // of this right. A single-shard claim (`?nomag=1`) is fast per call (min
-  // 139-197ms) but misses often when that shard is empty (9-14 of 20 served).
-  // Awaiting all eight shards covered the pool (17 of 20 served) but made the
-  // FASTEST possible create 258-410ms, because every claim paid for the slowest
-  // shard. First-responder gives the single-shard latency and the all-shard
-  // coverage: the caller unblocks on whichever shard answers first, and the
-  // stragglers still land — they top the magazine up in the background, so
-  // their boxes serve the next create instead of being wasted.
-  const per = Math.max(1, Math.ceil(want / POOL_STOCK_SHARDS));
-  const start = Math.floor(Math.random() * POOL_STOCK_SHARDS);
-
-  // Deposit boxes into the magazine as each shard answers, whenever it answers.
-  const deposit = (data: { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number } | null): number => {
-    if (!data) return 0;
-    if (data.stock !== undefined) magazineLastStock.set(key, data.stock);
-    const boxes = data.boxes ?? [];
-    if (boxes.length === 0) return 0;
-    const arr = magazines.get(key) ?? [];
-    const at = Date.now();
-    for (const b of boxes) arr.push({ ...b, atMs: at });
-    magazines.set(key, arr);
-    return boxes.length;
-  };
-
-  const shardCall = async (i: number): Promise<number> => {
-    const shard = (start + i) % POOL_STOCK_SHARDS;
-    try {
-      const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
-        method: "POST",
-        body: JSON.stringify({
-          cell: { cellID: cell.cell_id, baseURL: cell.base_url },
-          orgID,
-          count: per,
-        }),
-      });
-      if (!r.ok) return 0;
-      return deposit((await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number });
-    } catch {
-      return 0;
-    }
-  };
-
-  // Settle as soon as one shard has produced stock. The losers keep running and
-  // deposit on their own — they are never awaited by this caller, so a slow or
-  // empty shard can't hold up the create. shardCall never rejects, so no
-  // unhandled rejection can escape the un-awaited tail.
-  const calls = Array.from({ length: POOL_STOCK_SHARDS }, (_, i) => shardCall(i));
-  await new Promise<void>((resolve) => {
-    let pending = calls.length;
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    for (const c of calls) {
-      void c.then((n) => {
-        if (n > 0) finish(); // first shard with boxes unblocks the caller
-        if (--pending === 0) finish(); // all shards empty — fall through to CP
-      });
-    }
-  });
-}
-
-// claimDirectBox is the CONTROL arm for the magazine A/B (`?nomag=1`): exactly
-// one claim-batch(count:1) per request, no isolate-local inventory, no
-// single-flight. This is the pre-magazine shape — 100 concurrent creates issue
-// 100 parallel DO claims — so the two arms differ only in the batching strategy.
-async function claimDirectBox(
-  env: Env,
-  cell: CellRow,
-  orgID: string,
-): Promise<{ box: MagazineBox; amortized: boolean; stock: number } | null> {
+): Promise<{ box: PoolBox; stock: number } | null> {
   const body = JSON.stringify({
     cell: { cellID: cell.cell_id, baseURL: cell.base_url },
     orgID,
     count: 1,
   });
   let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
-  const stride = 1 + Math.floor(Math.random() * (POOL_STOCK_SHARDS - 1));
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Odd stride only, so the walk is a full cycle of the 8 shards rather than a
+  // sub-orbit. An even stride shares a factor with POOL_STOCK_SHARDS and can
+  // only ever reach half of them (stride 2 visits 4, stride 4 visits 2), so a
+  // create could exhaust its attempts against shards that are empty while the
+  // ones holding stock were unreachable by construction.
+  const stride = 1 + 2 * Math.floor(Math.random() * (POOL_STOCK_SHARDS / 2));
+  // Walk every shard before giving up. Measured on dev: with a 3-attempt walk,
+  // 56 of 100 concurrent creates fell through to the control plane while the
+  // shards still held 22-81 boxes. Falling back to a cold MicroVM launch while
+  // warm stock is sitting one shard away is the expensive mistake here: those
+  // creates then serialize behind the RunMicrovm 5/s quota, which is what turns
+  // a burst into a 25s tail.
+  for (let attempt = 0; attempt < POOL_STOCK_SHARDS; attempt++) {
     try {
       const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
         method: "POST",
@@ -1342,63 +1261,15 @@ async function claimDirectBox(
       });
       shard = (shard + stride) % POOL_STOCK_SHARDS;
       if (!r.ok) continue;
-      const data = (await r.json()) as { boxes?: Omit<MagazineBox, "atMs">[]; stock?: number };
+      const data = (await r.json()) as { boxes?: PoolBox[]; stock?: number };
       const b = data.boxes?.[0];
       if (!b) continue;
-      return { box: { ...b, atMs: Date.now() }, amortized: false, stock: data.stock ?? -1 };
+      return { box: b, stock: data.stock ?? -1 };
     } catch {
       shard = (shard + stride) % POOL_STOCK_SHARDS;
     }
   }
   return null;
-}
-
-// claimMagazineBox returns a ready-to-serve box (token already minted) or null to
-// fall through to the CP create. `amortized` reports that this create did NOT
-// perform a DO call of its own — it either popped a box already in memory or
-// rode someone else's in-flight batch. That ratio IS the fan-out reduction: in a
-// burst of N served by one batch, one create pays and N-1 are amortized.
-async function claimMagazineBox(
-  env: Env,
-  cell: CellRow,
-  orgID: string,
-): Promise<{ box: MagazineBox; amortized: boolean; stock: number } | null> {
-  const key = `${cell.cell_id}|${orgID}`;
-  magazineWaiters.set(key, (magazineWaiters.get(key) ?? 0) + 1);
-  let didRefill = false;
-  try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const mag = magazines.get(key);
-      if (mag && mag.length > 0) {
-        const box = mag.pop()!;
-        // Held too long (idle isolate): drop the whole batch rather than serve a
-        // box the cell may be about to reap. Rare — TTL is far under the DO's
-        // 10-min entry TTL and the cell's 15-min destroy backstop.
-        if (Date.now() - box.atMs < MAGAZINE_TTL_MS) {
-          return { box, amortized: !didRefill, stock: magazineLastStock.get(key) ?? -1 };
-        }
-        magazines.set(key, []);
-      }
-      let inflight = magazineInflight.get(key);
-      if (!inflight) {
-        didRefill = true;
-        // Size the batch to demand: how many creates are waiting on this org's
-        // magazine right now (1 for a lone create → no over-fetch, no waste).
-        const want = Math.min(MAGAZINE_MAX, Math.max(1, magazineWaiters.get(key) ?? 1));
-        inflight = refillMagazine(env, cell, orgID, key, want);
-        magazineInflight.set(key, inflight);
-        void inflight.finally(() => {
-          if (magazineInflight.get(key) === inflight) magazineInflight.delete(key);
-        });
-      }
-      await inflight;
-    }
-    return null;
-  } finally {
-    const n = (magazineWaiters.get(key) ?? 1) - 1;
-    if (n <= 0) magazineWaiters.delete(key);
-    else magazineWaiters.set(key, n);
-  }
 }
 
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
@@ -1597,24 +1468,15 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // first-class shard instead of hoarding reservations until TTL. One empty
       // shard (404) gets one retry on a different shard before the CP fallback.
       mark("cap");
-      // Magazine claim: a hit is pure isolate memory (no subrequest, no HMAC —
-      // the DO minted the token when it filled the batch). A miss single-flights
-      // one /claim-batch sized to the number of creates currently waiting, so a
-      // burst pays ~N/MAGAZINE_MAX DO calls instead of N.
-      // `?nomag=1` bypasses the isolate magazine and does the pre-magazine
-      // thing: one direct DO claim for this request. Kept so magazine-vs-direct
-      // can be A/B'd against a SINGLE deploy — otherwise the two arms differ by
-      // a deploy as well as by the variable, which is not a controlled test.
-      const claimed = req.url.includes("nomag=1")
-        ? await claimDirectBox(env, cell, caller.orgID)
-        : await claimMagazineBox(env, cell, caller.orgID);
+      // One DO pop. The token was minted in the DO when it filled its stock, so
+      // a hit costs one subrequest and no crypto on this isolate.
+      const claimed = await claimPoolBox(env, cell, caller.orgID);
       const box = claimed?.box ?? null;
       if (box && claimed) {
         mark("claim");
-        // Telemetry (#7): whether this create was served from the magazine (no
-        // origin work at all) and the stock left in the shard at last refill.
-        // `dur` is a value here, not a duration.
-        phases.push(`mag;dur=${claimed.amortized ? 1 : 0}`, `stock;dur=${claimed.stock}`);
+        // Telemetry: stock left in the shard that served this claim. `dur` is a
+        // value here, not a duration.
+        phases.push(`stock;dur=${claimed.stock}`);
         const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
@@ -1623,6 +1485,18 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // race-safe here: the client can't send that exec until the 201 crosses
         // the network (≥ one RTT), and the put lands in ~5ms.
         ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+        // Warm the edge→cell connection for the exec that is about to follow.
+        //
+        // Measured on dev: a create's first exec spends 200ms in `origin` against
+        // 102ms steady — TLS + CF Tunnel setup on the first outbound request,
+        // paid once and then free. TTI measures exactly that first exec.
+        //
+        // EXPERIMENT, and its result is not obvious: the exec usually lands on a
+        // DIFFERENT isolate than the create, so this only helps if Workers pool
+        // outbound connections more broadly than per-isolate. If the first-exec
+        // `origin` does not fall toward 102ms after this ships, that hypothesis
+        // is dead and the warming has to live somewhere shared instead.
+        ctx.waitUntil(warmCellConnection(cell));
         mark("mintseed");
         const resp: Record<string, unknown> = {
           sandboxID: box.id,
@@ -1678,9 +1552,15 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     }
   }
 
+  // Reaching here means edge-claim was skipped or missed. Marked separately so a
+  // fallback create's header shows whether it paid for a failed claim attempt
+  // (DO round-trip + retry) before falling through, or never tried at all.
+  mark("claimmiss");
+
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
   const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
+  mark("capmint");
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -1710,8 +1590,14 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   } catch (e) {
     return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
   }
+  // The edge→cell leg, isolated. This is the fork in the road for the fallback
+  // create: `cell` covers network RTT to the cell plus everything the CP does,
+  // and the CP logs its own handler time, so `cell` minus that is the tunnel.
+  // Everything before it is edge compute + D1.
+  mark("cell");
 
   const cpText = await cpResp.text();
+  mark("cellbody");
   if (cpResp.status >= 200 && cpResp.status < 300) {
     let parsed: SandboxCreateResult = {};
     try {
@@ -1734,10 +1620,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       ),
     );
   }
-  // Pass the CP's response through verbatim (status + body).
+  if (env.DIAG === "1") console.log(`create-timing fallback ${cell.cell_id} ${phases.join(" ")}`);
+  // Pass the CP's response through verbatim (status + body), plus the phase
+  // breakdown — the edge-claim path above already returns one, and a fallback
+  // create with no header is exactly the case that needed attributing.
   return new Response(cpText, {
     status: cpResp.status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
   });
 }
 
@@ -1908,10 +1797,40 @@ async function tryVmDoExec(req: Request, env: Env, caller: Caller, id: string, a
 // and stream the response back. Pre-fix this was a 307 redirect, which broke
 // when the SDK's API key didn't exist in cell PG (api_keys are global in D1
 // now, not mirrored per-cell).
-async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string): Promise<Response> {
+// warmCellConnection opens (and discards) a cheap request to a cell so the
+// TLS + tunnel handshake is already paid when the real one arrives. Best-effort
+// by construction: it runs in waitUntil, and a failure just means the next
+// request pays what it would have paid anyway.
+async function warmCellConnection(cell: CellRow): Promise<void> {
+  try {
+    await fetch(cell.base_url.replace(/\/$/, "") + "/health", {
+      method: "GET",
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, vmdoMs = 0): Promise<Response> {
+  // Step timing for the data-plane path. Measured on dev, an exec through here
+  // cost ~718-851ms end to end while the network legs account for only ~200ms
+  // (client↔CP 118ms + CP↔box 81ms), so ~500ms was unattributed. Nothing on
+  // this path emitted server-timing, which is why it stayed invisible.
+  const t0 = Date.now();
+  let tPrev = t0;
+  const phases: string[] = [];
+  if (authMs > 0) phases.push(`auth;dur=${authMs}`);
+  if (vmdoMs > 0) phases.push(`vmdo;dur=${vmdoMs}`);
+  const mark = (name: string): void => {
+    const now = Date.now();
+    phases.push(`${name};dur=${now - tPrev}`);
+    tPrev = now;
+  };
   // Route cache first — the sandbox→cell mapping is immutable, and the D1 read
   // it replaces is a blocking per-sub-op cost (2-3× per SDK runCommand).
   const route = await resolveSandboxRoute(env, id);
+  mark("route");
   if (!route) return json({ error: "sandbox not found" }, 404);
   // Authorization: the sandbox must belong to the caller's org. Without this,
   // any authenticated org could exec/files/pty/delete/hibernate/wake another
@@ -1919,6 +1838,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // we don't leak which sandbox ids exist.
   if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
   const cell = await lookupCell(env, route.cellID);
+  mark("cell");
   if (!cell) return json({ error: `cell ${route.cellID} not registered` }, 503);
 
   const url = new URL(req.url);
@@ -1929,6 +1849,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Reuse the per-isolate org-policy cache instead of a separate per-request
   // SELECT plan — under a burst these are all the same org.
   const orgPol = await loadOrgPolicy(env, caller.orgID);
+  mark("pol");
   // Mint a cap-token (iss=opensandbox-edge, signed with SESSION_JWT_SECRET).
   // The cell's PGAPIKeyMiddleware accepts cap-tokens too (alongside identity
   // tokens and API keys), so the same handler chain that runs for SDK
@@ -1938,6 +1859,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // whose backend is already fixed by its persisted worker_id. Runtime only
   // decides placement, and placement has already happened.
   const token = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", "", caller.userID);
+  mark("tok");
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -2012,6 +1934,11 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Otherwise the dashboard accumulates phantoms — D1 rows stuck at
   // "running" after the actual sandbox stopped.
   const resp = await fetch(target, init);
+  mark("origin");
+  // Copy through so the step breakdown rides along with the cell's own answer.
+  // Response headers are immutable, hence the rewrap.
+  const timed = new Response(resp.body, resp);
+  timed.headers.set("server-timing", phases.join(", "));
   if (postUpdate && resp.status >= 200 && resp.status < 300) {
     const nowSec = Math.floor(Date.now() / 1000);
     let stmt: D1PreparedStatement;
@@ -2042,7 +1969,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
       }),
     );
   }
-  return resp;
+  return timed;
 }
 
 // proxyToCellAuthed forwards an authenticated SDK/CLI request to a cell with an
@@ -4040,11 +3967,16 @@ export default {
       // channel isn't live (DO 409) — so this is safe even before/while workers
       // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
       // wherever the DO auth can be verified at all).
+      let vmdoMs = 0;
       if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
+        const tVmdo = Date.now();
         const doResp = await tryVmDoExec(req, env, caller, id, authMs);
+        vmdoMs = Date.now() - tVmdo;
         if (doResp) return doResp;
       }
-      return proxyToCellSDK(req, env, ctx, caller, id);
+      // vmdo = time spent deciding NOT to use the VM-DO path. For MicroVM orgs
+      // that decision needs an org-policy lookup, so it is not free.
+      return proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs);
     }
 
     // Generic /api/* fallback for SDK/CLI routes without a dedicated D1-native

@@ -22,6 +22,7 @@ package awsvm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -320,11 +321,52 @@ func (c *Client) Terminate(ctx context.Context, id string) error {
 // List enumerates this account's MicroVMs in the region. Used for reconciling
 // our view against reality — the analogue of the QEMU orphan reaper, since a VM
 // we lose track of keeps consuming quota.
+// listAttempts bounds retries on a single page of ListMicrovms.
+//
+// This call is throttled harder than the rest of the API on a busy account —
+// observed failing on most passes with "exceeded maximum number of attempts, 3",
+// the SDK's own default. The SDK gives up quickly and List is only ever called
+// by background reconciliation, where nobody is waiting, so it is worth being
+// considerably more patient than the default.
+//
+// It matters because List is the ONLY way the control plane sees a box that has
+// no database row. A List that gives up does not degrade gracefully — it makes
+// the orphan sweep a no-op, so leaked hosts bill and hold regional quota
+// indefinitely while the sweep logs a failure nobody reads.
+const listAttempts = 6
+
+// listBackoff is the first delay between page retries, doubling thereafter. A
+// var rather than a const so tests can exercise the full ladder without paying
+// for it in wall-clock.
+var listBackoff = 500 * time.Millisecond
+
+// listPage fetches one page, retrying throttles with exponential backoff.
+func (c *Client) listPage(ctx context.Context, next *string) (*lambdamicrovms.ListMicrovmsOutput, error) {
+	backoff := listBackoff
+	for attempt := 1; ; attempt++ {
+		out, err := c.api.ListMicrovms(ctx, &lambdamicrovms.ListMicrovmsInput{NextToken: next})
+		if err == nil {
+			return out, nil
+		}
+		// Only throttling is worth retrying: a permissions or validation failure
+		// answers the same way however long we wait.
+		if !errors.Is(classifyLaunchError(err), ErrThrottled) || attempt >= listAttempts {
+			return nil, err
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		backoff *= 2
+	}
+}
+
 func (c *Client) List(ctx context.Context) ([]Box, error) {
 	var boxes []Box
 	var next *string
 	for {
-		out, err := c.api.ListMicrovms(ctx, &lambdamicrovms.ListMicrovmsInput{NextToken: next})
+		out, err := c.listPage(ctx, next)
 		if err != nil {
 			return nil, fmt.Errorf("awsvm: list microvms: %w", err)
 		}

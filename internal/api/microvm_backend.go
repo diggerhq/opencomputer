@@ -80,6 +80,11 @@ type microvmBackend struct {
 	// not leave stock running: abandoned boxes bill compute and hold regional
 	// memory quota until the 8h service cap.
 	stopPool context.CancelFunc
+
+	// edgeReserved maps a reserved box back to the sandbox id bound to it at
+	// reserve time, so an expiring reservation can drop that binding. See
+	// edge_claim_microvm.go for why the binding happens that early.
+	edgeReserved edgeReservedMap
 }
 
 // microvmEnabled reports whether this cell serves MicroVM-backed sandboxes.
@@ -153,24 +158,62 @@ func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointS
 	log.Printf("microvm: idle policy — suspend after %ds idle, terminate after %ds suspended, auto-resume=%v",
 		idleSec, suspendedSec, autoResume)
 
-	pool := awsvm.NewPool(client, awsvm.PoolConfig{
-		TargetStock: envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20),
-	})
-
 	poolCtx, stop := context.WithCancel(context.Background())
-	go pool.Run(poolCtx)
 
-	log.Printf("microvm: backend enabled (region=%s image=%s poolTarget=%d)",
-		region, image, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
-
-	return &microvmBackend{
+	// Built before the pool because the pool's expiry callback reaches back into
+	// it: an edge reservation that dies unclaimed has to drop the sandbox
+	// binding this backend made when it handed the box to the edge.
+	b := &microvmBackend{
 		client:          client,
-		pool:            pool,
 		manager:         awsvm.NewManager(client, os.TempDir()),
 		checkpointStore: checkpointStore,
 		coldSlots:       make(chan struct{}, maxColdCreates),
 		stopPool:        stop,
-	}, nil
+	}
+	// The account-wide ceiling, in boxes. The regional quota is expressed in
+	// gigabytes (1024 by default, adjustable), and every box costs the image's
+	// delivered size regardless of what the create asked for — so the box count
+	// is what actually has to be capped. Default 0 (off) so a cell nobody has
+	// sized keeps its previous behaviour rather than silently refusing to fill.
+	maxTotal := envInt("OPENSANDBOX_MICROVM_MAX_TOTAL_BOXES", 0)
+	b.pool = awsvm.NewPool(client, awsvm.PoolConfig{
+		TargetStock:   envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20),
+		MaxTotalBoxes: maxTotal,
+		// Claimed boxes are exactly the ones the manager tracks: a box enters on
+		// Claim and leaves on Release, which is the population the pool is blind
+		// to and the reason a target-only filler can overrun the quota.
+		//
+		// Minus the edge's reservations, which the pool already counts itself.
+		// EdgeReserve binds a box to its sandbox id at RESERVE (see
+		// edge_claim_microvm.go for why that window has to be closed), so every
+		// box sitting in a PoolStock shard is simultaneously tracked here and
+		// inside committed()'s len(p.reserved). Double-counting them makes the
+		// budget hallucinate a fleet roughly SHARDS × POOL_STOCK_TARGET larger
+		// than the one AWS is actually running — measured on dev at 130 "in
+		// use" against 130 boxes alive in total, which pinned the pool at a
+		// permanent budget hold and would have starved refill through exactly
+		// the burst the budget exists to survive.
+		InUse:      b.boxesInUse,
+		OnExpire:   b.forgetExpiredReservation,
+		OnMaintain: b.warmReservedTunnels,
+		// How long refill stands down once the budget is reached. Tunable
+		// because the right value is a property of the workload, not the code:
+		// it wants to outlast the burst that drained the pool, so that the
+		// releases behind it accumulate into headroom instead of being spent
+		// one at a time against the regional quota the burst still needs.
+		RefillDelay: time.Duration(envInt("OPENSANDBOX_MICROVM_POOL_REFILL_DELAY_SECONDS", 60)) * time.Second,
+	})
+	if maxTotal > 0 {
+		log.Printf("microvm: box budget %d (pool target %d) — refill pauses while claimed boxes fill the rest",
+			maxTotal, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
+	}
+
+	go b.pool.Run(poolCtx)
+
+	log.Printf("microvm: backend enabled (region=%s image=%s poolTarget=%d)",
+		region, image, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
+
+	return b, nil
 }
 
 // claimPooled binds a warm host to a sandbox id and returns whether one was
@@ -326,7 +369,11 @@ func (b *microvmBackend) reconcileOnce(ctx context.Context, store *db.Store) {
 	}
 
 	var restored, closed int
+	hasRow := make(map[string]struct{}, len(rows))
 	for _, r := range rows {
+		// Recorded before the parse check: a row we cannot parse is still a row,
+		// and the binding sweep below must not treat its sandbox as vanished.
+		hasRow[r.SandboxID] = struct{}{}
 		microvmID, ok := parseMicrovmWorkerID(r.WorkerID)
 		if !ok {
 			continue
@@ -351,6 +398,15 @@ func (b *microvmBackend) reconcileOnce(ctx context.Context, store *db.Store) {
 			// against a sandbox that cannot exist.
 			msg := "microvm no longer exists"
 			_ = store.UpdateSandboxSessionStatus(ctx, r.SandboxID, "stopped", &msg)
+			// Drop the in-memory binding too. Closing only the row leaves a
+			// phantom entry in the manager's map that nothing can ever remove:
+			// ListMicrovmSessions returns running rows, so the next pass does not
+			// even see this sandbox again. Those phantoms are counted by
+			// TrackedMicrovmIDs, which is what the pool's box budget treats as
+			// "in use" — measured on dev at 112 phantoms against 130 boxes
+			// actually alive, i.e. a budget that would refuse to refill the pool
+			// during exactly the burst it was sized for.
+			b.manager.Forget(r.SandboxID)
 			closed++
 			continue
 		}
@@ -371,6 +427,77 @@ func (b *microvmBackend) reconcileOnce(ctx context.Context, store *db.Store) {
 	}
 	if restored > 0 || closed > 0 {
 		log.Printf("microvm: reconciled — adopted %d sandbox(es), closed %d dead row(s)", restored, closed)
+	}
+	b.forgetDeadBindings(ctx, hasRow)
+}
+
+// bindingSweepCap bounds how many rowless bindings one pass probes against AWS.
+// Each probe is a GetMicrovm, and a cell that has accumulated a large backlog
+// should drain it over successive passes rather than spend its API budget in one
+// burst — the same reasoning as orphanReapCap, minus the blast radius, since
+// this sweep only ever forgets local state.
+const bindingSweepCap = 50
+
+// forgetDeadBindings drops in-memory bindings whose sandbox no longer has a row.
+//
+// reconcileOnce walks the sessions table and can therefore only ever fix a
+// binding whose sandbox still has a running row. That leaves the opposite leak
+// structurally invisible: when a row reaches a terminal state by any path that
+// does not also call Kill or Forget, its binding stays in the manager's map with
+// nothing left that can reach it. Nothing reaps it, and it is counted forever by
+// TrackedMicrovmIDs — which is precisely what boxesInUse reports to the pool as
+// the budget's "in use" term. Every stranded binding is a box the pool believes
+// is working and permanently refuses to replace, so the pool's usable depth
+// decays toward zero over a cell's uptime and never recovers without a restart.
+//
+// Two cases, treated differently on purpose:
+//
+//   - Box dead in AWS. Unambiguous, and forgetting is purely local — no API call,
+//     nothing destroyed. Dropped.
+//   - Box alive but rowless. Only reported. It may be a genuine leak, but it may
+//     equally be a create mid-flight whose row has not landed yet, and this
+//     account is shared with other products, so acting on "I cannot find the
+//     paperwork" is exactly the reasoning that must never terminate anything.
+//     sweepOrphans owns that decision, behind its age and attribution guards.
+func (b *microvmBackend) forgetDeadBindings(ctx context.Context, hasRow map[string]struct{}) {
+	if b == nil || b.manager == nil {
+		return
+	}
+	// Edge reservations are bound before any row exists — that window is the
+	// whole point of reserving — so they are rowless by design, not by leak.
+	reserved := b.edgeReserved.sandboxIDs()
+
+	var forgotten, aliveRowless, probed int
+	for sandboxID, microvmID := range b.manager.TrackedBindings() {
+		if _, ok := hasRow[sandboxID]; ok {
+			continue
+		}
+		if _, ok := reserved[sandboxID]; ok {
+			continue
+		}
+		if probed >= bindingSweepCap {
+			break
+		}
+		probed++
+		box, err := b.client.Get(ctx, microvmID)
+		if err != nil {
+			// Could not prove it is dead, so leave it. A transient describe
+			// failure must not be able to unbind a live sandbox.
+			continue
+		}
+		if box.Alive() {
+			aliveRowless++
+			continue
+		}
+		b.manager.Forget(sandboxID)
+		forgotten++
+	}
+	if forgotten > 0 {
+		log.Printf("microvm: binding sweep forgot %d dead binding(s) holding pool budget", forgotten)
+	}
+	if aliveRowless > 0 {
+		log.Printf("microvm: binding sweep — %d live box(es) bound to a sandbox with no row; left alone for the orphan sweep to age out",
+			aliveRowless)
 	}
 }
 
@@ -425,7 +552,7 @@ func (b *microvmBackend) sweepOrphans(ctx context.Context) {
 	armed := envInt("OPENSANDBOX_MICROVM_ORPHAN_REAP", 0) == 1
 
 	var orphans []string
-	var skippedYoung, skippedForeign int
+	var skippedYoung, skippedForeign, skippedUnprovable int
 	for _, box := range boxes {
 		if !box.Alive() {
 			continue // already terminating; nothing to reclaim
@@ -433,27 +560,55 @@ func (b *microvmBackend) sweepOrphans(ctx context.Context) {
 		if _, ok := known[box.ID]; ok {
 			continue
 		}
-		// Never reap a box we did not build. Without this the sweep would
-		// happily terminate another environment's pool out from under it.
-		if ourImage != "" && box.ImageArn != "" && box.ImageArn != ourImage {
-			skippedForeign++
-			continue
-		}
 		// An unset StartedAt must protect the box, not expose it. The API does
 		// not always populate it (observed empty on real Get responses), and
 		// time.Since(zero) is enormous — so a naive age comparison reads
 		// "ancient" for exactly the boxes whose age we failed to learn, turning
 		// the guard inside out and making unknown boxes the most eligible.
+		//
+		// Checked before the image lookup below so a fleet of young boxes cannot
+		// cost us a GetMicrovm each — ListMicrovms already throttles on this
+		// account.
 		if box.StartedAt.IsZero() || time.Since(box.StartedAt) < orphanMinAge {
 			skippedYoung++
+			continue
+		}
+		// Never reap a box we did not build: this AWS account is shared with
+		// other products, and terminating their hosts would be far worse than
+		// leaking one of ours.
+		//
+		// The match must be POSITIVE. An earlier version skipped the comparison
+		// whenever ImageArn was empty, which inverted the guard exactly like the
+		// StartedAt bug above: a box whose image we failed to learn became
+		// eligible instead of protected. ListMicrovms returns a reduced
+		// projection (it carries no endpoint either), so an empty ImageArn here
+		// says nothing about ownership — resolve it with a Get, and if it still
+		// cannot be established, leave the box alone.
+		arn := box.ImageArn
+		if arn == "" {
+			if full, gerr := b.client.Get(ctx, box.ID); gerr == nil {
+				arn = full.ImageArn
+			}
+		}
+		if ourImage == "" || arn != ourImage {
+			if arn == "" {
+				skippedUnprovable++
+			} else {
+				skippedForeign++
+			}
 			continue
 		}
 		orphans = append(orphans, box.ID)
 	}
 
+	if skippedForeign > 0 || skippedUnprovable > 0 {
+		log.Printf("microvm: orphan sweep left %d foreign-image and %d unprovable box(es) alone",
+			skippedForeign, skippedUnprovable)
+	}
 	if len(orphans) == 0 {
-		if skippedYoung > 0 || skippedForeign > 0 {
-			log.Printf("microvm: orphan sweep clean (skipped %d too-young, %d foreign-image)", skippedYoung, skippedForeign)
+		if skippedYoung > 0 || skippedForeign > 0 || skippedUnprovable > 0 {
+			log.Printf("microvm: orphan sweep clean (skipped %d too-young, %d foreign-image, %d unprovable)",
+				skippedYoung, skippedForeign, skippedUnprovable)
 		}
 		return
 	}
@@ -817,6 +972,13 @@ func (b *microvmBackend) Activate(_ context.Context, a activation) (activated, e
 // terminate — it bills compute and holds regional capacity until the service's
 // hard lifetime cap.
 func (b *microvmBackend) RequiresPersistedRow() bool { return true }
+
+// DefersPersist is true: Claim binds sandbox→MicroVM in the manager and adopts
+// the pool's warm tunnel before it returns, so exec, destroy and routing all
+// resolve from memory the moment the create is answered. Nothing on the request
+// path reads the row, and the two writes it contains measured 230ms of a 450ms
+// create. Restart recovery reads it, and tolerates arriving late.
+func (b *microvmBackend) DefersPersist() bool { return true }
 
 // Release terminates the host, because here Claim already produced a running
 // one — from warm stock or a cold launch. Merely forgetting it would leave a

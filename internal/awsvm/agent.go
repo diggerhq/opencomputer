@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -204,11 +205,30 @@ func newAgentPool() *agentPool {
 func (p *agentPool) get(sandboxID, endpoint string, port int32, token tokenProvider) (*agentConn, error) {
 	p.mu.Lock()
 	if c, ok := p.conns[sandboxID]; ok {
+		// A cached channel is only useful if it is still usable. Serving one
+		// that has been shut down is a permanent, silent break: every exec on
+		// that sandbox returns "grpc: the client connection is closing" in
+		// milliseconds and nothing ever re-dials, because this map hit is what
+		// suppresses the dial. Shutdown is terminal in gRPC — it never
+		// reconnects — so drop it and fall through to a fresh dial. Any other
+		// state (Idle, Connecting, TransientFailure) does recover on its own
+		// and must be left alone, or a blip would churn channels under load.
+		if c.conn == nil || c.conn.GetState() == connectivity.Shutdown {
+			delete(p.conns, sandboxID)
+			p.mu.Unlock()
+			_ = c.Close()
+		} else {
+			p.mu.Unlock()
+			return c, nil
+		}
+	} else {
 		p.mu.Unlock()
-		return c, nil
 	}
-	p.mu.Unlock()
 
+	// Reaching here on a claimed box means the pre-dialled tunnel did not
+	// survive to the first exec, which is exactly the ~330ms TTI penalty we are
+	// hunting. Logged so the cold path is visible instead of merely slow.
+	log.Printf("awsvm: agent COLD DIAL for %s (%s) — no warm tunnel in pool", sandboxID, endpoint)
 	c, err := dialAgent(endpoint, port, token)
 	if err != nil {
 		return nil, err
@@ -249,6 +269,50 @@ func (p *agentPool) drop(sandboxID string) {
 	if c != nil {
 		_ = c.Close()
 	}
+}
+
+// warm reconnects the channels of the given sandboxes if they have gone idle.
+// Returns how many needed it.
+//
+// Used for boxes reserved to the edge but not yet claimed by a customer: they
+// are warm stock, so keeping their tunnel established is the whole point, and
+// none of the idle-suspend reasoning that justifies PermitWithoutStream:false
+// applies to a box with no customer on it yet.
+//
+// Connect() rather than a probe RPC: it restores the transport without touching
+// the guest, so nothing that watches for sandbox activity can mistake it for
+// any.
+func (p *agentPool) warm(sandboxIDs map[string]struct{}) int {
+	p.mu.Lock()
+	conns := make([]*agentConn, 0, len(sandboxIDs))
+	for id := range sandboxIDs {
+		if c, ok := p.conns[id]; ok && c.conn != nil {
+			conns = append(conns, c)
+		}
+	}
+	p.mu.Unlock()
+
+	n := 0
+	for _, c := range conns {
+		switch c.conn.GetState() {
+		case connectivity.Ready, connectivity.Connecting, connectivity.Shutdown:
+		default: // Idle, TransientFailure
+			c.conn.Connect()
+			n++
+		}
+	}
+	return n
+}
+
+// detach removes a sandbox's channel WITHOUT closing it, handing ownership to
+// the caller. drop() is the closing variant; this exists for the one case where
+// the channel outlives the binding — an edge reservation returning to stock.
+func (p *agentPool) detach(sandboxID string) *agentConn {
+	p.mu.Lock()
+	c := p.conns[sandboxID]
+	delete(p.conns, sandboxID)
+	p.mu.Unlock()
+	return c
 }
 
 func (p *agentPool) closeAll() {
