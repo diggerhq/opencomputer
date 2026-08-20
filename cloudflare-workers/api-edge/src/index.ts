@@ -1158,8 +1158,17 @@ function indexSandboxFromSSE(
 // pre-sharding DO would drain as a first-class shard, but that cutover is long
 // done, and the bare name was permanently unplaceable — a guaranteed 1-in-8
 // cross-country claim no gen bump could ever fix.
+// g4: g3 fixed the hemisphere but not the metro. Measured on prod 2026-08-20
+// from an IAD runner, the g3 shards split MIA/IAD — `doin=0` on both, so the
+// gap is pure network: IAD shards answered a claim in 10-18ms, MIA shards in
+// 35-49ms, dragging the claim median to 35ms and create to 50ms.
+//
+// locationHint is doing its job: Miami IS eastern North America. The hint picks
+// a region, not a metro, so within enam the placement still falls out of which
+// colo touches the object first. That is the part only the arming run controls
+// — see the note above about first-touching from the cell's own metro.
 const POOL_STOCK_SHARDS = 8;
-const POOL_STOCK_SHARD_GEN = "g3";
+const POOL_STOCK_SHARD_GEN = "g4";
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
   const name = `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
