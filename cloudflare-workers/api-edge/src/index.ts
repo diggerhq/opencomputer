@@ -546,7 +546,36 @@ async function listActiveCells(env: Env): Promise<CellRow[]> {
 // (fresh isolates, caches empty) that collapses ~3×D1-latency into one. Each
 // piece still honours + populates its existing per-isolate cache, so warm/
 // sustained traffic skips D1 entirely and only the cold misses are batched.
-async function loadCreateContext(
+type CreateContext = { org: OrgPolicy | null; activeCount: number; cells: CellRow[] };
+
+// In-flight loads, keyed by org. The three cache tiers below only help a request
+// that arrives after some earlier request has already finished populating them —
+// which is never true at the start of a burst. Measured on prod 2026-08-20 at
+// burst-100: `ctx` was 376ms median / 500ms p90, the largest term inside the
+// create handler, because all 100 creates landed with every tier cold and each
+// one independently ran the same D1 batch. Collapsing them to one read per
+// isolate is the whole fix; the losers await the winner's promise instead of
+// queueing behind it in D1.
+//
+// Keyed by org rather than global because the batch is org-scoped, and deleted
+// in a finally so a rejection can't wedge every later create for that org.
+const createContextInflight = new Map<string, Promise<CreateContext>>();
+
+function loadCreateContext(env: Env, orgID: string, ctx?: ExecutionContext): Promise<CreateContext> {
+  const inflight = createContextInflight.get(orgID);
+  if (inflight) return inflight;
+  const p = (async () => {
+    try {
+      return await loadCreateContextUncoalesced(env, orgID, ctx);
+    } finally {
+      createContextInflight.delete(orgID);
+    }
+  })();
+  createContextInflight.set(orgID, p);
+  return p;
+}
+
+async function loadCreateContextUncoalesced(
   env: Env,
   orgID: string,
   ctx?: ExecutionContext,
@@ -1516,14 +1545,25 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           routeEntry.reach = { endpoint: box.agentEndpoint, token: box.agentToken, port: box.agentPort };
         }
         ctx.waitUntil(coloPut("route", box.id, routeEntry, MVM_REACH_TTL_SEC));
-        // The tunnel pre-warm that used to live here is gone. It dialled the box
-        // (DNS+TCP+TLS+101, bimodal 50-260ms) on every create purely to warm this
-        // colo's outbound connection. Under burst that was 100 concurrent cold
-        // handshakes contending for the same invocation budget, and the exec leg
-        // it was meant to protect does not actually degrade under load —
-        // `up;dur` measured 69/66/56ms median at concurrency 10/25/100, i.e. flat
-        // to falling while create tripled. It was buying nothing and costing the
-        // create path a held connection for its whole duration.
+        // Tunnel pre-warm: dial the box now (DNS+TCP+TLS+101) so this colo has a
+        // live outbound connection before the customer's first exec needs one.
+        //
+        // This was removed in 706ab07e on the theory that create's burst scaling
+        // came from holding too many concurrent connections per invocation. The
+        // fully-attributed run that theory was waiting on has now happened, and
+        // it does not survive: at burst-100 create's cost is `pre` (client→
+        // handler transit) plus `ctx` (a cold-cache D1 stampede, fixed above),
+        // while `claim` is 25ms median and `unbr` is 0 — the marks account for
+        // every millisecond inside the handler, so there is no hidden scheduling
+        // backlog for a held connection to explain. Removing it did cut create
+        // 853→727ms, but exec regressed 102→232ms in the same change, and the
+        // regression sits in `execleg` — which contains `up`, the dial this warm
+        // used to pre-pay. Measured after removal: `up` 73ms median, 527ms p99.
+        //
+        // Net for the benchmark, which scores create+exec together, this is a
+        // win. It stays in waitUntil and swallows its errors, so the worst case
+        // is the first exec dialling cold exactly as it does today.
+        if (routeEntry.reach) ctx.waitUntil(warmEdgeTunnel(routeEntry.reach));
         //
         // NOTE: the MicroVM exec channel is deliberately NOT warmed here. It is
         // warmed at stock-prep in pool_stock.ts, where the box sits idle for
@@ -1953,6 +1993,23 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
 // Bounded well under the SDK's own patience: a command that outlives this is
 // one the caller has already re-run through the tunnel.
 const MVM_EXEC_TIMEOUT_MS = 10_000;
+
+/**
+ * warmEdgeTunnel dials the box and drops the connection straight away, so the
+ * runtime's outbound pool in this colo has a warm entry for the first exec.
+ *
+ * Errors are swallowed on purpose: this is speculative work off the create
+ * path, and a box that refuses now simply means the first exec pays what it
+ * would have paid anyway.
+ */
+async function warmEdgeTunnel(r: MvmReach): Promise<void> {
+  try {
+    const conn = await dialAgent(r);
+    conn.close();
+  } catch {
+    /* first exec dials cold, exactly as it would have */
+  }
+}
 
 // Last dial's split, in module scope so the exec that caused it can report the
 // two halves without threading a result object through. Single-threaded isolate,
