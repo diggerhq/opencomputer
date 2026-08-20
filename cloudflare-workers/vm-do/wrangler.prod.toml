@@ -1,6 +1,6 @@
-# vm-do Worker — PROD on Mo's CF account. Owns the VmSession Durable Object
-# class; api-edge (opencomputer-edge-prod) binds it cross-script via
-# script_name. Deliberately a separate worker so api-edge's deploy cadence
+# vm-do Worker — PROD on Mo's CF account. Owns the VmSession and MicrovmSession
+# Durable Object classes; api-edge (opencomputer-edge-prod) binds both
+# cross-script via script_name. Deliberately a separate worker so api-edge's deploy cadence
 # (every merge touching web/ or edge code redeploys the edge, and every deploy
 # resets all DOs → severs every host-dialed VM WebSocket) can't flap the exec
 # data plane. Deploy: `wrangler deploy -c wrangler.prod.toml` — and ONLY when
@@ -16,6 +16,19 @@ account_id = "b8f23cb87a7a6c64040d3134643da448"
 name = "VM_SESSIONS"
 class_name = "VmSession"
 
+# MicroVM exec data plane. Same worker and same reasoning as VmSession above;
+# this DO dials the box's AWS agent endpoint directly, so exec never traverses
+# the control plane. Mirrors wrangler.toml (dev) — keep the two in step.
+[[durable_objects.bindings]]
+name = "MICROVM_SESSIONS"
+class_name = "MicrovmSession"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["VmSession"]
+
+# v2 adds MicrovmSession. Migration tags are a forward-only ledger per script:
+# this must stay v2 to match dev and must not be renumbered once deployed.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MicrovmSession"]
