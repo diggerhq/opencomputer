@@ -75,6 +75,22 @@ name = "VM_SESSIONS"
 class_name = "VmSession"
 script_name = "opencomputer-vmdo-prod"
 
+# MicroVM exec data plane. Same worker, same reasoning; the DO dials the box's
+# AWS agent endpoint directly so exec never traverses the control plane.
+#
+# No migration accompanies this: MicrovmSession is defined in the vm-do script
+# (see its wrangler.prod.toml v2), and a cross-script binding only references a
+# class — it never creates one. Adding a migration here would try to define a
+# second, unrelated MicrovmSession inside the edge script.
+#
+# The edge guards every use with `env.MICROVM_SESSIONS &&`, so prod ran without
+# this binding rather than erroring — it silently skipped the detach-on-destroy
+# that stops the DO's keepalive alarm re-dialing a terminated box.
+[[durable_objects.bindings]]
+name = "MICROVM_SESSIONS"
+class_name = "MicrovmSession"
+script_name = "opencomputer-vmdo-prod"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
