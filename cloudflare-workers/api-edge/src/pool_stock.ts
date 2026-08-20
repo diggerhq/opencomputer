@@ -187,6 +187,9 @@ export class PoolStock {
   // One-shot colo self-identification (diagnostics): placement is sticky at
   // first-touch; a stock DO cross-colo from the claiming edge adds per-claim RTT.
   private coloLogged = false;
+  // Resolved once per isolate alongside coloLogged; reported on every claim so
+  // the create path can see whether its stock DO is even in the same colo.
+  private colo = "?";
   // Last cell seen on a /claim, persisted so the proactive alarm can restock
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
@@ -294,6 +297,20 @@ export class PoolStock {
   // are TOKENED, so — exactly like /claim — they must never return to the pool;
   // an isolate that dies holding them leaves them to the cell's reaper.
   private async claimBatch(req: Request): Promise<Response> {
+    // Split the create path's `claim;dur` into DO work vs the network to get
+    // here. Both halves have completely different fixes — token minting and
+    // stock bookkeeping are ours to cut, cross-colo RTT is a placement problem —
+    // and from the edge they are indistinguishable.
+    const tDo = Date.now();
+    if (!this.coloLogged) {
+      this.coloLogged = true;
+      void fetch("https://www.cloudflare.com/cdn-cgi/trace")
+        .then(async (r) => {
+          this.colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+          console.log(`pool-stock colo=${this.colo}`);
+        })
+        .catch(() => {});
+    }
     let cell: { cellID: string; baseURL: string } | null = null;
     let orgID = "";
     let count = 1;
@@ -354,7 +371,7 @@ export class PoolStock {
         agentPort: e.port,
       })),
     );
-    return Response.json({ boxes, stock: this.stock.length });
+    return Response.json({ boxes, stock: this.stock.length, t: Date.now() - tDo, colo: this.colo });
   }
 
   // rememberCell persists the cell coordinates so the alarm can restock even on

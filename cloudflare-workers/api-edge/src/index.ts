@@ -1203,11 +1203,19 @@ function indexSandboxFromSSE(
 // the cell, never a laptop). g1's shards 1-7 were armed from off-metro and
 // pinned cross-country; g2 exists to re-place them. Old-gen shards strand their
 // reservations at most ENTRY_TTL + the cell's 15-min reaper.
+// g3: measured 2026-08-20 from an IAD sandbox, g2's shards answered from LAX and
+// SJC with doin=0 — every claim was a ~78ms cross-country round trip and the
+// entire cost of a ~92ms create. locationHint below could not save them because
+// placement is fixed at creation and these objects predate it. Shard 0 is folded
+// into the gen scheme here too: it had kept the bare cellID name so the
+// pre-sharding DO would drain as a first-class shard, but that cutover is long
+// done, and the bare name was permanently unplaceable — a guaranteed 1-in-8
+// cross-country claim no gen bump could ever fix.
 const POOL_STOCK_SHARDS = 8;
-const POOL_STOCK_SHARD_GEN = "g2";
+const POOL_STOCK_SHARD_GEN = "g3";
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
-  const name = shard === 0 ? cellID : `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
+  const name = `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
   // Deterministic placement hint: pin the stock DO to eastern North America
   // (covers eastus2 / the IAD leaderboard runner) so a claim never eats a
   // cross-colo hop even if the first touch comes from an off-metro edge. A
@@ -1261,7 +1269,7 @@ async function claimPoolBox(
   env: Env,
   cell: CellRow,
   orgID: string,
-): Promise<{ box: PoolBox; stock: number } | null> {
+): Promise<{ box: PoolBox; stock: number; doMs: number; doColo: string } | null> {
   const body = JSON.stringify({
     cell: { cellID: cell.cell_id, baseURL: cell.base_url },
     orgID,
@@ -1288,10 +1296,10 @@ async function claimPoolBox(
       });
       shard = (shard + stride) % POOL_STOCK_SHARDS;
       if (!r.ok) continue;
-      const data = (await r.json()) as { boxes?: PoolBox[]; stock?: number };
+      const data = (await r.json()) as { boxes?: PoolBox[]; stock?: number; t?: number; colo?: string };
       const b = data.boxes?.[0];
       if (!b) continue;
-      return { box: b, stock: data.stock ?? -1 };
+      return { box: b, stock: data.stock ?? -1, doMs: data.t ?? -1, doColo: data.colo ?? "?" };
     } catch {
       shard = (shard + stride) % POOL_STOCK_SHARDS;
     }
@@ -1504,6 +1512,10 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // Telemetry: stock left in the shard that served this claim. `dur` is a
         // value here, not a duration.
         phases.push(`stock;dur=${claimed.stock}`);
+        // `claim` above is DO work + network to the DO. This is the DO's half,
+        // so the remainder is the hop — see claimBatch. `doclo` is a colo name,
+        // not a duration; Server-Timing has nowhere else to put it.
+        phases.push(`doin;dur=${claimed.doMs}`, `doclo;desc=${claimed.doColo}`);
         const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
@@ -1935,7 +1947,7 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
       status: 200,
       headers: {
         "content-type": "application/json",
-        "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}`,
+        "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}`,
       },
     });
   } catch (e) {
@@ -1968,9 +1980,25 @@ async function warmEdgeTunnel(r: MvmReach): Promise<void> {
   }
 }
 
-/** dialAgent opens one agent tunnel and returns an HTTP/2 client on it. */
+// Last dial's split, in module scope so the exec that caused it can report the
+// two halves without threading a result object through. Single-threaded isolate,
+// and the value is read immediately after the await that sets it.
+let lastUpgradeMs = 0;
+let lastReadyMs = 0;
+
+/**
+ * dialAgent opens one agent tunnel and returns an HTTP/2 client on it.
+ *
+ * The two legs are timed apart because they fail differently and fix
+ * differently. `upgrade` is DNS + TCP + TLS + the 101, i.e. this colo's
+ * connection to the box's host — a warm pooled connection makes it ~free.
+ * `ready` is the guest's first SETTINGS frame, which the AWS proxy cannot
+ * produce until it has connected to the guest port. A slow dial is one or the
+ * other, never both, and knowing which is the whole diagnosis.
+ */
 async function dialAgent(r: MvmReach): Promise<H2Grpc> {
   const host = r.endpoint.replace(/^https?:\/\//, "").split("/")[0];
+  const tUp = Date.now();
   const up = await fetch(`https://${host}/osb/agent-grpc`, {
     signal: AbortSignal.timeout(5000),
     headers: {
@@ -1981,7 +2009,9 @@ async function dialAgent(r: MvmReach): Promise<H2Grpc> {
   });
   const ws = (up as unknown as { webSocket: WebSocket | null }).webSocket;
   if (!ws) throw new Error(`agent tunnel upgrade failed (http ${up.status})`);
+  lastUpgradeMs = Date.now() - tUp;
   ws.accept();
+  const tReady = Date.now();
   const conn = new H2Grpc(ws, host);
   // Wait for the GUEST, not just the AWS proxy: the 101 comes from the proxy,
   // which only connects to the guest port once payload arrives. Its SETTINGS
@@ -1990,6 +2020,7 @@ async function dialAgent(r: MvmReach): Promise<H2Grpc> {
     conn.ready,
     new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), 8000)),
   ]);
+  lastReadyMs = Date.now() - tReady;
   return conn;
 }
 
