@@ -1480,28 +1480,36 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // a different isolate — skips its blocking D1 route read. waitUntil is
         // race-safe here: the client can't send that exec until the 201 crosses
         // the network (≥ one RTT), and the put lands in ~5ms.
-        ctx.waitUntil(coloPut("route", box.id, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
-        // Same trick for the box's agent reach-info, which the claim response
-        // carries because the pool already knew it. This is what lets the first
-        // exec dial the guest itself — see tryMicrovmDirectExec. Without it that
-        // exec's only source is the control plane in westus2, a cross-country
-        // round trip measured at 67-401ms, which would cost more than the whole
-        // exec it is trying to enable.
+        // ONE colo write, carrying the reach info that used to be a second entry.
+        // Each waitUntil holds an open connection for the life of the
+        // invocation, and a Worker invocation may hold only six — this path was
+        // sitting exactly on that ceiling (claim + 2 colo puts + tunnel warm +
+        // VM_SESSIONS wake + queue send). Measured from IAD 2026-08-20, create
+        // median scaled 334→551→853ms at concurrency 10→25→100 while every
+        // server-timing mark stayed flat (claim 20→21→32ms), i.e. the growth was
+        // entirely in requests waiting to be scheduled, which the marks cannot
+        // see because tPrev starts at handler entry.
+        //
+        // TTL is the reach TTL (the longer of the two). resolveRoute's own put
+        // writes this key without `reach`; that costs the next exec one cell
+        // lookup and then self-heals via the mvmreach put on the exec path.
+        const routeEntry: { cellID: string; orgID: string; reach?: MvmReach } = {
+          cellID: cell.cell_id,
+          orgID: caller.orgID,
+        };
         if (box.agentEndpoint && box.agentToken && box.agentPort) {
-          const reach = { endpoint: box.agentEndpoint, token: box.agentToken, port: box.agentPort };
-          ctx.waitUntil(coloPut("mvmreach", box.id, reach, MVM_REACH_TTL_SEC));
-          // Open and immediately drop a tunnel to the box, purely to warm this
-          // colo's outbound connection to its host.
-          //
-          // The dial cost is sharply bimodal — ~50ms or ~260ms, measured across
-          // several runs — and the slow half is a cold TLS handshake to a host
-          // this edge has never contacted. It used to be hidden because the
-          // MicrovmSession DO had dialled the box at stock time, so the
-          // connection was already warm; dialling from the edge instead moved
-          // that cost onto the customer's first exec. Paying it here, on
-          // waitUntil, puts it back where nobody is waiting.
-          ctx.waitUntil(warmEdgeTunnel(reach));
+          routeEntry.reach = { endpoint: box.agentEndpoint, token: box.agentToken, port: box.agentPort };
         }
+        ctx.waitUntil(coloPut("route", box.id, routeEntry, MVM_REACH_TTL_SEC));
+        // The tunnel pre-warm that used to live here is gone. It dialled the box
+        // (DNS+TCP+TLS+101, bimodal 50-260ms) on every create purely to warm this
+        // colo's outbound connection. Under burst that was 100 concurrent cold
+        // handshakes contending for the same invocation budget, and the exec leg
+        // it was meant to protect does not actually degrade under load —
+        // `up;dur` measured 69/66/56ms median at concurrency 10/25/100, i.e. flat
+        // to falling while create tripled. It was buying nothing and costing the
+        // create path a held connection for its whole duration.
+        //
         // NOTE: the MicroVM exec channel is deliberately NOT warmed here. It is
         // warmed at stock-prep in pool_stock.ts, where the box sits idle for
         // minutes — warming from this path both loses the race against the
@@ -1516,17 +1524,14 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
-        // Pre-wake the box's VmSession OFF the response path: the DO hibernated
-        // after the manufacture dial, and its isolate wake (~180ms, measured via
-        // do−doin) otherwise lands on the customer's first exec. waitUntil runs
-        // after the 201 is sent, so unlike the reverted inline /status verify
-        // this cannot tax create latency.
-        ctx.waitUntil(
-          env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(box.id))
-            .fetch("https://do/status")
-            .then(() => {})
-            .catch(() => {}),
-        );
+        // The VmSession pre-wake that used to live here is gone too. Its premise
+        // — "waitUntil runs after the 201, so it cannot tax create latency" — is
+        // false under burst: waitUntil keeps the invocation (and its connection
+        // budget) alive, so a ~180ms DO wake per create is 100 of them in flight
+        // at burst-100, competing with the claims that still have to be served.
+        // The wake it was hiding lands on the first exec of a box whose DO has
+        // hibernated; the durable fix for that is the shared dialer work
+        // (task #167), not a per-create background wake.
         // Finalize off the create isolate: enqueue a tiny message (one cheap
         // send) instead of running the CP fetch + D1 insert here. ~100 inline
         // finalizes otherwise accumulate on the isolate and stall the burst (dev
@@ -1861,7 +1866,12 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
   };
 
   const tReach = Date.now();
-  let reach = await coloGet<MvmReach>("mvmreach", id);
+  // Create now folds reach into the "route" entry (one colo write instead of
+  // two — see createSandbox). Fall back to the standalone "mvmreach" key, which
+  // the refresh below still writes and which covers boxes claimed before this
+  // deployed.
+  let reach = (await coloGet<{ reach?: MvmReach }>("route", id))?.reach ?? null;
+  if (!reach) reach = await coloGet<MvmReach>("mvmreach", id);
   let reachFromCell = false;
   if (!reach) {
     // Cache miss: a box claimed before this deployed, an expired credential, or
@@ -1923,23 +1933,6 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
 // Bounded well under the SDK's own patience: a command that outlives this is
 // one the caller has already re-run through the tunnel.
 const MVM_EXEC_TIMEOUT_MS = 10_000;
-
-/**
- * warmEdgeTunnel dials the box and drops the connection straight away, so the
- * handshake is already done when the customer's first exec dials for real.
- *
- * Errors are swallowed on purpose: this is speculative work off the create
- * path, and a box that refuses now simply means the first exec pays what it
- * would have paid anyway.
- */
-async function warmEdgeTunnel(r: MvmReach): Promise<void> {
-  try {
-    const conn = await dialAgent(r);
-    conn.close();
-  } catch {
-    /* first exec dials cold, exactly as it would have */
-  }
-}
 
 // Last dial's split, in module scope so the exec that caused it can report the
 // two halves without threading a result object through. Single-threaded isolate,
