@@ -145,6 +145,17 @@ crons = ["*/5 * * * *"]
 
 [vars]
 WORKER_ENV = "prod"
+# PoolStock sizing. SHARDS × TARGET must stay ≤ the cell's MicroVM pool
+# (OPENSANDBOX_MICROVM_POOL_TARGET on the CP) or every shard sits permanently
+# below low-water, restocks on every claim, and competes for a supply that can
+# never satisfy it — creates then fall through to the ~10× slower CP path.
+#
+# 8 × 18 = 144 against prod's pool of 150. These were unset until 2026-08-20,
+# which meant the DO defaults (38 per shard = 304 fleet) applied against a pool
+# of 5 — every shard starved and edge-claim effectively never hit. Raise the CP
+# pool target FIRST, then this. See the SIZING INVARIANT in src/pool_stock.ts.
+POOL_STOCK_TARGET = "18"
+POOL_STOCK_LOW_WATER = "9"
 # Cells eligible for new-org home assignment live in the D1 `cells` table
 # (`accepts_new_orgs` column), not an env list — toggle a row to onboard a cell,
 # no deploy. See pickHomeCell in src/index.ts.
