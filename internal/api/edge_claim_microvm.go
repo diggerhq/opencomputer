@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -45,6 +48,24 @@ import (
 type edgeBox struct {
 	SandboxID string
 	WorkerID  string
+
+	// Reach-info: how to talk to this box WITHOUT going through this process.
+	// The endpoint is a public TLS host and the token is a port-scoped header
+	// credential, so handing them to the edge lets it hold the agent tunnel
+	// itself and take the control plane out of the exec data path entirely.
+	//
+	// Delivered here, at reserve, rather than fetched later on purpose: the
+	// sandbox id is already assigned at this point, so the edge can open and
+	// guest-attach the tunnel while the box is still sitting in stock — before
+	// any customer exists. Measured, that is the difference between a first exec
+	// of ~30ms and one of ~1.1s, because the AWS proxy only connects to the
+	// guest when payload first arrives and somebody has to pay for that.
+	//
+	// Empty on the Postgres path: those cells route through a worker, and this
+	// is a MicroVM-only shortcut.
+	Endpoint string
+	Token    string
+	Port     int32
 }
 
 // edgeClaimer is a backend that serves edge-claim from its own stock instead of
@@ -136,7 +157,13 @@ func (b *microvmBackend) EdgeReserve(n int) []edgeBox {
 		// real config once there is one.
 		b.manager.TrackClaimed(sandboxID, e, types.SandboxConfig{})
 		b.edgeReserved.put(e.MicrovmID, sandboxID)
-		out = append(out, edgeBox{SandboxID: sandboxID, WorkerID: microvmWorkerID(e.MicrovmID)})
+		out = append(out, edgeBox{
+			SandboxID: sandboxID,
+			WorkerID:  microvmWorkerID(e.MicrovmID),
+			Endpoint:  e.Endpoint,
+			Token:     e.Token,
+			Port:      b.pool.AgentPort(),
+		})
 	}
 	log.Printf("microvm: edge-reserved %d box(es) (asked %d, %d left in stock)", len(out), n, b.pool.Depth())
 	return out
@@ -223,6 +250,9 @@ func (b *microvmBackend) forgetExpiredReservation(microvmID string) {
 		return
 	}
 	b.manager.Forget(sandboxID)
+	if b.onReservationLost != nil {
+		b.onReservationLost(sandboxID, errors.New("edge reservation expired before it was claimed"))
+	}
 	log.Printf("microvm: edge reservation %s (box %s) expired unclaimed — binding dropped", sandboxID, microvmID)
 }
 
@@ -300,5 +330,14 @@ func (b *microvmBackend) warmReservedTunnels() {
 	}
 	if n := b.manager.WarmAgents(reserved); n > 0 {
 		log.Printf("microvm: re-warmed %d idle tunnel(s) across %d edge reservation(s)", n, len(reserved))
+	}
+	// Reconnecting the channel is not enough to keep the box awake — only guest
+	// traffic is. Edge reservations matter most here: they are the boxes a
+	// customer is about to claim, so a suspended one turns into ~1s on the very
+	// first exec. See the keepalive block in internal/awsvm/agent.go.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if ok, failed := b.manager.PingAgents(ctx, reserved); ok+failed > 0 {
+		log.Printf("microvm: keepalive pinged %d reserved box(es) (%d failed)", ok, failed)
 	}
 }

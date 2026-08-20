@@ -104,6 +104,13 @@ name = "VM_SESSIONS"
 class_name = "VmSession"
 script_name = "opensandbox-vmdo-dev"
 
+# MicroVM exec data plane. Same worker, same reasoning; the DO dials the box's
+# agent endpoint directly so exec never traverses the control plane.
+[[durable_objects.bindings]]
+name = "MICROVM_SESSIONS"
+class_name = "MicrovmSession"
+script_name = "opensandbox-vmdo-dev"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]

@@ -67,6 +67,7 @@ type Server struct {
 	sandboxDomain      string                            // base domain for sandbox subdomains
 	cfClient           *cloudflare.Client                // nil if Cloudflare not configured
 	pendingCreates     sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
+	pendingEdgeClaims  sync.Map                          // map[sandboxID]*edgePending — edge-claimed boxes awaiting claim-finalize
 	mountSvc           *mounts.Service                   // shared with worker.HTTPServer; nil disables the mounts API
 	sandboxAPIProxy    *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
 	wsGateway          *wsgateway.Gateway                // nil disables the broker; WS data-plane routes fall back to sandboxAPIProxy
@@ -236,7 +237,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 			s.sandboxAPIProxy.SetWaitForReady(func(ctx context.Context, sandboxID string) error {
 				val, ok := s.pendingCreates.Load(sandboxID)
 				if !ok {
-					return nil // not a pending create — proceed normally
+					// Not an async create. It may still be an edge claim whose
+					// finalize hasn't landed — the other way a caller can hold
+					// a sandbox id this process cannot yet look up.
+					return s.waitEdgeFinalize(ctx, sandboxID)
 				}
 				pending := val.(*pendingCreate)
 				select {
@@ -358,6 +362,9 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		internal.POST("/pool/edge-reserve", s.edgeReservePool)
 		internal.POST("/pool/edge-release", s.edgeReleasePool)
 		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
+		// Direct-path seam (see microvm_direct.go): lets the edge dial a
+		// MicroVM's agent itself instead of relaying exec through this process.
+		internal.GET("/microvm/direct/:id", s.microvmDirectInfo)
 		// Cross-cell paused-cap enforcement: the edge (which has the org-global
 		// view via D1) calls this to promote a specific paused sandbox to deep
 		// hibernation, reclaiming its worker RAM.
@@ -808,6 +815,9 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		log.Fatalf("opensandbox: microvm backend: %v", err)
 	} else if mvm != nil {
 		s.microvm = mvm
+		// A reservation that dies unclaimed must wake anything parked on its
+		// finalize — see THE FINALIZE RACE in edge_claim.go.
+		mvm.onReservationLost = s.resolveEdgePending
 		// Registering it is what makes every claim/route site find it. Before
 		// this the sites each hardcoded their own check, and any new one
 		// silently defaulted to the worker path.

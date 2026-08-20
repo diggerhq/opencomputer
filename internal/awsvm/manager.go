@@ -938,3 +938,31 @@ func (m *Manager) Forget(sandboxID string) {
 	m.mu.Unlock()
 	m.agents.drop(sandboxID)
 }
+
+// DirectInfo returns everything a caller OUTSIDE this process needs to reach a
+// sandbox's agent itself: the MicroVM's public endpoint, a proxy auth token,
+// and the guest port that token is scoped to.
+//
+// This is the seam for taking the control plane out of the exec data path. The
+// endpoint is a public TLS host and the token is a plain header credential — the
+// same one dialAgent presents on the WebSocket upgrade — so a caller that
+// speaks the tunnel protocol gets an identical channel without relaying through
+// here. Tokens are cached and port-scoped by AuthToken, so this is cheap to call
+// and cannot widen access beyond the agent port.
+func (m *Manager) DirectInfo(ctx context.Context, sandboxID string) (endpoint, token string, port int32, err error) {
+	e, err := m.lookup(sandboxID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	tok, err := m.client.AuthToken(ctx, e.microvmID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return e.endpoint, tok, m.client.Config().AgentPort, nil
+}
+
+// PingAgents keeps the given sandboxes' boxes out of AWS's idle policy. See the
+// keepalive block in agent.go for why an open connection is not enough.
+func (m *Manager) PingAgents(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed int) {
+	return m.agents.pingTracked(ctx, sandboxIDs)
+}

@@ -85,6 +85,12 @@ type microvmBackend struct {
 	// reserve time, so an expiring reservation can drop that binding. See
 	// edge_claim_microvm.go for why the binding happens that early.
 	edgeReserved edgeReservedMap
+
+	// onReservationLost tells the control plane that a reserved sandbox id will
+	// never finalize, so anything parked waiting for that claim is released
+	// with the failure instead of waiting the window out. Set by the Server at
+	// wiring time; nil in tests, where nobody is waiting.
+	onReservationLost func(sandboxID string, err error)
 }
 
 // microvmEnabled reports whether this cell serves MicroVM-backed sandboxes.

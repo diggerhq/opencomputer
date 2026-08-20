@@ -244,6 +244,11 @@ type Pool struct {
 	inflight int
 }
 
+// AgentPort is the guest port this pool's tokens are scoped to. Callers handing
+// a box's reach-info to something outside this process need it, because the
+// credential is only valid for that one port.
+func (p *Pool) AgentPort() int32 { return p.client.Config().AgentPort }
+
 func NewPool(client *Client, cfg PoolConfig) *Pool {
 	cfg.applyDefaults()
 	p := &Pool{client: client, cfg: cfg}
@@ -643,6 +648,15 @@ func (p *Pool) launchOne(ctx context.Context) error {
 			log.Printf("awsvm: pool pre-dial %s failed, box still usable cold: %v", box.ID, derr)
 		} else {
 			agent = a
+			// Spend the box's first-shell cost here rather than on the
+			// customer's first command — see agentConn.warmShell. Best effort:
+			// a box that fails to warm is still a perfectly good box, it just
+			// starts cold like it did before.
+			warmCtx, cancelWarm := context.WithTimeout(runCtx, warmShellTimeout)
+			if werr := agent.warmShell(warmCtx); werr != nil {
+				log.Printf("awsvm: pool warm-up exec %s failed, box starts cold: %v", box.ID, werr)
+			}
+			cancelWarm()
 		}
 	}
 
@@ -764,6 +778,14 @@ func (p *Pool) warmTunnels(ctx context.Context) {
 		}
 	}
 	p.mu.Unlock()
+
+	// Keepalive: touch every stocked box so it never goes idle long enough for
+	// AWS to suspend it. This is the expensive-on-purpose half of the trade —
+	// an unsuspended box bills compute while it waits — and it is what keeps a
+	// claim's first exec off the ~1s resume path.
+	if ok, failed := pingAll(ctx, conns); ok+failed > 0 {
+		log.Printf("awsvm: pool keepalive pinged %d stocked box(es) (%d failed)", ok, failed)
+	}
 
 	if p.preDial != nil {
 		for _, e := range missing {

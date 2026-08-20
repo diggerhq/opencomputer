@@ -26,6 +26,12 @@ interface StockEntry {
   region: string;
   sandboxDomain: string;
   atMs: number;
+  // MicroVM reach-info, when the cell supplies it. Present means exec can go
+  // straight from the edge to the box's agent; absent means this cell routes
+  // through a worker and exec uses the control-plane path.
+  endpoint?: string;
+  token?: string;
+  port?: number;
 }
 
 interface PoolStockEnv {
@@ -41,6 +47,11 @@ interface PoolStockEnv {
   // subrequests from the create isolate, saturating its subrequest budget.
   // Optional so the binding can be absent mid-cutover (prewake just skips).
   VM_SESSIONS?: DurableObjectNamespace;
+  // MicroVM exec data plane. Warmed here at stock-prep for the same reason
+  // VM_SESSIONS is: doing it on the create path would fan out a subrequest per
+  // box from the create isolate, and — more importantly — would lose the race
+  // against the customer's first exec.
+  MICROVM_SESSIONS?: DurableObjectNamespace;
 }
 
 // Stock tuning. TARGET_STOCK mirrors ~the whole per-cell hot pool so every
@@ -406,6 +417,51 @@ export class PoolStock {
     );
   }
 
+  // warmMicrovmBox hands a box's reach-info to its MicrovmSession DO and has it
+  // open the agent tunnel, best-effort and off every hot path.
+  //
+  // Doing this at stock-prep rather than at create is the whole point. The
+  // WebSocket 101 comes from the AWS proxy, which only connects to the guest
+  // port when payload first arrives — so the ~1.1s cost of actually reaching the
+  // agent lands on whoever sends first. Warming at create loses that race (the
+  // customer's exec arrives one RTT after the 201), and warming lazily on first
+  // exec IS the race. Here there is no race: the box sits in stock for minutes.
+  private warmMicrovmBox(b: { sandboxID: string; endpoint?: string; token?: string; port?: number }): void {
+    const ns = this.env.MICROVM_SESSIONS;
+    if (!ns || !b.endpoint || !b.token || !b.port) return;
+    this.state.waitUntil(
+      ns
+        .get(ns.idFromName(b.sandboxID), { locationHint: "enam" })
+        .fetch("https://do/attach", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ endpoint: b.endpoint, token: b.token, port: b.port, dial: true }),
+        })
+        .then(() => {})
+        .catch(() => {}),
+    );
+  }
+
+  // coolMicrovmBox drops a DO's channel when its box leaves this stock without
+  // ever reaching a customer.
+  //
+  // Not just tidiness: the box goes back to anonymous pool stock and will be
+  // reissued under a DIFFERENT sandbox id, so a DO still holding a live tunnel
+  // under the OLD id is a channel into a box that now belongs to someone else.
+  // The id stops resolving in D1, which is the real guard, but leaving an armed
+  // channel behind it is not a thing to rely on.
+  private coolMicrovmBox(sandboxID: string): void {
+    const ns = this.env.MICROVM_SESSIONS;
+    if (!ns) return;
+    this.state.waitUntil(
+      ns
+        .get(ns.idFromName(sandboxID), { locationHint: "enam" })
+        .fetch("https://do/detach", { method: "POST" })
+        .then(() => {})
+        .catch(() => {}),
+    );
+  }
+
   private persist(): void {
     // allowUnconfirmed skips the output gate: the claim response leaves ~10ms
     // sooner instead of waiting for the write to be durable. Failure window
@@ -454,7 +510,9 @@ export class PoolStock {
         region: string;
         sandboxDomain: string;
         epoch?: string;
-        boxes: Array<{ sandboxID: string; workerID: string }>;
+        // endpoint/token/port are present only for cells whose backend can be
+        // reached directly (MicroVM); worker-backed cells omit them.
+        boxes: Array<{ sandboxID: string; workerID: string; endpoint?: string; token?: string; port?: number }>;
       };
       // Epoch fence. A cell that stamps an epoch is telling us its edge
       // reservations live in that process's memory, not in Postgres — so when
@@ -490,8 +548,14 @@ export class PoolStock {
           region: data.region,
           sandboxDomain: data.sandboxDomain,
           atMs: now,
+          endpoint: b.endpoint,
+          token: b.token,
+          port: b.port,
         });
         added++;
+        // Open and guest-attach this box's agent tunnel NOW, while it is still
+        // stock and nobody is waiting on it.
+        this.warmMicrovmBox(b);
         // Pre-wake the box's VmSession DO now (stock-prep), off any hot path, so
         // the create burst doesn't fan out ~100 prewake subrequests from the
         // create isolate. The alarm (prewakeStock) keeps it warm while it sits.
@@ -506,6 +570,9 @@ export class PoolStock {
   }
 
   private async release(entries: StockEntry[]): Promise<void> {
+    // Tear down any agent tunnel first — this box is about to be reissued under
+    // a different sandbox id. See coolMicrovmBox.
+    for (const e of entries) if (e.endpoint) this.coolMicrovmBox(e.id);
     // Group by cell (entries could straddle a base_url change).
     const byCell = new Map<string, { cellID: string; ids: string[] }>();
     for (const e of entries) {
