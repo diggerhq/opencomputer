@@ -268,6 +268,125 @@ const webhookSchema = z.object({
 const webhooksResponseSchema = z.object({ webhooks: z.array(webhookSchema) })
 const webhookResponseSchema = z.object({ webhook: webhookSchema })
 
+const githubEnvironmentNameSchema = z.enum(['development', 'production'])
+const githubScopeModeSchema = z.enum(['all', 'selected'])
+const githubAppModeSchema = z.enum(['oc_app', 'dedicated'])
+
+const githubAttachedAppSchema = z.object({
+  id: z.string(),
+  mode: githubAppModeSchema,
+  slug: z.string(),
+  name: z.string(),
+  githubAppId: z.number(),
+  webhookConfigured: z.boolean(),
+  status: z.string(),
+})
+
+const githubAppSchema = z.object({
+  id: z.string(),
+  mode: githubAppModeSchema,
+  slug: z.string(),
+  name: z.string(),
+  htmlUrl: z.string().optional(),
+  permissions: z.record(z.string(), z.string()),
+  events: z.array(z.string()),
+  webhookConfigured: z.boolean(),
+  status: z.string(),
+})
+
+const githubAttachedInstallationSchema = z.object({
+  id: z.string(),
+  githubInstallationId: z.number(),
+  accountLogin: z.string(),
+  accountType: z.string(),
+  repositorySelection: z.string(),
+  status: z.string(),
+})
+
+const githubInstallationSchema = z.object({
+  id: z.string(),
+  accountLogin: z.string(),
+  accountType: z.string(),
+  repositorySelection: z.string(),
+  status: z.string(),
+  app: z
+    .object({
+      id: z.string(),
+      mode: githubAppModeSchema,
+      slug: z.string(),
+      name: z.string(),
+    })
+    .nullish(),
+})
+
+const githubEnvironmentSchema = z.object({
+  environment: githubEnvironmentNameSchema,
+  state: z.enum([
+    'not_connected',
+    'connected',
+    'auth_required',
+    'app_suspended',
+    'app_deleted',
+  ]),
+  app: githubAttachedAppSchema.optional(),
+  installation: githubAttachedInstallationSchema.optional(),
+  scopeMode: githubScopeModeSchema.optional(),
+  selectedRepositoryCount: z.number().optional(),
+})
+
+const githubStatusSchema = z.object({
+  environments: z.array(githubEnvironmentSchema),
+  installations: z.array(githubInstallationSchema),
+  apps: z.array(githubAppSchema),
+  ocAppAvailable: z.boolean(),
+})
+
+// Attaching an existing installation resolves immediately (fresh environment
+// states); a new OC-app install hands back the GitHub URL to finish in.
+const githubConnectResponseSchema = z.union([
+  z.object({ installUrl: z.string() }),
+  z.object({ environments: z.array(githubEnvironmentSchema) }),
+])
+
+const githubEnvironmentsResponseSchema = z.object({
+  environments: z.array(githubEnvironmentSchema),
+})
+
+const githubManifestResponseSchema = z.object({
+  action: z.string(),
+  manifest: z.record(z.string(), z.unknown()),
+})
+
+const githubSelectedRepositorySchema = z.object({
+  repoId: z.number(),
+  fullName: z.string(),
+  granted: z.boolean(),
+})
+
+const githubGrantRepositorySchema = z.object({
+  repoId: z.number(),
+  fullName: z.string(),
+  private: z.boolean(),
+  defaultBranch: z.string().optional(),
+})
+
+const githubRepositoriesSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not_connected') }),
+  z.object({
+    state: z.literal('unavailable'),
+    scopeMode: githubScopeModeSchema,
+    selected: z.array(githubSelectedRepositorySchema),
+  }),
+  z.object({
+    state: z.literal('connected'),
+    scopeMode: githubScopeModeSchema,
+    truncated: z.boolean(),
+    grant: z.array(githubGrantRepositorySchema),
+    selected: z.array(githubSelectedRepositorySchema),
+    unavailableSelected: z.array(z.number()),
+  }),
+])
+
 const slackManifestResponseSchema = z.object({
   connection: channelSchema,
   manifest: z.record(z.string(), z.unknown()),
@@ -377,6 +496,19 @@ export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
+export type ProjectGithubStatus = z.infer<typeof githubStatusSchema>
+export type ProjectGithubEnvironment = z.infer<typeof githubEnvironmentSchema>
+export type ProjectGithubApp = z.infer<typeof githubAppSchema>
+export type ProjectGithubAttachedApp = z.infer<typeof githubAttachedAppSchema>
+export type ProjectGithubInstallation = z.infer<typeof githubInstallationSchema>
+export type ProjectGithubManifest = z.infer<typeof githubManifestResponseSchema>
+export type ProjectGithubRepositories = z.infer<typeof githubRepositoriesSchema>
+export type ProjectGithubGrantRepository = z.infer<
+  typeof githubGrantRepositorySchema
+>
+export type ProjectGithubSelectedRepository = z.infer<
+  typeof githubSelectedRepositorySchema
+>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -691,6 +823,128 @@ export async function deleteManagedAgentWebhook(
 ) {
   return apiFetch<void>(
     `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(webhookId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function getProjectGithub(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github`,
+    undefined,
+    githubStatusSchema,
+  )
+}
+
+export async function connectProjectGithub(input: {
+  projectId: string
+  environments: Array<'development' | 'production'>
+  installationId?: string
+  scopeMode?: 'all' | 'selected'
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        environments: input.environments,
+        ...(input.installationId
+          ? { installationId: input.installationId }
+          : {}),
+        ...(input.scopeMode ? { scopeMode: input.scopeMode } : {}),
+      }),
+    },
+    githubConnectResponseSchema,
+  )
+}
+
+export async function createProjectGithubManifest(input: {
+  projectId: string
+  environments: Array<'development' | 'production'>
+  organization?: string
+  scopeMode?: 'all' | 'selected'
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/manifest`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        environments: input.environments,
+        ...(input.organization ? { organization: input.organization } : {}),
+        ...(input.scopeMode ? { scopeMode: input.scopeMode } : {}),
+      }),
+    },
+    githubManifestResponseSchema,
+  )
+}
+
+export async function getProjectGithubRepositories(
+  projectId: string,
+  environment: 'development' | 'production',
+) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github/repositories?environment=${encodeURIComponent(environment)}`,
+    undefined,
+    githubRepositoriesSchema,
+  )
+}
+
+export async function putProjectGithubRepositories(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  mode: 'all' | 'selected'
+  repositories?: Array<{ repoId: number; fullName: string }>
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/repositories?environment=${encodeURIComponent(input.environment)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        mode: input.mode,
+        ...(input.repositories ? { repositories: input.repositories } : {}),
+      }),
+    },
+    githubEnvironmentsResponseSchema,
+  )
+}
+
+export async function detachProjectGithub(
+  projectId: string,
+  environment: 'development' | 'production',
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github?environment=${encodeURIComponent(environment)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function setProjectGithubAppWebhookSecret(
+  projectId: string,
+  appRef: string,
+  secret: string,
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github/apps/${encodeURIComponent(appRef)}/webhook-secret`,
+    { method: 'POST', body: JSON.stringify({ secret }) },
+  )
+}
+
+export async function setProjectGithubAppPrivateKey(
+  projectId: string,
+  appRef: string,
+  pem: string,
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github/apps/${encodeURIComponent(appRef)}/private-key`,
+    { method: 'POST', body: JSON.stringify({ pem }) },
+  )
+}
+
+export async function deleteProjectGithubApp(
+  projectId: string,
+  appRef: string,
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github/apps/${encodeURIComponent(appRef)}`,
     { method: 'DELETE' },
   )
 }
