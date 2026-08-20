@@ -6,7 +6,7 @@ Create a hello-world OpenComputer application:
 npm create @opencomputer/start@latest my-agent
 cd my-agent
 npm install
-npx opencomputer login
+npx --package @opencomputer/cli opencomputer login
 npm run dev
 ```
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
@@ -33,6 +34,82 @@ describe("managed agents proxy", () => {
       user_id: "user_test",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("forwards webhook text and payload without requiring a user API key", async () => {
+    const fetchSpy = vi.fn(
+      async (_target: URL | RequestInfo, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer webhook-secret",
+        );
+        expect(new Headers(init?.headers).get("idempotency-key")).toBe(
+          "delivery-1",
+        );
+        expect(await new Response(init?.body).json()).toEqual({
+          text: "Run the review",
+          payload: { mode: "hygiene", repository: "acme/api" },
+        });
+        return Response.json({
+          request: {
+            id: "whr_request",
+            webhookId: "wh_0123456789abcdef0123456789abcdef",
+            projectId: "prj_test",
+            environment: "development",
+            agentId: "reviewer",
+            sessionId: "session_test",
+            outcome: "accepted",
+            createdAt: "2026-08-18T00:00:00.000Z",
+            updatedAt: "2026-08-18T00:00:01.000Z",
+            internal: "private",
+          },
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer webhook-secret",
+            "content-type": "application/json",
+            "idempotency-key": "delivery-1",
+          },
+          body: JSON.stringify({
+            text: "Run the review",
+            payload: { mode: "hygiene", repository: "acme/api" },
+          }),
+        },
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+
+    expect(response.status).toBe(202);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = await response.json();
+    expect(body).toMatchObject({
+      request: { sessionId: "session_test", outcome: "accepted" },
+      duplicate: false,
+      sessionUrl:
+        "https://app.opencomputer.dev/projects/prj_test/sessions/session_test?agent=reviewer&environment=development",
+    });
+    expect(JSON.stringify(body)).not.toContain("internal");
+  });
+
+  it("rejects webhook calls without bearer credentials", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef",
+        { method: "POST", body: "{}" },
+      ),
+      {},
+    );
+    expect(response.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("does not consume a channel connection grant on link preview", async () => {
@@ -387,6 +464,205 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("lists one environment's outboxes without private delivery details", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      Response.json({
+        agentId: "reviewer-agent",
+        environment: "development",
+        deploymentId: "reviewer-agent:digest",
+        accountId: "private_org",
+        outboxes: [
+          {
+            id: "review-requests",
+            channelId: "team-slack",
+            channelName: "Team Slack",
+            destination: "pull-request-reviews",
+            readiness: "ready",
+            targetDisplayName: "#pull-request-reviews",
+            connectionId: "private_connection",
+            items: [
+              {
+                id: "outbox_item",
+                outboxId: "review-requests",
+                eventType: "pull-request.ready",
+                sessionId: "session_public",
+                contentPreview: {
+                  title: "Pull request ready",
+                  body: "Please review it.",
+                  url: "https://example.com/pull/42",
+                  secret: "private",
+                },
+                status: "failed",
+                attemptCount: 1,
+                error: "Slack chat.postMessage failed: internal_detail",
+                createdAt: "2026-08-15T00:00:00.000Z",
+                updatedAt: "2026-08-15T00:01:00.000Z",
+                externalMessageId: "private_message",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/outboxes?agentId=reviewer-agent&environment=development",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        href: "https://managedagents.test/v1/outboxes?agentId=reviewer-agent&environment=development",
+      }),
+      expect.anything(),
+    );
+    expect(await response.json()).toEqual({
+      agentId: "reviewer-agent",
+      environment: "development",
+      deploymentId: "reviewer-agent:digest",
+      outboxes: [
+        {
+          id: "review-requests",
+          channelId: "team-slack",
+          channelName: "Team Slack",
+          destination: "pull-request-reviews",
+          readiness: "ready",
+          targetDisplayName: "#pull-request-reviews",
+          items: [
+            {
+              id: "outbox_item",
+              outboxId: "review-requests",
+              eventType: "pull-request.ready",
+              sessionId: "session_public",
+              contentPreview: {
+                title: "Pull request ready",
+                body: "Please review it.",
+                url: "https://example.com/pull/42",
+              },
+              status: "failed",
+              attemptCount: 1,
+              error: "Delivery failed.",
+              createdAt: "2026-08-15T00:00:00.000Z",
+              updatedAt: "2026-08-15T00:01:00.000Z",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("lists schedules and exposes only a public run failure", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          accountId: "private_org",
+          schedules: [
+            {
+              id: "weekday-hygiene",
+              projectId: "prj_test",
+              environment: "development",
+              agentId: "hygiene-agent",
+              deploymentId: "hygiene-agent:digest",
+              cron: "0 9 * * 1-5",
+              timezone: "America/Los_Angeles",
+              overlap: "skip",
+              dispatch: { text: "Review flags", payload: { mode: "async" } },
+              nextRunAt: "2026-08-17T16:00:00.000Z",
+              status: "manual",
+              userId: "private_user",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            run: {
+              id: "run_test",
+              scheduleId: "weekday-hygiene",
+              projectId: "prj_test",
+              environment: "development",
+              deploymentId: "hygiene-agent:digest",
+              scheduledAt: "2026-08-16T20:00:00.000Z",
+              manual: true,
+              attempt: 1,
+              outcome: "failed",
+              error: "Runtime secret and topology details",
+              createdAt: "2026-08-16T20:00:00.000Z",
+            },
+          },
+          { status: 201 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const schedules = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/schedules?projectId=prj_test&agentId=hygiene-agent&environment=development",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(await schedules.json()).toEqual({
+      schedules: [
+        {
+          id: "weekday-hygiene",
+          projectId: "prj_test",
+          environment: "development",
+          agentId: "hygiene-agent",
+          deploymentId: "hygiene-agent:digest",
+          cron: "0 9 * * 1-5",
+          timezone: "America/Los_Angeles",
+          overlap: "skip",
+          dispatch: { text: "Review flags", payload: { mode: "async" } },
+          nextRunAt: "2026-08-17T16:00:00.000Z",
+          status: "manual",
+        },
+      ],
+    });
+
+    const run = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/schedules/weekday-hygiene/run?projectId=prj_test&agentId=hygiene-agent&environment=development",
+        { method: "POST" },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(run.status).toBe(201);
+    expect(await run.json()).toEqual({
+      run: {
+        id: "run_test",
+        scheduleId: "weekday-hygiene",
+        projectId: "prj_test",
+        environment: "development",
+        deploymentId: "hygiene-agent:digest",
+        scheduledAt: "2026-08-16T20:00:00.000Z",
+        manual: true,
+        attempt: 1,
+        outcome: "failed",
+        error: "The scheduled run could not be started.",
+        createdAt: "2026-08-16T20:00:00.000Z",
+      },
+    });
+  });
+
   it("returns a public per-agent Slack manifest", async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       Response.json({
@@ -456,6 +732,49 @@ describe("managed agents proxy", () => {
       },
       createUrl: "https://api.slack.com/apps",
       steps: ["Create the app"],
+    });
+  });
+
+  it("returns actionable Slack destination verification errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "destination_verification_failed",
+              message: "Slack conversations.info failed: channel_not_found",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channels/slack/connections/channel_slack/destinations/pull-request-reviews",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ conversationId: "C012ABCDEF" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "destination_verification_failed",
+        message:
+          "Slack could not find that conversation. Check its ID and invite the app first.",
+      },
     });
   });
 
@@ -675,6 +994,48 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("forwards runtime variable metadata without returning its value", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        name: "DATABASE_URL",
+        value: "postgres://must-not-leak",
+        projectId: "prj_1",
+        environment: "production",
+        createdAt: "2026-08-18T00:00:00.000Z",
+        updatedAt: "2026-08-18T00:00:00.000Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/runtime-variables/DATABASE_URL",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            value: "postgres://must-not-leak",
+            environment: "production",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      name: "DATABASE_URL",
+      environment: "production",
+    });
+    expect(JSON.stringify(body)).not.toContain("postgres://must-not-leak");
+  });
+
   it("forwards redacted reactive render snapshots for the debug playground", async () => {
     vi.stubGlobal(
       "fetch",
@@ -724,7 +1085,9 @@ describe("managed agents proxy", () => {
       ],
     });
     expect(JSON.stringify(body)).not.toContain("never-return-this");
-    expect(JSON.stringify(body)).not.toContain("You are an OpenComputer agent.");
+    expect(JSON.stringify(body)).not.toContain(
+      "You are an OpenComputer agent.",
+    );
     expect(JSON.stringify(body)).not.toContain("platformInstructions");
   });
 
@@ -764,6 +1127,50 @@ describe("managed agents proxy", () => {
       "The agent service is temporarily unavailable.",
     );
     expect(JSON.stringify(body)).not.toMatch(/blue|lambda|microvm/i);
+  });
+
+  it("forwards explicit running-session input modes", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json(
+        { turnId: "turn-2", status: "running", duplicate: false },
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: "focus on the failing test",
+            mode: "steer",
+            idempotencyKey: "admission-1",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(202);
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(await new Response(init.body).json()).toMatchObject({
+      input: "focus on the failing test",
+      mode: "steer",
+      idempotencyKey: "admission-1",
+    });
+    expect(await response.json()).toEqual({
+      turnId: "turn-2",
+      status: "running",
+      duplicate: false,
+    });
   });
 
   it("removes backend artifact and runtime fields from successful responses", async () => {

@@ -53,6 +53,7 @@ import * as templates from "./templates";
 import * as webhooks from "./webhooks";
 import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
+  handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -252,11 +253,35 @@ function hmacSignKey(secret: string): Promise<CryptoKey> {
   return key;
 }
 
-// NOTE: the sandbox-scoped JWT that the create response carries is now minted in
-// the PoolStock DO (mintSandboxTokenDO), once per batch rather than once per
-// create — see the magazine below. It stays byte-compatible with Go's
-// auth.IssueSandboxToken (same secret, iss="opensandbox", same claim names, 24h
-// TTL), so cells/workers validate it identically.
+// Mint the sandbox-scoped JWT the create response carries (direct worker
+// access: exec WS, PTY, files). Byte-compatible with Go's
+// auth.IssueSandboxToken — same shared secret, iss="opensandbox", same claim
+// names — so cells/workers validate edge-minted tokens identically to
+// CP-minted ones. 24h TTL mirrors the CP.
+async function mintSandboxToken(
+  secret: string,
+  orgID: string,
+  sandboxID: string,
+  workerID: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload = {
+    sub: orgID,
+    iat: now,
+    exp: now + 24 * 3600,
+    iss: "opensandbox",
+    org_id: orgID,
+    sandbox_id: sandboxID,
+    worker_id: workerID,
+  };
+  const signingInput =
+    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const key = await hmacSignKey(secret);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
 
 interface Caller {
   orgID: string;
@@ -349,20 +374,8 @@ interface AuthEntry {
   expiresAt: number | null;
   cachedAtMs: number;
   lastBumpMs: number;
-  // SHA-256 of the key, carried so a cache HIT never has to recompute it
-  // (bumpLastUsed + the colo tier are keyed by hash).
-  hash: string;
 }
-// Keyed by the RAW api key, not its hash: hashing costs a crypto.subtle SHA-256
-// plus a 32-byte hex encode on EVERY request, and at burst-100 that CPU
-// serializes on the isolate's single JS thread — pure overhead when the answer
-// is already cached. The raw key is per-isolate memory only (it arrived in this
-// request's header); the SHARED colo tier stays hash-keyed, so a key is never
-// persisted in plaintext.
 const authCache = new Map<string, AuthEntry>();
-// In-flight auth misses, keyed by raw api key — single-flights concurrent cold
-// lookups so a burst doesn't fan out N identical colo/D1 reads (see authenticate).
-const authInflight = new Map<string, Promise<Caller | null>>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
 // The create concurrency cap counts running sandboxes from the global
 // sandboxes_index — a per-create D1 read. That index already trails events, so
@@ -453,43 +466,17 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   ) {
     return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
   }
-  const nowMs = Date.now();
-  const nowSec = Math.floor(nowMs / 1000);
-
-  // Warm path: one Map lookup, ZERO crypto. (The hash is only needed on a miss.)
-  const cached = authCache.get(apiKey);
-  if (cached && nowMs - cached.cachedAtMs < AUTH_TTL_MS) {
-    if (cached.expiresAt && cached.expiresAt < nowSec) return null;
-    bumpLastUsed(env, cached.hash, cached, nowMs);
-    return cached.caller;
-  }
-
-  // Single-flight the cold miss: a burst-100 of a fresh (uncached) key otherwise
-  // fires ~100 identical SHA-256s + colo-gets + api_keys D1 reads from this one
-  // isolate, piling onto the concurrent-subrequest fan-out that gates burst
-  // creates. Coalesce by key so only the leader hashes and touches colo/D1; the
-  // rest await it. Deleted on settle, so a revoked key still re-checks within
-  // AUTH_TTL_MS.
-  let inflight = authInflight.get(apiKey);
-  if (!inflight) {
-    inflight = resolveAuthMiss(env, apiKey);
-    authInflight.set(apiKey, inflight);
-    void inflight.finally(() => {
-      if (authInflight.get(apiKey) === inflight) authInflight.delete(apiKey);
-    });
-  }
-  return inflight;
-}
-
-// resolveAuthMiss is the (coalesced) cold path for authenticate(): hash → colo
-// tier → D1 → populate both caches. Kept separate so authenticate() can
-// single-flight it per key, and so the SHA-256 is paid ONCE per miss instead of
-// once per request. Negatives are never cached (a freshly-created key must work
-// at once).
-async function resolveAuthMiss(env: Env, apiKey: string): Promise<Caller | null> {
   const hash = await hashAPIKey(apiKey);
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
+
+  const cached = authCache.get(hash);
+  if (cached && nowMs - cached.cachedAtMs < AUTH_TTL_MS) {
+    if (cached.expiresAt && cached.expiresAt < nowSec) return null;
+    bumpLastUsed(env, hash, cached, nowMs);
+    return cached.caller;
+  }
+
   // Colo tier: a fresh box's sub-ops usually land on isolates that never saw
   // this key. cachedAtMs travels with the entry so the total staleness bound
   // (revocation lag) stays AUTH_TTL_MS, not colo-TTL + isolate-TTL stacked.
@@ -497,8 +484,8 @@ async function resolveAuthMiss(env: Env, apiKey: string): Promise<Caller | null>
   if (shared && nowMs - shared.cachedAtMs < AUTH_TTL_MS) {
     if (shared.expiresAt && shared.expiresAt < nowSec) return null;
     if (authCache.size >= CACHE_MAX) authCache.clear();
-    const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0, hash };
-    authCache.set(apiKey, entry);
+    const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0 };
+    authCache.set(hash, entry);
     bumpLastUsed(env, hash, entry, nowMs);
     return shared.caller;
   }
@@ -513,8 +500,8 @@ async function resolveAuthMiss(env: Env, apiKey: string): Promise<Caller | null>
 
   const caller: Caller = { orgID: row.org_id, userID: row.created_by };
   if (authCache.size >= CACHE_MAX) authCache.clear();
-  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0, hash };
-  authCache.set(apiKey, entry);
+  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
+  authCache.set(hash, entry);
   await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
   bumpLastUsed(env, hash, entry, nowMs);
   return caller;
@@ -553,53 +540,13 @@ async function listActiveCells(env: Env): Promise<CellRow[]> {
   return cells;
 }
 
-// In-flight create-context loads, keyed by org — single-flights concurrent cold
-// loads so a burst-100 for one org does ONE org/count/cells load instead of 100
-// (see loadCreateContext).
-const createCtxInflight = new Map<
-  string,
-  Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }>
->();
-
-// loadCreateContext is a thin coalescing wrapper over loadCreateContextCold: a
-// fully-warm isolate returns immediately (no map churn); otherwise concurrent
-// cold loads for the same org share one in-flight load. The concurrency-count
-// snapshot is shared across the coalesced creates — no weaker than the existing
-// gate, which already reads low under burst (the sandboxes_index count trails
-// create events), so a same-instant burst overshoots identically today.
-async function loadCreateContext(
-  env: Env,
-  orgID: string,
-  ctx?: ExecutionContext,
-): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }> {
-  const nowMs = Date.now();
-  const oc = orgPolicyCache.get(orgID);
-  const cc = concurrencyCountCache.get(orgID);
-  if (
-    oc !== undefined && nowMs - oc.cachedAtMs < ORG_POLICY_TTL_MS &&
-    cc !== undefined && nowMs - cc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS &&
-    activeCellsCache !== null && nowMs - activeCellsCache.cachedAtMs < CELL_TTL_MS
-  ) {
-    return { org: oc.policy, activeCount: cc.count, cells: activeCellsCache.cells };
-  }
-  let inflight = createCtxInflight.get(orgID);
-  if (!inflight) {
-    inflight = loadCreateContextCold(env, orgID, ctx);
-    createCtxInflight.set(orgID, inflight);
-    void inflight.finally(() => {
-      if (createCtxInflight.get(orgID) === inflight) createCtxInflight.delete(orgID);
-    });
-  }
-  return inflight;
-}
-
-// loadCreateContextCold fetches the three org-keyed reads the create hot path
-// needs — org policy, running-sandbox count, active-cells list — in a SINGLE D1
-// round trip via db.batch(), instead of three sequential awaits. Under a cold
-// burst (fresh isolates, caches empty) that collapses ~3×D1-latency into one.
-// Each piece still honours + populates its existing per-isolate cache, so warm/
+// loadCreateContext fetches the three org-keyed reads the create hot path needs
+// — org policy, running-sandbox count, active-cells list — in a SINGLE D1 round
+// trip via db.batch(), instead of three sequential awaits. Under a cold burst
+// (fresh isolates, caches empty) that collapses ~3×D1-latency into one. Each
+// piece still honours + populates its existing per-isolate cache, so warm/
 // sustained traffic skips D1 entirely and only the cold misses are batched.
-async function loadCreateContextCold(
+async function loadCreateContext(
   env: Env,
   orgID: string,
   ctx?: ExecutionContext,
@@ -1502,6 +1449,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       // the pre-sharding DO (holding the fleet's stock at cutover) drains as a
       // first-class shard instead of hoarding reservations until TTL. One empty
       // shard (404) gets one retry on a different shard before the CP fallback.
+      const claimBody = JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } });
       mark("cap");
       // One DO pop. The token was minted in the DO when it filled its stock, so
       // a hit costs one subrequest and no crypto on this isolate.
@@ -1559,13 +1507,17 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
           workerID: box.workerID,
         };
         if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
-        // NOTE: the VmSession pre-wake was MOVED off this create hot path to
-        // stock-prep (pool_stock.ts reserveOnce). At burst-100 the per-create
-        // prewake fanned out ~100 DO /status subrequests from the create
-        // isolate, saturating its subrequest budget — create p100 549ms at
-        // 100-way vs ~140ms at 30-way. Warming at reserve keeps the DO hot for
-        // the common case; a box that re-hibernates before claim wakes on the
-        // host dial / first exec as before.
+        // Pre-wake the box's VmSession OFF the response path: the DO hibernated
+        // after the manufacture dial, and its isolate wake (~180ms, measured via
+        // do−doin) otherwise lands on the customer's first exec. waitUntil runs
+        // after the 201 is sent, so unlike the reverted inline /status verify
+        // this cannot tax create latency.
+        ctx.waitUntil(
+          env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(box.id))
+            .fetch("https://do/status")
+            .then(() => {})
+            .catch(() => {}),
+        );
         // Finalize off the create isolate: enqueue a tiny message (one cheap
         // send) instead of running the CP fetch + D1 insert here. ~100 inline
         // finalizes otherwise accumulate on the isolate and stall the burst (dev
@@ -4213,6 +4165,9 @@ export default {
     // assertion before calling the private deployment backend.
     if (path.startsWith("/api/managed-agents/channel-connections/")) {
       return handleManagedAgentChannelConnection(req, env);
+    }
+    if (path.startsWith("/api/agent-webhooks/")) {
+      return handleAgentWebhookInvocation(req, env);
     }
     if (
       path === "/api/managed-agents" ||

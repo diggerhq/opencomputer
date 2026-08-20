@@ -1,4 +1,5 @@
 import type { ResolvedConfig } from "./config.js";
+import type { ProjectResourceManifest } from "./project.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -34,6 +35,8 @@ export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
   alias: string;
+  projectDeploymentId?: string;
+  localAgentId?: string;
   createdAt: string;
 }
 
@@ -52,6 +55,29 @@ export interface ManagedSecretMetadata {
   allowedOrigins: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentRuntimeVariableMetadata {
+  name: string;
+  projectId: string;
+  environment: "development" | "production";
+  agentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedAgentWebhook {
+  id: string;
+  projectId: string;
+  environment: "development" | "production";
+  agentId: string;
+  name: string;
+  enabled: boolean;
+  invocationUrl: string;
+  token?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastInvokedAt?: string;
 }
 
 export interface ManagedAgentLog {
@@ -259,6 +285,123 @@ export class OpenComputerClient {
     );
   }
 
+  async runtimeVariables(input: {
+    projectId: string;
+    environment?: "development" | "production";
+    agentId?: string;
+  }): Promise<AgentRuntimeVariableMetadata[]> {
+    const query = new URLSearchParams();
+    if (input.environment) query.set("environment", input.environment);
+    if (input.agentId) query.set("agentId", input.agentId);
+    const suffix = query.size ? `?${query.toString()}` : "";
+    const result = await this.request<{
+      variables: AgentRuntimeVariableMetadata[];
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables${suffix}`,
+    );
+    return result.variables;
+  }
+
+  putRuntimeVariable(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    return this.request<AgentRuntimeVariableMetadata>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          value: input.value,
+          environment: input.environment,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+        }),
+      },
+    );
+  }
+
+  deleteRuntimeVariable(input: {
+    projectId: string;
+    name: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    const query = new URLSearchParams({ environment: input.environment });
+    if (input.agentId) query.set("agentId", input.agentId);
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}?${query.toString()}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async webhooks(input: {
+    projectId: string;
+    environment?: "development" | "production";
+    agentId?: string;
+  }): Promise<ManagedAgentWebhook[]> {
+    const query = new URLSearchParams();
+    if (input.environment) query.set("environment", input.environment);
+    if (input.agentId) query.set("agentId", input.agentId);
+    const suffix = query.size ? `?${query.toString()}` : "";
+    const result = await this.request<{ webhooks: ManagedAgentWebhook[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks${suffix}`,
+    );
+    return result.webhooks;
+  }
+
+  createWebhook(input: {
+    projectId: string;
+    name: string;
+    environment: "development" | "production";
+    agentId: string;
+  }) {
+    return this.request<{ webhook: ManagedAgentWebhook }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: input.name,
+          environment: input.environment,
+          agentId: input.agentId,
+        }),
+      },
+    ).then((result) => result.webhook);
+  }
+
+  updateWebhook(input: {
+    projectId: string;
+    webhookId: string;
+    name?: string;
+    enabled?: boolean;
+  }) {
+    return this.request<{ webhook: ManagedAgentWebhook }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        }),
+      },
+    ).then((result) => result.webhook);
+  }
+
+  rotateWebhookToken(input: { projectId: string; webhookId: string }) {
+    return this.request<{ webhook: ManagedAgentWebhook }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}/rotate-token`,
+      { method: "POST" },
+    ).then((result) => result.webhook);
+  }
+
+  deleteWebhook(input: { projectId: string; webhookId: string }) {
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
+      { method: "DELETE" },
+    );
+  }
+
   logs(input: {
     agentId?: string;
     sessionId?: string;
@@ -300,6 +443,17 @@ export class OpenComputerClient {
       pathPrefix?: string;
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
+    projectDeployment?: {
+      id: string;
+      digest: string;
+      localAgentId: string;
+      agents: Array<{
+        localId: string;
+        agentId: string;
+        artifactDigest: string;
+      }>;
+      resources: ProjectResourceManifest;
+    };
     source: {
       digest: string;
       size: number;

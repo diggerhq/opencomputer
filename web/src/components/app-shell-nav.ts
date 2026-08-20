@@ -10,6 +10,7 @@ import {
   Package,
   Radio,
   Rocket,
+  Send,
   Webhook,
   type LucideIcon,
 } from 'lucide-react'
@@ -66,9 +67,19 @@ export function managedAgentsNav(options: {
             icon: Radio,
           },
           {
+            to: `${projectPath}/outboxes`,
+            label: 'Outboxes',
+            icon: Send,
+          },
+          {
             to: `${projectPath}/schedules`,
             label: 'Schedules',
             icon: CalendarClock,
+          },
+          {
+            to: `${projectPath}/webhooks`,
+            label: 'Webhooks',
+            icon: Webhook,
           },
           {
             to: `${projectPath}/secrets`,

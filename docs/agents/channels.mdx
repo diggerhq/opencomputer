@@ -1,0 +1,118 @@
+---
+title: "Slack channels"
+description: "Declare Slack capabilities in code and connect them per environment"
+---
+
+Channels connect a project to a messaging provider. The channel definition is
+code-owned; provider credentials and Slack conversation IDs are configured in
+the dashboard for each environment.
+
+The current channel provider is Slack.
+
+## Define a Slack channel
+
+Create a project-level channel under `opencomputer/channels/`:
+
+```tsx opencomputer/channels/team-slack.ts
+import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "team-slack",
+  type: "slack",
+  displayName: "Engineering Slack",
+  scopes: {
+    bot: ["app_mentions:read", "channels:read", "chat:write"],
+  },
+  events: ["app_mention"],
+  destinations: {
+    "pull-request-reviews": {
+      type: "conversation",
+      visibility: "public",
+    },
+  },
+  routing: {
+    whenAmbiguous: "ask",
+  },
+});
+```
+
+The filename must match the channel `id`. A channel owns:
+
+- the Slack bot scopes requested by its generated app manifest;
+- the Slack events the app subscribes to;
+- stable destination names used by outboxes; and
+- the routing policy used when several agents can receive the same event.
+
+Slack workspace IDs, conversation IDs, bot tokens, and signing secrets do not
+belong in source.
+
+## Register an agent for inbound messages
+
+A channel does not name an agent. An agent opts into inbound events with a
+registration under its own directory:
+
+```tsx opencomputer/agents/reviewer/channels/team-slack.ts
+import { registerChannel } from "@opencomputer/agent";
+import teamSlack from "../../../channels/team-slack.js";
+
+export default registerChannel(teamSlack, {
+  on: ["mention"],
+});
+```
+
+`mention` requires the channel to declare the `app_mention` event and the
+`app_mentions:read` scope. `direct-message` requires `message.im` and
+`im:history`.
+
+Several agents may register the same channel. An existing Slack thread stays
+with its selected agent. If a new thread has several eligible agents,
+OpenComputer asks the user which agent should handle it instead of guessing.
+
+## Connect Slack
+
+After the deployment is synchronized:
+
+1. Open the project in the dashboard.
+2. Select **Development** or **Production**.
+3. Open **Channels** and choose **Connect Slack**.
+4. Create or update the Slack app from the generated manifest.
+5. Install the app to the intended Slack workspace.
+6. Enter the installed app credentials when prompted.
+7. Invite the app to each Slack conversation it will use.
+8. Bind each code-defined destination to that conversation's Slack ID and
+   verify it.
+
+For a public destination, include `channels:read` and `chat:write`. For a
+private destination, include `groups:read` and `chat:write`. The app must be a
+member of the selected conversation. OpenComputer does not request
+`chat:write.public` automatically.
+
+Adding a scope in code changes the generated manifest. Update and reinstall
+the Slack app so its granted scopes satisfy the current deployment.
+
+## Environment isolation
+
+Development and Production never share Slack credentials, destination
+bindings, thread routing, or delivery history. Connecting a Slack app in one
+environment does not connect it in the other.
+
+The same stable destination name can therefore map independently:
+
+```text
+Development: pull-request-reviews -> #agent-tests
+Production:  pull-request-reviews -> #pull-request-reviews
+```
+
+Slack delivery uses the stored conversation ID. Renaming the conversation does
+not change the route, although its display label may refresh later.
+
+## Current limits
+
+- Slack is the only channel provider.
+- Destination binding currently uses a Slack conversation ID.
+- Direct Slack user mapping and outbound DMs are not available.
+- A registration can receive mentions or direct messages only when the
+  corresponding event and scope are declared.
+
+Use an [outbox](/agents/outboxes) when an agent needs to publish a proactive
+message to a configured Slack destination.

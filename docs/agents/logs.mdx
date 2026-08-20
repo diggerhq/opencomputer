@@ -12,28 +12,28 @@ inspect failures from the project or CLI.
 From an initialized project:
 
 ```bash
-npx opencomputer logs
+npx --package @opencomputer/cli opencomputer logs
 ```
 
 The CLI uses the local project binding and current agent automatically. Follow
 new entries while developing:
 
 ```bash
-npx opencomputer logs --follow
+npx --package @opencomputer/cli opencomputer logs --follow
 ```
 
 ## Filter logs
 
 ```bash
-npx opencomputer logs --agent hello-world --environment development
-npx opencomputer logs --session <session-id>
-npx opencomputer logs --limit 200
+npx --package @opencomputer/cli opencomputer logs --agent hello-world --environment development
+npx --package @opencomputer/cli opencomputer logs --session <session-id>
+npx --package @opencomputer/cli opencomputer logs --limit 200
 ```
 
 Use JSON Lines for scripts and log processors:
 
 ```bash
-npx opencomputer logs --follow --json
+npx --package @opencomputer/cli opencomputer logs --follow --json
 ```
 
 Each entry includes a stable cursor, timestamp, level, source, message, and

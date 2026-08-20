@@ -41,7 +41,11 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
+              "agents/schedules",
+              "agents/webhooks",
               "agents/capabilities",
+              "agents/channels",
+              "agents/outboxes",
               "agents/secrets"
             ]
           },
@@ -61,16 +65,11 @@
           },
           {
             "group": "Test and operate",
-            "pages": [
-              "agents/playground",
-              "agents/logs"
-            ]
+            "pages": ["agents/playground", "agents/logs"]
           },
           {
             "group": "Examples",
-            "pages": [
-              "agents/examples/exa-research-session"
-            ]
+            "pages": ["agents/examples/gtm-engineer"]
           }
         ]
       },
@@ -79,11 +78,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": [
-              "introduction",
-              "quickstart",
-              "how-it-works"
-            ]
+            "pages": ["introduction", "quickstart", "how-it-works"]
           },
           {
             "group": "Sandboxes",
@@ -107,18 +102,14 @@
                 "group": "Usage",
                 "tag": "Preview",
                 "expanded": true,
-                "pages": [
-                  "sandboxes/usage"
-                ]
+                "pages": ["sandboxes/usage"]
               }
             ]
           },
           {
             "group": "Browser Sessions",
             "tag": "Preview",
-            "pages": [
-              "browser-sessions/overview"
-            ]
+            "pages": ["browser-sessions/overview"]
           },
           {
             "group": "Reserved Capacity",
@@ -162,9 +153,7 @@
                 "group": "Usage & Tags",
                 "tag": "Preview",
                 "expanded": true,
-                "pages": [
-                  "reference/typescript-sdk/usage"
-                ]
+                "pages": ["reference/typescript-sdk/usage"]
               },
               "reference/typescript-sdk/exec",
               "reference/typescript-sdk/filesystem",
@@ -336,16 +325,11 @@
           },
           {
             "group": "Resources",
-            "pages": [
-              "troubleshooting"
-            ]
+            "pages": ["troubleshooting"]
           },
           {
             "group": "Self-hosting",
-            "pages": [
-              "self-hosting/overview",
-              "self-hosting/gcp-development"
-            ]
+            "pages": ["self-hosting/overview", "self-hosting/gcp-development"]
           }
         ]
       }
@@ -365,6 +349,12 @@
       }
     }
   },
+  "redirects": [
+    {
+      "source": "/agents/examples/exa-research-session",
+      "destination": "/agents/examples/gtm-engineer"
+    }
+  ],
   "appearance": {
     "default": "light"
   },

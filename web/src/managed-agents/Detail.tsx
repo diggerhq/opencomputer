@@ -9,8 +9,6 @@ import {
   useParams,
   useSearchParams,
 } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import {
   Bot,
   Check,
@@ -21,7 +19,6 @@ import {
   Loader2,
   Plus,
   Send,
-  Square,
   TerminalSquare,
   Wrench,
 } from 'lucide-react'
@@ -41,6 +38,7 @@ import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
+  admitManagedAgentInput,
   displayManagedAgentName,
   getManagedAgentDeployment,
   getManagedAgentDeployments,
@@ -49,6 +47,7 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
+  type ManagedAgentInputMode,
   type ManagedAgentSession,
   type ManagedAgentSummary,
   type ManagedProjectOverview,
@@ -58,15 +57,26 @@ import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
+import {
+  playgroundSessionIdFromSearch,
+  playgroundSessionSearch,
+  sessionsForEnvironment,
+} from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
+import { ManagedAgentOutboxes } from './Outboxes'
+import { ManagedAgentSchedules } from './Schedules'
+import { ManagedAgentWebhooks } from './Webhooks'
+import { AgentMarkdown } from './AgentMarkdown'
 
 type DetailTab =
   | 'playground'
   | 'deployments'
   | 'sessions'
   | 'channels'
+  | 'outboxes'
   | 'schedules'
+  | 'webhooks'
   | 'secrets'
 
 function formatDate(value: string) {
@@ -75,102 +85,6 @@ function formatDate(value: string) {
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
-}
-
-function AgentMarkdown({ children }: { children: string }) {
-  return (
-    <div className="text-sm leading-6">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children, ...props }) => (
-            <h1
-              className="mt-6 mb-3 text-xl font-semibold first:mt-0"
-              {...props}
-            >
-              {children}
-            </h1>
-          ),
-          h2: ({ children, ...props }) => (
-            <h2
-              className="mt-5 mb-2 text-lg font-semibold first:mt-0"
-              {...props}
-            >
-              {children}
-            </h2>
-          ),
-          h3: ({ children, ...props }) => (
-            <h3
-              className="mt-4 mb-2 text-base font-semibold first:mt-0"
-              {...props}
-            >
-              {children}
-            </h3>
-          ),
-          p: (props) => <p className="mb-3 last:mb-0" {...props} />,
-          ul: (props) => (
-            <ul
-              className="mb-3 list-disc space-y-1 pl-5 last:mb-0"
-              {...props}
-            />
-          ),
-          ol: (props) => (
-            <ol
-              className="mb-3 list-decimal space-y-1 pl-5 last:mb-0"
-              {...props}
-            />
-          ),
-          li: (props) => <li className="pl-0.5" {...props} />,
-          blockquote: (props) => (
-            <blockquote
-              className="text-muted-foreground my-3 border-l-2 pl-4 italic"
-              {...props}
-            />
-          ),
-          a: ({ children, ...props }) => (
-            <a
-              className="underline underline-offset-4"
-              target="_blank"
-              rel="noreferrer"
-              {...props}
-            >
-              {children}
-            </a>
-          ),
-          code: (props) => (
-            <code
-              className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]"
-              {...props}
-            />
-          ),
-          pre: (props) => (
-            <pre
-              className="bg-muted my-3 overflow-x-auto rounded-md border p-3 text-xs leading-5 [&_code]:bg-transparent [&_code]:p-0"
-              {...props}
-            />
-          ),
-          hr: (props) => <hr className="my-5" {...props} />,
-          table: (props) => (
-            <div className="my-3 overflow-x-auto rounded-md border">
-              <table
-                className="w-full border-collapse text-left text-xs"
-                {...props}
-              />
-            </div>
-          ),
-          th: (props) => (
-            <th
-              className="bg-muted border-b px-3 py-2 font-medium"
-              {...props}
-            />
-          ),
-          td: (props) => <td className="border-b px-3 py-2" {...props} />,
-        }}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
-  )
 }
 
 function historicalMessages(
@@ -273,14 +187,20 @@ function PlaygroundChat({
   agentId,
   session,
   events,
+  onSessionFinished,
 }: {
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
+  onSessionFinished?: (sessionId: string) => void
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
+  const [inputMode, setInputMode] = useState<ManagedAgentInputMode>('queue')
+  const [admitting, setAdmitting] = useState(false)
+  const [admissionNotice, setAdmissionNotice] = useState<string>()
   const [liveSessionId, setLiveSessionId] = useState(session?.id)
+  const liveSessionIdRef = useRef(session?.id)
   const timelineRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
@@ -293,6 +213,7 @@ function PlaygroundChat({
     () =>
       new ManagedAgentChatTransport(agentId, session?.id, (sessionId) => {
         setLiveSessionId(sessionId)
+        liveSessionIdRef.current = sessionId
       }),
     [agentId, session?.id],
   )
@@ -302,7 +223,7 @@ function PlaygroundChat({
     enabled: Boolean(liveSessionId),
     refetchInterval: 1_000,
   })
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, error } = useChat({
     id: session?.id ?? `new-${agentId}`,
     messages: initialMessages,
     transport,
@@ -310,16 +231,22 @@ function PlaygroundChat({
     onError: (chatError) => notifyError("Couldn't run this agent.", chatError),
     onFinish: () => {
       void queryClient.invalidateQueries({
-        queryKey: ['managed-agent-sessions', agentId],
+        queryKey: ['managed-agent-sessions'],
       })
-      if (liveSessionId) {
+      const completedSessionId = liveSessionIdRef.current
+      if (completedSessionId) {
         void queryClient.invalidateQueries({
-          queryKey: ['managed-agent-session-events', liveSessionId],
+          queryKey: ['managed-agent-session-events', completedSessionId],
         })
+        onSessionFinished?.(completedSessionId)
       }
     },
   })
   const running = status === 'submitted' || status === 'streaming'
+  const agentWorking =
+    running ||
+    session?.status === 'running' ||
+    session?.status === 'waiting_runtime'
 
   useLayoutEffect(() => {
     const timeline = timelineRef.current
@@ -333,9 +260,44 @@ function PlaygroundChat({
 
   const send = () => {
     const input = prompt.trim()
-    if (!input || running) return
+    if (!input || admitting) return
+    if (agentWorking) {
+      const sessionId = liveSessionIdRef.current
+      if (!sessionId) {
+        notifyError(
+          "Couldn't direct this run.",
+          new Error('The durable session has not been created yet.'),
+        )
+        return
+      }
+      setAdmitting(true)
+      setAdmissionNotice(undefined)
+      void admitManagedAgentInput(sessionId, input, inputMode)
+        .then(() => {
+          setPrompt('')
+          setAdmissionNotice(
+            inputMode === 'queue'
+              ? 'Queued after the active work.'
+              : inputMode === 'steer'
+                ? 'Steering will apply at the next safe boundary.'
+                : 'Active work was interrupted and the replacement was admitted.',
+          )
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-sessions'],
+          })
+          void queryClient.invalidateQueries({
+            queryKey: ['managed-agent-session-events', sessionId],
+          })
+        })
+        .catch((admissionError: unknown) =>
+          notifyError("Couldn't direct this run.", admissionError),
+        )
+        .finally(() => setAdmitting(false))
+      return
+    }
     followOutputRef.current = true
     setPrompt('')
+    setAdmissionNotice(undefined)
     void sendMessage({ text: input })
     requestAnimationFrame(() =>
       composerRef.current?.querySelector('textarea')?.focus(),
@@ -354,7 +316,7 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {running ? (
+          {agentWorking ? (
             <div className="text-muted-foreground flex items-center gap-2 text-xs">
               <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
               Agent is working
@@ -430,6 +392,11 @@ function PlaygroundChat({
           {error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
+          {admissionNotice ? (
+            <p className="text-muted-foreground mb-2 text-xs">
+              {admissionNotice}
+            </p>
+          ) : null}
           <div
             ref={composerRef}
             className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
@@ -445,10 +412,36 @@ function PlaygroundChat({
               <p className="text-muted-foreground text-[10px]">
                 Enter to send · Shift + Enter for a new line
               </p>
-              {running ? (
-                <Button variant="outline" size="sm" onClick={() => void stop()}>
-                  <Square className="fill-current" /> Stop
-                </Button>
+              {agentWorking ? (
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Running session input mode"
+                    value={inputMode}
+                    onChange={(event) =>
+                      setInputMode(event.target.value as ManagedAgentInputMode)
+                    }
+                    className="border-input bg-background h-8 rounded-md border px-2 text-xs outline-none"
+                  >
+                    <option value="queue">Queue after current</option>
+                    <option value="steer">Steer active work</option>
+                    <option value="interrupt">Interrupt and replace</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant={
+                      inputMode === 'interrupt' ? 'destructive' : 'default'
+                    }
+                    disabled={!prompt.trim() || admitting}
+                    onClick={send}
+                  >
+                    {admitting ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Send />
+                    )}
+                    {inputMode === 'interrupt' ? 'Interrupt' : 'Send'}
+                  </Button>
+                </div>
               ) : (
                 <Button size="sm" disabled={!prompt.trim()} onClick={send}>
                   <Send /> Send
@@ -486,7 +479,9 @@ export default function ManagedAgentDetail({
     'deployments',
     'sessions',
     'channels',
+    'outboxes',
     'schedules',
+    'webhooks',
     'secrets',
   ])
   const activeTab = project
@@ -498,7 +493,7 @@ export default function ManagedAgentDetail({
     searchParams.get('environment') === 'production'
       ? 'production'
       : 'development'
-  const [selectedPlaygroundId, setSelectedPlaygroundId] = useState<string>()
+  const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
 
   const agents = useQuery({
@@ -545,32 +540,45 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
   })
-  const selectedPlayground = sessions.data?.find(
-    (session) => session.id === selectedPlaygroundId,
-  )
-  const selectedPlaygroundEvents = useQuery({
-    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
-    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
-    enabled: Boolean(selectedPlaygroundId),
-  })
-
-  const environmentSessions = (sessions.data ?? []).filter(
-    (session) =>
-      !projectEnvironment?.activeDeploymentId ||
-      session.deploymentId === projectEnvironment.activeDeploymentId,
-  )
+  const environmentSessions = project
+    ? sessionsForEnvironment(
+        sessions.data ?? [],
+        project.deployments,
+        agentId,
+        environment,
+      )
+    : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
   const externalSessions = environmentSessions.filter(
     (session) => session.source !== 'playground',
   )
-  const activeAliasChannel = (channels.data ?? []).find(
+  const selectedPlayground = playgroundSessions.find(
+    (session) => session.id === requestedPlaygroundId,
+  )
+  const selectedPlaygroundId = selectedPlayground?.id
+  const selectedPlaygroundEvents = useQuery({
+    queryKey: ['managed-agent-session-events', selectedPlaygroundId],
+    queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
+    enabled: Boolean(selectedPlaygroundId),
+  })
+
+  const selectPlaygroundSession = (sessionId?: string) => {
+    void navigate({
+      pathname: location.pathname,
+      search: playgroundSessionSearch(location.search, sessionId),
+    })
+  }
+  const activeAliasChannels = (channels.data ?? []).filter(
     (channel) =>
       channel.agentId === agentId &&
       channel.alias === (activeDeployment.data?.alias ?? agent?.activeAlias) &&
       channel.status !== 'disconnected',
   )
+  const activeAliasChannel = activeAliasChannels[0]
+  const declaredChannels =
+    activeDeployment.data?.projectDeployment?.resources.channels ?? []
 
   const sessionColumns: Column<ManagedAgentSession>[] = [
     {
@@ -640,7 +648,9 @@ export default function ManagedAgentDetail({
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
     { id: 'channels', label: 'Channels' },
+    ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
+    ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
   ]
 
@@ -674,28 +684,31 @@ export default function ManagedAgentDetail({
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
 
-      {project && activeTab === 'playground' ? (
+      {project ? (
         <div className="flex shrink-0 items-center gap-3">
           <label
-            htmlFor="playground-agent"
+            htmlFor="project-agent"
             className="text-muted-foreground text-xs font-medium"
           >
             Agent
           </label>
           <select
-            id="playground-agent"
-            aria-label="Playground agent"
+            id="project-agent"
+            aria-label="Project agent"
             value={agentId}
             onChange={(event) => {
-              setSelectedPlaygroundId(undefined)
               setNewSessionKey(crypto.randomUUID())
-              void navigate({
-                pathname: location.pathname,
-                search: projectContextSearch(
+              const search = new URLSearchParams(
+                projectContextSearch(
                   location.search,
                   event.target.value,
                   environment,
                 ),
+              )
+              search.delete('session')
+              void navigate({
+                pathname: location.pathname,
+                search: search.toString(),
               })
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
@@ -731,7 +744,12 @@ export default function ManagedAgentDetail({
           <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
             <span>{agent?.deploymentCount ?? 0} deployments</span>
             <span>
-              {activeAliasChannel?.status === 'connected' ? 1 : 0} channels
+              {
+                activeAliasChannels.filter(
+                  (channel) => channel.status === 'connected',
+                ).length
+              }{' '}
+              channels
             </span>
           </div>
         </div>
@@ -784,7 +802,7 @@ export default function ManagedAgentDetail({
                   variant="ghost"
                   aria-label="New playground session"
                   onClick={() => {
-                    setSelectedPlaygroundId(undefined)
+                    selectPlaygroundSession()
                     setNewSessionKey(crypto.randomUUID())
                   }}
                 >
@@ -809,7 +827,7 @@ export default function ManagedAgentDetail({
                   <button
                     key={session.id}
                     type="button"
-                    onClick={() => setSelectedPlaygroundId(session.id)}
+                    onClick={() => selectPlaygroundSession(session.id)}
                     className={cn(
                       'hover:bg-muted/70 mb-1 w-full rounded-md px-3 py-2 text-left transition-colors',
                       selectedPlaygroundId === session.id && 'bg-muted',
@@ -822,6 +840,9 @@ export default function ManagedAgentDetail({
                       {session.turns.length}{' '}
                       {session.turns.length === 1 ? 'turn' : 'turns'} ·{' '}
                       {formatDate(session.updatedAt)}
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 block truncate font-mono text-[10px]">
+                      deployment {session.deploymentId.slice(0, 12)}
                     </span>
                   </button>
                 ))}
@@ -837,6 +858,7 @@ export default function ManagedAgentDetail({
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
+                onSessionFinished={selectPlaygroundSession}
               />
             )}
           </div>
@@ -955,12 +977,31 @@ export default function ManagedAgentDetail({
             </div>
           </PanelHeader>
           {agent && activeDeployment.data ? (
-            <ManagedSlackWizard
-              agentId={agent.id}
-              alias={activeDeployment.data.alias}
-              agentName={displayManagedAgentName(agent)}
-              connection={activeAliasChannel}
-            />
+            declaredChannels.length ? (
+              declaredChannels.map((declaredChannel) => (
+                <ManagedSlackWizard
+                  key={declaredChannel.id}
+                  agentId={agent.id}
+                  alias={activeDeployment.data.alias}
+                  agentName={displayManagedAgentName(agent)}
+                  channelName={
+                    declaredChannel.displayName ?? declaredChannel.id
+                  }
+                  connection={activeAliasChannels.find(
+                    (channel) => channel.channelId === declaredChannel.id,
+                  )}
+                  channelId={declaredChannel.id}
+                  destinations={Object.keys(declaredChannel.destinations)}
+                />
+              ))
+            ) : (
+              <ManagedSlackWizard
+                agentId={agent.id}
+                alias={activeDeployment.data.alias}
+                agentName={displayManagedAgentName(agent)}
+                connection={activeAliasChannel}
+              />
+            )
           ) : (
             <PanelContent className="text-muted-foreground text-sm">
               Loading channels…
@@ -969,11 +1010,31 @@ export default function ManagedAgentDetail({
         </Panel>
       ) : null}
 
-      {activeTab === 'schedules' && project ? (
-        <ProjectResourcePanel
-          title="Schedules"
-          description="Functions in this project that run on a cron schedule."
-          values={project.schedules}
+      {activeTab === 'outboxes' && project && agent ? (
+        <ManagedAgentOutboxes
+          projectId={project.project.id}
+          agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
+      {activeTab === 'schedules' && project && agent ? (
+        <ManagedAgentSchedules
+          projectId={project.project.id}
+          agentId={agent.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
+      {activeTab === 'webhooks' && project && agent ? (
+        <ManagedAgentWebhooks
+          projectId={project.project.id}
+          agentId={agent.id}
+          agentName={displayManagedAgentName(agent)}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
         />
       ) : null}
 
@@ -985,35 +1046,5 @@ export default function ManagedAgentDetail({
         />
       ) : null}
     </div>
-  )
-}
-
-function ProjectResourcePanel({
-  title,
-  description,
-  values,
-}: {
-  title: string
-  description: string
-  values: unknown[]
-}) {
-  return (
-    <Panel>
-      <PanelHeader>
-        <div>
-          <PanelTitle>{title}</PanelTitle>
-          <PanelDescription className="mt-1">{description}</PanelDescription>
-        </div>
-      </PanelHeader>
-      <PanelContent>
-        {values.length ? (
-          <pre className="bg-muted overflow-x-auto rounded-md border p-4 text-xs leading-5">
-            {JSON.stringify(values.length === 1 ? values[0] : values, null, 2)}
-          </pre>
-        ) : (
-          <p className="text-muted-foreground text-sm">Nothing here yet.</p>
-        )}
-      </PanelContent>
-    </Panel>
   )
 }

@@ -6,19 +6,23 @@ import {
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { resolveConfig } from "./config.js";
-import { runCloudDevelopment } from "./dev.js";
+import { publishProjectDeployment, runCloudDevelopment } from "./dev.js";
 import {
   ensureProjectBinding,
   findOpenComputerProjectRoot,
 } from "./binding.js";
-import { runLocalAgent } from "./local.js";
 import {
   assertStarterTarget,
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
-  readManifest,
 } from "./project.js";
+import {
+  developmentAgentReference,
+  parseSessionCommand,
+  resolveProjectAgent,
+} from "./session-command.js";
+import { formatSessionEvent } from "./session-prompt.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -72,7 +76,9 @@ async function readSecretValue(): Promise<string> {
     for await (const chunk of process.stdin) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+    const value = Buffer.concat(chunks)
+      .toString("utf8")
+      .replace(/\r?\n$/, "");
     if (!value) throw new Error("Secret value was empty");
     return value;
   }
@@ -124,6 +130,21 @@ async function selectedProject(
   return { projectId: binding.projectId, agentId: binding.agentId };
 }
 
+async function selectedSessionAgent(
+  client: OpenComputerClient,
+  project: { projectId: string; agentId: string },
+  selector?: string,
+): Promise<string> {
+  if (!selector) return project.agentId;
+  const current = (await client.projects()).find(
+    (candidate) => candidate.id === project.projectId,
+  );
+  if (!current) {
+    throw new Error("The bound project is no longer available.");
+  }
+  return resolveProjectAgent(current.agents, selector);
+}
+
 function printLog(entry: ManagedAgentLog, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(entry)}\n`);
@@ -150,13 +171,6 @@ async function requireAgentRoot(): Promise<string> {
     );
   }
   return root;
-}
-
-async function inferAgentReference(alias: string): Promise<string | undefined> {
-  const root = await findAgentRoot();
-  if (!root) return undefined;
-  const manifest = await readManifest(root);
-  return `${manifest.id}@${alias}`;
 }
 
 function printSession(session: ManagedSessionSnapshot): void {
@@ -191,6 +205,20 @@ function printToolProgress(event: ManagedAgentEvent): void {
   process.stderr.write(
     `tool: ${tool} ${event.type === "tool.completed" ? "completed" : "failed"}\n`,
   );
+}
+
+function printSessionProgress(
+  event: ManagedAgentEvent,
+  json: boolean,
+  verbose: boolean,
+): void {
+  if (json) return;
+  if (verbose) {
+    const formatted = formatSessionEvent(event);
+    if (formatted) process.stderr.write(`${formatted}\n`);
+    return;
+  }
+  printToolProgress(event);
 }
 
 function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
@@ -345,6 +373,7 @@ async function runAgent(
   prompt: string,
   keep: boolean,
   json: boolean,
+  verbose: boolean,
 ): Promise<unknown> {
   const created = await client.createSession(agent);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -353,7 +382,7 @@ async function runAgent(
     created.session.id,
     0,
     (event) => event.type === "runtime.connected",
-    () => undefined,
+    (event) => printSessionProgress(event, json, verbose),
     90_000,
   );
   const turn = await client.createTurn(created.session.id, prompt);
@@ -377,7 +406,7 @@ async function runAgent(
       ) {
         completedText = event.data.text;
       } else {
-        if (!json) printToolProgress(event);
+        printSessionProgress(event, json, verbose);
       }
     },
     180_000,
@@ -528,31 +557,36 @@ export async function runCommand(
   if (command === "deploy") {
     const alias = option(args, "--alias") ?? "production";
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const built = await buildAgentArtifact(await requireAgentRoot());
-    process.stderr.write(
-      `Built ${built.agentId} in ${String(built.elapsedMs)}ms\n`,
-    );
-    const deployment = await client.registerDeployment({
-      agentId: built.agentId,
-      name: built.name,
-      alias,
-      channels: built.channels,
-      connections: built.connections,
-      httpConnections: built.httpConnections,
-      source: {
-        digest: built.digest,
-        size: built.body.byteLength,
-        contentType: "application/vnd.opencomputer.agent+json",
-        body: built.body.toString("utf8"),
-      },
-    });
-    if (globals.json) printJSON(deployment);
-    else {
-      process.stdout.write(
-        `Deployed ${deployment.agentId}@${deployment.alias}\n` +
-          `Deployment: ${deployment.id}\n` +
-          `Source ID:  opencomputer.toml\n`,
+    const root = await findOpenComputerProjectRoot(process.cwd());
+    if (!root) {
+      throw new Error(
+        "No OpenComputer project found. Run `opencomputer init <directory>` first.",
       );
+    }
+    const binding = await ensureProjectBinding(client, config, root, {
+      interactive: !globals.json,
+      select: true,
+    });
+    const results = await publishProjectDeployment(
+      client,
+      root,
+      binding,
+      alias,
+    );
+    for (const { built } of results) {
+      process.stderr.write(
+        `Built ${built.agentId} in ${String(built.elapsedMs)}ms\n`,
+      );
+    }
+    if (globals.json) printJSON(results.map(({ deployment }) => deployment));
+    else {
+      for (const { deployment } of results) {
+        process.stdout.write(
+          `Deployed ${deployment.agentId}@${deployment.alias}\n` +
+            `Deployment: ${deployment.id}\n` +
+            `Source ID:  opencomputer.toml\n`,
+        );
+      }
     }
     return;
   }
@@ -564,7 +598,14 @@ export async function runCommand(
     if (!agent || !prompt) {
       throw new Error("Usage: opencomputer run <agent> <prompt>");
     }
-    const result = await runAgent(client, agent, prompt, keep, globals.json);
+    const result = await runAgent(
+      client,
+      agent,
+      prompt,
+      keep,
+      globals.json,
+      globals.verbose === true,
+    );
     if (globals.json) printJSON(result);
     return;
   }
@@ -624,9 +665,7 @@ export async function runCommand(
     }
     const name = args.shift();
     if (!name) {
-      throw new Error(
-        "Use `opencomputer secrets set|list|remove <name>`.",
-      );
+      throw new Error("Use `opencomputer secrets set|list|remove <name>`.");
     }
     if (action === "set") {
       const explicitOrigins = options(args, "--allow-origin");
@@ -685,6 +724,182 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
+  if (command === "env") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const agentOption = option(args, "--agent");
+    const environment = environmentOption(option(args, "--environment"));
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
+    const agentId = agentOption
+      ? agentOption === "current"
+        ? project.agentId
+        : agentOption
+      : undefined;
+    if (action === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const variables = await client.runtimeVariables({
+        projectId: project.projectId,
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json) printJSON(variables);
+      else if (!variables.length)
+        process.stdout.write("No runtime variables.\n");
+      else {
+        for (const variable of variables) {
+          process.stdout.write(
+            `${variable.name.padEnd(28)} ${variable.environment.padEnd(12)} ` +
+              `${variable.agentId ?? "project"}\n`,
+          );
+        }
+      }
+      return;
+    }
+    const name = args.shift()?.trim().toUpperCase();
+    if (!name) {
+      throw new Error("Use `opencomputer env set|list|remove <name>`.");
+    }
+    if (action === "set") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const variable = await client.putRuntimeVariable({
+        projectId: project.projectId,
+        name,
+        value: await readSecretValue(),
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json) printJSON(variable);
+      else {
+        process.stdout.write(
+          `Set ${variable.name} for ${variable.agentId ?? "project"} ` +
+            `(${variable.environment}). Restart the agent runtime to apply it.\n`,
+        );
+      }
+      return;
+    }
+    if (action === "remove" || action === "delete") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      await client.deleteRuntimeVariable({
+        projectId: project.projectId,
+        name,
+        environment,
+        ...(agentId ? { agentId } : {}),
+      });
+      if (globals.json)
+        printJSON({ removed: true, name, environment, agentId });
+      else process.stdout.write(`Removed runtime variable ${name}.\n`);
+      return;
+    }
+    throw new Error("Use `opencomputer env set|list|remove <name>`.");
+  }
+
+  if (command === "webhooks") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const agentOption = option(args, "--agent");
+    const environment = environmentOption(option(args, "--environment"));
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
+    const agentId = await selectedSessionAgent(
+      client,
+      project,
+      !agentOption || agentOption === "current" ? undefined : agentOption,
+    );
+    if (action === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const webhooks = await client.webhooks({
+        projectId: project.projectId,
+        environment,
+        agentId,
+      });
+      if (globals.json) printJSON(webhooks);
+      else if (!webhooks.length) process.stdout.write("No webhooks.\n");
+      else {
+        for (const webhook of webhooks) {
+          process.stdout.write(
+            `${webhook.id}  ${webhook.enabled ? "enabled " : "disabled"}  ` +
+              `${webhook.name}  ${webhook.invocationUrl}\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (action === "create") {
+      const name = args.shift()?.trim();
+      if (!name || args.length) {
+        throw new Error("Use `opencomputer webhooks create <name>`.");
+      }
+      const webhook = await client.createWebhook({
+        projectId: project.projectId,
+        name,
+        environment,
+        agentId,
+      });
+      if (globals.json) printJSON(webhook);
+      else {
+        process.stdout.write(
+          `Created ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
+            `URL: ${webhook.invocationUrl}\n` +
+            `Token: ${webhook.token ?? "unavailable"}\n` +
+            "Save this token now. It will not be shown again.\n",
+        );
+      }
+      return;
+    }
+    const webhookId = args.shift();
+    if (!webhookId || args.length) {
+      throw new Error(
+        "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+      );
+    }
+    if (action === "enable" || action === "disable") {
+      const webhook = await client.updateWebhook({
+        projectId: project.projectId,
+        webhookId,
+        enabled: action === "enable",
+      });
+      if (globals.json) printJSON(webhook);
+      else
+        process.stdout.write(
+          `${action === "enable" ? "Enabled" : "Disabled"} ${webhook.name}.\n`,
+        );
+      return;
+    }
+    if (action === "rotate-token") {
+      const webhook = await client.rotateWebhookToken({
+        projectId: project.projectId,
+        webhookId,
+      });
+      if (globals.json) printJSON(webhook);
+      else {
+        process.stdout.write(
+          `Rotated the token for ${webhook.name}.\n` +
+            `Token: ${webhook.token ?? "unavailable"}\n` +
+            "Save this token now. The previous token no longer works.\n",
+        );
+      }
+      return;
+    }
+    if (action === "remove" || action === "delete") {
+      await client.deleteWebhook({ projectId: project.projectId, webhookId });
+      if (globals.json) printJSON({ deleted: true, webhookId });
+      else process.stdout.write(`Removed webhook ${webhookId}.\n`);
+      return;
+    }
+    throw new Error(
+      "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+    );
+  }
+
   if (command === "logs") {
     const follow = flag(args, "--follow");
     let agentId = option(args, "--agent");
@@ -740,56 +955,39 @@ export async function runCommand(
   }
 
   if (command === "session") {
-    const local = flag(args, "--local");
-    const remote = flag(args, "--remote");
-    const keep = flag(args, "--keep");
-    const agentOption = option(args, "--agent");
-    const alias = option(args, "--alias") ?? "production";
-    if (local && (remote || agentOption)) {
-      throw new Error("--local cannot be combined with --remote or --agent.");
-    }
-    const knownActions = new Set([
-      "create",
-      "list",
-      "inspect",
-      "attach",
-      "send",
-      "end",
-    ]);
-    const shorthand = args[0];
-    const action =
-      shorthand && knownActions.has(shorthand) ? args.shift()! : "create";
-    const useRemote = remote || Boolean(agentOption) || action !== "create";
-    if (!useRemote) {
-      const prompt = args.join(" ").trim();
-      await runLocalAgent(prompt ? ["run", prompt] : ["shell"], config, {
-        verbose: globals.verbose,
-      });
-      return;
-    }
-    if (action === "list") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const session = parseSessionCommand(args);
+    const sessionArgs = session.args;
+    if (session.action === "list") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       const sessions = await client.sessions();
       if (globals.json) printJSON(sessions);
       else if (!sessions.length) process.stdout.write("No sessions.\n");
       else sessions.forEach(printSession);
       return;
     }
-    if (action === "create") {
-      const prompt = args.join(" ").trim();
-      const agent = agentOption ?? (await inferAgentReference(alias));
-      if (!agent) {
-        throw new Error(
-          "No agent repository found. Pass --agent <agent>@<alias>.",
-        );
-      }
+    if (session.action === "create") {
+      const prompt = sessionArgs.join(" ").trim();
+      const project = await selectedProject(
+        client,
+        config,
+        undefined,
+        !globals.json,
+      );
+      const agentId = await selectedSessionAgent(
+        client,
+        project,
+        session.agent,
+      );
+      const agent = developmentAgentReference(agentId);
       if (prompt) {
         const result = await runAgent(
           client,
           agent,
           prompt,
-          keep,
+          session.keep,
           globals.json,
+          globals.verbose === true,
         );
         if (globals.json) printJSON(result);
         return;
@@ -803,14 +1001,14 @@ export async function runCommand(
         () => undefined,
         90_000,
       );
-      if (!keep) {
+      if (!session.keep) {
         await client.suspendSession(created.session.id).catch(() => undefined);
       }
       const result = {
         sessionId: created.session.id,
         agentId: created.deployment?.agentId ?? agent,
         deploymentId: created.deployment?.id,
-        status: keep ? "running" : "suspended",
+        status: session.keep ? "running" : "suspended",
         cursor: connected.cursor,
       };
       if (globals.json) printJSON(result);
@@ -824,26 +1022,28 @@ export async function runCommand(
       }
       return;
     }
-    const sessionId = args.shift();
+    const sessionId = sessionArgs.shift();
     if (!sessionId) throw new Error("A session ID is required.");
-    if (action === "inspect") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "inspect") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       printJSON(await client.session(sessionId));
       return;
     }
-    if (action === "attach") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "attach") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       await attachSession(client, sessionId, globals.json);
       return;
     }
-    if (action === "send") {
-      const prompt = args.join(" ").trim();
+    if (session.action === "send") {
+      const prompt = sessionArgs.join(" ").trim();
       if (!prompt) throw new Error("A prompt is required.");
       const result = await sendAgentTurn(
         client,
         sessionId,
         prompt,
-        keep,
+        session.keep,
         globals.json,
       );
       if (globals.json) {
@@ -851,8 +1051,9 @@ export async function runCommand(
       }
       return;
     }
-    if (action === "end") {
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (session.action === "end") {
+      if (sessionArgs.length)
+        throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
       await client.terminateSession(sessionId).catch(() => undefined);
       const ended = await client.endSession(sessionId);
       if (globals.json) printJSON(ended);

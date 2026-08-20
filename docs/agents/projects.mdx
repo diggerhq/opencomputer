@@ -16,11 +16,16 @@ my-agent/
 ├── opencomputer/
 │   ├── .env.example
 │   ├── project.ts
+│   ├── channels/        # optional project messaging channels
+│   ├── outboxes/        # optional durable notification routes
 │   └── agents/
 │       └── hello-world/
 │           ├── agent.ts
+│           ├── channels/    # optional inbound registrations
+│           ├── outboxes/    # optional publish registrations
 │           ├── tools/       # optional
-│           └── skills/      # optional
+│           ├── skills/      # optional
+│           └── schedules/   # optional
 ├── src/
 │   ├── App.tsx
 │   └── main.tsx
@@ -30,6 +35,8 @@ my-agent/
 
 - `opencomputer/project.ts` declares project metadata and agent IDs.
 - `opencomputer/agents/<id>/agent.ts` defines one agent.
+- `opencomputer/channels/` and `opencomputer/outboxes/` define shared project
+  resources; registrations under an agent authorize that agent to use them.
 - `opencomputer/.env.local` optionally holds ignored development secrets.
 - `src/` is a normal React application.
 - `.opencomputer/` is ignored local state created by the CLI.
@@ -43,7 +50,7 @@ The source scaffold and cloud project are separate. `npm create` writes local
 source. Link it to a cloud project with:
 
 ```bash
-npx opencomputer link
+npx --package @opencomputer/cli opencomputer link
 ```
 
 The command asks whether to create a project or select an existing one. If you
@@ -52,8 +59,8 @@ skip it, the first project-scoped command shows the same prompt.
 For non-interactive use:
 
 ```bash
-npx opencomputer dev --project <project-id-or-slug>
-npx opencomputer dev --create-project "Support agents"
+npx --package @opencomputer/cli opencomputer dev --project <project-id-or-slug>
+npx --package @opencomputer/cli opencomputer dev --create-project "Support agents"
 ```
 
 Later commands reuse `.opencomputer/project.json`. Run `opencomputer link`
@@ -97,6 +104,10 @@ The current project dashboard provides:
 - **Agent playground** for creating and resuming test sessions
 - **Deployments** for immutable version history and active aliases
 - **Sessions** created through the dashboard, React client, or API
+- **Schedules** deployed from each agent's source directory
+- **Channels** for environment-specific Slack installation and destination
+  binding
+- **Outboxes** for inspecting proactive notification delivery
 - **Secrets** for write-only project and agent credentials
 
 Project and agent behavior remains code-owned. The dashboard is for selection,

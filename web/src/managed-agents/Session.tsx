@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Bot, Clock3, Loader2, TerminalSquare } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
@@ -17,6 +18,7 @@ import {
   getManagedAgentSessionEvents,
   getManagedProject,
 } from './api'
+import { AgentMarkdown } from './AgentMarkdown'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -25,6 +27,9 @@ function formatDate(value: string) {
 export default function ManagedSessionDetail() {
   const { projectId = '', sessionId = '' } = useParams()
   const [searchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState<'conversation' | 'events'>(
+    'conversation',
+  )
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId),
@@ -119,83 +124,116 @@ export default function ManagedSessionDetail() {
         </Panel>
       </div>
 
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Conversation</PanelTitle>
-            <PanelDescription className="mt-1">
-              Durable turn history for this session.
-            </PanelDescription>
-          </div>
-        </PanelHeader>
-        <PanelContent className="space-y-6">
-          {session.data.turns.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No turns yet.</p>
-          ) : (
-            session.data.turns.map((turn) => {
-              const response = replies.find((event) => event.turnId === turn.id)
-              return (
-                <div
-                  key={turn.id}
-                  className="space-y-4 border-b pb-6 last:border-0 last:pb-0"
-                >
-                  <div>
-                    <p className="text-muted-foreground mb-2 text-[10px] font-medium tracking-wider uppercase">
-                      You · {formatDate(turn.createdAt)}
-                    </p>
-                    <p className="bg-muted ml-auto max-w-3xl rounded-lg px-4 py-3 text-sm whitespace-pre-wrap">
-                      {turn.input}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground mb-2 flex items-center gap-1.5 text-[10px] font-medium tracking-wider uppercase">
-                      <Bot className="size-3" /> Agent · {turn.status}
-                    </p>
-                    <p className="max-w-3xl text-sm leading-6 whitespace-pre-wrap">
-                      {response && typeof response.data.text === 'string'
-                        ? response.data.text
-                        : 'No completed response recorded.'}
-                    </p>
-                  </div>
-                </div>
-              )
-            })
-          )}
-        </PanelContent>
-      </Panel>
-
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Durable log</PanelTitle>
-            <PanelDescription className="mt-1">
-              Runtime events persisted for inspection and debugging.
-            </PanelDescription>
-          </div>
-          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Clock3 className="size-3.5" /> {events.data?.length ?? 0} events
+      <div
+        role="tablist"
+        aria-label="Session detail"
+        className="flex w-fit items-center gap-1 rounded-lg border p-1"
+      >
+        <Button
+          role="tab"
+          aria-selected={activeTab === 'conversation'}
+          variant={activeTab === 'conversation' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('conversation')}
+        >
+          Conversation
+        </Button>
+        <Button
+          role="tab"
+          aria-selected={activeTab === 'events'}
+          variant={activeTab === 'events' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('events')}
+        >
+          Events
+          <span className="text-[10px] opacity-70">
+            {events.data?.length ?? 0}
           </span>
-        </PanelHeader>
-        <div className="divide-y font-mono text-xs">
-          {(events.data ?? []).map((event) => (
-            <div
-              key={event.id ?? event.seq}
-              className="grid gap-2 px-5 py-3 md:grid-cols-[5rem_12rem_1fr]"
-            >
-              <span className="text-muted-foreground">#{event.seq}</span>
-              <span>{event.type}</span>
-              <pre className="overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(event.data, null, 2)}
-              </pre>
+        </Button>
+      </div>
+
+      {activeTab === 'conversation' ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Conversation</PanelTitle>
+              <PanelDescription className="mt-1">
+                Durable turn history for this session.
+              </PanelDescription>
             </div>
-          ))}
-          {!events.isLoading && (events.data ?? []).length === 0 ? (
-            <p className="text-muted-foreground px-5 py-4">
-              No events recorded.
-            </p>
-          ) : null}
-        </div>
-      </Panel>
+          </PanelHeader>
+          <PanelContent className="space-y-8 px-6 py-7">
+            {session.data.turns.length === 0 ? (
+              <p className="text-muted-foreground text-sm">No turns yet.</p>
+            ) : (
+              session.data.turns.map((turn) => {
+                const response = replies.find(
+                  (event) => event.turnId === turn.id,
+                )
+                return (
+                  <div key={turn.id} className="space-y-6">
+                    <div>
+                      <p className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wider uppercase">
+                        You
+                      </p>
+                      <p className="bg-muted ml-auto max-w-2xl rounded-xl rounded-br-sm px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap">
+                        {turn.input}
+                      </p>
+                    </div>
+                    <div className="max-w-3xl">
+                      <p className="text-muted-foreground mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold tracking-wider uppercase">
+                        <Bot className="size-3" /> Agent
+                      </p>
+                      {response && typeof response.data.text === 'string' ? (
+                        <AgentMarkdown>{response.data.text}</AgentMarkdown>
+                      ) : (
+                        <p className="text-muted-foreground text-sm">
+                          {turn.status === 'completed'
+                            ? 'No completed response recorded.'
+                            : `Turn ${turn.status.replace(/_/g, ' ')}.`}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </PanelContent>
+        </Panel>
+      ) : (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Durable log</PanelTitle>
+              <PanelDescription className="mt-1">
+                Runtime events persisted for inspection and debugging.
+              </PanelDescription>
+            </div>
+            <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+              <Clock3 className="size-3.5" /> {events.data?.length ?? 0} events
+            </span>
+          </PanelHeader>
+          <div className="divide-y font-mono text-xs">
+            {(events.data ?? []).map((event) => (
+              <div
+                key={event.id ?? event.seq}
+                className="grid gap-2 px-5 py-3 md:grid-cols-[5rem_12rem_1fr]"
+              >
+                <span className="text-muted-foreground">#{event.seq}</span>
+                <span>{event.type}</span>
+                <pre className="overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(event.data, null, 2)}
+                </pre>
+              </div>
+            ))}
+            {!events.isLoading && (events.data ?? []).length === 0 ? (
+              <p className="text-muted-foreground px-5 py-4">
+                No events recorded.
+              </p>
+            ) : null}
+          </div>
+        </Panel>
+      )}
     </div>
   )
 }

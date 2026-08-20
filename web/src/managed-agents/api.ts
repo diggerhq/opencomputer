@@ -18,6 +18,46 @@ const deploymentSchema = z.object({
   channels: z.array(z.string()),
   connections: z.array(z.string()),
   createdAt: z.string(),
+  projectDeployment: z
+    .object({
+      id: z.string(),
+      digest: z.string(),
+      localAgentId: z.string(),
+      resources: z.object({
+        channels: z.array(
+          z.object({
+            id: z.string(),
+            type: z.literal('slack'),
+            displayName: z.string().optional(),
+            destinations: z.record(
+              z.string(),
+              z.object({
+                type: z.literal('conversation'),
+                visibility: z.enum(['public', 'private']),
+              }),
+            ),
+          }),
+        ),
+        schedules: z
+          .array(
+            z.object({
+              id: z.string(),
+              agentId: z.string(),
+              cron: z.string(),
+              timezone: z.string(),
+              enabled: z.array(z.enum(['development', 'production'])),
+              overlap: z.enum(['skip', 'allow']),
+              dispatch: z.object({
+                text: z.string().optional(),
+                payload: z.unknown().optional(),
+              }),
+            }),
+          )
+          .optional()
+          .default([]),
+      }),
+    })
+    .optional(),
 })
 
 const deploymentsResponseSchema = z.object({
@@ -59,6 +99,19 @@ const secretSchema = z.object({
 
 const secretsResponseSchema = z.object({ secrets: z.array(secretSchema) })
 
+const runtimeVariableSchema = z.object({
+  name: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const runtimeVariablesResponseSchema = z.object({
+  variables: z.array(runtimeVariableSchema),
+})
+
 const connectionSchema = z.object({
   id: z.string(),
   kind: z.enum(['tool', 'channel']),
@@ -76,6 +129,7 @@ const connectionSchema = z.object({
 const channelSchema = z.object({
   id: z.string(),
   channel: z.string(),
+  channelId: z.string().optional().default('slack'),
   agentId: z.string(),
   alias: z.string(),
   appName: z.string().nullish(),
@@ -88,6 +142,17 @@ const channelSchema = z.object({
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  destinations: z
+    .array(
+      z.object({
+        name: z.string(),
+        conversationId: z.string(),
+        displayName: z.string(),
+        verifiedAt: z.string(),
+      }),
+    )
+    .optional()
+    .default([]),
 })
 
 const connectionsResponseSchema = z.object({
@@ -107,6 +172,101 @@ const connectionLinkSchema = z.object({
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
+
+const outboxItemSchema = z.object({
+  id: z.string(),
+  outboxId: z.string(),
+  eventType: z.string(),
+  sessionId: z.string().optional(),
+  contentPreview: z.object({
+    title: z.string().optional(),
+    body: z.string().optional(),
+    url: z.string().optional(),
+  }),
+  status: z.string(),
+  destination: z.string().optional(),
+  attemptCount: z.number(),
+  error: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const outboxSchema = z.object({
+  id: z.string(),
+  channelId: z.string(),
+  channelName: z.string(),
+  destination: z.string(),
+  readiness: z.enum([
+    'ready',
+    'channel_not_connected',
+    'destination_not_bound',
+  ]),
+  targetDisplayName: z.string().optional(),
+  items: z.array(outboxItemSchema),
+})
+
+const outboxesResponseSchema = z.object({
+  agentId: z.string(),
+  environment: z.enum(['development', 'production']),
+  deploymentId: z.string(),
+  outboxes: z.array(outboxSchema),
+})
+
+const scheduleSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  deploymentId: z.string(),
+  cron: z.string(),
+  timezone: z.string(),
+  overlap: z.enum(['skip', 'allow']),
+  dispatch: z.object({
+    text: z.string().optional(),
+    payload: z.unknown().optional(),
+  }),
+  nextRunAt: z.string(),
+  lastRunAt: z.string().optional(),
+  status: z.enum(['active', 'manual', 'paused']),
+})
+
+const scheduleRunSchema = z.object({
+  id: z.string(),
+  scheduleId: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  deploymentId: z.string(),
+  scheduledAt: z.string(),
+  manual: z.boolean(),
+  attempt: z.number(),
+  outcome: z.enum(['pending', 'enacted', 'skipped', 'failed']),
+  sessionId: z.string().optional(),
+  error: z.string().optional(),
+  createdAt: z.string(),
+})
+
+const schedulesResponseSchema = z.object({ schedules: z.array(scheduleSchema) })
+const scheduleRunsResponseSchema = z.object({
+  runs: z.array(scheduleRunSchema),
+})
+const scheduleRunResponseSchema = z.object({ run: scheduleRunSchema })
+
+const webhookSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  invocationUrl: z.string().url(),
+  token: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastInvokedAt: z.string().optional(),
+})
+
+const webhooksResponseSchema = z.object({ webhooks: z.array(webhookSchema) })
+const webhookResponseSchema = z.object({ webhook: webhookSchema })
 
 const slackManifestResponseSchema = z.object({
   connection: channelSchema,
@@ -153,15 +313,21 @@ const eventsResponseSchema = z.object({
 
 const turnSchema = z.object({
   turnId: z.string(),
+  status: z.string(),
   duplicate: z.boolean(),
 })
+
+export type ManagedAgentInputMode = 'queue' | 'steer' | 'interrupt'
 
 const sessionSchema = z.object({
   id: z.string(),
   agentId: z.string(),
   deploymentId: z.string(),
   status: z.string(),
-  source: z.enum(['api', 'channel', 'playground']).optional().default('api'),
+  source: z
+    .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
+    .optional()
+    .default('api'),
   microvmState: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -170,6 +336,10 @@ const sessionSchema = z.object({
       z.object({
         id: z.string(),
         input: z.string(),
+        mode: z
+          .enum(['queue', 'steer', 'interrupt'])
+          .optional()
+          .default('queue'),
         status: z.string(),
         createdAt: z.string(),
         updatedAt: z.string(),
@@ -200,6 +370,11 @@ export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
+export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
+export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
+export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
+export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
+export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 
@@ -295,6 +470,54 @@ export async function deleteManagedProjectSecret(input: {
   )
 }
 
+export async function getAgentRuntimeVariables(
+  projectId: string,
+  environment: 'development' | 'production',
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/runtime-variables?environment=${encodeURIComponent(environment)}`,
+      undefined,
+      runtimeVariablesResponseSchema,
+    )
+  ).variables
+}
+
+export async function putAgentRuntimeVariable(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+  value: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        environment: input.environment,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        value: input.value,
+      }),
+    },
+    runtimeVariableSchema,
+  )
+}
+
+export async function deleteAgentRuntimeVariable(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+  name: string
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  if (input.agentId) query.set('agentId', input.agentId)
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/runtime-variables/${encodeURIComponent(input.name)}?${query.toString()}`,
+    { method: 'DELETE' },
+  )
+}
+
 export async function getManagedAgentConnections() {
   return (
     await apiFetch(
@@ -340,18 +563,169 @@ export async function getManagedAgentChannels() {
   ).channels
 }
 
+export async function getManagedAgentOutboxes(
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ agentId, environment })
+  return apiFetch(
+    `/managed-agents/outboxes?${query.toString()}`,
+    undefined,
+    outboxesResponseSchema,
+  )
+}
+
+export async function getManagedAgentSchedules(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedules?${query.toString()}`,
+      undefined,
+      schedulesResponseSchema,
+    )
+  ).schedules
+}
+
+export async function getManagedAgentScheduleRuns(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedule-runs?${query.toString()}`,
+      undefined,
+      scheduleRunsResponseSchema,
+    )
+  ).runs
+}
+
+export async function runManagedAgentSchedule(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+  scheduleId: string,
+) {
+  const query = new URLSearchParams({ projectId, agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/schedules/${encodeURIComponent(scheduleId)}/run?${query.toString()}`,
+      { method: 'POST' },
+      scheduleRunResponseSchema,
+    )
+  ).run
+}
+
+export async function getManagedAgentWebhooks(
+  projectId: string,
+  agentId: string,
+  environment: 'development' | 'production',
+) {
+  const query = new URLSearchParams({ agentId, environment })
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks?${query.toString()}`,
+      undefined,
+      webhooksResponseSchema,
+    )
+  ).webhooks
+}
+
+export async function createManagedAgentWebhook(input: {
+  projectId: string
+  agentId: string
+  environment: 'development' | 'production'
+  name: string
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          agentId: input.agentId,
+          environment: input.environment,
+          name: input.name,
+        }),
+      },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function updateManagedAgentWebhook(input: {
+  projectId: string
+  webhookId: string
+  enabled: boolean
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
+      { method: 'PATCH', body: JSON.stringify({ enabled: input.enabled }) },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function rotateManagedAgentWebhookToken(
+  projectId: string,
+  webhookId: string,
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(webhookId)}/rotate-token`,
+      { method: 'POST' },
+      webhookResponseSchema,
+    )
+  ).webhook
+}
+
+export async function deleteManagedAgentWebhook(
+  projectId: string,
+  webhookId: string,
+) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(webhookId)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export async function startManagedAgentSlack(
   agentId: string,
   name: string,
   reconnect = false,
+  channelId?: string,
 ) {
   return apiFetch(
     '/managed-agents/channels/slack/connections',
     {
       method: 'POST',
-      body: JSON.stringify({ agentId, name, reconnect }),
+      body: JSON.stringify({ agentId, name, reconnect, channelId }),
     },
     slackManifestResponseSchema,
+  )
+}
+
+export async function bindManagedAgentSlackDestination(
+  connectionId: string,
+  destination: string,
+  conversationId: string,
+) {
+  return apiFetch(
+    `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}/destinations/${encodeURIComponent(destination)}`,
+    { method: 'PUT', body: JSON.stringify({ conversationId }) },
+    z.object({
+      connectionId: z.string(),
+      destination: z.string(),
+      conversationId: z.string(),
+      displayName: z.string(),
+      verifiedAt: z.string(),
+    }),
   )
 }
 
@@ -411,6 +785,36 @@ export async function getManagedAgentSessionEvents(sessionId: string) {
       eventsResponseSchema,
     )
   ).events
+}
+
+export async function admitManagedAgentInput(
+  sessionId: string,
+  input: string,
+  mode: ManagedAgentInputMode,
+  signal?: AbortSignal,
+) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        input,
+        mode,
+        idempotencyKey: crypto.randomUUID(),
+      }),
+      signal,
+    },
+    turnSchema,
+  )
+}
+
+async function suspendManagedAgentIfIdle(sessionId: string) {
+  const session = await getManagedAgentSession(sessionId).catch(() => undefined)
+  if (session?.status !== 'idle') return
+  await apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
+    { method: 'POST' },
+  ).catch(() => undefined)
 }
 
 export function managedAgentRenderDebug(event: ManagedAgentEvent) {
@@ -511,23 +915,20 @@ export async function runManagedAgent(
       90_000,
       options.signal,
     )
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-        signal: options.signal,
-      },
-      turnSchema,
+    const turn = await admitManagedAgentInput(
+      sessionId,
+      input,
+      'queue',
+      options.signal,
     )
     const completed = await waitForAgentEvent(
       sessionId,
       connected.cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       onEvent,
       180_000,
       options.signal,
@@ -541,10 +942,7 @@ export async function runManagedAgent(
     }
     return { sessionId, turnId: turn.turnId }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }
 
@@ -577,23 +975,15 @@ export async function continueManagedAgentSession(
     cursor = connected.cursor
   }
   try {
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-        signal,
-      },
-      turnSchema,
-    )
+    const turn = await admitManagedAgentInput(sessionId, input, 'queue', signal)
     const completed = await waitForAgentEvent(
       sessionId,
       cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       onEvent,
       180_000,
       signal,
@@ -607,10 +997,7 @@ export async function continueManagedAgentSession(
     }
     return { sessionId, turnId: turn.turnId }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }
 
@@ -632,24 +1019,17 @@ export async function invokeManagedAgent(agentId: string, input: string) {
       () => undefined,
       90_000,
     )
-    const turn = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          input,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      },
-      turnSchema,
-    )
+    const turn = await admitManagedAgentInput(sessionId, input, 'queue')
     let streamedText = ''
     let completedText = ''
     const completed = await waitForAgentEvent(
       sessionId,
       connected.cursor,
       (event) =>
-        event.type === 'turn.completed' || event.type === 'turn.failed',
+        event.turnId === turn.turnId &&
+        (event.type === 'turn.completed' ||
+          event.type === 'turn.failed' ||
+          event.type === 'turn.cancelled'),
       (event) => {
         if (event.type === 'message.delta') {
           streamedText +=
@@ -676,9 +1056,6 @@ export async function invokeManagedAgent(agentId: string, input: string) {
       output: streamedText || completedText || 'Done.',
     }
   } finally {
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
-      { method: 'POST' },
-    ).catch(() => undefined)
+    await suspendManagedAgentIfIdle(sessionId)
   }
 }

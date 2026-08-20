@@ -1,0 +1,107 @@
+---
+title: "Schedules"
+description: "Run an agent from a code-defined cron schedule"
+---
+
+Schedules start durable agent sessions at recurring times. Their timing,
+timezone, target agent, and input are defined in source control and deployed
+with the project.
+
+## Define a schedule
+
+Create a TypeScript file under an agent's `schedules/` directory. The filename
+must match the schedule ID:
+
+```text
+opencomputer/
+└── agents/
+    └── feature-flag-hygiene/
+        ├── agent.ts
+        └── schedules/
+            └── weekday-hygiene.ts
+```
+
+```ts weekday-hygiene.ts
+import { defineSchedule } from "@opencomputer/agent";
+
+export default defineSchedule({
+  id: "weekday-hygiene",
+  cron: "0 9 * * 1-5",
+  timezone: "America/Los_Angeles",
+  enabled: ["production"],
+  overlap: "skip",
+  dispatch: {
+    text: "Review stale feature flags.",
+    payload: {
+      mode: "async",
+      repository: "acme/widgets",
+      dryRun: true,
+    },
+  },
+});
+```
+
+Schedules use five-field cron expressions. `timezone` is an IANA timezone such
+as `UTC`, `America/Los_Angeles`, or `Europe/London`. The dispatch payload must
+be JSON-compatible and must not contain secrets.
+
+## Development and Production
+
+When `enabled` is omitted, it defaults to `["production"]`.
+
+- Development displays every deployed schedule and supports **Run now**.
+  Schedules that do not enable Development are marked **Manual only** and never
+  recur there.
+- Production automatically runs schedules that enable Production.
+- Add `"development"` to `enabled` only when you intentionally want automatic
+  Development recurrence.
+
+Development and Production have separate schedule state, run history,
+sessions, secrets, and channel bindings.
+
+## Receive scheduled input
+
+Each run starts a fresh session pinned to the deployment that was active when
+the run was claimed. `useInput()` includes the static dispatch and execution
+metadata:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  const payload =
+    input.payload &&
+    typeof input.payload === "object" &&
+    !Array.isArray(input.payload)
+      ? input.payload
+      : {};
+
+  if (payload.mode === "async") {
+    return "Complete the unattended hygiene workflow and publish its result.";
+  }
+
+  return "Ask the user which repository they want to inspect.";
+}
+```
+
+Use payload fields such as `mode` to select business behavior. The platform
+sets `input.source` to `"schedule"` as provenance, but transport provenance
+should not be the agent's business-mode switch.
+
+After narrowing `input.source === "schedule"`, `input.schedule` contains the
+schedule ID, run ID, intended time, timezone, attempt number, and whether the
+run was started manually.
+
+## Overlap and run history
+
+`overlap` defaults to `"skip"`. If an earlier run is still starting or running,
+the next occurrence is recorded as skipped. Use `"allow"` only when concurrent
+runs are safe.
+
+The project's **Schedules** tab shows the next and previous run, current
+activation state, recent outcomes, and linked sessions. **Run now** uses the
+same deployment and dispatch payload as an automatic occurrence.
+
+Schedule timing and payload remain code-owned. Redeploy the project after
+changing a definition.

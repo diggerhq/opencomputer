@@ -85,6 +85,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[a-z][a-z0-9_]{0,63}$/.test(backendError.code)
       ? backendError.code
       : "agent_request_failed";
+  const backendMessage =
+    typeof backendError?.message === "string" ? backendError.message : "";
   let message = "The agent request could not be completed.";
   if (upstream.status === 400) {
     message =
@@ -96,7 +98,26 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    message = "The agent request conflicts with the current state.";
+    if (backendCode === "destination_verification_failed") {
+      if (
+        backendMessage === "Invite the Slack app to this conversation first"
+      ) {
+        message = backendMessage;
+      } else if (backendMessage === "Slack conversation is archived") {
+        message = "That Slack conversation is archived.";
+      } else if (backendMessage.includes("channel_not_found")) {
+        message =
+          "Slack could not find that conversation. Check its ID and invite the app first.";
+      } else if (backendMessage.includes("missing_scope")) {
+        message =
+          "The Slack app is missing a required permission. Reinstall it from the current manifest.";
+      } else {
+        message =
+          "Slack could not verify that conversation. Check its ID and app membership.";
+      }
+    } else {
+      message = "The agent request conflicts with the current state.";
+    }
   } else if (upstream.status === 429) {
     message = "Too many agent requests. Try again shortly.";
   } else if (upstream.status >= 500) {
@@ -132,6 +153,9 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(deployment.projectDeployment
+      ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
+      : {}),
   };
 }
 
@@ -197,6 +221,7 @@ function publicChannel(value: unknown): Record<string, unknown> {
   return {
     id: channel.id,
     channel: "slack",
+    channelId: channel.channelId,
     agentId: channel.agentId,
     alias: channel.alias,
     appName: channel.appName,
@@ -207,6 +232,82 @@ function publicChannel(value: unknown): Record<string, unknown> {
     status: channel.status,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
+    ...(Array.isArray(channel.destinations)
+      ? { destinations: channel.destinations.map(stripPrivateValues) }
+      : {}),
+  };
+}
+
+function publicOutboxItem(value: unknown): Record<string, unknown> {
+  const item = record(value) ?? {};
+  const content = record(item.contentPreview) ?? {};
+  return {
+    id: item.id,
+    outboxId: item.outboxId,
+    eventType: item.eventType,
+    sessionId: item.sessionId,
+    contentPreview: {
+      ...(typeof content.title === "string" ? { title: content.title } : {}),
+      ...(typeof content.body === "string" ? { body: content.body } : {}),
+      ...(typeof content.url === "string" ? { url: content.url } : {}),
+    },
+    status: item.status,
+    destination: item.destination,
+    attemptCount: item.attemptCount,
+    ...(item.error ? { error: "Delivery failed." } : {}),
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function publicOutbox(value: unknown): Record<string, unknown> {
+  const outbox = record(value) ?? {};
+  return {
+    id: outbox.id,
+    channelId: outbox.channelId,
+    channelName: outbox.channelName,
+    destination: outbox.destination,
+    readiness: outbox.readiness,
+    targetDisplayName: outbox.targetDisplayName,
+    items: Array.isArray(outbox.items)
+      ? outbox.items.map(publicOutboxItem)
+      : [],
+  };
+}
+
+function publicSchedule(value: unknown): Record<string, unknown> {
+  const schedule = record(value) ?? {};
+  return {
+    id: schedule.id,
+    projectId: schedule.projectId,
+    environment: schedule.environment,
+    agentId: schedule.agentId,
+    deploymentId: schedule.deploymentId,
+    cron: schedule.cron,
+    timezone: schedule.timezone,
+    overlap: schedule.overlap,
+    dispatch: stripPrivateValues(schedule.dispatch),
+    nextRunAt: schedule.nextRunAt,
+    lastRunAt: schedule.lastRunAt,
+    status: schedule.status,
+  };
+}
+
+function publicScheduleRun(value: unknown): Record<string, unknown> {
+  const run = record(value) ?? {};
+  return {
+    id: run.id,
+    scheduleId: run.scheduleId,
+    projectId: run.projectId,
+    environment: run.environment,
+    deploymentId: run.deploymentId,
+    scheduledAt: run.scheduledAt,
+    manual: run.manual,
+    attempt: run.attempt,
+    outcome: run.outcome,
+    sessionId: run.sessionId,
+    ...(run.error ? { error: "The scheduled run could not be started." } : {}),
+    createdAt: run.createdAt,
   };
 }
 
@@ -219,6 +320,64 @@ function stripPrivateValues(value: unknown): unknown {
       .filter(([key]) => !PRIVATE_EVENT_KEYS.has(key))
       .map(([key, child]) => [key, stripPrivateValues(child)]),
   );
+}
+
+function publicRuntimeVariable(value: unknown): Record<string, unknown> {
+  const variable = record(value) ?? {};
+  return {
+    name: variable.name,
+    projectId: variable.projectId,
+    environment: variable.environment,
+    ...(typeof variable.agentId === "string"
+      ? { agentId: variable.agentId }
+      : {}),
+    createdAt: variable.createdAt,
+    updatedAt: variable.updatedAt,
+  };
+}
+
+function publicWebhook(
+  value: unknown,
+  publicOrigin?: string,
+): Record<string, unknown> {
+  const webhook = record(value) ?? {};
+  const id = typeof webhook.id === "string" ? webhook.id : "";
+  return {
+    id: webhook.id,
+    projectId: webhook.projectId,
+    environment: webhook.environment,
+    agentId: webhook.agentId,
+    name: webhook.name,
+    enabled: webhook.enabled,
+    ...(publicOrigin && id
+      ? {
+          invocationUrl: `${publicOrigin}/api/agent-webhooks/${encodeURIComponent(id)}`,
+        }
+      : {}),
+    ...(typeof webhook.token === "string" ? { token: webhook.token } : {}),
+    createdAt: webhook.createdAt,
+    updatedAt: webhook.updatedAt,
+    lastInvokedAt: webhook.lastInvokedAt,
+  };
+}
+
+function publicWebhookRequest(value: unknown): Record<string, unknown> {
+  const request = record(value) ?? {};
+  return {
+    id: request.id,
+    webhookId: request.webhookId,
+    projectId: request.projectId,
+    environment: request.environment,
+    agentId: request.agentId,
+    deploymentId: request.deploymentId,
+    sessionId: request.sessionId,
+    outcome: request.outcome,
+    ...(request.error
+      ? { error: "The webhook request could not start a session." }
+      : {}),
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+  };
 }
 
 const PRIVATE_EVENT_KEYS = new Set([
@@ -262,6 +421,7 @@ function publicSuccessBody(
   method: string,
   suffix: string,
   value: unknown,
+  publicOrigin?: string,
 ): unknown {
   const body = record(value) ?? {};
   if (method === "GET" && suffix === "/agents") {
@@ -300,6 +460,37 @@ function publicSuccessBody(
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
   ) {
     return stripPrivateValues(body);
+  }
+  if (method === "GET" && /^\/projects\/[^/]+\/webhooks$/.test(suffix)) {
+    return {
+      webhooks: Array.isArray(body.webhooks)
+        ? body.webhooks.map((value) => publicWebhook(value, publicOrigin))
+        : [],
+    };
+  }
+  if (
+    (method === "POST" || method === "PATCH") &&
+    /^\/projects\/[^/]+\/webhooks(?:\/[^/]+(?:\/rotate-token)?)?$/.test(suffix)
+  ) {
+    return { webhook: publicWebhook(body.webhook, publicOrigin) };
+  }
+  if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/webhooks\/[^/]+\/requests$/.test(suffix)
+  ) {
+    return {
+      requests: Array.isArray(body.requests)
+        ? body.requests.map(publicWebhookRequest)
+        : [],
+    };
+  }
+  if (
+    (method === "GET" || method === "PUT") &&
+    /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return Array.isArray(body.variables)
+      ? { variables: body.variables.map(publicRuntimeVariable) }
+      : publicRuntimeVariable(body);
   }
   if (method === "GET" && suffix === "/logs") {
     return stripPrivateValues(body);
@@ -362,6 +553,31 @@ function publicSuccessBody(
         ? body.connections.map(publicChannel)
         : [],
     };
+  }
+  if (method === "GET" && suffix === "/outboxes") {
+    return {
+      agentId: body.agentId,
+      environment: body.environment,
+      deploymentId: body.deploymentId,
+      outboxes: Array.isArray(body.outboxes)
+        ? body.outboxes.map(publicOutbox)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/schedules") {
+    return {
+      schedules: Array.isArray(body.schedules)
+        ? body.schedules.map(publicSchedule)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/schedule-runs") {
+    return {
+      runs: Array.isArray(body.runs) ? body.runs.map(publicScheduleRun) : [],
+    };
+  }
+  if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix)) {
+    return { run: publicScheduleRun(body.run) };
   }
   if (method === "POST" && suffix === "/channels/slack/connections") {
     return {
@@ -449,13 +665,15 @@ async function publicSuccessResponse(
   upstream: Response,
   method: string,
   suffix: string,
+  publicOrigin?: string,
 ): Promise<Response> {
   const value: unknown = await upstream.json();
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
+  if (suffix.includes("/webhooks")) headers.set("cache-control", "no-store");
   return new Response(
-    JSON.stringify(publicSuccessBody(method, suffix, value)),
+    JSON.stringify(publicSuccessBody(method, suffix, value, publicOrigin)),
     {
       status: upstream.status,
       headers,
@@ -564,6 +782,9 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      ...(body.projectDeployment && typeof body.projectDeployment === "object"
+        ? { projectDeployment: body.projectDeployment }
+        : {}),
       artifact,
     }),
     redirect: "manual",
@@ -587,6 +808,32 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   ) {
     return true;
   }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/projects\/[^/]+\/webhooks$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "PATCH" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/webhooks\/[^/]+$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "POST" &&
+      /^\/projects\/[^/]+\/webhooks\/[^/]+\/rotate-token$/.test(suffix)) ||
+    (method === "GET" &&
+      /^\/projects\/[^/]+\/webhooks\/[^/]+\/requests$/.test(suffix))
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
   if (method === "GET" && suffix === "/logs") return true;
   if (method === "POST" && suffix === "/deployments") return true;
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
@@ -595,6 +842,11 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && suffix === "/outboxes") return true;
+  if (method === "GET" && suffix === "/schedules") return true;
+  if (method === "GET" && suffix === "/schedule-runs") return true;
+  if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix))
+    return true;
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||
@@ -741,6 +993,111 @@ export async function handleManagedAgentChannelConnection(
   });
 }
 
+export async function handleAgentWebhookInvocation(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/api\/agent-webhooks\/([^/]+)$/);
+  if (!match?.[1] || request.method !== "POST") {
+    return Response.json(
+      { error: { code: "not_found", message: "Webhook not found." } },
+      { status: 404 },
+    );
+  }
+  const webhookId = match[1];
+  if (!/^wh_[a-f0-9]{32}$/.test(webhookId)) {
+    return Response.json(
+      { error: { code: "not_found", message: "Webhook not found." } },
+      { status: 404 },
+    );
+  }
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) {
+    return Response.json(
+      {
+        error: {
+          code: "unauthorized",
+          message: "Webhook credentials are required.",
+        },
+      },
+      { status: 401 },
+    );
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(
+    `${base}/v1/agent-webhooks/${encodeURIComponent(webhookId)}`,
+  );
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return Response.json(
+      {
+        error: {
+          code: "unavailable",
+          message: "Webhook service is unavailable.",
+        },
+      },
+      { status: 503 },
+    );
+  }
+  const headers = new Headers({
+    authorization,
+    "content-type": request.headers.get("content-type") ?? "application/json",
+    "x-request-id": crypto.randomUUID(),
+  });
+  const idempotencyKey = request.headers.get("idempotency-key");
+  if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers,
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    const body = record(await upstream.json()) ?? {};
+    const webhookRequest = publicWebhookRequest(body.request);
+    const projectId = webhookRequest.projectId;
+    const agentId = webhookRequest.agentId;
+    const environment = webhookRequest.environment;
+    const sessionId = webhookRequest.sessionId;
+    const sessionUrl =
+      typeof projectId === "string" &&
+      typeof agentId === "string" &&
+      typeof environment === "string" &&
+      typeof sessionId === "string"
+        ? `${url.origin}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?agent=${encodeURIComponent(agentId)}&environment=${encodeURIComponent(environment)}`
+        : undefined;
+    return Response.json(
+      {
+        request: webhookRequest,
+        duplicate: body.duplicate === true,
+        ...(sessionUrl ? { sessionUrl } : {}),
+      },
+      { status: 202 },
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "agent_webhook.upstream_failed",
+        webhookId,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      {
+        error: {
+          code: "unavailable",
+          message: "Webhook service is unavailable.",
+        },
+      },
+      { status: 502 },
+    );
+  }
+}
+
 export async function proxyManagedAgents(
   request: Request,
   env: ManagedAgentsEnv,
@@ -821,6 +1178,7 @@ export async function proxyManagedAgents(
       upstream,
       request.method.toUpperCase(),
       suffix,
+      requestURL.origin,
     );
   } catch (error) {
     console.error(

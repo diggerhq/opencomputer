@@ -50,9 +50,8 @@ Usage:
   opencomputer init <directory|.> [--spa|--agent-only]
   opencomputer link
   opencomputer dev [--project <id|slug> | --create-project <name>]
-  opencomputer session [prompt]
-  opencomputer session create <prompt> [--local]
-  opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]
+  opencomputer session [prompt] [--agent <project-agent>] [--keep]
+  opencomputer session create [prompt] [--agent <project-agent>] [--keep]
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
@@ -61,6 +60,15 @@ Usage:
   opencomputer secrets set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer env list [--environment development|production] [--agent <agent>|current]
+  opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer webhooks list [--environment development|production] [--agent <agent>|current]
+  opencomputer webhooks create <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer webhooks enable <webhook-id> [--project <id|slug>]
+  opencomputer webhooks disable <webhook-id> [--project <id|slug>]
+  opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
+  opencomputer webhooks remove <webhook-id> [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer deploy [--alias <alias>]
   opencomputer run <agent> <prompt> [--keep]

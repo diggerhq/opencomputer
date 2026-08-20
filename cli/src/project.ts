@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
+import { Cron } from "croner";
 import ts from "typescript";
 
 export interface AgentManifest {
@@ -44,6 +45,65 @@ export interface McpServerManifest {
   id: string;
   url: string;
   connection?: string;
+}
+
+export interface ChannelDestinationManifest {
+  type: "conversation";
+  visibility: "public" | "private";
+}
+
+export interface ChannelDefinitionManifest {
+  id: string;
+  type: "slack";
+  displayName?: string;
+  scopes: { bot: string[] };
+  events: Array<"app_mention" | "message.im">;
+  destinations: Record<string, ChannelDestinationManifest>;
+  routing: { whenAmbiguous: "ask" };
+}
+
+export interface ChannelRegistrationManifest {
+  agentId: string;
+  channelId: string;
+  triggers: Array<"mention" | "direct-message">;
+}
+
+export interface OutboxDefinitionManifest {
+  id: string;
+  channelId: string;
+  destination: string;
+}
+
+export interface OutboxRegistrationManifest {
+  agentId: string;
+  outboxId: string;
+}
+
+export interface ScheduleDefinitionManifest {
+  id: string;
+  agentId: string;
+  cron: string;
+  timezone: string;
+  enabled: Array<"development" | "production">;
+  overlap: "skip" | "allow";
+  dispatch: {
+    text?: string;
+    payload?: unknown;
+  };
+}
+
+export interface ProjectResourceManifest {
+  version: 1;
+  channels: ChannelDefinitionManifest[];
+  channelRegistrations: ChannelRegistrationManifest[];
+  outboxes: OutboxDefinitionManifest[];
+  outboxRegistrations: OutboxRegistrationManifest[];
+  schedules: ScheduleDefinitionManifest[];
+}
+
+export interface BuiltProjectResources {
+  manifest: ProjectResourceManifest;
+  digest: string;
 }
 
 export interface ProjectAgentSource {
@@ -367,7 +427,7 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.4.0",
+          "@opencomputer/agent": "^0.5.0",
           ...(spa
             ? {
                 "@opencomputer/react": "^0.1.0",
@@ -799,6 +859,498 @@ function literalStringValue(
   return expression.text;
 }
 
+function literalStringArray(
+  expression: ts.Expression | undefined,
+  label: string,
+): string[] {
+  if (!expression || !ts.isArrayLiteralExpression(expression)) {
+    throw new Error(`${label} must be an array literal`);
+  }
+  return expression.elements.map((element) =>
+    literalStringValue(element, `${label} item`),
+  );
+}
+
+function staticPropertyName(name: ts.PropertyName, label: string): string {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  throw new Error(`${label} must use static property names`);
+}
+
+function defaultExportCall(
+  source: string,
+  path: string,
+  helper: string,
+): ts.CallExpression {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const statement = file.statements.find(
+    (candidate): candidate is ts.ExportAssignment =>
+      ts.isExportAssignment(candidate) &&
+      ts.isCallExpression(candidate.expression) &&
+      ts.isIdentifier(candidate.expression.expression) &&
+      candidate.expression.expression.text === helper,
+  );
+  if (!statement || !ts.isCallExpression(statement.expression)) {
+    throw new Error(`${path} must default-export ${helper}()`);
+  }
+  return statement.expression;
+}
+
+function importedResourceId(
+  source: string,
+  path: string,
+  localName: string,
+  label: string,
+): string {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const declaration = file.statements.find(
+    (statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) &&
+      statement.importClause?.name?.text === localName,
+  );
+  if (!declaration || !ts.isStringLiteralLike(declaration.moduleSpecifier)) {
+    throw new Error(`${path} must default-import the ${label} definition`);
+  }
+  const module = basename(declaration.moduleSpecifier.text).replace(
+    /\.(?:js|ts)$/,
+    "",
+  );
+  if (!AGENT_ID_PATTERN.test(module)) {
+    throw new Error(`${path} imports an invalid ${label} resource name`);
+  }
+  return module;
+}
+
+function channelDefinition(
+  source: string,
+  path: string,
+): ChannelDefinitionManifest {
+  const call = defaultExportCall(source, path, "defineChannel");
+  const input = call.arguments[0];
+  if (!input || !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${path} defineChannel() requires an object literal`);
+  }
+  const id = literalStringValue(objectProperty(input, "id"), `${path} channel id`);
+  if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
+    throw new Error(`${path} filename must match its valid channel id`);
+  }
+  const type = literalStringValue(
+    objectProperty(input, "type"),
+    `${path} channel type`,
+  );
+  if (type !== "slack") throw new Error(`${path} supports only type "slack"`);
+  const scopesExpression = objectProperty(input, "scopes");
+  if (!scopesExpression || !ts.isObjectLiteralExpression(scopesExpression)) {
+    throw new Error(`${path} scopes must be an object literal`);
+  }
+  const scopes = [
+    ...new Set(
+      literalStringArray(
+        objectProperty(scopesExpression, "bot"),
+        `${path} Slack bot scopes`,
+      ),
+    ),
+  ].sort();
+  const events = [
+    ...new Set(
+      objectProperty(input, "events")
+        ? literalStringArray(objectProperty(input, "events"), `${path} events`)
+        : [],
+    ),
+  ].sort();
+  const allowedEvents = new Set(["app_mention", "message.im"]);
+  if (events.some((event) => !allowedEvents.has(event))) {
+    throw new Error(`${path} declares an unsupported Slack event`);
+  }
+  const requiredEventScopes: Record<string, string> = {
+    app_mention: "app_mentions:read",
+    "message.im": "im:history",
+  };
+  for (const event of events) {
+    const required = requiredEventScopes[event]!;
+    if (!scopes.includes(required)) {
+      throw new Error(`${path} event ${event} requires bot scope ${required}`);
+    }
+  }
+  const destinations: Record<string, ChannelDestinationManifest> = {};
+  const destinationsExpression = objectProperty(input, "destinations");
+  if (destinationsExpression) {
+    if (!ts.isObjectLiteralExpression(destinationsExpression)) {
+      throw new Error(`${path} destinations must be an object literal`);
+    }
+    for (const property of destinationsExpression.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        throw new Error(`${path} destinations cannot use spreads`);
+      }
+      const name = staticPropertyName(property.name, `${path} destination`);
+      if (!AGENT_ID_PATTERN.test(name)) {
+        throw new Error(`${path} has invalid destination ${name}`);
+      }
+      if (!ts.isObjectLiteralExpression(property.initializer)) {
+        throw new Error(`${path} destination ${name} must be an object literal`);
+      }
+      const destinationType = literalStringValue(
+        objectProperty(property.initializer, "type"),
+        `${path} destination ${name} type`,
+      );
+      const visibility = literalStringValue(
+        objectProperty(property.initializer, "visibility"),
+        `${path} destination ${name} visibility`,
+      );
+      if (
+        destinationType !== "conversation" ||
+        (visibility !== "public" && visibility !== "private")
+      ) {
+        throw new Error(`${path} destination ${name} is unsupported`);
+      }
+      const required = visibility === "private" ? "groups:read" : "channels:read";
+      if (!scopes.includes(required) || !scopes.includes("chat:write")) {
+        throw new Error(
+          `${path} destination ${name} requires ${required} and chat:write`,
+        );
+      }
+      destinations[name] = { type: "conversation", visibility };
+    }
+  }
+  const routingExpression = objectProperty(input, "routing");
+  if (routingExpression && !ts.isObjectLiteralExpression(routingExpression)) {
+    throw new Error(`${path} routing must be an object literal`);
+  }
+  if (routingExpression) {
+    const ambiguity = objectProperty(routingExpression, "whenAmbiguous");
+    if (ambiguity && literalStringValue(ambiguity, `${path} ambiguity policy`) !== "ask") {
+      throw new Error(`${path} supports only routing.whenAmbiguous = "ask"`);
+    }
+  }
+  const displayNameExpression = objectProperty(input, "displayName");
+  return {
+    id,
+    type: "slack",
+    ...(displayNameExpression
+      ? { displayName: literalStringValue(displayNameExpression, `${path} displayName`) }
+      : {}),
+    scopes: { bot: scopes },
+    events: events as ChannelDefinitionManifest["events"],
+    destinations,
+    routing: { whenAmbiguous: "ask" },
+  };
+}
+
+function channelRegistration(
+  source: string,
+  path: string,
+  agentId: string,
+  channels: ReadonlyMap<string, ChannelDefinitionManifest>,
+): ChannelRegistrationManifest {
+  const call = defaultExportCall(source, path, "registerChannel");
+  const channelExpression = call.arguments[0];
+  const input = call.arguments[1];
+  if (!channelExpression || !ts.isIdentifier(channelExpression)) {
+    throw new Error(`${path} must register an imported channel definition`);
+  }
+  if (!input || !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${path} registerChannel() requires an object literal`);
+  }
+  const channelId = importedResourceId(
+    source,
+    path,
+    channelExpression.text,
+    "channel",
+  );
+  const channel = channels.get(channelId);
+  if (!channel) throw new Error(`${path} references unknown channel ${channelId}`);
+  const triggers = [
+    ...new Set(
+      literalStringArray(objectProperty(input, "on"), `${path} triggers`),
+    ),
+  ].sort();
+  const triggerEvents: Record<string, string> = {
+    mention: "app_mention",
+    "direct-message": "message.im",
+  };
+  for (const trigger of triggers) {
+    const event = triggerEvents[trigger];
+    if (!event || !channel.events.includes(event as "app_mention" | "message.im")) {
+      throw new Error(`${path} trigger ${trigger} is not declared by ${channelId}`);
+    }
+  }
+  return {
+    agentId,
+    channelId,
+    triggers: triggers as ChannelRegistrationManifest["triggers"],
+  };
+}
+
+function outboxDefinition(
+  source: string,
+  path: string,
+  channels: ReadonlyMap<string, ChannelDefinitionManifest>,
+): OutboxDefinitionManifest {
+  const call = defaultExportCall(source, path, "defineOutbox");
+  const input = call.arguments[0];
+  if (!input || !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${path} defineOutbox() requires an object literal`);
+  }
+  const id = literalStringValue(objectProperty(input, "id"), `${path} outbox id`);
+  if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
+    throw new Error(`${path} filename must match its valid outbox id`);
+  }
+  const delivery = objectProperty(input, "delivery");
+  if (!delivery || !ts.isObjectLiteralExpression(delivery)) {
+    throw new Error(`${path} delivery must be an object literal`);
+  }
+  const channelExpression = objectProperty(delivery, "channel");
+  if (!channelExpression || !ts.isIdentifier(channelExpression)) {
+    throw new Error(`${path} delivery.channel must reference an imported channel`);
+  }
+  const channelId = importedResourceId(
+    source,
+    path,
+    channelExpression.text,
+    "channel",
+  );
+  const destination = literalStringValue(
+    objectProperty(delivery, "destination"),
+    `${path} destination`,
+  );
+  if (!channels.get(channelId)?.destinations[destination]) {
+    throw new Error(
+      `${path} references unknown destination ${destination} on ${channelId}`,
+    );
+  }
+  return { id, channelId, destination };
+}
+
+function outboxRegistration(
+  source: string,
+  path: string,
+  agentId: string,
+  outboxes: ReadonlyMap<string, OutboxDefinitionManifest>,
+): OutboxRegistrationManifest {
+  const call = defaultExportCall(source, path, "registerOutbox");
+  const expression = call.arguments[0];
+  if (!expression || !ts.isIdentifier(expression)) {
+    throw new Error(`${path} must register an imported outbox definition`);
+  }
+  const outboxId = importedResourceId(source, path, expression.text, "outbox");
+  if (!outboxes.has(outboxId)) {
+    throw new Error(`${path} references unknown outbox ${outboxId}`);
+  }
+  return { agentId, outboxId };
+}
+
+function staticJsonValue(expression: ts.Expression, label: string): unknown {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
+  if (ts.isNumericLiteral(expression)) return Number(expression.text);
+  if (
+    ts.isPrefixUnaryExpression(expression) &&
+    expression.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(expression.operand)
+  ) {
+    return -Number(expression.operand.text);
+  }
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (expression.kind === ts.SyntaxKind.NullKeyword) return null;
+  if (ts.isArrayLiteralExpression(expression)) {
+    return expression.elements.map((element) => {
+      if (ts.isSpreadElement(element)) {
+        throw new Error(`${label} cannot use spreads`);
+      }
+      return staticJsonValue(element, label);
+    });
+  }
+  if (ts.isObjectLiteralExpression(expression)) {
+    const value: Record<string, unknown> = {};
+    for (const property of expression.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        throw new Error(`${label} cannot use methods or spreads`);
+      }
+      value[staticPropertyName(property.name, label)] = staticJsonValue(
+        property.initializer,
+        label,
+      );
+    }
+    return value;
+  }
+  throw new Error(`${label} must be a static JSON value`);
+}
+
+function scheduleDefinition(
+  source: string,
+  path: string,
+  agentId: string,
+): ScheduleDefinitionManifest {
+  const call = defaultExportCall(source, path, "defineSchedule");
+  const input = call.arguments[0];
+  if (!input || !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${path} defineSchedule() requires an object literal`);
+  }
+  const id = literalStringValue(objectProperty(input, "id"), `${path} schedule id`);
+  if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
+    throw new Error(`${path} filename must match its valid schedule id`);
+  }
+  const cron = literalStringValue(objectProperty(input, "cron"), `${path} cron`)
+    .trim()
+    .replace(/\s+/g, " ");
+  if (cron.split(" ").length !== 5) {
+    throw new Error(`${path} cron must contain exactly five fields`);
+  }
+  const timezoneExpression = objectProperty(input, "timezone");
+  const timezone = timezoneExpression
+    ? literalStringValue(timezoneExpression, `${path} timezone`)
+    : "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+  } catch {
+    throw new Error(`${path} timezone must be a valid IANA timezone`);
+  }
+  try {
+    new Cron(cron, { timezone, paused: true });
+  } catch {
+    throw new Error(`${path} cron is invalid`);
+  }
+  const enabledExpression = objectProperty(input, "enabled");
+  const enabled = [
+    ...new Set(
+      enabledExpression
+        ? literalStringArray(enabledExpression, `${path} enabled environments`)
+        : ["production"],
+    ),
+  ].sort();
+  if (
+    !enabled.length ||
+    enabled.some(
+      (environment) =>
+        environment !== "development" && environment !== "production",
+    )
+  ) {
+    throw new Error(`${path} enabled environments are invalid`);
+  }
+  const overlapExpression = objectProperty(input, "overlap");
+  const overlap = overlapExpression
+    ? literalStringValue(overlapExpression, `${path} overlap`)
+    : "skip";
+  if (overlap !== "skip" && overlap !== "allow") {
+    throw new Error(`${path} overlap must be "skip" or "allow"`);
+  }
+  const dispatchExpression = objectProperty(input, "dispatch");
+  if (!dispatchExpression || !ts.isObjectLiteralExpression(dispatchExpression)) {
+    throw new Error(`${path} dispatch must be an object literal`);
+  }
+  const textExpression = objectProperty(dispatchExpression, "text");
+  const text = textExpression
+    ? literalStringValue(textExpression, `${path} dispatch text`).trim()
+    : undefined;
+  const payloadExpression = objectProperty(dispatchExpression, "payload");
+  const payload = payloadExpression
+    ? staticJsonValue(payloadExpression, `${path} dispatch payload`)
+    : undefined;
+  if (!text && payload === undefined) {
+    throw new Error(`${path} dispatch requires text or payload`);
+  }
+  if (payload !== undefined && JSON.stringify(payload).length > 32 * 1024) {
+    throw new Error(`${path} dispatch payload cannot exceed 32 KiB`);
+  }
+  return {
+    id,
+    agentId,
+    cron,
+    timezone,
+    enabled: enabled as ScheduleDefinitionManifest["enabled"],
+    overlap,
+    dispatch: {
+      ...(text ? { text } : {}),
+      ...(payload === undefined ? {} : { payload }),
+    },
+  };
+}
+
+async function typescriptFiles(directory: string): Promise<string[]> {
+  if (!(await exists(directory))) return [];
+  return (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+    .map((entry) => resolve(directory, entry.name))
+    .sort();
+}
+
+export async function readProjectResources(
+  projectRoot: string,
+): Promise<BuiltProjectResources> {
+  const opencomputer = resolve(projectRoot, "opencomputer");
+  const channelDefinitions = await Promise.all(
+    (await typescriptFiles(resolve(opencomputer, "channels"))).map(async (path) =>
+      channelDefinition(await readFile(path, "utf8"), path),
+    ),
+  );
+  const channels = new Map(channelDefinitions.map((channel) => [channel.id, channel]));
+  if (channels.size !== channelDefinitions.length) {
+    throw new Error("Project channel IDs must be unique");
+  }
+  const outboxDefinitions = await Promise.all(
+    (await typescriptFiles(resolve(opencomputer, "outboxes"))).map(async (path) =>
+      outboxDefinition(await readFile(path, "utf8"), path, channels),
+    ),
+  );
+  const outboxes = new Map(outboxDefinitions.map((outbox) => [outbox.id, outbox]));
+  if (outboxes.size !== outboxDefinitions.length) {
+    throw new Error("Project outbox IDs must be unique");
+  }
+  const agents = await readProjectAgents(projectRoot);
+  const channelRegistrations: ChannelRegistrationManifest[] = [];
+  const outboxRegistrations: OutboxRegistrationManifest[] = [];
+  const schedules: ScheduleDefinitionManifest[] = [];
+  for (const agent of agents) {
+    for (const path of await typescriptFiles(resolve(agent.root, "channels"))) {
+      channelRegistrations.push(
+        channelRegistration(
+          await readFile(path, "utf8"),
+          path,
+          agent.localId,
+          channels,
+        ),
+      );
+    }
+    for (const path of await typescriptFiles(resolve(agent.root, "outboxes"))) {
+      outboxRegistrations.push(
+        outboxRegistration(
+          await readFile(path, "utf8"),
+          path,
+          agent.localId,
+          outboxes,
+        ),
+      );
+    }
+    for (const path of await typescriptFiles(resolve(agent.root, "schedules"))) {
+      schedules.push(
+        scheduleDefinition(await readFile(path, "utf8"), path, agent.localId),
+      );
+    }
+  }
+  const scheduleKeys = schedules.map(({ agentId, id }) => `${agentId}:${id}`);
+  if (new Set(scheduleKeys).size !== scheduleKeys.length) {
+    throw new Error("Agent schedule IDs must be unique within each agent");
+  }
+  const manifest: ProjectResourceManifest = {
+    version: 1,
+    channels: channelDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
+    channelRegistrations: channelRegistrations.sort((left, right) =>
+      `${left.channelId}:${left.agentId}`.localeCompare(`${right.channelId}:${right.agentId}`),
+    ),
+    outboxes: outboxDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
+    outboxRegistrations: outboxRegistrations.sort((left, right) =>
+      `${left.outboxId}:${left.agentId}`.localeCompare(`${right.outboxId}:${right.agentId}`),
+    ),
+    schedules: schedules.sort((left, right) =>
+      `${left.agentId}:${left.id}`.localeCompare(`${right.agentId}:${right.id}`),
+    ),
+  };
+  const serialized = JSON.stringify(manifest);
+  return {
+    manifest,
+    digest: createHash("sha256").update(serialized).digest("hex"),
+  };
+}
+
 function secretNameFromExpression(expression: ts.Expression): string {
   if (
     !ts.isCallExpression(expression) ||
@@ -1093,6 +1645,23 @@ export const defineTool = (input) => {
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
   return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+};
+export const publishOutbox = async (outbox, input) => {
+  const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
+  const type = String(input.type).trim();
+  if (!/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(type)) throw new Error("Outbox event types must use lowercase dot notation");
+  const idempotencyKey = String(input.idempotencyKey).trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) throw new Error("Outbox idempotency keys must contain 1 to 256 characters");
+  const base = globalThis.process?.env?.OPENCOMPUTER_OUTBOX_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_OUTBOX_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer outbox delivery is unavailable");
+  const response = await fetch(base.replace(/\\\/$/, "") + "/" + encodeURIComponent(outboxId) + "/items", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ type, content: input.content, idempotencyKey }),
+  });
+  if (!response.ok) throw new Error("Outbox publish failed with status " + response.status);
+  return await response.json();
 };
 export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
