@@ -1350,6 +1350,21 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   // in Workers, so deltas attribute I/O waits; pure CPU shows ~0).
   const phases: string[] = [];
   let tPrev = Date.now();
+  const tEntry = tPrev;
+  // `pre` is everything before this handler ran: client send -> CF -> routing ->
+  // handler entry. Every other mark starts at tPrev, i.e. AFTER this point, so
+  // without it the biggest term on the burst create path is invisible. Measured
+  // 2026-08-20 from IAD: create median scaled 334->551->853ms at concurrency
+  // 10/25/100 while the marks stayed flat (claim 20->21->32ms), leaving ~700ms
+  // unattributed even after cutting the waitUntil fan-out. This says whether
+  // that time is spent getting to the handler or after the response is built.
+  //
+  // Client-supplied clock, so it carries the client's skew — fine against a
+  // ~700ms signal, useless for anything small. Absent header => no mark.
+  const clientSentMs = Number(req.headers.get("x-client-sent") ?? "");
+  if (Number.isFinite(clientSentMs) && clientSentMs > 0) {
+    phases.push(`pre;dur=${tEntry - clientSentMs}`);
+  }
   const mark = (name: string): void => {
     const t = Date.now();
     phases.push(`${name};dur=${t - tPrev}`);
@@ -1560,6 +1575,11 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         } else {
           ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, org.runtime ?? "", box.id, box.workerID, bodyText));
         }
+        // Total in-handler wall time. With `pre`, the client's own measurement
+        // splits three ways: pre (getting here) + hdl (this handler) + the rest
+        // (response back over the wire, or time this Worker spent after the
+        // return that no mark can reach).
+        phases.push(`hdl;dur=${Date.now() - tEntry}`);
         if (env.DIAG === "1") console.log(`create-timing ${box.id} ${phases.join(" ")}`);
         return new Response(JSON.stringify(resp), {
           status: 201,
