@@ -14,6 +14,24 @@ const target = process.env.OC_API_TARGET || 'http://localhost:8080'
 // org-token; this shortcut is local-only.
 const v3Key = process.env.OC_V3_KEY
 const v3Target = process.env.OC_V3_TARGET || 'https://api.opencomputer.dev'
+
+// Dev-only managed-agents bypass. With OC_MANAGED_TARGET set (e.g. a local
+// `wrangler dev` of the private edge on http://localhost:8787), Vite forwards
+// /api/managed-agents/* straight to it as /v1/* — skipping the public api-edge
+// adapter. The private edge in development mode accepts unauthenticated
+// requests as the local account, so the dashboard works with no key. GitHub
+// browser callbacks (/api/managed-agents/github/setup, .../manifest/callback)
+// ride the same rewrite.
+const managedTarget = process.env.OC_MANAGED_TARGET
+const managedProxy: Record<string, ProxyOptions> = managedTarget
+  ? {
+      '/api/managed-agents': {
+        target: managedTarget,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/managed-agents/, '/v1'),
+      },
+    }
+  : {}
 const injectKey: ProxyOptions['configure'] = (proxy) => {
   proxy.on('proxyReq', (proxyReq) => {
     if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
@@ -52,6 +70,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       ...v3Proxy,
+      ...managedProxy,
       '/auth': target,
       // Trailing slash so the SPA route `/api-keys` isn't proxied to the
       // backend; all real API paths live under `/api/dashboard/`.
