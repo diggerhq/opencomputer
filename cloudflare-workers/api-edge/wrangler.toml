@@ -210,8 +210,14 @@ PAUSED_CAP = "10"
 # more than the pool maintains starves every shard. Raise the pool first, then
 # this. Measured before the change: burst-30 returned exactly 24 fast (90ms
 # median) and dropped the remaining 6 to the CP.
-POOL_STOCK_TARGET = "18"
-POOL_STOCK_LOW_WATER = "9"
+#
+# 2026-08-20: dev's MicroVM pool dropped 150 → 30 so prod could hold the deep
+# pool instead (both cells draw on the SAME us-east-1 account, so depth here is
+# depth prod cannot have). 8 × 3 = 24 against 30, restoring the ratio this file
+# used to carry. The tuning above is kept because it is the reasoning that will
+# be needed again if dev ever takes the deep pool back.
+POOL_STOCK_TARGET = "3"
+POOL_STOCK_LOW_WATER = "2"
 # Cells eligible for new-org home assignment are NOT configured here anymore —
 # it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.
