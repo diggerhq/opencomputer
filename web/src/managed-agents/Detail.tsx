@@ -63,6 +63,7 @@ import {
   sessionsForEnvironment,
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
+import { ManagedProjectRepositories } from './Repositories'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
@@ -78,6 +79,7 @@ type DetailTab =
   | 'schedules'
   | 'webhooks'
   | 'secrets'
+  | 'repositories'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -483,6 +485,7 @@ export default function ManagedAgentDetail({
     'schedules',
     'webhooks',
     'secrets',
+    'repositories',
   ])
   const activeTab = project
     ? routeTab && projectTabs.has(routeTab)
@@ -652,6 +655,9 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
+    ...(project
+      ? ([{ id: 'repositories', label: 'Repositories' }] as const)
+      : []),
   ]
 
   return (
@@ -1042,6 +1048,13 @@ export default function ManagedAgentDetail({
         <ManagedProjectSecrets
           projectId={project.project.id}
           agents={project.project.agents}
+          environment={environment}
+        />
+      ) : null}
+
+      {activeTab === 'repositories' && project ? (
+        <ManagedProjectRepositories
+          projectId={project.project.id}
           environment={environment}
         />
       ) : null}

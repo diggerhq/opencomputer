@@ -14,6 +14,44 @@ const target = process.env.OC_API_TARGET || 'http://localhost:8080'
 // org-token; this shortcut is local-only.
 const v3Key = process.env.OC_V3_KEY
 const v3Target = process.env.OC_V3_TARGET || 'https://api.opencomputer.dev'
+
+// Dev-only managed-agents bypass. With OC_MANAGED_TARGET set (e.g. a local
+// `wrangler dev` of the private edge on http://localhost:8787), Vite forwards
+// /api/managed-agents/* straight to it as /v1/* — skipping the public api-edge
+// adapter. The private edge in development mode accepts unauthenticated
+// requests as the local account, so the dashboard works with no key. GitHub
+// browser callbacks (/api/managed-agents/github/setup, .../manifest/callback)
+// ride the same rewrite.
+const managedTarget = process.env.OC_MANAGED_TARGET
+const managedProxy: Record<string, ProxyOptions> = managedTarget
+  ? {
+      '/api/managed-agents': {
+        target: managedTarget,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/managed-agents/, '/v1'),
+      },
+    }
+  : {}
+
+// Dev-only prod-shell bypass. Cookie auth can't bridge localhost -> the prod
+// edge (the WorkOS callback lands on the prod domain), but the vite proxy can
+// attach an existing prod session server-side: set OC_SESSION_COOKIE to the
+// value of your `oc_session` cookie from app.opencomputer.dev (devtools ->
+// Application -> Cookies) and point OC_API_TARGET at https://app.opencomputer.dev.
+// The cookie lives only in the Node dev server, never in the browser bundle.
+const sessionCookie = process.env.OC_SESSION_COOKIE
+const shellProxyOptions: ProxyOptions = sessionCookie
+  ? {
+      target,
+      ws: true,
+      changeOrigin: true,
+      configure: (proxy) => {
+        proxy.on('proxyReq', (proxyReq) => {
+          proxyReq.setHeader('cookie', `oc_session=${sessionCookie}`)
+        })
+      },
+    }
+  : { target, ws: true }
 const injectKey: ProxyOptions['configure'] = (proxy) => {
   proxy.on('proxyReq', (proxyReq) => {
     if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
@@ -52,10 +90,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       ...v3Proxy,
+      ...managedProxy,
       '/auth': target,
       // Trailing slash so the SPA route `/api-keys` isn't proxied to the
       // backend; all real API paths live under `/api/dashboard/`.
-      '/api/': { target, ws: true },
+      '/api/': shellProxyOptions,
       '/webhooks': target,
     },
   },

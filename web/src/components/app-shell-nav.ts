@@ -3,6 +3,7 @@ import {
   Bot,
   Boxes,
   CalendarClock,
+  FolderGit2,
   KeySquare,
   Layers,
   MessagesSquare,
@@ -85,6 +86,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/secrets`,
             label: 'Secrets',
             icon: KeySquare,
+          },
+          {
+            to: `${projectPath}/repositories`,
+            label: 'Repositories',
+            icon: FolderGit2,
           },
           {
             to: projectPath,

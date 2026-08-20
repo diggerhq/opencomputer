@@ -676,7 +676,10 @@ export async function runCommand(
         allowedOrigins = built.httpConnections
           .filter((connection) =>
             Object.values(connection.headers).some(
-              (value) => typeof value !== "string" && value.name === name,
+              (value) =>
+                typeof value !== "string" &&
+                value.kind === "secret" &&
+                value.name === name,
             ),
           )
           .flatMap((connection) => [
@@ -796,6 +799,75 @@ export async function runCommand(
       return;
     }
     throw new Error("Use `opencomputer env set|list|remove <name>`.");
+  }
+
+  if (command === "github") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+      !globals.json,
+    );
+    if (action === "status" || action === undefined) {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const status = await client.githubStatus({
+        projectId: project.projectId,
+      });
+      if (globals.json) printJSON(status);
+      else {
+        for (const entry of status.environments) {
+          const app = entry.app
+            ? `${entry.app.slug} (${entry.app.mode === "oc_app" ? "shared" : "dedicated"})`
+            : "—";
+          const scope =
+            entry.scopeMode === "selected"
+              ? `${entry.selectedRepositoryCount ?? 0} selected repositories`
+              : entry.scopeMode === "all"
+                ? "all granted repositories"
+                : "";
+          process.stdout.write(
+            `${entry.environment.padEnd(12)} ${entry.state.padEnd(14)} ${app}` +
+              (entry.installation ? `  @${entry.installation.accountLogin}` : "") +
+              (scope ? `  ${scope}` : "") +
+              "\n",
+          );
+        }
+        if (
+          status.environments.every((entry) => entry.state === "not_connected")
+        ) {
+          process.stdout.write(
+            "Connect with `opencomputer github connect` or from the dashboard Repositories tab.\n",
+          );
+        }
+      }
+      return;
+    }
+    if (action === "connect") {
+      const environmentValue = option(args, "--environment");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const result = await client.githubConnect({
+        projectId: project.projectId,
+        environments: environmentValue
+          ? [environmentOption(environmentValue)]
+          : ["development", "production"],
+      });
+      if (globals.json) printJSON(result);
+      else if (result.installUrl) {
+        process.stdout.write(
+          "Open this URL to install the OpenComputer GitHub app:\n" +
+            `  ${result.installUrl}\n` +
+            "Pick repositories on GitHub, then manage scope from the dashboard Repositories tab.\n",
+        );
+      } else {
+        process.stdout.write("GitHub is connected for this project.\n");
+      }
+      return;
+    }
+    throw new Error(
+      "Use `opencomputer github status` or `opencomputer github connect`.",
+    );
   }
 
   if (command === "webhooks") {

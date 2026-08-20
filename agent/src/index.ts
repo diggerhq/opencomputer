@@ -68,9 +68,21 @@ export interface SecretHeaderReference {
   readonly suffix?: string;
 }
 
+export type GithubAppPermission = "read" | "write";
+
+export interface GithubAppHeaderReference {
+  readonly kind: "github-app-header";
+  readonly permissions: Readonly<Record<string, GithubAppPermission>>;
+}
+
+export type ConnectionHeaderValue =
+  | string
+  | SecretHeaderReference
+  | GithubAppHeaderReference;
+
 export interface HttpConnectionDefinition extends ConnectionReference {
   readonly origin: string;
-  readonly headers: Readonly<Record<string, string | SecretHeaderReference>>;
+  readonly headers: Readonly<Record<string, ConnectionHeaderValue>>;
   readonly methods?: readonly string[];
   readonly pathPrefix?: string;
   readonly redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
@@ -286,10 +298,53 @@ export function bearer(secret: SecretReference): SecretHeaderReference {
   return secretHeader(secret, { prefix: "Bearer " });
 }
 
+const GITHUB_APP_PERMISSION_KEYS = new Set([
+  "contents",
+  "pull_requests",
+  "issues",
+  "metadata",
+  "checks",
+]);
+
+const GITHUB_APP_ORIGINS = new Set([
+  "https://api.github.com",
+  "https://api.githubcopilot.com",
+]);
+
+export function githubApp(options: {
+  permissions: Readonly<Record<string, GithubAppPermission>>;
+}): GithubAppHeaderReference {
+  const entries = Object.entries(options?.permissions ?? {});
+  if (entries.length === 0) {
+    throw new Error(
+      "githubApp() requires at least one permission, e.g. githubApp({ permissions: { contents: \"read\" } })",
+    );
+  }
+  const permissions: Record<string, GithubAppPermission> = {};
+  for (const [key, value] of entries) {
+    if (!GITHUB_APP_PERMISSION_KEYS.has(key)) {
+      throw new Error(
+        `githubApp() does not support the ${key} permission; supported keys are ${[...GITHUB_APP_PERMISSION_KEYS].join(", ")}`,
+      );
+    }
+    if (value !== "read" && value !== "write") {
+      throw new Error(`githubApp() permissions must be read or write, got ${String(value)}`);
+    }
+    if ((key === "metadata" || key === "checks") && value === "write") {
+      throw new Error(`The ${key} permission is read-only`);
+    }
+    permissions[key] = value;
+  }
+  return Object.freeze({
+    kind: "github-app-header",
+    permissions: Object.freeze(permissions),
+  });
+}
+
 export function defineConnection(input: {
   id: string;
   origin: string;
-  headers?: Readonly<Record<string, string | SecretHeaderReference>>;
+  headers?: Readonly<Record<string, ConnectionHeaderValue>>;
   methods?: readonly string[];
   pathPrefix?: string;
   redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
@@ -298,6 +353,17 @@ export function defineConnection(input: {
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") {
     throw new Error("Connection origins must be HTTPS origins without a path");
+  }
+  for (const [, value] of Object.entries(input.headers ?? {})) {
+    if (
+      typeof value === "object" &&
+      value.kind === "github-app-header" &&
+      !GITHUB_APP_ORIGINS.has(origin.origin)
+    ) {
+      throw new Error(
+        "githubApp() headers are only valid on GitHub API origins (https://api.github.com, https://api.githubcopilot.com)",
+      );
+    }
   }
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     if (

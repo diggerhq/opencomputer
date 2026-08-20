@@ -271,6 +271,35 @@ export class OpenComputerClient {
     );
   }
 
+  githubStatus(input: { projectId: string }) {
+    return this.request<{
+      environments: Array<{
+        environment: "development" | "production";
+        state: string;
+        app?: { mode: string; slug: string };
+        installation?: { accountLogin: string };
+        scopeMode?: "all" | "selected";
+        selectedRepositoryCount?: number;
+      }>;
+      ocAppAvailable: boolean;
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github`,
+    );
+  }
+
+  githubConnect(input: {
+    projectId: string;
+    environments: Array<"development" | "production">;
+  }) {
+    return this.request<{ installUrl?: string }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
+      {
+        method: "POST",
+        body: JSON.stringify({ environments: input.environments }),
+      },
+    );
+  }
+
   deleteSecret(input: {
     projectId: string;
     name: string;
@@ -437,6 +466,10 @@ export class OpenComputerClient {
             name: string;
             prefix?: string;
             suffix?: string;
+          }
+        | {
+            kind: "github_app";
+            permissions: Record<string, "read" | "write">;
           }
       >;
       methods?: string[];
