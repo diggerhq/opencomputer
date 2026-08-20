@@ -52,6 +52,7 @@ import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
   handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
+  handleManagedAgentGithubPublic,
   proxyManagedAgents,
 } from "./managed_agents";
 
@@ -3632,6 +3633,12 @@ export default {
     }
     if (path.startsWith("/api/agent-webhooks/")) {
       return handleAgentWebhookInvocation(req, env);
+    }
+    // GitHub App browser callbacks and webhook ingress. Unauthenticated by
+    // design: the callbacks are authorized by a one-time state consumed at the
+    // private edge, the webhook by its HMAC signature there.
+    if (path.startsWith("/api/managed-agents/github/")) {
+      return handleManagedAgentGithubPublic(req, env);
     }
     if (
       path === "/api/managed-agents" ||

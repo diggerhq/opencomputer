@@ -834,6 +834,38 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   ) {
     return true;
   }
+  if (
+    (method === "GET" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/github$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/github\/(connect|manifest)$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT") &&
+    /^\/projects\/[^/]+\/github\/repositories$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/github\/apps\/[^/]+\/(webhook-secret|private-key)$/.test(
+      suffix,
+    )
+  ) {
+    return true;
+  }
+  if (
+    method === "DELETE" &&
+    /^\/projects\/[^/]+\/github\/apps\/[^/]+$/.test(suffix)
+  ) {
+    return true;
+  }
   if (method === "GET" && suffix === "/logs") return true;
   if (method === "POST" && suffix === "/deployments") return true;
   if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
@@ -991,6 +1023,84 @@ export async function handleManagedAgentChannelConnection(
       "x-content-type-options": "nosniff",
     },
   });
+}
+
+// GitHub App public surface: two browser-facing callbacks (setup after an
+// installation, manifest conversion after app creation) and the App webhook
+// ingress. No API-key auth — the private edge authorizes the callbacks with
+// their one-time state and the webhook with its HMAC signature. This public
+// origin is what gets baked into GitHub app manifests, never the private
+// hostname.
+export async function handleManagedAgentGithubPublic(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  let target: URL | null = null;
+  if (
+    request.method === "GET" &&
+    url.pathname === "/api/managed-agents/github/setup"
+  ) {
+    target = new URL(`${base}/v1/github/setup${url.search}`);
+  } else if (
+    request.method === "GET" &&
+    url.pathname === "/api/managed-agents/github/manifest/callback"
+  ) {
+    target = new URL(`${base}/v1/github/manifest/callback${url.search}`);
+  } else if (
+    request.method === "POST" &&
+    url.pathname === "/api/managed-agents/github/webhooks"
+  ) {
+    target = new URL(`${base}/v1/webhooks/github`);
+  }
+  if (!target || (target.protocol !== "https:" && target.hostname !== "localhost")) {
+    return Response.json(
+      { error: { code: "not_found", message: "Route not found." } },
+      { status: 404 },
+    );
+  }
+  const headers = new Headers({ "x-request-id": crypto.randomUUID() });
+  for (const name of [
+    "content-type",
+    "x-github-event",
+    "x-github-delivery",
+    "x-github-hook-installation-target-id",
+    "x-github-hook-installation-target-type",
+    "x-hub-signature-256",
+  ]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: request.method,
+      headers,
+      body: request.method === "POST" ? request.body : undefined,
+      redirect: "manual",
+    });
+    // Redirects (e.g. manifest conversion -> GitHub install) and HTML
+    // callback pages pass through verbatim.
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: upstream.headers,
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.github_public_failed",
+        path: url.pathname,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      { error: { code: "unavailable", message: "GitHub service is unavailable." } },
+      { status: 503 },
+    );
+  }
 }
 
 export async function handleAgentWebhookInvocation(

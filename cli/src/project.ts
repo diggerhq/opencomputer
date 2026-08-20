@@ -34,7 +34,9 @@ export interface HttpConnectionManifest {
   origin: string;
   headers: Record<
     string,
-    string | { kind: "secret"; name: string; prefix?: string; suffix?: string }
+    | string
+    | { kind: "secret"; name: string; prefix?: string; suffix?: string }
+    | { kind: "github_app"; permissions: Record<string, "read" | "write"> }
   >;
   methods?: string[];
   pathPrefix?: string;
@@ -1371,10 +1373,63 @@ function connectionHeaderValue(
     !ts.isIdentifier(expression.expression)
   ) {
     throw new Error(
-      "Connection headers must be string literals, bearer(useSecret()), or secretHeader(useSecret())",
+      "Connection headers must be string literals, bearer(useSecret()), secretHeader(useSecret()), or githubApp()",
     );
   }
   const helper = expression.expression.text;
+  if (helper === "githubApp") {
+    const options = expression.arguments[0];
+    if (!options || !ts.isObjectLiteralExpression(options)) {
+      throw new Error(
+        "githubApp() requires an object literal, e.g. githubApp({ permissions: { contents: \"read\" } })",
+      );
+    }
+    const permissionsProperty = objectProperty(options, "permissions");
+    if (
+      !permissionsProperty ||
+      !ts.isObjectLiteralExpression(permissionsProperty)
+    ) {
+      throw new Error(
+        "githubApp() permissions must be an inline object literal with literal values",
+      );
+    }
+    const permissions: Record<string, "read" | "write"> = {};
+    for (const property of permissionsProperty.properties) {
+      if (
+        !ts.isPropertyAssignment(property) ||
+        (!ts.isIdentifier(property.name) &&
+          !ts.isStringLiteralLike(property.name))
+      ) {
+        throw new Error(
+          "githubApp() permissions must use literal keys and literal values",
+        );
+      }
+      const key = ts.isIdentifier(property.name)
+        ? property.name.text
+        : property.name.text;
+      const value = literalStringValue(
+        property.initializer,
+        `githubApp permission ${key}`,
+      );
+      if (value !== "read" && value !== "write") {
+        throw new Error(
+          `githubApp() permission ${key} must be "read" or "write"`,
+        );
+      }
+      if (
+        !["contents", "pull_requests", "issues", "metadata", "checks"].includes(
+          key,
+        )
+      ) {
+        throw new Error(`githubApp() does not support the ${key} permission`);
+      }
+      permissions[key] = value;
+    }
+    if (Object.keys(permissions).length === 0) {
+      throw new Error("githubApp() requires at least one permission");
+    }
+    return { kind: "github_app", permissions };
+  }
   if (helper === "bearer") {
     const secret = expression.arguments[0];
     if (!secret) throw new Error("bearer() requires useSecret()");
@@ -1593,6 +1648,18 @@ export const useSecret = (value) => {
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
+export const githubApp = (options) => {
+  const entries = Object.entries(options?.permissions || {});
+  if (!entries.length) throw new Error("githubApp() requires at least one permission");
+  const permissions = {};
+  for (const [key, value] of entries) {
+    if (!["contents", "pull_requests", "issues", "metadata", "checks"].includes(key)) throw new Error("githubApp() does not support the " + key + " permission");
+    if (value !== "read" && value !== "write") throw new Error("githubApp() permissions must be read or write");
+    if ((key === "metadata" || key === "checks") && value === "write") throw new Error("The " + key + " permission is read-only");
+    permissions[key] = value;
+  }
+  return Object.freeze({ kind: "github-app-header", permissions: Object.freeze(permissions) });
+};
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
   const origin = new URL(input.origin);

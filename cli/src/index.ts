@@ -63,6 +63,8 @@ Usage:
   opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer github status [--project <id|slug>]
+  opencomputer github connect [--environment development|production] [--project <id|slug>]
   opencomputer webhooks list [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks create <name> [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks enable <webhook-id> [--project <id|slug>]

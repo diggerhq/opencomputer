@@ -75,7 +75,7 @@ function secretOrigins(results: DevelopmentResults): Map<string, string[]> {
   for (const { built } of results) {
     for (const connection of built.httpConnections) {
       for (const header of Object.values(connection.headers)) {
-        if (typeof header === "string") continue;
+        if (typeof header === "string" || header.kind !== "secret") continue;
         const current = origins.get(header.name) ?? new Set<string>();
         current.add(connection.origin);
         for (const redirect of connection.redirectOrigins ?? []) {
@@ -516,6 +516,33 @@ export async function runCloudDevelopment(
           ? `React:      starting local Vite app\n`
           : `React:      not included\n`),
     );
+    const usesGithubApp = initial.some(({ built }) =>
+      built.httpConnections.some((connection) =>
+        Object.values(connection.headers).some(
+          (header) => typeof header !== "string" && header.kind === "github_app",
+        ),
+      ),
+    );
+    if (usesGithubApp) {
+      try {
+        const github = await client.githubStatus({
+          projectId: binding.projectId,
+        });
+        const development = github.environments.find(
+          (entry) => entry.environment === "development",
+        );
+        if (development && development.state !== "connected") {
+          process.stdout.write(
+            `GitHub:     not connected for development — githubApp() calls will fail
+` +
+              `            Run \`opencomputer github connect\` or open the dashboard Repositories tab
+`,
+          );
+        }
+      } catch {
+        // Connection status is advisory; never block the dev loop on it.
+      }
+    }
     if (spa) web = await startReactDevServer(projectRoot);
     watcher = watch(
       resolve(projectRoot, "opencomputer"),

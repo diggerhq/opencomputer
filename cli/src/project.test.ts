@@ -454,6 +454,81 @@ export default function Agent() {
   }
 });
 
+test("the compiler records app-minted GitHub connections with literal permissions", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-app-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+
+export const github = defineConnection({
+  id: "github",
+  origin: "https://api.github.com",
+  headers: {
+    Authorization: githubApp({
+      permissions: { contents: "read", pull_requests: "write" },
+    }),
+  },
+});
+export default function Agent() {
+  return "Use GitHub.";
+}
+`,
+    );
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    await assert.doesNotReject(
+      import(
+        `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+      ),
+    );
+    assert.deepEqual(built.httpConnections, [
+      {
+        id: "github",
+        origin: "https://api.github.com",
+        headers: {
+          Authorization: {
+            kind: "github_app",
+            permissions: { contents: "read", pull_requests: "write" },
+          },
+        },
+      },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects githubApp permissions that are not literal", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-bad-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+
+const shared = { contents: "read" } as const;
+export const github = defineConnection({
+  id: "github",
+  origin: "https://api.github.com",
+  headers: { Authorization: githubApp({ permissions: shared }) },
+});
+export default function Agent() {
+  return "Use GitHub.";
+}
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /githubApp\(\) permissions must be an inline object literal/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler records managed MCP server definitions", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-mcp-"));
   const root = resolve(parent, "app");
