@@ -137,6 +137,20 @@ export class H2Grpc {
     return this.dead !== null;
   }
 
+  /**
+   * close tears the tunnel down. Callers that dial per request MUST call it:
+   * a Worker that opens a WebSocket per exec and never closes it leaks one
+   * socket per command, against the box and against the isolate's own limits.
+   */
+  close(): void {
+    this.kill(new Error("h2grpc: closed by caller"));
+    try {
+      this.ws.close();
+    } catch {
+      /* already gone */
+    }
+  }
+
   private kill(e: Error): void {
     if (this.dead) return;
     this.dead = e;

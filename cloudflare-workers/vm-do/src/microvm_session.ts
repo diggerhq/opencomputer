@@ -21,7 +21,7 @@
 // control-plane path — they are not implemented here and calls for them should
 // never be routed to this DO.
 
-import { H2Grpc, encodeExecRequest, decodeExecResponse, type ExecReq } from "./h2grpc";
+import { H2Grpc, encodeExecRequest, decodeExecResponse, type ExecReq } from "../../shared/h2grpc";
 
 const EXEC_PATH = "/agent.SandboxAgent/Exec";
 const AGENT_TUNNEL_PATH = "/osb/agent-grpc"; // must match internal/awsvm.AgentTunnelPath
@@ -70,6 +70,14 @@ export class MicrovmSession {
   // save an alarm loop that costs nothing; an eviction just restarts the clock,
   // and the alarm re-reads the durable deadline set at attach.
   private warmUntil = 0;
+  // Requests served by THIS instance. 1 means the object was constructed to
+  // serve this request, which is the only way to tell an eviction apart from a
+  // live-but-slow channel — and the whole remaining cost of this path is on one
+  // side or the other of that line. Reported back in x-mvm-timing.
+  private served = 0;
+  // Last dial cost, so the exec that triggered a dial can attribute it. Set by
+  // dial(), consumed and cleared by exec().
+  private lastDialMs = 0;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -77,6 +85,7 @@ export class MicrovmSession {
 
   async fetch(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
+    this.served++;
     try {
       if (path === "/attach") return await this.attach(req);
       if (path === "/exec") return await this.exec(req);
@@ -246,7 +255,8 @@ export class MicrovmSession {
       // Logged rather than dropped: a dial here is the ~1.1s guest-attach the
       // keepalive exists to keep off the customer's path, so a run of them is
       // the signal that the keepalive is not holding.
-      console.log(`mvm-do: dial+ready in ${Date.now() - tDial}ms`);
+      this.lastDialMs = Date.now() - tDial;
+      console.log(`mvm-do: dial+ready in ${this.lastDialMs}ms`);
       return conn;
     })();
     this.dialing = p;
@@ -265,6 +275,16 @@ export class MicrovmSession {
   }
 
   private async exec(req: Request): Promise<Response> {
+    // Everything the caller cannot see from outside. do;dur on the edge is one
+    // opaque number covering the hop to this object, this object's cold start,
+    // a dial if the channel was gone, and the RPC itself — and the four have
+    // completely different fixes. Measured here and handed back so the edge can
+    // publish the split.
+    const tEnter = Date.now();
+    this.lastDialMs = 0;
+    const wasLive = this.live();
+    const coldStart = this.served === 1;
+
     const body = (await req.json()) as ExecReq & { timeoutMs?: number };
     if (!body?.command) return json({ error: "command required" }, 400);
 
@@ -283,11 +303,12 @@ export class MicrovmSession {
     try {
       const tU = Date.now();
       const res = await conn.unary(EXEC_PATH, encodeExecRequest(body), timeoutMs);
+      const unaryMs = Date.now() - tU;
       // Kept deliberately. This is the only number that separates transport
       // from the guest actually running the command: everything else the edge
       // can see lumps them together, which is how ~700ms of shell startup spent
       // a whole session being mistaken for a slow tunnel.
-      console.log(`mvm-do: unary ${Date.now() - tU}ms`);
+      console.log(`mvm-do: unary ${unaryMs}ms`);
       // Being used is the strongest signal the box is worth keeping warm, so
       // each exec pushes the deadline out and restarts the loop if it had
       // lapsed (TTL expiry, or a run of failures while the box was resuming).
@@ -295,7 +316,11 @@ export class MicrovmSession {
       this.failures = 0;
       await this.state.storage.put("warmUntil", this.warmUntil);
       await this.armKeepalive();
-      return json(decodeExecResponse(res));
+      return json(decodeExecResponse(res), 200, {
+        // live=1 means the channel survived from the last request or the
+        // keepalive — the state this whole design is trying to be in.
+        "x-mvm-timing": `live=${wasLive ? 1 : 0},cold=${coldStart ? 1 : 0},dial=${this.lastDialMs},unary=${unaryMs},inside=${Date.now() - tEnter}`,
+      });
     } catch (e) {
       // The channel is suspect once a call fails on it: drop it so the next
       // exec re-dials rather than inheriting a half-dead connection.
@@ -305,9 +330,9 @@ export class MicrovmSession {
   }
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(extra ?? {}) },
   });
 }

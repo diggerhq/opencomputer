@@ -341,6 +341,17 @@ export class PoolStock {
         region: e.region,
         sandboxDomain: e.sandboxDomain,
         token: await mintSandboxTokenDO(this.env.SESSION_JWT_SECRET, orgID, e.id, e.workerID),
+        // How to reach the box's agent directly. Named apart from `token` above,
+        // which is the CUSTOMER's sandbox token — these are the AWS proxy's
+        // port-scoped credential and are never handed to a customer.
+        //
+        // Carried out with the box so the create isolate can cache them
+        // colo-locally: that is what lets a later exec dial the agent itself
+        // instead of asking the control plane in westus2 for reach-info it has
+        // already been told once. Absent for backends with no in-memory stock.
+        agentEndpoint: e.endpoint,
+        agentToken: e.token,
+        agentPort: e.port,
       })),
     );
     return Response.json({ boxes, stock: this.stock.length });
