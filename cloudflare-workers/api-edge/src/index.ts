@@ -961,17 +961,68 @@ const RUNTIME_MICROVM = "microvm";
 
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
 // when the org doesn't exist (callers 401).
-async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
+const orgPolicyInflight = new Map<string, Promise<OrgPolicy | null>>();
+
+// loadOrgPolicy resolves the org row every exec needs to decide how to route.
+//
+// This used to consult ONLY the per-isolate map, whose TTL is 5s. Every exec on
+// the MicroVM path calls it (tryVmDoExec reads .runtime before it can pick a
+// path), and a 100-wide burst spreads across many fresh isolates, so most of
+// those calls missed and went to D1 — whose primary is in WNAM while the burst
+// runs in IAD. Measured on prod, that was the entire unexplained remainder of
+// the exec handler: `hdl` grew 67 -> 497ms across a prewarm sweep while the
+// gRPC exec inside it got FASTER (59 -> 35ms), because tighter client
+// concurrency made more of those cold misses land at once.
+//
+// The value is already sitting in the colo tier — loadCreateContext writes it on
+// every create and the PoolStock/request-path warmers refresh it — so this only
+// ever had to read what was there. Same fix that took the create path's `ctx`
+// mark from 376ms to 2ms.
+//
+// Staleness is safe for these callers specifically: all four use it for routing
+// and cap-token minting (runtime, billing_provider), never for halt
+// enforcement, which goes through enforceCreatePolicy on the create path.
+async function loadOrgPolicy(env: Env, orgID: string, ctx?: ExecutionContext): Promise<OrgPolicy | null> {
   const nowMs = Date.now();
   const cached = orgPolicyCache.get(orgID);
   if (cached && nowMs - cached.cachedAtMs < ORG_POLICY_TTL_MS) return cached.policy;
-  const policy = await env.OPENCOMPUTER_DB.prepare(
-    ORG_POLICY_SQL,
-  )
-    .bind(orgID)
-    .first<OrgPolicy>();
+
+  const remember = (policy: OrgPolicy | null, at: number) => {
+    if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
+    orgPolicyCache.set(orgID, { policy, cachedAtMs: at });
+  };
+
+  const shared = await coloGet<{ policy: OrgPolicy | null; cachedAtMs: number }>("org", orgID);
+  if (shared) {
+    const age = nowMs - shared.cachedAtMs;
+    if (age < ORG_POLICY_TTL_MS) {
+      remember(shared.policy, shared.cachedAtMs);
+      return shared.policy;
+    }
+    // Stale-but-usable: serve it and refresh behind the response, rather than
+    // making this request pay a transcontinental read for a value that changes
+    // approximately never.
+    if (age < ORG_STALE_MAX_MS && shared.policy) {
+      remember(shared.policy, shared.cachedAtMs);
+      if (ctx) ctx.waitUntil(refreshOrgPolicy(env, orgID).catch(() => {}));
+      return shared.policy;
+    }
+  }
+  // Single-flight the cold read: a burst arriving on one isolate would otherwise
+  // fire N identical D1 reads before any of them lands.
+  const inflight = orgPolicyInflight.get(orgID);
+  if (inflight) return inflight;
+  const p = refreshOrgPolicy(env, orgID).finally(() => orgPolicyInflight.delete(orgID));
+  orgPolicyInflight.set(orgID, p);
+  return p;
+}
+
+async function refreshOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
+  const policy = await env.OPENCOMPUTER_DB.prepare(ORG_POLICY_SQL).bind(orgID).first<OrgPolicy>();
+  const at = Date.now();
   if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
-  orgPolicyCache.set(orgID, { policy, cachedAtMs: nowMs });
+  orgPolicyCache.set(orgID, { policy, cachedAtMs: at });
+  await coloPut("org", orgID, { policy, cachedAtMs: at }, ORG_STALE_MAX_MS / 1000);
   return policy;
 }
 
@@ -1818,8 +1869,10 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
   // backend cannot have. Measured on prod: that grace was ~437ms of every
   // MicroVM exec — 79% of benchmark TTI, against a control plane that served
   // the exec itself in 10ms. Skip straight to the tunnel.
-  const orgPolicy = await loadOrgPolicy(env, caller.orgID);
-  if (orgPolicy?.runtime === RUNTIME_MICROVM) return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs);
+  const tPol = Date.now();
+  const orgPolicy = await loadOrgPolicy(env, caller.orgID, ctx);
+  const polMs = Date.now() - tPol;
+  if (orgPolicy?.runtime === RUNTIME_MICROVM) return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs, polMs);
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;
@@ -1913,7 +1966,7 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
  * SCOPE: one-shot Exec only. Streaming, PTY and file transfer stay on the
  * control-plane path via the null return.
  */
-async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
+async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, polMs = 0): Promise<Response | null> {
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;
@@ -1999,7 +2052,7 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
       status: 200,
       headers: {
         "content-type": "application/json",
-        "server-timing": `auth;dur=${authMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}`,
+        "server-timing": `auth;dur=${authMs}, pol;dur=${polMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}`,
       },
     });
   } catch (e) {
