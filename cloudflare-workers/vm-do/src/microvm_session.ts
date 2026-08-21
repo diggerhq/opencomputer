@@ -159,7 +159,19 @@ export class MicrovmSession {
     // Opening the tunnel costs ~30-45ms. Doing it here, off the create path,
     // means the first exec — the one time-to-first-command actually measures —
     // finds a live channel instead of paying for it.
-    if (c.dial) {
+    // Only dial when there is nothing live to reuse. dial() unconditionally
+    // opens a new socket and overwrites this.ws/this.conn — it has no
+    // live-channel guard of its own (it only dedupes CONCURRENT dials) — so
+    // calling it on a healthy channel destroys that channel and replaces it with
+    // an unproven one.
+    //
+    // That was harmless while attach ran exactly once per box, at restock. It
+    // stopped being harmless when PoolStock started re-attaching sitting stock
+    // on a rotation: every box would have its working tunnel torn down and
+    // rebuilt every ~45s, and any exec in flight at that moment would have the
+    // channel swapped underneath it. Re-attaching must be a no-op refresh of the
+    // credentials and the idle clock, not a reconnect.
+    if (c.dial && !this.live()) {
       try {
         await this.dial(this.creds);
       } catch (e) {
