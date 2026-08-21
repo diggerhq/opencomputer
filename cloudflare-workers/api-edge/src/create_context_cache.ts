@@ -73,6 +73,23 @@ export const RUNNING_COUNT_SQL =
   "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'";
 export const ACTIVE_CELLS_SQL =
   "SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at FROM cells WHERE status = 'active'";
+// The org's API keys, so the auth entry can be warmed alongside the rest of the
+// create context. Bounded and most-recently-used first: an org may hold many
+// keys but a burst arrives on one, and this rides inside a 10s alarm.
+export const ORG_KEYS_SQL =
+  "SELECT key_hash, org_id, created_by, expires_at FROM api_keys WHERE org_id = ?1 ORDER BY last_used DESC LIMIT 8";
+
+// How long a warmed auth entry stays usable. Must equal index.ts's AUTH_TTL_MS
+// — authenticate() reads these entries and applies that bound itself, so a
+// longer TTL here would only produce entries it rejects on arrival.
+export const AUTH_TTL_MS = 60_000;
+
+interface KeyRow {
+  key_hash: string;
+  org_id: string;
+  created_by: string | null;
+  expires_at: number | null;
+}
 
 // How many recently-serving orgs one warm pass refreshes. The point is to cover
 // whoever is actually creating through this shard, not the whole customer base:
@@ -143,6 +160,7 @@ export async function warmCreateContextColo(db: D1Database, orgIDs: string[]): P
     for (const id of orgs) {
       stmts.push(db.prepare(ORG_POLICY_SQL).bind(id));
       stmts.push(db.prepare(RUNNING_COUNT_SQL).bind(id));
+      stmts.push(db.prepare(ORG_KEYS_SQL).bind(id));
     }
     // One round trip for everything: the whole reason this is worth doing from
     // a 10s alarm rather than N separate reads.
@@ -158,9 +176,36 @@ export async function warmCreateContextColo(db: D1Database, orgIDs: string[]): P
       puts.push(coloPut("cells", "active", { cells, cachedAtMs: at }, CELL_STALE_MAX_MS / 1000));
     }
 
+    const nowSec = Math.floor(at / 1000);
     for (let i = 0; i < orgs.length; i++) {
-      const policy = (res[1 + i * 2]?.results?.[0] as OrgPolicy | undefined) ?? null;
-      const n = (res[2 + i * 2]?.results?.[0] as { n: number } | undefined)?.n ?? 0;
+      const policy = (res[1 + i * 3]?.results?.[0] as OrgPolicy | undefined) ?? null;
+      const n = (res[2 + i * 3]?.results?.[0] as { n: number } | undefined)?.n ?? 0;
+      // Auth entries, in the shape authenticate() reads. This is the one read on
+      // the create path that no warmer covered, and it is the most expensive to
+      // miss: measured on prod from IAD, a cold isolate's FIRST D1 touch cost
+      // 16,723ms while the same read from SJC — where the primary lives — cost
+      // 57ms. authenticate() runs before everything else, so it pays that
+      // establishment and every later read on the request rides the open
+      // connection (`ctx` was 125ms on the very same request).
+      //
+      // Revocation is unaffected: a deleted key simply stops coming back from
+      // this query, so its entry lapses within AUTH_TTL_MS exactly as it does
+      // today. Expired keys are skipped rather than published as valid.
+      for (const k of (res[3 + i * 3]?.results as KeyRow[] | undefined) ?? []) {
+        if (k.expires_at !== null && k.expires_at < nowSec) continue;
+        puts.push(
+          coloPut(
+            "auth",
+            k.key_hash,
+            {
+              caller: { orgID: k.org_id, userID: k.created_by },
+              expiresAt: k.expires_at,
+              cachedAtMs: at,
+            },
+            AUTH_TTL_MS / 1000,
+          ),
+        );
+      }
       // A null policy is a real answer (org deleted), but publishing it from a
       // background pass would hand the create path a "no such org" it did not
       // ask for. Let the create path establish that itself.
