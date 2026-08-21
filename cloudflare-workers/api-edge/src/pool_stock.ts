@@ -217,19 +217,6 @@ export class PoolStock {
   // Resolved once per isolate alongside coloLogged; reported on every claim so
   // the create path can see whether its stock DO is even in the same colo.
   private colo = "?";
-  // Blocking form, for the /colo probe only — never on a claim, which must not
-  // wait on a diagnostic round trip.
-  private async coloNow(): Promise<string> {
-    if (this.colo !== "?") return this.colo;
-    this.coloLogged = true;
-    try {
-      const t = await fetch("https://www.cloudflare.com/cdn-cgi/trace").then((r) => r.text());
-      this.colo = (t.match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
-    } catch {
-      /* leave "?" — the probe reports unknown rather than failing */
-    }
-    return this.colo;
-  }
   // Last cell seen on a /claim, persisted so the proactive alarm can restock
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
@@ -281,39 +268,6 @@ export class PoolStock {
     }
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({ stock: this.stock.length, restocking: this.restockInFlight });
-    }
-    // Placement probe. A DO pins to a colo at first touch, permanently, and
-    // locationHint only picks a REGION — four generations of shards were armed
-    // from an in-metro client and still scattered across five colos inside
-    // enam. So placement is not something to aim; it is something to measure
-    // and then select on. /colo reports where this object actually landed.
-    //
-    // ?child=<name> additionally asks a MicrovmSession this shard parents where
-    // IT landed. That is the load-bearing question for stock-prep warming: if a
-    // child inherits its parent's colo, pinning the shards pins every session
-    // DO with them; if it does not, session placement needs its own lever.
-    //
-    // ANSWERED, on prod 2026-08-21 over 64 parent/child pairs: it does not.
-    // A child matches its parent's colo 34/64 of the time, and parent-IAD
-    // yields child-IAD only 12/27 (44%) against a 30% background rate. So
-    // parentage biases placement without deciding it. Pinning the shards is
-    // still worth doing — deterministic for the claim hop, and it lifts the
-    // session DOs from 21% IAD to ~44% for free — but the other half of them
-    // need a lever this has now ruled out.
-    if (req.method === "GET" && url.pathname === "/colo") {
-      const self = await this.coloNow();
-      const child = url.searchParams.get("child");
-      const ns = this.env.MICROVM_SESSIONS;
-      let childColo: string | null = null;
-      if (child && ns) {
-        childColo = await ns
-          .get(ns.idFromName(child), { locationHint: "enam" })
-          .fetch("https://do/colo")
-          .then((r) => r.json() as Promise<{ colo: string }>)
-          .then((j) => j.colo)
-          .catch(() => "err");
-      }
-      return Response.json({ colo: self, stock: this.stock.length, child: childColo });
     }
     return new Response("not found", { status: 404 });
   }
