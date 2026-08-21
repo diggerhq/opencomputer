@@ -32,6 +32,7 @@ export { PoolStock } from "./pool_stock";
 import { coloGet, coloPut } from "./colo_cache";
 import {
   ACTIVE_CELLS_SQL,
+  AUTH_TTL_MS,
   CELL_STALE_MAX_MS,
   CELL_TTL_MS,
   CONCURRENCY_COUNT_TTL_MS,
@@ -375,7 +376,6 @@ function stripApiKeyQueryParam(target: string): string {
 // per-isolate for a few seconds so a burst collapses to a handful of D1 reads,
 // and throttle the last_used bump. Isolates recycle so entries are naturally
 // bounded; CACHE_MAX guards pathological key cardinality.
-const AUTH_TTL_MS = 60_000;
 // SWR window for org policy in the colo tier: a ≤60s-stale not-halted policy
 // may gate a create while a background refresh runs (see loadCreateContext).
 const LAST_USED_BUMP_MS = 60_000; // at most once/min/key/isolate
