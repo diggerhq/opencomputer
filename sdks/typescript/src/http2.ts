@@ -33,19 +33,28 @@ let configurePromise: Promise<void> | null = null;
 
 // How many connections to hold open, and how often to keep them alive.
 //
-// OFF by default. The original default was 100 — sized to a 100-way burst on
-// the theory that anything less just warms fewer connections. Measured against
-// prod from an IAD runner (4 vCPU), the opposite is true: opening 100 TLS
-// connections while 100 creates are already in flight starves the event loop
-// and every request unblocks together at the end.
+// 48. Swept against prod from an IAD runner (4 vCPU) at burst-100, TTI p50:
 //
-//   prewarm=100   wall 24,040ms   create p50 994ms   exec p50 22,991ms   TTI p50 23,990ms
-//   prewarm=0     wall  1,203ms   create p50 573ms   exec p50    107ms   TTI p50    709ms
+//   prewarm=100   23,990ms   opening 100 TLS connections while 100 creates are
+//                            in flight starves the event loop; everything
+//                            unblocks together at the end
+//   prewarm=0        624ms   the opposite failure — undici marks an h2 session
+//                            busy per in-flight POST, so 100 concurrent creates
+//                            queue behind each other on one connection
+//   prewarm=32       338ms
+//   prewarm=48       301ms / 328ms (two runs)
+//   prewarm=64       312ms
 //
-// A 34x regression in exactly the shape it was written to help, so it does not
-// get to be the default. Opt in with OPENCOMPUTER_PREWARM_CONNECTIONS=N once a
-// value has been measured to beat 0 on the workload in question.
-const DEFAULT_PREWARM = 0;
+// The curve is flat between 32 and 64 — run-to-run variance on TTI p50 is ~27ms,
+// so 48 vs 64 is not a real difference — and turns back up past that because
+// establishing the pool starts costing more than it saves (424ms to open 64
+// versus 153ms for 48, paid inside the measured window). 48 sits at the bottom
+// with margin on both sides.
+//
+// Note the 100 figure is not a typo: this was shipped as the default on the
+// theory that a smaller pool merely warms fewer connections. It is worth 34x in
+// the exact shape it was written for.
+const DEFAULT_PREWARM = 48;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 // Above undici's 4s default so an idle connection survives between phases of a
 // workload; still far below any sane server-side idle close.
