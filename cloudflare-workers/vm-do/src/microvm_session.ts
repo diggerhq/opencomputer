@@ -274,6 +274,27 @@ export class MicrovmSession {
     return this.dial(creds);
   }
 
+  // Colo self-identification, resolved once per isolate and reported on every
+  // exec. Placement is decided at FIRST TOUCH and is permanent, and the first
+  // touch for these objects is warmMicrovmBox running inside a PoolStock shard
+  // — so they inherit the shards' placement, which was measured scattered
+  // across ATL/IAD/EWR/MIA/ORD. locationHint cannot fix this: it is
+  // jurisdiction-level ("enam" covers all of those) and only consulted at
+  // creation. This number is here to prove or kill that theory: if mvmdo
+  // latency tracks colo, placement is the remaining tail.
+  private colo = "?";
+  private coloResolved = false;
+
+  private resolveColo(): void {
+    if (this.coloResolved) return;
+    this.coloResolved = true;
+    void fetch("https://www.cloudflare.com/cdn-cgi/trace")
+      .then(async (r) => {
+        this.colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+      })
+      .catch(() => {});
+  }
+
   private async exec(req: Request): Promise<Response> {
     // Everything the caller cannot see from outside. do;dur on the edge is one
     // opaque number covering the hop to this object, this object's cold start,
@@ -281,6 +302,7 @@ export class MicrovmSession {
     // completely different fixes. Measured here and handed back so the edge can
     // publish the split.
     const tEnter = Date.now();
+    this.resolveColo();
     this.lastDialMs = 0;
     const wasLive = this.live();
     const coldStart = this.served === 1;
@@ -320,6 +342,7 @@ export class MicrovmSession {
         // live=1 means the channel survived from the last request or the
         // keepalive — the state this whole design is trying to be in.
         "x-mvm-timing": `live=${wasLive ? 1 : 0},cold=${coldStart ? 1 : 0},dial=${this.lastDialMs},unary=${unaryMs},inside=${Date.now() - tEnter}`,
+        "x-mvm-colo": this.colo,
       });
     } catch (e) {
       // The channel is suspect once a call fails on it: drop it so the next

@@ -2039,7 +2039,8 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
             "server-timing":
               `auth;dur=${authMs}, pol;dur=${polMs}, mvmdo;dur=${doMs}, ` +
               `dlive;dur=${t.live ?? -1}, dcold;dur=${t.cold ?? -1}, ddial;dur=${t.dial ?? -1}, ` +
-              `dunary;dur=${t.unary ?? -1}, dinside;dur=${t.inside ?? -1}`,
+              `dunary;dur=${t.unary ?? -1}, dinside;dur=${t.inside ?? -1}, ` +
+              `dcolo;desc=${dr.headers.get("x-mvm-colo") ?? "?"}`,
           },
         });
       }
