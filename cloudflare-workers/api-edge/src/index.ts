@@ -388,6 +388,9 @@ interface AuthEntry {
   lastBumpMs: number;
 }
 const authCache = new Map<string, AuthEntry>();
+// In-flight D1 auth lookups, keyed by key hash — see authenticate(). Collapses a
+// cold-cache burst onto one query instead of one per request.
+const authInflight = new Map<string, Promise<Caller | null>>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
 // The create concurrency cap counts running sandboxes from the global
 // sandboxes_index — a per-create D1 read. That index already trails events, so
@@ -500,21 +503,46 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
     return shared.caller;
   }
 
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
-  )
-    .bind(hash)
-    .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
-  if (!row) return null; // never cache negatives — a freshly-created key must work at once
-  if (row.expires_at && row.expires_at < nowSec) return null;
+  // Single-flight the D1 read. Both cache tiers are empty on a fresh isolate,
+  // and a burst arrives before either can fill, so without this N concurrent
+  // creates issue N identical queries against a primary that sits in WNAM while
+  // the burst runs in IAD.
+  //
+  // Measured on prod at burst-100 against a just-deployed worker: `auth` median
+  // 15,026ms, with all 100 requests inside a 48ms band — the tight band is the
+  // tell, since it means they were not queueing behind each other's work but
+  // waiting on one shared round trip that D1 serialized. Same isolate warm, the
+  // mark is 0ms. loadOrgPolicy already does this; auth was the last read on the
+  // create path that did not.
+  //
+  // Keyed on the hash, so distinct keys still proceed in parallel, and the
+  // entry is removed as soon as it settles — this collapses a stampede, it is
+  // not a cache tier of its own.
+  const inflight = authInflight.get(hash);
+  if (inflight) return inflight;
+  const pending = (async (): Promise<Caller | null> => {
+    const row = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
+    )
+      .bind(hash)
+      .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
+    if (!row) return null; // never cache negatives — a freshly-created key must work at once
+    if (row.expires_at && row.expires_at < nowSec) return null;
 
-  const caller: Caller = { orgID: row.org_id, userID: row.created_by };
-  if (authCache.size >= CACHE_MAX) authCache.clear();
-  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
-  authCache.set(hash, entry);
-  await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
-  bumpLastUsed(env, hash, entry, nowMs);
-  return caller;
+    const caller: Caller = { orgID: row.org_id, userID: row.created_by };
+    if (authCache.size >= CACHE_MAX) authCache.clear();
+    const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
+    authCache.set(hash, entry);
+    await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
+    bumpLastUsed(env, hash, entry, nowMs);
+    return caller;
+  })();
+  authInflight.set(hash, pending);
+  try {
+    return await pending;
+  } finally {
+    authInflight.delete(hash);
+  }
 }
 
 // Cell rows are semi-static (base_url is fixed; capacity refreshes ~30s and
