@@ -31,10 +31,21 @@
 
 let configurePromise: Promise<void> | null = null;
 
-// How many connections to hold open, and how often to keep them alive. The
-// default matches the concurrency of a 100-way burst; a smaller pool simply
-// warms fewer of them, and anything beyond the burst width is wasted sockets.
-const DEFAULT_PREWARM = 100;
+// How many connections to hold open, and how often to keep them alive.
+//
+// OFF by default. The original default was 100 — sized to a 100-way burst on
+// the theory that anything less just warms fewer connections. Measured against
+// prod from an IAD runner (4 vCPU), the opposite is true: opening 100 TLS
+// connections while 100 creates are already in flight starves the event loop
+// and every request unblocks together at the end.
+//
+//   prewarm=100   wall 24,040ms   create p50 994ms   exec p50 22,991ms   TTI p50 23,990ms
+//   prewarm=0     wall  1,203ms   create p50 573ms   exec p50    107ms   TTI p50    709ms
+//
+// A 34x regression in exactly the shape it was written to help, so it does not
+// get to be the default. Opt in with OPENCOMPUTER_PREWARM_CONNECTIONS=N once a
+// value has been measured to beat 0 on the workload in question.
+const DEFAULT_PREWARM = 0;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 // Above undici's 4s default so an idle connection survives between phases of a
 // workload; still far below any sane server-side idle close.
