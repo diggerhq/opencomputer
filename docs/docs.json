@@ -30,10 +30,9 @@
             "group": "Getting started",
             "pages": [
               "agents/overview",
+              "agents/mental-model",
               "agents/quickstart",
-              "agents/projects",
-              "agents/development",
-              "agents/deployments"
+              "agents/projects"
             ]
           },
           {
@@ -46,7 +45,8 @@
               "agents/capabilities",
               "agents/channels",
               "agents/outboxes",
-              "agents/secrets"
+              "agents/secrets",
+              "agents/deployments"
             ]
           },
           {
@@ -69,7 +69,10 @@
           },
           {
             "group": "Examples",
-            "pages": ["agents/examples/gtm-engineer"]
+            "pages": [
+              "agents/examples/gtm-engineer",
+              "agents/examples/feature-flag-hygiene"
+            ]
           }
         ]
       },
