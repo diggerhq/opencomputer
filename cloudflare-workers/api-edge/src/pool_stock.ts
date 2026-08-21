@@ -679,17 +679,7 @@ export class PoolStock {
         added++;
         // Open and guest-attach this box's agent tunnel NOW, while it is still
         // stock and nobody is waiting on it.
-        // NOT warming the MicrovmSession here any more, and the reason is
-        // placement, not warmth. A Durable Object is placed next to whatever
-        // FIRST touches it, permanently, and locationHint is jurisdiction-level
-        // ("enam" spans IAD, EWR, ATL, ORD and MIA) so it cannot pin a colo.
-        // Touching from this shard therefore made every session DO inherit the
-        // shards' own scatter. Measured on prod, the edge->DO hop tracks that
-        // exactly — IAD 57ms, EWR 88, ATL 95, ORD 177, MIA 201 — while only
-        // ~25% of objects landed in IAD, where 100% of requests are served.
-        //
-        // The create handler does the attach instead: it runs in the request's
-        // colo, so the object is placed with the traffic. See attachMicrovmSession.
+        this.warmMicrovmBox(b);
         // Pre-wake the box's VmSession DO now (stock-prep), off any hot path, so
         // the create burst doesn't fan out ~100 prewake subrequests from the
         // create isolate. The alarm (prewakeStock) keeps it warm while it sits.
@@ -706,11 +696,7 @@ export class PoolStock {
   private async release(entries: StockEntry[]): Promise<void> {
     // Tear down any agent tunnel first — this box is about to be reissued under
     // a different sandbox id. See coolMicrovmBox.
-    // Deliberately NOT detaching here. These boxes were never handed to a
-    // customer, so their session DO was never created — and asking for one by
-    // id CREATES it, from this shard, which is precisely the first touch that
-    // would pin it to the wrong colo. The id stops resolving in D1 either way.
-    void entries;
+    for (const e of entries) if (e.endpoint) this.coolMicrovmBox(e.id);
     // Group by cell (entries could straddle a base_url change).
     const byCell = new Map<string, { cellID: string; ids: string[] }>();
     for (const e of entries) {
