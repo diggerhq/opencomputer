@@ -96,6 +96,11 @@ export class MicrovmSession {
           warmUntil: this.warmUntil,
           failures: this.failures,
         });
+      // Awaited colo, unlike resolveColo()'s fire-and-forget. Placement is
+      // decided at first touch and is permanent, so the only way to get a shard
+      // set that is actually in one metro is to mint candidates, ask each where
+      // it landed, and keep the ones that answer correctly. This is the "ask".
+      if (path === "/colo") return json({ colo: await this.coloNow() });
       if (path === "/detach") return await this.detach();
     } catch (e) {
       return json({ error: String(e) }, 500);
@@ -293,6 +298,20 @@ export class MicrovmSession {
         this.colo = ((await r.text()).match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
       })
       .catch(() => {});
+  }
+
+  // Blocking form of resolveColo, for /colo only. Never used on the exec path:
+  // an exec must not wait on a diagnostic round trip to cdn-cgi/trace.
+  private async coloNow(): Promise<string> {
+    if (this.colo !== "?") return this.colo;
+    this.coloResolved = true;
+    try {
+      const t = await fetch("https://www.cloudflare.com/cdn-cgi/trace").then((r) => r.text());
+      this.colo = (t.match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+    } catch {
+      /* leave "?" — the probe reports it as unknown rather than failing */
+    }
+    return this.colo;
   }
 
   private async exec(req: Request): Promise<Response> {
