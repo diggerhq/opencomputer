@@ -314,6 +314,50 @@ for (const m of toRun) {
 // measurement of the breakage instead.
 const REQUIRE_POOL = Number(flag('require-pool', 'REQUIRE_POOL', '0'));
 
+/**
+ * Locate an installed package's root and version.
+ *
+ * Deliberately NOT `require('<pkg>/package.json')`: both of these packages ship
+ * an "exports" map that does not expose ./package.json, so that throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED even when the package is installed and fine.
+ * Reading it that way is how the version assert silently turned into "unknown"
+ * and stopped asserting anything. Resolve the entry point instead — which the
+ * exports map does cover — then walk up to the package root.
+ */
+async function pkgInfo(name) {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  // Walk node_modules by hand rather than going through the resolver. Both
+  // packages here defeat the resolver in a different way: the adapter's
+  // "exports" map omits ./package.json (ERR_PACKAGE_PATH_NOT_EXPORTED), and the
+  // SDK defines no "exports" main at all (ERR_PACKAGE_PATH_NOT_EXPORTED again,
+  // from the other direction). Neither is a real problem with the install, but
+  // both turn a version assert into "unknown" — which is how this check quietly
+  // stopped checking anything. The directory layout is not ambiguous, so use it.
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    const root = path.join(dir, 'node_modules', ...name.split('/'));
+    const p = path.join(root, 'package.json');
+    if (fs.existsSync(p)) {
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      return { version: j.version, dir: root, fs, path };
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  throw new Error(`${name} not found in any node_modules above ${path.dirname(fileURLToPath(import.meta.url))}`);
+}
+
+// The SDK build this bench is required to exercise. Pinned rather than merely
+// reported: the adapter's own dependency range is ^0.12.4, which on a 0.x
+// version resolves below 0.13, so a plain install quietly runs a client that
+// predates every change being measured. package.json forces the resolution and
+// this asserts the force actually took.
+const REQUIRE_SDK = flag('require-sdk', 'REQUIRE_SDK', '0.15.6');
+
 async function preflight() {
   const problems = [];
 
@@ -321,32 +365,36 @@ async function preflight() {
   //    node_modules measures something nobody else will ever run.
   let adapterVersion = 'unknown';
   try {
-    const { createRequire } = await import('node:module');
-    const req = createRequire(import.meta.url);
-    adapterVersion = req('@computesdk/opencomputer/package.json').version;
-  } catch {
-    problems.push('cannot resolve @computesdk/opencomputer — is node_modules installed?');
+    adapterVersion = (await pkgInfo('@computesdk/opencomputer')).version;
+  } catch (e) {
+    problems.push(`cannot resolve @computesdk/opencomputer (${e.message}) — run npm install`);
   }
 
-  // 2. Connection prewarm. Without it the first create in a burst pays TLS +
-  //    HTTP/2 setup and the whole distribution shifts; with it the cost is paid
-  //    at import. Which of the two we are measuring must never be a surprise —
-  //    a silently-absent prewarm was worth hundreds of ms and went unnoticed
-  //    for a month.
-  let prewarm = 'absent';
+  // 2. The SDK underneath it, and its connection prewarm. Without prewarm the
+  //    first create in a burst pays TLS + HTTP/2 setup and the whole
+  //    distribution shifts; with it the cost is paid at import. Which of the two
+  //    we are measuring must never be a surprise — a silently-absent prewarm was
+  //    worth hundreds of ms and went unnoticed for a month.
+  let sdkVersion = 'unknown';
+  let prewarm = 'unknown';
   try {
-    const { createRequire } = await import('node:module');
-    const req = createRequire(import.meta.url);
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const sdkPkg = req.resolve('@opencomputer/sdk/package.json');
-    const dist = path.join(path.dirname(sdkPkg), 'dist');
-    const hit = ['sandbox.js', 'http2.js'].every(
-      (f) => fs.existsSync(path.join(dist, f)) && fs.readFileSync(path.join(dist, f), 'utf8').includes('prewarmConnections'),
-    );
+    const { version, dir, fs, path } = await pkgInfo('@opencomputer/sdk');
+    sdkVersion = version;
+    const hit = ['sandbox.js', 'http2.js'].every((f) => {
+      const p = path.join(dir, 'dist', f);
+      return fs.existsSync(p) && fs.readFileSync(p, 'utf8').includes('prewarmConnections');
+    });
     prewarm = hit ? 'present' : 'absent';
-  } catch {
-    prewarm = 'unknown';
+    if (REQUIRE_SDK && REQUIRE_SDK !== '0' && version !== REQUIRE_SDK) {
+      problems.push(
+        `@opencomputer/sdk is ${version}, required ${REQUIRE_SDK} — the adapter's ^0.12.4 range pins it below 0.13 unless package.json overrides it. Delete node_modules and npm install.`,
+      );
+    }
+    if (prewarm !== 'present') {
+      problems.push(`@opencomputer/sdk ${version} has no prewarmConnections — this is not the client we ship`);
+    }
+  } catch (e) {
+    problems.push(`cannot resolve @opencomputer/sdk (${e.message}) — run npm install`);
   }
 
   // 3. Pool depth. This is the one that invalidated an entire measurement
@@ -369,12 +417,9 @@ async function preflight() {
   }
 
   console.log(
-    `preflight: adapter=${adapterVersion} sdk-prewarm=${prewarm}` +
+    `preflight: adapter=${adapterVersion} sdk=${sdkVersion} prewarm=${prewarm}` +
       (poolDepth !== null ? ` pool-reserved=${poolDepth}` : ' pool-check=skipped'),
   );
-  if (prewarm !== 'present') {
-    console.log(`  NOTE: SDK connection prewarm is ${prewarm} — create p50 will include per-connection setup.`);
-  }
   if (REQUIRE_POOL <= 0) {
     console.log('  NOTE: pool-depth check skipped. Set REQUIRE_POOL=144 to refuse to run against a depleted pool.');
   }

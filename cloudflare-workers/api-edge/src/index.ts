@@ -1389,6 +1389,56 @@ async function claimPoolBox(
   return null;
 }
 
+// runPoolKeepWarm touches every shard of every active cell so the stock never
+// idle-decommissions between bursts.
+//
+// The shard's own idle policy is right for a shard nobody uses and wrong for the
+// traffic this pool actually serves. Stock is released after
+// IDLE_DECOMMISSION_MS (30 min) and the alarm stops entirely after
+// WARM_MAX_IDLE_MS (6h). But the workloads that care about create latency are
+// exactly the ones that arrive after a long quiet period AND arrive all at once:
+// a weekly benchmark, a nightly CI fan-out, an hourly cron. Each of those lands
+// on a shard set that has been fully cold for far longer than six hours, so all
+// N concurrent creates miss every shard together and fall through to
+// control-plane cold launches paced by the RunMicrovm quota — the exact 25s tail
+// the pool exists to prevent. The pool was being handed back precisely when it
+// was about to be needed.
+//
+// This creates NOTHING. It refreshes the idle clock and re-arms the alarm; the
+// alarm's ordinary restock does the reserving. That distinction is the whole
+// design: a keep-warm that created sandboxes to stay warm would leak a box every
+// tick forever, which is worse than the problem.
+//
+// Cost is one DO wake per shard per cron tick (8 shards × 1 cell = 8 wakes / 5
+// min). Failures are logged and swallowed: a cron that throws would take the
+// other scheduled jobs down with it, and a missed tick just means the next one
+// does the work.
+async function runPoolKeepWarm(env: Env): Promise<void> {
+  const cells = await listActiveCells(env);
+  if (cells.length === 0) return;
+  let ok = 0;
+  let failed = 0;
+  await Promise.all(
+    cells.flatMap((cell) =>
+      POOL_STOCK_SHARD_IDS.map(async (shard) => {
+        try {
+          const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/touch", {
+            method: "POST",
+            body: JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } }),
+          });
+          if (r.ok) ok++;
+          else failed++;
+        } catch {
+          failed++;
+        }
+      }),
+    ),
+  );
+  if (failed > 0) {
+    console.error(`pool-keepwarm: touched ${ok} shard(s), ${failed} FAILED — stock may idle-decommission before the next burst`);
+  }
+}
+
 // edgeClaimEligible: a create qualifies for the edge fast path only when it
 // asks for exactly what pool boxes are manufactured as — base template at the
 // default shape (4GB/1cpu/default disk), no guest-side customization (envs,
@@ -1874,7 +1924,46 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
   )
     .bind(id)
     .first<SandboxRow & { org_id: string }>();
-  if (!row || row.org_id !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+  if (!row) {
+    // No index row yet. That does NOT mean the sandbox doesn't exist: an
+    // edge-claimed create answers 201 before its sandboxes_index row is written,
+    // because finalize runs off the hot path through FINALIZE_QUEUE. Measured on
+    // prod, the row can trail the 201 by more than 2.6s — far longer than the
+    // ~1s a client needs to create, exec and then tear down.
+    //
+    // Returning 404 in that window is not a harmless "not yet". Our own
+    // published adapter calls connect() (this route) before kill(), and treats a
+    // 404 as "already gone" — so it skips the DELETE and reports success. Every
+    // sandbox created and destroyed inside the finalize window therefore LEAKED,
+    // holding a pool box until the 8h AWS cap. A burst-100 leaked all 100 and
+    // pinned the cell at its box budget, which then degraded every subsequent
+    // run. That is the whole reason this fallback exists.
+    //
+    // Exec and DELETE never had the bug because they resolve through
+    // sandboxRouteCache / the colo route entry, both seeded at create. This
+    // route just never consulted them. So consult them: a route entry is proof
+    // the create happened and carries the owning org, which is all the
+    // authorization check needs.
+    const route = await resolveSandboxRoute(env, id);
+    if (!route || route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+    const cell = await lookupCell(env, route.cellID);
+    // Deliberately minimal, and deliberately NOT invented: only the fields a
+    // claim proves. status is "running" because a claimed box is running — the
+    // finalize that would tell us otherwise is exactly what hasn't landed yet.
+    return json({
+      sandboxID: id,
+      templateID: "",
+      cellID: route.cellID,
+      workerID: "",
+      status: "running",
+      cpuCount: 0,
+      memoryMB: 0,
+      startedAt: null,
+      endAt: null,
+      cellEndpoint: cell ? cell.base_url : null,
+    });
+  }
+  if (row.org_id !== caller.orgID) return json({ error: "sandbox not found" }, 404);
   const cell = await lookupCell(env, row.cell_id);
   return json({ ...sandboxRowToJSON(row), cellEndpoint: cell ? cell.base_url : null });
 }
@@ -4758,6 +4847,13 @@ export default {
     // "no cells available with capacity". See retention.ts.
     ctx.waitUntil(
       runRetentionSweep(env).catch((err) => console.error("retention: run failed", err)),
+    );
+    // Pool keep-warm. Deliberately ABOVE the billing-config early return below:
+    // create latency must not depend on whether Autumn happens to be configured,
+    // and a cell whose stock has decommissioned serves every create through the
+    // slow path. Creates nothing — see runPoolKeepWarm.
+    ctx.waitUntil(
+      runPoolKeepWarm(env).catch((err) => console.error("pool-keepwarm: run failed", err)),
     );
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(

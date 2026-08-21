@@ -198,6 +198,44 @@ describe("PoolStock", () => {
     err.mockRestore();
   });
 
+  it("keep-warm defers decommission without reserving a single box", async () => {
+    // Two properties, and the second matters more than the first. A keep-warm
+    // that created sandboxes to stay warm would leak one per tick forever —
+    // worse than the idle decommission it fixes — so /touch must reserve
+    // nothing. What it may do is move the idle clock, which is what stops the
+    // shard dumping its stock 30 minutes into a quiet period.
+    origin.supply = [
+      { sandboxID: "sb-1", workerID: "w-1" },
+      { sandboxID: "sb-2", workerID: "w-2" },
+    ];
+    const { doInstance, state } = makeDO(origin, "2", "1");
+    await claimBatch(doInstance, state, ORG_A, 0); // prime
+    const reserveCallsAfterPrime = origin.reserved.length;
+
+    // Past the 30-minute idle window, but touched along the way.
+    vi.setSystemTime(Date.now() + 25 * 60_000);
+    await post(doInstance, "/touch", { cell: CELL });
+    await state.settle();
+    expect(origin.reserved.length).toBe(reserveCallsAfterPrime); // reserved NOTHING
+
+    // Now run the alarm. The shard is 25 minutes past its last real claim, so
+    // without the touch it would be in the decommission branch: release
+    // everything and drop to the warm-only tick. With it, the ordinary path
+    // runs and the shard tops itself back up.
+    //
+    // Asserting on "did it restock" rather than "did it release" on purpose:
+    // entries also expire on ENTRY_TTL_MS (10 min), so a release here proves
+    // nothing about which branch ran, while a restock only happens on the live
+    // path. Conflating the two is what made the first version of this test fail.
+    origin.supply = [
+      { sandboxID: "sb-3", workerID: "w-3" },
+      { sandboxID: "sb-4", workerID: "w-4" },
+    ];
+    await doInstance.alarm();
+    await state.settle();
+    expect(origin.reserved.length).toBeGreaterThan(reserveCallsAfterPrime);
+  });
+
   it("hands a box out exactly once", async () => {
     origin.supply = [{ sandboxID: "sb-1", workerID: "w-1" }];
     const { doInstance, state } = makeDO(origin);
