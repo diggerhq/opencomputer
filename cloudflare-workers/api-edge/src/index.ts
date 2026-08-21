@@ -1277,13 +1277,16 @@ function indexSandboxFromSSE(
 // POOL_STOCK_SHARD_IDS is therefore a MEASUREMENT, not a configuration. Re-run
 // the probe and re-pick if the shard set is ever regenerated; do not hand-edit
 // it to indices nobody has verified.
-// STILL g4 with the identity list — i.e. exactly today's behaviour. The gen
-// flips only once the probe below has run against prod and named the winning
-// indices; shipping a fresh generation before then would empty the live shards
-// (every create falling through to a cold CP launch) to land on placements
-// nobody has looked at yet.
-const POOL_STOCK_SHARD_GEN = "g4";
-const POOL_STOCK_SHARD_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
+// Probed on prod 2026-08-21 from the control plane (IAD ingress), 64 g5
+// candidates: IAD 27, EWR 17, ATL 9, MIA 7, ORD 4. Confirms the diagnosis —
+// every candidate was first-touched by the same request, from one colo, and
+// they still scattered five ways. Placement inside enam is not ours to aim.
+//
+// The eight below are the first eight that answered IAD. There is nothing
+// special about these indices; they are simply the ones that landed where we
+// want, which is the entire idea.
+const POOL_STOCK_SHARD_GEN = "g5";
+const POOL_STOCK_SHARD_IDS = [1, 4, 6, 12, 13, 14, 16, 17];
 const POOL_STOCK_SHARDS = POOL_STOCK_SHARD_IDS.length;
 // How many candidate names the probe route sweeps. Only the ones that report
 // the target colo get promoted into POOL_STOCK_SHARD_IDS above.
