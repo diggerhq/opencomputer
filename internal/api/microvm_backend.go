@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -72,6 +73,11 @@ type microvmBackend struct {
 	// capacity tells the edge this cell exists and can take creates. A cell that
 	// never reports is not routed to at all.
 	capacity *controlplane.CapacityReporter
+
+	// aliveRowless carries the last binding sweep's count of live boxes bound to
+	// a sandbox with no row, so the pool's budget log can report it without
+	// re-probing AWS. See boxesInUseDetail.
+	aliveRowless atomic.Int64
 
 	// coldSlots caps concurrent cold launches (see maxColdCreates).
 	coldSlots chan struct{}
@@ -199,9 +205,10 @@ func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointS
 		// use" against 130 boxes alive in total, which pinned the pool at a
 		// permanent budget hold and would have starved refill through exactly
 		// the burst the budget exists to survive.
-		InUse:      b.boxesInUse,
-		OnExpire:   b.forgetExpiredReservation,
-		OnMaintain: b.warmReservedTunnels,
+		InUse:       b.boxesInUse,
+		InUseDetail: b.boxesInUseDetail,
+		OnExpire:    b.forgetExpiredReservation,
+		OnMaintain:  b.warmReservedTunnels,
 		// How long refill stands down once the budget is reached. Tunable
 		// because the right value is a property of the workload, not the code:
 		// it wants to outlast the burst that drained the pool, so that the
@@ -501,10 +508,29 @@ func (b *microvmBackend) forgetDeadBindings(ctx context.Context, hasRow map[stri
 	if forgotten > 0 {
 		log.Printf("microvm: binding sweep forgot %d dead binding(s) holding pool budget", forgotten)
 	}
+	b.aliveRowless.Store(int64(aliveRowless))
 	if aliveRowless > 0 {
 		log.Printf("microvm: binding sweep — %d live box(es) bound to a sandbox with no row; left alone for the orphan sweep to age out",
 			aliveRowless)
 	}
+}
+
+// boxesInUseDetail decomposes boxesInUse for the pool's budget log. Wired to
+// PoolConfig.InUseDetail.
+//
+// boxesInUse is a subtraction of two independently-maintained counts, and when
+// the pool freezes at its budget the only question that matters is which of them
+// is wrong. Reporting just the difference makes that unanswerable from the logs:
+// a freeze looks identical whether the manager is holding bindings for sandboxes
+// that are long gone or the edge genuinely has that many boxes reserved.
+// alive-rowless is included because it is the leading indicator of the first
+// case — bindings the sweep can see but deliberately will not act on.
+func (b *microvmBackend) boxesInUseDetail() string {
+	if b == nil || b.manager == nil {
+		return ""
+	}
+	return fmt.Sprintf("tracked=%d edge-reserved=%d alive-rowless=%d",
+		len(b.manager.TrackedMicrovmIDs()), b.edgeReserved.depth(), b.aliveRowless.Load())
 }
 
 // orphanMinAge is how old a MicroVM must be before the sweep will consider it

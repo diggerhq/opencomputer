@@ -47,10 +47,32 @@ const KEEPALIVE_MS = 5_000;
 // stock can sit for a while and the whole point is that the customer never waits
 // for a dial. Refreshed by every attach and every exec.
 const KEEPALIVE_TTL_MS = 60 * 60 * 1000;
-// Consecutive failed keepalives before we stop. A box that has been destroyed
-// or whose credential expired will never answer, and pinging it forever would
-// leave one alarm loop running per dead sandbox.
+// Consecutive failed keepalives before we back the loop off to its slow cadence.
+// A box that has been destroyed or whose credential expired will never answer,
+// and pinging one of those every 5s forever is a per-dead-sandbox alarm loop.
+//
+// Backing OFF is not the same as giving up, and conflating the two was a real
+// outage of the warm path. This used to return without re-arming the alarm, so
+// five failures ended the loop permanently — and because PoolStock warms each
+// box exactly once, at restock (see the NOTE in its alarm()), nothing ever
+// re-attached it. The give-up was written for "destroyed box / expired
+// credential", but it also caught the far more common case it was never meant
+// to: a box attached in the seconds after manufacture, before its agent is
+// answering. Those five pings burn in 25s and the box then sits in stock cold
+// for its whole life. Measured on prod: a burst against a freshly-manufactured
+// pool served 76 of 78 execs on a dead channel (dlive=0), each paying the full
+// re-dial, against dlive=1 on 100/100 for a pool that had been stocked long
+// enough to be attached while healthy.
+//
+// So failures slow the loop down instead of ending it. warmUntil is what ends
+// it — one hour, refreshed by every attach and every exec — which bounds a truly
+// dead box to KEEPALIVE_TTL_MS of slow pings rather than forever, while leaving
+// a not-yet-ready box able to recover on its own.
 const MAX_KEEPALIVE_FAILURES = 5;
+// Cadence once a box has failed MAX_KEEPALIVE_FAILURES in a row. Long enough
+// that a dead sandbox costs ~60 pings/hour instead of 720, short enough that a
+// box which comes good is back on the fast cadence within a minute.
+const KEEPALIVE_BACKOFF_MS = 60_000;
 const PING_TIMEOUT_MS = 3_000;
 
 interface Creds {
@@ -168,6 +190,12 @@ export class MicrovmSession {
   }
 
   private async armKeepalive(): Promise<void> {
+    // Called from attach and from exec — either way someone just proved they
+    // care about this box, so clear the failure count. A box that failed its way
+    // into the slow cadence and is then re-attached (a PoolStock re-warm) or
+    // used gets the fast cadence back immediately rather than staying on the
+    // 60s tick until its next success.
+    this.failures = 0;
     // setAlarm overwrites, so this is also the re-arm. Only skip when one is
     // already due sooner than we would set it — a burst of attaches must not
     // push the next tick further out.
@@ -201,23 +229,22 @@ export class MicrovmSession {
       console.log("mvm-do: keepalive expired, going cold");
       return;
     }
+    let next = KEEPALIVE_MS;
     try {
       const conn = await this.channel();
       await conn.ping(PING_TIMEOUT_MS);
+      if (this.failures > 0) console.log(`mvm-do: keepalive recovered after ${this.failures}`);
       this.failures = 0;
     } catch (e) {
       this.conn = null;
       this.failures++;
       console.log(`mvm-do: keepalive failed (${this.failures}/${MAX_KEEPALIVE_FAILURES}): ${e}`);
-      if (this.failures >= MAX_KEEPALIVE_FAILURES) {
-        // Destroyed box, or a credential that has aged out. Either way nothing
-        // here can fix it, and a permanent retry loop per dead sandbox is worse
-        // than a cold first exec.
-        console.log("mvm-do: keepalive giving up");
-        return;
-      }
+      // Slow down, but keep trying — a box that is merely not ready yet must be
+      // able to recover, and nothing else will ever re-attach it. warmUntil is
+      // the thing that ends this loop.
+      if (this.failures >= MAX_KEEPALIVE_FAILURES) next = KEEPALIVE_BACKOFF_MS;
     }
-    await this.state.storage.setAlarm(Date.now() + KEEPALIVE_MS);
+    await this.state.storage.setAlarm(Date.now() + next);
   }
 
   private async loadCreds(): Promise<Creds | null> {
