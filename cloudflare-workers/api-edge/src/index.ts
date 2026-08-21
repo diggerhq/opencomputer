@@ -30,6 +30,20 @@ export { PoolStock } from "./pool_stock";
 // touching web/ or edge code) can't reset the DOs and sever the host-dialed
 // VM WebSockets.
 import { coloGet, coloPut } from "./colo_cache";
+import {
+  ACTIVE_CELLS_SQL,
+  CELL_STALE_MAX_MS,
+  CELL_TTL_MS,
+  CONCURRENCY_COUNT_TTL_MS,
+  CONCURRENCY_STALE_MAX_MS,
+  ORG_POLICY_SQL,
+  ORG_POLICY_TTL_MS,
+  ORG_STALE_MAX_MS,
+  RUNNING_COUNT_SQL,
+  keepCreateContextWarm,
+  type CellRow,
+  type OrgPolicy,
+} from "./create_context_cache";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
@@ -362,10 +376,8 @@ function stripApiKeyQueryParam(target: string): string {
 // and throttle the last_used bump. Isolates recycle so entries are naturally
 // bounded; CACHE_MAX guards pathological key cardinality.
 const AUTH_TTL_MS = 60_000;
-const ORG_POLICY_TTL_MS = 5_000; // short: bounds is_halted / cap staleness
 // SWR window for org policy in the colo tier: a ≤60s-stale not-halted policy
 // may gate a create while a background refresh runs (see loadCreateContext).
-const ORG_STALE_MAX_MS = 60_000;
 const LAST_USED_BUMP_MS = 60_000; // at most once/min/key/isolate
 const CACHE_MAX = 10_000;
 
@@ -383,11 +395,9 @@ const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: n
 // short window so a burst fires ~one COUNT/isolate/window instead of one per
 // create. Under burst the cached value reads low (index lag), so it stays
 // permissive — no spurious 429s.
-const CONCURRENCY_COUNT_TTL_MS = 1_500;
 // Optimistic-gate stale window + headroom: a count up to 30s old may gate a
 // create IF it sits at least HEADROOM below the org's limit (see
 // loadCreateContext). Bounds the worst-case cap overshoot to ~HEADROOM boxes.
-const CONCURRENCY_STALE_MAX_MS = 30_000;
 const CONCURRENCY_STALE_HEADROOM = 8;
 const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: number }>();
 // Sandbox → owning-cell route. proxyToCellSDK otherwise pays a blocking D1
@@ -507,21 +517,10 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   return caller;
 }
 
-interface CellRow {
-  cell_id: string;
-  cloud: string;
-  region: string;
-  base_url: string;
-  status: string;
-  available_workers: number;
-  capacity_updated_at: number | null;
-}
-
 // Cell rows are semi-static (base_url is fixed; capacity refreshes ~30s and
 // isHealthy already tolerates 120s staleness). Every create AND every exec/
 // sub-op resolves the cell — a burst does 100 identical reads for the same 1-2
 // cells. Cache per-isolate for a short window.
-const CELL_TTL_MS = 5_000;
 const cellCache = new Map<string, { cell: CellRow | null; cachedAtMs: number }>();
 // Per-isolate cache of the active-cells list. pickCell ran this SELECT uncached
 // on every no-cellId create — ~65ms of the burst prework. Cells change rarely,
@@ -622,7 +621,7 @@ async function loadCreateContextUncoalesced(
       if (ctx) {
         ctx.waitUntil(
           env.OPENCOMPUTER_DB.prepare(
-            "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
+            ORG_POLICY_SQL,
           )
             .bind(orgID)
             .first<OrgPolicy>()
@@ -648,6 +647,33 @@ async function loadCreateContextUncoalesced(
       cells = scl.cells;
       cellsHave = true;
       activeCellsCache = { cells: scl.cells, cachedAtMs: scl.cachedAtMs };
+    } else if (scl && scl.cells.length > 0 && nowMs - scl.cachedAtMs < CELL_STALE_MAX_MS) {
+      // Stale-while-revalidate, mirroring the org-policy gate above. Only ever
+      // from a NON-EMPTY snapshot: serving a stale empty list would 503 every
+      // create in this colo for the length of the stale window, which is a
+      // strictly worse failure than routing on slightly old capacity numbers.
+      cells = scl.cells;
+      cellsHave = true;
+      activeCellsCache = { cells: scl.cells, cachedAtMs: scl.cachedAtMs };
+      if (ctx) {
+        ctx.waitUntil(
+          env.OPENCOMPUTER_DB.prepare(
+            ACTIVE_CELLS_SQL,
+          )
+            .all<CellRow>()
+            .then(async ({ results }) => {
+              const fresh = results ?? [];
+              // An empty read here is far more likely to be a blip than a fleet
+              // with no active cells, and caching it would take the colo down
+              // for the whole window. Leave the last good list in place.
+              if (fresh.length === 0) return;
+              const at = Date.now();
+              activeCellsCache = { cells: fresh, cachedAtMs: at };
+              await coloPut("cells", "active", { cells: fresh, cachedAtMs: at }, CELL_STALE_MAX_MS / 1000);
+            })
+            .catch(() => {}),
+        );
+      }
     }
   }
 
@@ -666,7 +692,7 @@ async function loadCreateContextUncoalesced(
       activeCount = staleCount.count;
       cntHave = true;
       const refresh = env.OPENCOMPUTER_DB.prepare(
-        "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
+        RUNNING_COUNT_SQL,
       )
         .bind(orgID)
         .first<{ n: number }>()
@@ -691,21 +717,21 @@ async function loadCreateContextUncoalesced(
   if (!orgWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare(
-        "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
+        ORG_POLICY_SQL,
       ).bind(orgID),
     );
     kinds.push("org");
   }
   if (!cntWarm2) {
     stmts.push(
-      env.OPENCOMPUTER_DB.prepare("SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'").bind(orgID),
+      env.OPENCOMPUTER_DB.prepare(RUNNING_COUNT_SQL).bind(orgID),
     );
     kinds.push("count");
   }
   if (!cellsWarm2) {
     stmts.push(
       env.OPENCOMPUTER_DB.prepare(
-        "SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at FROM cells WHERE status = 'active'",
+        ACTIVE_CELLS_SQL,
       ),
     );
     kinds.push("cells");
@@ -728,7 +754,10 @@ async function loadCreateContextUncoalesced(
       } else {
         cells = (res[i].results as CellRow[]) ?? [];
         activeCellsCache = { cells, cachedAtMs: nowMs };
-        puts.push(coloPut("cells", "active", { cells, cachedAtMs: nowMs }, CELL_TTL_MS / 1000));
+        // Entry TTL is the STALE window, not CELL_TTL_MS: an entry that expires
+        // at 5s can never be served stale, which is the whole point of the
+        // branch above. Freshness is decided by cachedAtMs on read.
+        puts.push(coloPut("cells", "active", { cells, cachedAtMs: nowMs }, CELL_STALE_MAX_MS / 1000));
       }
     }
     await Promise.all(puts);
@@ -930,19 +959,6 @@ async function handlePreviewURL(
 // orgs.runtime that routes an org's creates to the AWS MicroVM backend.
 const RUNTIME_MICROVM = "microvm";
 
-interface OrgPolicy {
-  home_cell: string;
-  plan: string;
-  is_halted: number;
-  max_concurrent_sandboxes: number;
-  max_disk_mb: number;
-  billing_provider: string;
-  // Which sandbox runtime this org's creates belong on. NULL/"" is the QEMU
-  // fleet — so every org that predates this column keeps its current runtime
-  // and opting one in is a single-row change.
-  runtime: string | null;
-}
-
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
 // when the org doesn't exist (callers 401).
 async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
@@ -950,7 +966,7 @@ async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null>
   const cached = orgPolicyCache.get(orgID);
   if (cached && nowMs - cached.cachedAtMs < ORG_POLICY_TTL_MS) return cached.policy;
   const policy = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1",
+    ORG_POLICY_SQL,
   )
     .bind(orgID)
     .first<OrgPolicy>();
@@ -4421,6 +4437,10 @@ export default {
       const caller = await authenticate(req, env);
       const authMs = Date.now() - tAuth;
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      // Exec/delete traffic is what keeps an org's create-context entries warm
+      // in THIS colo between its bursts. Off the hot path (waitUntil) and a
+      // no-op unless an entry is actually aging.
+      keepCreateContextWarm(env.OPENCOMPUTER_DB, ctx, caller.orgID);
       // VM-DO exec fast path: route POST /:id/exec/run-async through the
       // sandbox's VmSession DO. Automatic tunnel fallback (no flag) whenever the
       // channel isn't live (DO 409) — so this is safe even before/while workers
