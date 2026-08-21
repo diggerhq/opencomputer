@@ -1630,7 +1630,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // Net for the benchmark, which scores create+exec together, this is a
         // win. It stays in waitUntil and swallows its errors, so the worst case
         // is the first exec dialling cold exactly as it does today.
-        if (routeEntry.reach) ctx.waitUntil(placeAndDialMicrovmSession(env, box.id, routeEntry.reach));
+        if (routeEntry.reach) ctx.waitUntil(warmEdgeTunnel(routeEntry.reach));
         //
         // NOTE: the MicroVM exec channel is deliberately NOT warmed here. It is
         // warmed at stock-prep in pool_stock.ts, where the box sits idle for
@@ -2126,36 +2126,6 @@ const MVM_EXEC_TIMEOUT_MS = 10_000;
  * path, and a box that refuses now simply means the first exec pays what it
  * would have paid anyway.
  */
-// attachMicrovmSession hands a freshly-claimed box's reach-info to its session
-// DO and has it dial, from the CREATE request rather than from a PoolStock
-// shard.
-//
-// Placement is the point. A DO lives next to whatever first touches it, forever,
-// and locationHint only names a jurisdiction ("enam" covers IAD, EWR, ATL, ORD
-// and MIA alike). Stock-prep touched these first, from a shard, so they
-// inherited the shards' scatter — and the edge->DO hop tracks that precisely:
-// IAD 57ms, EWR 88, ATL 95, ORD 177, MIA 201, with only ~25% in IAD against
-// 100% of requests served there. Creates run in the request's colo, so touching
-// here places the object with the traffic that will use it.
-//
-// The cost is that the dial now races the customer's first exec instead of
-// happening minutes ahead while the box sits in stock. The race looks winnable
-// (ddial p90 39ms against a create->exec gap of ~200ms) but that is a
-// prediction, which is what the dlive mark exists to check.
-async function placeAndDialMicrovmSession(env: Env, id: string, r: MvmReach): Promise<void> {
-  const ns = env.MICROVM_SESSIONS;
-  if (!ns) return;
-  try {
-    await ns.get(ns.idFromName(id)).fetch("https://do/attach", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ endpoint: r.endpoint, token: r.token, port: r.port, dial: true }),
-    });
-  } catch {
-    /* first exec dials through the DO itself, exactly as it would have */
-  }
-}
-
 async function warmEdgeTunnel(r: MvmReach): Promise<void> {
   try {
     const conn = await dialAgent(r);
