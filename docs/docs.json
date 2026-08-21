@@ -32,9 +32,7 @@
               "agents/overview",
               "agents/mental-model",
               "agents/quickstart",
-              "agents/projects",
-              "agents/development",
-              "agents/deployments"
+              "agents/projects"
             ]
           },
           {
@@ -47,7 +45,9 @@
               "agents/capabilities",
               "agents/channels",
               "agents/outboxes",
-              "agents/secrets"
+              "agents/secrets",
+              "agents/development",
+              "agents/deployments"
             ]
           },
           {
