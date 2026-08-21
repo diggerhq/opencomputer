@@ -1,20 +1,19 @@
 ---
 title: "Feature flag hygiene"
-description: "Inspect Unleash flags, find safe cleanup candidates, open focused pull requests, and notify reviewers"
+description: "Inspect Unleash flags, find safe cleanup candidates, and open focused pull requests"
 ---
 
 The feature flag hygiene example finds old Unleash release flags that remain in
 a repository and prepares one small cleanup pull request per eligible flag. It
-combines an interactive agent, remote MCP servers, code-defined tools, a
-schedule, and a Slack outbox in one project.
+combines an interactive agent, remote MCP servers, code-defined tools, and a
+schedule in one project.
 
 <Card
   title="OpenComputer × Unleash feature flag hygiene"
   icon="github"
   href="https://github.com/diggerhq/opencomputer-example-unleash"
 >
-  Clone the complete agent, schedule, channel, outbox, and fixture application
-  from GitHub.
+  Clone the complete agent, schedule, and fixture application from GitHub.
 </Card>
 
 ## How it works
@@ -27,7 +26,6 @@ flowchart LR
     Unleash[Unleash MCP<br/>production state]
     Check{Safe to remove?}
     PR[One cleanup PR<br/>per flag]
-    Slack[Slack review<br/>notification]
     Report[Explain why<br/>the flag was skipped]
 
     Start --> Agent
@@ -36,7 +34,6 @@ flowchart LR
     GitHub --> Check
     Unleash --> Check
     Check -->|yes| PR
-    PR --> Slack
     Check -->|no| Report
 ```
 
@@ -47,8 +44,8 @@ For each exact feature-flag reference found in executable code, the agent:
 3. determines the behavior that should survive removal;
 4. finds an owner through `CODEOWNERS` or recent file history;
 5. runs the narrowest relevant tests;
-6. opens one focused pull request per eligible flag; and
-7. publishes a deduplicated review request through the Slack outbox.
+6. opens one focused pull request per eligible flag and requests the identified
+   owner as a reviewer.
 
 The agent does not disable, archive, or delete flags in Unleash. Flag retirement
 remains a separate action after the cleanup pull request has been reviewed and
@@ -143,18 +140,6 @@ The payload's `mode` selects unattended behavior. The transport provenance in
 `input.source` remains available for observability, but it is not used as the
 agent's business-mode switch.
 
-## Notify reviewers through an outbox
-
-Outside dry-run mode, every created or reused cleanup pull request publishes a
-review request to a code-defined outbox. The outbox routes the provider-neutral
-message to the `pull-request-reviews` destination on the project's Slack
-channel.
-
-Publishing and Slack delivery are separate. A temporary Slack failure does not
-turn an already-created GitHub pull request into a failed tool call. Reusing the
-same `owner/repository#pull-number:review-request` idempotency key lets the
-outbox deduplicate retries.
-
 ## Try the fixture safely
 
 After cloning the repository and configuring the documented GitHub and Unleash
@@ -171,7 +156,6 @@ Start with the included fixture and a dry run:
 npm run session -- "Analyze repository diggerhq/opencomputer-example-unleash using Unleash project feature-example-test and production environment. Use minimumAgeDays 0, GitHub PAT mode, and dryRun true."
 ```
 
-The repository README documents the required token permissions, Slack
-destination binding, production deployment, fixture tests, and the deliberate
-step from dry-run analysis to pull-request creation.
-
+The repository README documents the required token permissions, production
+deployment, fixture tests, and the deliberate step from dry-run analysis to
+pull-request creation.
