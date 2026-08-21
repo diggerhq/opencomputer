@@ -115,7 +115,8 @@ const IDLE_WARM_INTERVAL_MS = 20_000;
 // it is out of service, and warming it is pure cost.
 const WARM_MAX_IDLE_MS = 6 * 3600_000;
 // Warmed before traffic teaches a shard who to warm. Overridden by WARM_ORG_IDS.
-const DEFAULT_WARM_ORG_IDS = "1f92e6ca-fe5d-4cf4-ab3e-00fa7bedef4f";
+const DEFAULT_WARM_ORG_IDS =
+  "1f92e6ca-fe5d-4cf4-ab3e-00fa7bedef4f,b0e1d424-b592-44c5-b8a1-cd022e04f4a5";
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,

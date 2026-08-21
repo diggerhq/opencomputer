@@ -1933,13 +1933,18 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
   // here, where quoting and redirection would be silently mangled.
   const cmd = typeof body.cmd === "string" ? body.cmd : typeof body.command === "string" ? body.command : "";
   if (!cmd) return null;
-  const execReq = {
-    command: "/bin/sh",
-    args: ["-lc", cmd],
-    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-    env: (body.env as Record<string, string> | undefined) ?? undefined,
-    timeoutSeconds: typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : undefined,
-  };
+  // Two request shapes reach this endpoint and only one used to be handled.
+  //
+  //   string form: {cmd: "echo hi"}                  — cmd IS the shell line
+  //   argv form:   {cmd: "sh", args: ["-c","echo hi"]} — cmd is the program
+  //
+  // The SDK sends the argv form (see Exec.run). Reading only `cmd` turned that
+  // into `/bin/sh -lc sh` — a shell with no script, which reads stdin, gets EOF,
+  // and exits 0 having printed nothing. So every SDK exec against a MicroVM box
+  // came back {exitCode: 0, stdout: ""}: silent, total output loss that looks
+  // like a command which simply produced nothing. Verified on prod — the string
+  // form returned "hi-string\n" while the argv form returned "" on the same box.
+  const execReq = buildAgentExecRequest(body, cmd);
 
   const tReach = Date.now();
   // Create now folds reach into the "route" entry (one colo write instead of
@@ -2668,6 +2673,38 @@ type IdentitySelection = "browser" | "cli";
 // the 1000-char prompt limit (web/src/lib/deferred-actions.ts) through the
 // WorkOS `state` round-trip — keep the two limits in sync. WorkOS documents no
 // `state` maximum, so we bound it here rather than rely on a large round-trip.
+// buildAgentExecRequest shapes an SDK exec body into the agent's argv contract.
+//
+// Two request shapes reach this endpoint and only one used to be handled:
+//
+//   string form: {cmd: "echo hi"}                    — cmd IS the shell line
+//   argv form:   {cmd: "sh", args: ["-c", "echo hi"]} — cmd is the program
+//
+// The SDK sends the argv form (see Exec.run). Reading only `cmd` turned that
+// into `/bin/sh -lc sh` — a shell with no script, which reads stdin, gets EOF,
+// and exits 0 having printed nothing. So every SDK exec against a MicroVM box
+// came back {exitCode: 0, stdout: ""}: silent, total output loss that reads as
+// a command which simply produced nothing. Verified on prod — the string form
+// returned "hi-string\n" while the argv form returned "" on the same box.
+//
+// Exported purely so that contract has a test; the wire format is invisible in
+// every signal except the output being empty.
+export function buildAgentExecRequest(
+  body: Record<string, unknown>,
+  cmd: string,
+): { command: string; args: string[]; cwd?: string; env?: Record<string, string>; timeoutSeconds?: number } {
+  const argv = Array.isArray(body.args) ? (body.args as unknown[]).filter((a): a is string => typeof a === "string") : [];
+  return {
+    // Honour argv verbatim when present; "sh" means the guest's shell, which is
+    // what /bin/sh resolves to and what the string form already assumed.
+    command: argv.length > 0 ? (cmd === "sh" ? "/bin/sh" : cmd) : "/bin/sh",
+    args: argv.length > 0 ? argv : ["-lc", cmd],
+    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+    env: (body.env as Record<string, string> | undefined) ?? undefined,
+    timeoutSeconds: typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : undefined,
+  };
+}
+
 export function safeReturnTo(raw: string | null | undefined): string | null {
   if (!raw || raw.length > 4096) return null;
   if (!raw.startsWith("/") || raw.startsWith("//")) return null;
