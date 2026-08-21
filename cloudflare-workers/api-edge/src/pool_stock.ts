@@ -292,6 +292,14 @@ export class PoolStock {
     // IT landed. That is the load-bearing question for stock-prep warming: if a
     // child inherits its parent's colo, pinning the shards pins every session
     // DO with them; if it does not, session placement needs its own lever.
+    //
+    // ANSWERED, on prod 2026-08-21 over 64 parent/child pairs: it does not.
+    // A child matches its parent's colo 34/64 of the time, and parent-IAD
+    // yields child-IAD only 12/27 (44%) against a 30% background rate. So
+    // parentage biases placement without deciding it. Pinning the shards is
+    // still worth doing — deterministic for the claim hop, and it lifts the
+    // session DOs from 21% IAD to ~44% for free — but the other half of them
+    // need a lever this has now ruled out.
     if (req.method === "GET" && url.pathname === "/colo") {
       const self = await this.coloNow();
       const child = url.searchParams.get("child");
