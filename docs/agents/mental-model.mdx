@@ -28,7 +28,7 @@ flowchart LR
     Harness -->|events and messages| Session
 ```
 
-## The four parts
+## The runtime model
 
 ### Your agent function describes the next step
 
@@ -141,15 +141,14 @@ flowchart LR
 
 Development and Production point to different deployments and keep operational
 configuration—such as secrets, schedule state, webhook tokens, and channel
-bindings—separate. Read [Cloud development](/agents/development) and
+bindings—separate. Read
 [Deployments and environments](/agents/deployments) for that lifecycle.
 
 ## Remember this
 
 > **The agent function decides what the agent is for this step.**  
 > **The harness decides how to run that step.**  
-> **The session remembers what happened.**  
-> **Triggers decide when the work begins.**
+> **The session remembers what happened.**
 
 ## Explore each concept
 
