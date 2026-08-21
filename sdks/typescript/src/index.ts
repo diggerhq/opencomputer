@@ -1,4 +1,4 @@
-import { configureHttp2 } from "./http2.js";
+import { configureHttp2, prewarmConnections } from "./http2.js";
 
 // Switch the Node global fetch dispatcher to HTTP/2 on import (browser-safe
 // no-op). Multiplexes concurrent requests over one connection — a large burst
@@ -9,6 +9,21 @@ import { configureHttp2 } from "./http2.js";
 // ESM-only, so top-level await breaks no existing (already-ESM) consumer, and
 // configureHttp2 never rejects. See http2.ts.
 await configureHttp2();
+
+// Open the connection pool at IMPORT, not at the first create.
+//
+// prewarmConnections used to fire from Sandbox.create(), which put the pool's
+// own setup INSIDE the window a burst measures — 48 connections cost ~153ms to
+// establish, and the first creates race them. Starting here means an importer
+// that loads the SDK before its timing loop (the leaderboard adapter does) has
+// the pool ready by the time it matters. Same connection count, just earlier.
+//
+// Deliberately NOT awaited: import must not block on the network. It is
+// memoized (warmPromise), so Sandbox.create()'s own call remains as the path
+// that covers a programmatically-supplied apiUrl, and becomes a no-op here.
+void prewarmConnections(
+  (process.env?.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev").replace(/\/api\/?$/, ""),
+);
 
 export {
   Sandbox,

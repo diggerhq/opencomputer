@@ -88,6 +88,12 @@ type PoolConfig struct {
 	// Nil means "nothing else exists", which is only true in tests.
 	InUse func() int
 
+	// InUseDetail explains the InUse number for the budget log — the terms it is
+	// computed from, so a refill freeze names its own cause instead of needing a
+	// live investigation to decompose. Optional; must be cheap and must not
+	// block, since it runs inside the pool's own tick.
+	InUseDetail func() string
+
 	// RefillDelay is how long the filler stands down after finding itself at
 	// MaxTotalBoxes.
 	//
@@ -579,8 +585,23 @@ func (p *Pool) overBudget() bool {
 	}
 	p.mu.Unlock()
 	if !quiet {
-		log.Printf("awsvm: pool at box budget (%d in use + %d committed >= %d) — refill paused %s to leave regional quota for creates",
-			inUse, p.committed(), p.cfg.MaxTotalBoxes, p.cfg.RefillDelay)
+		// Decomposed on purpose. "N in use + M committed" says the budget is
+		// full but not which term is holding it, and the two have opposite
+		// fixes: a stuck committed() means the pool is hoarding stock or has
+		// launches wedged in flight, while a stuck in-use means bindings the
+		// manager still counts for sandboxes that are gone. Diagnosing a refill
+		// freeze from the undecomposed line took a full benchmark session and
+		// several wrong answers, because every latency number measured during it
+		// was taken against a capped pool without that being visible.
+		p.mu.Lock()
+		stock, inflight, reserved := len(p.stock), p.inflight, len(p.reserved)
+		p.mu.Unlock()
+		detail := ""
+		if p.cfg.InUseDetail != nil {
+			detail = " " + p.cfg.InUseDetail()
+		}
+		log.Printf("awsvm: pool at box budget (%d in use + %d committed >= %d) — refill paused %s to leave regional quota for creates [stock=%d inflight=%d reserved=%d%s]",
+			inUse, p.committed(), p.cfg.MaxTotalBoxes, p.cfg.RefillDelay, stock, inflight, reserved, detail)
 	}
 	return true
 }

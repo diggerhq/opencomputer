@@ -1263,11 +1263,41 @@ function indexSandboxFromSSE(
 // a region, not a metro, so within enam the placement still falls out of which
 // colo touches the object first. That is the part only the arming run controls
 // — see the note above about first-touching from the cell's own metro.
-const POOL_STOCK_SHARDS = 8;
-const POOL_STOCK_SHARD_GEN = "g4";
+// g5 stops trying to AIM placement and starts SELECTING it. Four generations
+// were armed exactly as the note above prescribes — first-touched from a
+// sandbox inside the cell's own metro — and all four still scattered across
+// five colos. The conclusion is that first-touch-colo does not decide placement
+// within a region; Cloudflare spreads inside enam and the arming client cannot
+// override that. So placement is not something to get right, it is something to
+// measure: mint far more candidate shard names than we need, ask each one where
+// it landed (GET /internal/pool/colo-probe), and keep only the indices that
+// answer IAD. Selection is deterministic where placement is not, and it is
+// permanent for the same reason placement was a trap — a placed DO never moves.
+//
+// POOL_STOCK_SHARD_IDS is therefore a MEASUREMENT, not a configuration. Re-run
+// the probe and re-pick if the shard set is ever regenerated; do not hand-edit
+// it to indices nobody has verified.
+// Probed on prod 2026-08-21 from the control plane (IAD ingress), 64 g5
+// candidates: IAD 27, EWR 17, ATL 9, MIA 7, ORD 4. Confirms the diagnosis —
+// every candidate was first-touched by the same request, from one colo, and
+// they still scattered five ways. Placement inside enam is not ours to aim.
+//
+// The eight below are the first eight that answered IAD. There is nothing
+// special about these indices; they are simply the ones that landed where we
+// want, which is the entire idea.
+const POOL_STOCK_SHARD_GEN = "g5";
+const POOL_STOCK_SHARD_IDS = [1, 4, 6, 12, 13, 14, 16, 17];
+const POOL_STOCK_SHARDS = POOL_STOCK_SHARD_IDS.length;
+// How many candidate names the probe route sweeps. Only the ones that report
+// the target colo get promoted into POOL_STOCK_SHARD_IDS above.
+const POOL_STOCK_CANDIDATES = 64;
+
+function poolStockShardName(cellID: string, id: number): string {
+  return `${cellID}#${POOL_STOCK_SHARD_GEN}#${id}`;
+}
 
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
-  const name = `${cellID}#${POOL_STOCK_SHARD_GEN}#${shard}`;
+  const name = poolStockShardName(cellID, POOL_STOCK_SHARD_IDS[shard] ?? shard);
   // Deterministic placement hint: pin the stock DO to eastern North America
   // (covers eastus2 / the IAD leaderboard runner) so a claim never eats a
   // cross-colo hop even if the first touch comes from an off-metro edge. A
@@ -4149,6 +4179,50 @@ export default {
       if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
       await runPausedCapEnforcer(env);
       return json({ ok: true });
+    }
+    // Placement probe for the pool shards. HMAC-auth'd (CF_ADMIN_SECRET) so it
+    // is safe to run against prod, which is the only place the answer matters —
+    // the colo a DO lands in is a property of the account and region, and dev
+    // cannot stand in for it.
+    //
+    // Touching a candidate PLACES it, permanently. That is the point: this
+    // sweep is how a generation of shards gets minted, and its output is the
+    // POOL_STOCK_SHARD_IDS list. Sweeping a gen that is already live is
+    // harmless (the candidates beyond the selected ones just sit empty and
+    // never claim), but do not sweep with a `target` you are not about to ship.
+    //
+    // ?child=1 also asks each candidate to parent a throwaway MicrovmSession
+    // and report where the CHILD landed — the one measurement that decides
+    // whether pinning shards also pins the session DOs warmed from them.
+    if (path === "/internal/pool/colo-probe" && req.method === "GET") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${path}${url.search}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300)
+        return json({ error: "timestamp out of window" }, 401);
+      const cellID = url.searchParams.get("cell") ?? "";
+      if (!cellID) return json({ error: "cell required" }, 400);
+      const gen = url.searchParams.get("gen") ?? POOL_STOCK_SHARD_GEN;
+      const n = Math.min(Number(url.searchParams.get("n")) || POOL_STOCK_CANDIDATES, 256);
+      const wantChild = url.searchParams.get("child") === "1";
+      const probe = async (i: number) => {
+        const name = `${cellID}#${gen}#${i}`;
+        const q = wantChild ? `?child=${encodeURIComponent(`probe-${gen}-${i}`)}` : "";
+        try {
+          const r = await env.POOL_STOCK.get(env.POOL_STOCK.idFromName(name), {
+            locationHint: "enam",
+          }).fetch(`https://pool-stock/colo${q}`);
+          const j = (await r.json()) as { colo: string; stock: number; child: string | null };
+          return { i, colo: j.colo, stock: j.stock, child: j.child };
+        } catch (e) {
+          return { i, colo: "err", stock: -1, child: String(e).slice(0, 60) };
+        }
+      };
+      const results = await Promise.all(Array.from({ length: n }, (_, i) => probe(i)));
+      const byColo: Record<string, number[]> = {};
+      for (const r of results) (byColo[r.colo] ??= []).push(r.i);
+      return json({ cell: cellID, gen, edgeColo: req.headers.get("cf-ray")?.split("-")[1] ?? "?", byColo, results });
     }
     // Force a model-meter run (token billing §5.4). HMAC-auth'd (CF_ADMIN_SECRET) so
     // it's safe to run in prod for testing/ops — useful to debit + push caps right

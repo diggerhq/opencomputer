@@ -75,15 +75,83 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// ---- teardown ledger ------------------------------------------------------
+//
+// Every sandbox this process has ever been handed, minus the ones confirmed
+// destroyed. It exists because a benchmark that leaks boxes silently corrupts
+// every measurement taken after it, including its own later modes.
+//
+// The leak this closes is specifically the timed-out create. withTimeout only
+// abandons OUR promise — the create it raced is still running server-side, and
+// the sandbox it eventually returns lands in a resolved promise nobody is
+// holding. Those boxes were never destroyed and never even counted. A burst of
+// 100 could pin the cell at its box budget, at which point creates stop being
+// served from warm stock and fall through to rate-limited cold launches, and
+// the run measures that instead of what it meant to. Registering off the
+// ORIGINAL promise (not the raced one) is what makes a late arrival reachable.
+const outstanding = new Map(); // sandboxId -> sandbox handle
+
+function register(sandbox) {
+  const id = sandbox?.sandboxId ?? sandbox?.id;
+  if (id) outstanding.set(id, sandbox);
+  return sandbox;
+}
+
+/** Destroy with retries. Resolves true only when the box is confirmed gone. */
+async function destroySandbox(sandbox, attempts = 3) {
+  const id = sandbox?.sandboxId ?? sandbox?.id;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await withTimeout(sandbox.destroy(), DESTROY_TIMEOUT_MS, 'destroy timed out');
+      if (id) outstanding.delete(id);
+      return true;
+    } catch {
+      if (i < attempts - 1) await sleep(250 * (i + 1));
+    }
+  }
+  return false;
+}
+
+/**
+ * Destroy anything still outstanding. Called after every mode and once more on
+ * exit, so a leak has to survive both to escape — and if it does, it is printed
+ * with its ids rather than swallowed, because the next run needs to know the
+ * pool it is measuring against is short.
+ */
+async function sweepOutstanding(where) {
+  if (outstanding.size === 0) return;
+  const handles = [...outstanding.values()];
+  process.stdout.write(`\n  sweeping ${handles.length} undestroyed sandbox(es) after ${where}...\n`);
+  const q = [...handles];
+  await Promise.all(
+    Array.from({ length: 16 }, async () => {
+      for (;;) {
+        const sb = q.pop();
+        if (!sb) return;
+        await destroySandbox(sb);
+      }
+    }),
+  );
+  if (outstanding.size > 0) {
+    process.stdout.write(
+      `  LEAKED ${outstanding.size} sandbox(es) — these boxes are still running and hold pool budget:\n` +
+        `    ${[...outstanding.keys()].join(' ')}\n` +
+        `  Reclaim them with: go run ./cmd/mvmwipe -state RUNNING -apply\n`,
+    );
+  }
+}
+
 /** One TTI iteration: create -> node -v (exit 0) -> destroy (untimed). */
 async function ttiTask() {
   const compute = opencomputer({ apiKey: API_KEY, apiUrl: API_URL });
   const start = performance.now();
-  const sandbox = await withTimeout(
-    compute.sandbox.create({ timeout: KEEP_ALIVE_MS }),
-    CREATE_TIMEOUT_MS,
-    'create timed out',
-  );
+  // Register off the underlying promise so a create that outruns our timeout is
+  // still swept. Attaching to the raced promise instead would lose exactly the
+  // sandboxes most likely to leak.
+  const creating = compute.sandbox.create({ timeout: KEEP_ALIVE_MS });
+  creating.then(register).catch(() => {});
+  const sandbox = await withTimeout(creating, CREATE_TIMEOUT_MS, 'create timed out');
+  register(sandbox);
   try {
     const res = await withTimeout(sandbox.runCommand('node -v'), COMMAND_TIMEOUT_MS, 'command timed out');
     if (res.exitCode !== 0) {
@@ -91,7 +159,7 @@ async function ttiTask() {
     }
     return performance.now() - start;
   } finally {
-    await withTimeout(sandbox.destroy(), DESTROY_TIMEOUT_MS, 'destroy timed out').catch(() => {});
+    await destroySandbox(sandbox);
   }
 }
 
@@ -131,6 +199,9 @@ async function runMode(label, { iterations, concurrency, staggerDelayMs }) {
     if (staggerDelayMs > 0 && i < iterations - 1) await sleep(staggerDelayMs);
   }
   await Promise.all(queue);
+  // Between modes, not just at exit: a mode that leaks must not hand the next
+  // mode a depleted pool and have its result read as a regression.
+  await sweepOutstanding(label);
 
   return summarize(label, { iterations, oks, fails });
 }
@@ -230,11 +301,115 @@ for (const m of toRun) {
   }
 }
 
+// ---- preflight ------------------------------------------------------------
+//
+// Every precondition below is load-bearing for the number this prints, and each
+// one has already produced a wrong answer at least once by failing quietly. The
+// rule here is: a run that cannot be compared to the reference must ABORT, not
+// print a number that looks comparable.
+//
+// The reference is TTI p50=308 p90=457 p95=521 p99=564, burst-100 from IAD
+// against a pool confirmed at >=144 reserved, with the agent channel live on
+// 100/100 execs. Anything that silently breaks one of those makes this bench a
+// measurement of the breakage instead.
+const REQUIRE_POOL = Number(flag('require-pool', 'REQUIRE_POOL', '0'));
+
+async function preflight() {
+  const problems = [];
+
+  // 1. The adapter must actually be the leaderboard's. A local shim or a stale
+  //    node_modules measures something nobody else will ever run.
+  let adapterVersion = 'unknown';
+  try {
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    adapterVersion = req('@computesdk/opencomputer/package.json').version;
+  } catch {
+    problems.push('cannot resolve @computesdk/opencomputer — is node_modules installed?');
+  }
+
+  // 2. Connection prewarm. Without it the first create in a burst pays TLS +
+  //    HTTP/2 setup and the whole distribution shifts; with it the cost is paid
+  //    at import. Which of the two we are measuring must never be a surprise —
+  //    a silently-absent prewarm was worth hundreds of ms and went unnoticed
+  //    for a month.
+  let prewarm = 'absent';
+  try {
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const sdkPkg = req.resolve('@opencomputer/sdk/package.json');
+    const dist = path.join(path.dirname(sdkPkg), 'dist');
+    const hit = ['sandbox.js', 'http2.js'].every(
+      (f) => fs.existsSync(path.join(dist, f)) && fs.readFileSync(path.join(dist, f), 'utf8').includes('prewarmConnections'),
+    );
+    prewarm = hit ? 'present' : 'absent';
+  } catch {
+    prewarm = 'unknown';
+  }
+
+  // 3. Pool depth. This is the one that invalidated an entire measurement
+  //    session: a burst against a depleted pool does not measure create latency
+  //    at all, it measures the cold-launch rate limit behind it, and the result
+  //    is a plausible-looking number that is simply about something else.
+  //    Opt-in because it needs an admin endpoint the public bench has no
+  //    business calling.
+  let poolDepth = null;
+  if (REQUIRE_POOL > 0) {
+    try {
+      const r = await fetch(`${API_URL}/api/internal/pool/depth`, { headers: { 'X-API-Key': API_KEY } });
+      const j = await r.json();
+      poolDepth = Number(j.reserved ?? j.depth ?? NaN);
+      if (!Number.isFinite(poolDepth)) problems.push(`pool depth endpoint returned no usable count: ${JSON.stringify(j)}`);
+      else if (poolDepth < REQUIRE_POOL) problems.push(`pool depth ${poolDepth} < required ${REQUIRE_POOL} — burst would measure cold launches, not create`);
+    } catch (e) {
+      problems.push(`pool depth check failed: ${e?.message || e} (unset REQUIRE_POOL to skip)`);
+    }
+  }
+
+  console.log(
+    `preflight: adapter=${adapterVersion} sdk-prewarm=${prewarm}` +
+      (poolDepth !== null ? ` pool-reserved=${poolDepth}` : ' pool-check=skipped'),
+  );
+  if (prewarm !== 'present') {
+    console.log(`  NOTE: SDK connection prewarm is ${prewarm} — create p50 will include per-connection setup.`);
+  }
+  if (REQUIRE_POOL <= 0) {
+    console.log('  NOTE: pool-depth check skipped. Set REQUIRE_POOL=144 to refuse to run against a depleted pool.');
+  }
+  if (problems.length > 0) {
+    console.error('\nABORT — preconditions for a comparable run are not met:');
+    for (const p of problems) console.error(`  - ${p}`);
+    console.error('\nRefusing to print a score that cannot be compared to the reference run.');
+    process.exit(3);
+  }
+}
+
+await preflight();
+
 console.log(`OpenComputer TTI bench → ${API_URL}  (key ${API_KEY.slice(0, 6)}…)  modes=[${toRun.join(', ')}]`);
 
+// Ctrl-C is the most likely way this run ends with boxes outstanding, and it was
+// previously the way they were guaranteed to leak. One pass only — a second
+// signal exits immediately rather than trapping someone in a sweep.
+let interrupted = false;
+process.on('SIGINT', async () => {
+  if (interrupted) process.exit(130);
+  interrupted = true;
+  process.stdout.write('\ninterrupted — destroying outstanding sandboxes (Ctrl-C again to abandon them)\n');
+  await sweepOutstanding('interrupt');
+  process.exit(130);
+});
+
 const results = [];
-for (const m of toRun) {
-  results.push(await runMode(m, MODES[m]));
+try {
+  for (const m of toRun) {
+    results.push(await runMode(m, MODES[m]));
+  }
+} finally {
+  // A crash mid-run must not leave the pool short for whatever runs next.
+  await sweepOutstanding('exit');
 }
 printSummary(results);
 
@@ -242,4 +417,13 @@ if (JSON_OUT) {
   const fs = await import('node:fs');
   fs.writeFileSync(JSON_OUT, JSON.stringify({ apiUrl: API_URL, results }, null, 2));
   console.log(`\nwrote raw results → ${JSON_OUT}`);
+}
+
+// A leak is a failed run even when the numbers look fine, because the damage is
+// to whatever measures next: those boxes hold pool budget until something
+// reclaims them. Exiting non-zero is what stops a scripted sequence of runs from
+// stacking leak on leak, which is exactly how a 308ms baseline became a 3.1s one.
+if (outstanding.size > 0) {
+  console.error(`\nFAIL: ${outstanding.size} sandbox(es) leaked — the pool is now short by that many.`);
+  process.exit(1);
 }

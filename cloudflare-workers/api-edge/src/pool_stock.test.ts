@@ -45,6 +45,31 @@ const ORG_A = "11111111-1111-4111-8111-111111111111";
 interface ReserveBox {
   sandboxID: string;
   workerID: string;
+  endpoint?: string;
+  token?: string;
+  port?: number;
+}
+
+/**
+ * Stands in for the MICROVM_SESSIONS namespace, recording every attach.
+ *
+ * The attach count per box is the thing under test: it used to be exactly one
+ * for a box's entire life, which made the warm path depend on that single call
+ * landing at a moment when the box happened to be ready.
+ */
+class FakeSessions {
+  attaches: string[] = [];
+  idFromName(name: string): string {
+    return name;
+  }
+  get(id: string): { fetch: (url: string, init?: RequestInit) => Promise<Response> } {
+    return {
+      fetch: async (url: string) => {
+        if (url.includes("/attach")) this.attaches.push(id);
+        return Response.json({ ok: true });
+      },
+    };
+  }
 }
 
 /** Records every origin call the DO makes, and controls what edge-reserve returns. */
@@ -74,12 +99,13 @@ class FakeOrigin {
   };
 }
 
-function makeDO(origin: FakeOrigin, target = "4", lowWater = "1") {
+function makeDO(origin: FakeOrigin, target = "4", lowWater = "1", sessions?: FakeSessions) {
   const state = new FakeState();
   const env = {
     SESSION_JWT_SECRET: "test-secret",
     POOL_STOCK_TARGET: target,
     POOL_STOCK_LOW_WATER: lowWater,
+    MICROVM_SESSIONS: sessions,
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doInstance = new PoolStock(state as any, env as any);
@@ -124,6 +150,52 @@ describe("PoolStock", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps re-attaching sitting stock instead of warming it exactly once", async () => {
+    // The regression this pins: with a single attach per box, the whole warm
+    // path hung on that one call landing while the box happened to be ready.
+    // For freshly-manufactured stock it usually is not, and the box then sits
+    // cold for its entire life because nothing ever tries again. Measured on
+    // prod: 76 of 78 execs served on a dead channel.
+    const sessions = new FakeSessions();
+    origin.supply = [
+      { sandboxID: "sb-1", workerID: "w-1", endpoint: "e1", token: "t1", port: 8080 },
+      { sandboxID: "sb-2", workerID: "w-2", endpoint: "e2", token: "t2", port: 8080 },
+    ];
+    const { doInstance, state } = makeDO(origin, "2", "1", sessions);
+    await claimBatch(doInstance, state, ORG_A, 0); // prime the stock
+
+    const afterRestock = sessions.attaches.length;
+    expect(afterRestock).toBe(2); // one attach each at reserve
+
+    // Ticks with the stock full and nothing claimed: restock has nothing to do,
+    // so any further attach can only come from the rotating re-warm.
+    for (let i = 0; i < 3; i++) {
+      await doInstance.alarm();
+      await state.settle();
+    }
+    expect(sessions.attaches.length).toBeGreaterThan(afterRestock);
+    // And it must cover the whole shard, not just re-poke the first entry.
+    expect(new Set(sessions.attaches.slice(afterRestock))).toEqual(new Set(["sb-1", "sb-2"]));
+  });
+
+  it("reports a pre-warm it cannot perform rather than skipping in silence", async () => {
+    // A cell that supplies no reach-info means every exec pays a cold dial. That
+    // is a config problem with a large latency cost and no other symptom, so it
+    // has to appear in the log; silently returning here is what let it hide.
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sessions = new FakeSessions();
+    origin.supply = [
+      { sandboxID: "sb-1", workerID: "w-1" }, // no endpoint/token/port
+      { sandboxID: "sb-2", workerID: "w-2" },
+    ];
+    const { doInstance, state } = makeDO(origin, "2", "1", sessions);
+    await claimBatch(doInstance, state, ORG_A, 0);
+
+    expect(sessions.attaches).toEqual([]);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("agent pre-warm SKIPPED"));
+    err.mockRestore();
   });
 
   it("hands a box out exactly once", async () => {

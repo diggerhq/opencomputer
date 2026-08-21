@@ -111,6 +111,10 @@ const IDLE_DECOMMISSION_MS = 30 * 60_000;
 // than ALARM_INTERVAL_MS because nothing is being restocked, but still inside
 // the shortest window it refreshes (count/cells, 30s) so an entry never lapses.
 const IDLE_WARM_INTERVAL_MS = 20_000;
+// Stock entries re-attached per alarm tick by rewarmSlice. Deliberately a count,
+// not a fraction: it makes background load independent of TARGET_STOCK. At the
+// default 18 this cycles the whole shard about every 45s.
+const REWARM_PER_TICK = 4;
 // Hard stop for warm-only ticking. A shard idle this long is not between bursts,
 // it is out of service, and warming it is pure cost.
 const WARM_MAX_IDLE_MS = 6 * 3600_000;
@@ -211,12 +215,34 @@ export class PoolStock {
   private stock: StockEntry[] = [];
   private restockInFlight = false;
   private lastClaimMs = 0;
+  // Rotating position for rewarmSlice. In-memory only: a shard that is evicted
+  // and reloaded simply restarts the rotation, which costs nothing.
+  private rewarmCursor = 0;
+  // Pre-warm health. Counted and reported rather than swallowed — see
+  // warmMicrovmBox for why a silent skip here is the expensive kind of quiet.
+  private warmSkips = 0;
+  private warmFails = 0;
+  private warmSkipLoggedAt = 0;
+  private warmFailLoggedAt = 0;
   // One-shot colo self-identification (diagnostics): placement is sticky at
   // first-touch; a stock DO cross-colo from the claiming edge adds per-claim RTT.
   private coloLogged = false;
   // Resolved once per isolate alongside coloLogged; reported on every claim so
   // the create path can see whether its stock DO is even in the same colo.
   private colo = "?";
+  // Blocking form, for the /colo probe only — never on a claim, which must not
+  // wait on a diagnostic round trip.
+  private async coloNow(): Promise<string> {
+    if (this.colo !== "?") return this.colo;
+    this.coloLogged = true;
+    try {
+      const t = await fetch("https://www.cloudflare.com/cdn-cgi/trace").then((r) => r.text());
+      this.colo = (t.match(/^colo=(\w+)/m) ?? [])[1] ?? "?";
+    } catch {
+      /* leave "?" — the probe reports unknown rather than failing */
+    }
+    return this.colo;
+  }
   // Last cell seen on a /claim, persisted so the proactive alarm can restock
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
@@ -268,6 +294,39 @@ export class PoolStock {
     }
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({ stock: this.stock.length, restocking: this.restockInFlight });
+    }
+    // Placement probe. A DO pins to a colo at first touch, permanently, and
+    // locationHint only picks a REGION — four generations of shards were armed
+    // from an in-metro client and still scattered across five colos inside
+    // enam. So placement is not something to aim; it is something to measure
+    // and then select on. /colo reports where this object actually landed.
+    //
+    // ?child=<name> additionally asks a MicrovmSession this shard parents where
+    // IT landed. That is the load-bearing question for stock-prep warming: if a
+    // child inherits its parent's colo, pinning the shards pins every session
+    // DO with them; if it does not, session placement needs its own lever.
+    //
+    // ANSWERED, on prod 2026-08-21 over 64 parent/child pairs: it does not.
+    // A child matches its parent's colo 34/64 of the time, and parent-IAD
+    // yields child-IAD only 12/27 (44%) against a 30% background rate. So
+    // parentage biases placement without deciding it. Pinning the shards is
+    // still worth doing — deterministic for the claim hop, and it lifts the
+    // session DOs from 21% IAD to ~44% for free — but the other half of them
+    // need a lever this has now ruled out.
+    if (req.method === "GET" && url.pathname === "/colo") {
+      const self = await this.coloNow();
+      const child = url.searchParams.get("child");
+      const ns = this.env.MICROVM_SESSIONS;
+      let childColo: string | null = null;
+      if (child && ns) {
+        childColo = await ns
+          .get(ns.idFromName(child), { locationHint: "enam" })
+          .fetch("https://do/colo")
+          .then((r) => r.json() as Promise<{ colo: string }>)
+          .then((j) => j.colo)
+          .catch(() => "err");
+      }
+      return Response.json({ colo: self, stock: this.stock.length, child: childColo });
     }
     return new Response("not found", { status: 404 });
   }
@@ -520,15 +579,44 @@ export class PoolStock {
     // lands, and the shard is placed in-metro with the traffic it serves, so
     // the colo it warms is the colo that will read it.
     await this.warmColo();
-    // NOTE: deliberately NO periodic re-prewake of sitting stock here. Warming
-    // every entry each tick costs 8 shards × TARGET_STOCK DO pokes every
-    // ALARM_INTERVAL — sustained background load on the vm-do worker plus
-    // waitUntil work competing with this DO's own claim serving — and prod
-    // measurement showed the burst gate is edge-isolate admission, not DO
-    // coldness (exec held ~48ms with 100% VM-DO). Fresh boxes are warmed once in
-    // reserveOnce; a box that re-hibernates while it sits wakes on the host dial
-    // or first exec, as it always did.
+    this.rewarmSlice();
     await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+  }
+
+  // rewarmSlice re-attaches a bounded, rotating slice of the sitting stock.
+  //
+  // This used to be nothing at all, and the comment where it used to be argued
+  // that warming every entry on every tick was too expensive — 8 shards ×
+  // TARGET_STOCK DO pokes per ALARM_INTERVAL of sustained load on the vm-do
+  // worker, competing with this object's own claim serving. That argument is
+  // still right, and this does not do that.
+  //
+  // What it replaces is the part that was wrong: with no re-warm at all, the
+  // single attach in reserveOnce was the ONLY one a box ever got. Its whole
+  // warm life then hung on one call landing at one moment — and for a freshly
+  // manufactured box that moment is the worst possible one, because the agent
+  // may not be answering yet. The MicrovmSession keepalive would fail its five
+  // pings, drop to its slow cadence (before that fix: stop forever), and nothing
+  // would ever re-attach. Measured on prod against a just-manufactured pool: 76
+  // of 78 execs served on a dead channel, each paying the full re-dial, versus
+  // 100 of 100 live on a pool old enough to have been attached while healthy.
+  //
+  // A rotating cursor makes the cost independent of stock depth: REWARM_PER_TICK
+  // pokes per shard per tick regardless of TARGET_STOCK, so at the default 18
+  // every box is re-attached about every 45s for roughly a fifth of the load the
+  // rejected every-entry version would have cost. Re-attach is idempotent — an
+  // already-live channel just refreshes warmUntil.
+  private rewarmSlice(): void {
+    if (this.stock.length === 0) return;
+    const n = Math.min(REWARM_PER_TICK, this.stock.length);
+    for (let i = 0; i < n; i++) {
+      const e = this.stock[this.rewarmCursor % this.stock.length];
+      this.rewarmCursor++;
+      if (!e.endpoint) continue; // cell routes through a worker; nothing to attach
+      this.warmMicrovmBox({ sandboxID: e.id, endpoint: e.endpoint, token: e.token, port: e.port });
+    }
+    // Keep the cursor from growing without bound over a long-lived shard.
+    if (this.rewarmCursor > 1e9) this.rewarmCursor = 0;
   }
 
   // prewakeBox wakes one box's VmSession DO isolate (best-effort, off any hot
@@ -552,7 +640,27 @@ export class PoolStock {
   // exec IS the race. Here there is no race: the box sits in stock for minutes.
   private warmMicrovmBox(b: { sandboxID: string; endpoint?: string; token?: string; port?: number }): void {
     const ns = this.env.MICROVM_SESSIONS;
-    if (!ns || !b.endpoint || !b.token || !b.port) return;
+    // A silent skip here is indistinguishable from a warm that worked, and this
+    // is the single most load-bearing call on the fast path: without it every
+    // exec in the next burst pays a full re-dial. Every reason it can be skipped
+    // is a misconfiguration or a cell that changed shape, so say so — rate
+    // limited to one line per minute per shard, because under a restock storm
+    // this would otherwise be the noisiest line in the log.
+    if (!ns || !b.endpoint || !b.token || !b.port) {
+      this.warmSkips++;
+      const now = Date.now();
+      if (now - this.warmSkipLoggedAt > 60_000) {
+        this.warmSkipLoggedAt = now;
+        const missing = !ns
+          ? "MICROVM_SESSIONS binding"
+          : [!b.endpoint && "endpoint", !b.token && "token", !b.port && "port"].filter(Boolean).join("+");
+        console.error(
+          `pool-stock ${this.cell?.cellID ?? "?"}: agent pre-warm SKIPPED (${this.warmSkips} total) — missing ${missing}. ` +
+            `Every exec on these boxes will pay a cold dial.`,
+        );
+      }
+      return;
+    }
     this.state.waitUntil(
       ns
         .get(ns.idFromName(b.sandboxID), { locationHint: "enam" })
@@ -561,8 +669,25 @@ export class PoolStock {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ endpoint: b.endpoint, token: b.token, port: b.port, dial: true }),
         })
-        .then(() => {})
-        .catch(() => {}),
+        .then(async (r) => {
+          if (r.ok) return;
+          this.warmFails++;
+          const now = Date.now();
+          if (now - this.warmFailLoggedAt > 60_000) {
+            this.warmFailLoggedAt = now;
+            console.error(
+              `pool-stock ${this.cell?.cellID ?? "?"}: agent pre-warm attach failed ${r.status} (${this.warmFails} total)`,
+            );
+          }
+        })
+        .catch((e) => {
+          this.warmFails++;
+          const now = Date.now();
+          if (now - this.warmFailLoggedAt > 60_000) {
+            this.warmFailLoggedAt = now;
+            console.error(`pool-stock ${this.cell?.cellID ?? "?"}: agent pre-warm attach error (${this.warmFails} total): ${e}`);
+          }
+        }),
     );
   }
 
