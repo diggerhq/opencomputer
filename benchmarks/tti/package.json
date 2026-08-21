@@ -10,7 +10,11 @@
     "bench:burst": "node bench.mjs --mode burst"
   },
   "dependencies": {
-    "@computesdk/opencomputer": "^1.0.1",
-    "computesdk": "^4.1.4"
+    "@computesdk/opencomputer": "latest",
+    "computesdk": "latest"
+  },
+  "//overrides": "The adapter's own dependency range is ^0.12.4, which on a 0.x version means <0.13 — so a plain install pins the SDK to 0.12.x no matter what has been published since. This bench exists to measure the client we actually ship, so the resolution is forced to latest here. Without it the bench and the raw harness run different SDKs and their numbers are not comparable.",
+  "overrides": {
+    "@opencomputer/sdk": "latest"
   }
 }

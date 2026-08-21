@@ -295,6 +295,32 @@ export class PoolStock {
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({ stock: this.stock.length, restocking: this.restockInFlight });
     }
+    // Keep-warm touch: refresh the idle clock and make sure the alarm is armed,
+    // WITHOUT handing out a box.
+    //
+    // A shard decommissions its whole stock after IDLE_DECOMMISSION_MS and stops
+    // ticking entirely after WARM_MAX_IDLE_MS, which is correct for a shard
+    // nobody is using but wrong for the traffic pattern this pool actually
+    // serves. The benchmark that grades us runs WEEKLY; a CI tenant runs nightly
+    // and a cron tenant hourly. All of them arrive after the shard has gone
+    // fully cold, and all of them arrive as a BURST — so the first hundred
+    // creates race one empty shard set, miss all eight, and fall through to
+    // control-plane cold launches paced by the RunMicrovm quota. The pool exists
+    // precisely to make that not happen, and idle decommission was handing back
+    // the stock that would have prevented it.
+    //
+    // Touching from the cron keeps lastClaim inside the idle window, so stock
+    // stays at target between visits. It reserves nothing on its own — the
+    // alarm's normal restock does that — so a shard that has genuinely gone
+    // unused costs one DO wake per cron tick and nothing else.
+    if (req.method === "POST" && url.pathname === "/touch") {
+      const body = (await req.json().catch(() => ({}))) as { cell?: { cellID: string; baseURL: string } };
+      if (body.cell?.cellID) this.cell = body.cell;
+      this.lastClaimMs = Date.now();
+      await this.state.storage.put("lastClaim", this.lastClaimMs);
+      await this.ensureAlarm();
+      return Response.json({ stock: this.stock.length, target: this.targetStock, cell: this.cell?.cellID ?? null });
+    }
     // Placement probe. A DO pins to a colo at first touch, permanently, and
     // locationHint only picks a REGION — four generations of shards were armed
     // from an in-metro client and still scattered across five colos inside
