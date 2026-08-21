@@ -1630,7 +1630,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // Net for the benchmark, which scores create+exec together, this is a
         // win. It stays in waitUntil and swallows its errors, so the worst case
         // is the first exec dialling cold exactly as it does today.
-        if (routeEntry.reach) ctx.waitUntil(warmEdgeTunnel(box.id, routeEntry.reach));
+        if (routeEntry.reach) ctx.waitUntil(warmEdgeTunnel(routeEntry.reach));
         //
         // NOTE: the MicroVM exec channel is deliberately NOT warmed here. It is
         // warmed at stock-prep in pool_stock.ts, where the box sits idle for
@@ -2017,43 +2017,13 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
   }
   const reachMs = Date.now() - tReach;
 
-  // heldHit is reported as a mark so the hit RATE is observable, not just the
-  // latency it produces — a warm-connection optimisation that silently stops
-  // hitting looks exactly like one that never worked.
-  let heldHit = "miss";
   const run = async (r: MvmReach): Promise<Response> => {
-    const held = takeHeldAgent(id);
-    if (held) {
-      try {
-        const res = await held.unary("/agent.SandboxAgent/Exec", encodeExecRequest(execReq), MVM_EXEC_TIMEOUT_MS);
-        heldHit = "hit";
-        holdAgent(id, held); // keep it for this box's next exec
-        return json(decodeExecResponse(res));
-      } catch {
-        // A held connection the proxy has since dropped fails here and only
-        // here. Discard it and dial fresh rather than failing the exec.
-        try {
-          held.close();
-        } catch {
-          /* already gone */
-        }
-        heldHit = "stale";
-      }
-    }
     const conn = await dialAgent(r);
     try {
       const res = await conn.unary("/agent.SandboxAgent/Exec", encodeExecRequest(execReq), MVM_EXEC_TIMEOUT_MS);
-      // Hold only on success: a connection whose exec threw is exactly the one
-      // not to hand to the next caller. Bounded by HELD_MAX / HELD_TTL_MS.
-      holdAgent(id, conn);
       return json(decodeExecResponse(res));
-    } catch (e) {
-      try {
-        conn.close();
-      } catch {
-        /* already gone */
-      }
-      throw e;
+    } finally {
+      conn.close();
     }
   };
 
@@ -2082,7 +2052,7 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
       status: 200,
       headers: {
         "content-type": "application/json",
-        "server-timing": `auth;dur=${authMs}, pol;dur=${polMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}, held;desc=${heldHit}`,
+        "server-timing": `auth;dur=${authMs}, pol;dur=${polMs}, route;dur=${routeMs}, reach;dur=${reachMs}, exec;dur=${execMs}, up;dur=${lastUpgradeMs}, ready;dur=${lastReadyMs}`,
       },
     });
   } catch (e) {
@@ -2106,68 +2076,10 @@ const MVM_EXEC_TIMEOUT_MS = 10_000;
  * path, and a box that refuses now simply means the first exec pays what it
  * would have paid anyway.
  */
-// Held agent connections, keyed by sandbox id.
-//
-// warmEdgeTunnel used to dial and immediately close(), which paid the handshake
-// at create time and then threw away the only thing that made it worth paying.
-// Measured on prod twice: ~20% of a burst-100 arrive with an unpaid first touch
-// costing ~300ms, and the SAME box answers its second exec in ~50ms. The CP
-// pings all 144 reserved boxes over its own gRPC channels (0 failed), so that
-// warmth demonstrably does not transfer — the cost is bound to the edge's own
-// connection. Holding it is therefore the whole fix.
-//
-// Bounded on purpose: an unclosed connection per create under burst is a leak.
-const HELD_MAX = 256;
-const HELD_TTL_MS = 60_000;
-const heldAgents = new Map<string, { conn: H2Grpc; atMs: number }>();
-
-// takeHeldAgent removes and returns a usable connection. Ownership transfers to
-// the caller — a connection must never be handed to two concurrent execs.
-function takeHeldAgent(id: string): H2Grpc | null {
-  const e = heldAgents.get(id);
-  if (!e) return null;
-  heldAgents.delete(id);
-  if (Date.now() - e.atMs > HELD_TTL_MS) {
-    try {
-      e.conn.close();
-    } catch {
-      /* already gone */
-    }
-    return null;
-  }
-  return e.conn;
-}
-
-function holdAgent(id: string, conn: H2Grpc): void {
-  if (heldAgents.has(id)) {
-    // Someone else re-held first; keep theirs and drop this one rather than
-    // leaking the replaced connection.
-    try {
-      conn.close();
-    } catch {
-      /* already gone */
-    }
-    return;
-  }
-  // Map iteration is insertion-ordered, so the first key is the oldest.
-  while (heldAgents.size >= HELD_MAX) {
-    const oldest = heldAgents.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    const victim = heldAgents.get(oldest);
-    heldAgents.delete(oldest);
-    try {
-      victim?.conn.close();
-    } catch {
-      /* already gone */
-    }
-  }
-  heldAgents.set(id, { conn, atMs: Date.now() });
-}
-
-async function warmEdgeTunnel(id: string, r: MvmReach): Promise<void> {
+async function warmEdgeTunnel(r: MvmReach): Promise<void> {
   try {
     const conn = await dialAgent(r);
-    holdAgent(id, conn);
+    conn.close();
   } catch {
     /* first exec dials cold, exactly as it would have */
   }
