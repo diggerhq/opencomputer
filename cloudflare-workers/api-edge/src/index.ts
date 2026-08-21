@@ -1999,6 +1999,55 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
   // form returned "hi-string\n" while the argv form returned "" on the same box.
   const execReq = buildAgentExecRequest(body, cmd);
 
+  // Session-DO first, direct dial as the fallback.
+  //
+  // A Durable Object can hold the agent tunnel across requests; a Worker
+  // isolate provably cannot — #663 held connections in a module map and got
+  // hit=0 out of 100 twice, with 40-53% found dead on arrival, because the
+  // socket dies with the request context that opened it. That is what task #167
+  // meant by "shared dialer DO", and the object already exists: pool_stock
+  // attaches AND dials it at stock-prep (warmMicrovmBox), so a pooled box
+  // should reach its customer with a live channel already open.
+  //
+  // Tried BEFORE resolving reach: the DO holds its own credentials from attach,
+  // so a hit skips that lookup entirely. 409 (channel unavailable, for any
+  // reason) falls through to the dial below, which is exactly today's path.
+  if (env.MICROVM_SESSIONS) {
+    const tDo = Date.now();
+    try {
+      const ns = env.MICROVM_SESSIONS;
+      const dr = await ns.get(ns.idFromName(id), { locationHint: "enam" }).fetch("https://do/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...execReq, timeoutMs: MVM_EXEC_TIMEOUT_MS }),
+      });
+      const doMs = Date.now() - tDo;
+      if (dr.status === 200) {
+        // Split the DO's own timing back out. `dlive` is the one that matters:
+        // 1 means the channel survived from a previous request or the
+        // keepalive, which is the entire point of routing through here.
+        const t = Object.fromEntries(
+          (dr.headers.get("x-mvm-timing") ?? "")
+            .split(",")
+            .map((kv) => kv.split("="))
+            .filter((kv) => kv.length === 2),
+        ) as Record<string, string>;
+        return new Response(dr.body, {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "server-timing":
+              `auth;dur=${authMs}, pol;dur=${polMs}, mvmdo;dur=${doMs}, ` +
+              `dlive;dur=${t.live ?? -1}, dcold;dur=${t.cold ?? -1}, ddial;dur=${t.dial ?? -1}, ` +
+              `dunary;dur=${t.unary ?? -1}, dinside;dur=${t.inside ?? -1}`,
+          },
+        });
+      }
+    } catch {
+      /* DO unreachable — the direct dial below is the fallback */
+    }
+  }
+
   const tReach = Date.now();
   // Create now folds reach into the "route" entry (one colo write instead of
   // two — see createSandbox). Fall back to the standalone "mvmreach" key, which
