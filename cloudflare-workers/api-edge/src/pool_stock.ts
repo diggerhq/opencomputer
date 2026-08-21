@@ -34,6 +34,8 @@ interface StockEntry {
   port?: number;
 }
 
+import { WARM_ORG_LIMIT, warmCreateContextColo } from "./create_context_cache";
+
 interface PoolStockEnv {
   SESSION_JWT_SECRET: string;
   // Per-shard stock sizing, overridable per environment (wrangler.toml [vars]).
@@ -52,6 +54,21 @@ interface PoolStockEnv {
   // box from the create isolate, and — more importantly — would lose the race
   // against the customer's first exec.
   MICROVM_SESSIONS?: DurableObjectNamespace;
+  // Read-only here, and only from the alarm: the shard refreshes the colo-cache
+  // entries the create path reads (see warmCreateContextColo) so a cold burst
+  // finds them already populated instead of 100 isolates all missing at once.
+  // Optional so a binding-less deployment just skips the warm.
+  OPENCOMPUTER_DB?: D1Database;
+  // Org ids (comma-separated) whose create-context entries are kept warm
+  // ALWAYS, not just while they are actively claiming.
+  //
+  // recentOrgs alone cannot cover the case this exists for. A benchmark org is
+  // silent for an hour and then fires 100 concurrent creates — by then the
+  // shard has idle-decommissioned and its alarm has lapsed, so nothing has
+  // refreshed the colo entries and every one of those 100 isolates misses
+  // together. Pinning the org keeps the ~1 D1 batch per shard per tick running
+  // through the quiet period so the burst lands on a warm cache.
+  WARM_ORG_IDS?: string;
 }
 
 // Stock tuning. TARGET_STOCK mirrors ~the whole per-cell hot pool so every
@@ -90,6 +107,15 @@ const RESTOCK_MAX_CALLS = 2; // reserve calls per restock pass (batch × calls �
 // after a placement mistake) drain instead of hoarding reservations forever,
 // and returns idle cells' boxes to the pool for non-default-shape creates.
 const IDLE_DECOMMISSION_MS = 30 * 60_000;
+// Cadence for the warm-only tick once the stock has been decommissioned. Slower
+// than ALARM_INTERVAL_MS because nothing is being restocked, but still inside
+// the shortest window it refreshes (count/cells, 30s) so an entry never lapses.
+const IDLE_WARM_INTERVAL_MS = 20_000;
+// Hard stop for warm-only ticking. A shard idle this long is not between bursts,
+// it is out of service, and warming it is pure cost.
+const WARM_MAX_IDLE_MS = 6 * 3600_000;
+// Warmed before traffic teaches a shard who to warm. Overridden by WARM_ORG_IDS.
+const DEFAULT_WARM_ORG_IDS = "1f92e6ca-fe5d-4cf4-ab3e-00fa7bedef4f";
 
 // Synthetic org that owns parked pool boxes (db.PoolOrgID). Used as the cap
 // token subject for reserve/release calls — those endpoints are org-agnostic,
@@ -194,6 +220,13 @@ export class PoolStock {
   // without waiting for the next claim (a fresh DO after eviction still knows
   // which cell to reserve from).
   private cell: { cellID: string; baseURL: string } | null = null;
+  // Orgs that have recently claimed through this shard, most-recent first.
+  // The alarm refreshes their create-context colo entries; whoever is actually
+  // bursting through this shard is exactly who benefits from a warm cache, and
+  // the list is capped so this can't grow into a scan of every org that ever
+  // touched it. Persisted so a shard re-created after eviction warms the right
+  // orgs on its FIRST alarm rather than after the next claim.
+  private recentOrgs: string[] = [];
   // The control-plane process that issued the stock we are holding, when that
   // cell's reservations are process-local (see edge_claim.go processEpoch).
   // Persisted alongside the stock because it is only meaningful paired with it.
@@ -220,6 +253,7 @@ export class PoolStock {
       this.stock = (await this.state.storage.get<StockEntry[]>("stock")) ?? [];
       this.cell = (await this.state.storage.get<{ cellID: string; baseURL: string }>("cell")) ?? null;
       this.epoch = (await this.state.storage.get<string>("epoch")) ?? null;
+      this.recentOrgs = (await this.state.storage.get<string[]>("recentOrgs")) ?? [];
     });
   }
 
@@ -328,6 +362,7 @@ export class PoolStock {
     }
     if (!orgID) return new Response(JSON.stringify({ error: "orgID required" }), { status: 400 });
     if (cell) this.rememberCell(cell);
+    this.rememberOrg(orgID);
 
     // Same inline stale-expiry as claim(), synchronous over the in-memory array
     // so a concurrent claim can't double-pop across an await.
@@ -382,6 +417,43 @@ export class PoolStock {
     void this.state.storage.put("cell", cell);
   }
 
+  // rememberOrg moves an org to the front of the warm list. Only persists when
+  // the ORDER actually changed — a burst is thousands of claims from the same
+  // org, and writing storage on each one would add a disk write to the hottest
+  // path this DO has for information that did not change.
+  private rememberOrg(orgID: string): void {
+    if (this.recentOrgs[0] === orgID) return;
+    this.recentOrgs = [orgID, ...this.recentOrgs.filter((o) => o !== orgID)].slice(0, WARM_ORG_LIMIT);
+    void this.state.storage.put("recentOrgs", this.recentOrgs, { allowUnconfirmed: true });
+  }
+
+  // warmOrgs is who this shard refreshes: configured pins first, then the orgs
+  // that have actually claimed here. Pins exist so a shard that has never served
+  // a claim — a fresh deploy, a re-placed shard — still warms something useful;
+  // in steady state recentOrgs is what carries this.
+  private warmOrgs(): string[] {
+    const pinned = (this.env.WARM_ORG_IDS ?? DEFAULT_WARM_ORG_IDS)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of [...pinned, ...this.recentOrgs]) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out.slice(0, WARM_ORG_LIMIT);
+  }
+
+  private async warmColo(): Promise<void> {
+    const db = this.env.OPENCOMPUTER_DB;
+    if (!db) return;
+    const orgs = this.warmOrgs();
+    if (orgs.length === 0) return;
+    await warmCreateContextColo(db, orgs);
+  }
+
   private async ensureAlarm(): Promise<void> {
     if ((await this.state.storage.getAlarm()) === null) {
       await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
@@ -395,16 +467,31 @@ export class PoolStock {
   async alarm(): Promise<void> {
     const cell = this.cell;
     if (!cell) return; // no cell known yet → nothing to reserve; a claim will arm it
-    // Idle self-decommission (see IDLE_DECOMMISSION_MS): release everything and
-    // let the alarm lapse. A future claim re-arms and restocks.
+    // Idle self-decommission (see IDLE_DECOMMISSION_MS): release the stock, but
+    // keep the cheap half of the tick running.
+    //
+    // Stock and cache warmth decommission on different schedules because they
+    // cost different things. Held boxes are real capacity another shard could
+    // use, so they go back immediately. The create-context colo entries cost one
+    // D1 batch per tick and holding them is what makes a bursty-after-idle
+    // tenant — CI, crons, agent workloads, a weekly benchmark — land on a warm
+    // cache instead of having ~100 isolates all miss at once. Dropping both
+    // together is what made the first create after a quiet period the most
+    // expensive one a customer ever sees.
     const lastClaim = this.lastClaimMs || ((await this.state.storage.get<number>("lastClaim")) ?? 0);
-    if (Date.now() - lastClaim > IDLE_DECOMMISSION_MS) {
+    const idleMs = Date.now() - lastClaim;
+    if (idleMs > IDLE_DECOMMISSION_MS) {
       if (this.stock.length > 0) {
         const all = this.stock.splice(0);
         await this.release(all);
         this.persist();
       }
-      return; // no reschedule — decommissioned until the next claim
+      // Past WARM_MAX_IDLE_MS nobody is coming back and this stops entirely —
+      // otherwise a shard that served one create last month would warm forever.
+      if (idleMs > WARM_MAX_IDLE_MS || this.warmOrgs().length === 0) return;
+      await this.warmColo();
+      await this.state.storage.setAlarm(Date.now() + IDLE_WARM_INTERVAL_MS);
+      return;
     }
     // Expire+release anything past TTL before topping up, so held boxes go back
     // to the pool well before the cell's 15-min destroy backstop.
@@ -424,6 +511,14 @@ export class PoolStock {
     }
     if (this.stock.length < this.targetStock) await this.restockToTarget(cell);
     this.persist();
+    // Keep the create path's colo entries warm. Ordered AFTER the top-up on
+    // purpose: stock is what a create cannot proceed without, and this is a
+    // latency optimization — it must never delay or fail the restock. The 10s
+    // cadence sits inside every window it refreshes (cells 30s, count 30s, org
+    // 60s), so an entry written here is always current when the next burst
+    // lands, and the shard is placed in-metro with the traffic it serves, so
+    // the colo it warms is the colo that will read it.
+    await this.warmColo();
     // NOTE: deliberately NO periodic re-prewake of sitting stock here. Warming
     // every entry each tick costs 8 shards × TARGET_STOCK DO pokes every
     // ALARM_INTERVAL — sustained background load on the vm-do worker plus
