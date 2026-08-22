@@ -8,16 +8,16 @@ description: "Create an agent project and sync it to Development (Cloud)"
 - Node.js 22 or newer
 - an OpenComputer account
 
-## 1. Create the app
+## 1. Create the agent
 
 ```bash
-npm create @opencomputer/start@latest my-agent
+npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 ```
 
-Use `.` instead of `my-agent` to initialize an empty current directory.
-The initializer asks whether to create agent code only or include a React SPA.
+Use `.` instead of `my-agent` to initialize an empty current directory. The
+initializer creates one hello-world agent.
 
 ## 2. Log in
 
@@ -28,21 +28,20 @@ npx --package @opencomputer/cli opencomputer login
 The CLI opens the OpenComputer device-login flow and stores the login locally.
 The production API at `https://app.opencomputer.dev` is used by default.
 
-## 3. Start cloud development
+## 3. Watch development deployments
 
 ```bash
-npm run dev
+npm run deploy -- --watch
 ```
 
 On the first run, choose an existing cloud project or create a new one. The
-process prints the project dashboard URL, watches `opencomputer/`, and syncs
-changes to `development`. If you included the SPA, the same command starts
-Vite; open its URL and send a message.
+process prints the project dashboard URL, watches `opencomputer/`, and deploys
+changes to `development`. Open the dashboard playground or use the CLI to send
+a message.
 
-<Warning>
-  Keep `npm run dev` running while using the React app. The authenticated
-  development bridge exists only for the lifetime of that process.
-</Warning>
+<Note>
+  This command does not start a local agent server or a browser application.
+</Note>
 
 ## 4. Change the agent
 

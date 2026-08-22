@@ -19,7 +19,7 @@ import {
   readProjectResources,
 } from "./project.js";
 
-test("init creates a multi-agent-ready project and React hello world app", async () => {
+test("init creates a multi-agent-ready hello-world agent by default", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-project-"));
   const root = resolve(parent, "hello-app");
   try {
@@ -42,11 +42,8 @@ test("init creates a multi-agent-ready project and React hello world app", async
       await readFile(resolve(root, "opencomputer", "project.ts"), "utf8"),
       /id:/,
     );
-    await assert.rejects(stat(resolve(root, "src", "use-agent.ts")));
-    assert.match(
-      await readFile(resolve(root, "src", "App.tsx"), "utf8"),
-      /import \{ useAgent \} from "@opencomputer\/react"[\s\S]*useAgent\(__OPENCOMPUTER_AGENT__\)/,
-    );
+    await assert.rejects(stat(resolve(root, "src")));
+    await assert.rejects(stat(resolve(root, "vite.config.ts")));
     const packageJSON = JSON.parse(
       await readFile(resolve(root, "package.json"), "utf8"),
     ) as {
@@ -54,22 +51,16 @@ test("init creates a multi-agent-ready project and React hello world app", async
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
-    assert.equal(packageJSON.scripts.dev, "opencomputer dev");
+    assert.equal(packageJSON.scripts.dev, undefined);
     assert.equal(packageJSON.scripts["dev:web"], undefined);
+    assert.equal(packageJSON.scripts.deploy, "opencomputer deploy");
     assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.5.0");
-    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.5.0");
-    assert.ok(packageJSON.devDependencies["@types/node"]);
-    const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
-    assert.match(viteConfig, /command === "serve"/);
-    assert.match(viteConfig, /resolve\("\.opencomputer\/dev\.json"\)/);
-    assert.doesNotMatch(
-      viteConfig,
-      /opencomputer\/agents\/hello-world\/\.opencomputer\/dev\.json/,
-    );
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.0");
+    assert.equal(packageJSON.devDependencies["@types/node"], undefined);
     assert.match(
       await readFile(resolve(root, "README.md"), "utf8"),
-      /Sync agent code to Development \(Cloud\)[\s\S]*opencomputer\/\.env\.local/,
+      /Deploy agent changes to Development \(Cloud\)[\s\S]*npm run deploy -- --watch[\s\S]*opencomputer\/\.env\.local/,
     );
     assert.match(
       await readFile(resolve(root, "opencomputer", ".env.example"), "utf8"),
@@ -104,14 +95,8 @@ test("init creates a multi-agent-ready project and React hello world app", async
       "opencomputer/.env.example",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
-      "vite.config.ts",
-      "tsconfig.json",
-      "index.html",
       "README.md",
       ".gitignore",
-      "src/App.tsx",
-      "src/main.tsx",
-      "src/styles.css",
     ]);
   } finally {
     await rm(parent, { recursive: true, force: true });
@@ -261,18 +246,18 @@ export default defineSchedule({
   }
 });
 
-test("init can create an agent-only project", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-agent-only-"));
-  const root = resolve(parent, "hello-agent");
+test("init can explicitly include a separately-run React app", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-with-spa-"));
+  const root = resolve(parent, "hello-app");
   try {
     const initialized = await initializeAgentProject(root, undefined, {
-      spa: false,
+      spa: true,
     });
     await stat(
       resolve(root, "opencomputer", "agents", "hello-world", "agent.ts"),
     );
-    await assert.rejects(stat(resolve(root, "src")));
-    await assert.rejects(stat(resolve(root, "vite.config.ts")));
+    await stat(resolve(root, "src", "App.tsx"));
+    await stat(resolve(root, "vite.config.ts"));
     const packageJSON = JSON.parse(
       await readFile(resolve(root, "package.json"), "utf8"),
     ) as {
@@ -281,20 +266,30 @@ test("init can create an agent-only project", async () => {
       devDependencies: Record<string, string>;
     };
     assert.deepEqual(packageJSON.scripts, {
-      dev: "opencomputer dev",
+      "dev:web": "vite",
+      build: "tsc -b && vite build",
       session: "opencomputer session",
       deploy: "opencomputer deploy",
     });
-    assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
-    assert.equal(packageJSON.dependencies.react, undefined);
-    assert.equal(packageJSON.devDependencies.vite, undefined);
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
+    assert.equal(packageJSON.dependencies.react, "^19.2.0");
+    assert.equal(packageJSON.devDependencies.vite, "^8.0.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.0");
+    const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
+    assert.match(viteConfig, /npm run deploy -- --watch/);
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
+      "vite.config.ts",
+      "tsconfig.json",
+      "index.html",
       "README.md",
       ".gitignore",
+      "src/App.tsx",
+      "src/main.tsx",
+      "src/styles.css",
     ]);
   } finally {
     await rm(parent, { recursive: true, force: true });

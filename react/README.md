@@ -8,5 +8,6 @@ import { useAgent } from "@opencomputer/react";
 const agent = useAgent("support@development");
 ```
 
-The generated OpenComputer starter configures the local authenticated bridge
-automatically during `npm run dev`.
+Run `npm run deploy -- --watch` for the agent project to configure the local
+authenticated bridge, then start the React application separately with its own
+development command, such as `npm run dev:web`.

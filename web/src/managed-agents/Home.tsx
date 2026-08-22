@@ -107,8 +107,8 @@ export default function ProjectsHome() {
               Create your first project
             </h2>
             <p className="text-muted-foreground mt-3 max-w-xl text-sm leading-6">
-              Start with one hello-world agent, with an optional React SPA. Your
-              OpenComputer project is ready for more agents as it grows.
+              Start with one hello-world agent. Your OpenComputer project is
+              ready for more agents as it grows.
             </p>
             <pre className="bg-foreground text-background mt-5 overflow-x-auto rounded-lg px-4 py-3 text-sm leading-7">
               <code>{starterCommands('hello-world').join('\n')}</code>
@@ -161,19 +161,18 @@ export default function ProjectsHome() {
         <PanelContent className="flex items-start gap-3">
           <Bot className="text-muted-foreground mt-0.5 size-4" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">Cloud development</p>
+            <p className="text-sm font-medium">Deploy your first agent</p>
             <p className="text-muted-foreground mt-1 text-sm">
               Create a new app in a <code>my-agent/</code> folder. No global
               OpenComputer CLI installation is required.
             </p>
             <pre className="bg-muted mt-3 overflow-x-auto rounded-md border px-3 py-2 text-xs leading-5">
-              <code>npm create @opencomputer/start@latest my-agent</code>
+              <code>npx @opencomputer/cli init my-agent</code>
             </pre>
             <p className="text-muted-foreground mt-2 text-xs leading-5">
               Then run <code>cd my-agent</code>, <code>npm install</code>, and{' '}
-              <code>npm run dev</code>. The project contains an{' '}
-              <code>opencomputer/</code> agent backend and can include a{' '}
-              <code>src/</code> React app.
+              <code>npm run deploy -- --watch</code>. The project contains an{' '}
+              <code>opencomputer/</code> cloud agent definition.
             </p>
           </div>
         </PanelContent>

@@ -177,7 +177,7 @@ export async function syncDevelopmentSecrets(
     const confirmed = await (options.confirm ?? confirmNewSecrets)(newSecrets);
     if (!confirmed) {
       process.stderr.write(
-        "Development secret sync skipped. Use `opencomputer secrets set` or restart dev to approve it.\n",
+        "Development secret sync skipped. Use `opencomputer secrets set` or restart `opencomputer deploy --watch` to approve it.\n",
       );
       return [];
     }
@@ -398,11 +398,12 @@ async function startReactDevServer(projectRoot: string): Promise<ChildProcess> {
   });
 }
 
-export async function runCloudDevelopment(
+export async function runDeploymentWatch(
   client: OpenComputerClient,
   config: ResolvedConfig,
   root: string,
   options: ProjectBindingOptions = {},
+  behavior: { startWebApp?: boolean } = {},
 ): Promise<void> {
   const projectRoot = await findOpenComputerProjectRoot(root);
   const binding = await ensureProjectBinding(
@@ -505,18 +506,17 @@ export async function runCloudDevelopment(
     }
     await syncSecrets();
     const spa = await hasReactSpa(projectRoot);
+    const startWebApp = behavior.startWebApp === true && spa;
     process.stdout.write(
-      `Development (Cloud)\n` +
+      `Watching Development deployments\n` +
         `Project:    ${binding.projectName} (${binding.projectId})\n` +
         `Dashboard:  ${projectDashboardURL(config.apiUrl, binding.projectId)}\n` +
         `Agents:     ${initial.map((result) => `${result.deployment.agentId}@development`).join(", ")}\n` +
         `Deployments:${initial.map((result) => ` ${result.deployment.id}`).join("\n            ")}\n` +
         `Watching:   ${projectRoot}\n` +
-        (spa
-          ? `React:      starting local Vite app\n`
-          : `React:      not included\n`),
+        (startWebApp ? `Web app:    starting legacy local Vite app\n` : ""),
     );
-    if (spa) web = await startReactDevServer(projectRoot);
+    if (startWebApp) web = await startReactDevServer(projectRoot);
     watcher = watch(
       resolve(projectRoot, "opencomputer"),
       { recursive: true },
@@ -539,4 +539,15 @@ export async function runCloudDevelopment(
     await rm(stateFile, { force: true });
     await gateway.close();
   }
+}
+
+export async function runCloudDevelopment(
+  client: OpenComputerClient,
+  config: ResolvedConfig,
+  root: string,
+  options: ProjectBindingOptions = {},
+): Promise<void> {
+  return runDeploymentWatch(client, config, root, options, {
+    startWebApp: true,
+  });
 }

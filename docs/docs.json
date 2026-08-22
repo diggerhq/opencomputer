@@ -59,8 +59,7 @@
               "agents/mcp",
               "agents/skills",
               "agents/subagents",
-              "agents/session-data",
-              "agents/react"
+              "agents/session-data"
             ]
           },
           {

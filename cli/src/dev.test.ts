@@ -23,7 +23,11 @@ test("development derives the cloud dashboard project URL", () => {
 test("development detects whether the starter includes a React SPA", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-shape-"));
   try {
-    const withSpa = await initializeAgentProject(resolve(parent, "with-spa"));
+    const withSpa = await initializeAgentProject(
+      resolve(parent, "with-spa"),
+      undefined,
+      { spa: true },
+    );
     const agentOnly = await initializeAgentProject(
       resolve(parent, "agent-only"),
       undefined,

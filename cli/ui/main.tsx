@@ -417,7 +417,7 @@ function App() {
   useEffect(() => {
     if (!token) {
       setError(
-        "Missing dev token. Open the complete URL printed by opencomputer dev.",
+        "Missing dev token. Open the complete URL printed by opencomputer deploy --watch.",
       );
       return;
     }

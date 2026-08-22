@@ -3,8 +3,9 @@ title: "React integration"
 description: "Stream agent sessions from a React application with useAgent"
 ---
 
-Projects created with the React option use `@opencomputer/react`. The package
-owns session creation, multi-turn reuse, and streamed assistant messages.
+An independently developed React application can use `@opencomputer/react`.
+The package owns session creation, multi-turn reuse, and streamed assistant
+messages. React is not part of the default agent scaffold.
 
 ```tsx
 import { useAgent } from "@opencomputer/react";
@@ -65,8 +66,16 @@ useAgent({
 
 ## Development
 
-Keep `npm run dev` running while using the local application. It starts Vite
-and provides the authenticated development bridge; credentials are not bundled
+Run the watched agent deployment and the web application separately:
+
+```bash
+npm run deploy -- --watch
+npm run dev:web
+```
+
+The first command deploys agent changes and provides the authenticated
+development bridge. The second starts only the web application. The web app
+can also be deployed through its own lifecycle; credentials are not bundled
 into browser code.
 
 For the durable conversation model, see [Sessions and turns](/agents/sessions).

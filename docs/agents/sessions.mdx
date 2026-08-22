@@ -7,19 +7,6 @@ A session is a durable conversation with a deployed agent. Each turn appends
 input and streamed runtime events to the session, allowing clients to resume a
 conversation without rebuilding its history locally.
 
-## React
-
-When you select the React SPA, the starter imports `useAgent()` from
-`@opencomputer/react`. The hook exposes:
-
-- `messages` — accumulated user and assistant messages
-- `send(text)` — create a session if necessary and stream the next turn
-- `isRunning` — whether a turn is active
-- `error` — the latest request error
-
-The hook accepts an agent selector such as `hello-world@development`. Build
-additional UI and application hooks around its session state as needed.
-
 ## Agent playground
 
 Open a project in the dashboard and choose **Agent playground**. Select the
