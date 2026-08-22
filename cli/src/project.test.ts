@@ -56,7 +56,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.equal(packageJSON.scripts.deploy, "opencomputer deploy");
     assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.5.0");
     assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.1");
     assert.equal(packageJSON.devDependencies["@types/node"], undefined);
     assert.match(
       await readFile(resolve(root, "README.md"), "utf8"),
@@ -274,7 +274,7 @@ test("init can explicitly include a separately-run React app", async () => {
     assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
     assert.equal(packageJSON.dependencies.react, "^19.2.0");
     assert.equal(packageJSON.devDependencies.vite, "^8.0.0");
-    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.0");
+    assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.6.1");
     const viteConfig = await readFile(resolve(root, "vite.config.ts"), "utf8");
     assert.match(viteConfig, /npm run deploy -- --watch/);
     assert.deepEqual(initialized.files, [

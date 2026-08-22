@@ -6,6 +6,12 @@ const cli = await load("cli/package.json");
 const starter = await load("create-start/package.json");
 
 assert.equal(
+  cli.bin?.cli,
+  cli.bin?.opencomputer,
+  "@opencomputer/cli must expose a package-name bin so `npx @opencomputer/cli` is unambiguous",
+);
+
+assert.equal(
   starter.version,
   cli.version,
   "@opencomputer/create-start and @opencomputer/cli must share a version",

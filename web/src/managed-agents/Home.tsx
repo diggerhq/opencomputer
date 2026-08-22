@@ -2,7 +2,6 @@ import { FormEvent, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Bot,
   Check,
   ChevronRight,
   Clipboard,
@@ -26,7 +25,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { notifyError } from '@/lib/errors'
 import { createManagedProject, getManagedProjects } from './api'
-import { createStartCommand, starterCommands } from './onboarding'
+import { starterCommandBlock, starterCopyCommand } from './onboarding'
 
 export default function ProjectsHome() {
   const navigate = useNavigate()
@@ -58,7 +57,7 @@ export default function ProjectsHome() {
 
   async function copyCommand() {
     try {
-      await navigator.clipboard.writeText(createStartCommand('hello-world'))
+      await navigator.clipboard.writeText(starterCopyCommand('hello-world'))
       setCopied(true)
       toast.success('Command copied')
     } catch (error) {
@@ -111,7 +110,7 @@ export default function ProjectsHome() {
               ready for more agents as it grows.
             </p>
             <pre className="bg-foreground text-background mt-5 overflow-x-auto rounded-lg px-4 py-3 text-sm leading-7">
-              <code>{starterCommands('hello-world').join('\n')}</code>
+              <code>{starterCommandBlock('hello-world')}</code>
             </pre>
             <div className="mt-6 flex flex-wrap gap-3">
               <Button onClick={() => setDialogOpen(true)}>
@@ -156,27 +155,6 @@ export default function ProjectsHome() {
           </div>
         </section>
       )}
-
-      <Panel>
-        <PanelContent className="flex items-start gap-3">
-          <Bot className="text-muted-foreground mt-0.5 size-4" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">Deploy your first agent</p>
-            <p className="text-muted-foreground mt-1 text-sm">
-              Create a new app in a <code>my-agent/</code> folder. No global
-              OpenComputer CLI installation is required.
-            </p>
-            <pre className="bg-muted mt-3 overflow-x-auto rounded-md border px-3 py-2 text-xs leading-5">
-              <code>npx @opencomputer/cli init my-agent</code>
-            </pre>
-            <p className="text-muted-foreground mt-2 text-xs leading-5">
-              Then run <code>cd my-agent</code>, <code>npm install</code>, and{' '}
-              <code>npm run deploy -- --watch</code>. The project contains an{' '}
-              <code>opencomputer/</code> cloud agent definition.
-            </p>
-          </div>
-        </PanelContent>
-      </Panel>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-md">

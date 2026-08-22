@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/create-start",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Create a hello-world OpenComputer agent application.",
   "type": "module",
   "bin": {
@@ -18,7 +18,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@opencomputer/cli": "0.6.0"
+    "@opencomputer/cli": "0.6.1"
   },
   "publishConfig": {
     "access": "public"
