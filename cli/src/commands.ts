@@ -6,7 +6,11 @@ import {
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { resolveConfig } from "./config.js";
-import { publishProjectDeployment, runCloudDevelopment } from "./dev.js";
+import {
+  publishProjectDeployment,
+  runCloudDevelopment,
+  runDeploymentWatch,
+} from "./dev.js";
 import {
   ensureProjectBinding,
   findOpenComputerProjectRoot,
@@ -497,7 +501,7 @@ export async function runCommand(
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     await assertStarterTarget(directory);
     const initialized = await initializeAgentProject(directory, undefined, {
-      spa: !agentOnly,
+      spa,
     });
     if (globals.json) printJSON(initialized);
     else {
@@ -505,13 +509,14 @@ export async function runCommand(
       process.stdout.write(
         `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Project:   choose or create one on the first npm run dev\n` +
+          `Project:   choose or create one on the first watched deployment\n` +
           `Agents:    opencomputer/\n` +
-          (agentOnly ? `App:       agent only\n\n` : `React:     src/\n\n`) +
+          (spa ? `Web app:   src/ (separate lifecycle)\n\n` : `App:       agent only\n\n`) +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  npm run dev       # cloud sync${agentOnly ? "" : " + React app"}\n`,
+          `  npm run deploy -- --watch  # deploy changes to Development\n` +
+          (spa ? `  npm run dev:web             # optional local web app\n` : ""),
       );
     }
     return;
@@ -555,7 +560,10 @@ export async function runCommand(
   }
 
   if (command === "deploy") {
-    const alias = option(args, "--alias") ?? "production";
+    const watch = flag(args, "--watch");
+    const requestedAlias = option(args, "--alias");
+    const project = option(args, "--project");
+    const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const root = await findOpenComputerProjectRoot(process.cwd());
     if (!root) {
@@ -563,6 +571,23 @@ export async function runCommand(
         "No OpenComputer project found. Run `opencomputer init <directory>` first.",
       );
     }
+    if (watch) {
+      if (requestedAlias && requestedAlias !== "development") {
+        throw new Error(
+          "--watch deploys only to development; omit --alias or use --alias development",
+        );
+      }
+      await runDeploymentWatch(client, config, root, {
+        project,
+        createProjectName,
+        interactive: !globals.json,
+      });
+      return;
+    }
+    if (project || createProjectName) {
+      throw new Error("--project and --create-project require --watch");
+    }
+    const alias = requestedAlias ?? "production";
     const binding = await ensureProjectBinding(client, config, root, {
       interactive: !globals.json,
       select: true,
@@ -614,6 +639,9 @@ export async function runCommand(
     const project = option(args, "--project");
     const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    process.stderr.write(
+      "`opencomputer dev` is deprecated. Use `opencomputer deploy --watch`; start any web app separately.\n",
+    );
     await runCloudDevelopment(
       client,
       config,

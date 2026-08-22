@@ -6,7 +6,7 @@
 
 - [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, and deploy agents as code.
 - [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
-- [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple agents and a React application.
+- [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple cloud agents in one project.
 - [Cloud development](https://docs.opencomputer.dev/agents/development.md): Sync agent code to Development while your application runs locally.
 - [Deployments and environments](https://docs.opencomputer.dev/agents/deployments.md): Understand development, production, immutable deployments, and aliases.
 - [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, and MCP servers from code.
@@ -21,7 +21,6 @@
 - [Skills](https://docs.opencomputer.dev/agents/skills.md): Package reusable instructions and supporting resources with an agent.
 - [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
 - [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
-- [React integration](https://docs.opencomputer.dev/agents/react.md): Stream agent sessions from a React application with `useAgent()`.
 - [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect each agent turn.
 - [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow agent and outbound-request logs.
 

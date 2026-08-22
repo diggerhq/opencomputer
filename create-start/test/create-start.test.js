@@ -20,7 +20,7 @@ export async function runCreateStart(args) {
     );
     const result = spawnSync(
       process.execPath,
-      [resolve("index.js"), "my-agent", "--spa"],
+      [resolve("index.js"), "my-agent"],
       {
         cwd: resolve(import.meta.dirname, ".."),
         env: {
@@ -33,7 +33,6 @@ export async function runCreateStart(args) {
     assert.equal(result.status, 0, result.stderr.toString());
     assert.deepEqual(JSON.parse(await readFile(capture, "utf8")), [
       "my-agent",
-      "--spa",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -54,7 +53,7 @@ test("creates an app through the local CLI module", async () => {
   try {
     const result = spawnSync(
       process.execPath,
-      [resolve("index.js"), app, "--spa"],
+      [resolve("index.js"), app],
       {
         cwd: resolve(import.meta.dirname, ".."),
         env: {
@@ -72,7 +71,7 @@ test("creates an app through the local CLI module", async () => {
       ).isFile(),
       true,
     );
-    assert.equal((await stat(resolve(app, "src", "App.tsx"))).isFile(), true);
+    await assert.rejects(stat(resolve(app, "src", "App.tsx")));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

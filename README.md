@@ -1,33 +1,26 @@
 # OpenComputer
 
 Build, steer, and deploy serverless agents as code. An OpenComputer project
-contains one or more agents plus the React app used to interact with them.
+contains one or more agents that run in the cloud.
 
 ```bash
-npm create @opencomputer/start@latest my-agent
+npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
 ```
 
-Sync agent code to Development (Cloud) in one terminal:
+Watch agent code and deploy changes to Development (Cloud):
 
 ```bash
-npm run dev
-```
-
-Start the React app in another:
-
-```bash
-npm run dev:web
+npm run deploy -- --watch
 ```
 
 [Documentation](https://docs.opencomputer.dev/agents/overview) · [Quickstart](https://docs.opencomputer.dev/agents/quickstart) · [Dashboard](https://app.opencomputer.dev)
 
 ## Project structure
 
-`npm create @opencomputer/start@latest <directory|.>` creates a complete
-hello-world project:
+`npx @opencomputer/cli init <directory|.>` creates a hello-world agent project:
 
 ```text
 my-agent/
@@ -36,27 +29,22 @@ my-agent/
 │   └── agents/
 │       └── hello-world/
 │           └── agent.ts
-└── src/
-    ├── App.tsx
-    └── use-agent.ts
+└── package.json
 ```
 
-The `opencomputer/` tree is the backend definition. It is designed to grow to
-multiple agents in one project. The `src/` tree is a normal Vite + React app;
-its generated `useAgent` hook talks to the remote development agent through a
-small authenticated local bridge without exposing the server token to browser
-code.
+The `opencomputer/` tree contains the cloud agent definitions and is designed
+to grow to multiple agents in one project. A browser application can live in
+the same repository, but it has its own development and deployment lifecycle.
 
 ## Develop and deploy
 
-On the first `npm run dev`, choose an existing project from your account or
+On the first `npm run deploy -- --watch`, choose an existing project from your account or
 create a new one. That binding is reused on later runs. The CLI uses
 `https://app.opencomputer.dev` by default; pass `--api-url` or set
 `OPENCOMPUTER_API_URL` only when intentionally targeting another service.
 
-Edit the agent function, tools, connections, and routing while cloud sync
-is running. The React app streams turns and keeps the durable session ID for
-follow-up messages.
+Edit the agent function, tools, connections, and routing while watched cloud
+deployment is running. Test it from the dashboard or CLI.
 
 When the project is ready, publish an immutable deployment:
 
@@ -78,6 +66,7 @@ opencomputer whoami
 opencomputer init my-agent
 opencomputer agents
 opencomputer session "Say hello"
+opencomputer deploy --watch
 opencomputer deploy --alias production
 opencomputer run hello-world "Say hello"
 ```

@@ -1,11 +1,10 @@
 ---
 title: "Projects and agents"
-description: "Organize multiple cloud agents and a React application"
+description: "Organize multiple cloud agents in one project"
 ---
 
 A project is the cloud boundary for related agents, environments, deployments,
-and sessions. A source repository contains the project's agent definitions and
-the application that interacts with them.
+and sessions. A source repository contains the project's agent definitions.
 
 ## Project structure
 
@@ -26,11 +25,7 @@ my-agent/
 │           ├── tools/       # optional
 │           ├── skills/      # optional
 │           └── schedules/   # optional
-├── src/
-│   ├── App.tsx
-│   └── main.tsx
-├── package.json
-└── vite.config.ts
+└── package.json
 ```
 
 - `opencomputer/project.ts` declares project metadata and agent IDs.
@@ -38,7 +33,6 @@ my-agent/
 - `opencomputer/channels/` and `opencomputer/outboxes/` define shared project
   resources; registrations under an agent authorize that agent to use them.
 - `opencomputer/.env.local` optionally holds ignored development secrets.
-- `src/` is a normal React application.
 - `.opencomputer/` is ignored local state created by the CLI.
 
 Add source files only when the project uses them. The starter does not generate
@@ -46,8 +40,8 @@ placeholder capability directories.
 
 ## Create or select the cloud project
 
-The source scaffold and cloud project are separate. `npm create` writes local
-source. Link it to a cloud project with:
+The source scaffold and cloud project are separate. `opencomputer init` writes
+local source. Link it to a cloud project with:
 
 ```bash
 npx --package @opencomputer/cli opencomputer link
@@ -59,8 +53,8 @@ skip it, the first project-scoped command shows the same prompt.
 For non-interactive use:
 
 ```bash
-npx --package @opencomputer/cli opencomputer dev --project <project-id-or-slug>
-npx --package @opencomputer/cli opencomputer dev --create-project "Support agents"
+npx --package @opencomputer/cli opencomputer deploy --watch --project <project-id-or-slug>
+npx --package @opencomputer/cli opencomputer deploy --watch --create-project "Support agents"
 ```
 
 Later commands reuse `.opencomputer/project.json`. Run `opencomputer link`

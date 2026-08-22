@@ -47,9 +47,10 @@ Usage:
   opencomputer logout [--local]
   opencomputer whoami
   opencomputer agents
-  opencomputer init <directory|.> [--spa|--agent-only]
+  opencomputer init <directory|.>
   opencomputer link
-  opencomputer dev [--project <id|slug> | --create-project <name>]
+  opencomputer deploy --watch [--project <id|slug> | --create-project <name>]
+  opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
   opencomputer session create [prompt] [--agent <project-agent>] [--keep]
   opencomputer session list
@@ -70,7 +71,7 @@ Usage:
   opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
   opencomputer webhooks remove <webhook-id> [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
-  opencomputer deploy [--alias <alias>]
+  opencomputer deploy [--alias <alias>] [--watch]
   opencomputer run <agent> <prompt> [--keep]
 
 Global options:

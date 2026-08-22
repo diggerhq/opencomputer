@@ -1,12 +1,10 @@
-import { createInterface } from "node:readline/promises";
-
 import { runCommand } from "./commands.js";
 
 function usage(): void {
   process.stdout.write(`Create a hello-world OpenComputer application.
 
 Usage:
-  npm create @opencomputer/start@latest [directory|.] [--spa|--agent-only]
+  npm create @opencomputer/start@latest [directory|.]
 `);
 }
 
@@ -29,28 +27,11 @@ export async function runCreateStart(rawArgs: string[]): Promise<void> {
   }
 
   const directory = args[0] ?? ".";
-  let includeSpa = spaFlag >= 0;
-  if (spaFlag < 0 && agentOnlyFlag < 0 && process.stdin.isTTY) {
-    const prompt = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    try {
-      process.stdout.write(
-        "\nWhat would you like to create?\n\n" +
-          "  1) Agent only\n" +
-          "  2) Agent + React SPA\n\n",
-      );
-      const answer = await prompt.question("Select [1]: ");
-      includeSpa = ["2", "y", "yes", "spa"].includes(
-        answer.trim().toLowerCase(),
-      );
-    } finally {
-      prompt.close();
-    }
-  }
+  const includeSpa = spaFlag >= 0;
 
-  await runCommand("init", [directory, includeSpa ? "--spa" : "--agent-only"], {
-    json: false,
-  });
+  await runCommand(
+    "init",
+    includeSpa ? [directory, "--spa"] : [directory],
+    { json: false },
+  );
 }

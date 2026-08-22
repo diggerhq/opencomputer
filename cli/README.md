@@ -1,38 +1,37 @@
 # @opencomputer/cli
 
-The agent-focused OpenComputer CLI creates, develops, and deploys agent
-projects with an optional React application.
+The agent-focused OpenComputer CLI creates and deploys cloud agent projects.
 
 ```bash
-npm create @opencomputer/start@latest my-agent
+npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
 npx --package @opencomputer/cli opencomputer link
 ```
 
-The npm initializer asks whether to include a React SPA, then delegates to
-`opencomputer init`. Agent definitions live under `opencomputer/agents/`; the
-optional React app lives under `src/`.
+Agent definitions live under `opencomputer/agents/`. The default initializer
+creates one hello-world agent and no browser application.
 
-Start cloud sync and the optional React app together:
+Watch source and deploy changes to Development (Cloud):
 
 ```bash
-npm run dev
+npm run deploy -- --watch
 ```
 
 `opencomputer link` asks whether to create a project or select an existing
 project from the authenticated account. Later commands reuse that local binding.
 If you skip this step, the first project-scoped command prompts you to link.
-Use `opencomputer dev --project <id|slug>` for non-interactive selection or
-`opencomputer dev --create-project <name>` to create one explicitly.
+Use `opencomputer deploy --watch --project <id|slug>` for non-interactive
+selection or `opencomputer deploy --watch --create-project <name>` to create
+one explicitly.
 
 The production cloud API (`https://app.opencomputer.dev`) is the default.
 Override it only with `--api-url` or `OPENCOMPUTER_API_URL`.
 
-The command prints the cloud dashboard URL. A React app imports `useAgent`
-from `@opencomputer/react`; Vite proxies requests through the CLI's
-authenticated bridge, while agent execution remains in the cloud.
+The command prints the cloud dashboard URL. It does not start a local agent
+server or a browser application. A colocated web application can use a
+separate command such as `npm run dev:web` and be deployed independently.
 
 Deploy the same agent source when it is ready:
 

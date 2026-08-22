@@ -1,23 +1,22 @@
 # @opencomputer/create-start
 
-Create a hello-world OpenComputer application:
+This package is a compatibility shim for the former npm initializer. New
+projects should use the CLI directly:
 
 ```bash
-npm create @opencomputer/start@latest my-agent
+npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
-npm run dev
+npm run deploy -- --watch
 ```
 
-This package is the naming shim npm resolves for the command above. The
-interactive initializer is shipped by the same-version `@opencomputer/cli`
-package. It asks whether to create agent code only or include a React SPA. A
-single `npm run dev` syncs agents to Development (Cloud), prints the dashboard
-URL, and starts Vite when the SPA is included.
+The initializer creates a hello-world agent without a browser application.
+`npm run deploy -- --watch` watches agent source, publishes changes to
+Development (Cloud), and prints the dashboard URL.
 
 Use `.` to initialize the current directory:
 
 ```bash
-npm create @opencomputer/start@latest .
+npx @opencomputer/cli init .
 ```

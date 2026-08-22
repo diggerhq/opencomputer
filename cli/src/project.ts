@@ -355,7 +355,7 @@ export async function initializeAgentProject(
   files: string[];
 }> {
   const root = resolve(directory);
-  const spa = options.spa ?? true;
+  const spa = options.spa ?? false;
   const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
   await assertStarterTarget(root);
   await mkdir(agentRoot, { recursive: true });
@@ -421,8 +421,9 @@ export default function Agent() {
         private: true,
         type: "module",
         scripts: {
-          dev: "opencomputer dev",
-          ...(spa ? { build: "tsc -b && vite build" } : {}),
+          ...(spa
+            ? { "dev:web": "vite", build: "tsc -b && vite build" }
+            : {}),
           session: "opencomputer session",
           deploy: "opencomputer deploy",
         },
@@ -437,7 +438,7 @@ export default function Agent() {
             : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.5.0",
+          "@opencomputer/cli": "^0.6.0",
           ...(spa
             ? {
                 "@types/node": "^24.0.0",
@@ -469,7 +470,7 @@ function openComputerDev() {
     ) as { url: string; token: string; agent: string };
   } catch {
     throw new Error(
-      "OpenComputer is not running. Start npm run dev first.",
+      "OpenComputer is not running. Start npm run deploy -- --watch first.",
     );
   }
 }
@@ -484,7 +485,7 @@ function openComputerAgent() {
     // The production build below reports the actionable binding error.
   }
   throw new Error(
-    "This app is not connected to an OpenComputer project. Run npm run dev first.",
+    "This app is not connected to an OpenComputer project. Run npm run deploy -- --watch first.",
   );
 }
 
@@ -671,14 +672,20 @@ form button:disabled { cursor: default; opacity: .45; }
 This project keeps agent definitions in \`opencomputer/\` and the React app in
 \`src/\`.
 
-Sync agent code to Development (Cloud) and start the React app:
+Deploy agent changes to Development (Cloud):
 
 \`\`\`bash
-npm run dev
+npm run deploy -- --watch
+\`\`\`
+
+Start the web app separately:
+
+\`\`\`bash
+npm run dev:web
 \`\`\`
 
 The first run asks you to create a cloud project or select an existing one.
-That choice is saved for later development runs.
+That choice is saved for later watched deployments.
 
 Development secrets can be placed in \`opencomputer/.env.local\`. Only values
 referenced by \`useSecret()\` are synchronized, and their allowed origins are
@@ -688,14 +695,14 @@ inferred from \`defineConnection()\` declarations.
 
 This project keeps agent definitions in \`opencomputer/\`.
 
-Sync agent code to Development (Cloud):
+Deploy agent changes to Development (Cloud):
 
 \`\`\`bash
-npm run dev
+npm run deploy -- --watch
 \`\`\`
 
 The first run asks you to create a cloud project or select an existing one.
-That choice is saved for later development runs.
+That choice is saved for later watched deployments.
 
 Development secrets can be placed in \`opencomputer/.env.local\`. Only values
 referenced by \`useSecret()\` are synchronized, and their allowed origins are

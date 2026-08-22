@@ -4,8 +4,7 @@ description: "Define reactive agents in TypeScript and run them in the OpenCompu
 ---
 
 OpenComputer is a managed runtime for agents defined as code. A project can
-contain several agents and optionally a React application that talks to them. You write
-the behavior; OpenComputer manages development deployments, model execution,
+contain several agents. You write the behavior; OpenComputer manages development deployments, model execution,
 tools, durable sessions, streaming, and production versions.
 
 ```tsx
@@ -28,7 +27,7 @@ subagents needed for that render.
 
 <CardGroup cols={2}>
   <Card title="Projects" icon="folder" href="/agents/projects">
-    Group multiple agents and a client application in one repository.
+    Group multiple agents in one repository.
   </Card>
   <Card title="Reactive agents" icon="code" href="/agents/reactive-agents">
     Build agent behavior with a function and conditional hooks.
@@ -53,21 +52,20 @@ subagents needed for that render.
 ## Start a project
 
 ```bash
-npm create @opencomputer/start@latest my-agent
+npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
-npm run dev
+npm run deploy -- --watch
 ```
 
-The initializer asks whether to include a React SPA. The first `npm run dev`
+The initializer creates one hello-world agent. The first watched deployment
 lets you create a cloud project or select an existing one, prints its dashboard
-URL, and syncs every configured agent to `development`. When a SPA exists, the
-same command also starts it locally.
+URL, and syncs every configured agent to `development`.
 
 <Note>
-  There is no local agent server. An optional React app runs locally, while
-  agent code runs in OpenComputer's managed development cloud.
+  There is no local agent server. Agent code runs in OpenComputer's managed
+  development cloud.
 </Note>
 
 ## What is available today
@@ -76,8 +74,6 @@ same command also starts it locally.
 - reactive instructions, model selection, tools, subagents, MCP
   servers, input metadata, and session data reads
 - cloud development with file watching and automatic synchronization
-- an optional React client using `@opencomputer/react` for streaming and
-  multi-turn session reuse
 - dashboard and CLI playground sessions
 - immutable deployments promoted through aliases such as `production`
 - project-level secrets with optional agent overrides and constrained outbound requests

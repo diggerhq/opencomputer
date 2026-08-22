@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  developmentWatchReadyMessage,
   hasReactSpa,
   projectDashboardURL,
   publishDevelopment,
@@ -12,6 +13,21 @@ import {
   syncDevelopmentSecrets,
 } from "./dev.js";
 import { initializeAgentProject } from "./project.js";
+
+test("development watch explains the live deployment loop", () => {
+  const output = developmentWatchReadyMessage({
+    projectName: "Support agents",
+    projectId: "prj_support",
+    dashboardUrl: "https://mo-oc-dev.com/projects/prj_support",
+    agents: ["support@development"],
+    deployments: ["support:abc123"],
+    watchedDirectory: "/workspace/opencomputer",
+  });
+  assert.match(output, /✓ Deployment ready/);
+  assert.match(output, /Watching \/workspace\/opencomputer for changes\./);
+  assert.match(output, /Changes deploy automatically\. Press Ctrl\+C to stop\./);
+  assert.doesNotMatch(output, /web app|Vite/i);
+});
 
 test("development derives the cloud dashboard project URL", () => {
   assert.equal(
@@ -23,7 +39,11 @@ test("development derives the cloud dashboard project URL", () => {
 test("development detects whether the starter includes a React SPA", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-shape-"));
   try {
-    const withSpa = await initializeAgentProject(resolve(parent, "with-spa"));
+    const withSpa = await initializeAgentProject(
+      resolve(parent, "with-spa"),
+      undefined,
+      { spa: true },
+    );
     const agentOnly = await initializeAgentProject(
       resolve(parent, "agent-only"),
       undefined,

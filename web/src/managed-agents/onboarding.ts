@@ -5,9 +5,14 @@ function shellArgument(value: string) {
 }
 
 export function createStartCommand(directory: string) {
-  return `npm create @opencomputer/start@latest ${shellArgument(directory)}`
+  return `npx @opencomputer/cli init ${shellArgument(directory)}`
 }
 
 export function starterCommands(directory: string) {
-  return [createStartCommand(directory), 'npm i', 'npm run dev']
+  return [
+    createStartCommand(directory),
+    `cd ${shellArgument(directory)}`,
+    'npm install',
+    'npm run deploy -- --watch',
+  ]
 }
