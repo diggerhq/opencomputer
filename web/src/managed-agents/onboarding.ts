@@ -16,3 +16,11 @@ export function starterCommands(directory: string) {
     'npm run deploy -- --watch',
   ]
 }
+
+export function starterCommandBlock(directory: string) {
+  return starterCommands(directory).join('\n')
+}
+
+export function starterCopyCommand(directory: string) {
+  return starterCommands(directory).join(' && ')
+}
