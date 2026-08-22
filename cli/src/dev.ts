@@ -371,6 +371,28 @@ export function projectDashboardURL(apiUrl: string, projectId: string): string {
   return `${apiUrl.replace(/\/+$/, "")}/projects/${encodeURIComponent(projectId)}`;
 }
 
+export function developmentWatchReadyMessage(input: {
+  projectName: string;
+  projectId: string;
+  dashboardUrl: string;
+  agents: string[];
+  deployments: string[];
+  watchedDirectory: string;
+  startWebApp?: boolean;
+}): string {
+  return (
+    `\nOpenComputer Development\n\n` +
+    `✓ Deployment ready\n` +
+    `  Project      ${input.projectName} (${input.projectId})\n` +
+    `  Agents       ${input.agents.join(", ")}\n` +
+    `  Deployments  ${input.deployments.join("\n               ")}\n` +
+    `  Dashboard    ${input.dashboardUrl}\n\n` +
+    `Watching ${input.watchedDirectory} for changes.\n` +
+    `Changes deploy automatically. Press Ctrl+C to stop.\n` +
+    (input.startWebApp ? `Starting legacy local web app with Vite.\n` : "")
+  );
+}
+
 export async function hasReactSpa(projectRoot: string): Promise<boolean> {
   try {
     await Promise.all([
@@ -466,26 +488,34 @@ export async function runDeploymentWatch(
       do {
         pending = false;
         try {
+          process.stdout.write("\nChange detected. Deploying to Development...\n");
           const results = await publishProjectDevelopment(
             client,
             projectRoot,
             binding,
           );
           latestResults = results;
+          let changed = false;
           for (const result of results) {
             if (
               result.built.digest !== lastDigests.get(result.deployment.agentId)
             ) {
+              changed = true;
               lastDigests.set(result.deployment.agentId, result.built.digest);
               process.stdout.write(
-                `Synced ${result.deployment.agentId}@development  ${result.deployment.id}\n`,
+                `✓ Deployed ${result.deployment.agentId}@development\n` +
+                  `  Deployment  ${result.deployment.id}\n`,
               );
             }
+          }
+          if (!changed) {
+            process.stdout.write("✓ Development is already up to date.\n");
           }
           await syncSecrets();
         } catch (error) {
           process.stderr.write(
-            `Sync failed: ${error instanceof Error ? error.message : String(error)}\n`,
+            `✗ Deployment failed: ${error instanceof Error ? error.message : String(error)}\n` +
+              `Watching for the next change.\n`,
           );
         }
       } while (pending);
@@ -508,13 +538,17 @@ export async function runDeploymentWatch(
     const spa = await hasReactSpa(projectRoot);
     const startWebApp = behavior.startWebApp === true && spa;
     process.stdout.write(
-      `Watching Development deployments\n` +
-        `Project:    ${binding.projectName} (${binding.projectId})\n` +
-        `Dashboard:  ${projectDashboardURL(config.apiUrl, binding.projectId)}\n` +
-        `Agents:     ${initial.map((result) => `${result.deployment.agentId}@development`).join(", ")}\n` +
-        `Deployments:${initial.map((result) => ` ${result.deployment.id}`).join("\n            ")}\n` +
-        `Watching:   ${projectRoot}\n` +
-        (startWebApp ? `Web app:    starting legacy local Vite app\n` : ""),
+      developmentWatchReadyMessage({
+        projectName: binding.projectName,
+        projectId: binding.projectId,
+        dashboardUrl: projectDashboardURL(config.apiUrl, binding.projectId),
+        agents: initial.map(
+          (result) => `${result.deployment.agentId}@development`,
+        ),
+        deployments: initial.map((result) => result.deployment.id),
+        watchedDirectory: resolve(projectRoot, "opencomputer"),
+        startWebApp,
+      }),
     );
     if (startWebApp) web = await startReactDevServer(projectRoot);
     watcher = watch(

@@ -39,6 +39,20 @@ process prints the project dashboard URL, watches `opencomputer/`, and deploys
 changes to `development`. Open the dashboard playground or use the CLI to send
 a message.
 
+The watcher stays open like a live-reload development process:
+
+```text
+OpenComputer Development
+
+✓ Deployment ready
+  Project      my-agent (prj_...)
+  Agents       hello-world@development
+  Dashboard    https://app.opencomputer.dev/projects/prj_...
+
+Watching /path/to/my-agent/opencomputer for changes.
+Changes deploy automatically. Press Ctrl+C to stop.
+```
+
 <Note>
   This command does not start a local agent server or a browser application.
 </Note>
