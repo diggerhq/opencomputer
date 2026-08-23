@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { autumnSetAutoTopup, type AutumnApiEnv } from "./autumn_webhook";
+import { autumnPurchase, autumnSetAutoTopup, type AutumnApiEnv } from "./autumn_webhook";
 
 const env: AutumnApiEnv = {
   AUTUMN_SECRET_KEY: "autumn-secret",
@@ -53,5 +53,57 @@ describe("Autumn auto top-up", () => {
         budget: 90,
       }),
     ).rejects.toThrow("monthly budget divisible by quantity");
+  });
+});
+
+describe("Autumn recurring plan purchases", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("switches an existing paid subscriber directly through attach", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "pro", add_on: false, status: "active" }],
+        purchases: [],
+      }))
+      .mockResolvedValueOnce(Response.json({}));
+
+    await expect(autumnPurchase(env, {
+      customerId: "org_1",
+      productId: "max",
+      successUrl: "https://example.test/billing",
+    })).resolves.toEqual({ url: null });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://autumn.test/v1/attach",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ customer_id: "org_1", product_id: "max" }),
+      }),
+    );
+  });
+
+  it("starts hosted checkout when the customer has no payment history", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: "org_1", subscriptions: [], purchases: [] }))
+      .mockResolvedValueOnce(Response.json({ url: "https://checkout.stripe.test/session" }));
+
+    await expect(autumnPurchase(env, {
+      customerId: "org_1",
+      productId: "pro",
+      successUrl: "https://example.test/billing",
+    })).resolves.toEqual({ url: "https://checkout.stripe.test/session" });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://autumn.test/v1/checkout",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          customer_id: "org_1",
+          product_id: "pro",
+          success_url: "https://example.test/billing",
+        }),
+      }),
+    );
   });
 });

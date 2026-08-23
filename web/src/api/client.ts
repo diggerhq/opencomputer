@@ -464,6 +464,12 @@ export const autumnSubscribeConcurrency = (plan: string) =>
     body: JSON.stringify({ plan }),
   })
 
+export const autumnSubscribeUsagePlan = (plan: 'pro' | 'max') =>
+  apiFetch<{ url: string | null }>('/billing/autumn/plan', {
+    method: 'POST',
+    body: JSON.stringify({ plan }),
+  })
+
 // Open Autumn's Stripe-hosted billing portal to manage the saved card + invoices.
 export const autumnBillingPortal = () =>
   apiFetch<{ url: string }>('/billing/autumn/portal', { method: 'POST' })

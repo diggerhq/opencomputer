@@ -225,8 +225,10 @@ export const AutumnBillingSchema = z.object({
   creditsRemainingCents: z.number(),
   maxConcurrentSandboxes: z.number(),
   concurrencyPlan: z.string(),
+  usagePlan: z.enum(['base', 'pro', 'max']),
   isHalted: z.boolean(),
   hasToppedUp: z.boolean(),
+  hasPaidSubscription: z.boolean(),
   autoTopup: AutumnAutoTopupSchema.nullable(),
   modelUsage: AutumnModelUsageSchema.optional(),
 })
@@ -244,9 +246,7 @@ export const AgentSessionUsageRowSchema = z.object({
   updatedAt: z.string(),
   modelCalls: z.number(),
   modelProviderCostUsd: z.number(),
-  modelUsage: z.array(
-    z.object({ timestamp: z.string(), costUsd: z.number() }),
-  ),
+  modelUsage: z.array(z.object({ timestamp: z.string(), costUsd: z.number() })),
   runtimeSecondsByTier: z.record(z.string(), z.number()),
 })
 

@@ -38,12 +38,43 @@ export const base = plan({
   id: "base",
   name: "Usage",
   description: "Default OpenComputer usage balance.",
+  group: "usage_plan",
   autoEnable: true,
   items: [
     item({
       featureId: credits.id,
       included: 5,
       reset: { interval: "one_off" },
+    }),
+  ],
+});
+
+export const pro = plan({
+  id: "pro",
+  name: "Pro",
+  description: "$20 per month with $200 in shared OpenComputer credits.",
+  group: "usage_plan",
+  price: { amount: 20, interval: "month" },
+  items: [
+    item({
+      featureId: credits.id,
+      included: 200,
+      reset: { interval: "month" },
+    }),
+  ],
+});
+
+export const max = plan({
+  id: "max",
+  name: "Max",
+  description: "$200 per month with $2,000 in shared OpenComputer credits.",
+  group: "usage_plan",
+  price: { amount: 200, interval: "month" },
+  items: [
+    item({
+      featureId: credits.id,
+      included: 2_000,
+      reset: { interval: "month" },
     }),
   ],
 });

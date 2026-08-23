@@ -8,6 +8,7 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
   autumnBillingPortal,
   autumnSubscribeConcurrency,
+  autumnSubscribeUsagePlan,
   autumnTopup,
   billingPortal,
   billingSetup,
@@ -250,6 +251,30 @@ const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro_plus_plus', label: 'Pro++', limit: 1000, price: 1000 },
 ]
 
+const USAGE_PLANS = [
+  {
+    id: 'base',
+    label: 'Usage',
+    price: 0,
+    credits: null,
+    description: 'No subscription. Add prepaid credits whenever you need them.',
+  },
+  {
+    id: 'pro',
+    label: 'Pro',
+    price: 20,
+    credits: 200,
+    description: '$200 in shared credits added every month.',
+  },
+  {
+    id: 'max',
+    label: 'Max',
+    price: 200,
+    credits: 2000,
+    description: '$2,000 in shared credits added every month.',
+  },
+] as const
+
 function PrepaidPlan() {
   const queryClient = useQueryClient()
   const { data: autumn, isLoading } = useQuery({
@@ -260,6 +285,9 @@ function PrepaidPlan() {
   const [amount, setAmount] = useState(25)
   const [confirmTopup, setConfirmTopup] = useState(false)
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
+  const [confirmUsagePlanId, setConfirmUsagePlanId] = useState<
+    'pro' | 'max' | null
+  >(null)
   const [usageProduct, setUsageProduct] = useState<
     'sandboxes' | 'serverless-agents'
   >('serverless-agents')
@@ -278,13 +306,21 @@ function PrepaidPlan() {
     },
     onError: (e) => notifyError("Couldn't complete the top-up.", e),
   })
-  const planMutation = useMutation({
+  const concurrencyPlanMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
     onSuccess: (d) => {
       setConfirmPlanId(null)
       onPurchase(d)
     },
     onError: (e) => notifyError("Couldn't update your subscription.", e),
+  })
+  const usagePlanMutation = useMutation({
+    mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
+    onSuccess: (d) => {
+      setConfirmUsagePlanId(null)
+      onPurchase(d)
+    },
+    onError: (e) => notifyError("Couldn't update your plan.", e),
   })
 
   // Whether a card is on file → offer the Stripe portal to manage it. Compliance
@@ -307,90 +343,102 @@ function PrepaidPlan() {
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
+  const selectedUsagePlan = USAGE_PLANS.find(
+    (plan) => plan.id === confirmUsagePlanId,
+  )
   const hasCard =
-    (billing?.hasPaymentMethod ?? false) || (autumn?.hasToppedUp ?? false)
+    (billing?.hasPaymentMethod ?? false) ||
+    (autumn?.hasToppedUp ?? false) ||
+    (autumn?.hasPaidSubscription ?? false)
 
   return (
     <div className="max-w-5xl space-y-4">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
-      {/* Credits */}
-      <Panel className="p-6">
-        <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
-        <div className="flex items-baseline gap-3">
-          <span
-            className={cn(
-              'font-mono text-4xl font-semibold',
-              halted ? 'text-status-error' : 'text-status-running',
-            )}
-          >
-            ${credits.toFixed(2)}
-          </span>
-          <span className="text-muted-foreground text-xs">remaining</span>
-        </div>
-        {halted ? (
-          <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
-            <CircleAlert className="size-4 shrink-0" />
-            Credits exhausted — top up to resume your agent sessions and
-            sandboxes
-          </p>
-        ) : null}
-
-        <div className="mt-5">
-          <p className="text-muted-foreground mb-2.5 text-sm">
-            Add credits (billed at the same per-second rates)
-          </p>
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            {TOPUP_AMOUNTS.map((a) => (
-              <Button
-                key={a}
-                variant={amount === a ? 'default' : 'outline'}
-                size="sm"
-                className="font-mono"
-                onClick={() => setAmount(a)}
-              >
-                ${a}
-              </Button>
-            ))}
-            <Input
-              type="number"
-              min={1}
-              value={amount}
-              onChange={(e) =>
-                setAmount(Math.max(1, Math.floor(Number(e.target.value) || 0)))
-              }
-              className="w-24 font-mono"
-            />
-          </div>
-          <Button disabled={amount < 1} onClick={() => setConfirmTopup(true)}>
-            Top up ${amount}
-          </Button>
-        </div>
-      </Panel>
-
-      <AutoTopupCard
-        current={autumn?.autoTopup ?? null}
-        hasToppedUp={autumn?.hasToppedUp ?? false}
+      <UsagePlanCard
+        currentPlan={autumn?.usagePlan ?? 'base'}
+        onSelectPlan={setConfirmUsagePlanId}
+        onManage={() => portalMutation.mutate()}
+        managing={portalMutation.isPending}
       />
-
-      {hasCard ? (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+        {/* Credits */}
         <Panel className="p-6">
-          <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
-          <p className="text-muted-foreground mb-3 text-sm">
-            Update your card, download invoices, or remove your payment method
-            on Stripe.
-          </p>
-          <Button
-            variant="outline"
-            onClick={() => portalMutation.mutate()}
-            disabled={portalMutation.isPending}
-          >
-            {portalMutation.isPending
-              ? 'Opening Stripe…'
-              : 'Manage payment method ↗'}
-          </Button>
-        </Panel>
-      ) : null}
+          <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
+          <div className="flex items-baseline gap-3">
+            <span
+              className={cn(
+                'font-mono text-4xl font-semibold',
+                halted ? 'text-status-error' : 'text-status-running',
+              )}
+            >
+              ${credits.toFixed(2)}
+            </span>
+            <span className="text-muted-foreground text-xs">remaining</span>
+          </div>
+          {halted ? (
+            <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
+              <CircleAlert className="size-4 shrink-0" />
+              Credits exhausted — top up to resume your agent sessions and
+              sandboxes
+            </p>
+          ) : null}
 
+          <div className="mt-5">
+            <p className="text-muted-foreground mb-2.5 text-sm">
+              Add credits (billed at the same per-second rates)
+            </p>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              {TOPUP_AMOUNTS.map((a) => (
+                <Button
+                  key={a}
+                  variant={amount === a ? 'default' : 'outline'}
+                  size="sm"
+                  className="font-mono"
+                  onClick={() => setAmount(a)}
+                >
+                  ${a}
+                </Button>
+              ))}
+              <Input
+                type="number"
+                min={1}
+                value={amount}
+                onChange={(e) =>
+                  setAmount(
+                    Math.max(1, Math.floor(Number(e.target.value) || 0)),
+                  )
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+            <Button disabled={amount < 1} onClick={() => setConfirmTopup(true)}>
+              Top up ${amount}
+            </Button>
+          </div>
+        </Panel>
+
+        <AutoTopupCard
+          current={autumn?.autoTopup ?? null}
+          hasToppedUp={autumn?.hasToppedUp ?? false}
+        />
+
+        {hasCard ? (
+          <Panel className="p-6">
+            <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
+            <p className="text-muted-foreground mb-3 text-sm">
+              Update your card, download invoices, or remove your payment method
+              on Stripe.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => portalMutation.mutate()}
+              disabled={portalMutation.isPending}
+            >
+              {portalMutation.isPending
+                ? 'Opening Stripe…'
+                : 'Manage payment method ↗'}
+            </Button>
+          </Panel>
+        ) : null}
       </div>
 
       <div>
@@ -448,10 +496,112 @@ function PrepaidPlan() {
             : ''
         }
         confirmLabel={tier ? `Subscribe — $${tier.price}/mo` : 'Subscribe'}
-        pending={planMutation.isPending}
-        onConfirm={() => tier && planMutation.mutate(tier.id)}
+        pending={concurrencyPlanMutation.isPending}
+        onConfirm={() => tier && concurrencyPlanMutation.mutate(tier.id)}
+      />
+      <ConfirmDialog
+        open={!!selectedUsagePlan}
+        onOpenChange={(open) => !open && setConfirmUsagePlanId(null)}
+        title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
+        description={
+          selectedUsagePlan
+            ? `${selectedUsagePlan.label} costs $${selectedUsagePlan.price}/month and adds $${selectedUsagePlan.credits?.toLocaleString()} in shared credits each month. Autumn applies the plan change and any required proration through Stripe.`
+            : ''
+        }
+        confirmLabel={
+          selectedUsagePlan
+            ? `${selectedUsagePlan.label} — $${selectedUsagePlan.price}/mo`
+            : 'Continue'
+        }
+        pending={usagePlanMutation.isPending}
+        onConfirm={() =>
+          selectedUsagePlan &&
+          selectedUsagePlan.id !== 'base' &&
+          usagePlanMutation.mutate(selectedUsagePlan.id)
+        }
       />
     </div>
+  )
+}
+
+function UsagePlanCard({
+  currentPlan,
+  onSelectPlan,
+  onManage,
+  managing,
+}: {
+  currentPlan: 'base' | 'pro' | 'max'
+  onSelectPlan: (plan: 'pro' | 'max') => void
+  onManage: () => void
+  managing: boolean
+}) {
+  return (
+    <Panel className="p-6">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold">Plan</h2>
+        <p className="text-muted-foreground mt-1 text-sm">
+          Monthly credits are shared by serverless-agent sessions and sandboxes.
+          Top-ups stack with every plan.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {USAGE_PLANS.map((plan) => {
+          const current = plan.id === currentPlan
+          return (
+            <div key={plan.id} className="rounded-md border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium">{plan.label}</div>
+                  <div className="mt-1 font-mono text-xl font-semibold">
+                    ${plan.price}
+                    <span className="text-muted-foreground text-xs font-normal">
+                      /mo
+                    </span>
+                  </div>
+                </div>
+                {current ? <StatusBadge status="active" /> : null}
+              </div>
+              <p className="text-muted-foreground mt-3 min-h-10 text-sm">
+                {plan.description}
+              </p>
+              {current ? (
+                currentPlan === 'base' ? (
+                  <Button className="mt-4 w-full" variant="outline" disabled>
+                    Current plan
+                  </Button>
+                ) : (
+                  <Button
+                    className="mt-4 w-full"
+                    variant="outline"
+                    disabled={managing}
+                    onClick={onManage}
+                  >
+                    Manage subscription
+                  </Button>
+                )
+              ) : plan.id === 'base' ? (
+                <Button
+                  className="mt-4 w-full"
+                  variant="outline"
+                  disabled={currentPlan === 'base' || managing}
+                  onClick={onManage}
+                >
+                  Manage in Stripe
+                </Button>
+              ) : (
+                <Button
+                  className="mt-4 w-full"
+                  variant="outline"
+                  onClick={() => onSelectPlan(plan.id)}
+                >
+                  {currentPlan === 'base' ? 'Upgrade' : 'Switch plan'}
+                </Button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Panel>
   )
 }
 
@@ -468,9 +618,8 @@ function ConcurrencyCard({
     <Panel className="p-6">
       <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
       <p className="text-muted-foreground mb-4 text-sm">
-        You can run{' '}
-        <strong className="text-foreground">{maxConcurrent}</strong> sandboxes
-        at once on the{' '}
+        You can run <strong className="text-foreground">{maxConcurrent}</strong>{' '}
+        sandboxes at once on the{' '}
         <strong className="text-foreground">
           {currentPlan === 'base' ? 'Base' : currentPlan}
         </strong>{' '}
@@ -595,10 +744,7 @@ function billableModelUsage(
     : session.modelUsage
   return {
     calls: events.length,
-    providerCostUsd: events.reduce(
-      (total, event) => total + event.costUsd,
-      0,
-    ),
+    providerCostUsd: events.reduce((total, event) => total + event.costUsd, 0),
   }
 }
 
@@ -692,8 +838,7 @@ function AgentUsageBreakdown({
       align: 'right',
       cell: (session) => {
         const model =
-          billableModelUsage(session, usage?.billingStartedAt)
-            .providerCostUsd *
+          billableModelUsage(session, usage?.billingStartedAt).providerCostUsd *
           100 *
           markup
         const runtime =
@@ -731,8 +876,8 @@ function AgentUsageBreakdown({
         <div className="px-6 pt-6">
           <h2 className="text-sm font-semibold">Usage by agent session</h2>
           <p className="text-muted-foreground mt-1 text-xs">
-            Recent serverless-agent sessions, split into model and runtime
-            cost. Organization totals remain the billing ledger of record.
+            Recent serverless-agent sessions, split into model and runtime cost.
+            Organization totals remain the billing ledger of record.
           </p>
         </div>
         <div className="mt-3">
@@ -741,7 +886,9 @@ function AgentUsageBreakdown({
             rows={rows}
             rowKey={(session) => session.id}
             loading={isLoading}
-            empty={<EmptyState title="No serverless-agent usage to show yet." />}
+            empty={
+              <EmptyState title="No serverless-agent usage to show yet." />
+            }
           />
         </div>
       </Panel>

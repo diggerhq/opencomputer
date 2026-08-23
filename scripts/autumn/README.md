@@ -1,7 +1,12 @@
 # Autumn billing catalog
 
-This directory defines the Autumn features and plans expected by
-OpenComputer's usage-billing code. It contains no environment credentials.
+This directory defines the Autumn features and plans used to bill serverless
+agent sessions. It contains no environment credentials.
+
+The catalog currently covers the shared credit balance, the fixed 2 GB / 1
+vCPU agent runtime meter, managed model spend, Usage/Pro/Max plans, and one-off
+top-ups. Raw standalone-sandbox products are intentionally outside this
+catalog and have a separate rollout lifecycle.
 
 To create or reconcile a sandbox catalog:
 

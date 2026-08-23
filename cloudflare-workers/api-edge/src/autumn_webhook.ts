@@ -583,9 +583,10 @@ export async function autumnAttach(
   }
 }
 
-// autumnPurchase buys a product (concurrency tier), handling both Autumn flows.
-// It gates the direct /attach on hasToppedUp — a real prior charge means a card
-// is RELIABLY on file. We deliberately do NOT use the /checkout `url` probe to
+// autumnPurchase buys a recurring plan or concurrency add-on, handling both
+// Autumn flows. It gates direct /attach on a prior top-up or paid subscription —
+// either is reliable evidence that a card is on file. We deliberately do NOT
+// use the /checkout `url` probe to
 // detect a card: it can spuriously return null for a CARDLESS org, which then
 // takes the attach path → Autumn returns checkout_created → autumnAttach throws
 // → 502 (the same failure we fixed for top-up via autumnTopUpCharge). So:
@@ -597,7 +598,16 @@ export async function autumnPurchase(
   env: AutumnApiEnv,
   params: { customerId: string; productId: string; options?: AutumnCheckoutOption[]; successUrl: string },
 ): Promise<{ url: string | null }> {
-  if (await autumnHasToppedUp(env, params.customerId)) {
+  const customer = await getAutumnCustomer(env, params.customerId);
+  const hasPaidSubscription = (customer?.subscriptions ?? []).some(
+    (subscription) =>
+      (subscription.plan_id === "pro" || subscription.plan_id === "max") &&
+      (!subscription.status || subscription.status === "active"),
+  );
+  const hasToppedUp = (customer?.purchases ?? []).some(
+    (purchase) => purchase.plan_id === "top_up",
+  );
+  if (hasToppedUp || hasPaidSubscription) {
     await autumnAttach(env, { customerId: params.customerId, productId: params.productId, options: params.options });
     return { url: null };
   }

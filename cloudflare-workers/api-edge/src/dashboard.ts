@@ -1257,6 +1257,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/topup" && method === "POST") {
     return handleAutumnTopup(req, env, caller);
   }
+  if (sub === "/billing/autumn/plan" && method === "POST") {
+    return handleAutumnUsagePlan(req, env, caller);
+  }
   if (sub === "/billing/autumn/concurrency" && method === "POST") {
     return handleAutumnConcurrency(req, env, caller);
   }
@@ -1524,6 +1527,12 @@ const AUTUMN_CONCURRENCY_PRODUCTS: Record<string, number> = {
   concurrency_pro_plus_plus: 1000,
 };
 
+const AUTUMN_USAGE_PLANS: Record<string, number> = {
+  base: 0,
+  pro: 1,
+  max: 2,
+};
+
 // GET /api/dashboard/billing/autumn — prepaid credit balance + concurrency plan.
 // Re-syncs Autumn → D1 on the way (this is the checkout-return / page-view resume
 // trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
@@ -1540,13 +1549,20 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
 
   // The active concurrency plan = the highest non-base plan the customer holds.
   let concurrencyPlan = "base";
+  let usagePlan = "base";
   let best = 0;
+  let bestUsagePlan = 0;
   for (const s of r.customer.subscriptions ?? []) {
     if (s.status && s.status !== "active") continue;
     const v = AUTUMN_CONCURRENCY_PRODUCTS[s.plan_id];
     if (v !== undefined && v > best) {
       best = v;
       concurrencyPlan = s.plan_id;
+    }
+    const usageRank = AUTUMN_USAGE_PLANS[s.plan_id];
+    if (usageRank !== undefined && usageRank >= bestUsagePlan) {
+      bestUsagePlan = usageRank;
+      usagePlan = s.plan_id;
     }
   }
 
@@ -1556,6 +1572,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   // so the UI uses it to tell whether enabling auto-recharge will run a first
   // recharge or just save. Free — the customer is already loaded above.
   const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
+  const hasPaidSubscription = usagePlan === "pro" || usagePlan === "max";
 
   const model = await env.OPENCOMPUTER_DB.prepare(
     `SELECT
@@ -1586,8 +1603,10 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     creditsRemainingCents: Math.round(r.creditsRemaining * 100),
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
+    usagePlan,
     isHalted: r.halted,
     hasToppedUp,
+    hasPaidSubscription,
     autoTopup: at
       ? {
           enabled: at.enabled,
@@ -1612,6 +1631,35 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
           : null,
     },
   });
+}
+
+// POST /api/dashboard/billing/autumn/plan { plan } — subscribe to or switch
+// between the recurring Pro and Max shared-credit plans. Usage remains the
+// automatic fallback when a paid subscription is cancelled in Stripe.
+async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { plan?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const plan = body.plan ?? "";
+  if (plan !== "pro" && plan !== "max") {
+    return json({ error: `unknown usage plan '${plan}'` }, 400);
+  }
+  const origin = new URL(req.url).origin;
+  try {
+    const co = await autumnPurchase(env, {
+      customerId: caller.orgID,
+      productId: plan,
+      successUrl: `${origin}/dashboard/billing?usage-plan=success`,
+    });
+    return json({ url: co.url });
+  } catch (e) {
+    console.error("billing/autumn plan:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
 }
 
 // POST /api/dashboard/billing/autumn/auto-topup
