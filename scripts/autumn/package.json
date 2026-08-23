@@ -1,0 +1,11 @@
+{
+  "name": "opencomputer-autumn-catalog",
+  "private": true,
+  "scripts": {
+    "push:sandbox": "atmn push",
+    "preview": "atmn preview"
+  },
+  "devDependencies": {
+    "atmn": "1.1.20"
+  }
+}
