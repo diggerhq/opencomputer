@@ -53,6 +53,7 @@ import {
   autumnWebhook,
   autumnProjectInternal,
   autumnSetProviderInternal,
+  agentRuntimeUsageInternal,
   browserUsageInternal,
   selfHealHalt,
   createAutumnCustomer,
@@ -94,6 +95,8 @@ export interface Env extends DashboardEnv {
   // HMAC secret used by Browser API to submit runtime usage. Falls back to
   // EVENT_SECRET in the handler when unset for compatibility during rollout.
   BROWSER_USAGE_HMAC_SECRET?: string;
+  // Dedicated HMAC secret for finalized managed-agent runtime segments.
+  AGENT_RUNTIME_USAGE_HMAC_SECRET?: string;
   // Shared with every CP via Infisical /shared/ → per-cell KV/SM. Used for
   // envelope encryption of secret_store_entries.encrypted_value. Matches
   // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
@@ -4227,6 +4230,10 @@ export default {
     if (path === "/internal/browser-usage") {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return browserUsageInternal(req, env);
+    }
+    if (path === "/internal/agent-runtime-usage") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return agentRuntimeUsageInternal(req, env);
     }
     if (path === AGENT_SECURITY_NOTIFICATION_PATH) {
       return receiveAgentSecurityNotification(req, env);

@@ -35,6 +35,7 @@ export interface AutumnEnv extends AutumnSyncEnv {
   EVENT_SECRET: string;
   AUTUMN_WEBHOOK_SECRET: string;
   BROWSER_USAGE_HMAC_SECRET?: string;
+  AGENT_RUNTIME_USAGE_HMAC_SECRET?: string;
 }
 
 const DEFAULT_BASE_URL = "https://api.useautumn.com/v1";
@@ -220,6 +221,82 @@ export async function browserUsageInternal(req: Request, env: AutumnEnv): Promis
   } catch (err) {
     console.error(`browser-usage: track failed org=${p.org_id} browser=${p.browser_id}`, err);
     return json({ error: "browser usage billing failed" }, 502);
+  }
+}
+
+// Managed-agent runtime usage arrives only after the session Durable Object
+// has finalized a bounded lease segment. The segment ID is the financial
+// idempotency key; authenticated organization and session attribution travel
+// with it, but only the fixed resource tier controls the Autumn feature.
+export async function agentRuntimeUsageInternal(
+  req: Request,
+  env: AutumnEnv,
+): Promise<Response> {
+  const rawBody = await req.text();
+  const ts = req.headers.get("X-Timestamp") ?? "";
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!ts || !sig) return json({ error: "missing signature headers" }, 400);
+  const tsNum = parseInt(ts, 10);
+  if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TOLERANCE_SEC) {
+    return json({ error: "timestamp out of window" }, 401);
+  }
+  const secret = env.AGENT_RUNTIME_USAGE_HMAC_SECRET;
+  if (!secret) return json({ error: "agent runtime usage billing is not configured" }, 503);
+  const url = new URL(req.url);
+  const expected = await hmacHex(secret, `${ts}.${url.pathname}.${rawBody}`);
+  if (!timingSafeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+
+  let p: {
+    org_id?: string;
+    project_id?: string;
+    environment?: string;
+    deployment_id?: string;
+    agent_id?: string;
+    session_id?: string;
+    microvm_id?: string;
+    resource_tier?: string;
+    quantity_seconds?: number;
+    idempotency_key?: string;
+  };
+  try {
+    p = JSON.parse(rawBody);
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  if (!p.org_id || !p.session_id || !p.deployment_id || !p.agent_id || !p.idempotency_key) {
+    return json(
+      { error: "org_id, session_id, deployment_id, agent_id, and idempotency_key required" },
+      400,
+    );
+  }
+  if (p.resource_tier !== "2gb_1vcpu") {
+    return json({ error: "unsupported resource_tier" }, 400);
+  }
+  if (!Number.isInteger(p.quantity_seconds) || Number(p.quantity_seconds) <= 0) {
+    return json({ error: "quantity_seconds must be a positive integer" }, 400);
+  }
+
+  try {
+    const remaining = await trackAutumnUsage(env, {
+      customerID: p.org_id,
+      featureID: "agent_runtime_2gb_1vcpu",
+      value: Number(p.quantity_seconds),
+      idempotencyKey: p.idempotency_key,
+    });
+    if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    return json({
+      ok: true,
+      billed: true,
+      org_id: p.org_id,
+      session_id: p.session_id,
+      remaining,
+    });
+  } catch (err) {
+    console.error(
+      `agent-runtime-usage: track failed org=${p.org_id} session=${p.session_id}`,
+      err,
+    );
+    return json({ error: "agent runtime usage billing failed" }, 502);
   }
 }
 
