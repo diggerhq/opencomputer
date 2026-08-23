@@ -66,6 +66,7 @@ interface OrgBillingRow {
   billing_provider: string;
   model_billing_status: string;
   model_markup_bps: number;
+  is_halted?: number;
 }
 
 // sessions-api owner id for an OC org. MUST match sessions-api's ownerIdForOrg
@@ -96,7 +97,7 @@ function markupBps(env: ModelBillingEnv, org: OrgBillingRow): number {
 
 async function getOrg(env: ModelBillingEnv, orgId: string): Promise<OrgBillingRow | null> {
   return env.OPENCOMPUTER_DB.prepare(
-    "SELECT id, billing_provider, model_billing_status, model_markup_bps FROM orgs WHERE id = ?1",
+    "SELECT id, billing_provider, model_billing_status, model_markup_bps, is_halted FROM orgs WHERE id = ?1",
   )
     .bind(orgId)
     .first<OrgBillingRow>();
@@ -305,7 +306,7 @@ async function revokeManagedCredential(env: ModelBillingEnv, ownerId: string): P
 // ── the state machine ───────────────────────────────────────────────────────
 
 export interface EnableResult {
-  status: "active" | "error";
+  status: "active" | "error" | "halted";
   credentialId?: string;
 }
 
@@ -315,6 +316,10 @@ export interface EnableResult {
 export async function enableManagedBilling(env: ModelBillingEnv, orgId: string): Promise<EnableResult> {
   const org = await getOrg(env, orgId);
   if (!org) throw new Error(`model-billing: org ${orgId} not found`);
+  // Reuse the row this path already reads so session creation pays no extra D1
+  // round trip for credit admission. OpenRouter's per-org key limit remains the
+  // hard backstop if this asynchronously maintained projection briefly lags.
+  if (org.is_halted === 1) return { status: "halted" };
   if (org.model_billing_status === "active") {
     const active = await getActiveKeyRow(env, orgId);
     if (active) {

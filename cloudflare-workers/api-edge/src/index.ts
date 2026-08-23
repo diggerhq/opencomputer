@@ -61,6 +61,10 @@ import {
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
+import {
+  enforceManagedAgentCreditGate,
+  insufficientManagedAgentCredits,
+} from "./managed_agent_credit_gate";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -4587,6 +4591,9 @@ export default {
       if (path === "/api/managed-agents/sessions" && req.method === "POST") {
         try {
           const billing = await enableManagedBilling(env, caller.orgID);
+          if (billing.status === "halted") {
+            return insufficientManagedAgentCredits(req);
+          }
           if (billing.status !== "active") {
             return json({ error: "managed model billing is unavailable" }, 503);
           }
@@ -4597,6 +4604,13 @@ export default {
           );
           return json({ error: "managed model billing is unavailable" }, 503);
         }
+      } else {
+        const creditError = await enforceManagedAgentCreditGate(
+          req,
+          env,
+          caller.orgID,
+        );
+        if (creditError) return creditError;
       }
       return proxyManagedAgents(
         req,
