@@ -77,6 +77,7 @@ describe("browser usage billing", () => {
         headers: {
           Authorization: "Bearer autumn-secret",
           "content-type": "application/json",
+          "Idempotency-Key": "browser_runtime:br_1",
         },
         body: JSON.stringify({
           customer_id: "org_1",

@@ -1567,7 +1567,17 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     concurrencyPlan,
     isHalted: r.halted,
     hasToppedUp,
-    autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
+    autoTopup: at
+      ? {
+          enabled: at.enabled,
+          threshold: at.threshold,
+          quantity: at.quantity,
+          budget:
+            at.purchase_limit?.interval === "month"
+              ? at.purchase_limit.limit * at.quantity
+              : null,
+        }
+      : null,
     modelUsage: {
       enabled: modelStatus === "active",
       status: modelStatus,
@@ -1579,13 +1589,14 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   });
 }
 
-// POST /api/dashboard/billing/autumn/auto-topup { enabled, threshold, quantity }
-// — configure automatic credit recharge. threshold/quantity are in credits ($1
-// each). A saved payment method is required for the charge to succeed; the
-// config itself persists regardless.
+// POST /api/dashboard/billing/autumn/auto-topup
+// { enabled, threshold, quantity, budget } — configure automatic credit
+// recharge. Monetary values are integer credits ($1 each). Autumn expresses the
+// hard monthly budget as a purchase count, so budget must be a whole multiple of
+// quantity. A saved payment method is required for charges to succeed.
 async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
-  let body: { enabled?: boolean; threshold?: number; quantity?: number };
+  let body: { enabled?: boolean; threshold?: number; quantity?: number; budget?: number };
   try {
     body = await req.json();
   } catch {
@@ -1594,11 +1605,24 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
   const enabled = !!body.enabled;
   const threshold = Math.floor(body.threshold ?? 0);
   const quantity = Math.floor(body.quantity ?? 0);
-  if (enabled && (threshold < 0 || quantity < 1)) {
-    return json({ error: "threshold ≥ 0 and quantity ≥ 1 required when enabling" }, 400);
+  const budget = Math.floor(body.budget ?? 0);
+  if (
+    enabled &&
+    (!Number.isFinite(threshold) ||
+      threshold < 0 ||
+      !Number.isFinite(quantity) ||
+      quantity < 1 ||
+      !Number.isFinite(budget) ||
+      budget < quantity ||
+      budget % quantity !== 0)
+  ) {
+    return json(
+      { error: "threshold ≥ 0, quantity ≥ 1, and a monthly budget divisible by quantity are required" },
+      400,
+    );
   }
   try {
-    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity });
+    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity, budget });
 
     // Auto-recharge is armed once the customer has charged a top-up (a
     // saved-but-never-charged card is unarmed). If they've already topped up, just

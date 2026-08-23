@@ -208,6 +208,7 @@ export const AutumnAutoTopupSchema = z.object({
   enabled: z.boolean(),
   threshold: z.number(),
   quantity: z.number(),
+  budget: z.number().nullable(),
 })
 
 export const AutumnModelUsageSchema = z.object({

@@ -465,6 +465,7 @@ export const setAutumnAutoTopup = (cfg: {
   enabled: boolean
   threshold: number
   quantity: number
+  budget: number
 }) =>
   apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
     method: 'POST',

@@ -283,7 +283,10 @@ function PrepaidPlan() {
 
   // Whether a card is on file → offer the Stripe portal to manage it. Compliance
   // requires that anyone with a saved card can view/update/remove it.
-  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
+  const { data: billing } = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
   const portalMutation = useMutation({
     mutationFn: autumnBillingPortal,
     onSuccess: (data) => {
@@ -366,8 +369,8 @@ function PrepaidPlan() {
         <Panel className="p-6">
           <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
           <p className="text-muted-foreground mb-3 text-sm">
-            Update your card, download invoices, or remove your payment method on
-            Stripe.
+            Update your card, download invoices, or remove your payment method
+            on Stripe.
           </p>
           <Button
             variant="outline"
@@ -483,7 +486,9 @@ function ModelUsageCard({
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Managed model usage</h2>
         <StatusBadge
-          status={enabled ? 'success' : status === 'error' ? 'error' : 'stopped'}
+          status={
+            enabled ? 'success' : status === 'error' ? 'error' : 'stopped'
+          }
           label={status}
         />
       </div>
@@ -534,15 +539,18 @@ function AutoTopupCard({
     enabled?: boolean
     threshold?: number
     quantity?: number
+    budget?: number
   }>({})
   const enabled = draft.enabled ?? current?.enabled ?? false
   const threshold = draft.threshold ?? current?.threshold ?? 5
   const quantity = draft.quantity ?? current?.quantity ?? 25
+  const budget = draft.budget ?? current?.budget ?? 100
   const [saved, markSaved] = useTransientFlag(3000)
   const [confirm, setConfirm] = useState(false)
 
   const mutation = useMutation({
-    mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
+    mutationFn: () =>
+      setAutumnAutoTopup({ enabled, threshold, quantity, budget }),
     onSuccess: (data) => {
       setConfirm(false)
       if (data?.url) {
@@ -558,7 +566,12 @@ function AutoTopupCard({
 
   // Saving only charges when enabling WITHOUT a card on file. Gate that one path.
   const willCharge = enabled && !hasToppedUp
-  const onSave = () => (willCharge ? setConfirm(true) : mutation.mutate())
+  const validBudget = budget >= quantity && budget % quantity === 0
+  const onSave = () => {
+    if (enabled && !validBudget) return
+    if (willCharge) setConfirm(true)
+    else mutation.mutate()
+  }
 
   return (
     <Panel className="p-6">
@@ -625,13 +638,42 @@ function AutoTopupCard({
               />
             </div>
           </Field>
+          <Field label="Monthly budget" htmlFor="budget">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-sm">$</span>
+              <Input
+                id="budget"
+                type="number"
+                min={quantity}
+                step={quantity}
+                value={budget}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    budget: Math.max(
+                      0,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+          </Field>
         </div>
+      ) : null}
+
+      {enabled && !validBudget ? (
+        <p className="text-status-error mt-3 text-xs">
+          Monthly budget must be at least ${quantity} and a whole multiple of
+          the ${quantity} top-up amount.
+        </p>
       ) : null}
 
       <div className="mt-4">
         <Button
           variant="outline"
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || (enabled && !validBudget)}
           onClick={onSave}
         >
           {mutation.isPending ? 'Saving…' : saved ? 'Saved' : 'Save'}
@@ -649,7 +691,7 @@ function AutoTopupCard({
         open={confirm}
         onOpenChange={(o) => !o && setConfirm(false)}
         title="Enable automatic top-up"
-        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}.`}
+        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}, up to $${budget} per month.`}
         confirmLabel={`Charge $${quantity} & enable`}
         pending={mutation.isPending}
         onConfirm={() => mutation.mutate()}

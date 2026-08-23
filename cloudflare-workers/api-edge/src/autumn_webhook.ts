@@ -67,6 +67,11 @@ export interface AutumnAutoTopup {
   enabled: boolean;
   threshold: number;
   quantity: number;
+  purchase_limit?: {
+    interval: "hour" | "day" | "week" | "month";
+    interval_count: number;
+    limit: number;
+  };
 }
 export interface AutumnCustomer {
   id: string;
@@ -411,7 +416,11 @@ export async function trackAutumnUsage(
   const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
   const resp = await fetch(`${base}/track`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "Idempotency-Key": p.idempotencyKey,
+    },
     body: JSON.stringify({
       customer_id: p.customerID,
       feature_id: p.featureID,
@@ -604,17 +613,40 @@ export async function autumnHasToppedUp(env: AutumnApiEnv, customerId: string): 
 export async function autumnSetAutoTopup(
   env: AutumnApiEnv,
   customerID: string,
-  cfg: { enabled: boolean; threshold: number; quantity: number },
+  cfg: { enabled: boolean; threshold: number; quantity: number; budget: number },
 ): Promise<void> {
+  if (
+    cfg.enabled &&
+    (!Number.isInteger(cfg.threshold) ||
+      cfg.threshold < 0 ||
+      !Number.isInteger(cfg.quantity) ||
+      cfg.quantity < 1 ||
+      !Number.isInteger(cfg.budget) ||
+      cfg.budget < cfg.quantity ||
+      cfg.budget % cfg.quantity !== 0)
+  ) {
+    throw new Error("auto-topup requires integer threshold, quantity, and a monthly budget divisible by quantity");
+  }
   const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const autoTopup: Record<string, unknown> = {
+    feature_id: CREDITS_FEATURE_ID,
+    enabled: cfg.enabled,
+    threshold: cfg.threshold,
+    quantity: cfg.quantity,
+  };
+  if (cfg.enabled) {
+    autoTopup.purchase_limit = {
+      interval: "month",
+      interval_count: 1,
+      limit: cfg.budget / cfg.quantity,
+    };
+  }
   const resp = await fetch(`${base}/customers/${encodeURIComponent(customerID)}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
     body: JSON.stringify({
       billing_controls: {
-        auto_topups: [
-          { feature_id: CREDITS_FEATURE_ID, enabled: cfg.enabled, threshold: cfg.threshold, quantity: cfg.quantity },
-        ],
+        auto_topups: [autoTopup],
       },
     }),
   });
