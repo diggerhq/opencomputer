@@ -615,6 +615,49 @@ export async function autumnPurchase(
   return { url: co.url };
 }
 
+// autumnUsagePlanPurchase uses Autumn's current billing.attach API for the
+// mutually-exclusive Usage / Pro / Max plan group. When a customer leaves the
+// free Usage plan, preserve only the remaining shared-credit balance from that
+// plan. Purchased top-ups are already independent balances and continue to
+// stack; paid-plan switches keep Autumn's normal replacement/proration rules.
+export async function autumnUsagePlanPurchase(
+  env: AutumnApiEnv,
+  params: { customerId: string; planId: "pro" | "max"; successUrl: string },
+): Promise<{ url: string | null }> {
+  const customer = await getAutumnCustomer(env, params.customerId);
+  const upgradingFromUsage = (customer?.subscriptions ?? []).some(
+    (subscription) =>
+      subscription.plan_id === "base" &&
+      (!subscription.status || subscription.status === "active"),
+  );
+  const body: Record<string, unknown> = {
+    customer_id: params.customerId,
+    plan_id: params.planId,
+    success_url: params.successUrl,
+    plan_schedule: "immediate",
+  };
+  if (upgradingFromUsage) {
+    body.carry_over_balances = {
+      enabled: true,
+      feature_ids: [CREDITS_FEATURE_ID],
+    };
+  }
+
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.attach`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "x-api-version": "2.3.0",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`autumn billing.attach ${resp.status}: ${await resp.text()}`);
+  const result = (await resp.json()) as { payment_url?: string | null };
+  return { url: result.payment_url ?? null };
+}
+
 // autumnSetupPayment creates a Stripe SETUP session that saves a card for future
 // OFF-SESSION use — POST /v1/billing.setup_payment. It does NOT charge (setup
 // mode), so arming auto-recharge takes a follow-up /attach once the card is on

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
@@ -277,10 +277,15 @@ const USAGE_PLANS = [
 
 function PrepaidPlan() {
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const redirectedPlan = searchParams.get('usage-plan')
+  const pendingUsagePlan =
+    redirectedPlan === 'pro' || redirectedPlan === 'max' ? redirectedPlan : null
+  const activationToastShown = useRef(false)
   const { data: autumn, isLoading } = useQuery({
     queryKey: ['autumn-billing'],
     queryFn: getAutumnBilling,
-    refetchInterval: 30_000,
+    refetchInterval: pendingUsagePlan != null ? 1_500 : 30_000,
   })
   const [amount, setAmount] = useState(25)
   const [confirmTopup, setConfirmTopup] = useState(false)
@@ -291,6 +296,22 @@ function PrepaidPlan() {
   const [usageProduct, setUsageProduct] = useState<
     'sandboxes' | 'serverless-agents'
   >('serverless-agents')
+
+  useEffect(() => {
+    if (pendingUsagePlan == null || autumn?.usagePlan !== pendingUsagePlan)
+      return
+
+    if (!activationToastShown.current) {
+      const label = pendingUsagePlan === 'pro' ? 'Pro' : 'Max'
+      toast.success(`${label} plan activated`, {
+        description: 'Your monthly credits are ready to use.',
+      })
+      activationToastShown.current = true
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('usage-plan')
+    setSearchParams(next, { replace: true })
+  }, [autumn?.usagePlan, pendingUsagePlan, searchParams, setSearchParams])
 
   // url present → redirect to hosted checkout (new card); url null → the
   // existing card was charged server-side, so just refresh the balance.
@@ -316,8 +337,14 @@ function PrepaidPlan() {
   })
   const usagePlanMutation = useMutation({
     mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
-    onSuccess: (d) => {
+    onSuccess: (d, plan) => {
       setConfirmUsagePlanId(null)
+      if (!d.url) {
+        const label = plan === 'pro' ? 'Pro' : 'Max'
+        toast.success(`${label} plan updated`, {
+          description: 'Your billing status and credits are refreshing.',
+        })
+      }
       onPurchase(d)
     },
     onError: (e) => notifyError("Couldn't update your plan.", e),
@@ -353,6 +380,22 @@ function PrepaidPlan() {
 
   return (
     <div className="max-w-5xl space-y-4">
+      {pendingUsagePlan != null ? (
+        <Panel className="p-4">
+          <div className="flex items-start gap-3">
+            <CircleCheck className="text-status-running mt-0.5 size-5 shrink-0" />
+            <div>
+              <h2 className="text-sm font-semibold">
+                Activating {pendingUsagePlan === 'pro' ? 'Pro' : 'Max'}…
+              </h2>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Payment completed. We are waiting for the plan and monthly
+                credits to synchronize.
+              </p>
+            </div>
+          </div>
+        </Panel>
+      ) : null}
       <UsagePlanCard
         currentPlan={autumn?.usagePlan ?? 'base'}
         onSelectPlan={setConfirmUsagePlanId}

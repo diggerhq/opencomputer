@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { autumnPurchase, autumnSetAutoTopup, type AutumnApiEnv } from "./autumn_webhook";
+import {
+  autumnPurchase,
+  autumnSetAutoTopup,
+  autumnUsagePlanPurchase,
+  type AutumnApiEnv,
+} from "./autumn_webhook";
 
 const env: AutumnApiEnv = {
   AUTUMN_SECRET_KEY: "autumn-secret",
@@ -102,6 +107,72 @@ describe("Autumn recurring plan purchases", () => {
           customer_id: "org_1",
           product_id: "pro",
           success_url: "https://example.test/billing",
+        }),
+      }),
+    );
+  });
+});
+
+describe("Autumn shared-credit plan purchases", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("carries the remaining signup balance into the first paid plan", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "base", add_on: false, status: "active" }],
+        purchases: [],
+      }))
+      .mockResolvedValueOnce(Response.json({ payment_url: "https://checkout.stripe.test/session" }));
+
+    await expect(autumnUsagePlanPurchase(env, {
+      customerId: "org_1",
+      planId: "pro",
+      successUrl: "https://example.test/billing?usage-plan=pro",
+    })).resolves.toEqual({ url: "https://checkout.stripe.test/session" });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://autumn.test/v1/billing.attach",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          customer_id: "org_1",
+          plan_id: "pro",
+          success_url: "https://example.test/billing?usage-plan=pro",
+          plan_schedule: "immediate",
+          carry_over_balances: {
+            enabled: true,
+            feature_ids: ["credits"],
+          },
+        }),
+      }),
+    );
+  });
+
+  it("does not roll paid monthly grants into another paid plan", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "pro", add_on: false, status: "active" }],
+        purchases: [],
+      }))
+      .mockResolvedValueOnce(Response.json({ payment_url: null }));
+
+    await expect(autumnUsagePlanPurchase(env, {
+      customerId: "org_1",
+      planId: "max",
+      successUrl: "https://example.test/billing?usage-plan=max",
+    })).resolves.toEqual({ url: null });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://autumn.test/v1/billing.attach",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          customer_id: "org_1",
+          plan_id: "max",
+          success_url: "https://example.test/billing?usage-plan=max",
+          plan_schedule: "immediate",
         }),
       }),
     );

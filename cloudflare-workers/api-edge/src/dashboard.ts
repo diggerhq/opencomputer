@@ -19,6 +19,7 @@
 
 import {
   autumnPurchase,
+  autumnUsagePlanPurchase,
   autumnTopUpCharge,
   autumnAttach,
   autumnHasToppedUp,
@@ -1650,10 +1651,10 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
   }
   const origin = new URL(req.url).origin;
   try {
-    const co = await autumnPurchase(env, {
+    const co = await autumnUsagePlanPurchase(env, {
       customerId: caller.orgID,
-      productId: plan,
-      successUrl: `${origin}/dashboard/billing?usage-plan=success`,
+      planId: plan,
+      successUrl: `${origin}/billing?usage-plan=${plan}`,
     });
     return json({ url: co.url });
   } catch (e) {
