@@ -3,8 +3,95 @@ import {
   autumnPurchase,
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
+  summarizeAutumnCreditBalance,
   type AutumnApiEnv,
 } from "./autumn_webhook";
+
+describe("Autumn credit balance summary", () => {
+  it("separates monthly plan credits from persistent top-ups", () => {
+    expect(
+      summarizeAutumnCreditBalance(
+        {
+          id: "org_1",
+          balances: {
+            credits: {
+              remaining: 225,
+              breakdown: [
+                {
+                  plan_id: "pro",
+                  remaining: 200,
+                  reset: {
+                    interval: "month",
+                    resets_at: 1_787_472_000_000,
+                  },
+                },
+                { plan_id: "top_up", remaining: 25, reset: null },
+              ],
+            },
+          },
+        },
+        "pro",
+      ),
+    ).toEqual({
+      available: true,
+      planRemaining: 200,
+      topupRemaining: 25,
+      otherRemaining: 0,
+      planResetsAt: 1_787_472_000_000,
+    });
+  });
+
+  it("keeps carried credits separate even when Autumn folds them into the plan row", () => {
+    const summary = summarizeAutumnCreditBalance(
+      {
+        id: "org_1",
+        balances: {
+          credits: {
+            remaining: 229.9,
+            rollovers: [{ balance: 4.9, expires_at: 1_787_472_000_000 }],
+            breakdown: [
+              {
+                plan_id: "pro",
+                remaining: 204.9,
+                reset: {
+                  interval: "month",
+                  resets_at: 1_787_472_000_000,
+                },
+              },
+              { plan_id: "top_up", remaining: 25 },
+            ],
+          },
+        },
+      },
+      "pro",
+    );
+
+    expect(summary).toMatchObject({
+      available: true,
+      planRemaining: 200,
+      topupRemaining: 25,
+    });
+    expect(summary.otherRemaining).toBeCloseTo(4.9);
+  });
+
+  it("does not invent a split when Autumn omits its balance breakdown", () => {
+    expect(
+      summarizeAutumnCreditBalance(
+        {
+          id: "org_1",
+          balances: { credits: { remaining: 12.5 } },
+        },
+        "base",
+      ),
+    ).toEqual({
+      available: false,
+      planRemaining: 0,
+      topupRemaining: 0,
+      otherRemaining: 12.5,
+      planResetsAt: null,
+    });
+  });
+});
 
 const env: AutumnApiEnv = {
   AUTUMN_SECRET_KEY: "autumn-secret",

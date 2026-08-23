@@ -82,8 +82,97 @@ export interface AutumnCustomer {
   // (autumnTopUpCharge), that's also when auto-recharge becomes armed. So it's our
   // "auto-recharge will fire" signal (Autumn exposes no payment-method field).
   purchases?: Array<{ plan_id: string }>;
-  balances?: Record<string, { remaining?: number }>;
+  balances?: Record<string, AutumnBalance>;
   billing_controls?: { auto_topups?: AutumnAutoTopup[] };
+}
+
+export interface AutumnBalanceBreakdown {
+  plan_id?: string | null;
+  remaining?: number;
+  reset?: {
+    interval?: string;
+    resets_at?: number | null;
+  } | null;
+}
+
+export interface AutumnBalance {
+  remaining?: number;
+  next_reset_at?: number | null;
+  breakdown?: AutumnBalanceBreakdown[];
+  rollovers?: Array<{
+    balance?: number;
+    expires_at?: number | null;
+  }>;
+}
+
+export interface AutumnCreditBalanceSummary {
+  available: boolean;
+  planRemaining: number;
+  topupRemaining: number;
+  otherRemaining: number;
+  planResetsAt: number | null;
+}
+
+const PLAN_CREDIT_GRANTS: Record<string, number> = {
+  base: 5,
+  pro: 200,
+  max: 2_000,
+};
+
+export function summarizeAutumnCreditBalance(
+  customer: AutumnCustomer,
+  usagePlan: string,
+): AutumnCreditBalanceSummary {
+  const balance = customer.balances?.[CREDITS_FEATURE_ID];
+  const totalRemaining = Math.max(0, balance?.remaining ?? 0);
+  const breakdown = balance?.breakdown;
+
+  if (!breakdown?.length) {
+    return {
+      available: false,
+      planRemaining: 0,
+      topupRemaining: 0,
+      otherRemaining: totalRemaining,
+      planResetsAt: null,
+    };
+  }
+
+  const planRows = breakdown.filter((row) => row.plan_id === usagePlan);
+  const planGrant = PLAN_CREDIT_GRANTS[usagePlan] ?? 0;
+  const rawPlanRemaining = planRows.reduce(
+    (sum, row) => sum + Math.max(0, row.remaining ?? 0),
+    0,
+  );
+  const rolloverRemaining = (balance?.rollovers ?? []).reduce(
+    (sum, rollover) => sum + Math.max(0, rollover.balance ?? 0),
+    0,
+  );
+  // Autumn includes rollover balances in the active entitlement's remaining
+  // amount. Remove those explicit rollovers before labeling the monthly bucket.
+  const planRemaining = Math.min(
+    Math.max(0, rawPlanRemaining - rolloverRemaining),
+    planGrant,
+  );
+  const topupRemaining = breakdown
+    .filter((row) => row.plan_id === "top_up")
+    .reduce((sum, row) => sum + Math.max(0, row.remaining ?? 0), 0);
+  const resetCandidates = planRows
+    .map((row) => row.reset?.resets_at)
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value),
+    );
+
+  return {
+    available: true,
+    planRemaining,
+    topupRemaining,
+    otherRemaining: Math.max(0, totalRemaining - planRemaining - topupRemaining),
+    planResetsAt:
+      resetCandidates.length > 0
+        ? Math.min(...resetCandidates)
+        : balance?.next_reset_at ?? null,
+  };
 }
 
 function json(body: unknown, status = 200): Response {

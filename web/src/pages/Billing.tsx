@@ -275,6 +275,18 @@ const USAGE_PLANS = [
   },
 ] as const
 
+function formatCreditAmount(cents: number) {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+function formatResetDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(value))
+}
+
 function PrepaidPlan() {
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -367,6 +379,7 @@ function PrepaidPlan() {
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
   const credits = (autumn?.creditsRemainingCents ?? 0) / 100
+  const creditBreakdown = autumn?.creditBreakdown
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
@@ -415,8 +428,59 @@ function PrepaidPlan() {
             >
               ${credits.toFixed(2)}
             </span>
-            <span className="text-muted-foreground text-xs">remaining</span>
+            <span className="text-muted-foreground text-xs">
+              total available
+            </span>
           </div>
+          {creditBreakdown?.available ? (
+            <div className="mt-5 space-y-3 border-t pt-4 text-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-medium">
+                    {autumn?.usagePlan === 'base'
+                      ? 'Signup credits'
+                      : `${autumn?.usagePlan === 'max' ? 'Max' : 'Pro'} plan credits`}
+                  </p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    {creditBreakdown.planResetsAt
+                      ? `Used first · resets to $${USAGE_PLANS.find((plan) => plan.id === autumn?.usagePlan)?.credits?.toLocaleString() ?? '0'} on ${formatResetDate(creditBreakdown.planResetsAt)}`
+                      : 'One-time included balance'}
+                  </p>
+                </div>
+                <span className="font-mono font-medium">
+                  {formatCreditAmount(creditBreakdown.planRemainingCents)}
+                </span>
+              </div>
+              {creditBreakdown.topupRemainingCents > 0 ? (
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-medium">Top-up credits</p>
+                    <p className="text-muted-foreground mt-0.5 text-xs">
+                      Used after plan credits · carries forward
+                    </p>
+                  </div>
+                  <span className="font-mono font-medium">
+                    {formatCreditAmount(creditBreakdown.topupRemainingCents)}
+                  </span>
+                </div>
+              ) : null}
+              {creditBreakdown.otherRemainingCents > 0 ? (
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-medium">
+                      Carried or promotional credits
+                    </p>
+                    <p className="text-muted-foreground mt-0.5 text-xs">
+                      Preserved separately from this month&apos;s allowance
+                    </p>
+                  </div>
+                  <span className="font-mono font-medium">
+                    {formatCreditAmount(creditBreakdown.otherRemainingCents)}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {halted ? (
             <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
               <CircleAlert className="size-4 shrink-0" />

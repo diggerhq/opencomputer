@@ -223,6 +223,13 @@ export const AutumnModelUsageSchema = z.object({
 
 export const AutumnBillingSchema = z.object({
   creditsRemainingCents: z.number(),
+  creditBreakdown: z.object({
+    available: z.boolean(),
+    planRemainingCents: z.number(),
+    topupRemainingCents: z.number(),
+    otherRemainingCents: z.number(),
+    planResetsAt: z.string().nullable(),
+  }),
   maxConcurrentSandboxes: z.number(),
   concurrencyPlan: z.string(),
   usagePlan: z.enum(['base', 'pro', 'max']),

@@ -24,6 +24,7 @@ import {
   autumnAttach,
   autumnHasToppedUp,
   syncAutumnToD1,
+  summarizeAutumnCreditBalance,
   autumnSetAutoTopup,
   autumnOpenCustomerPortal,
 } from "./autumn_webhook";
@@ -1574,6 +1575,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   // recharge or just save. Free — the customer is already loaded above.
   const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
   const hasPaidSubscription = usagePlan === "pro" || usagePlan === "max";
+  const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
 
   const model = await env.OPENCOMPUTER_DB.prepare(
     `SELECT
@@ -1599,9 +1601,28 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   const modelMarkupBps = model?.markup_bps ?? 0;
   const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
   const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
+  const creditsRemainingCents = Math.max(0, Math.round(r.creditsRemaining * 100));
+  const planRemainingCents = Math.min(
+    creditsRemainingCents,
+    Math.round(creditBreakdown.planRemaining * 100),
+  );
+  const topupRemainingCents = Math.min(
+    creditsRemainingCents - planRemainingCents,
+    Math.round(creditBreakdown.topupRemaining * 100),
+  );
 
   return json({
-    creditsRemainingCents: Math.round(r.creditsRemaining * 100),
+    creditsRemainingCents,
+    creditBreakdown: {
+      available: creditBreakdown.available,
+      planRemainingCents,
+      topupRemainingCents,
+      otherRemainingCents:
+        creditsRemainingCents - planRemainingCents - topupRemainingCents,
+      planResetsAt: creditBreakdown.planResetsAt == null
+        ? null
+        : new Date(creditBreakdown.planResetsAt).toISOString(),
+    },
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
     usagePlan,
