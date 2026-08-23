@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
@@ -11,12 +12,14 @@ import {
   billingPortal,
   billingSetup,
   getAutumnBilling,
+  getAgentSessionUsage,
   getBilling,
   getBillingInvoices,
   getSandboxUsage,
   redeemPromoCode,
   setAutumnAutoTopup,
   type AutumnBilling,
+  type AgentSessionUsageRow,
   type StripeInvoice,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -257,6 +260,9 @@ function PrepaidPlan() {
   const [amount, setAmount] = useState(25)
   const [confirmTopup, setConfirmTopup] = useState(false)
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
+  const [usageProduct, setUsageProduct] = useState<
+    'sandboxes' | 'serverless-agents'
+  >('serverless-agents')
 
   // url present → redirect to hosted checkout (new card); url null → the
   // existing card was charged server-side, so just refresh the balance.
@@ -305,7 +311,8 @@ function PrepaidPlan() {
     (billing?.hasPaymentMethod ?? false) || (autumn?.hasToppedUp ?? false)
 
   return (
-    <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+    <div className="max-w-5xl space-y-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
       {/* Credits */}
       <Panel className="p-6">
         <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
@@ -384,67 +391,43 @@ function PrepaidPlan() {
         </Panel>
       ) : null}
 
-      <ModelUsageCard usage={autumn?.modelUsage ?? null} />
+      </div>
 
-      {/* Concurrency */}
-      <Panel className="p-6">
-        <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
-        <p className="text-muted-foreground mb-4 text-sm">
-          You can run{' '}
-          <strong className="text-foreground">
-            {autumn?.maxConcurrentSandboxes ?? 50}
-          </strong>{' '}
-          sandboxes at once on the{' '}
-          <strong className="text-foreground">
-            {currentPlan === 'base' ? 'Base' : currentPlan}
-          </strong>{' '}
-          tier. Subscribe to a higher tier for more — billed monthly, separate
-          from usage credits.
-        </p>
-        <div className="space-y-2">
-          {CONCURRENCY_TIERS.map((t) => {
-            const active = currentPlan === t.id
-            return (
-              <div
-                key={t.id}
-                className={cn(
-                  'flex items-center justify-between rounded-md border px-4 py-3',
-                  active && 'border-foreground/40 bg-secondary',
-                )}
-              >
-                <div>
-                  <div className="text-foreground text-sm font-medium">
-                    {t.label} — {t.limit} concurrent
-                  </div>
-                  <div className="text-muted-foreground font-mono text-xs">
-                    ${t.price}/mo
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={active}
-                  onClick={() => setConfirmPlanId(t.id)}
-                >
-                  {active ? 'Current' : 'Subscribe'}
-                </Button>
-              </div>
-            )
-          })}
-          <p className="text-muted-foreground text-xs">
-            Need more than 1000?{' '}
-            <a
-              href="mailto:support@digger.dev"
-              className="text-foreground font-medium underline underline-offset-4"
+      <div>
+        <div className="mb-4 flex gap-1 border-b">
+          {(
+            [
+              ['serverless-agents', 'Serverless agents'],
+              ['sandboxes', 'Sandboxes'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setUsageProduct(value)}
+              className={cn(
+                '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
+                usageProduct === value
+                  ? 'border-foreground text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground border-transparent',
+              )}
             >
-              Contact us
-            </a>
-            .
-          </p>
+              {label}
+            </button>
+          ))}
         </div>
-      </Panel>
-
-      <UsageBreakdown />
+        {usageProduct === 'sandboxes' ? (
+          <div className="space-y-4">
+            <ConcurrencyCard
+              currentPlan={currentPlan}
+              maxConcurrent={autumn?.maxConcurrentSandboxes ?? 50}
+              onSelectPlan={setConfirmPlanId}
+            />
+            <UsageBreakdown />
+          </div>
+        ) : (
+          <AgentUsageBreakdown usage={autumn?.modelUsage ?? null} />
+        )}
+      </div>
 
       <ConfirmDialog
         open={confirmTopup}
@@ -472,6 +455,73 @@ function PrepaidPlan() {
   )
 }
 
+function ConcurrencyCard({
+  currentPlan,
+  maxConcurrent,
+  onSelectPlan,
+}: {
+  currentPlan: string
+  maxConcurrent: number
+  onSelectPlan: (plan: string) => void
+}) {
+  return (
+    <Panel className="p-6">
+      <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
+      <p className="text-muted-foreground mb-4 text-sm">
+        You can run{' '}
+        <strong className="text-foreground">{maxConcurrent}</strong> sandboxes
+        at once on the{' '}
+        <strong className="text-foreground">
+          {currentPlan === 'base' ? 'Base' : currentPlan}
+        </strong>{' '}
+        tier. Subscribe to a higher tier for more — billed monthly, separate
+        from usage credits.
+      </p>
+      <div className="space-y-2">
+        {CONCURRENCY_TIERS.map((tier) => {
+          const active = currentPlan === tier.id
+          return (
+            <div
+              key={tier.id}
+              className={cn(
+                'flex items-center justify-between rounded-md border px-4 py-3',
+                active && 'border-foreground/40 bg-secondary',
+              )}
+            >
+              <div>
+                <div className="text-foreground text-sm font-medium">
+                  {tier.label} — {tier.limit} concurrent
+                </div>
+                <div className="text-muted-foreground font-mono text-xs">
+                  ${tier.price}/mo
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={active}
+                onClick={() => onSelectPlan(tier.id)}
+              >
+                {active ? 'Current' : 'Subscribe'}
+              </Button>
+            </div>
+          )
+        })}
+        <p className="text-muted-foreground text-xs">
+          Need more than 1000?{' '}
+          <a
+            href="mailto:support@digger.dev"
+            className="text-foreground font-medium underline underline-offset-4"
+          >
+            Contact us
+          </a>
+          .
+        </p>
+      </div>
+    </Panel>
+  )
+}
+
 function ModelUsageCard({
   usage,
 }: {
@@ -484,7 +534,7 @@ function ModelUsageCard({
   return (
     <Panel className="p-6">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Managed model usage</h2>
+        <h2 className="text-sm font-semibold">Model usage</h2>
         <StatusBadge
           status={
             enabled ? 'success' : status === 'error' ? 'error' : 'stopped'
@@ -499,8 +549,8 @@ function ModelUsageCard({
         <span className="text-muted-foreground text-xs">credits used</span>
       </div>
       <p className="text-muted-foreground mt-2 text-sm">
-        Managed agent models draw from the same prepaid credits balance as
-        sandbox compute.
+        Serverless-agent models draw from the same prepaid credits balance as
+        agent runtime and sandboxes.
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div>
@@ -521,6 +571,181 @@ function ModelUsageCard({
         </div>
       </div>
     </Panel>
+  )
+}
+
+const AGENT_RUNTIME_CENTS_PER_SECOND = (0.00315 * 100) / 60
+
+function sessionRuntimeSeconds(session: AgentSessionUsageRow): number {
+  return Object.values(session.runtimeSecondsByTier).reduce(
+    (total, seconds) => total + seconds,
+    0,
+  )
+}
+
+function billableModelUsage(
+  session: AgentSessionUsageRow,
+  billingStartedAt?: string | null,
+): { calls: number; providerCostUsd: number } {
+  const cutoff = billingStartedAt ? Date.parse(billingStartedAt) : NaN
+  const events = Number.isFinite(cutoff)
+    ? session.modelUsage.filter(
+        (event) => Date.parse(event.timestamp) >= cutoff,
+      )
+    : session.modelUsage
+  return {
+    calls: events.length,
+    providerCostUsd: events.reduce(
+      (total, event) => total + event.costUsd,
+      0,
+    ),
+  }
+}
+
+function AgentUsageBreakdown({
+  usage,
+}: {
+  usage: AutumnBilling['modelUsage'] | null
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['agent-session-usage'],
+    queryFn: () => getAgentSessionUsage(100),
+    refetchInterval: 30_000,
+  })
+  const rows = data?.sessions ?? []
+  const markup = 1 + (usage?.markupBps ?? 0) / 10_000
+  const runtimeSeconds = rows.reduce(
+    (total, session) => total + sessionRuntimeSeconds(session),
+    0,
+  )
+  const runtimeCostCents = runtimeSeconds * AGENT_RUNTIME_CENTS_PER_SECOND
+
+  const columns: Column<AgentSessionUsageRow>[] = [
+    {
+      key: 'session',
+      header: 'Session',
+      cell: (session) => {
+        const content = (
+          <>
+            <div className="text-foreground max-w-sm truncate text-sm font-medium">
+              {session.title ?? 'Untitled session'}
+            </div>
+            <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-2 font-mono text-xs">
+              <span>{session.projectName ?? 'Unknown project'}</span>
+              <span>{session.id}</span>
+              <span>{session.source}</span>
+              <span>{session.status}</span>
+            </div>
+          </>
+        )
+        return session.projectId ? (
+          <Link
+            to={`/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`}
+            className="block min-w-0 hover:underline hover:underline-offset-4"
+          >
+            {content}
+          </Link>
+        ) : (
+          <div className="min-w-0">{content}</div>
+        )
+      },
+    },
+    {
+      key: 'model',
+      header: 'Model',
+      align: 'right',
+      cell: (session) => {
+        const model = billableModelUsage(session, usage?.billingStartedAt)
+        return (
+          <div className="font-mono text-xs">
+            <div className="text-foreground">
+              {formatCost(model.providerCostUsd * 100 * markup)}
+            </div>
+            <div className="text-muted-foreground">
+              {model.calls} call{model.calls === 1 ? '' : 's'}
+            </div>
+          </div>
+        )
+      },
+    },
+    {
+      key: 'runtime',
+      header: 'Runtime',
+      align: 'right',
+      cell: (session) => {
+        const seconds = sessionRuntimeSeconds(session)
+        return (
+          <div className="font-mono text-xs">
+            <div className="text-foreground">
+              {formatCost(seconds * AGENT_RUNTIME_CENTS_PER_SECOND)}
+            </div>
+            <div className="text-muted-foreground">
+              {formatDuration(seconds)}
+            </div>
+          </div>
+        )
+      },
+    },
+    {
+      key: 'total',
+      header: 'Total',
+      align: 'right',
+      cell: (session) => {
+        const model =
+          billableModelUsage(session, usage?.billingStartedAt)
+            .providerCostUsd *
+          100 *
+          markup
+        const runtime =
+          sessionRuntimeSeconds(session) * AGENT_RUNTIME_CENTS_PER_SECOND
+        return (
+          <span className="text-foreground font-mono text-xs font-medium">
+            {formatCost(model + runtime)}
+          </span>
+        )
+      },
+    },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ModelUsageCard usage={usage} />
+        <Panel className="p-6">
+          <h2 className="text-sm font-semibold">Agent runtime usage</h2>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-foreground font-mono text-3xl font-semibold">
+              {formatCost(runtimeCostCents)}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {formatDuration(runtimeSeconds)} in recent sessions
+            </span>
+          </div>
+          <p className="text-muted-foreground mt-2 text-sm">
+            Runtime is billed per second at the serverless-agent resource rate.
+          </p>
+        </Panel>
+      </div>
+
+      <Panel className="overflow-hidden">
+        <div className="px-6 pt-6">
+          <h2 className="text-sm font-semibold">Usage by agent session</h2>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Recent serverless-agent sessions, split into model and runtime
+            cost. Organization totals remain the billing ledger of record.
+          </p>
+        </div>
+        <div className="mt-3">
+          <ResourceTable
+            columns={columns}
+            rows={rows}
+            rowKey={(session) => session.id}
+            loading={isLoading}
+            empty={<EmptyState title="No serverless-agent usage to show yet." />}
+          />
+        </div>
+      </Panel>
+    </div>
   )
 }
 

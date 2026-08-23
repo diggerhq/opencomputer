@@ -4584,6 +4584,20 @@ export default {
       }
       const scopeError = provisionScopeGate(caller, path);
       if (scopeError) return scopeError;
+      if (path === "/api/managed-agents/sessions" && req.method === "POST") {
+        try {
+          const billing = await enableManagedBilling(env, caller.orgID);
+          if (billing.status !== "active") {
+            return json({ error: "managed model billing is unavailable" }, 503);
+          }
+        } catch (error) {
+          console.error(
+            `managed-agents: model billing admission failed org=${caller.orgID}`,
+            error,
+          );
+          return json({ error: "managed model billing is unavailable" }, 503);
+        }
+      }
       return proxyManagedAgents(
         req,
         env,

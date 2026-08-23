@@ -9,6 +9,13 @@ export const agentRuntime = feature({
   consumable: true,
 });
 
+export const modelSpend = feature({
+  id: "model_spend",
+  name: "Managed model spend",
+  type: "metered",
+  consumable: true,
+});
+
 export const credits = feature({
   id: "credits",
   name: "Credits",
@@ -18,6 +25,11 @@ export const credits = feature({
       meteredFeatureId: agentRuntime.id,
       // $0.00315 per minute, billed in whole seconds.
       creditCost: 0.0000525,
+    },
+    {
+      meteredFeatureId: modelSpend.id,
+      // The model meter submits provider spend in micro-dollars.
+      creditCost: 0.000001,
     },
   ],
 });

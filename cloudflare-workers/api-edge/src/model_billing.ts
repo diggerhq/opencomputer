@@ -1,8 +1,8 @@
-// Token / model-usage billing — provisioning state machine + the edge→sessions-api
+// Token / model-usage billing — provisioning state machine + the edge→managed-agent
 // key hand-off (design: .agents/work/token-billing.md §5.1, §6.7.5). The edge owns
 // the whole OpenRouter lifecycle (Autumn/OR are edge-native); this module drives one
 // managed org from `model_billing_status` off → provisioning → active, minting a
-// per-org OR key and binding it to a sessions-api credential.
+// per-org OR key and binding it to an encrypted managed-agent credential.
 //
 // The metering cron (model_meter, §5.4) is a separate file (step 3); this is step 1:
 // the key lifecycle + per-org state only.
@@ -18,6 +18,9 @@ export interface ModelBillingEnv extends OpenRouterEnv, AutumnApiEnv {
   OPENCOMPUTER_DB: D1Database;
   // sessions-api base URL (shared with the dashboard /v3 proxy). Default = prod.
   SESSIONS_API_URL?: string;
+  // Private managed-agent backend. Preferred for new Serverless Agent key
+  // custody; SESSIONS_API_URL remains a compatibility fallback during rollout.
+  MANAGED_AGENTS_API_URL?: string;
   // DEDICATED HMAC secret for the plaintext-key hand-off (§6.7.5 / P2-f). NOT the
   // generic internal-auth secret — this route carries a live model key. Shared
   // only with sessions-api.
@@ -238,7 +241,11 @@ async function signedHandoff(
   if (!env.OC_MANAGED_CRED_HMAC_SECRET) {
     throw new Error("model-billing: OC_MANAGED_CRED_HMAC_SECRET unset — refusing hand-off");
   }
-  const base = (env.SESSIONS_API_URL ?? DEFAULT_SESSIONS_API).replace(/\/+$/, "");
+  const base = (
+    env.MANAGED_AGENTS_API_URL ??
+    env.SESSIONS_API_URL ??
+    DEFAULT_SESSIONS_API
+  ).replace(/\/+$/, "");
   const ts = Math.floor(Date.now() / 1000).toString();
   const sig = await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${method}.${path}.${body}`);
   const resp = await fetch(`${base}${path}`, {
@@ -308,6 +315,15 @@ export interface EnableResult {
 export async function enableManagedBilling(env: ModelBillingEnv, orgId: string): Promise<EnableResult> {
   const org = await getOrg(env, orgId);
   if (!org) throw new Error(`model-billing: org ${orgId} not found`);
+  if (org.model_billing_status === "active") {
+    const active = await getActiveKeyRow(env, orgId);
+    if (active) {
+      return {
+        status: "active",
+        credentialId: active.managed_credential_id ?? undefined,
+      };
+    }
+  }
   // Managed is available to ANY org (decoupled from billing). Autumn orgs meter
   // against the shared credit pool; non-autumn orgs run on a fixed OR-key budget
   // (see budgetFor). The provider only changes the budget source, never whether

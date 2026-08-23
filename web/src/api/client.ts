@@ -25,6 +25,8 @@ export type {
   BillingState,
   AutumnAutoTopup,
   AutumnBilling,
+  AgentSessionUsage,
+  AgentSessionUsageRow,
   StripeInvoice,
   SandboxUsageRow,
   SandboxUsage,
@@ -440,6 +442,13 @@ export const redeemPromoCode = (code: string) =>
 // Autumn prepaid billing API
 export const getAutumnBilling = () =>
   apiFetch('/billing/autumn', {}, S.AutumnBillingSchema)
+
+export const getAgentSessionUsage = (limit = 50) =>
+  apiFetch(
+    `/managed-agents/billing/sessions?limit=${limit}`,
+    {},
+    S.AgentSessionUsageSchema,
+  )
 
 // url is non-null → redirect to a hosted Stripe flow (no card yet); null → the
 // existing card was charged server-side, so just refresh the balance.

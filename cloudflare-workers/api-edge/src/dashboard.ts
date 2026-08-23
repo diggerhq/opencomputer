@@ -33,6 +33,7 @@ import {
 } from "./agent_security_notifications";
 import { createAPIKey } from "./api_keys";
 import { proxyManagedAgents } from "./managed_agents";
+import { enableManagedBilling } from "./model_billing";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -70,6 +71,10 @@ export interface DashboardEnv {
   // never receives the backend URL or assertion secret.
   MANAGED_AGENTS_API_URL?: string;
   OC_MANAGED_AGENTS_SECRET?: string;
+  OPENROUTER_PROVISIONING_KEY: string;
+  OPENROUTER_BASE_URL?: string;
+  OPENROUTER_MARKUP_BPS?: string;
+  OC_MANAGED_CRED_HMAC_SECRET: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -955,6 +960,20 @@ export async function handleDashboard(
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
+    if (sub === "/managed-agents/sessions" && method === "POST") {
+      try {
+        const billing = await enableManagedBilling(env, caller.orgID);
+        if (billing.status !== "active") {
+          return json({ error: "managed model billing is unavailable" }, 503);
+        }
+      } catch (error) {
+        console.error(
+          `managed-agents: model billing admission failed org=${caller.orgID}`,
+          error,
+        );
+        return json({ error: "managed model billing is unavailable" }, 503);
+      }
+    }
     return proxyManagedAgents(
       req,
       env,
@@ -1543,6 +1562,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
        o.model_billing_status AS status,
        o.model_markup_bps AS markup_bps,
        COUNT(CASE WHEN k.status = 'active' THEN 1 END) AS active_key_count,
+       MIN(k.created_at) AS billing_started_at,
        COALESCE(SUM(k.committed_micro), 0) AS committed_micro
      FROM orgs o
      LEFT JOIN managed_model_keys k
@@ -1554,6 +1574,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     status: string;
     markup_bps: number;
     active_key_count: number;
+    billing_started_at: number | null;
     committed_micro: number;
   }>();
   const modelStatus = model?.status ?? "off";
@@ -1585,6 +1606,10 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       providerSpendCents: modelProviderSpendCents,
       billedCreditsCents: modelBilledCreditsCents,
       activeKeyCount: model?.active_key_count ?? 0,
+      billingStartedAt:
+        model?.billing_started_at != null
+          ? new Date(Number(model.billing_started_at) * 1_000).toISOString()
+          : null,
     },
   });
 }

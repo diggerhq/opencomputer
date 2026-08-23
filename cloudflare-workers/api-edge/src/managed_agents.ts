@@ -644,6 +644,9 @@ function publicSuccessBody(
       duplicate: body.duplicate,
     };
   }
+  if (method === "GET" && suffix === "/billing/sessions") {
+    return stripPrivateValues(body);
+  }
   if (method === "POST" && /\/suspend$/.test(suffix)) {
     return {
       id: body.id,
@@ -859,6 +862,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (suffix.startsWith("/openrouter/")) return true;
   if (method === "POST" && suffix === "/sessions") return true;
   if (method === "GET" && suffix === "/sessions") return true;
+  if (method === "GET" && suffix === "/billing/sessions") return true;
   if (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
