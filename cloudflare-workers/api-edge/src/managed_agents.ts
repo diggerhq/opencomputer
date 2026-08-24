@@ -864,6 +864,26 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
         /^\/channels(?:\/.*)?$/.test(suffix)))
   )
     return true;
+  // Model access (work 011): org-owned Claude/Codex subscription connections
+  // and their project-environment bindings.
+  if (
+    (method === "GET" || method === "POST") &&
+    suffix === "/model-access/connections"
+  ) {
+    return true;
+  }
+  if (
+    (method === "POST" || method === "DELETE") &&
+    /^\/model-access\/connections\/[^/]+(\/validate)?$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/model-access\/bindings(?:\/[^/]+\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
   if (suffix.startsWith("/openrouter/")) return true;
   if (method === "POST" && suffix === "/sessions") return true;
   if (method === "GET" && suffix === "/sessions") return true;
