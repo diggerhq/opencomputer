@@ -208,6 +208,7 @@ export const AutumnAutoTopupSchema = z.object({
   enabled: z.boolean(),
   threshold: z.number(),
   quantity: z.number(),
+  budget: z.number().nullable(),
 })
 
 export const AutumnModelUsageSchema = z.object({
@@ -217,16 +218,47 @@ export const AutumnModelUsageSchema = z.object({
   providerSpendCents: z.number(),
   billedCreditsCents: z.number(),
   activeKeyCount: z.number(),
+  billingStartedAt: z.string().nullable().optional(),
 })
 
 export const AutumnBillingSchema = z.object({
   creditsRemainingCents: z.number(),
+  creditBreakdown: z.object({
+    available: z.boolean(),
+    planRemainingCents: z.number(),
+    topupRemainingCents: z.number(),
+    otherRemainingCents: z.number(),
+    planResetsAt: z.string().nullable(),
+  }),
   maxConcurrentSandboxes: z.number(),
   concurrencyPlan: z.string(),
+  usagePlan: z.enum(['base', 'pro', 'max']),
   isHalted: z.boolean(),
   hasToppedUp: z.boolean(),
+  hasPaidSubscription: z.boolean(),
   autoTopup: AutumnAutoTopupSchema.nullable(),
   modelUsage: AutumnModelUsageSchema.optional(),
+})
+
+export const AgentSessionUsageRowSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  deploymentId: z.string(),
+  projectId: z.string().optional(),
+  projectName: z.string().optional(),
+  source: z.string(),
+  status: z.string(),
+  title: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  modelCalls: z.number(),
+  modelProviderCostUsd: z.number(),
+  modelUsage: z.array(z.object({ timestamp: z.string(), costUsd: z.number() })),
+  runtimeSecondsByTier: z.record(z.string(), z.number()),
+})
+
+export const AgentSessionUsageSchema = z.object({
+  sessions: z.array(AgentSessionUsageRowSchema),
 })
 
 export const StripeInvoiceSchema = z.object({
@@ -1214,6 +1246,8 @@ export type Credits = z.infer<typeof CreditsSchema>
 export type BillingState = z.infer<typeof BillingStateSchema>
 export type AutumnAutoTopup = z.infer<typeof AutumnAutoTopupSchema>
 export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
+export type AgentSessionUsageRow = z.infer<typeof AgentSessionUsageRowSchema>
+export type AgentSessionUsage = z.infer<typeof AgentSessionUsageSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
 export type SandboxUsageRow = z.infer<typeof SandboxUsageRowSchema>
 export type SandboxUsage = z.infer<typeof SandboxUsageSchema>

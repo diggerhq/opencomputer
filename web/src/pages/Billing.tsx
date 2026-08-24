@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
@@ -7,16 +8,19 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
   autumnBillingPortal,
   autumnSubscribeConcurrency,
+  autumnSubscribeUsagePlan,
   autumnTopup,
   billingPortal,
   billingSetup,
   getAutumnBilling,
+  getAgentSessionUsage,
   getBilling,
   getBillingInvoices,
   getSandboxUsage,
   redeemPromoCode,
   setAutumnAutoTopup,
   type AutumnBilling,
+  type AgentSessionUsageRow,
   type StripeInvoice,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -247,16 +251,79 @@ const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro_plus_plus', label: 'Pro++', limit: 1000, price: 1000 },
 ]
 
+const USAGE_PLANS = [
+  {
+    id: 'base',
+    label: 'Usage',
+    price: 0,
+    credits: null,
+    description: 'No subscription. Add prepaid credits whenever you need them.',
+  },
+  {
+    id: 'pro',
+    label: 'Pro',
+    price: 20,
+    credits: 200,
+    description: '$200 in shared credits added every month.',
+  },
+  {
+    id: 'max',
+    label: 'Max',
+    price: 200,
+    credits: 2000,
+    description: '$2,000 in shared credits added every month.',
+  },
+] as const
+
+function formatCreditAmount(cents: number) {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+function formatResetDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(value))
+}
+
 function PrepaidPlan() {
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const redirectedPlan = searchParams.get('usage-plan')
+  const pendingUsagePlan =
+    redirectedPlan === 'pro' || redirectedPlan === 'max' ? redirectedPlan : null
+  const activationToastShown = useRef(false)
   const { data: autumn, isLoading } = useQuery({
     queryKey: ['autumn-billing'],
     queryFn: getAutumnBilling,
-    refetchInterval: 30_000,
+    refetchInterval: pendingUsagePlan != null ? 1_500 : 30_000,
   })
   const [amount, setAmount] = useState(25)
   const [confirmTopup, setConfirmTopup] = useState(false)
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
+  const [confirmUsagePlanId, setConfirmUsagePlanId] = useState<
+    'pro' | 'max' | null
+  >(null)
+  const [usageProduct, setUsageProduct] = useState<
+    'sandboxes' | 'serverless-agents'
+  >('serverless-agents')
+
+  useEffect(() => {
+    if (pendingUsagePlan == null || autumn?.usagePlan !== pendingUsagePlan)
+      return
+
+    if (!activationToastShown.current) {
+      const label = pendingUsagePlan === 'pro' ? 'Pro' : 'Max'
+      toast.success(`${label} plan activated`, {
+        description: 'Your monthly credits are ready to use.',
+      })
+      activationToastShown.current = true
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('usage-plan')
+    setSearchParams(next, { replace: true })
+  }, [autumn?.usagePlan, pendingUsagePlan, searchParams, setSearchParams])
 
   // url present → redirect to hosted checkout (new card); url null → the
   // existing card was charged server-side, so just refresh the balance.
@@ -272,7 +339,7 @@ function PrepaidPlan() {
     },
     onError: (e) => notifyError("Couldn't complete the top-up.", e),
   })
-  const planMutation = useMutation({
+  const concurrencyPlanMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
     onSuccess: (d) => {
       setConfirmPlanId(null)
@@ -280,10 +347,27 @@ function PrepaidPlan() {
     },
     onError: (e) => notifyError("Couldn't update your subscription.", e),
   })
+  const usagePlanMutation = useMutation({
+    mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
+    onSuccess: (d, plan) => {
+      setConfirmUsagePlanId(null)
+      if (!d.url) {
+        const label = plan === 'pro' ? 'Pro' : 'Max'
+        toast.success(`${label} plan updated`, {
+          description: 'Your billing status and credits are refreshing.',
+        })
+      }
+      onPurchase(d)
+    },
+    onError: (e) => notifyError("Couldn't update your plan.", e),
+  })
 
   // Whether a card is on file → offer the Stripe portal to manage it. Compliance
   // requires that anyone with a saved card can view/update/remove it.
-  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
+  const { data: billing } = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
   const portalMutation = useMutation({
     mutationFn: autumnBillingPortal,
     onSuccess: (data) => {
@@ -295,153 +379,210 @@ function PrepaidPlan() {
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
   const credits = (autumn?.creditsRemainingCents ?? 0) / 100
+  const creditBreakdown = autumn?.creditBreakdown
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
+  const selectedUsagePlan = USAGE_PLANS.find(
+    (plan) => plan.id === confirmUsagePlanId,
+  )
   const hasCard =
-    (billing?.hasPaymentMethod ?? false) || (autumn?.hasToppedUp ?? false)
+    (billing?.hasPaymentMethod ?? false) ||
+    (autumn?.hasToppedUp ?? false) ||
+    (autumn?.hasPaidSubscription ?? false)
 
   return (
-    <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
-      {/* Credits */}
-      <Panel className="p-6">
-        <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
-        <div className="flex items-baseline gap-3">
-          <span
-            className={cn(
-              'font-mono text-4xl font-semibold',
-              halted ? 'text-status-error' : 'text-status-running',
-            )}
-          >
-            ${credits.toFixed(2)}
-          </span>
-          <span className="text-muted-foreground text-xs">remaining</span>
-        </div>
-        {halted ? (
-          <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
-            <CircleAlert className="size-4 shrink-0" />
-            Credits exhausted — top up to resume your agent sessions and
-            sandboxes
-          </p>
-        ) : null}
-
-        <div className="mt-5">
-          <p className="text-muted-foreground mb-2.5 text-sm">
-            Add credits (billed at the same per-second rates)
-          </p>
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            {TOPUP_AMOUNTS.map((a) => (
-              <Button
-                key={a}
-                variant={amount === a ? 'default' : 'outline'}
-                size="sm"
-                className="font-mono"
-                onClick={() => setAmount(a)}
-              >
-                ${a}
-              </Button>
-            ))}
-            <Input
-              type="number"
-              min={1}
-              value={amount}
-              onChange={(e) =>
-                setAmount(Math.max(1, Math.floor(Number(e.target.value) || 0)))
-              }
-              className="w-24 font-mono"
-            />
+    <div className="max-w-5xl space-y-4">
+      {pendingUsagePlan != null ? (
+        <Panel className="p-4">
+          <div className="flex items-start gap-3">
+            <CircleCheck className="text-status-running mt-0.5 size-5 shrink-0" />
+            <div>
+              <h2 className="text-sm font-semibold">
+                Activating {pendingUsagePlan === 'pro' ? 'Pro' : 'Max'}…
+              </h2>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Payment completed. We are waiting for the plan and monthly
+                credits to synchronize.
+              </p>
+            </div>
           </div>
-          <Button disabled={amount < 1} onClick={() => setConfirmTopup(true)}>
-            Top up ${amount}
-          </Button>
-        </div>
-      </Panel>
-
-      <AutoTopupCard
-        current={autumn?.autoTopup ?? null}
-        hasToppedUp={autumn?.hasToppedUp ?? false}
-      />
-
-      {hasCard ? (
-        <Panel className="p-6">
-          <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
-          <p className="text-muted-foreground mb-3 text-sm">
-            Update your card, download invoices, or remove your payment method on
-            Stripe.
-          </p>
-          <Button
-            variant="outline"
-            onClick={() => portalMutation.mutate()}
-            disabled={portalMutation.isPending}
-          >
-            {portalMutation.isPending
-              ? 'Opening Stripe…'
-              : 'Manage payment method ↗'}
-          </Button>
         </Panel>
       ) : null}
-
-      <ModelUsageCard usage={autumn?.modelUsage ?? null} />
-
-      {/* Concurrency */}
-      <Panel className="p-6">
-        <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
-        <p className="text-muted-foreground mb-4 text-sm">
-          You can run{' '}
-          <strong className="text-foreground">
-            {autumn?.maxConcurrentSandboxes ?? 50}
-          </strong>{' '}
-          sandboxes at once on the{' '}
-          <strong className="text-foreground">
-            {currentPlan === 'base' ? 'Base' : currentPlan}
-          </strong>{' '}
-          tier. Subscribe to a higher tier for more — billed monthly, separate
-          from usage credits.
-        </p>
-        <div className="space-y-2">
-          {CONCURRENCY_TIERS.map((t) => {
-            const active = currentPlan === t.id
-            return (
-              <div
-                key={t.id}
-                className={cn(
-                  'flex items-center justify-between rounded-md border px-4 py-3',
-                  active && 'border-foreground/40 bg-secondary',
-                )}
-              >
-                <div>
-                  <div className="text-foreground text-sm font-medium">
-                    {t.label} — {t.limit} concurrent
-                  </div>
-                  <div className="text-muted-foreground font-mono text-xs">
-                    ${t.price}/mo
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={active}
-                  onClick={() => setConfirmPlanId(t.id)}
-                >
-                  {active ? 'Current' : 'Subscribe'}
-                </Button>
-              </div>
-            )
-          })}
-          <p className="text-muted-foreground text-xs">
-            Need more than 1000?{' '}
-            <a
-              href="mailto:support@digger.dev"
-              className="text-foreground font-medium underline underline-offset-4"
+      <UsagePlanCard
+        currentPlan={autumn?.usagePlan ?? 'base'}
+        onSelectPlan={setConfirmUsagePlanId}
+        onManage={() => portalMutation.mutate()}
+        managing={portalMutation.isPending}
+      />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+        {/* Credits */}
+        <Panel className="p-6">
+          <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
+          <div className="flex items-baseline gap-3">
+            <span
+              className={cn(
+                'font-mono text-4xl font-semibold',
+                halted ? 'text-status-error' : 'text-status-running',
+              )}
             >
-              Contact us
-            </a>
-            .
-          </p>
-        </div>
-      </Panel>
+              ${credits.toFixed(2)}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              total available
+            </span>
+          </div>
+          {creditBreakdown?.available ? (
+            <div className="mt-5 space-y-3 border-t pt-4 text-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-medium">
+                    {autumn?.usagePlan === 'base'
+                      ? 'Signup credits'
+                      : `${autumn?.usagePlan === 'max' ? 'Max' : 'Pro'} plan credits`}
+                  </p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    {creditBreakdown.planResetsAt
+                      ? `Used first · resets to $${USAGE_PLANS.find((plan) => plan.id === autumn?.usagePlan)?.credits?.toLocaleString() ?? '0'} on ${formatResetDate(creditBreakdown.planResetsAt)}`
+                      : 'One-time included balance'}
+                  </p>
+                </div>
+                <span className="font-mono font-medium">
+                  {formatCreditAmount(creditBreakdown.planRemainingCents)}
+                </span>
+              </div>
+              {creditBreakdown.topupRemainingCents > 0 ? (
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-medium">Top-up credits</p>
+                    <p className="text-muted-foreground mt-0.5 text-xs">
+                      Used after plan credits · carries forward
+                    </p>
+                  </div>
+                  <span className="font-mono font-medium">
+                    {formatCreditAmount(creditBreakdown.topupRemainingCents)}
+                  </span>
+                </div>
+              ) : null}
+              {creditBreakdown.otherRemainingCents > 0 ? (
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-medium">
+                      Carried or promotional credits
+                    </p>
+                    <p className="text-muted-foreground mt-0.5 text-xs">
+                      Preserved separately from this month&apos;s allowance
+                    </p>
+                  </div>
+                  <span className="font-mono font-medium">
+                    {formatCreditAmount(creditBreakdown.otherRemainingCents)}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {halted ? (
+            <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
+              <CircleAlert className="size-4 shrink-0" />
+              Credits exhausted — top up to resume your agent sessions and
+              sandboxes
+            </p>
+          ) : null}
 
-      <UsageBreakdown />
+          <div className="mt-5">
+            <p className="text-muted-foreground mb-2.5 text-sm">
+              Add credits (billed at the same per-second rates)
+            </p>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              {TOPUP_AMOUNTS.map((a) => (
+                <Button
+                  key={a}
+                  variant={amount === a ? 'default' : 'outline'}
+                  size="sm"
+                  className="font-mono"
+                  onClick={() => setAmount(a)}
+                >
+                  ${a}
+                </Button>
+              ))}
+              <Input
+                type="number"
+                min={1}
+                value={amount}
+                onChange={(e) =>
+                  setAmount(
+                    Math.max(1, Math.floor(Number(e.target.value) || 0)),
+                  )
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+            <Button disabled={amount < 1} onClick={() => setConfirmTopup(true)}>
+              Top up ${amount}
+            </Button>
+          </div>
+        </Panel>
+
+        <AutoTopupCard
+          current={autumn?.autoTopup ?? null}
+          hasToppedUp={autumn?.hasToppedUp ?? false}
+        />
+
+        {hasCard ? (
+          <Panel className="p-6">
+            <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
+            <p className="text-muted-foreground mb-3 text-sm">
+              Update your card, download invoices, or remove your payment method
+              on Stripe.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => portalMutation.mutate()}
+              disabled={portalMutation.isPending}
+            >
+              {portalMutation.isPending
+                ? 'Opening Stripe…'
+                : 'Manage payment method ↗'}
+            </Button>
+          </Panel>
+        ) : null}
+      </div>
+
+      <div>
+        <div className="mb-4 flex gap-1 border-b">
+          {(
+            [
+              ['serverless-agents', 'Serverless agents'],
+              ['sandboxes', 'Sandboxes'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setUsageProduct(value)}
+              className={cn(
+                '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
+                usageProduct === value
+                  ? 'border-foreground text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground border-transparent',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {usageProduct === 'sandboxes' ? (
+          <div className="space-y-4">
+            <ConcurrencyCard
+              currentPlan={currentPlan}
+              maxConcurrent={autumn?.maxConcurrentSandboxes ?? 50}
+              onSelectPlan={setConfirmPlanId}
+            />
+            <UsageBreakdown />
+          </div>
+        ) : (
+          <AgentUsageBreakdown usage={autumn?.modelUsage ?? null} />
+        )}
+      </div>
 
       <ConfirmDialog
         open={confirmTopup}
@@ -462,10 +603,178 @@ function PrepaidPlan() {
             : ''
         }
         confirmLabel={tier ? `Subscribe — $${tier.price}/mo` : 'Subscribe'}
-        pending={planMutation.isPending}
-        onConfirm={() => tier && planMutation.mutate(tier.id)}
+        pending={concurrencyPlanMutation.isPending}
+        onConfirm={() => tier && concurrencyPlanMutation.mutate(tier.id)}
+      />
+      <ConfirmDialog
+        open={!!selectedUsagePlan}
+        onOpenChange={(open) => !open && setConfirmUsagePlanId(null)}
+        title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
+        description={
+          selectedUsagePlan
+            ? `${selectedUsagePlan.label} costs $${selectedUsagePlan.price}/month and adds $${selectedUsagePlan.credits?.toLocaleString()} in shared credits each month. Autumn applies the plan change and any required proration through Stripe.`
+            : ''
+        }
+        confirmLabel={
+          selectedUsagePlan
+            ? `${selectedUsagePlan.label} — $${selectedUsagePlan.price}/mo`
+            : 'Continue'
+        }
+        pending={usagePlanMutation.isPending}
+        onConfirm={() =>
+          selectedUsagePlan &&
+          selectedUsagePlan.id !== 'base' &&
+          usagePlanMutation.mutate(selectedUsagePlan.id)
+        }
       />
     </div>
+  )
+}
+
+function UsagePlanCard({
+  currentPlan,
+  onSelectPlan,
+  onManage,
+  managing,
+}: {
+  currentPlan: 'base' | 'pro' | 'max'
+  onSelectPlan: (plan: 'pro' | 'max') => void
+  onManage: () => void
+  managing: boolean
+}) {
+  return (
+    <Panel className="p-6">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold">Plan</h2>
+        <p className="text-muted-foreground mt-1 text-sm">
+          Monthly credits are shared by serverless-agent sessions and sandboxes.
+          Top-ups stack with every plan.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {USAGE_PLANS.map((plan) => {
+          const current = plan.id === currentPlan
+          return (
+            <div key={plan.id} className="rounded-md border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium">{plan.label}</div>
+                  <div className="mt-1 font-mono text-xl font-semibold">
+                    ${plan.price}
+                    <span className="text-muted-foreground text-xs font-normal">
+                      /mo
+                    </span>
+                  </div>
+                </div>
+                {current ? <StatusBadge status="active" /> : null}
+              </div>
+              <p className="text-muted-foreground mt-3 min-h-10 text-sm">
+                {plan.description}
+              </p>
+              {current ? (
+                currentPlan === 'base' ? (
+                  <Button className="mt-4 w-full" variant="outline" disabled>
+                    Current plan
+                  </Button>
+                ) : (
+                  <Button
+                    className="mt-4 w-full"
+                    variant="outline"
+                    disabled={managing}
+                    onClick={onManage}
+                  >
+                    Manage subscription
+                  </Button>
+                )
+              ) : plan.id === 'base' ? (
+                <Button
+                  className="mt-4 w-full"
+                  variant="outline"
+                  disabled={currentPlan === 'base' || managing}
+                  onClick={onManage}
+                >
+                  Manage in Stripe
+                </Button>
+              ) : (
+                <Button
+                  className="mt-4 w-full"
+                  variant="outline"
+                  onClick={() => onSelectPlan(plan.id)}
+                >
+                  {currentPlan === 'base' ? 'Upgrade' : 'Switch plan'}
+                </Button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Panel>
+  )
+}
+
+function ConcurrencyCard({
+  currentPlan,
+  maxConcurrent,
+  onSelectPlan,
+}: {
+  currentPlan: string
+  maxConcurrent: number
+  onSelectPlan: (plan: string) => void
+}) {
+  return (
+    <Panel className="p-6">
+      <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
+      <p className="text-muted-foreground mb-4 text-sm">
+        You can run <strong className="text-foreground">{maxConcurrent}</strong>{' '}
+        sandboxes at once on the{' '}
+        <strong className="text-foreground">
+          {currentPlan === 'base' ? 'Base' : currentPlan}
+        </strong>{' '}
+        tier. Subscribe to a higher tier for more — billed monthly, separate
+        from usage credits.
+      </p>
+      <div className="space-y-2">
+        {CONCURRENCY_TIERS.map((tier) => {
+          const active = currentPlan === tier.id
+          return (
+            <div
+              key={tier.id}
+              className={cn(
+                'flex items-center justify-between rounded-md border px-4 py-3',
+                active && 'border-foreground/40 bg-secondary',
+              )}
+            >
+              <div>
+                <div className="text-foreground text-sm font-medium">
+                  {tier.label} — {tier.limit} concurrent
+                </div>
+                <div className="text-muted-foreground font-mono text-xs">
+                  ${tier.price}/mo
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={active}
+                onClick={() => onSelectPlan(tier.id)}
+              >
+                {active ? 'Current' : 'Subscribe'}
+              </Button>
+            </div>
+          )
+        })}
+        <p className="text-muted-foreground text-xs">
+          Need more than 1000?{' '}
+          <a
+            href="mailto:support@digger.dev"
+            className="text-foreground font-medium underline underline-offset-4"
+          >
+            Contact us
+          </a>
+          .
+        </p>
+      </div>
+    </Panel>
   )
 }
 
@@ -481,9 +790,11 @@ function ModelUsageCard({
   return (
     <Panel className="p-6">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Managed model usage</h2>
+        <h2 className="text-sm font-semibold">Model usage</h2>
         <StatusBadge
-          status={enabled ? 'success' : status === 'error' ? 'error' : 'stopped'}
+          status={
+            enabled ? 'success' : status === 'error' ? 'error' : 'stopped'
+          }
           label={status}
         />
       </div>
@@ -494,8 +805,8 @@ function ModelUsageCard({
         <span className="text-muted-foreground text-xs">credits used</span>
       </div>
       <p className="text-muted-foreground mt-2 text-sm">
-        Managed agent models draw from the same prepaid credits balance as
-        sandbox compute.
+        Serverless-agent models draw from the same prepaid credits balance as
+        agent runtime and sandboxes.
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div>
@@ -519,6 +830,179 @@ function ModelUsageCard({
   )
 }
 
+const AGENT_RUNTIME_CENTS_PER_SECOND = (0.00315 * 100) / 60
+
+function sessionRuntimeSeconds(session: AgentSessionUsageRow): number {
+  return Object.values(session.runtimeSecondsByTier).reduce(
+    (total, seconds) => total + seconds,
+    0,
+  )
+}
+
+function billableModelUsage(
+  session: AgentSessionUsageRow,
+  billingStartedAt?: string | null,
+): { calls: number; providerCostUsd: number } {
+  const cutoff = billingStartedAt ? Date.parse(billingStartedAt) : NaN
+  const events = Number.isFinite(cutoff)
+    ? session.modelUsage.filter(
+        (event) => Date.parse(event.timestamp) >= cutoff,
+      )
+    : session.modelUsage
+  return {
+    calls: events.length,
+    providerCostUsd: events.reduce((total, event) => total + event.costUsd, 0),
+  }
+}
+
+function AgentUsageBreakdown({
+  usage,
+}: {
+  usage: AutumnBilling['modelUsage'] | null
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['agent-session-usage'],
+    queryFn: () => getAgentSessionUsage(100),
+    refetchInterval: 30_000,
+  })
+  const rows = data?.sessions ?? []
+  const markup = 1 + (usage?.markupBps ?? 0) / 10_000
+  const runtimeSeconds = rows.reduce(
+    (total, session) => total + sessionRuntimeSeconds(session),
+    0,
+  )
+  const runtimeCostCents = runtimeSeconds * AGENT_RUNTIME_CENTS_PER_SECOND
+
+  const columns: Column<AgentSessionUsageRow>[] = [
+    {
+      key: 'session',
+      header: 'Session',
+      cell: (session) => {
+        const content = (
+          <>
+            <div className="text-foreground max-w-sm truncate text-sm font-medium">
+              {session.title ?? 'Untitled session'}
+            </div>
+            <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-2 font-mono text-xs">
+              <span>{session.projectName ?? 'Unknown project'}</span>
+              <span>{session.id}</span>
+              <span>{session.source}</span>
+              <span>{session.status}</span>
+            </div>
+          </>
+        )
+        return session.projectId ? (
+          <Link
+            to={`/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`}
+            className="block min-w-0 hover:underline hover:underline-offset-4"
+          >
+            {content}
+          </Link>
+        ) : (
+          <div className="min-w-0">{content}</div>
+        )
+      },
+    },
+    {
+      key: 'model',
+      header: 'Model',
+      align: 'right',
+      cell: (session) => {
+        const model = billableModelUsage(session, usage?.billingStartedAt)
+        return (
+          <div className="font-mono text-xs">
+            <div className="text-foreground">
+              {formatCost(model.providerCostUsd * 100 * markup)}
+            </div>
+            <div className="text-muted-foreground">
+              {model.calls} call{model.calls === 1 ? '' : 's'}
+            </div>
+          </div>
+        )
+      },
+    },
+    {
+      key: 'runtime',
+      header: 'Runtime',
+      align: 'right',
+      cell: (session) => {
+        const seconds = sessionRuntimeSeconds(session)
+        return (
+          <div className="font-mono text-xs">
+            <div className="text-foreground">
+              {formatCost(seconds * AGENT_RUNTIME_CENTS_PER_SECOND)}
+            </div>
+            <div className="text-muted-foreground">
+              {formatDuration(seconds)}
+            </div>
+          </div>
+        )
+      },
+    },
+    {
+      key: 'total',
+      header: 'Total',
+      align: 'right',
+      cell: (session) => {
+        const model =
+          billableModelUsage(session, usage?.billingStartedAt).providerCostUsd *
+          100 *
+          markup
+        const runtime =
+          sessionRuntimeSeconds(session) * AGENT_RUNTIME_CENTS_PER_SECOND
+        return (
+          <span className="text-foreground font-mono text-xs font-medium">
+            {formatCost(model + runtime)}
+          </span>
+        )
+      },
+    },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ModelUsageCard usage={usage} />
+        <Panel className="p-6">
+          <h2 className="text-sm font-semibold">Agent runtime usage</h2>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-foreground font-mono text-3xl font-semibold">
+              {formatCost(runtimeCostCents)}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {formatDuration(runtimeSeconds)} in recent sessions
+            </span>
+          </div>
+          <p className="text-muted-foreground mt-2 text-sm">
+            Runtime is billed per second at the serverless-agent resource rate.
+          </p>
+        </Panel>
+      </div>
+
+      <Panel className="overflow-hidden">
+        <div className="px-6 pt-6">
+          <h2 className="text-sm font-semibold">Usage by agent session</h2>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Recent serverless-agent sessions, split into model and runtime cost.
+            Organization totals remain the billing ledger of record.
+          </p>
+        </div>
+        <div className="mt-3">
+          <ResourceTable
+            columns={columns}
+            rows={rows}
+            rowKey={(session) => session.id}
+            loading={isLoading}
+            empty={
+              <EmptyState title="No serverless-agent usage to show yet." />
+            }
+          />
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
 function AutoTopupCard({
   current,
   hasToppedUp,
@@ -534,15 +1018,18 @@ function AutoTopupCard({
     enabled?: boolean
     threshold?: number
     quantity?: number
+    budget?: number
   }>({})
   const enabled = draft.enabled ?? current?.enabled ?? false
   const threshold = draft.threshold ?? current?.threshold ?? 5
   const quantity = draft.quantity ?? current?.quantity ?? 25
+  const budget = draft.budget ?? current?.budget ?? 100
   const [saved, markSaved] = useTransientFlag(3000)
   const [confirm, setConfirm] = useState(false)
 
   const mutation = useMutation({
-    mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
+    mutationFn: () =>
+      setAutumnAutoTopup({ enabled, threshold, quantity, budget }),
     onSuccess: (data) => {
       setConfirm(false)
       if (data?.url) {
@@ -558,7 +1045,12 @@ function AutoTopupCard({
 
   // Saving only charges when enabling WITHOUT a card on file. Gate that one path.
   const willCharge = enabled && !hasToppedUp
-  const onSave = () => (willCharge ? setConfirm(true) : mutation.mutate())
+  const validBudget = budget >= quantity && budget % quantity === 0
+  const onSave = () => {
+    if (enabled && !validBudget) return
+    if (willCharge) setConfirm(true)
+    else mutation.mutate()
+  }
 
   return (
     <Panel className="p-6">
@@ -625,13 +1117,42 @@ function AutoTopupCard({
               />
             </div>
           </Field>
+          <Field label="Monthly budget" htmlFor="budget">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-sm">$</span>
+              <Input
+                id="budget"
+                type="number"
+                min={quantity}
+                step={quantity}
+                value={budget}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    budget: Math.max(
+                      0,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+          </Field>
         </div>
+      ) : null}
+
+      {enabled && !validBudget ? (
+        <p className="text-status-error mt-3 text-xs">
+          Monthly budget must be at least ${quantity} and a whole multiple of
+          the ${quantity} top-up amount.
+        </p>
       ) : null}
 
       <div className="mt-4">
         <Button
           variant="outline"
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || (enabled && !validBudget)}
           onClick={onSave}
         >
           {mutation.isPending ? 'Saving…' : saved ? 'Saved' : 'Save'}
@@ -649,7 +1170,7 @@ function AutoTopupCard({
         open={confirm}
         onOpenChange={(o) => !o && setConfirm(false)}
         title="Enable automatic top-up"
-        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}.`}
+        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}, up to $${budget} per month.`}
         confirmLabel={`Charge $${quantity} & enable`}
         pending={mutation.isPending}
         onConfirm={() => mutation.mutate()}

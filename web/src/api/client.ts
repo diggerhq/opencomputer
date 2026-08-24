@@ -25,6 +25,8 @@ export type {
   BillingState,
   AutumnAutoTopup,
   AutumnBilling,
+  AgentSessionUsage,
+  AgentSessionUsageRow,
   StripeInvoice,
   SandboxUsageRow,
   SandboxUsage,
@@ -441,6 +443,13 @@ export const redeemPromoCode = (code: string) =>
 export const getAutumnBilling = () =>
   apiFetch('/billing/autumn', {}, S.AutumnBillingSchema)
 
+export const getAgentSessionUsage = (limit = 50) =>
+  apiFetch(
+    `/managed-agents/billing/sessions?limit=${limit}`,
+    {},
+    S.AgentSessionUsageSchema,
+  )
+
 // url is non-null → redirect to a hosted Stripe flow (no card yet); null → the
 // existing card was charged server-side, so just refresh the balance.
 export const autumnTopup = (credits: number) =>
@@ -455,6 +464,12 @@ export const autumnSubscribeConcurrency = (plan: string) =>
     body: JSON.stringify({ plan }),
   })
 
+export const autumnSubscribeUsagePlan = (plan: 'pro' | 'max') =>
+  apiFetch<{ url: string | null }>('/billing/autumn/plan', {
+    method: 'POST',
+    body: JSON.stringify({ plan }),
+  })
+
 // Open Autumn's Stripe-hosted billing portal to manage the saved card + invoices.
 export const autumnBillingPortal = () =>
   apiFetch<{ url: string }>('/billing/autumn/portal', { method: 'POST' })
@@ -465,6 +480,7 @@ export const setAutumnAutoTopup = (cfg: {
   enabled: boolean
   threshold: number
   quantity: number
+  budget: number
 }) =>
   apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
     method: 'POST',

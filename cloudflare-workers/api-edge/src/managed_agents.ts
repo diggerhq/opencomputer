@@ -120,6 +120,11 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     }
   } else if (upstream.status === 429) {
     message = "Too many agent requests. Try again shortly.";
+  } else if (upstream.status === 402) {
+    message =
+      backendCode === "insufficient_credits"
+        ? "Insufficient prepaid credits. Top up or enable automatic top-up."
+        : "The agent request requires additional prepaid credits.";
   } else if (upstream.status >= 500) {
     message = "The agent service is temporarily unavailable.";
   }
@@ -644,6 +649,9 @@ function publicSuccessBody(
       duplicate: body.duplicate,
     };
   }
+  if (method === "GET" && suffix === "/billing/sessions") {
+    return stripPrivateValues(body);
+  }
   if (method === "POST" && /\/suspend$/.test(suffix)) {
     return {
       id: body.id,
@@ -859,6 +867,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (suffix.startsWith("/openrouter/")) return true;
   if (method === "POST" && suffix === "/sessions") return true;
   if (method === "GET" && suffix === "/sessions") return true;
+  if (method === "GET" && suffix === "/billing/sessions") return true;
   if (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;

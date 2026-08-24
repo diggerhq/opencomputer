@@ -19,10 +19,12 @@
 
 import {
   autumnPurchase,
+  autumnUsagePlanPurchase,
   autumnTopUpCharge,
   autumnAttach,
   autumnHasToppedUp,
   syncAutumnToD1,
+  summarizeAutumnCreditBalance,
   autumnSetAutoTopup,
   autumnOpenCustomerPortal,
 } from "./autumn_webhook";
@@ -33,6 +35,7 @@ import {
 } from "./agent_security_notifications";
 import { createAPIKey } from "./api_keys";
 import { proxyManagedAgents } from "./managed_agents";
+import { enableManagedBilling } from "./model_billing";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -70,6 +73,10 @@ export interface DashboardEnv {
   // never receives the backend URL or assertion secret.
   MANAGED_AGENTS_API_URL?: string;
   OC_MANAGED_AGENTS_SECRET?: string;
+  OPENROUTER_PROVISIONING_KEY: string;
+  OPENROUTER_BASE_URL?: string;
+  OPENROUTER_MARKUP_BPS?: string;
+  OC_MANAGED_CRED_HMAC_SECRET: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -955,6 +962,20 @@ export async function handleDashboard(
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
+    if (sub === "/managed-agents/sessions" && method === "POST") {
+      try {
+        const billing = await enableManagedBilling(env, caller.orgID);
+        if (billing.status !== "active") {
+          return json({ error: "managed model billing is unavailable" }, 503);
+        }
+      } catch (error) {
+        console.error(
+          `managed-agents: model billing admission failed org=${caller.orgID}`,
+          error,
+        );
+        return json({ error: "managed model billing is unavailable" }, 503);
+      }
+    }
     return proxyManagedAgents(
       req,
       env,
@@ -1238,6 +1259,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/topup" && method === "POST") {
     return handleAutumnTopup(req, env, caller);
   }
+  if (sub === "/billing/autumn/plan" && method === "POST") {
+    return handleAutumnUsagePlan(req, env, caller);
+  }
   if (sub === "/billing/autumn/concurrency" && method === "POST") {
     return handleAutumnConcurrency(req, env, caller);
   }
@@ -1505,6 +1529,12 @@ const AUTUMN_CONCURRENCY_PRODUCTS: Record<string, number> = {
   concurrency_pro_plus_plus: 1000,
 };
 
+const AUTUMN_USAGE_PLANS: Record<string, number> = {
+  base: 0,
+  pro: 1,
+  max: 2,
+};
+
 // GET /api/dashboard/billing/autumn — prepaid credit balance + concurrency plan.
 // Re-syncs Autumn → D1 on the way (this is the checkout-return / page-view resume
 // trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
@@ -1521,13 +1551,20 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
 
   // The active concurrency plan = the highest non-base plan the customer holds.
   let concurrencyPlan = "base";
+  let usagePlan = "base";
   let best = 0;
+  let bestUsagePlan = 0;
   for (const s of r.customer.subscriptions ?? []) {
     if (s.status && s.status !== "active") continue;
     const v = AUTUMN_CONCURRENCY_PRODUCTS[s.plan_id];
     if (v !== undefined && v > best) {
       best = v;
       concurrencyPlan = s.plan_id;
+    }
+    const usageRank = AUTUMN_USAGE_PLANS[s.plan_id];
+    if (usageRank !== undefined && usageRank >= bestUsagePlan) {
+      bestUsagePlan = usageRank;
+      usagePlan = s.plan_id;
     }
   }
 
@@ -1537,12 +1574,15 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   // so the UI uses it to tell whether enabling auto-recharge will run a first
   // recharge or just save. Free — the customer is already loaded above.
   const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
+  const hasPaidSubscription = usagePlan === "pro" || usagePlan === "max";
+  const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
 
   const model = await env.OPENCOMPUTER_DB.prepare(
     `SELECT
        o.model_billing_status AS status,
        o.model_markup_bps AS markup_bps,
        COUNT(CASE WHEN k.status = 'active' THEN 1 END) AS active_key_count,
+       MIN(k.created_at) AS billing_started_at,
        COALESCE(SUM(k.committed_micro), 0) AS committed_micro
      FROM orgs o
      LEFT JOIN managed_model_keys k
@@ -1554,20 +1594,52 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     status: string;
     markup_bps: number;
     active_key_count: number;
+    billing_started_at: number | null;
     committed_micro: number;
   }>();
   const modelStatus = model?.status ?? "off";
   const modelMarkupBps = model?.markup_bps ?? 0;
   const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
   const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
+  const creditsRemainingCents = Math.max(0, Math.round(r.creditsRemaining * 100));
+  const planRemainingCents = Math.min(
+    creditsRemainingCents,
+    Math.round(creditBreakdown.planRemaining * 100),
+  );
+  const topupRemainingCents = Math.min(
+    creditsRemainingCents - planRemainingCents,
+    Math.round(creditBreakdown.topupRemaining * 100),
+  );
 
   return json({
-    creditsRemainingCents: Math.round(r.creditsRemaining * 100),
+    creditsRemainingCents,
+    creditBreakdown: {
+      available: creditBreakdown.available,
+      planRemainingCents,
+      topupRemainingCents,
+      otherRemainingCents:
+        creditsRemainingCents - planRemainingCents - topupRemainingCents,
+      planResetsAt: creditBreakdown.planResetsAt == null
+        ? null
+        : new Date(creditBreakdown.planResetsAt).toISOString(),
+    },
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
+    usagePlan,
     isHalted: r.halted,
     hasToppedUp,
-    autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
+    hasPaidSubscription,
+    autoTopup: at
+      ? {
+          enabled: at.enabled,
+          threshold: at.threshold,
+          quantity: at.quantity,
+          budget:
+            at.purchase_limit?.interval === "month"
+              ? at.purchase_limit.limit * at.quantity
+              : null,
+        }
+      : null,
     modelUsage: {
       enabled: modelStatus === "active",
       status: modelStatus,
@@ -1575,17 +1647,51 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       providerSpendCents: modelProviderSpendCents,
       billedCreditsCents: modelBilledCreditsCents,
       activeKeyCount: model?.active_key_count ?? 0,
+      billingStartedAt:
+        model?.billing_started_at != null
+          ? new Date(Number(model.billing_started_at) * 1_000).toISOString()
+          : null,
     },
   });
 }
 
-// POST /api/dashboard/billing/autumn/auto-topup { enabled, threshold, quantity }
-// — configure automatic credit recharge. threshold/quantity are in credits ($1
-// each). A saved payment method is required for the charge to succeed; the
-// config itself persists regardless.
+// POST /api/dashboard/billing/autumn/plan { plan } — subscribe to or switch
+// between the recurring Pro and Max shared-credit plans. Usage remains the
+// automatic fallback when a paid subscription is cancelled in Stripe.
+async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { plan?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const plan = body.plan ?? "";
+  if (plan !== "pro" && plan !== "max") {
+    return json({ error: `unknown usage plan '${plan}'` }, 400);
+  }
+  const origin = new URL(req.url).origin;
+  try {
+    const co = await autumnUsagePlanPurchase(env, {
+      customerId: caller.orgID,
+      planId: plan,
+      successUrl: `${origin}/billing?usage-plan=${plan}`,
+    });
+    return json({ url: co.url });
+  } catch (e) {
+    console.error("billing/autumn plan:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
+}
+
+// POST /api/dashboard/billing/autumn/auto-topup
+// { enabled, threshold, quantity, budget } — configure automatic credit
+// recharge. Monetary values are integer credits ($1 each). Autumn expresses the
+// hard monthly budget as a purchase count, so budget must be a whole multiple of
+// quantity. A saved payment method is required for charges to succeed.
 async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
-  let body: { enabled?: boolean; threshold?: number; quantity?: number };
+  let body: { enabled?: boolean; threshold?: number; quantity?: number; budget?: number };
   try {
     body = await req.json();
   } catch {
@@ -1594,11 +1700,24 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
   const enabled = !!body.enabled;
   const threshold = Math.floor(body.threshold ?? 0);
   const quantity = Math.floor(body.quantity ?? 0);
-  if (enabled && (threshold < 0 || quantity < 1)) {
-    return json({ error: "threshold ≥ 0 and quantity ≥ 1 required when enabling" }, 400);
+  const budget = Math.floor(body.budget ?? 0);
+  if (
+    enabled &&
+    (!Number.isFinite(threshold) ||
+      threshold < 0 ||
+      !Number.isFinite(quantity) ||
+      quantity < 1 ||
+      !Number.isFinite(budget) ||
+      budget < quantity ||
+      budget % quantity !== 0)
+  ) {
+    return json(
+      { error: "threshold ≥ 0, quantity ≥ 1, and a monthly budget divisible by quantity are required" },
+      400,
+    );
   }
   try {
-    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity });
+    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity, budget });
 
     // Auto-recharge is armed once the customer has charged a top-up (a
     // saved-but-never-charged card is unarmed). If they've already topped up, just

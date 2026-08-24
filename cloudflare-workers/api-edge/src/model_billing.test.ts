@@ -21,6 +21,7 @@ interface OrgRow {
   billing_provider: string;
   model_billing_status: string;
   model_markup_bps: number;
+  is_halted?: number;
 }
 
 class FakeDb {
@@ -228,6 +229,20 @@ describe("openrouter client", () => {
 });
 
 describe("enableManagedBilling state machine", () => {
+  it("returns halted before provisioning or calling a provider", async () => {
+    const db = new FakeDb();
+    const orgId = seedOrg(db, { is_halted: 1 });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(enableManagedBilling(makeEnv(db), orgId)).resolves.toEqual({
+      status: "halted",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(db.keys).toHaveLength(0);
+    expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
+  });
+
   it("off → active: mints key, binds credential, flips org", async () => {
     const db = new FakeDb();
     const orgId = seedOrg(db);

@@ -136,7 +136,7 @@ describe("managed agents proxy", () => {
   });
 
   it("claims a channel grant and redirects to the provider", async () => {
-    const fetchSpy = vi.fn(async () =>
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
       Response.json({
         authorizationUrl: "https://connect.example.test/authorize",
       }),
@@ -1127,6 +1127,58 @@ describe("managed agents proxy", () => {
       "The agent service is temporarily unavailable.",
     );
     expect(JSON.stringify(body)).not.toMatch(/blue|lambda|microvm/i);
+  });
+
+  it("exposes durable per-session billing attribution", async () => {
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
+      Response.json({
+        sessions: [
+          {
+            id: "session-1",
+            agentId: "reviewer",
+            deploymentId: "reviewer:digest",
+            source: "schedule",
+            status: "idle",
+            title: "Review stale flags",
+            createdAt: "2026-08-22T00:00:00.000Z",
+            updatedAt: "2026-08-22T00:01:00.000Z",
+            modelCalls: 2,
+            modelProviderCostUsd: 0.0123,
+            modelUsage: [
+              { timestamp: "2026-08-22T00:00:30.000Z", costUsd: 0.0123 },
+            ],
+            runtimeSecondsByTier: { "2gb_1vcpu": 40 },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/dashboard/managed-agents/billing/sessions?limit=100",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/dashboard/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      sessions: [
+        {
+          id: "session-1",
+          modelProviderCostUsd: 0.0123,
+          runtimeSecondsByTier: { "2gb_1vcpu": 40 },
+        },
+      ],
+    });
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "https://managedagents.test/v1/billing/sessions?limit=100",
+    );
   });
 
   it("forwards explicit running-session input modes", async () => {

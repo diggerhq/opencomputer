@@ -35,6 +35,7 @@ export interface AutumnEnv extends AutumnSyncEnv {
   EVENT_SECRET: string;
   AUTUMN_WEBHOOK_SECRET: string;
   BROWSER_USAGE_HMAC_SECRET?: string;
+  AGENT_RUNTIME_USAGE_HMAC_SECRET?: string;
 }
 
 const DEFAULT_BASE_URL = "https://api.useautumn.com/v1";
@@ -67,6 +68,11 @@ export interface AutumnAutoTopup {
   enabled: boolean;
   threshold: number;
   quantity: number;
+  purchase_limit?: {
+    interval: "hour" | "day" | "week" | "month";
+    interval_count: number;
+    limit: number;
+  };
 }
 export interface AutumnCustomer {
   id: string;
@@ -76,8 +82,97 @@ export interface AutumnCustomer {
   // (autumnTopUpCharge), that's also when auto-recharge becomes armed. So it's our
   // "auto-recharge will fire" signal (Autumn exposes no payment-method field).
   purchases?: Array<{ plan_id: string }>;
-  balances?: Record<string, { remaining?: number }>;
+  balances?: Record<string, AutumnBalance>;
   billing_controls?: { auto_topups?: AutumnAutoTopup[] };
+}
+
+export interface AutumnBalanceBreakdown {
+  plan_id?: string | null;
+  remaining?: number;
+  reset?: {
+    interval?: string;
+    resets_at?: number | null;
+  } | null;
+}
+
+export interface AutumnBalance {
+  remaining?: number;
+  next_reset_at?: number | null;
+  breakdown?: AutumnBalanceBreakdown[];
+  rollovers?: Array<{
+    balance?: number;
+    expires_at?: number | null;
+  }>;
+}
+
+export interface AutumnCreditBalanceSummary {
+  available: boolean;
+  planRemaining: number;
+  topupRemaining: number;
+  otherRemaining: number;
+  planResetsAt: number | null;
+}
+
+const PLAN_CREDIT_GRANTS: Record<string, number> = {
+  base: 5,
+  pro: 200,
+  max: 2_000,
+};
+
+export function summarizeAutumnCreditBalance(
+  customer: AutumnCustomer,
+  usagePlan: string,
+): AutumnCreditBalanceSummary {
+  const balance = customer.balances?.[CREDITS_FEATURE_ID];
+  const totalRemaining = Math.max(0, balance?.remaining ?? 0);
+  const breakdown = balance?.breakdown;
+
+  if (!breakdown?.length) {
+    return {
+      available: false,
+      planRemaining: 0,
+      topupRemaining: 0,
+      otherRemaining: totalRemaining,
+      planResetsAt: null,
+    };
+  }
+
+  const planRows = breakdown.filter((row) => row.plan_id === usagePlan);
+  const planGrant = PLAN_CREDIT_GRANTS[usagePlan] ?? 0;
+  const rawPlanRemaining = planRows.reduce(
+    (sum, row) => sum + Math.max(0, row.remaining ?? 0),
+    0,
+  );
+  const rolloverRemaining = (balance?.rollovers ?? []).reduce(
+    (sum, rollover) => sum + Math.max(0, rollover.balance ?? 0),
+    0,
+  );
+  // Autumn includes rollover balances in the active entitlement's remaining
+  // amount. Remove those explicit rollovers before labeling the monthly bucket.
+  const planRemaining = Math.min(
+    Math.max(0, rawPlanRemaining - rolloverRemaining),
+    planGrant,
+  );
+  const topupRemaining = breakdown
+    .filter((row) => row.plan_id === "top_up")
+    .reduce((sum, row) => sum + Math.max(0, row.remaining ?? 0), 0);
+  const resetCandidates = planRows
+    .map((row) => row.reset?.resets_at)
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value),
+    );
+
+  return {
+    available: true,
+    planRemaining,
+    topupRemaining,
+    otherRemaining: Math.max(0, totalRemaining - planRemaining - topupRemaining),
+    planResetsAt:
+      resetCandidates.length > 0
+        ? Math.min(...resetCandidates)
+        : balance?.next_reset_at ?? null,
+  };
 }
 
 function json(body: unknown, status = 200): Response {
@@ -215,6 +310,82 @@ export async function browserUsageInternal(req: Request, env: AutumnEnv): Promis
   } catch (err) {
     console.error(`browser-usage: track failed org=${p.org_id} browser=${p.browser_id}`, err);
     return json({ error: "browser usage billing failed" }, 502);
+  }
+}
+
+// Managed-agent runtime usage arrives only after the session Durable Object
+// has finalized a bounded lease segment. The segment ID is the financial
+// idempotency key; authenticated organization and session attribution travel
+// with it, but only the fixed resource tier controls the Autumn feature.
+export async function agentRuntimeUsageInternal(
+  req: Request,
+  env: AutumnEnv,
+): Promise<Response> {
+  const rawBody = await req.text();
+  const ts = req.headers.get("X-Timestamp") ?? "";
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!ts || !sig) return json({ error: "missing signature headers" }, 400);
+  const tsNum = parseInt(ts, 10);
+  if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TOLERANCE_SEC) {
+    return json({ error: "timestamp out of window" }, 401);
+  }
+  const secret = env.AGENT_RUNTIME_USAGE_HMAC_SECRET;
+  if (!secret) return json({ error: "agent runtime usage billing is not configured" }, 503);
+  const url = new URL(req.url);
+  const expected = await hmacHex(secret, `${ts}.${url.pathname}.${rawBody}`);
+  if (!timingSafeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+
+  let p: {
+    org_id?: string;
+    project_id?: string;
+    environment?: string;
+    deployment_id?: string;
+    agent_id?: string;
+    session_id?: string;
+    microvm_id?: string;
+    resource_tier?: string;
+    quantity_seconds?: number;
+    idempotency_key?: string;
+  };
+  try {
+    p = JSON.parse(rawBody);
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  if (!p.org_id || !p.session_id || !p.deployment_id || !p.agent_id || !p.idempotency_key) {
+    return json(
+      { error: "org_id, session_id, deployment_id, agent_id, and idempotency_key required" },
+      400,
+    );
+  }
+  if (p.resource_tier !== "2gb_1vcpu") {
+    return json({ error: "unsupported resource_tier" }, 400);
+  }
+  if (!Number.isInteger(p.quantity_seconds) || Number(p.quantity_seconds) <= 0) {
+    return json({ error: "quantity_seconds must be a positive integer" }, 400);
+  }
+
+  try {
+    const remaining = await trackAutumnUsage(env, {
+      customerID: p.org_id,
+      featureID: "agent_runtime_2gb_1vcpu",
+      value: Number(p.quantity_seconds),
+      idempotencyKey: p.idempotency_key,
+    });
+    if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    return json({
+      ok: true,
+      billed: true,
+      org_id: p.org_id,
+      session_id: p.session_id,
+      remaining,
+    });
+  } catch (err) {
+    console.error(
+      `agent-runtime-usage: track failed org=${p.org_id} session=${p.session_id}`,
+      err,
+    );
+    return json({ error: "agent runtime usage billing failed" }, 502);
   }
 }
 
@@ -411,7 +582,11 @@ export async function trackAutumnUsage(
   const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
   const resp = await fetch(`${base}/track`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "Idempotency-Key": p.idempotencyKey,
+    },
     body: JSON.stringify({
       customer_id: p.customerID,
       feature_id: p.featureID,
@@ -497,9 +672,10 @@ export async function autumnAttach(
   }
 }
 
-// autumnPurchase buys a product (concurrency tier), handling both Autumn flows.
-// It gates the direct /attach on hasToppedUp — a real prior charge means a card
-// is RELIABLY on file. We deliberately do NOT use the /checkout `url` probe to
+// autumnPurchase buys a recurring plan or concurrency add-on, handling both
+// Autumn flows. It gates direct /attach on a prior top-up or paid subscription —
+// either is reliable evidence that a card is on file. We deliberately do NOT
+// use the /checkout `url` probe to
 // detect a card: it can spuriously return null for a CARDLESS org, which then
 // takes the attach path → Autumn returns checkout_created → autumnAttach throws
 // → 502 (the same failure we fixed for top-up via autumnTopUpCharge). So:
@@ -511,12 +687,64 @@ export async function autumnPurchase(
   env: AutumnApiEnv,
   params: { customerId: string; productId: string; options?: AutumnCheckoutOption[]; successUrl: string },
 ): Promise<{ url: string | null }> {
-  if (await autumnHasToppedUp(env, params.customerId)) {
+  const customer = await getAutumnCustomer(env, params.customerId);
+  const hasPaidSubscription = (customer?.subscriptions ?? []).some(
+    (subscription) =>
+      (subscription.plan_id === "pro" || subscription.plan_id === "max") &&
+      (!subscription.status || subscription.status === "active"),
+  );
+  const hasToppedUp = (customer?.purchases ?? []).some(
+    (purchase) => purchase.plan_id === "top_up",
+  );
+  if (hasToppedUp || hasPaidSubscription) {
     await autumnAttach(env, { customerId: params.customerId, productId: params.productId, options: params.options });
     return { url: null };
   }
   const co = await autumnCheckout(env, params);
   return { url: co.url };
+}
+
+// autumnUsagePlanPurchase uses Autumn's current billing.attach API for the
+// mutually-exclusive Usage / Pro / Max plan group. When a customer leaves the
+// free Usage plan, preserve only the remaining shared-credit balance from that
+// plan. Purchased top-ups are already independent balances and continue to
+// stack; paid-plan switches keep Autumn's normal replacement/proration rules.
+export async function autumnUsagePlanPurchase(
+  env: AutumnApiEnv,
+  params: { customerId: string; planId: "pro" | "max"; successUrl: string },
+): Promise<{ url: string | null }> {
+  const customer = await getAutumnCustomer(env, params.customerId);
+  const upgradingFromUsage = (customer?.subscriptions ?? []).some(
+    (subscription) =>
+      subscription.plan_id === "base" &&
+      (!subscription.status || subscription.status === "active"),
+  );
+  const body: Record<string, unknown> = {
+    customer_id: params.customerId,
+    plan_id: params.planId,
+    success_url: params.successUrl,
+    plan_schedule: "immediate",
+  };
+  if (upgradingFromUsage) {
+    body.carry_over_balances = {
+      enabled: true,
+      feature_ids: [CREDITS_FEATURE_ID],
+    };
+  }
+
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.attach`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "x-api-version": "2.3.0",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`autumn billing.attach ${resp.status}: ${await resp.text()}`);
+  const result = (await resp.json()) as { payment_url?: string | null };
+  return { url: result.payment_url ?? null };
 }
 
 // autumnSetupPayment creates a Stripe SETUP session that saves a card for future
@@ -604,17 +832,40 @@ export async function autumnHasToppedUp(env: AutumnApiEnv, customerId: string): 
 export async function autumnSetAutoTopup(
   env: AutumnApiEnv,
   customerID: string,
-  cfg: { enabled: boolean; threshold: number; quantity: number },
+  cfg: { enabled: boolean; threshold: number; quantity: number; budget: number },
 ): Promise<void> {
+  if (
+    cfg.enabled &&
+    (!Number.isInteger(cfg.threshold) ||
+      cfg.threshold < 0 ||
+      !Number.isInteger(cfg.quantity) ||
+      cfg.quantity < 1 ||
+      !Number.isInteger(cfg.budget) ||
+      cfg.budget < cfg.quantity ||
+      cfg.budget % cfg.quantity !== 0)
+  ) {
+    throw new Error("auto-topup requires integer threshold, quantity, and a monthly budget divisible by quantity");
+  }
   const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const autoTopup: Record<string, unknown> = {
+    feature_id: CREDITS_FEATURE_ID,
+    enabled: cfg.enabled,
+    threshold: cfg.threshold,
+    quantity: cfg.quantity,
+  };
+  if (cfg.enabled) {
+    autoTopup.purchase_limit = {
+      interval: "month",
+      interval_count: 1,
+      limit: cfg.budget / cfg.quantity,
+    };
+  }
   const resp = await fetch(`${base}/customers/${encodeURIComponent(customerID)}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
     body: JSON.stringify({
       billing_controls: {
-        auto_topups: [
-          { feature_id: CREDITS_FEATURE_ID, enabled: cfg.enabled, threshold: cfg.threshold, quantity: cfg.quantity },
-        ],
+        auto_topups: [autoTopup],
       },
     }),
   });

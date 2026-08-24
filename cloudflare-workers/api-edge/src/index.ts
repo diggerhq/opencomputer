@@ -53,6 +53,7 @@ import {
   autumnWebhook,
   autumnProjectInternal,
   autumnSetProviderInternal,
+  agentRuntimeUsageInternal,
   browserUsageInternal,
   selfHealHalt,
   createAutumnCustomer,
@@ -60,6 +61,10 @@ import {
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
+import {
+  enforceManagedAgentCreditGate,
+  insufficientManagedAgentCredits,
+} from "./managed_agent_credit_gate";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -94,6 +99,8 @@ export interface Env extends DashboardEnv {
   // HMAC secret used by Browser API to submit runtime usage. Falls back to
   // EVENT_SECRET in the handler when unset for compatibility during rollout.
   BROWSER_USAGE_HMAC_SECRET?: string;
+  // Dedicated HMAC secret for finalized managed-agent runtime segments.
+  AGENT_RUNTIME_USAGE_HMAC_SECRET?: string;
   // Shared with every CP via Infisical /shared/ → per-cell KV/SM. Used for
   // envelope encryption of secret_store_entries.encrypted_value. Matches
   // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
@@ -4228,6 +4235,10 @@ export default {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return browserUsageInternal(req, env);
     }
+    if (path === "/internal/agent-runtime-usage") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return agentRuntimeUsageInternal(req, env);
+    }
     if (path === AGENT_SECURITY_NOTIFICATION_PATH) {
       return receiveAgentSecurityNotification(req, env);
     }
@@ -4577,6 +4588,30 @@ export default {
       }
       const scopeError = provisionScopeGate(caller, path);
       if (scopeError) return scopeError;
+      if (path === "/api/managed-agents/sessions" && req.method === "POST") {
+        try {
+          const billing = await enableManagedBilling(env, caller.orgID);
+          if (billing.status === "halted") {
+            return insufficientManagedAgentCredits(req);
+          }
+          if (billing.status !== "active") {
+            return json({ error: "managed model billing is unavailable" }, 503);
+          }
+        } catch (error) {
+          console.error(
+            `managed-agents: model billing admission failed org=${caller.orgID}`,
+            error,
+          );
+          return json({ error: "managed model billing is unavailable" }, 503);
+        }
+      } else {
+        const creditError = await enforceManagedAgentCreditGate(
+          req,
+          env,
+          caller.orgID,
+        );
+        if (creditError) return creditError;
+      }
       return proxyManagedAgents(
         req,
         env,

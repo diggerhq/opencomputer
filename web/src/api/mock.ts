@@ -330,9 +330,11 @@ const autumn = {
   isHalted: false,
   creditsRemainingCents: 4210,
   concurrencyPlan: 'base',
+  usagePlan: 'base',
   maxConcurrentSandboxes: 5,
-  autoTopup: { enabled: false, threshold: 5, quantity: 25 },
+  autoTopup: { enabled: false, threshold: 5, quantity: 25, budget: 100 },
   hasToppedUp: true,
+  hasPaidSubscription: false,
   currency: 'usd',
 }
 
