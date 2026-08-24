@@ -4,7 +4,8 @@ import {
   type ManagedAgentLog,
   type ManagedSessionSnapshot,
 } from "./api.js";
-import { login, logout, openBrowser } from "./auth.js";
+import { login, logout } from "./auth.js";
+import { codexLogin } from "./codex-oauth.js";
 import { resolveConfig } from "./config.js";
 import {
   publishProjectDeployment,
@@ -755,20 +756,29 @@ export async function runCommand(
   if (command === "model-access") {
     const action = args.shift();
     if (action === "connect") {
-      // Starts the personal Codex subscription OAuth flow and opens the browser.
-      // No credential is accepted or stored locally.
+      // Local personal-Codex-subscription OAuth: open a localhost callback
+      // server, complete the flow in the user's browser, then relay the
+      // credential to OpenComputer as a connected subscription. Nothing secret
+      // is echoed or persisted locally.
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const receipt = await client.connectModelAccess({ provider: "openai" });
-      if (!openBrowser(receipt.authorize_url)) {
+      process.stdout.write(
+        "Opening a local callback and your browser to authorize your Codex subscription…\n",
+      );
+      const { credential, accountHint } = await codexLogin();
+      const connection = await client.relayModelAccess(receipt.connection.id, {
+        access_token: credential.access_token,
+        refresh_token: credential.refresh_token,
+        token_type: credential.token_type,
+        expires_at: credential.expires_at,
+      });
+      if (globals.json)
+        printJSON({ ...connection, external_account_hint: accountHint });
+      else {
         process.stdout.write(
-          `Open this URL to authorize your Codex subscription:\n${receipt.authorize_url}\n`,
-        );
-      } else {
-        process.stdout.write(
-          "Opening OpenAI to authorize your Codex subscription…\n",
+          `Connected Codex subscription as ${connection.label}; status ${connection.status}.\n`,
         );
       }
-      if (globals.json) printJSON(receipt);
       return;
     }
     if (action === "list" || action === "ls" || action === undefined) {

@@ -335,6 +335,28 @@ export class OpenComputerClient {
     });
   }
 
+  // Relays a credential the local CLI obtained through the authorized Codex
+  // OAuth flow into a connected subscription (encrypted custody server-side).
+  relayModelAccess(id: string, credential: {
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_at: number;
+  }) {
+    return this.request<ModelAccessConnection>(
+      `/api/managed-agents/model-access/connections/${encodeURIComponent(id)}/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          access_token: credential.access_token,
+          refresh_token: credential.refresh_token,
+          token_type: credential.token_type,
+          expires_at: credential.expires_at,
+        }),
+      },
+    );
+  }
+
   disconnectModelAccess(id: string) {
     return this.request<ModelAccessConnection>(
       `/api/managed-agents/model-access/connections/${encodeURIComponent(id)}`,
