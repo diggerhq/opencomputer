@@ -57,6 +57,34 @@ export interface ManagedSecretMetadata {
   updatedAt: string;
 }
 
+// Model access (work 011). The provider token is write-only; these shapes
+// carry only normalized metadata.
+export interface ModelAccessConnection {
+  id: string;
+  organizationId: string;
+  connectedByUserId: string;
+  provider: "anthropic" | "openai";
+  kind: "claude_subscription" | "codex_subscription";
+  label: string;
+  externalAccountHint?: string;
+  status: string;
+  checkedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ModelAccessBinding {
+  organizationId: string;
+  projectId: string;
+  environment: "development" | "production";
+  provider: "anthropic" | "openai";
+  connectionId: string;
+  enabled: boolean;
+  enabledByUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AgentRuntimeVariableMetadata {
   name: string;
   projectId: string;
@@ -282,6 +310,51 @@ export class OpenComputerClient {
     return this.request<void>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
       { method: "DELETE" },
+    );
+  }
+
+  // ── Model access (work 011) ──────────────────────────────────────────────
+  async modelAccessConnections(): Promise<ModelAccessConnection[]> {
+    const result = await this.request<{ data: ModelAccessConnection[] }>(
+      "/api/managed-agents/model-access/connections",
+    );
+    return result.data;
+  }
+
+  connectModelAccess(input: {
+    provider: "anthropic" | "openai";
+    token: string;
+    label?: string;
+  }) {
+    return this.request<ModelAccessConnection>(
+      "/api/managed-agents/model-access/connections",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  disconnectModelAccess(id: string) {
+    return this.request<ModelAccessConnection>(
+      `/api/managed-agents/model-access/connections/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async modelAccessBindings(projectId: string): Promise<ModelAccessBinding[]> {
+    const result = await this.request<{ data: ModelAccessBinding[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/model-access/bindings`,
+    );
+    return result.data;
+  }
+
+  putModelAccessBinding(input: {
+    projectId: string;
+    provider: "anthropic" | "openai";
+    environment: "development" | "production";
+    enabled: boolean;
+  }) {
+    return this.request<ModelAccessBinding>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-access/bindings/${input.provider}/${input.environment}`,
+      { method: "PUT", body: JSON.stringify({ enabled: input.enabled }) },
     );
   }
 

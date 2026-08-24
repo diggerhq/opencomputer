@@ -752,6 +752,103 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
+  if (command === "model-access") {
+    const action = args.shift();
+    // connect <provider> — write-only token via hidden prompt or stdin, never
+    // a command argument, and never echoed or persisted locally.
+    if (action === "connect") {
+      const provider = args.shift();
+      if (provider !== "claude" && provider !== "codex") {
+        throw new Error("Use `opencomputer model-access connect claude|codex`.");
+      }
+      if (provider === "claude") {
+        throw new Error(
+          "Claude subscription access is not yet enabled. Only Codex is available in this rollout.",
+        );
+      }
+      const label = option(args, "--label");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const token = await readSecretValue();
+      const connection = await client.connectModelAccess({
+        provider: "openai",
+        token,
+        ...(label ? { label } : {}),
+      });
+      if (globals.json) printJSON(connection);
+      else {
+        process.stdout.write(
+          `Connected ${connection.label} (${connection.provider}); status ${connection.status}.\n`,
+        );
+      }
+      return;
+    }
+    if (action === "list" || action === "ls" || action === undefined) {
+      const connections = await client.modelAccessConnections();
+      if (globals.json) printJSON(connections);
+      else if (!connections.length)
+        process.stdout.write("No model access connections.\n");
+      else {
+        for (const connection of connections) {
+          process.stdout.write(
+            `${connection.provider.padEnd(10)} ${connection.status.padEnd(18)} ` +
+              `${connection.label}${connection.externalAccountHint ? ` (${connection.externalAccountHint})` : ""}\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (action === "disconnect") {
+      const provider = args.shift();
+      if (provider !== "claude" && provider !== "codex") {
+        throw new Error(
+          "Use `opencomputer model-access disconnect claude|codex`.",
+        );
+      }
+      const apiProvider = provider === "claude" ? "anthropic" : "openai";
+      const connections = await client.modelAccessConnections();
+      const connection = connections.find((c) => c.provider === apiProvider);
+      if (!connection) throw new Error(`No ${provider} connection found.`);
+      const updated = await client.disconnectModelAccess(connection.id);
+      if (globals.json) printJSON(updated);
+      else process.stdout.write(`Disconnected ${connection.label}.\n`);
+      return;
+    }
+    if (action === "enable" || action === "disable") {
+      const provider = args.shift();
+      if (provider !== "claude" && provider !== "codex") {
+        throw new Error(
+          `Use \`opencomputer model-access ${action} claude|codex --project <project> --environment development|production\`.`,
+        );
+      }
+      const projectReference = option(args, "--project");
+      const environment = environmentOption(option(args, "--environment"));
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const project = await selectedProject(
+        client,
+        config,
+        projectReference,
+        !globals.json,
+      );
+      const apiProvider = provider === "claude" ? "anthropic" : "openai";
+      const binding = await client.putModelAccessBinding({
+        projectId: project.projectId,
+        provider: apiProvider,
+        environment,
+        enabled: action === "enable",
+      });
+      if (globals.json) printJSON(binding);
+      else {
+        process.stdout.write(
+          `${action === "enable" ? "Enabled" : "Disabled"} ${provider} for ${project.projectId} (${environment}).\n`,
+        );
+      }
+      return;
+    }
+    throw new Error(
+      "Use `opencomputer model-access connect|list|disconnect|enable|disable`.",
+    );
+  }
+
   if (command === "env") {
     const action = args.shift();
     const projectReference = option(args, "--project");

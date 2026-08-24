@@ -15,9 +15,14 @@ import {
   setCustomDomain,
   updateOrg,
   updateNavigationPreferences,
+  getModelAccessConnections,
+  connectModelAccess,
+  disconnectModelAccess,
+  validateModelAccessConnection,
   type NavigationPreferenceUpdate,
   type OrgInvitation,
   type OrgMember,
+  type ModelAccessConnection,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import {
@@ -171,6 +176,11 @@ export default function Settings() {
             />
           </div>
         </Panel>
+
+        {/* Model access (work 011) — connect an external Claude/Codex
+            subscription. Connection management is org-admin only; the raw
+            provider token is write-only and never shown. */}
+        <ModelAccessPanel canManage={user?.capabilities?.manageMembers !== false} />
 
         {/* Organization */}
         <Panel className="p-6">
@@ -409,6 +419,219 @@ function NavigationToggle({
         disabled={disabled}
         onCheckedChange={onCheckedChange}
       />
+    </div>
+  )
+}
+
+// Model access (work 011). One organization connection per provider. The
+// connect form accepts a write-only provider token; Codex is the only enabled
+// provider in this rollout, so the Claude action is shown disabled.
+function ModelAccessPanel({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const { data: connections, isLoading } = useQuery({
+    queryKey: ['model-access-connections'],
+    queryFn: getModelAccessConnections,
+  })
+  const [token, setToken] = useState('')
+  const [label, setLabel] = useState('')
+  const [confirmDisconnect, setConfirmDisconnect] = useState<string | null>(null)
+
+  const invalidate = () =>
+    void queryClient.invalidateQueries({
+      queryKey: ['model-access-connections'],
+    })
+
+  const connectMutation = useMutation({
+    mutationFn: () =>
+      connectModelAccess({
+        provider: 'openai',
+        token,
+        label: label.trim() || undefined,
+      }),
+    onSuccess: () => {
+      setToken('')
+      setLabel('')
+      invalidate()
+    },
+    onError: (e) => notifyError("Couldn't connect the subscription.", e),
+  })
+
+  const disconnectMutation = useMutation({
+    mutationFn: (id: string) => disconnectModelAccess(id),
+    onSuccess: invalidate,
+    onError: (e) => notifyError("Couldn't disconnect the subscription.", e),
+  })
+
+  const validateMutation = useMutation({
+    mutationFn: (id: string) => validateModelAccessConnection(id),
+    onSuccess: invalidate,
+    onError: (e) => notifyError("Couldn't validate the connection.", e),
+  })
+
+  const codex = connections?.find((c) => c.provider === 'openai')
+  const claude = connections?.find((c) => c.provider === 'anthropic')
+
+  return (
+    <Panel className="p-6 lg:col-span-2">
+      <div className="mb-5">
+        <PanelTitle>Model access</PanelTitle>
+        <PanelDescription className="mt-1">
+          Connect an external Claude or Codex subscription so eligible model
+          inference is billed by your subscription, not OpenComputer credits.
+          Runtime compute is still charged. Requires OpenComputer Pro or Max.
+        </PanelDescription>
+      </div>
+
+      {isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : (
+        <div className="space-y-6">
+          <ModelAccessConnectionRow
+            title="Codex subscription"
+            provider="openai"
+            connection={codex}
+            canManage={canManage}
+            onValidate={(id) => validateMutation.mutate(id)}
+            onDisconnect={(id) => setConfirmDisconnect(id)}
+            validating={validateMutation.isPending}
+          />
+          <ModelAccessConnectionRow
+            title="Claude subscription"
+            provider="anthropic"
+            connection={claude}
+            canManage={false}
+            disabledReason="Claude subscription access is not yet enabled."
+            onValidate={() => {}}
+            onDisconnect={() => {}}
+            validating={false}
+          />
+
+          {canManage && !codex ? (
+            <form
+              className="space-y-3 border-t pt-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (token.trim()) connectMutation.mutate()
+              }}
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field>
+                  <Label htmlFor="ma-label">Label (optional)</Label>
+                  <Input
+                    id="ma-label"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="Codex workspace"
+                  />
+                </Field>
+                <Field>
+                  <Label htmlFor="ma-token">Codex access token</Label>
+                  <Input
+                    id="ma-token"
+                    type="password"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder="Paste the workspace access token"
+                    autoComplete="off"
+                  />
+                </Field>
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!token.trim() || connectMutation.isPending}
+              >
+                {connectMutation.isPending
+                  ? 'Connecting…'
+                  : 'Connect Codex subscription'}
+              </Button>
+            </form>
+          ) : null}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmDisconnect !== null}
+        onOpenChange={(open) => !open && setConfirmDisconnect(null)}
+        title="Disconnect subscription?"
+        description="This revokes the stored credential and returns affected projects to Managed usage-based inference. This cannot be undone."
+        confirmLabel="Disconnect"
+        onConfirm={() => {
+          if (confirmDisconnect) disconnectMutation.mutate(confirmDisconnect)
+          setConfirmDisconnect(null)
+        }}
+      />
+    </Panel>
+  )
+}
+
+function ModelAccessConnectionRow({
+  title,
+  connection,
+  canManage,
+  disabledReason,
+  onValidate,
+  onDisconnect,
+  validating,
+}: {
+  title: string
+  provider: 'anthropic' | 'openai'
+  connection: ModelAccessConnection | undefined
+  canManage: boolean
+  disabledReason?: string
+  onValidate: (id: string) => void
+  onDisconnect: (id: string) => void
+  validating: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b pb-4 last:border-0 last:pb-0">
+      <div>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{title}</span>
+          {connection ? (
+            <StatusBadge
+              status={connection.status === 'connected' ? 'running' : 'pending'}
+              label={connection.status.replace(/_/g, ' ')}
+            />
+          ) : (
+            <StatusBadge status="stopped" label="Not connected" />
+          )}
+        </div>
+        {connection ? (
+          <p className="text-muted-foreground mt-1 text-sm">
+            {connection.label}
+            {connection.external_account_hint
+              ? ` · ${connection.external_account_hint}`
+              : ''}
+            {connection.checked_at
+              ? ` · checked ${new Date(connection.checked_at).toLocaleDateString()}`
+              : ''}
+          </p>
+        ) : (
+          <p className="text-muted-foreground mt-1 text-sm">
+            {disabledReason ?? 'No connection configured.'}
+          </p>
+        )}
+      </div>
+      {connection && canManage ? (
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={validating}
+            onClick={() => onValidate(connection.id)}
+          >
+            Revalidate
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onDisconnect(connection.id)}
+          >
+            Disconnect
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }
