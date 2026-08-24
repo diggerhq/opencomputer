@@ -25,6 +25,7 @@ describe('managed agents navigation', () => {
       'Schedules',
       'Webhooks',
       'Secrets',
+      'BYOK',
       'Debug playground',
     ])
     expect(nav[1]?.items[nav[1].items.length - 1]?.to).toBe(

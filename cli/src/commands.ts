@@ -36,6 +36,10 @@ export interface GlobalOptions {
   verbose?: boolean;
 }
 
+export function deploymentAlias(requestedAlias?: string): string {
+  return requestedAlias ?? "development";
+}
+
 function printJSON(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -73,6 +77,19 @@ function environmentOption(
   if (!value || value === "development") return "development";
   if (value === "production") return "production";
   throw new Error("--environment must be development or production");
+}
+
+function modelAccessEnvironments(
+  value: string | undefined,
+): Array<"development" | "production"> | undefined {
+  if (value === undefined) return undefined;
+  if (value === "development" || value === "production") return [value];
+  if (value === "both") return ["development", "production"];
+  throw new Error("--environment must be development, production, or both");
+}
+
+function consumeCodexProvider(args: string[]): void {
+  if (args[0] === "codex") args.shift();
 }
 
 async function readSecretValue(): Promise<string> {
@@ -512,12 +529,16 @@ export async function runCommand(
           `Directory: ${initialized.root}\n` +
           `Project:   choose or create one on the first watched deployment\n` +
           `Agents:    opencomputer/\n` +
-          (spa ? `Web app:   src/ (separate lifecycle)\n\n` : `App:       agent only\n\n`) +
+          (spa
+            ? `Web app:   src/ (separate lifecycle)\n\n`
+            : `App:       agent only\n\n`) +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
           `  npm run deploy -- --watch  # deploy changes to Development\n` +
-          (spa ? `  npm run dev:web             # optional local web app\n` : ""),
+          (spa
+            ? `  npm run dev:web             # optional local web app\n`
+            : ""),
       );
     }
     return;
@@ -588,7 +609,7 @@ export async function runCommand(
     if (project || createProjectName) {
       throw new Error("--project and --create-project require --watch");
     }
-    const alias = requestedAlias ?? "production";
+    const alias = deploymentAlias(requestedAlias);
     const binding = await ensureProjectBinding(client, config, root, {
       interactive: !globals.json,
       select: true,
@@ -760,7 +781,23 @@ export async function runCommand(
       // server, complete the flow in the user's browser, then relay the
       // credential to OpenComputer as a connected subscription. Nothing secret
       // is echoed or persisted locally.
+      consumeCodexProvider(args);
+      const projectReference = option(args, "--project");
+      const environments = modelAccessEnvironments(
+        option(args, "--environment"),
+      );
+      if (projectReference && !environments) {
+        throw new Error(
+          "--project requires --environment development, production, or both",
+        );
+      }
+      if (!projectReference && environments) {
+        throw new Error("--environment requires --project <id|slug>");
+      }
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const project = projectReference
+        ? await selectedProject(client, config, projectReference, false)
+        : undefined;
       const receipt = await client.connectModelAccess({ provider: "openai" });
       process.stdout.write(
         "Opening a local callback and your browser to authorize your Codex subscription…\n",
@@ -772,12 +809,33 @@ export async function runCommand(
         token_type: credential.token_type,
         expires_at: credential.expires_at,
       });
+      const bindings = project
+        ? await Promise.all(
+            (environments ?? []).map((environment) =>
+              client.putModelAccessBinding({
+                projectId: project.projectId,
+                provider: "openai",
+                environment,
+                enabled: true,
+              }),
+            ),
+          )
+        : [];
       if (globals.json)
-        printJSON({ ...connection, external_account_hint: accountHint });
+        printJSON({
+          ...connection,
+          external_account_hint: accountHint,
+          bindings,
+        });
       else {
         process.stdout.write(
           `Connected Codex subscription as ${connection.label}; status ${connection.status}.\n`,
         );
+        if (project && environments?.length) {
+          process.stdout.write(
+            `Enabled Codex for ${project.projectId} (${environments.join(" and ")}).\n`,
+          );
+        }
       }
       return;
     }
@@ -797,6 +855,8 @@ export async function runCommand(
       return;
     }
     if (action === "disconnect") {
+      consumeCodexProvider(args);
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const connections = await client.modelAccessConnections();
       const connection = connections.find((c) => c.provider === "openai");
       if (!connection) throw new Error("No Codex connection found.");
@@ -806,6 +866,7 @@ export async function runCommand(
       return;
     }
     if (action === "enable" || action === "disable") {
+      consumeCodexProvider(args);
       const projectReference = option(args, "--project");
       const environment = environmentOption(option(args, "--environment"));
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);

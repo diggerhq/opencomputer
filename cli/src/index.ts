@@ -64,7 +64,7 @@ Usage:
   opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer model-access connect codex
+  opencomputer model-access connect codex [--project <id|slug> --environment development|production|both]
   opencomputer model-access list
   opencomputer model-access disconnect codex
   opencomputer model-access enable codex --project <id|slug> --environment development|production
@@ -76,7 +76,7 @@ Usage:
   opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
   opencomputer webhooks remove <webhook-id> [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
-  opencomputer deploy [--alias <alias>] [--watch]
+  opencomputer deploy [--alias development|production] [--watch]
   opencomputer run <agent> <prompt> [--keep]
 
 Global options:

@@ -307,6 +307,7 @@ async function mintSandboxToken(
 interface Caller {
   orgID: string;
   userID: string | null;
+  role?: string;
   // Set only for act-as-org provisioning tokens (sessions-api). Least-privilege:
   // the dispatch gates these to sandbox + secret-store routes (provisionScopeGate).
   scope?: "sandbox-provision";
@@ -508,14 +509,28 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   }
 
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
+    `SELECT k.org_id, k.created_by, k.expires_at,
+            CASE WHEN m.role IN ('owner', 'admin') THEN 'admin' ELSE m.role END AS role
+       FROM api_keys k
+       LEFT JOIN org_memberships m
+         ON m.org_id = k.org_id AND m.user_id = k.created_by
+      WHERE k.key_hash = ?1`,
   )
     .bind(hash)
-    .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
+    .first<{
+      org_id: string;
+      created_by: string | null;
+      expires_at: number | null;
+      role: string | null;
+    }>();
   if (!row) return null; // never cache negatives — a freshly-created key must work at once
   if (row.expires_at && row.expires_at < nowSec) return null;
 
-  const caller: Caller = { orgID: row.org_id, userID: row.created_by };
+  const caller: Caller = {
+    orgID: row.org_id,
+    userID: row.created_by,
+    ...(row.role ? { role: row.role } : {}),
+  };
   if (authCache.size >= CACHE_MAX) authCache.clear();
   const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
   authCache.set(hash, entry);

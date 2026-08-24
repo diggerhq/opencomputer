@@ -99,6 +99,53 @@ const secretSchema = z.object({
 
 const secretsResponseSchema = z.object({ secrets: z.array(secretSchema) })
 
+const modelAccessConnectionSchema = z.object({
+  id: z.string(),
+  organizationId: z.string().optional(),
+  connectedByUserId: z.string().optional(),
+  provider: z.literal('openai'),
+  kind: z.literal('codex_subscription'),
+  label: z.string(),
+  externalAccountHint: z.string().nullish(),
+  status: z.enum([
+    'connecting',
+    'connected',
+    'reauth_required',
+    'provider_limited',
+    'plan_ineligible',
+    'revoked',
+    'unavailable',
+  ]),
+  checkedAt: z.string().nullish(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelAccessConnectionsResponseSchema = z.object({
+  data: z.array(modelAccessConnectionSchema),
+})
+
+const modelAccessConnectResponseSchema = z.object({
+  connection: modelAccessConnectionSchema,
+  status: z.literal('pending'),
+  authorize_url: z.string().url(),
+  expires_at: z.string(),
+})
+
+const modelAccessBindingSchema = z.object({
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  provider: z.literal('openai'),
+  connectionId: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelAccessBindingsResponseSchema = z.object({
+  data: z.array(modelAccessBindingSchema),
+})
+
 const runtimeVariableSchema = z.object({
   name: z.string(),
   projectId: z.string(),
@@ -377,6 +424,10 @@ export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
+export type ManagedModelAccessConnection = z.infer<
+  typeof modelAccessConnectionSchema
+>
+export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -417,6 +468,74 @@ export async function getManagedProject(projectId: string) {
     `/managed-agents/projects/${encodeURIComponent(projectId)}`,
     undefined,
     projectOverviewSchema,
+  )
+}
+
+export async function getManagedModelAccessConnections() {
+  return (
+    await apiFetch(
+      '/managed-agents/model-access/connections',
+      undefined,
+      modelAccessConnectionsResponseSchema,
+    )
+  ).data
+}
+
+export async function connectManagedModelAccess() {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    { method: 'POST', body: JSON.stringify({ provider: 'openai' }) },
+    modelAccessConnectResponseSchema,
+  )
+}
+
+export async function completeManagedModelAccess(
+  id: string,
+  code: string,
+  state: string,
+) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}/complete`,
+    { method: 'POST', body: JSON.stringify({ code, state }) },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function validateManagedModelAccessConnection(id: string) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}/validate`,
+    { method: 'POST' },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function disconnectManagedModelAccessConnection(id: string) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function getManagedModelAccessBindings(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/model-access/bindings`,
+      undefined,
+      modelAccessBindingsResponseSchema,
+    )
+  ).data
+}
+
+export async function putManagedModelAccessBinding(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  enabled: boolean
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-access/bindings/openai/${input.environment}`,
+    { method: 'PUT', body: JSON.stringify({ enabled: input.enabled }) },
+    modelAccessBindingSchema,
   )
 }
 

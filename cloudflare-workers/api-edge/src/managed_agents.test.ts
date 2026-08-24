@@ -23,6 +23,7 @@ describe("managed agents proxy", () => {
     const token = await mintManagedAgentsAssertion("test-secret", {
       orgID: "org_test",
       userID: "user_test",
+      role: "admin",
     });
     const payload = decodePayload(token);
 
@@ -32,8 +33,67 @@ describe("managed agents proxy", () => {
       sub: "org_test",
       org_id: "org_test",
       user_id: "user_test",
+      role: "admin",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("returns the public model-access OAuth receipt without custody fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          connection: {
+            id: "mac_test",
+            organizationId: "org_test",
+            connectedByUserId: "user_test",
+            provider: "openai",
+            kind: "codex_subscription",
+            label: "Codex subscription",
+            status: "connecting",
+            credentialCiphertext: "must-not-leak",
+            oauthCodeVerifier: "must-not-leak",
+          },
+          status: "pending",
+          authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+          expires_at: "2026-08-24T00:15:00.000Z",
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ provider: "openai" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      status: "pending",
+      authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+      connection: {
+        id: "mac_test",
+        organizationId: "org_test",
+        connectedByUserId: "user_test",
+        provider: "openai",
+        status: "connecting",
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(
+      /credentialCiphertext|oauthCodeVerifier|must-not-leak/,
+    );
   });
 
   it("forwards webhook text and payload without requiring a user API key", async () => {

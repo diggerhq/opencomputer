@@ -4,6 +4,7 @@ import {
   Boxes,
   CalendarClock,
   KeySquare,
+  KeyRound,
   Layers,
   MessagesSquare,
   Monitor,
@@ -85,6 +86,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/secrets`,
             label: 'Secrets',
             icon: KeySquare,
+          },
+          {
+            to: `${projectPath}/byok`,
+            label: 'BYOK',
+            icon: KeyRound,
           },
           {
             to: projectPath,

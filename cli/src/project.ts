@@ -1582,6 +1582,56 @@ function definedToolIds(source: string): string[] {
     .sort();
 }
 
+function staticModelSelections(
+  source: string,
+): Array<{ provider: string; model: string }> {
+  const file = ts.createSourceFile(
+    "agent.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const selections: Array<{ provider: string; model: string }> = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "useModel"
+    ) {
+      const value = node.arguments[0];
+      if (value && ts.isStringLiteralLike(value)) {
+        selections.push({ provider: "openrouter", model: value.text });
+      } else if (value && ts.isObjectLiteralExpression(value)) {
+        let provider: string | undefined;
+        let model: string | undefined;
+        for (const property of value.properties) {
+          if (!ts.isPropertyAssignment(property)) continue;
+          const name = ts.isIdentifier(property.name)
+            ? property.name.text
+            : ts.isStringLiteralLike(property.name)
+              ? property.name.text
+              : undefined;
+          if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
+          if (name === "provider") provider = property.initializer.text;
+          if (name === "model") model = property.initializer.text;
+        }
+        if (provider && model) selections.push({ provider, model });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return selections.filter(
+    (selection, index) =>
+      selections.findIndex(
+        (candidate) =>
+          candidate.provider === selection.provider &&
+          candidate.model === selection.model,
+      ) === index,
+  );
+}
+
 function agentApiRuntimeSource(): string {
   return `function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
@@ -1708,13 +1758,21 @@ the product or support surface presented to users.
 
 `,
   );
+  const declaredModels = staticModelSelections(agentSource);
   const openCodeConfig = resolve(root, "opencode.json");
-  if (await exists(openCodeConfig)) {
-    const parsed: unknown = JSON.parse(await readFile(openCodeConfig, "utf8"));
+  const hasOpenCodeConfig = await exists(openCodeConfig);
+  if (hasOpenCodeConfig || declaredModels.length === 1) {
+    const parsed: unknown = hasOpenCodeConfig
+      ? JSON.parse(await readFile(openCodeConfig, "utf8"))
+      : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("opencode.json must contain a JSON object");
     }
     const config = parsed as Record<string, unknown>;
+    const inferredModel =
+      declaredModels.length === 1
+        ? `${declaredModels[0]!.provider}/${declaredModels[0]!.model}`
+        : undefined;
     const configuredTools =
       config.tools &&
       typeof config.tools === "object" &&
@@ -1735,6 +1793,9 @@ the product or support surface presented to users.
       `${JSON.stringify(
         {
           ...config,
+          ...(config.model === undefined && inferredModel
+            ? { model: inferredModel }
+            : {}),
           tools: { ...configuredTools, question: !questionDenied },
           permission: {
             ...configuredPermission,
@@ -1937,6 +1998,7 @@ the product or support surface presented to users.
           ]),
         ].sort(),
         mcpServerDefinitions,
+        models: declaredModels,
       },
       null,
       2,

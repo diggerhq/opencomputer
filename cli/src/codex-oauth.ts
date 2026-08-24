@@ -91,39 +91,61 @@ export async function codexLogin(): Promise<{
 
 // Starts a temporary localhost callback server, opens the browser to the
 // authorize URL, and resolves the one-time authorization code.
-function exchangeCodeOnCallback(
+export function exchangeCodeOnCallback(
   authorizeUrl: string,
   expectedState: string,
   port: number,
+  launchBrowser: (url: string) => void = openBrowser,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", `http://localhost:${port}`);
       if (url.pathname !== CALLBACK_PATH) {
         res.writeHead(404).end();
         return;
       }
+      if (settled) {
+        res.writeHead(409, { connection: "close" }).end();
+        return;
+      }
+      settled = true;
+      const finish = (
+        status: number,
+        message: string,
+        result: { code: string } | { error: Error },
+      ): void => {
+        res.writeHead(status, {
+          "content-type": "text/plain",
+          connection: "close",
+        });
+        res.end(message, () => {
+          server.close((closeError) => {
+            if (closeError) reject(closeError);
+            else if ("code" in result) resolve(result.code);
+            else reject(result.error);
+          });
+          server.closeAllConnections();
+        });
+      };
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       if (!state || !secureEqual(state, expectedState)) {
-        res.writeHead(401, { "content-type": "text/plain" });
-        res.end("OAuth state mismatch. Please close this window and retry.");
-        reject(new Error("OAuth state mismatch"));
-        server.close();
+        finish(
+          401,
+          "OAuth state mismatch. Please close this window and retry.",
+          { error: new Error("OAuth state mismatch") },
+        );
         return;
       }
       if (!code) {
         const error = url.searchParams.get("error") ?? "missing code";
-        res.writeHead(400, { "content-type": "text/plain" });
-        res.end(`Authorization failed: ${error}`);
-        reject(new Error(`Authorization failed: ${error}`));
-        server.close();
+        finish(400, `Authorization failed: ${error}`, {
+          error: new Error(`Authorization failed: ${error}`),
+        });
         return;
       }
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("Authorized. You can close this window.");
-      server.close();
-      resolve(code);
+      finish(200, "Authorized. You can close this window.", { code });
     });
 
     server.on("error", (error) => {
@@ -131,7 +153,7 @@ function exchangeCodeOnCallback(
     });
 
     server.listen(port, "127.0.0.1", () => {
-      openBrowser(authorizeUrl);
+      launchBrowser(authorizeUrl);
     });
   });
 }

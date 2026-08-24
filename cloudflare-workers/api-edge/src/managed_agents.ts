@@ -6,6 +6,7 @@ export interface ManagedAgentsEnv {
 export interface ManagedAgentsCaller {
   orgID: string;
   userID: string | null;
+  role?: string;
 }
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
@@ -36,6 +37,7 @@ export async function mintManagedAgentsAssertion(
     exp: now + 120,
   };
   if (caller.userID) payload.user_id = caller.userID;
+  if (caller.role) payload.role = caller.role;
   const encoder = new TextEncoder();
   const signingInput =
     `${b64url(encoder.encode(JSON.stringify(header)))}.` +
@@ -218,6 +220,43 @@ function publicConnection(value: unknown): Record<string, unknown> {
     status: connection.status,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
+  };
+}
+
+function publicModelAccessConnection(
+  value: unknown,
+  includeAdminMetadata: boolean,
+): Record<string, unknown> {
+  const connection = record(value) ?? {};
+  return {
+    id: connection.id,
+    provider: connection.provider,
+    kind: connection.kind,
+    label: connection.label,
+    status: connection.status,
+    checkedAt: connection.checkedAt,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
+    ...(includeAdminMetadata
+      ? {
+          organizationId: connection.organizationId,
+          connectedByUserId: connection.connectedByUserId,
+          externalAccountHint: connection.externalAccountHint,
+        }
+      : {}),
+  };
+}
+
+function publicModelAccessBinding(value: unknown): Record<string, unknown> {
+  const binding = record(value) ?? {};
+  return {
+    projectId: binding.projectId,
+    environment: binding.environment,
+    provider: binding.provider,
+    connectionId: binding.connectionId,
+    enabled: binding.enabled,
+    createdAt: binding.createdAt,
+    updatedAt: binding.updatedAt,
   };
 }
 
@@ -427,6 +466,7 @@ function publicSuccessBody(
   suffix: string,
   value: unknown,
   publicOrigin?: string,
+  includeAdminMetadata = false,
 ): unknown {
   const body = record(value) ?? {};
   if (method === "GET" && suffix === "/agents") {
@@ -521,6 +561,48 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/me") {
     return stripPrivateValues(body);
+  }
+  if (method === "GET" && suffix === "/model-access/connections") {
+    return {
+      data: Array.isArray(body.data)
+        ? body.data.map((value) =>
+            publicModelAccessConnection(value, includeAdminMetadata),
+          )
+        : [],
+    };
+  }
+  if (method === "POST" && suffix === "/model-access/connections") {
+    return {
+      connection: publicModelAccessConnection(
+        body.connection,
+        includeAdminMetadata,
+      ),
+      status: body.status,
+      authorize_url: body.authorize_url,
+      expires_at: body.expires_at,
+    };
+  }
+  if (
+    (method === "POST" || method === "DELETE") &&
+    /^\/model-access\/connections\/[^/]+(\/validate|\/complete)?$/.test(suffix)
+  ) {
+    return publicModelAccessConnection(body, includeAdminMetadata);
+  }
+  if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/model-access\/bindings$/.test(suffix)
+  ) {
+    return {
+      data: Array.isArray(body.data)
+        ? body.data.map(publicModelAccessBinding)
+        : [],
+    };
+  }
+  if (
+    method === "PUT" &&
+    /^\/projects\/[^/]+\/model-access\/bindings\/[^/]+\/[^/]+$/.test(suffix)
+  ) {
+    return publicModelAccessBinding(body);
   }
   if (method === "POST" && suffix === "/deployments") {
     return publicDeployment(body);
@@ -674,6 +756,7 @@ async function publicSuccessResponse(
   method: string,
   suffix: string,
   publicOrigin?: string,
+  includeAdminMetadata = false,
 ): Promise<Response> {
   const value: unknown = await upstream.json();
   const headers = new Headers({ "content-type": "application/json" });
@@ -681,7 +764,15 @@ async function publicSuccessResponse(
   if (cacheControl) headers.set("cache-control", cacheControl);
   if (suffix.includes("/webhooks")) headers.set("cache-control", "no-store");
   return new Response(
-    JSON.stringify(publicSuccessBody(method, suffix, value, publicOrigin)),
+    JSON.stringify(
+      publicSuccessBody(
+        method,
+        suffix,
+        value,
+        publicOrigin,
+        includeAdminMetadata,
+      ),
+    ),
     {
       status: upstream.status,
       headers,
@@ -1208,6 +1299,7 @@ export async function proxyManagedAgents(
       request.method.toUpperCase(),
       suffix,
       requestURL.origin,
+      caller.role === "admin",
     );
   } catch (error) {
     console.error(
