@@ -1007,15 +1007,27 @@ export const getModelAccessConnections = () =>
     (r) => r.data,
   )
 
+// Starts the personal Codex subscription OAuth flow. Returns a pending intent
+// with an authorize_url the dashboard redirects to. No token is accepted here;
+// the provider credential never crosses the browser.
 export const connectModelAccess = (body: {
-  provider: 'anthropic' | 'openai'
-  token: string
+  provider: 'openai'
   label?: string
 }) =>
   apiFetch(
     '/v3/model-access/connections',
     { method: 'POST', body: JSON.stringify(body) },
     S.ModelAccessConnectResponseSchema,
+  )
+
+// Completes the OAuth callback (exchanged server-side at the private credential
+// boundary), returning the connected connection. The authorization code is a
+// one-time exchange value, not a stored credential.
+export const completeModelAccess = (id: string, code: string, state: string) =>
+  apiFetch(
+    `/v3/model-access/connections/${encodeURIComponent(id)}/complete`,
+    { method: 'POST', body: JSON.stringify({ code, state }) },
+    S.ModelAccessConnectionSchema,
   )
 
 // Re-validate the held credential against the provider (refresh entitlement /
@@ -1044,7 +1056,7 @@ export const getModelAccessBindings = (projectId: string) =>
 
 export const putModelAccessBinding = (
   projectId: string,
-  provider: 'anthropic' | 'openai',
+  provider: 'openai',
   environment: 'development' | 'production',
   enabled: boolean,
 ) =>
@@ -1056,7 +1068,7 @@ export const putModelAccessBinding = (
 
 export const deleteModelAccessBinding = (
   projectId: string,
-  provider: 'anthropic' | 'openai',
+  provider: 'openai',
   environment: 'development' | 'production',
 ) =>
   apiFetch<void>(

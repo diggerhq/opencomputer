@@ -64,7 +64,7 @@ Usage:
   opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer model-access connect codex [--label <label>]
+  opencomputer model-access connect codex
   opencomputer model-access list
   opencomputer model-access disconnect codex
   opencomputer model-access enable codex --project <id|slug> --environment development|production

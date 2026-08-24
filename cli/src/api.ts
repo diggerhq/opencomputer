@@ -63,8 +63,8 @@ export interface ModelAccessConnection {
   id: string;
   organizationId: string;
   connectedByUserId: string;
-  provider: "anthropic" | "openai";
-  kind: "claude_subscription" | "codex_subscription";
+  provider: "openai";
+  kind: "codex_subscription";
   label: string;
   externalAccountHint?: string;
   status: string;
@@ -77,7 +77,7 @@ export interface ModelAccessBinding {
   organizationId: string;
   projectId: string;
   environment: "development" | "production";
-  provider: "anthropic" | "openai";
+  provider: "openai";
   connectionId: string;
   enabled: boolean;
   enabledByUserId?: string;
@@ -321,15 +321,18 @@ export class OpenComputerClient {
     return result.data;
   }
 
-  connectModelAccess(input: {
-    provider: "anthropic" | "openai";
-    token: string;
-    label?: string;
-  }) {
-    return this.request<ModelAccessConnection>(
-      "/api/managed-agents/model-access/connections",
-      { method: "POST", body: JSON.stringify(input) },
-    );
+  // Starts the personal Codex subscription OAuth flow. No token is given or
+  // accepted; returns a pending intent with an authorize_url.
+  connectModelAccess(input: { provider: "openai"; label?: string }) {
+    return this.request<{
+      connection: ModelAccessConnection;
+      status: "pending";
+      authorize_url: string;
+      expires_at: string;
+    }>("/api/managed-agents/model-access/connections", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   disconnectModelAccess(id: string) {
@@ -348,7 +351,7 @@ export class OpenComputerClient {
 
   putModelAccessBinding(input: {
     projectId: string;
-    provider: "anthropic" | "openai";
+    provider: "openai";
     environment: "development" | "production";
     enabled: boolean;
   }) {

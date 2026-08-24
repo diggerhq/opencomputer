@@ -4,7 +4,7 @@ import {
   type ManagedAgentLog,
   type ManagedSessionSnapshot,
 } from "./api.js";
-import { login, logout } from "./auth.js";
+import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
 import {
   publishProjectDeployment,
@@ -754,32 +754,21 @@ export async function runCommand(
 
   if (command === "model-access") {
     const action = args.shift();
-    // connect <provider> — write-only token via hidden prompt or stdin, never
-    // a command argument, and never echoed or persisted locally.
     if (action === "connect") {
-      const provider = args.shift();
-      if (provider !== "claude" && provider !== "codex") {
-        throw new Error("Use `opencomputer model-access connect claude|codex`.");
-      }
-      if (provider === "claude") {
-        throw new Error(
-          "Claude subscription access is not yet enabled. Only Codex is available in this rollout.",
-        );
-      }
-      const label = option(args, "--label");
+      // Starts the personal Codex subscription OAuth flow and opens the browser.
+      // No credential is accepted or stored locally.
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const token = await readSecretValue();
-      const connection = await client.connectModelAccess({
-        provider: "openai",
-        token,
-        ...(label ? { label } : {}),
-      });
-      if (globals.json) printJSON(connection);
-      else {
+      const receipt = await client.connectModelAccess({ provider: "openai" });
+      if (!openBrowser(receipt.authorize_url)) {
         process.stdout.write(
-          `Connected ${connection.label} (${connection.provider}); status ${connection.status}.\n`,
+          `Open this URL to authorize your Codex subscription:\n${receipt.authorize_url}\n`,
+        );
+      } else {
+        process.stdout.write(
+          "Opening OpenAI to authorize your Codex subscription…\n",
         );
       }
+      if (globals.json) printJSON(receipt);
       return;
     }
     if (action === "list" || action === "ls" || action === undefined) {
@@ -798,28 +787,15 @@ export async function runCommand(
       return;
     }
     if (action === "disconnect") {
-      const provider = args.shift();
-      if (provider !== "claude" && provider !== "codex") {
-        throw new Error(
-          "Use `opencomputer model-access disconnect claude|codex`.",
-        );
-      }
-      const apiProvider = provider === "claude" ? "anthropic" : "openai";
       const connections = await client.modelAccessConnections();
-      const connection = connections.find((c) => c.provider === apiProvider);
-      if (!connection) throw new Error(`No ${provider} connection found.`);
+      const connection = connections.find((c) => c.provider === "openai");
+      if (!connection) throw new Error("No Codex connection found.");
       const updated = await client.disconnectModelAccess(connection.id);
       if (globals.json) printJSON(updated);
       else process.stdout.write(`Disconnected ${connection.label}.\n`);
       return;
     }
     if (action === "enable" || action === "disable") {
-      const provider = args.shift();
-      if (provider !== "claude" && provider !== "codex") {
-        throw new Error(
-          `Use \`opencomputer model-access ${action} claude|codex --project <project> --environment development|production\`.`,
-        );
-      }
       const projectReference = option(args, "--project");
       const environment = environmentOption(option(args, "--environment"));
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
@@ -829,17 +805,16 @@ export async function runCommand(
         projectReference,
         !globals.json,
       );
-      const apiProvider = provider === "claude" ? "anthropic" : "openai";
       const binding = await client.putModelAccessBinding({
         projectId: project.projectId,
-        provider: apiProvider,
+        provider: "openai",
         environment,
         enabled: action === "enable",
       });
       if (globals.json) printJSON(binding);
       else {
         process.stdout.write(
-          `${action === "enable" ? "Enabled" : "Disabled"} ${provider} for ${project.projectId} (${environment}).\n`,
+          `${action === "enable" ? "Enabled" : "Disabled"} codex for ${project.projectId} (${environment}).\n`,
         );
       }
       return;

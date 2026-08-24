@@ -864,8 +864,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
         /^\/channels(?:\/.*)?$/.test(suffix)))
   )
     return true;
-  // Model access (work 011): org-owned Claude/Codex subscription connections
-  // and their project-environment bindings.
+  // Model access (work 011): org-owned Codex subscription connections and their
+  // project-environment bindings.
   if (
     (method === "GET" || method === "POST") &&
     suffix === "/model-access/connections"
@@ -874,7 +874,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     (method === "POST" || method === "DELETE") &&
-    /^\/model-access\/connections\/[^/]+(\/validate)?$/.test(suffix)
+    /^\/model-access\/connections\/[^/]+(\/validate|\/complete)?$/.test(suffix)
   ) {
     return true;
   }

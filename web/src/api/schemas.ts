@@ -904,17 +904,17 @@ export const CredentialListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
-// ── Model access (work 011: bring-your-own Claude/Codex subscription) ────────
-// An organization-owned connection to an external provider subscription. The
-// raw provider token is write-only and never appears on this object; the API
-// returns only normalized metadata. At most one connection per provider per
-// organization is enforced server-side (unique (organizationId, provider)).
+// ── Model access (work 011: bring-your-own Codex subscription) ──────────────
+// An organization-owned connection to a Codex subscription. The provider token
+// is write-only and never appears on this object; the API returns only
+// normalized metadata. At most one Codex connection per organization is
+// enforced server-side (unique (organization_id, provider)).
 export const ModelAccessConnectionSchema = z.object({
   id: z.string(),
   organization_id: z.string(),
   connected_by_user_id: z.string(),
-  provider: z.enum(['anthropic', 'openai']),
-  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  provider: z.literal('openai'),
+  kind: z.literal('codex_subscription'),
   label: z.string(),
   external_account_hint: z.string().nullish(),
   status: z.enum([
@@ -937,23 +937,19 @@ export const ModelAccessConnectionListSchema = z.object({
   data: z.array(ModelAccessConnectionSchema),
 })
 
-// Connect/create: the provider token is write-only. `label` defaults server-side
-// when omitted. Returns the normalized connection (never the token).
+// Connect: starts the personal Codex subscription OAuth flow. Returns a pending
+// intent the dashboard redirects to, with the authorize_url. `label` is a
+// display override and defaults server-side.
 export const ModelAccessConnectRequestSchema = z.object({
-  provider: z.enum(['anthropic', 'openai']),
-  token: z.string(),
+  provider: z.literal('openai'),
   label: z.string().optional(),
 })
-export const ModelAccessConnectResponseSchema = z.union([
-  // Token flow: validated synchronously, connection is immediately connected.
-  ModelAccessConnectionSchema,
-  // OAuth/device flow (future): dashboard redirects to authorize_url.
-  z.object({
-    status: z.literal('pending'),
-    authorize_url: z.string(),
-    expires_at: z.string(),
-  }),
-])
+export const ModelAccessConnectResponseSchema = z.object({
+  connection: ModelAccessConnectionSchema,
+  status: z.literal('pending'),
+  authorize_url: z.string(),
+  expires_at: z.string(),
+})
 
 // A project-environment enablement of the single org connection for a provider.
 // One binding per (project, environment, provider). Created disabled by default.
@@ -961,7 +957,7 @@ export const ModelAccessBindingSchema = z.object({
   organization_id: z.string(),
   project_id: z.string(),
   environment: z.enum(['development', 'production']),
-  provider: z.enum(['anthropic', 'openai']),
+  provider: z.literal('openai'),
   connection_id: z.string(),
   enabled: z.boolean(),
   enabled_by_user_id: z.string().nullish(),
@@ -998,13 +994,11 @@ export const ModelAccessErrorSchema = z.object({
 export const EffectiveModelRouteSchema = z.object({
   requested: z.object({ provider: z.string(), model: z.string() }),
   effective: z.object({ provider: z.string(), model: z.string() }),
-  runtime: z.enum(['claude', 'codex']),
+  runtime: z.literal('codex'),
   access: z.object({
     type: z.enum(['managed', 'external_subscription']),
     connection_id: z.string().nullish(),
-    connection_kind: z
-      .enum(['claude_subscription', 'codex_subscription'])
-      .nullish(),
+    connection_kind: z.literal('codex_subscription').nullish(),
   }),
   fallback: z
     .object({
