@@ -99,9 +99,23 @@ jobs:
         working-directory: cloudflare-workers/api-edge
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          OC_MANAGED_CRED_HMAC_SECRET: ${{ secrets.OC_MANAGED_CRED_HMAC_SECRET }}
+          AGENT_RUNTIME_USAGE_HMAC_SECRET: ${{ secrets.AGENT_RUNTIME_USAGE_HMAC_SECRET }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
             echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
             exit 1
           fi
-          npx wrangler deploy -c wrangler.ci.toml
+          : "${OC_MANAGED_CRED_HMAC_SECRET:?missing OC_MANAGED_CRED_HMAC_SECRET}"
+          : "${AGENT_RUNTIME_USAGE_HMAC_SECRET:?missing AGENT_RUNTIME_USAGE_HMAC_SECRET}"
+          umask 077
+          jq -n \
+            --arg managedCredential "$OC_MANAGED_CRED_HMAC_SECRET" \
+            --arg runtimeUsage "$AGENT_RUNTIME_USAGE_HMAC_SECRET" \
+            '{OC_MANAGED_CRED_HMAC_SECRET: $managedCredential, AGENT_RUNTIME_USAGE_HMAC_SECRET: $runtimeUsage}' \
+            > "$RUNNER_TEMP/api-edge-secrets.json"
+          npx wrangler deploy \
+            -c wrangler.ci.toml \
+            --keep-vars \
+            --strict \
+            --secrets-file "$RUNNER_TEMP/api-edge-secrets.json"
