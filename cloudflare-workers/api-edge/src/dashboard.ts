@@ -396,10 +396,7 @@ async function handleMe(req: Request, env: DashboardEnv, caller: Caller): Promis
     name: user.name,
     orgId: caller.orgID,
     orgs,
-    // The legacy durable-session navigation is globally retired. Keep the
-    // response field for client compatibility, but never expose the stored
-    // preference as enabled.
-    durableSessionsEnabled: false,
+    durableSessionsEnabled: !!user.durable_sessions_enabled,
     infrastructureEnabled: !!user.infrastructure_enabled,
   });
 }
@@ -413,8 +410,8 @@ async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller
   if (body.durableSessionsEnabled !== undefined && typeof body.durableSessionsEnabled !== "boolean") {
     return json({ error: "durableSessionsEnabled must be a boolean" }, 400);
   }
-  if (body.durableSessionsEnabled === true) {
-    return json({ error: "durable session navigation is no longer available" }, 403);
+  if (body.durableSessionsEnabled !== undefined) {
+    return json({ error: "durable session navigation is managed by an administrator" }, 403);
   }
   if (body.infrastructureEnabled !== undefined && typeof body.infrastructureEnabled !== "boolean") {
     return json({ error: "infrastructureEnabled must be a boolean" }, 400);
