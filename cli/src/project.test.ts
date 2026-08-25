@@ -697,3 +697,56 @@ export default function Agent() {
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("the compiler packages agent source modules outside the tools directory", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-source-modules-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "config.ts"),
+      `import { defineConnection } from "@opencomputer/agent";
+
+export const github = defineConnection({
+  id: "fixture-github",
+  origin: "https://api.github.com",
+  methods: ["GET"],
+  pathPrefix: "/repos/opencomputer/example/",
+});
+export const repository = "opencomputer/example";
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { repository } from "./config.js";
+
+export default function Agent() {
+  return \`Review missing tests in \${repository}.\`;
+}
+`,
+    );
+
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    const artifact = JSON.parse(built.body.toString("utf8")) as {
+      files: Array<{ path: string }>;
+    };
+    assert.ok(artifact.files.some((file) => file.path === "config.js"));
+    assert.ok(built.connections.includes("fixture-github"));
+    assert.match(
+      await readFile(
+        resolve(initialized.agentRoot, ".opencomputer", "runtime", "config.js"),
+        "utf8",
+      ),
+      /opencomputer\/example/,
+    );
+    const packaged = await import(
+      `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "agent.js")).href}?test=${crypto.randomUUID()}`
+    ) as { default(): string };
+    assert.equal(
+      packaged.default(),
+      "Review missing tests in opencomputer/example.",
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

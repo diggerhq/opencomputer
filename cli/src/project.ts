@@ -1730,6 +1730,83 @@ export const useSessionData = (key) => hooks().useSessionData(key);
 `;
 }
 
+interface AgentSourceModule {
+  path: string;
+  source: string;
+}
+
+const AGENT_SOURCE_MODULE_PATTERN = /\.[cm]?[jt]sx?$/;
+
+async function collectAgentSourceModules(
+  root: string,
+  entries: string[],
+): Promise<AgentSourceModule[]> {
+  const compilerOptions: ts.CompilerOptions = {
+    allowJs: true,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    resolveJsonModule: true,
+    target: ts.ScriptTarget.ES2022,
+  };
+  const pending = [...entries];
+  const seen = new Set<string>();
+  const modules: AgentSourceModule[] = [];
+  while (pending.length > 0) {
+    const absolute = resolve(pending.pop()!);
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
+    const path = relative(root, absolute).split("\\").join("/");
+    if (!path || path === ".." || path.startsWith("../")) {
+      throw new Error(
+        "Agent source modules must stay inside the agent directory",
+      );
+    }
+    if (!AGENT_SOURCE_MODULE_PATTERN.test(path)) {
+      throw new Error(`Agent source module ${path} has an unsupported extension`);
+    }
+    const source = await readFile(absolute, "utf8");
+    modules.push({ path, source });
+    for (const imported of ts.preProcessFile(source, true, true).importedFiles) {
+      if (!imported.fileName.startsWith(".")) continue;
+      const resolved = ts.resolveModuleName(
+        imported.fileName,
+        absolute,
+        compilerOptions,
+        ts.sys,
+      ).resolvedModule?.resolvedFileName;
+      if (!resolved) {
+        throw new Error(
+          `${path} imports ${JSON.stringify(imported.fileName)}, which could not be resolved`,
+        );
+      }
+      const importedPath = relative(root, resolved).split("\\").join("/");
+      if (
+        !importedPath ||
+        importedPath === ".." ||
+        importedPath.startsWith("../")
+      ) {
+        throw new Error(
+          `${path} imports ${JSON.stringify(imported.fileName)} outside the agent directory`,
+        );
+      }
+      pending.push(resolved);
+    }
+  }
+  return modules.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function compiledModulePath(path: string): string {
+  return path === "agent.ts" ? "agent.js" : path.replace(/\.[^.]+$/, ".js");
+}
+
+function runtimeAgentApiImport(runtime: string, outputPath: string): string {
+  const path = relative(
+    dirname(resolve(runtime, outputPath)),
+    resolve(runtime, "opencomputer-agent.js"),
+  ).split("\\").join("/");
+  return path.startsWith(".") ? path : `./${path}`;
+}
+
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = resolve(root, ".opencomputer", "runtime");
   await rm(runtime, { recursive: true, force: true });
@@ -1835,45 +1912,54 @@ the product or support surface presented to users.
       },
       reportDiagnostics: true,
     });
-  const compiledAgent = transpile(agentSource, "agent.ts");
-  const diagnostics = compiledAgent.diagnostics ?? [];
-  if (
-    diagnostics.some(
-      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-    )
-  ) {
-    throw new Error(
-      `agent.ts could not be compiled: ${diagnostics
-        .map((diagnostic) =>
-          ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-        )
-        .join("; ")}`,
-    );
-  }
-  const compiledSource = compiledAgent.outputText.replace(
-    /(["'])@opencomputer\/agent\1/g,
-    '"./opencomputer-agent.js"',
-  );
-  await writeFile(resolve(runtime, "agent.js"), compiledSource);
   await writeFile(
     resolve(runtime, "opencomputer-agent.js"),
     agentApiRuntimeSource(),
   );
-  const toolSources: Array<{ filename: string; source: string }> = [];
+  const sourceEntries = [resolve(root, "agent.ts")];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
     const entries = await readdir(sourceTools, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !/\.[cm]?[jt]s$/.test(entry.name)) continue;
-      toolSources.push({
-        filename: entry.name,
-        source: await readFile(resolve(sourceTools, entry.name), "utf8"),
-      });
+      sourceEntries.push(resolve(sourceTools, entry.name));
     }
   }
+  const sourceModules = await collectAgentSourceModules(root, sourceEntries);
+  const outputPaths = new Set<string>();
+  for (const candidate of sourceModules) {
+    const outputPath = compiledModulePath(candidate.path);
+    if (outputPaths.has(outputPath)) {
+      throw new Error(`Agent source modules emit the same path: ${outputPath}`);
+    }
+    outputPaths.add(outputPath);
+    const compiled = transpile(candidate.source, candidate.path);
+    const diagnostics = compiled.diagnostics ?? [];
+    if (
+      diagnostics.some(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      )
+    ) {
+      throw new Error(
+        `${candidate.path} could not be compiled: ${diagnostics
+          .map((diagnostic) =>
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          )
+          .join("; ")}`,
+      );
+    }
+    const output = compiled.outputText.replace(
+      /(["'])@opencomputer\/agent\1/g,
+      JSON.stringify(runtimeAgentApiImport(runtime, outputPath)),
+    );
+    await mkdir(dirname(resolve(runtime, outputPath)), { recursive: true });
+    await writeFile(resolve(runtime, outputPath), output);
+  }
+  const toolSources = sourceModules.filter((candidate) =>
+    candidate.path.startsWith("tools/"),
+  );
   const reactiveTools: string[] = [];
   const toolModules: string[] = [];
-  await mkdir(resolve(runtime, "tools"), { recursive: true });
   for (const candidate of toolSources) {
     const ids = definedToolIds(candidate.source);
     const calls = [
@@ -1881,33 +1967,12 @@ the product or support surface presented to users.
     ].length;
     if (ids.length !== calls) {
       throw new Error(
-        `${candidate.filename} must give every defineTool() a literal string name`,
+        `${candidate.path} must give every defineTool() a literal string name`,
       );
     }
-    const compiledTool = transpile(candidate.source, candidate.filename);
-    const toolDiagnostics = compiledTool.diagnostics ?? [];
-    if (
-      toolDiagnostics.some(
-        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-      )
-    ) {
-      throw new Error(
-        `${candidate.filename} could not be compiled: ${toolDiagnostics
-          .map((diagnostic) =>
-            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-          )
-          .join("; ")}`,
-      );
-    }
-    const outputName = candidate.filename.replace(/\.[^.]+$/, ".js");
-    const output = compiledTool.outputText.replace(
-      /(["'])@opencomputer\/agent\1/g,
-      '"../opencomputer-agent.js"',
-    );
-    await writeFile(resolve(runtime, "tools", outputName), output);
     if (ids.length > 0) {
       reactiveTools.push(...ids);
-      toolModules.push(`../tools/${outputName}`);
+      toolModules.push(`../${compiledModulePath(candidate.path)}`);
     }
   }
   const duplicateTool = reactiveTools.find(
@@ -1918,14 +1983,8 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
-  const httpConnections = [
-    agentSource,
-    ...toolSources.map((item) => item.source),
-  ].flatMap((source, index) =>
-    definedHttpConnections(
-      source,
-      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename,
-    ),
+  const httpConnections = sourceModules.flatMap((module) =>
+    definedHttpConnections(module.source, module.path),
   );
   const duplicateConnection = httpConnections.find(
     (connection, index) =>
@@ -1939,12 +1998,7 @@ the product or support surface presented to users.
     );
   }
   const connectionBindings = new Map<string, HttpConnectionManifest>();
-  for (const [index, source] of [
-    agentSource,
-    ...toolSources.map((item) => item.source),
-  ].entries()) {
-    const filename =
-      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename;
+  for (const { path: filename, source } of sourceModules) {
     for (const [name, definition] of definedConnectionBindings(
       source,
       filename,
@@ -1958,10 +2012,8 @@ the product or support surface presented to users.
       connectionBindings.set(name, definition);
     }
   }
-  const mcpServerDefinitions = definedMcpServers(
-    agentSource,
-    "agent.ts",
-    connectionBindings,
+  const mcpServerDefinitions = sourceModules.flatMap((module) =>
+    definedMcpServers(module.source, module.path, connectionBindings),
   );
   const duplicateMcpServer = mcpServerDefinitions.find(
     (server, index) =>
