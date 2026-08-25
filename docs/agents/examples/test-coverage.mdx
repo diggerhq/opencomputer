@@ -155,24 +155,27 @@ Current example source authorizes GitHub's archive redirect from
 `502 egress-redirect-blocked` while materializing the repository, update the
 example, wait for a new Development deployment, and start a new session.
 
-### Bash capability and launch trust boundary
+### Filesystem capabilities and launch trust boundary
 
-The example explicitly enables OpenComputer's built-in `bash` tool so the
-agent can inspect, edit, and test the materialized repository snapshot. If an
-older deployment reports `No Code Mode tools are available`, update the
-example, wait for a new Development deployment, and start a new session.
+The example explicitly registers the runtime-provided `bash` and `read` tools
+in `opencode.json` and exposes them from the agent render. They let the agent
+inspect, edit, and test the materialized repository snapshot. If an older
+deployment reports `Unknown tool: bash`, `Tool is not available for this
+request: read`, or `No Code Mode tools are available`, update the example, wait
+for a new Development deployment, and start a new session.
 
-`bash` is a broad capability. Repository files and test scripts are untrusted
-code and may execute inside the session runtime. For the initial launch, use a
-disposable or non-production repository, restrict the fine-grained token to
-that repository, keep `PUBLISH_ENABLED` set to `false`, and review the dry-run
-result before enabling publication.
+These are broad capabilities. Repository files and test scripts are untrusted
+code and may execute inside the session runtime, and file reads are not
+enforced as repository-only. For the initial launch, use a disposable or
+non-production repository, restrict the fine-grained token to that repository,
+keep `PUBLISH_ENABLED` set to `false`, and review the dry-run result before
+enabling publication.
 
-The agent prompt limits shell work to the exact materialized snapshot and
-reserves GitHub operations for audited code-defined tools. Those instructions
-are behavioral guardrails, not a sandbox boundary. Do not target a sensitive
-or production repository until a constrained repository executor replaces the
-general-purpose shell.
+The agent prompt limits shell and file-reading work to the exact materialized
+snapshot and reserves GitHub operations for audited code-defined tools. Those
+instructions are behavioral guardrails, not a sandbox boundary. Do not target a
+sensitive or production repository until a constrained repository executor
+replaces the general-purpose filesystem tools.
 
 ## Safety boundaries
 
@@ -184,8 +187,9 @@ general-purpose shell.
   publishing.
 - Repository content and test output are treated as untrusted evidence rather
   than instructions.
-- The initial launch uses a general-purpose shell inside the session runtime;
-  repository and token scoping remain required even with prompt guardrails.
+- The initial launch uses general-purpose filesystem tools inside the session
+  runtime; repository and token scoping remain required even with prompt
+  guardrails.
 - This example starts from explicit interactive runs. Add a recurring schedule
   only after validating the repository-specific workflow and publication
   policy.
