@@ -17,14 +17,12 @@ comments anchored to diff lines:
   />
 </Frame>
 
-## What the example is made of
+## Structure
 
-Three files carry the whole design.
-
-**The agent function** — `opencomputer/agents/pr-review/agent.ts` — is a
-synchronous render that runs before every model step. It reads the current
-input and decides what the model gets for that step: the instructions and the
-tool set. The write tool exists only when the request asks for a live post:
+**The agent function** (`opencomputer/agents/pr-review/agent.ts`) is a
+synchronous render, called before every model step. It reads the current
+input and selects the instructions and tool set for that step. The write
+tool is attached only when the request asks for a live post:
 
 ```tsx
 export default function Agent() {
@@ -44,11 +42,11 @@ export default function Agent() {
 }
 ```
 
-There is no separate permissions system: dry-run-by-default is one `if`
+There is no separate permission layer: dry-run-by-default is one `if`
 statement, and a tool the render does not select does not exist for that
 model step.
 
-**The tools module** — `opencomputer/agents/pr-review/tools/github-tools.ts` —
+**The tools module** (`opencomputer/agents/pr-review/tools/github-tools.ts`)
 declares one HTTP connection and three typed tools that use it.
 `get_pull_request` and `get_diff` read; `post_review` writes one `COMMENT`
 review and falls back to summary-only when GitHub rejects an inline anchor:
@@ -66,14 +64,14 @@ export const github = defineConnection({
 });
 ```
 
-The connection is the agent's entire reach: tools call
+The connection defines all outbound access: tools call
 `github.fetch("/repos/…")`, and the platform validates origin, method, and
 path prefix before attaching the token at its outbound edge. The token never
 enters the agent runtime, so a prompt-injected model step cannot read or
 exfiltrate it. See [Secrets and runtime variables](/agents/secrets).
 
-**The managed runtime** supplies everything else: the durable session and
-turn queue, the model/tool loop that calls the render before each step, and
+**The managed runtime** provides the rest: the durable session and turn
+queue, the model/tool loop that calls the render before each step, and
 deployments. `npm run deploy -- --watch` builds an immutable
 content-addressed deployment on every save and advances the Development
 alias; sessions stay pinned to the deployment they started on.
