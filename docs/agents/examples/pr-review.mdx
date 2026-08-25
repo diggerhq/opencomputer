@@ -6,14 +6,14 @@ description: "Fetch a PR through a managed GitHub connection, review it, and pos
 The [Pull Request Reviewer example](https://github.com/diggerhq/opencomputer-example-pr-review)
 reviews a GitHub pull request on demand. The agent fetches the PR metadata and
 diff through a declared GitHub connection, reviews the change for correctness,
-and returns the review as session output. Only when the request explicitly
-asks does it post a `COMMENT` review — a verdict plus findings, with inline
-comments anchored to diff lines:
+and returns the review as session output. When the request explicitly asks,
+it posts a `COMMENT` review: a verdict plus findings, with inline comments
+anchored to diff lines:
 
 <Frame>
   <img
     src="/images/agents/pr-review-posted-review.png"
-    alt="An inline review comment anchored to a diff line, posted by the agent with a concrete code suggestion"
+    alt="An inline review comment anchored to a diff line, posted by the agent with a code suggestion"
   />
 </Frame>
 
@@ -124,9 +124,8 @@ agent should review, with **Pull requests: read and write** and
 npm run opencomputer -- secrets set GITHUB_TOKEN
 ```
 
-The token's grant is the agent's blast radius: it can read and review
-exactly the repositories selected when the token was created, and nothing
-else.
+The agent's repository access equals the token's grant: it can read and
+review only the repositories selected when the token was created.
 
 ## Review a pull request
 
@@ -137,7 +136,7 @@ npm run session -- "Review acme/widgets#42"
 The dry-run review is a verdict paragraph plus numbered findings anchored to
 files and lines from the diff. Nothing is posted.
 
-To post, say so:
+To post the review:
 
 ```bash
 npm run session -- "Review acme/widgets#42 and post the review on the PR."
@@ -160,9 +159,10 @@ active deployment and returns HTTP 202 with the session URL; a repeated
 `Idempotency-Key` returns the original session instead of starting a second
 review. See [Agent webhooks](/agents/webhooks).
 
-GitHub webhooks sign with an HMAC header and cannot supply the bearer token,
-so reviewing PRs on open takes a small relay — for example a GitHub Actions
-`pull_request` job holding the webhook URL and token as repository secrets.
+GitHub webhooks sign with an HMAC header and cannot supply the bearer
+token, so reviewing PRs on open requires a relay — for example a GitHub
+Actions `pull_request` job holding the webhook URL and token as repository
+secrets.
 
 ## Safety properties
 
