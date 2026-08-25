@@ -40,6 +40,13 @@ export function deploymentAlias(requestedAlias?: string): string {
   return requestedAlias ?? "development";
 }
 
+export function shouldBindModelAccessProject(
+  projectReference: string | undefined,
+  currentAgentRoot: string | null | undefined,
+): boolean {
+  return Boolean(projectReference || currentAgentRoot);
+}
+
 function printJSON(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -790,13 +797,15 @@ export async function runCommand(
         !["development", "production", "both"].includes(legacyEnvironment)
       )
         throw new Error("--environment must be development, production, or both");
-      const environments = projectReference
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const currentAgentRoot = projectReference ? null : await findAgentRoot();
+      const project =
+        shouldBindModelAccessProject(projectReference, currentAgentRoot)
+          ? await selectedProject(client, config, projectReference, false)
+          : undefined;
+      const environments = project
         ? (["development", "production"] as const)
         : [];
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const project = projectReference
-        ? await selectedProject(client, config, projectReference, false)
-        : undefined;
       const receipt = await client.connectModelAccess({ provider: "openai" });
       process.stdout.write(
         "Opening a local callback and your browser to authorize your Codex account…\n",
