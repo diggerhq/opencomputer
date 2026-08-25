@@ -92,7 +92,8 @@ npm run opencomputer -- secrets set GITHUB_PAT \
 
 The declared connection limits credential injection to GitHub API requests.
 The token is not placed in agent source, prompts, repository URLs, or the
-runtime environment.
+runtime environment. GitHub archive downloads follow the connection's declared
+redirect to `codeload.github.com`; they do not require a second secret.
 
 ## Test in Development
 
@@ -121,6 +122,27 @@ finish, and start a new session with the same request.
 The published branch is deterministically named
 `test/coverage-<head-sha>`. Repeating the run for the same repository head
 returns the existing open pull request rather than creating a duplicate.
+
+After changing the example source, wait for the Development watch deployment
+to finish and start a new session. Existing sessions remain pinned to the
+deployment with which they started.
+
+## Troubleshoot remote runs
+
+### GitHub archive redirect is blocked
+
+Current example source authorizes GitHub's archive redirect from
+`api.github.com` to `codeload.github.com`. If a session reports
+`502 egress-redirect-blocked` while materializing the repository, update the
+example, wait for a new Development deployment, and start a new session.
+
+### Code Mode tools are unavailable
+
+The workflow requires filesystem and shell capabilities after materialization
+to inspect source, edit tests, and run validation commands. If a deployment
+reports `No Code Mode tools are available`, stop the run and keep
+`PUBLISH_ENABLED` set to `false`. Do not enable publishing until a complete dry
+run has executed and observed the repository's test commands.
 
 ## Safety boundaries
 
