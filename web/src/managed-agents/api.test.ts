@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   displayManagedAgentName,
+  managedAgentModelRoute,
   managedAgentRenderDebug,
   nextAgentEventDeadline,
 } from './api'
@@ -63,6 +64,41 @@ describe('managedAgentRenderDebug', () => {
     })
     expect(
       managedAgentRenderDebug({ ...event, type: 'runtime.log' }),
+    ).toBeUndefined()
+  })
+})
+
+describe('managedAgentModelRoute', () => {
+  it('parses Codex BYOK route attribution', () => {
+    const event = {
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-08-24T00:00:00.000Z',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      type: 'model.route_resolved',
+      data: {
+        requested: { provider: 'openai', model: 'gpt-5.6-sol' },
+        effective: { provider: 'openai', model: 'gpt-5.6-sol' },
+        runtime: 'codex',
+        access: {
+          type: 'external_subscription',
+          connectionId: 'mac_1',
+          connectionKind: 'codex_subscription',
+        },
+        openComputerModelChargeUsd: 0,
+      },
+    }
+
+    expect(managedAgentModelRoute(event)).toMatchObject({
+      access: {
+        type: 'external_subscription',
+        connectionKind: 'codex_subscription',
+      },
+      openComputerModelChargeUsd: 0,
+    })
+    expect(
+      managedAgentModelRoute({ ...event, type: 'agent.rendered' }),
     ).toBeUndefined()
   })
 })

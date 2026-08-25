@@ -103,8 +103,8 @@ const modelAccessConnectionSchema = z.object({
   id: z.string(),
   organizationId: z.string().optional(),
   connectedByUserId: z.string().optional(),
-  provider: z.literal('openai'),
-  kind: z.literal('codex_subscription'),
+  provider: z.enum(['anthropic', 'openai']),
+  kind: z.enum(['claude_subscription', 'codex_subscription']),
   label: z.string(),
   externalAccountHint: z.string().nullish(),
   status: z.enum([
@@ -135,7 +135,7 @@ const modelAccessConnectResponseSchema = z.object({
 const modelAccessBindingSchema = z.object({
   projectId: z.string(),
   environment: z.enum(['development', 'production']),
-  provider: z.literal('openai'),
+  provider: z.enum(['anthropic', 'openai']),
   connectionId: z.string(),
   enabled: z.boolean(),
   createdAt: z.string().nullish(),
@@ -354,6 +354,24 @@ const renderDebugSchema = z.object({
   renderedAt: z.string(),
 })
 
+const modelRouteSchema = z.object({
+  requested: z
+    .object({ provider: z.string(), model: z.string() })
+    .nullable()
+    .optional(),
+  effective: z
+    .object({ provider: z.string(), model: z.string() })
+    .nullable()
+    .optional(),
+  runtime: z.string(),
+  access: z.object({
+    type: z.enum(['managed', 'external_subscription']),
+    connectionId: z.string().optional(),
+    connectionKind: z.string().optional(),
+  }),
+  openComputerModelChargeUsd: z.number().nullable(),
+})
+
 const eventsResponseSchema = z.object({
   events: z.array(eventSchema),
 })
@@ -414,6 +432,7 @@ export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
 export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
+export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
@@ -529,11 +548,12 @@ export async function getManagedModelAccessBindings(projectId: string) {
 
 export async function putManagedModelAccessBinding(input: {
   projectId: string
+  provider: 'anthropic' | 'openai'
   environment: 'development' | 'production'
   enabled: boolean
 }) {
   return apiFetch(
-    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-access/bindings/openai/${input.environment}`,
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-access/bindings/${input.provider}/${input.environment}`,
     { method: 'PUT', body: JSON.stringify({ enabled: input.enabled }) },
     modelAccessBindingSchema,
   )
@@ -939,6 +959,12 @@ async function suspendManagedAgentIfIdle(sessionId: string) {
 export function managedAgentRenderDebug(event: ManagedAgentEvent) {
   if (event.type !== 'agent.rendered') return undefined
   const parsed = renderDebugSchema.safeParse(event.data)
+  return parsed.success ? parsed.data : undefined
+}
+
+export function managedAgentModelRoute(event: ManagedAgentEvent) {
+  if (event.type !== 'model.route_resolved') return undefined
+  const parsed = modelRouteSchema.safeParse(event.data)
   return parsed.success ? parsed.data : undefined
 }
 

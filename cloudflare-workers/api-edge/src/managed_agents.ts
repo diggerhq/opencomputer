@@ -565,13 +565,18 @@ function publicSuccessBody(
   if (method === "GET" && suffix === "/model-access/connections") {
     return {
       data: Array.isArray(body.data)
-        ? body.data.map((value) =>
-            publicModelAccessConnection(value, includeAdminMetadata),
-          )
+        ? body.data
+            .filter((value) => record(value)?.provider === "openai")
+            .map((value) =>
+              publicModelAccessConnection(value, includeAdminMetadata),
+            )
         : [],
     };
   }
   if (method === "POST" && suffix === "/model-access/connections") {
+    if (!body.connection) {
+      return publicModelAccessConnection(body, includeAdminMetadata);
+    }
     return {
       connection: publicModelAccessConnection(
         body.connection,
@@ -971,7 +976,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
-    /^\/projects\/[^/]+\/model-access\/bindings(?:\/[^/]+\/[^/]+)?$/.test(suffix)
+    /^\/projects\/[^/]+\/model-access\/bindings(?:\/[^/]+\/[^/]+)?$/.test(
+      suffix,
+    )
   ) {
     return true;
   }
@@ -1245,6 +1252,41 @@ export async function proxyManagedAgents(
     return Response.json(
       { error: "managed agents are not configured" },
       { status: 503 },
+    );
+  }
+  if (
+    request.method.toUpperCase() === "POST" &&
+    suffix === "/model-access/connections"
+  ) {
+    const payload = record(await request.clone().json().catch(() => null));
+    if (payload?.provider !== "openai") {
+      return Response.json(
+        {
+          error: {
+            code: "unsupported_provider",
+            message: "Codex is the only supported BYOK account provider.",
+          },
+        },
+        { status: 400 },
+      );
+    }
+  }
+  const bindingProvider = suffix.match(
+    /^\/projects\/[^/]+\/model-access\/bindings\/([^/]+)\/[^/]+$/,
+  )?.[1];
+  if (
+    request.method.toUpperCase() === "PUT" &&
+    bindingProvider &&
+    bindingProvider !== "openai"
+  ) {
+    return Response.json(
+      {
+        error: {
+          code: "unsupported_provider",
+          message: "Codex is the only supported BYOK account provider.",
+        },
+      },
+      { status: 400 },
     );
   }
   const base = (

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
+  managedAgentModelRoute,
   managedAgentRenderDebug,
   type ManagedAgentEvent,
   type ManagedAgentRenderDebug,
@@ -173,6 +174,32 @@ export function DebugInspector({
     : -1
   const previous =
     actualIndex > 0 ? renders[actualIndex - 1]?.render : undefined
+  const selectedEventIndex = selected ? events.indexOf(selected.event) : -1
+  const nextRenderIndex =
+    selectedEventIndex >= 0
+      ? events.findIndex(
+          (event, index) =>
+            index > selectedEventIndex && event.type === 'agent.rendered',
+        )
+      : -1
+  const route =
+    selectedEventIndex >= 0
+      ? events
+          .slice(
+            selectedEventIndex + 1,
+            nextRenderIndex < 0 ? undefined : nextRenderIndex,
+          )
+          .map(managedAgentModelRoute)
+          .find(Boolean)
+      : undefined
+  const accessLabel =
+    route?.access.type === 'external_subscription'
+      ? route.access.connectionKind === 'codex_subscription'
+        ? 'Codex account · BYOK'
+        : 'Connected account · BYOK'
+      : route?.access.type === 'managed'
+        ? 'Managed · usage-based'
+        : 'Not resolved yet'
   const activity = events
     .filter(
       (event) =>
@@ -239,6 +266,9 @@ export function DebugInspector({
                   {selected.render.model
                     ? `${selected.render.model.provider}/${selected.render.model.model}`
                     : 'Default'}
+                </p>
+                <p className="text-muted-foreground mt-1 text-[10px]">
+                  {accessLabel}
                 </p>
               </div>
               <div>

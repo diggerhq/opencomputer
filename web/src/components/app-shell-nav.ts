@@ -2,9 +2,9 @@ import {
   ArrowLeft,
   Bot,
   Boxes,
+  BrainCircuit,
   CalendarClock,
   KeySquare,
-  KeyRound,
   Layers,
   MessagesSquare,
   Monitor,
@@ -90,7 +90,7 @@ export function managedAgentsNav(options: {
           {
             to: `${projectPath}/byok`,
             label: 'BYOK',
-            icon: KeyRound,
+            icon: BrainCircuit,
           },
           {
             to: projectPath,

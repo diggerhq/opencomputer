@@ -913,8 +913,8 @@ export const ModelAccessConnectionSchema = z.object({
   id: z.string(),
   organization_id: z.string(),
   connected_by_user_id: z.string(),
-  provider: z.literal('openai'),
-  kind: z.literal('codex_subscription'),
+  provider: z.enum(['anthropic', 'openai']),
+  kind: z.enum(['claude_subscription', 'codex_subscription']),
   label: z.string(),
   external_account_hint: z.string().nullish(),
   status: z.enum([
@@ -940,16 +940,26 @@ export const ModelAccessConnectionListSchema = z.object({
 // Connect: starts the personal Codex subscription OAuth flow. Returns a pending
 // intent the dashboard redirects to, with the authorize_url. `label` is a
 // display override and defaults server-side.
-export const ModelAccessConnectRequestSchema = z.object({
-  provider: z.literal('openai'),
-  label: z.string().optional(),
-})
-export const ModelAccessConnectResponseSchema = z.object({
-  connection: ModelAccessConnectionSchema,
-  status: z.literal('pending'),
-  authorize_url: z.string(),
-  expires_at: z.string(),
-})
+export const ModelAccessConnectRequestSchema = z.discriminatedUnion(
+  'provider',
+  [
+    z.object({ provider: z.literal('openai'), label: z.string().optional() }),
+    z.object({
+      provider: z.literal('anthropic'),
+      token: z.string(),
+      label: z.string().optional(),
+    }),
+  ],
+)
+export const ModelAccessConnectResponseSchema = z.union([
+  ModelAccessConnectionSchema,
+  z.object({
+    connection: ModelAccessConnectionSchema,
+    status: z.literal('pending'),
+    authorize_url: z.string(),
+    expires_at: z.string(),
+  }),
+])
 
 // A project-environment enablement of the single org connection for a provider.
 // One binding per (project, environment, provider). Created disabled by default.
@@ -957,7 +967,7 @@ export const ModelAccessBindingSchema = z.object({
   organization_id: z.string(),
   project_id: z.string(),
   environment: z.enum(['development', 'production']),
-  provider: z.literal('openai'),
+  provider: z.enum(['anthropic', 'openai']),
   connection_id: z.string(),
   enabled: z.boolean(),
   enabled_by_user_id: z.string().nullish(),
@@ -994,11 +1004,13 @@ export const ModelAccessErrorSchema = z.object({
 export const EffectiveModelRouteSchema = z.object({
   requested: z.object({ provider: z.string(), model: z.string() }),
   effective: z.object({ provider: z.string(), model: z.string() }),
-  runtime: z.literal('codex'),
+  runtime: z.enum(['claude', 'codex']),
   access: z.object({
     type: z.enum(['managed', 'external_subscription']),
     connection_id: z.string().nullish(),
-    connection_kind: z.literal('codex_subscription').nullish(),
+    connection_kind: z
+      .enum(['claude_subscription', 'codex_subscription'])
+      .nullish(),
   }),
   fallback: z
     .object({

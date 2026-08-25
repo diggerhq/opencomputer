@@ -79,17 +79,11 @@ function environmentOption(
   throw new Error("--environment must be development or production");
 }
 
-function modelAccessEnvironments(
-  value: string | undefined,
-): Array<"development" | "production"> | undefined {
-  if (value === undefined) return undefined;
-  if (value === "development" || value === "production") return [value];
-  if (value === "both") return ["development", "production"];
-  throw new Error("--environment must be development, production, or both");
-}
-
-function consumeCodexProvider(args: string[]): void {
-  if (args[0] === "codex") args.shift();
+function consumeModelAccessProvider(args: string[]): "claude" | "codex" {
+  if (args[0] === "claude" || args[0] === "codex") {
+    return args.shift() as "claude" | "codex";
+  }
+  return "codex";
 }
 
 async function readSecretValue(): Promise<string> {
@@ -777,30 +771,35 @@ export async function runCommand(
   if (command === "model-access") {
     const action = args.shift();
     if (action === "connect") {
-      // Local personal-Codex-subscription OAuth: open a localhost callback
+      // Local Codex-account OAuth: open a localhost callback
       // server, complete the flow in the user's browser, then relay the
-      // credential to OpenComputer as a connected subscription. Nothing secret
+      // credential to OpenComputer as a connected account. Nothing secret
       // is echoed or persisted locally.
-      consumeCodexProvider(args);
-      const projectReference = option(args, "--project");
-      const environments = modelAccessEnvironments(
-        option(args, "--environment"),
-      );
-      if (projectReference && !environments) {
+      const provider = consumeModelAccessProvider(args);
+      if (provider !== "codex") {
         throw new Error(
-          "--project requires --environment development, production, or both",
+          "Claude account BYOK is not supported. Connect a Codex account instead.",
         );
       }
-      if (!projectReference && environments) {
+      const projectReference = option(args, "--project");
+      const legacyEnvironment = option(args, "--environment");
+      if (legacyEnvironment && !projectReference)
         throw new Error("--environment requires --project <id|slug>");
-      }
+      if (
+        legacyEnvironment &&
+        !["development", "production", "both"].includes(legacyEnvironment)
+      )
+        throw new Error("--environment must be development, production, or both");
+      const environments = projectReference
+        ? (["development", "production"] as const)
+        : [];
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const project = projectReference
         ? await selectedProject(client, config, projectReference, false)
         : undefined;
       const receipt = await client.connectModelAccess({ provider: "openai" });
       process.stdout.write(
-        "Opening a local callback and your browser to authorize your Codex subscription…\n",
+        "Opening a local callback and your browser to authorize your Codex account…\n",
       );
       const { credential, accountHint } = await codexLogin();
       const connection = await client.relayModelAccess(receipt.connection.id, {
@@ -811,7 +810,7 @@ export async function runCommand(
       });
       const bindings = project
         ? await Promise.all(
-            (environments ?? []).map((environment) =>
+            environments.map((environment) =>
               client.putModelAccessBinding({
                 projectId: project.projectId,
                 provider: "openai",
@@ -829,11 +828,11 @@ export async function runCommand(
         });
       else {
         process.stdout.write(
-          `Connected Codex subscription as ${connection.label}; status ${connection.status}.\n`,
+          `Connected Codex account as ${connection.label}; status ${connection.status}.\n`,
         );
-        if (project && environments?.length) {
+        if (project) {
           process.stdout.write(
-            `Enabled Codex for ${project.projectId} (${environments.join(" and ")}).\n`,
+            `Enabled Codex for ${project.projectId} (development and production).\n`,
           );
         }
       }
@@ -855,43 +854,19 @@ export async function runCommand(
       return;
     }
     if (action === "disconnect") {
-      consumeCodexProvider(args);
+      const provider = consumeModelAccessProvider(args);
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const connections = await client.modelAccessConnections();
-      const connection = connections.find((c) => c.provider === "openai");
-      if (!connection) throw new Error("No Codex connection found.");
+      const apiProvider = provider === "claude" ? "anthropic" : "openai";
+      const connection = connections.find((c) => c.provider === apiProvider);
+      if (!connection) throw new Error(`No ${provider} connection found.`);
       const updated = await client.disconnectModelAccess(connection.id);
       if (globals.json) printJSON(updated);
       else process.stdout.write(`Disconnected ${connection.label}.\n`);
       return;
     }
-    if (action === "enable" || action === "disable") {
-      consumeCodexProvider(args);
-      const projectReference = option(args, "--project");
-      const environment = environmentOption(option(args, "--environment"));
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const project = await selectedProject(
-        client,
-        config,
-        projectReference,
-        !globals.json,
-      );
-      const binding = await client.putModelAccessBinding({
-        projectId: project.projectId,
-        provider: "openai",
-        environment,
-        enabled: action === "enable",
-      });
-      if (globals.json) printJSON(binding);
-      else {
-        process.stdout.write(
-          `${action === "enable" ? "Enabled" : "Disabled"} codex for ${project.projectId} (${environment}).\n`,
-        );
-      }
-      return;
-    }
     throw new Error(
-      "Use `opencomputer model-access connect|list|disconnect|enable|disable`.",
+      "Use `opencomputer model-access connect|list|disconnect`.",
     );
   }
 

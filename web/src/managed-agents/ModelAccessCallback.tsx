@@ -3,8 +3,8 @@ import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { completeManagedModelAccess } from './api'
-import { MODEL_ACCESS_RETURN_TO_KEY } from './BYOK'
+import { completeManagedModelAccess, putManagedModelAccessBinding } from './api'
+import { MODEL_ACCESS_PROJECT_KEY, MODEL_ACCESS_RETURN_TO_KEY } from './BYOK'
 
 type CallbackState = 'completing' | 'failed'
 
@@ -33,11 +33,25 @@ export default function ModelAccessCallback() {
     }
 
     void completeManagedModelAccess(connectionId, code, state)
-      .then(() => {
+      .then(async () => {
+        const projectId = sessionStorage.getItem(MODEL_ACCESS_PROJECT_KEY)
+        if (projectId) {
+          await Promise.all(
+            (['development', 'production'] as const).map((environment) =>
+              putManagedModelAccessBinding({
+                projectId,
+                provider: 'openai',
+                environment,
+                enabled: true,
+              }),
+            ),
+          )
+        }
         const storedReturnTo = sessionStorage.getItem(
           MODEL_ACCESS_RETURN_TO_KEY,
         )
         sessionStorage.removeItem(MODEL_ACCESS_RETURN_TO_KEY)
+        sessionStorage.removeItem(MODEL_ACCESS_PROJECT_KEY)
         const returnTo = storedReturnTo?.startsWith('/projects/')
           ? storedReturnTo
           : '/'
@@ -48,7 +62,7 @@ export default function ModelAccessCallback() {
         setMessage(
           error instanceof Error
             ? error.message
-            : 'The Codex subscription could not be connected.',
+            : 'The Codex account could not be connected.',
         )
       })
   }, [navigate, searchParams])
@@ -64,7 +78,7 @@ export default function ModelAccessCallback() {
           )}
           <h1 className="text-lg font-semibold">
             {status === 'completing'
-              ? 'Connecting Codex subscription'
+              ? 'Connecting Codex account'
               : 'Codex authorization failed'}
           </h1>
           <p className="text-muted-foreground mt-2 max-w-md text-sm">

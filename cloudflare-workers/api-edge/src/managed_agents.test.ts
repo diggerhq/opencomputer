@@ -96,6 +96,41 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("rejects unsupported Claude account connection", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider: "anthropic",
+            token: "must-not-be-returned",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      error: {
+        code: "unsupported_provider",
+        message: "Codex is the only supported BYOK account provider.",
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("forwards webhook text and payload without requiring a user API key", async () => {
     const fetchSpy = vi.fn(
       async (_target: URL | RequestInfo, init?: RequestInit) => {

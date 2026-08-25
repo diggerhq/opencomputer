@@ -1003,15 +1003,18 @@ export const rotateCredential = (id: string, key: string) =>
 // The provider token is write-only; every response is normalized metadata only.
 // Secret-bearing provider callbacks terminate at the private credential boundary.
 export const getModelAccessConnections = () =>
-  apiFetch('/v3/model-access/connections', {}, S.ModelAccessConnectionListSchema).then(
-    (r) => r.data,
-  )
+  apiFetch(
+    '/v3/model-access/connections',
+    {},
+    S.ModelAccessConnectionListSchema,
+  ).then((r) => r.data)
 
 // Starts the personal Codex subscription OAuth flow. Returns a pending intent
 // with an authorize_url the dashboard redirects to. No token is accepted here;
 // the provider credential never crosses the browser.
 export const connectModelAccess = (body: {
-  provider: 'openai'
+  provider: 'openai' | 'anthropic'
+  token?: string
   label?: string
 }) =>
   apiFetch(
@@ -1056,7 +1059,7 @@ export const getModelAccessBindings = (projectId: string) =>
 
 export const putModelAccessBinding = (
   projectId: string,
-  provider: 'openai',
+  provider: 'anthropic' | 'openai',
   environment: 'development' | 'production',
   enabled: boolean,
 ) =>
@@ -1068,7 +1071,7 @@ export const putModelAccessBinding = (
 
 export const deleteModelAccessBinding = (
   projectId: string,
-  provider: 'openai',
+  provider: 'anthropic' | 'openai',
   environment: 'development' | 'production',
 ) =>
   apiFetch<void>(

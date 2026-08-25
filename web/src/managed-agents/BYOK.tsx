@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Loader2, RefreshCw, Unplug } from 'lucide-react'
+import { BrainCircuit, Loader2, RefreshCw, Unplug } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyRow } from '@/components/copy-row'
@@ -19,17 +19,12 @@ import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   connectManagedModelAccess,
   disconnectManagedModelAccessConnection,
-  getManagedModelAccessBindings,
   getManagedModelAccessConnections,
-  putManagedModelAccessBinding,
   validateManagedModelAccessConnection,
 } from './api'
 
 export const MODEL_ACCESS_RETURN_TO_KEY = 'opencomputer:model-access:return-to'
-
-type Environment = 'development' | 'production'
-
-const environments: Environment[] = ['development', 'production']
+export const MODEL_ACCESS_PROJECT_KEY = 'opencomputer:model-access:project'
 
 function connectionTone(status: string) {
   if (status === 'connected') return 'running'
@@ -49,37 +44,17 @@ export function ManagedProjectBYOK({
   const queryClient = useQueryClient()
   const [confirmReplace, setConfirmReplace] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
-  const [confirmProduction, setConfirmProduction] =
-    useState<Environment | null>(null)
   const canManageConnection = user?.capabilities?.manageMembers !== false
   const cliExecutable =
     window.location.hostname === 'mo-oc-dev.com' ? 'ocdev' : 'opencomputer'
   const connectionQueryKey = ['managed-model-access-connections']
-  const bindingQueryKey = ['managed-model-access-bindings', projectId]
   const connections = useQuery({
     queryKey: connectionQueryKey,
     queryFn: getManagedModelAccessConnections,
   })
-  const bindings = useQuery({
-    queryKey: bindingQueryKey,
-    queryFn: () => getManagedModelAccessBindings(projectId),
-  })
   const codex = connections.data?.find(
     (connection) => connection.provider === 'openai',
   )
-
-  const isEnabled = (environment: Environment) => {
-    const binding = bindings.data?.find(
-      (candidate) =>
-        candidate.provider === 'openai' &&
-        candidate.environment === environment,
-    )
-    return Boolean(
-      codex?.status === 'connected' &&
-      binding?.enabled &&
-      binding.connectionId === codex.id,
-    )
-  }
 
   const connect = useMutation({
     mutationFn: connectManagedModelAccess,
@@ -88,66 +63,36 @@ export function ManagedProjectBYOK({
         MODEL_ACCESS_RETURN_TO_KEY,
         `${location.pathname}${location.search}`,
       )
+      sessionStorage.setItem(MODEL_ACCESS_PROJECT_KEY, projectId)
       window.location.assign(receipt.authorize_url)
     },
     onError: (error) =>
       notifyError("Couldn't start Codex authorization.", error),
   })
-  const updateBinding = useMutation({
-    mutationFn: ({
-      environment,
-      enabled,
-    }: {
-      environment: Environment
-      enabled: boolean
-    }) => putManagedModelAccessBinding({ projectId, environment, enabled }),
-    onSuccess: async (updated) => {
-      await queryClient.invalidateQueries({ queryKey: bindingQueryKey })
-      notifySuccess(
-        updated.enabled
-          ? `Codex subscription enabled for ${updated.environment}.`
-          : `Managed inference restored for ${updated.environment}.`,
-      )
-    },
-    onError: (error) =>
-      notifyError("Couldn't update model access for this project.", error),
-  })
   const validateConnection = useMutation({
     mutationFn: () => validateManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: connectionQueryKey })
-      notifySuccess('Codex subscription revalidated.')
+      notifySuccess('Codex account revalidated.')
     },
     onError: (error) =>
-      notifyError("Couldn't revalidate the Codex subscription.", error),
+      notifyError("Couldn't revalidate the Codex account.", error),
   })
   const disconnectConnection = useMutation({
     mutationFn: () => disconnectManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
       setConfirmDisconnect(false)
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: connectionQueryKey }),
-        queryClient.invalidateQueries({ queryKey: bindingQueryKey }),
-      ])
-      notifySuccess('Codex subscription disconnected.')
+      await queryClient.invalidateQueries({ queryKey: connectionQueryKey })
+      notifySuccess('Codex account disconnected.')
     },
     onError: (error) =>
-      notifyError("Couldn't disconnect the Codex subscription.", error),
+      notifyError("Couldn't disconnect the Codex account.", error),
   })
-
   const startConnect = () => {
     setConfirmReplace(false)
     connect.mutate()
   }
-  const setEnvironmentEnabled = (
-    environment: Environment,
-    enabled: boolean,
-  ) => {
-    setConfirmProduction(null)
-    updateBinding.mutate({ environment, enabled })
-  }
-
-  if (connections.isLoading || bindings.isLoading) {
+  if (connections.isLoading) {
     return (
       <Panel>
         <PanelContent className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -157,11 +102,11 @@ export function ManagedProjectBYOK({
     )
   }
 
-  if (connections.isError || bindings.isError) {
+  if (connections.isError) {
     return (
       <Panel>
         <EmptyState
-          icon={KeyRound}
+          icon={BrainCircuit}
           title="BYOK status is temporarily unavailable"
           description="Try loading the project again."
           action={
@@ -169,7 +114,6 @@ export function ManagedProjectBYOK({
               variant="outline"
               onClick={() => {
                 void connections.refetch()
-                void bindings.refetch()
               }}
             >
               Try again
@@ -187,20 +131,19 @@ export function ManagedProjectBYOK({
           <div>
             <PanelTitle>BYOK</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Link your organization&apos;s Codex subscription, then configure
-              this project&apos;s development and production routing. Managed
-              usage-based inference remains the fallback. Runtime compute is
-              still charged.
+              Link a Codex account to this project. Connecting it enables the
+              account for both development and production. Managed usage-based
+              inference remains the fallback. Runtime compute is still charged.
             </PanelDescription>
           </div>
         </PanelHeader>
         <PanelContent className="space-y-6">
           <div>
             <p className="text-muted-foreground text-xs font-medium uppercase">
-              Organization subscription
+              Connected accounts
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">Codex subscription</span>
+              <span className="text-sm font-medium">Codex account</span>
               {codex ? (
                 <StatusBadge
                   status={connectionTone(codex.status)}
@@ -212,59 +155,9 @@ export function ManagedProjectBYOK({
             </div>
             <p className="text-muted-foreground mt-2 text-sm">
               {codex
-                ? `${codex.label}${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
-                : 'No Codex subscription is linked to this organization.'}
+                ? `Connected account${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
+                : 'No Codex account is linked.'}
             </p>
-          </div>
-
-          <div className="grid gap-4 border-t pt-5 md:grid-cols-2">
-            {environments.map((environment) => {
-              const enabled = isEnabled(environment)
-              return (
-                <div
-                  key={environment}
-                  className="bg-panel-2 rounded-lg border p-4"
-                >
-                  <p className="text-xs font-medium capitalize">
-                    {environment}
-                  </p>
-                  <div className="mt-2">
-                    <StatusBadge
-                      status={enabled ? 'running' : 'stopped'}
-                      label={
-                        enabled
-                          ? 'Subscription preferred · Managed fallback'
-                          : 'Managed'
-                      }
-                    />
-                  </div>
-                  <p className="text-muted-foreground mt-2 text-sm">
-                    {enabled
-                      ? 'Model calls prefer the linked subscription.'
-                      : 'Model calls use OpenComputer managed inference.'}
-                  </p>
-                  {codex?.status === 'connected' ? (
-                    <Button
-                      className="mt-4"
-                      size="sm"
-                      variant={enabled ? 'outline' : 'default'}
-                      disabled={updateBinding.isPending}
-                      onClick={() => {
-                        if (enabled) setEnvironmentEnabled(environment, false)
-                        else if (environment === 'production')
-                          setConfirmProduction(environment)
-                        else setEnvironmentEnabled(environment, true)
-                      }}
-                    >
-                      {updateBinding.isPending ? (
-                        <Loader2 className="animate-spin" />
-                      ) : null}
-                      {enabled ? 'Use Managed' : 'Use subscription'}
-                    </Button>
-                  ) : null}
-                </div>
-              )
-            })}
           </div>
 
           <div className="flex flex-wrap gap-2 border-t pt-5">
@@ -279,9 +172,9 @@ export function ManagedProjectBYOK({
                 {connect.isPending ? (
                   <Loader2 className="animate-spin" />
                 ) : (
-                  <KeyRound />
+                  <BrainCircuit />
                 )}
-                {codex ? 'Replace subscription' : 'Connect subscription'}
+                {codex ? 'Replace Codex account' : 'Connect Codex account'}
               </Button>
             ) : null}
             {canManageConnection && codex ? (
@@ -311,7 +204,7 @@ export function ManagedProjectBYOK({
 
           {!canManageConnection && !codex ? (
             <p className="text-muted-foreground text-sm">
-              Ask an organization admin to connect a Codex subscription.
+              Ask an organization admin to connect a model account.
             </p>
           ) : null}
         </PanelContent>
@@ -320,25 +213,39 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Use the subscription in agent code</PanelTitle>
+            <PanelTitle>Use the account in agent code</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Select the OpenAI provider explicitly. The shorter string form is
-              an OpenRouter catalog model and continues to use Managed access.
+              Select the model-access provider explicitly. Connected accounts
+              use their native provider; Managed models use OpenRouter.
             </PanelDescription>
           </div>
         </PanelHeader>
         <PanelContent className="space-y-4">
           <div>
-            <p className="mb-2 text-sm font-medium">
-              Codex subscription eligible
-            </p>
+            <p className="mb-2 text-sm font-medium">Codex account eligible</p>
             <CopyRow
-              value={'useModel({ provider: "openai", model: "gpt-5" })'}
+              value={'useModel({ provider: "openai", model: "gpt-5.6-sol" })'}
             />
           </div>
           <div>
-            <p className="mb-2 text-sm font-medium">Managed OpenRouter</p>
-            <CopyRow value={'useModel("openai/gpt-5")'} />
+            <p className="mb-2 text-sm font-medium">
+              Managed OpenRouter · OpenAI
+            </p>
+            <CopyRow
+              value={
+                'useModel({ provider: "openrouter", model: "openai/gpt-5" })'
+              }
+            />
+          </div>
+          <div>
+            <p className="mb-2 text-sm font-medium">
+              Managed OpenRouter · Anthropic
+            </p>
+            <CopyRow
+              value={
+                'useModel({ provider: "openrouter", model: "anthropic/claude-sonnet-4.6" })'
+              }
+            />
           </div>
         </PanelContent>
       </Panel>
@@ -348,55 +255,33 @@ export function ManagedProjectBYOK({
           <div>
             <PanelTitle>Connect with the CLI</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Each command opens the Codex OAuth flow, links or replaces the
-              organization subscription, and enables it for this project in one
-              run.
+              The Codex command opens OAuth, links or replaces the account, and
+              enables it for this project in both development and production.
             </PanelDescription>
           </div>
         </PanelHeader>
         <PanelContent className="space-y-4">
-          {(
-            [
-              ['Development', 'development'],
-              ['Production', 'production'],
-              ['Development and production', 'both'],
-            ] as const
-          ).map(([label, environment]) => (
-            <div key={environment}>
-              <p className="mb-2 text-sm font-medium">{label}</p>
-              <CopyRow
-                value={`${cliExecutable} model-access connect codex --project ${projectSlug} --environment ${environment}`}
-              />
-            </div>
-          ))}
+          <CopyRow
+            value={`${cliExecutable} model-access connect codex --project ${projectSlug}`}
+          />
         </PanelContent>
       </Panel>
 
       <ConfirmDialog
         open={confirmReplace}
         onOpenChange={setConfirmReplace}
-        title="Replace the organization subscription?"
-        description="This reconnects the organization-owned Codex subscription and affects every project environment currently using it."
+        title="Replace the Codex account?"
+        description="This reconnects the Codex account and enables it for both environments in this project."
         confirmLabel="Continue to OpenAI"
         onConfirm={startConnect}
       />
       <ConfirmDialog
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
-        title="Disconnect the organization subscription?"
-        description="Every project environment using this subscription will return to Managed inference."
-        confirmLabel="Disconnect subscription"
+        title="Disconnect the Codex account?"
+        description="Projects using this account will return to Managed inference."
+        confirmLabel="Disconnect account"
         onConfirm={() => disconnectConnection.mutate()}
-      />
-      <ConfirmDialog
-        open={confirmProduction !== null}
-        onOpenChange={(open) => {
-          if (!open) setConfirmProduction(null)
-        }}
-        title="Enable the subscription in production?"
-        description="Production model calls will prefer the Codex subscription and fall back to Managed inference when necessary."
-        confirmLabel="Enable in production"
-        onConfirm={() => setEnvironmentEnabled('production', true)}
       />
     </div>
   )

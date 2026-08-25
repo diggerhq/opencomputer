@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { BrainCircuit, KeySquare } from 'lucide-react'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
@@ -30,6 +31,12 @@ describe('managed agents navigation', () => {
     ])
     expect(nav[1]?.items[nav[1].items.length - 1]?.to).toBe(
       '/projects/project%20one',
+    )
+    expect(nav[1]?.items.find((item) => item.label === 'Secrets')?.icon).toBe(
+      KeySquare,
+    )
+    expect(nav[1]?.items.find((item) => item.label === 'BYOK')?.icon).toBe(
+      BrainCircuit,
     )
   })
 

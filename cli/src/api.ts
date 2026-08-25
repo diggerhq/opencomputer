@@ -63,8 +63,8 @@ export interface ModelAccessConnection {
   id: string;
   organizationId: string;
   connectedByUserId: string;
-  provider: "openai";
-  kind: "codex_subscription";
+  provider: "anthropic" | "openai";
+  kind: "claude_subscription" | "codex_subscription";
   label: string;
   externalAccountHint?: string;
   status: string;
@@ -77,7 +77,7 @@ export interface ModelAccessBinding {
   organizationId: string;
   projectId: string;
   environment: "development" | "production";
-  provider: "openai";
+  provider: "anthropic" | "openai";
   connectionId: string;
   enabled: boolean;
   enabledByUserId?: string;
@@ -337,12 +337,15 @@ export class OpenComputerClient {
 
   // Relays a credential the local CLI obtained through the authorized Codex
   // OAuth flow into a connected subscription (encrypted custody server-side).
-  relayModelAccess(id: string, credential: {
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_at: number;
-  }) {
+  relayModelAccess(
+    id: string,
+    credential: {
+      access_token: string;
+      refresh_token?: string;
+      token_type: string;
+      expires_at: number;
+    },
+  ) {
     return this.request<ModelAccessConnection>(
       `/api/managed-agents/model-access/connections/${encodeURIComponent(id)}/complete`,
       {
@@ -373,7 +376,7 @@ export class OpenComputerClient {
 
   putModelAccessBinding(input: {
     projectId: string;
-    provider: "openai";
+    provider: "anthropic" | "openai";
     environment: "development" | "production";
     enabled: boolean;
   }) {

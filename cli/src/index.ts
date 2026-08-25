@@ -64,11 +64,9 @@ Usage:
   opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer model-access connect codex [--project <id|slug> --environment development|production|both]
+  opencomputer model-access connect codex [--project <id|slug>]
   opencomputer model-access list
   opencomputer model-access disconnect codex
-  opencomputer model-access enable codex --project <id|slug> --environment development|production
-  opencomputer model-access disable codex --project <id|slug> --environment development|production
   opencomputer webhooks list [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks create <name> [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks enable <webhook-id> [--project <id|slug>]
