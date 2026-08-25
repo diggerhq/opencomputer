@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BrainCircuit, Loader2, RefreshCw, Unplug } from 'lucide-react'
-import { useLocation } from 'react-router-dom'
+import {
+  BrainCircuit,
+  Link2,
+  Link2Off,
+  Loader2,
+  RefreshCw,
+  Unplug,
+} from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyRow } from '@/components/copy-row'
 import { EmptyState } from '@/components/empty-state'
@@ -17,9 +23,10 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  connectManagedModelAccess,
   disconnectManagedModelAccessConnection,
   getManagedModelAccessConnections,
+  getManagedModelAccessBindings,
+  putManagedModelAccessBinding,
   validateManagedModelAccessConnection,
 } from './api'
 
@@ -32,6 +39,47 @@ function connectionTone(status: string) {
   return 'pending'
 }
 
+export function modelAccessCLICommand(
+  projectSlug: string,
+  location: Pick<Location, 'hostname' | 'origin'>,
+) {
+  const apiArgument =
+    location.hostname === 'app.opencomputer.dev'
+      ? ''
+      : ` --api-url ${location.origin}`
+  return `npx --yes --package=@opencomputer/cli@latest -- opencomputer${apiArgument} model-access connect codex --project ${projectSlug}`
+}
+
+export function hasProjectCodexAccess(
+  bindings:
+    | Array<{
+        enabled: boolean
+        environment: string
+        provider: string
+      }>
+    | undefined,
+) {
+  const enabled = bindings?.filter(
+    (binding) => binding.provider === 'openai' && binding.enabled,
+  )
+  return (
+    enabled?.some((binding) => binding.environment === 'development') ===
+      true && enabled.some((binding) => binding.environment === 'production')
+  )
+}
+
+export function projectCodexBindingUpdates(
+  projectId: string,
+  enabled: boolean,
+) {
+  return (['development', 'production'] as const).map((environment) => ({
+    projectId,
+    provider: 'openai' as const,
+    environment,
+    enabled,
+  }))
+}
+
 export function ManagedProjectBYOK({
   projectId,
   projectSlug,
@@ -40,34 +88,46 @@ export function ManagedProjectBYOK({
   projectSlug: string
 }) {
   const { user } = useAuth()
-  const location = useLocation()
   const queryClient = useQueryClient()
-  const [confirmReplace, setConfirmReplace] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const canManageConnection = user?.capabilities?.manageMembers !== false
-  const cliExecutable =
-    window.location.hostname === 'mo-oc-dev.com' ? 'ocdev' : 'opencomputer'
+  const cliCommand = modelAccessCLICommand(projectSlug, window.location)
   const connectionQueryKey = ['managed-model-access-connections']
+  const bindingQueryKey = ['managed-model-access-bindings', projectId]
   const connections = useQuery({
     queryKey: connectionQueryKey,
     queryFn: getManagedModelAccessConnections,
   })
+  const bindings = useQuery({
+    queryKey: bindingQueryKey,
+    queryFn: () => getManagedModelAccessBindings(projectId),
+  })
   const codex = connections.data?.find(
     (connection) => connection.provider === 'openai',
   )
-
-  const connect = useMutation({
-    mutationFn: connectManagedModelAccess,
-    onSuccess: (receipt) => {
-      sessionStorage.setItem(
-        MODEL_ACCESS_RETURN_TO_KEY,
-        `${location.pathname}${location.search}`,
+  const projectEnabled = hasProjectCodexAccess(bindings.data)
+  const updateProjectAccess = useMutation({
+    mutationFn: (enabled: boolean) =>
+      Promise.all(
+        projectCodexBindingUpdates(projectId, enabled).map((binding) =>
+          putManagedModelAccessBinding(binding),
+        ),
+      ),
+    onSuccess: async (_bindings, enabled) => {
+      await queryClient.invalidateQueries({ queryKey: bindingQueryKey })
+      notifySuccess(
+        enabled
+          ? 'Codex enabled for this project.'
+          : 'Codex disabled for this project.',
       )
-      sessionStorage.setItem(MODEL_ACCESS_PROJECT_KEY, projectId)
-      window.location.assign(receipt.authorize_url)
     },
-    onError: (error) =>
-      notifyError("Couldn't start Codex authorization.", error),
+    onError: (error, enabled) =>
+      notifyError(
+        enabled
+          ? "Couldn't enable Codex for this project."
+          : "Couldn't disable Codex for this project.",
+        error,
+      ),
   })
   const validateConnection = useMutation({
     mutationFn: () => validateManagedModelAccessConnection(codex!.id),
@@ -82,17 +142,16 @@ export function ManagedProjectBYOK({
     mutationFn: () => disconnectManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
       setConfirmDisconnect(false)
-      await queryClient.invalidateQueries({ queryKey: connectionQueryKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: connectionQueryKey }),
+        queryClient.invalidateQueries({ queryKey: bindingQueryKey }),
+      ])
       notifySuccess('Codex account disconnected.')
     },
     onError: (error) =>
       notifyError("Couldn't disconnect the Codex account.", error),
   })
-  const startConnect = () => {
-    setConfirmReplace(false)
-    connect.mutate()
-  }
-  if (connections.isLoading) {
+  if (connections.isLoading || bindings.isLoading) {
     return (
       <Panel>
         <PanelContent className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -102,7 +161,7 @@ export function ManagedProjectBYOK({
     )
   }
 
-  if (connections.isError) {
+  if (connections.isError || bindings.isError) {
     return (
       <Panel>
         <EmptyState
@@ -131,9 +190,10 @@ export function ManagedProjectBYOK({
           <div>
             <PanelTitle>BYOK</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Link a Codex account to this project. Connecting it enables the
-              account for both development and production. Managed usage-based
-              inference remains the fallback. Runtime compute is still charged.
+              Connect one Codex account to your organization, then enable it for
+              the projects that should use it. Project enablement always covers
+              both development and production. Managed usage-based inference
+              remains the fallback. Runtime compute is still charged.
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -155,52 +215,91 @@ export function ManagedProjectBYOK({
             </div>
             <p className="text-muted-foreground mt-2 text-sm">
               {codex
-                ? `Connected account${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
+                ? `Connected to your organization${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
                 : 'No Codex account is linked.'}
             </p>
+            <div className="mt-4">
+              <p className="text-muted-foreground text-xs font-medium uppercase">
+                Project access
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <StatusBadge
+                  status={projectEnabled ? 'running' : 'stopped'}
+                  label={
+                    projectEnabled
+                      ? 'Enabled for development and production'
+                      : 'Not enabled for this project'
+                  }
+                />
+              </div>
+              {codex && !projectEnabled ? (
+                <div className="mt-3 space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    The organization account is connected, but this project will
+                    use Managed inference until it is enabled.
+                  </p>
+                  {canManageConnection && codex.status === 'connected' ? (
+                    <Button
+                      variant="outline"
+                      disabled={updateProjectAccess.isPending}
+                      onClick={() => updateProjectAccess.mutate(true)}
+                    >
+                      {updateProjectAccess.isPending ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Link2 />
+                      )}
+                      Enable for this project
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {canManageConnection && projectEnabled ? (
+                <div className="mt-3 space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    Disable Codex here to return this project to Managed
+                    inference without disconnecting the organization account.
+                  </p>
+                  <Button
+                    variant="outline"
+                    disabled={updateProjectAccess.isPending}
+                    onClick={() => updateProjectAccess.mutate(false)}
+                  >
+                    {updateProjectAccess.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Link2Off />
+                    )}
+                    Disable for this project
+                  </Button>
+                </div>
+              ) : null}
+            </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 border-t pt-5">
-            {canManageConnection ? (
+          {canManageConnection && codex ? (
+            <div className="flex flex-wrap gap-2 border-t pt-5">
               <Button
-                variant={codex ? 'outline' : 'default'}
-                disabled={connect.isPending}
-                onClick={() =>
-                  codex ? setConfirmReplace(true) : startConnect()
-                }
+                variant="outline"
+                disabled={validateConnection.isPending}
+                onClick={() => validateConnection.mutate()}
               >
-                {connect.isPending ? (
+                {validateConnection.isPending ? (
                   <Loader2 className="animate-spin" />
                 ) : (
-                  <BrainCircuit />
+                  <RefreshCw />
                 )}
-                {codex ? 'Replace Codex account' : 'Connect Codex account'}
+                Revalidate
               </Button>
-            ) : null}
-            {canManageConnection && codex ? (
-              <>
-                <Button
-                  variant="outline"
-                  disabled={validateConnection.isPending}
-                  onClick={() => validateConnection.mutate()}
-                >
-                  {validateConnection.isPending ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <RefreshCw />
-                  )}
-                  Revalidate
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={disconnectConnection.isPending}
-                  onClick={() => setConfirmDisconnect(true)}
-                >
-                  <Unplug /> Disconnect
-                </Button>
-              </>
-            ) : null}
-          </div>
+              <Button
+                variant="outline"
+                disabled={disconnectConnection.isPending}
+                onClick={() => setConfirmDisconnect(true)}
+              >
+                <Unplug /> Disconnect
+              </Button>
+            </div>
+          ) : null}
 
           {!canManageConnection && !codex ? (
             <p className="text-muted-foreground text-sm">
@@ -253,28 +352,23 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Connect with the CLI</PanelTitle>
+            <PanelTitle>
+              {codex
+                ? 'Replace the organization account with the CLI'
+                : 'Connect an organization account with the CLI'}
+            </PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              The Codex command opens OAuth, links or replaces the account, and
-              enables it for this project in both development and production.
+              The Codex command opens OAuth, links or replaces the organization
+              account, and enables it for this project. If the account is
+              already connected, use the button above to enable this project
+              without repeating OAuth.
             </PanelDescription>
           </div>
         </PanelHeader>
         <PanelContent className="space-y-4">
-          <CopyRow
-            value={`${cliExecutable} model-access connect codex --project ${projectSlug}`}
-          />
+          <CopyRow value={cliCommand} />
         </PanelContent>
       </Panel>
-
-      <ConfirmDialog
-        open={confirmReplace}
-        onOpenChange={setConfirmReplace}
-        title="Replace the Codex account?"
-        description="This reconnects the Codex account and enables it for both environments in this project."
-        confirmLabel="Continue to OpenAI"
-        onConfirm={startConnect}
-      />
       <ConfirmDialog
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
