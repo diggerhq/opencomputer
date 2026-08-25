@@ -352,7 +352,6 @@ export const updateOrg = (updates: OrgUpdate) =>
   )
 
 export type NavigationPreferenceUpdate = {
-  durableSessionsEnabled?: boolean
   infrastructureEnabled?: boolean
 }
 

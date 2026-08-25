@@ -410,6 +410,9 @@ async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller
   if (body.durableSessionsEnabled !== undefined && typeof body.durableSessionsEnabled !== "boolean") {
     return json({ error: "durableSessionsEnabled must be a boolean" }, 400);
   }
+  if (body.durableSessionsEnabled !== undefined) {
+    return json({ error: "durable session navigation is managed by an administrator" }, 403);
+  }
   if (body.infrastructureEnabled !== undefined && typeof body.infrastructureEnabled !== "boolean") {
     return json({ error: "infrastructureEnabled must be a boolean" }, 400);
   }
@@ -418,12 +421,10 @@ async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller
   }
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE users
-        SET durable_sessions_enabled = COALESCE(?1, durable_sessions_enabled),
-            infrastructure_enabled = COALESCE(?2, infrastructure_enabled)
-      WHERE id = ?3`,
+        SET infrastructure_enabled = COALESCE(?1, infrastructure_enabled)
+      WHERE id = ?2`,
   )
     .bind(
-      typeof body.durableSessionsEnabled === "boolean" ? Number(body.durableSessionsEnabled) : null,
       typeof body.infrastructureEnabled === "boolean" ? Number(body.infrastructureEnabled) : null,
       caller.userID,
     )
