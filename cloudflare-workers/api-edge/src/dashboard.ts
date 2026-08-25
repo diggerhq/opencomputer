@@ -976,10 +976,20 @@ export async function handleDashboard(
         return json({ error: "managed model billing is unavailable" }, 503);
       }
     }
+    const membership = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+    ).bind(caller.orgID, caller.userID).first<{ role: string }>();
     return proxyManagedAgents(
       req,
       env,
-      caller,
+      {
+        orgID: caller.orgID,
+        userID: caller.userID,
+        role:
+          membership?.role === "owner" || membership?.role === "admin"
+            ? "admin"
+            : membership?.role,
+      },
       "/api/dashboard/managed-agents",
     );
   }

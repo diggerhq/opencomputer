@@ -1245,6 +1245,14 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
   [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
   [
+    /^\/managed-agents\/model-access\/connections$/,
+    () => ({ data: [] }),
+  ],
+  [
+    /^\/managed-agents\/projects\/[^/]+\/model-access\/bindings$/,
+    () => ({ data: [] }),
+  ],
+  [
     /^\/managed-agents\/projects\/[^/]+$/,
     () => ({
       project: managedProjects[0],

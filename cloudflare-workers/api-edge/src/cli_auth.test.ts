@@ -37,8 +37,16 @@ class FakeStatement {
       if (!this.db.user) return null;
       return this.db.user as T;
     }
-    if (this.sql.includes("FROM api_keys WHERE key_hash")) {
-      return { org_id: orgID, created_by: userID, expires_at: null } as T;
+    if (
+      this.sql.includes("FROM api_keys WHERE key_hash") ||
+      this.sql.includes("FROM api_keys k")
+    ) {
+      return {
+        org_id: orgID,
+        created_by: userID,
+        expires_at: null,
+        role: "admin",
+      } as T;
     }
     if (this.sql.includes("SELECT o.name AS org_name")) {
       return { org_name: "Igor's workspace", email: "igor@example.com" } as T;

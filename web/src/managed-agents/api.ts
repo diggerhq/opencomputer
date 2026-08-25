@@ -99,6 +99,53 @@ const secretSchema = z.object({
 
 const secretsResponseSchema = z.object({ secrets: z.array(secretSchema) })
 
+const modelAccessConnectionSchema = z.object({
+  id: z.string(),
+  organizationId: z.string().optional(),
+  connectedByUserId: z.string().optional(),
+  provider: z.enum(['anthropic', 'openai']),
+  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  label: z.string(),
+  externalAccountHint: z.string().nullish(),
+  status: z.enum([
+    'connecting',
+    'connected',
+    'reauth_required',
+    'provider_limited',
+    'plan_ineligible',
+    'revoked',
+    'unavailable',
+  ]),
+  checkedAt: z.string().nullish(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelAccessConnectionsResponseSchema = z.object({
+  data: z.array(modelAccessConnectionSchema),
+})
+
+const modelAccessConnectResponseSchema = z.object({
+  connection: modelAccessConnectionSchema,
+  status: z.literal('pending'),
+  authorize_url: z.string().url(),
+  expires_at: z.string(),
+})
+
+const modelAccessBindingSchema = z.object({
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  provider: z.enum(['anthropic', 'openai']),
+  connectionId: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelAccessBindingsResponseSchema = z.object({
+  data: z.array(modelAccessBindingSchema),
+})
+
 const runtimeVariableSchema = z.object({
   name: z.string(),
   projectId: z.string(),
@@ -307,6 +354,24 @@ const renderDebugSchema = z.object({
   renderedAt: z.string(),
 })
 
+const modelRouteSchema = z.object({
+  requested: z
+    .object({ provider: z.string(), model: z.string() })
+    .nullable()
+    .optional(),
+  effective: z
+    .object({ provider: z.string(), model: z.string() })
+    .nullable()
+    .optional(),
+  runtime: z.string(),
+  access: z.object({
+    type: z.enum(['managed', 'external_subscription']),
+    connectionId: z.string().optional(),
+    connectionKind: z.string().optional(),
+  }),
+  openComputerModelChargeUsd: z.number().nullable(),
+})
+
 const eventsResponseSchema = z.object({
   events: z.array(eventSchema),
 })
@@ -367,6 +432,7 @@ export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
 export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
+export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
@@ -377,6 +443,10 @@ export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
+export type ManagedModelAccessConnection = z.infer<
+  typeof modelAccessConnectionSchema
+>
+export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -417,6 +487,75 @@ export async function getManagedProject(projectId: string) {
     `/managed-agents/projects/${encodeURIComponent(projectId)}`,
     undefined,
     projectOverviewSchema,
+  )
+}
+
+export async function getManagedModelAccessConnections() {
+  return (
+    await apiFetch(
+      '/managed-agents/model-access/connections',
+      undefined,
+      modelAccessConnectionsResponseSchema,
+    )
+  ).data
+}
+
+export async function connectManagedModelAccess() {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    { method: 'POST', body: JSON.stringify({ provider: 'openai' }) },
+    modelAccessConnectResponseSchema,
+  )
+}
+
+export async function completeManagedModelAccess(
+  id: string,
+  code: string,
+  state: string,
+) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}/complete`,
+    { method: 'POST', body: JSON.stringify({ code, state }) },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function validateManagedModelAccessConnection(id: string) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}/validate`,
+    { method: 'POST' },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function disconnectManagedModelAccessConnection(id: string) {
+  return apiFetch(
+    `/managed-agents/model-access/connections/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function getManagedModelAccessBindings(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/model-access/bindings`,
+      undefined,
+      modelAccessBindingsResponseSchema,
+    )
+  ).data
+}
+
+export async function putManagedModelAccessBinding(input: {
+  projectId: string
+  provider: 'anthropic' | 'openai'
+  environment: 'development' | 'production'
+  enabled: boolean
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-access/bindings/${input.provider}/${input.environment}`,
+    { method: 'PUT', body: JSON.stringify({ enabled: input.enabled }) },
+    modelAccessBindingSchema,
   )
 }
 
@@ -820,6 +959,12 @@ async function suspendManagedAgentIfIdle(sessionId: string) {
 export function managedAgentRenderDebug(event: ManagedAgentEvent) {
   if (event.type !== 'agent.rendered') return undefined
   const parsed = renderDebugSchema.safeParse(event.data)
+  return parsed.success ? parsed.data : undefined
+}
+
+export function managedAgentModelRoute(event: ManagedAgentEvent) {
+  if (event.type !== 'model.route_resolved') return undefined
+  const parsed = modelRouteSchema.safeParse(event.data)
   return parsed.success ? parsed.data : undefined
 }
 

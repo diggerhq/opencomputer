@@ -904,6 +904,129 @@ export const CredentialListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
+// ── Model access (work 011: bring-your-own Codex subscription) ──────────────
+// An organization-owned connection to a Codex subscription. The provider token
+// is write-only and never appears on this object; the API returns only
+// normalized metadata. At most one Codex connection per organization is
+// enforced server-side (unique (organization_id, provider)).
+export const ModelAccessConnectionSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  connected_by_user_id: z.string(),
+  provider: z.enum(['anthropic', 'openai']),
+  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  label: z.string(),
+  external_account_hint: z.string().nullish(),
+  status: z.enum([
+    'connecting',
+    'connected',
+    'reauth_required',
+    'provider_limited',
+    'plan_ineligible',
+    'revoked',
+    'unavailable',
+  ]),
+  // Provider-reported entitlement/model snapshot, when a sanctioned capability
+  // surface exists. Opaque to the dashboard; display hints only, never authz.
+  entitlement_snapshot: z.unknown().nullish(),
+  checked_at: z.string().nullish(),
+  created_at: z.string().nullish(),
+  updated_at: z.string().nullish(),
+})
+export const ModelAccessConnectionListSchema = z.object({
+  data: z.array(ModelAccessConnectionSchema),
+})
+
+// Connect: starts the personal Codex subscription OAuth flow. Returns a pending
+// intent the dashboard redirects to, with the authorize_url. `label` is a
+// display override and defaults server-side.
+export const ModelAccessConnectRequestSchema = z.discriminatedUnion(
+  'provider',
+  [
+    z.object({ provider: z.literal('openai'), label: z.string().optional() }),
+    z.object({
+      provider: z.literal('anthropic'),
+      token: z.string(),
+      label: z.string().optional(),
+    }),
+  ],
+)
+export const ModelAccessConnectResponseSchema = z.union([
+  ModelAccessConnectionSchema,
+  z.object({
+    connection: ModelAccessConnectionSchema,
+    status: z.literal('pending'),
+    authorize_url: z.string(),
+    expires_at: z.string(),
+  }),
+])
+
+// A project-environment enablement of the single org connection for a provider.
+// One binding per (project, environment, provider). Created disabled by default.
+export const ModelAccessBindingSchema = z.object({
+  organization_id: z.string(),
+  project_id: z.string(),
+  environment: z.enum(['development', 'production']),
+  provider: z.enum(['anthropic', 'openai']),
+  connection_id: z.string(),
+  enabled: z.boolean(),
+  enabled_by_user_id: z.string().nullish(),
+  created_at: z.string().nullish(),
+  updated_at: z.string().nullish(),
+})
+export const ModelAccessBindingListSchema = z.object({
+  data: z.array(ModelAccessBindingSchema),
+})
+export const ModelAccessBindingPutRequestSchema = z.object({
+  enabled: z.boolean(),
+})
+
+// Typed error for model-access failures (resolution + dispatch).
+export const ModelAccessErrorSchema = z.object({
+  error: z.object({
+    code: z.enum([
+      'model_access_unavailable',
+      'plan_ineligible',
+      'provider_not_connected',
+      'model_not_in_subscription',
+      'reauth_required',
+      'provider_allowance_exhausted',
+      'subscription_unavailable',
+    ]),
+    message: z.string(),
+    // Present when both the subscription and Managed reasons must be shown.
+    subscription_reason: z.string().nullish(),
+    managed_reason: z.string().nullish(),
+  }),
+})
+
+// The immutable record of how one provider call was routed and billed.
+export const EffectiveModelRouteSchema = z.object({
+  requested: z.object({ provider: z.string(), model: z.string() }),
+  effective: z.object({ provider: z.string(), model: z.string() }),
+  runtime: z.enum(['claude', 'codex']),
+  access: z.object({
+    type: z.enum(['managed', 'external_subscription']),
+    connection_id: z.string().nullish(),
+    connection_kind: z
+      .enum(['claude_subscription', 'codex_subscription'])
+      .nullish(),
+  }),
+  fallback: z
+    .object({
+      from: z.literal('external_subscription'),
+      reason: z.enum([
+        'provider_not_connected',
+        'model_not_in_subscription',
+        'reauth_required',
+        'provider_allowance_exhausted',
+        'subscription_unavailable',
+      ]),
+    })
+    .nullish(),
+  open_computer_model_charge_usd: z.number(),
+})
+
 // Slack connection (sessions-api `serializeSlackApp`) — an agent's BYO Slack app.
 // Never carries secrets (bot token / signing secret stay in the secret backend).
 // `handle` is the agent's name; slack_app_id/team_id/account_login fill in once
@@ -1199,6 +1322,12 @@ export type RepositorySourceInspection = z.infer<
   typeof RepositorySourceInspectionSchema
 >
 export type Credential = z.infer<typeof CredentialSchema>
+export type ModelAccessConnection = z.infer<typeof ModelAccessConnectionSchema>
+export type ModelAccessBinding = z.infer<typeof ModelAccessBindingSchema>
+export type ModelAccessConnectResponse = z.infer<
+  typeof ModelAccessConnectResponseSchema
+>
+export type EffectiveModelRoute = z.infer<typeof EffectiveModelRouteSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
 export type ManagedSlackAuthorizeResponse = z.infer<

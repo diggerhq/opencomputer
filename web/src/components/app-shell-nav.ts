@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Bot,
   Boxes,
+  BrainCircuit,
   CalendarClock,
   KeySquare,
   Layers,
@@ -85,6 +86,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/secrets`,
             label: 'Secrets',
             icon: KeySquare,
+          },
+          {
+            to: `${projectPath}/byok`,
+            label: 'BYOK',
+            icon: BrainCircuit,
           },
           {
             to: projectPath,
