@@ -1,0 +1,143 @@
+---
+title: "Triage failed GitHub Actions runs"
+description: "Start an agent from a failed workflow and deliver its diagnosis to Slack"
+---
+
+The GitHub Actions triage example starts a durable OpenComputer session when a
+selected workflow fails. The agent receives the failed-step logs, separates
+observed evidence from likely causes, and publishes one report to a configured
+Slack conversation.
+
+<Frame>
+  <img
+    src="/images/agents/actions-triage-slack.png"
+    alt="A GitHub Actions CI failure report delivered by an OpenComputer agent to Slack"
+  />
+</Frame>
+
+## How it works
+
+1. A GitHub `workflow_run` workflow collects metadata and up to 24,000
+   characters of failed-step logs.
+2. The workflow posts a structured payload to an authenticated OpenComputer
+   agent webhook.
+3. The webhook starts a new session against the active deployment.
+4. The agent analyzes only the supplied evidence and calls its
+   `publish_ci_triage` tool.
+5. A durable outbox delivers provider-neutral report content to the Slack
+   conversation bound to the `ci-failures` destination.
+
+The collector does not check out or execute code from the failed run. The agent
+cannot rerun workflows, modify the repository, or call Slack directly.
+
+## Start with the example
+
+<Card
+  title="GitHub Actions triage agent"
+  icon="github"
+  href="https://github.com/diggerhq/opencomputer-example-actions-triage"
+>
+  Clone the complete agent project and GitHub Actions workflows from GitHub.
+</Card>
+
+```bash
+git clone https://github.com/diggerhq/opencomputer-example-actions-triage.git
+cd opencomputer-example-actions-triage
+npm install
+npm run opencomputer -- login
+npm run deploy -- --watch
+```
+
+Keep the watch command running while testing. It deploys changes to the
+Development environment; it does not start a local agent server.
+
+## Connect Slack
+
+The repository declares an **Engineering Slack** channel in
+`opencomputer/channels/team-slack.ts`. That channel defines the Slack app's
+capabilities and a stable `ci-failures` destination. Credentials and the actual
+Slack conversation are configured separately for each environment.
+
+In the OpenComputer project dashboard:
+
+1. Select **Development**, then open **Channels**.
+2. Open **Engineering Slack** and create or update a Slack app from the
+   generated manifest.
+3. Install the app in your workspace and invite it to the public conversation
+   that should receive failure reports.
+4. Bind `ci-failures` to that conversation and verify the binding.
+
+See [Slack channels](/agents/channels) for the complete installation and
+environment-isolation model. The agent publishes through the code-defined
+`ci-triage` [outbox](/agents/outboxes), so Slack delivery can retry separately
+from the agent turn.
+
+## Create the agent webhook
+
+Create a Development webhook from the repository:
+
+```bash
+npm run opencomputer -- webhooks create github-actions-failures \
+  --agent current \
+  --environment development
+```
+
+The CLI prints the stable invocation URL and bearer token. Save them as GitHub
+Actions repository secrets named:
+
+- `OPENCOMPUTER_WEBHOOK_URL`
+- `OPENCOMPUTER_WEBHOOK_TOKEN`
+
+The token is shown only when created or rotated. Never commit it. See
+[Agent webhooks](/agents/webhooks) for invocation and rotation details.
+
+## Choose workflows to monitor
+
+The included `.github/workflows/triage-failed-actions.yml` listens for a
+workflow whose display name is `CI`:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+```
+
+Change `workflows` to the exact display names you want to monitor. The
+collector must be present on the repository's default branch before GitHub
+will run it. To monitor another repository, copy the collector workflow and
+configure the same two repository secrets there.
+
+## Test the complete flow
+
+The example's `CI` workflow includes a manual `force_failure` input:
+
+1. Push the repository to GitHub's default branch.
+2. Open **Actions → CI → Run workflow**.
+3. Set `force_failure` to `true` and start the run.
+4. Wait for **Triage failed GitHub Actions** and confirm its webhook step
+   returns HTTP `202`.
+5. Open the `sessionUrl` printed by that step to inspect the durable session.
+6. In OpenComputer, confirm the `ci-triage` outbox item was delivered.
+7. Confirm a concise diagnosis and GitHub run link appear in the bound Slack
+   conversation. The complete structured content remains available on the
+   `ci-triage` outbox item.
+
+Each new webhook delivery starts a session pinned to the deployment active at
+that time. After changing the agent, trigger a new workflow run rather than
+steering an older session, which continues using its pinned deployment.
+
+The collector uses the GitHub run ID and attempt as its idempotency key. A
+retry of the same webhook delivery reuses the original session; rerunning the
+GitHub workflow creates a new attempt and report.
+
+## Safety properties
+
+- Workflow names, branches, commit metadata, actor names, and logs are treated
+  as untrusted evidence rather than instructions.
+- Common GitHub, AWS, and bearer-token shapes are redacted before model and
+  Slack use, in addition to GitHub's own secret masking.
+- Interactive questions are disabled so an unattended run records unknowns,
+  publishes its best available report, and finishes.
+- Missing or truncated logs are called out in the report, which always links
+  responders to the complete GitHub run.
