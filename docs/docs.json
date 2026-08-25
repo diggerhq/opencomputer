@@ -72,7 +72,8 @@
             "pages": [
               "agents/examples/gtm-engineer",
               "agents/examples/feature-flag-hygiene",
-              "agents/examples/github-actions-triage"
+              "agents/examples/github-actions-triage",
+              "agents/examples/test-coverage"
             ]
           }
         ]
