@@ -1,0 +1,86 @@
+---
+title: "Bring your own model account (BYOK)"
+description: "Use a Codex account for model inference in Serverless Agents"
+---
+
+BYOK lets a Serverless Agent use an organization-connected Codex account for
+eligible OpenAI models. OpenComputer keeps the authorization in its control
+plane; it is never added to your deployment, agent source, or runtime
+environment.
+
+BYOK is available on the **Pro and Max plans**. Runtime compute is still charged
+to your OpenComputer account. Model calls routed through your Codex account have
+no OpenComputer model-inference charge and remain subject to the provider's
+allowances and terms.
+
+## Connect a Codex account
+
+Only an organization admin can connect or replace the organization account.
+From a linked project repository, run:
+
+```bash
+npx --yes --package=@opencomputer/cli@latest -- opencomputer model-access connect codex
+```
+
+To choose a project explicitly, including when you are outside its repository,
+add its slug:
+
+```bash
+npx --yes --package=@opencomputer/cli@latest -- opencomputer model-access connect codex --project my-project
+```
+
+The CLI opens the authorized OAuth flow in your browser, stores the account for
+the organization, and enables it for both development and production in the
+selected project. The CLI exits after the callback completes.
+
+An organization has one Codex account. Connecting again replaces that account
+for every project that uses it.
+
+## Enable an existing account for another project
+
+Open the project's **BYOK** page and select **Enable for this project**. You can
+also run the connect command with `--project`; if the organization account is
+already connected, OpenComputer enables the project without requiring another
+OAuth flow.
+
+Project enablement always covers both development and production. Select
+**Disable for this project** to return only that project to Managed inference,
+or disconnect the organization account to stop using it in every project.
+
+## Select a Codex model
+
+Use the native `openai` provider in agent code:
+
+```tsx
+import { useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel({ provider: "openai", model: "gpt-5.6-sol" });
+  return "You are a helpful assistant.";
+}
+```
+
+The debug inspector labels a successful subscription-funded route **Codex
+account · BYOK**. If no connected and enabled account can serve the request,
+OpenComputer uses Managed inference when available. Managed fallback model
+calls are charged normally and are shown as Managed in session and usage
+details.
+
+To request an OpenAI model through Managed OpenRouter explicitly, use its full
+OpenRouter identifier instead:
+
+```tsx
+useModel({ provider: "openrouter", model: "openai/gpt-5" });
+```
+
+## Troubleshooting
+
+- **The BYOK page asks you to upgrade:** the organization must be on Pro or Max.
+- **The organization account is connected but the project is not enabled:**
+  select **Enable for this project** or rerun the CLI command with `--project`.
+- **The account is revoked or needs authentication:** rerun the connect command
+  to replace it.
+- **A session used Managed inference:** confirm the project is enabled and that
+  agent code uses `provider: "openai"` with a Codex-supported model.
+
+See [Models](/agents/models) for the general `useModel()` contract.

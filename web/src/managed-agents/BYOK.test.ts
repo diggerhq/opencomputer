@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
+  hasBYOKPlanAccess,
   hasProjectCodexAccess,
   modelAccessCLICommand,
   projectCodexBindingUpdates,
 } from './BYOK'
 
 describe('project BYOK presentation', () => {
+  it('limits BYOK to Pro and Max plans', () => {
+    expect(hasBYOKPlanAccess('base')).toBe(false)
+    expect(hasBYOKPlanAccess('pro')).toBe(true)
+    expect(hasBYOKPlanAccess('max')).toBe(true)
+  })
+
   it('uses an install-free production CLI command', () => {
     expect(
       modelAccessCLICommand('test', {
