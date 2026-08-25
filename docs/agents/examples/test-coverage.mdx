@@ -127,6 +127,25 @@ After changing the example source, wait for the Development watch deployment
 to finish and start a new session. Existing sessions remain pinned to the
 deployment with which they started.
 
+## What a dry run looks like
+
+A useful no-op still reports what it reviewed. This run ranked three recent
+merges, identified an entitlement gate as the highest-risk candidate, and
+named two concrete missing regression cases before deciding whether it could
+safely edit or publish tests.
+
+<Frame>
+  <img
+    src="/images/agents/test-coverage-dry-run.png"
+    alt="OpenComputer test coverage agent dry-run report ranking three merged pull requests and identifying missing OAuth completion-path and billing-unavailable regression tests"
+  />
+</Frame>
+
+The report is evidence for a human reviewer, not permission to publish. The
+agent proceeds only after it materializes the exact repository snapshot, reads
+the real test harness, edits test-only paths, and observes the validation
+commands succeed.
+
 ## Troubleshoot remote runs
 
 ### GitHub archive redirect is blocked
@@ -136,13 +155,24 @@ Current example source authorizes GitHub's archive redirect from
 `502 egress-redirect-blocked` while materializing the repository, update the
 example, wait for a new Development deployment, and start a new session.
 
-### Code Mode tools are unavailable
+### Bash capability and launch trust boundary
 
-The workflow requires filesystem and shell capabilities after materialization
-to inspect source, edit tests, and run validation commands. If a deployment
-reports `No Code Mode tools are available`, stop the run and keep
-`PUBLISH_ENABLED` set to `false`. Do not enable publishing until a complete dry
-run has executed and observed the repository's test commands.
+The example explicitly enables OpenComputer's built-in `bash` tool so the
+agent can inspect, edit, and test the materialized repository snapshot. If an
+older deployment reports `No Code Mode tools are available`, update the
+example, wait for a new Development deployment, and start a new session.
+
+`bash` is a broad capability. Repository files and test scripts are untrusted
+code and may execute inside the session runtime. For the initial launch, use a
+disposable or non-production repository, restrict the fine-grained token to
+that repository, keep `PUBLISH_ENABLED` set to `false`, and review the dry-run
+result before enabling publication.
+
+The agent prompt limits shell work to the exact materialized snapshot and
+reserves GitHub operations for audited code-defined tools. Those instructions
+are behavioral guardrails, not a sandbox boundary. Do not target a sensitive
+or production repository until a constrained repository executor replaces the
+general-purpose shell.
 
 ## Safety boundaries
 
@@ -154,6 +184,8 @@ run has executed and observed the repository's test commands.
   publishing.
 - Repository content and test output are treated as untrusted evidence rather
   than instructions.
+- The initial launch uses a general-purpose shell inside the session runtime;
+  repository and token scoping remain required even with prompt guardrails.
 - This example starts from explicit interactive runs. Add a recurring schedule
   only after validating the repository-specific workflow and publication
   policy.
