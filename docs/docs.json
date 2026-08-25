@@ -46,6 +46,7 @@
               "agents/channels",
               "agents/outboxes",
               "agents/secrets",
+              "agents/byok",
               "agents/deployments"
             ]
           },

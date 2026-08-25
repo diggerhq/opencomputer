@@ -1,13 +1,16 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BrainCircuit,
   Link2,
   Link2Off,
+  LockKeyhole,
   Loader2,
   RefreshCw,
   Unplug,
 } from 'lucide-react'
+import { getAutumnBilling, getBilling } from '@/api/client'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyRow } from '@/components/copy-row'
 import { EmptyState } from '@/components/empty-state'
@@ -80,6 +83,10 @@ export function projectCodexBindingUpdates(
   }))
 }
 
+export function hasBYOKPlanAccess(plan: string | undefined) {
+  return plan === 'pro' || plan === 'max'
+}
+
 export function ManagedProjectBYOK({
   projectId,
   projectSlug,
@@ -94,13 +101,35 @@ export function ManagedProjectBYOK({
   const cliCommand = modelAccessCLICommand(projectSlug, window.location)
   const connectionQueryKey = ['managed-model-access-connections']
   const bindingQueryKey = ['managed-model-access-bindings', projectId]
+  const billing = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
+  const autumnBilling = useQuery({
+    queryKey: ['billing', 'autumn'],
+    queryFn: getAutumnBilling,
+    enabled: billing.data?.billingProvider === 'autumn',
+  })
+  const usagePlan =
+    billing.data?.billingProvider === 'autumn'
+      ? autumnBilling.data?.usagePlan
+      : billing.data?.plan
+  const planEligible = hasBYOKPlanAccess(usagePlan)
+  const billingLoading =
+    billing.isLoading ||
+    (billing.data?.billingProvider === 'autumn' && autumnBilling.isLoading)
+  const billingError =
+    billing.isError ||
+    (billing.data?.billingProvider === 'autumn' && autumnBilling.isError)
   const connections = useQuery({
     queryKey: connectionQueryKey,
     queryFn: getManagedModelAccessConnections,
+    enabled: planEligible,
   })
   const bindings = useQuery({
     queryKey: bindingQueryKey,
     queryFn: () => getManagedModelAccessBindings(projectId),
+    enabled: planEligible,
   })
   const codex = connections.data?.find(
     (connection) => connection.provider === 'openai',
@@ -151,7 +180,10 @@ export function ManagedProjectBYOK({
     onError: (error) =>
       notifyError("Couldn't disconnect the Codex account.", error),
   })
-  if (connections.isLoading || bindings.isLoading) {
+  if (
+    billingLoading ||
+    (planEligible && (connections.isLoading || bindings.isLoading))
+  ) {
     return (
       <Panel>
         <PanelContent className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -161,7 +193,10 @@ export function ManagedProjectBYOK({
     )
   }
 
-  if (connections.isError || bindings.isError) {
+  if (
+    billingError ||
+    (planEligible && (connections.isError || bindings.isError))
+  ) {
     return (
       <Panel>
         <EmptyState
@@ -172,10 +207,31 @@ export function ManagedProjectBYOK({
             <Button
               variant="outline"
               onClick={() => {
+                void billing.refetch()
+                if (billing.data?.billingProvider === 'autumn') {
+                  void autumnBilling.refetch()
+                }
                 void connections.refetch()
               }}
             >
               Try again
+            </Button>
+          }
+        />
+      </Panel>
+    )
+  }
+
+  if (!planEligible) {
+    return (
+      <Panel>
+        <EmptyState
+          icon={LockKeyhole}
+          title="BYOK is available on Pro"
+          description="Upgrade to Pro to connect a Codex account and enable it for this project's development and production environments."
+          action={
+            <Button asChild>
+              <Link to="/billing">Upgrade to Pro</Link>
             </Button>
           }
         />

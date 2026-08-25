@@ -1,6 +1,11 @@
+import { getAutumnCustomer } from "./autumn_webhook";
+
 export interface ManagedAgentsEnv {
   MANAGED_AGENTS_API_URL?: string;
   OC_MANAGED_AGENTS_SECRET?: string;
+  OPENCOMPUTER_DB?: D1Database;
+  AUTUMN_SECRET_KEY?: string;
+  AUTUMN_BASE_URL?: string;
 }
 
 export interface ManagedAgentsCaller {
@@ -11,6 +16,51 @@ export interface ManagedAgentsCaller {
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
 const MAX_AGENT_SOURCE_BYTES = 10 * 1024 * 1024;
+
+export async function hasBYOKPlanAccess(
+  env: ManagedAgentsEnv,
+  orgID: string,
+): Promise<boolean> {
+  if (!env.OPENCOMPUTER_DB) return false;
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT plan, billing_provider FROM orgs WHERE id = ?1",
+  )
+    .bind(orgID)
+    .first<{ plan: string; billing_provider: string }>();
+  if (!org) return false;
+  if (org.billing_provider !== "autumn") {
+    return org.plan === "pro" || org.plan === "max";
+  }
+  if (!env.AUTUMN_SECRET_KEY) {
+    throw new Error("Autumn billing is not configured");
+  }
+  const customer = await getAutumnCustomer(
+    {
+      AUTUMN_SECRET_KEY: env.AUTUMN_SECRET_KEY,
+      AUTUMN_BASE_URL: env.AUTUMN_BASE_URL,
+    },
+    orgID,
+  );
+  return (
+    customer?.subscriptions?.some(
+      (subscription) =>
+        (!subscription.status || subscription.status === "active") &&
+        (subscription.plan_id === "pro" || subscription.plan_id === "max"),
+    ) === true
+  );
+}
+
+function byokPlanRequired(): Response {
+  return Response.json(
+    {
+      error: {
+        code: "model_access_plan_required",
+        message: "Upgrade to Pro to connect or enable a BYOK account.",
+      },
+    },
+    { status: 403 },
+  );
+}
 
 function b64url(value: ArrayBuffer | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -1258,7 +1308,12 @@ export async function proxyManagedAgents(
     request.method.toUpperCase() === "POST" &&
     suffix === "/model-access/connections"
   ) {
-    const payload = record(await request.clone().json().catch(() => null));
+    const payload = record(
+      await request
+        .clone()
+        .json()
+        .catch(() => null),
+    );
     if (payload?.provider !== "openai") {
       return Response.json(
         {
@@ -1268,6 +1323,45 @@ export async function proxyManagedAgents(
           },
         },
         { status: 400 },
+      );
+    }
+  }
+  const method = request.method.toUpperCase();
+  const modelAccessConnectionWrite =
+    method === "POST" &&
+    (suffix === "/model-access/connections" ||
+      /^\/model-access\/connections\/[^/]+\/(validate|complete)$/.test(suffix));
+  const modelAccessBindingEnable =
+    method === "PUT" &&
+    /^\/projects\/[^/]+\/model-access\/bindings\/[^/]+\/[^/]+$/.test(suffix) &&
+    record(
+      await request
+        .clone()
+        .json()
+        .catch(() => null),
+    )?.enabled === true;
+  if (modelAccessConnectionWrite || modelAccessBindingEnable) {
+    try {
+      if (!(await hasBYOKPlanAccess(env, caller.orgID))) {
+        return byokPlanRequired();
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "managed_agents.byok_entitlement_failed",
+          orgId: caller.orgID,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Response.json(
+        {
+          error: {
+            code: "billing_unavailable",
+            message: "BYOK plan eligibility could not be verified.",
+          },
+        },
+        { status: 503 },
       );
     }
   }
