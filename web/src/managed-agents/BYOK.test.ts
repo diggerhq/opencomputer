@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { hasProjectCodexAccess, modelAccessCLICommand } from './BYOK'
+import {
+  hasProjectCodexAccess,
+  modelAccessCLICommand,
+  projectCodexBindingUpdates,
+} from './BYOK'
 
 describe('project BYOK presentation', () => {
   it('uses an install-free production CLI command', () => {
@@ -46,5 +50,39 @@ describe('project BYOK presentation', () => {
         },
       ]),
     ).toBe(true)
+  })
+
+  it('enables development and production together without reconnecting', () => {
+    expect(projectCodexBindingUpdates('prj_test', true)).toEqual([
+      {
+        projectId: 'prj_test',
+        provider: 'openai',
+        environment: 'development',
+        enabled: true,
+      },
+      {
+        projectId: 'prj_test',
+        provider: 'openai',
+        environment: 'production',
+        enabled: true,
+      },
+    ])
+  })
+
+  it('disables both environments without disconnecting the account', () => {
+    expect(projectCodexBindingUpdates('prj_test', false)).toEqual([
+      {
+        projectId: 'prj_test',
+        provider: 'openai',
+        environment: 'development',
+        enabled: false,
+      },
+      {
+        projectId: 'prj_test',
+        provider: 'openai',
+        environment: 'production',
+        enabled: false,
+      },
+    ])
   })
 })

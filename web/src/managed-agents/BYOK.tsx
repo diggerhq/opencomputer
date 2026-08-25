@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BrainCircuit, Loader2, RefreshCw, Unplug } from 'lucide-react'
+import {
+  BrainCircuit,
+  Link2,
+  Link2Off,
+  Loader2,
+  RefreshCw,
+  Unplug,
+} from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyRow } from '@/components/copy-row'
 import { EmptyState } from '@/components/empty-state'
@@ -19,6 +26,7 @@ import {
   disconnectManagedModelAccessConnection,
   getManagedModelAccessConnections,
   getManagedModelAccessBindings,
+  putManagedModelAccessBinding,
   validateManagedModelAccessConnection,
 } from './api'
 
@@ -60,6 +68,18 @@ export function hasProjectCodexAccess(
   )
 }
 
+export function projectCodexBindingUpdates(
+  projectId: string,
+  enabled: boolean,
+) {
+  return (['development', 'production'] as const).map((environment) => ({
+    projectId,
+    provider: 'openai' as const,
+    environment,
+    enabled,
+  }))
+}
+
 export function ManagedProjectBYOK({
   projectId,
   projectSlug,
@@ -86,6 +106,29 @@ export function ManagedProjectBYOK({
     (connection) => connection.provider === 'openai',
   )
   const projectEnabled = hasProjectCodexAccess(bindings.data)
+  const updateProjectAccess = useMutation({
+    mutationFn: (enabled: boolean) =>
+      Promise.all(
+        projectCodexBindingUpdates(projectId, enabled).map((binding) =>
+          putManagedModelAccessBinding(binding),
+        ),
+      ),
+    onSuccess: async (_bindings, enabled) => {
+      await queryClient.invalidateQueries({ queryKey: bindingQueryKey })
+      notifySuccess(
+        enabled
+          ? 'Codex enabled for this project.'
+          : 'Codex disabled for this project.',
+      )
+    },
+    onError: (error, enabled) =>
+      notifyError(
+        enabled
+          ? "Couldn't enable Codex for this project."
+          : "Couldn't disable Codex for this project.",
+        error,
+      ),
+  })
   const validateConnection = useMutation({
     mutationFn: () => validateManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
@@ -147,10 +190,10 @@ export function ManagedProjectBYOK({
           <div>
             <PanelTitle>BYOK</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Link a Codex account to this project. Connecting it enables the
-              account for both development and production. Account connection
-              happens through the CLI. Managed usage-based inference remains the
-              fallback. Runtime compute is still charged.
+              Connect one Codex account to your organization, then enable it for
+              the projects that should use it. Project enablement always covers
+              both development and production. Managed usage-based inference
+              remains the fallback. Runtime compute is still charged.
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -172,7 +215,7 @@ export function ManagedProjectBYOK({
             </div>
             <p className="text-muted-foreground mt-2 text-sm">
               {codex
-                ? `Connected account${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
+                ? `Connected to your organization${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
                 : 'No Codex account is linked.'}
             </p>
             <div className="mt-4">
@@ -190,10 +233,46 @@ export function ManagedProjectBYOK({
                 />
               </div>
               {codex && !projectEnabled ? (
-                <p className="text-muted-foreground mt-2 text-sm">
-                  The organization account is connected, but this project will
-                  use Managed inference until you run the CLI command below.
-                </p>
+                <div className="mt-3 space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    The organization account is connected, but this project will
+                    use Managed inference until it is enabled.
+                  </p>
+                  {canManageConnection && codex.status === 'connected' ? (
+                    <Button
+                      variant="outline"
+                      disabled={updateProjectAccess.isPending}
+                      onClick={() => updateProjectAccess.mutate(true)}
+                    >
+                      {updateProjectAccess.isPending ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Link2 />
+                      )}
+                      Enable for this project
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {canManageConnection && projectEnabled ? (
+                <div className="mt-3 space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    Disable Codex here to return this project to Managed
+                    inference without disconnecting the organization account.
+                  </p>
+                  <Button
+                    variant="outline"
+                    disabled={updateProjectAccess.isPending}
+                    onClick={() => updateProjectAccess.mutate(false)}
+                  >
+                    {updateProjectAccess.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Link2Off />
+                    )}
+                    Disable for this project
+                  </Button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -273,10 +352,16 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Connect or replace with the CLI</PanelTitle>
+            <PanelTitle>
+              {codex
+                ? 'Replace the organization account with the CLI'
+                : 'Connect an organization account with the CLI'}
+            </PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              The Codex command opens OAuth, links or replaces the account, and
-              enables it for this project in both development and production.
+              The Codex command opens OAuth, links or replaces the organization
+              account, and enables it for this project. If the account is
+              already connected, use the button above to enable this project
+              without repeating OAuth.
             </PanelDescription>
           </div>
         </PanelHeader>
