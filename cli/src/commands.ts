@@ -362,6 +362,15 @@ async function attachSession(
   }
 }
 
+export function nextAgentEventDeadline(
+  deadline: number,
+  timeoutMs: number,
+  receivedEvents: number,
+  now = Date.now(),
+): number {
+  return receivedEvents > 0 ? now + timeoutMs : deadline;
+}
+
 async function waitForEvent(
   client: OpenComputerClient,
   sessionId: string,
@@ -370,10 +379,11 @@ async function waitForEvent(
   onEvent: (event: ManagedAgentEvent) => void,
   timeoutMs: number,
 ): Promise<{ event: ManagedAgentEvent; cursor: number }> {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   let cursor = after;
   while (Date.now() < deadline) {
-    for (const event of await client.events(sessionId, cursor)) {
+    const events = await client.events(sessionId, cursor);
+    for (const event of events) {
       cursor = Math.max(cursor, event.seq);
       onEvent(event);
       if (event.type === "runtime.disconnected") {
@@ -385,6 +395,10 @@ async function waitForEvent(
       }
       if (terminal(event)) return { event, cursor };
     }
+    // Long-running agent turns may exceed one fixed timeout window while
+    // continuing to emit useful progress. Timeout only after a full quiet
+    // window with no new durable session events.
+    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("Timed out waiting for the agent.");

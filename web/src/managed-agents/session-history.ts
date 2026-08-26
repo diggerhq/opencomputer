@@ -1,4 +1,8 @@
-import type { ManagedAgentDeployment, ManagedAgentSession } from './api'
+import type {
+  ManagedAgentDeployment,
+  ManagedAgentEvent,
+  ManagedAgentSession,
+} from './api'
 import type { ProjectEnvironment } from './project-context'
 
 export function sessionsForEnvironment(
@@ -27,4 +31,15 @@ export function playgroundSessionSearch(search: string, sessionId?: string) {
   if (sessionId) next.set('session', sessionId)
   else next.delete('session')
   return next.size ? `?${next.toString()}` : ''
+}
+
+export function turnAssistantText(events: ManagedAgentEvent[], turnId: string) {
+  let streamedText = ''
+  let completedText = ''
+  for (const event of events) {
+    if (event.turnId !== turnId || typeof event.data.text !== 'string') continue
+    if (event.type === 'message.delta') streamedText += event.data.text
+    if (event.type === 'message.completed') completedText = event.data.text
+  }
+  return streamedText || completedText
 }

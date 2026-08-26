@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { ManagedAgentDeployment, ManagedAgentSession } from './api'
+import type {
+  ManagedAgentDeployment,
+  ManagedAgentEvent,
+  ManagedAgentSession,
+} from './api'
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
   sessionsForEnvironment,
+  turnAssistantText,
 } from './session-history'
 
 function deployment(
@@ -85,5 +90,41 @@ describe('playground session URL state', () => {
     expect(playgroundSessionSearch('?agent=reviewer&session=session-1')).toBe(
       '?agent=reviewer',
     )
+  })
+})
+
+describe('turnAssistantText', () => {
+  const event = (
+    seq: number,
+    turnId: string,
+    type: string,
+    text: string,
+  ): ManagedAgentEvent => ({
+    seq,
+    turnId,
+    type,
+    data: { text },
+  })
+
+  it('joins streamed deltas for only the requested turn', () => {
+    expect(
+      turnAssistantText(
+        [
+          event(1, 'turn-1', 'message.delta', 'Reviewing '),
+          event(2, 'turn-2', 'message.delta', 'Ignore me'),
+          event(3, 'turn-1', 'message.delta', 'the repository.'),
+        ],
+        'turn-1',
+      ),
+    ).toBe('Reviewing the repository.')
+  })
+
+  it('uses the completed response when no deltas were recorded', () => {
+    expect(
+      turnAssistantText(
+        [event(1, 'turn-1', 'message.completed', 'Finished response')],
+        'turn-1',
+      ),
+    ).toBe('Finished response')
   })
 })
