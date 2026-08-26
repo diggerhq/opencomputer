@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Build, test, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
