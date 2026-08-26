@@ -240,6 +240,69 @@ export interface ToolDefinition<
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
+export type ActionEffect = "read" | "write";
+export type ActionDuration = "inline" | "deferred";
+
+export interface ActionRequest {
+  readonly id: string;
+  readonly definitionId: string;
+  readonly server: string;
+  readonly tool: string;
+  readonly effect: ActionEffect;
+  readonly duration: ActionDuration;
+  readonly input: Readonly<Record<string, DataValue>>;
+  readonly projectId: string;
+  readonly environment: string;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly deploymentDigest: string;
+}
+
+export interface ApprovalRule {
+  readonly role: string;
+  readonly reason?: string;
+}
+
+export type ActionDecision =
+  | { readonly action: "allow" }
+  | { readonly action: "deny"; readonly reason: string }
+  | { readonly action: "require-approval"; readonly approval: ApprovalRule }
+  | { readonly action: "defer"; readonly until: string }
+  | { readonly action: "route"; readonly executor: string };
+
+type MaterializedSecrets<
+  Secrets extends Readonly<Record<string, SecretReference>>,
+> = { readonly [Key in keyof Secrets]: string };
+
+export interface ActionExecutionContext<
+  Secrets extends Readonly<Record<string, SecretReference>>,
+> {
+  readonly actionId: string;
+  readonly requestOid: string;
+  readonly input: Readonly<Record<string, DataValue>>;
+  readonly secrets: MaterializedSecrets<Secrets>;
+  readonly signal?: AbortSignal;
+}
+
+export interface ActionDefinition<
+  Output extends DataValue = DataValue,
+  Secrets extends Readonly<
+    Record<string, SecretReference>
+  > = Readonly<Record<string, SecretReference>>,
+> extends ResourceReference {
+  readonly kind: "action";
+  readonly version: 1;
+  readonly server: string;
+  readonly tool: string;
+  readonly description: string;
+  readonly effect: ActionEffect;
+  readonly duration: ActionDuration;
+  readonly input?: ToolInputSchema;
+  readonly output?: ToolInputSchema;
+  readonly secrets: Secrets;
+  run(context: ActionExecutionContext<Secrets>): Output | Promise<Output>;
+}
+
 interface AgentHooks {
   useInput(): Readonly<AgentInput>;
   useModel(model: ModelSelection): void;
@@ -247,6 +310,11 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
+}
+
+interface ActionHooks {
+  useAction(): Readonly<ActionRequest>;
+  useGate(gate: () => ActionDecision): void;
 }
 
 function hooks(): AgentHooks {
@@ -257,6 +325,18 @@ function hooks(): AgentHooks {
     throw new Error("OpenComputer hooks can only run while rendering an agent");
   }
   return value as AgentHooks;
+}
+
+function actionHooks(): ActionHooks {
+  const value = (globalThis as Record<PropertyKey, unknown>)[
+    Symbol.for("opencomputer.action-hooks")
+  ];
+  if (!value) {
+    throw new Error(
+      "OpenComputer action hooks can only run while evaluating an action",
+    );
+  }
+  return value as ActionHooks;
 }
 
 function identifier(value: string, kind: string): string {
@@ -686,6 +766,84 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
     name: id,
   });
 }
+
+export function defineAction<
+  Output extends DataValue = DataValue,
+  Secrets extends Readonly<
+    Record<string, SecretReference>
+  > = Readonly<Record<string, never>>,
+>(input: {
+  id: string;
+  server: string;
+  tool: string;
+  description: string;
+  effect: ActionEffect;
+  duration?: ActionDuration;
+  input?: ToolInputSchema;
+  output?: ToolInputSchema;
+  secrets?: Secrets;
+  run(context: ActionExecutionContext<Secrets>): Output | Promise<Output>;
+}): ActionDefinition<Output, Secrets> {
+  const id = identifier(input.id, "defineAction");
+  const server = identifier(input.server, "defineAction server");
+  const tool = identifier(input.tool, "defineAction tool");
+  if (![id, server, tool].every((value) => /^[a-zA-Z0-9_-]+$/.test(value))) {
+    throw new Error(
+      "Action IDs, servers, and tools may contain only letters, numbers, underscores, and hyphens",
+    );
+  }
+  if (!input.description.trim()) {
+    throw new Error("defineAction requires a non-empty description");
+  }
+  if (input.effect !== "read" && input.effect !== "write") {
+    throw new Error("defineAction effect must be read or write");
+  }
+  if (input.input && typeof input.input !== "object") {
+    throw new Error("defineAction input must be a JSON Schema object");
+  }
+  if (input.output && typeof input.output !== "object") {
+    throw new Error("defineAction output must be a JSON Schema object");
+  }
+  const secrets = Object.freeze({ ...(input.secrets ?? {}) }) as Secrets;
+  for (const [alias, secret] of Object.entries(secrets)) {
+    identifier(alias, "defineAction secret alias");
+    if (secret.kind !== "secret") {
+      throw new Error(`Action secret ${alias} must use useSecret()`);
+    }
+  }
+  return Object.freeze({
+    kind: "action" as const,
+    version: 1 as const,
+    ...input,
+    id,
+    server,
+    tool,
+    duration: input.duration ?? "inline",
+    secrets,
+  });
+}
+
+export const useAction = (): Readonly<ActionRequest> =>
+  actionHooks().useAction();
+export const useGate = (gate: () => ActionDecision): void =>
+  actionHooks().useGate(gate);
+export const allow = (): ActionDecision => ({ action: "allow" });
+export const deny = (reason: string): ActionDecision => ({
+  action: "deny",
+  reason,
+});
+export const requireApproval = (approval: ApprovalRule): ActionDecision => ({
+  action: "require-approval",
+  approval,
+});
+export const defer = (until: string): ActionDecision => ({
+  action: "defer",
+  until,
+});
+export const route = (executor: string): ActionDecision => ({
+  action: "route",
+  executor,
+});
 
 export const useInput = (): Readonly<AgentInput> => hooks().useInput();
 export const useCurrentInput = useInput;

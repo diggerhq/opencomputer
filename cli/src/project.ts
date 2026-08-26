@@ -47,6 +47,18 @@ export interface McpServerManifest {
   connection?: string;
 }
 
+export interface ActionManifestDefinition {
+  id: string;
+  server: string;
+  tool: string;
+  description: string;
+  effect: "read" | "write";
+  duration: "inline" | "deferred";
+  input?: unknown;
+  output?: unknown;
+  secrets: Record<string, string>;
+}
+
 export interface ChannelDestinationManifest {
   type: "conversation";
   visibility: "public" | "private";
@@ -1182,6 +1194,94 @@ function staticJsonValue(expression: ts.Expression, label: string): unknown {
   throw new Error(`${label} must be a static JSON value`);
 }
 
+function definedActions(source: string, path: string): ActionManifestDefinition[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const actions: ActionManifestDefinition[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineAction"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error(`${path} defineAction() requires an object literal`);
+      }
+      const string = (name: string): string =>
+        literalStringValue(
+          objectProperty(input, name),
+          `${path} action ${name}`,
+        );
+      const id = string("id");
+      const server = string("server");
+      const tool = string("tool");
+      const description = string("description");
+      const effect = string("effect");
+      if (effect !== "read" && effect !== "write") {
+        throw new Error(`${path} action ${id} effect must be read or write`);
+      }
+      const durationExpression = objectProperty(input, "duration");
+      const duration = durationExpression
+        ? literalStringValue(durationExpression, `${path} action ${id} duration`)
+        : "inline";
+      if (duration !== "inline" && duration !== "deferred") {
+        throw new Error(
+          `${path} action ${id} duration must be inline or deferred`,
+        );
+      }
+      const secrets: Record<string, string> = {};
+      const secretsExpression = objectProperty(input, "secrets");
+      if (secretsExpression) {
+        if (!ts.isObjectLiteralExpression(secretsExpression)) {
+          throw new Error(`${path} action ${id} secrets must be an object literal`);
+        }
+        for (const property of secretsExpression.properties) {
+          if (!ts.isPropertyAssignment(property)) {
+            throw new Error(`${path} action ${id} secrets cannot use methods or spreads`);
+          }
+          const alias = staticPropertyName(
+            property.name,
+            `${path} action ${id} secret alias`,
+          );
+          const value = property.initializer;
+          if (
+            !ts.isCallExpression(value) ||
+            !ts.isIdentifier(value.expression) ||
+            value.expression.text !== "useSecret" ||
+            value.arguments.length !== 1 ||
+            !ts.isStringLiteralLike(value.arguments[0]!)
+          ) {
+            throw new Error(
+              `${path} action ${id} secret ${alias} must call useSecret() with a literal name`,
+            );
+          }
+          secrets[alias] = value.arguments[0].text;
+        }
+      }
+      const inputExpression = objectProperty(input, "input");
+      const outputExpression = objectProperty(input, "output");
+      actions.push({
+        id,
+        server,
+        tool,
+        description,
+        effect,
+        duration,
+        ...(inputExpression
+          ? { input: staticJsonValue(inputExpression, `${path} action ${id} input`) }
+          : {}),
+        ...(outputExpression
+          ? { output: staticJsonValue(outputExpression, `${path} action ${id} output`) }
+          : {}),
+        secrets,
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return actions;
+}
+
 function scheduleDefinition(
   source: string,
   path: string,
@@ -1638,6 +1738,11 @@ function agentApiRuntimeSource(): string {
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
   return value;
 }
+function actionHooks() {
+  const value = globalThis[Symbol.for("opencomputer.action-hooks")];
+  if (!value) throw new Error("OpenComputer action hooks can only run while evaluating an action");
+  return value;
+}
 function id(value, kind) {
   const normalized = String(value).trim();
   if (!normalized) throw new Error(kind + " requires a non-empty id");
@@ -1703,6 +1808,22 @@ export const defineTool = (input) => {
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
   return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
 };
+export const defineAction = (input) => {
+  const actionId = id(input.id, "defineAction");
+  const server = id(input.server, "defineAction server");
+  const tool = id(input.tool, "defineAction tool");
+  if (![actionId, server, tool].every((value) => /^[a-zA-Z0-9_-]+$/.test(value))) throw new Error("Invalid action identifier");
+  if (!String(input.description).trim()) throw new Error("defineAction requires a non-empty description");
+  if (input.effect !== "read" && input.effect !== "write") throw new Error("defineAction effect must be read or write");
+  if (input.input && typeof input.input !== "object") throw new Error("defineAction input must be a JSON Schema object");
+  if (input.output && typeof input.output !== "object") throw new Error("defineAction output must be a JSON Schema object");
+  const secrets = Object.freeze({ ...(input.secrets || {}) });
+  for (const [alias, secret] of Object.entries(secrets)) {
+    id(alias, "defineAction secret alias");
+    if (secret?.kind !== "secret") throw new Error("Action secret " + alias + " must use useSecret()");
+  }
+  return Object.freeze({ kind: "action", version: 1, ...input, id: actionId, server, tool, duration: input.duration || "inline", secrets });
+};
 export const publishOutbox = async (outbox, input) => {
   const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
   const type = String(input.type).trim();
@@ -1727,6 +1848,13 @@ export const useTool = (tool) => hooks().useTool(tool);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
+export const useAction = () => actionHooks().useAction();
+export const useGate = (gate) => actionHooks().useGate(gate);
+export const allow = () => ({ action: "allow" });
+export const deny = (reason) => ({ action: "deny", reason });
+export const requireApproval = (approval) => ({ action: "require-approval", approval });
+export const defer = (until) => ({ action: "defer", until });
+export const route = (executor) => ({ action: "route", executor });
 `;
 }
 
@@ -1735,6 +1863,10 @@ export async function prepareAgent(root: string): Promise<string> {
   await rm(runtime, { recursive: true, force: true });
   await mkdir(runtime, { recursive: true });
   const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
+  const actionsPath = resolve(root, "actions.ts");
+  const actionsSource = (await exists(actionsPath))
+    ? await readFile(actionsPath, "utf8")
+    : undefined;
   const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(
     agentSource,
   );
@@ -1859,6 +1991,54 @@ the product or support surface presented to users.
     resolve(runtime, "opencomputer-agent.js"),
     agentApiRuntimeSource(),
   );
+  let actionDefinitions: ActionManifestDefinition[] = [];
+  if (actionsSource !== undefined) {
+    actionDefinitions = definedActions(actionsSource, "actions.ts");
+    const duplicateAction = actionDefinitions.find(
+      (action, index) =>
+        actionDefinitions.findIndex((candidate) => candidate.id === action.id) !==
+        index,
+    );
+    if (duplicateAction) {
+      throw new Error(
+        `Action id ${JSON.stringify(duplicateAction.id)} is defined more than once`,
+      );
+    }
+    const duplicateActionTool = actionDefinitions.find(
+      (action, index) =>
+        actionDefinitions.findIndex(
+          (candidate) =>
+            candidate.server === action.server && candidate.tool === action.tool,
+        ) !== index,
+    );
+    if (duplicateActionTool) {
+      throw new Error(
+        `Action tool ${JSON.stringify(`${duplicateActionTool.server}.${duplicateActionTool.tool}`)} is defined more than once`,
+      );
+    }
+    const compiledActions = transpile(actionsSource, "actions.ts");
+    const actionDiagnostics = compiledActions.diagnostics ?? [];
+    if (
+      actionDiagnostics.some(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      )
+    ) {
+      throw new Error(
+        `actions.ts could not be compiled: ${actionDiagnostics
+          .map((diagnostic) =>
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          )
+          .join("; ")}`,
+      );
+    }
+    await writeFile(
+      resolve(runtime, "actions.js"),
+      compiledActions.outputText.replace(
+        /(["'])@opencomputer\/agent\1/g,
+        '"./opencomputer-agent.js"',
+      ),
+    );
+  }
   const toolSources: Array<{ filename: string; source: string }> = [];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
@@ -1999,6 +2179,14 @@ the product or support surface presented to users.
         ].sort(),
         mcpServerDefinitions,
         models: declaredModels,
+        ...(actionsSource === undefined
+          ? {}
+          : {
+              actions: {
+                entry: "../actions.js",
+                definitions: actionDefinitions,
+              },
+            }),
       },
       null,
       2,

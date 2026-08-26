@@ -384,6 +384,87 @@ export default function Agent() {
   }
 });
 
+test("the compiler packages statically declared gated actions", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-actions-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "actions.ts"),
+      `import {
+  allow,
+  defineAction,
+  deny,
+  useAction,
+  useGate,
+  useSecret,
+} from "@opencomputer/agent";
+
+export const createPullRequest = defineAction({
+  id: "github_create_pull_request",
+  server: "github",
+  tool: "create_pull_request",
+  description: "Mirror a reviewed commit and create a pull request",
+  effect: "write",
+  input: {
+    type: "object",
+    properties: { headOid: { type: "string" } },
+    required: ["headOid"],
+    additionalProperties: false,
+  },
+  output: { type: "object" },
+  secrets: { githubToken: useSecret("GITHUB_TOKEN") },
+  async run({ input, secrets }) {
+    return { headOid: input.headOid, tokenPresent: Boolean(secrets.githubToken) };
+  },
+});
+
+const request = useAction();
+useGate(() => request.effect === "write" ? deny("approval required") : allow());
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as {
+      actions: {
+        entry: string;
+        definitions: Array<Record<string, unknown>>;
+      };
+    };
+    assert.deepEqual(manifest.actions, {
+      entry: "../actions.js",
+      definitions: [
+        {
+          id: "github_create_pull_request",
+          server: "github",
+          tool: "create_pull_request",
+          description: "Mirror a reviewed commit and create a pull request",
+          effect: "write",
+          duration: "inline",
+          input: {
+            type: "object",
+            properties: { headOid: { type: "string" } },
+            required: ["headOid"],
+            additionalProperties: false,
+          },
+          output: { type: "object" },
+          secrets: { githubToken: "GITHUB_TOKEN" },
+        },
+      ],
+    });
+    const source = await readFile(resolve(runtime, "actions.js"), "utf8");
+    assert.match(source, /from "\.\/opencomputer-agent\.js"/);
+    assert.doesNotMatch(source, /@opencomputer\/agent/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler preserves an explicit OpenAI model selection for Codex routing", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-openai-model-"));
   const root = resolve(parent, "app");
