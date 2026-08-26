@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/cli",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "Build, test, deploy, and share OpenComputer agents as code.",
   "type": "module",
   "bin": {
@@ -46,6 +46,7 @@
     "@opencode-ai/sdk": "1.18.4",
     "ai": "^7.0.45",
     "croner": "^9.1.0",
+    "esbuild": "^0.28.2",
     "opencode-ai": "1.18.4",
     "react": "^19.2.8",
     "typescript": "^5.9.0"
