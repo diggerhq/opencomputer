@@ -1,10 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectManagedAgentEventPages,
   displayManagedAgentName,
   managedAgentModelRoute,
   managedAgentRenderDebug,
   nextAgentEventDeadline,
 } from './api'
+
+describe('collectManagedAgentEventPages', () => {
+  it('follows event cursors until the API returns an empty page', async () => {
+    const cursors: number[] = []
+    const pages = new Map([
+      [0, [{ seq: 1 }, { seq: 500 }]],
+      [500, [{ seq: 501 }]],
+      [501, []],
+    ])
+
+    const events = await collectManagedAgentEventPages((after) => {
+      cursors.push(after)
+      return Promise.resolve(
+        (pages.get(after) ?? []).map(({ seq }) => ({
+          seq,
+          type: 'message.delta',
+          data: { text: String(seq) },
+        })),
+      )
+    })
+
+    expect(cursors).toEqual([0, 500, 501])
+    expect(events.map(({ seq }) => seq)).toEqual([1, 500, 501])
+  })
+})
 
 describe('nextAgentEventDeadline', () => {
   it('refreshes the inactivity deadline only when progress arrives', () => {

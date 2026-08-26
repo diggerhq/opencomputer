@@ -916,14 +916,35 @@ export async function getManagedAgentSessions(agentId?: string) {
     : sessions
 }
 
-export async function getManagedAgentSessionEvents(sessionId: string) {
-  return (
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=0`,
-      undefined,
-      eventsResponseSchema,
-    )
-  ).events
+export async function collectManagedAgentEventPages(
+  loadPage: (after: number) => Promise<ManagedAgentEvent[]>,
+  after = 0,
+) {
+  const collected: ManagedAgentEvent[] = []
+  let cursor = after
+  for (;;) {
+    const events = await loadPage(cursor)
+    if (events.length === 0) return collected
+    collected.push(...events)
+    const nextCursor = Math.max(cursor, ...events.map((event) => event.seq))
+    if (nextCursor === cursor) return collected
+    cursor = nextCursor
+  }
+}
+
+export async function getManagedAgentSessionEvents(
+  sessionId: string,
+  after = 0,
+) {
+  return collectManagedAgentEventPages(async (cursor) => {
+    return (
+      await apiFetch(
+        `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
+        undefined,
+        eventsResponseSchema,
+      )
+    ).events
+  }, after)
 }
 
 export async function admitManagedAgentInput(
