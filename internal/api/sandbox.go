@@ -545,6 +545,15 @@ func layerSecretStores(cfg *types.SandboxConfig, inheritedBase, inheritedChild, 
 // shape (the existing db.DBTemplate); same semantics (org-scoped first,
 // public fallback). Returns (nil, nil) when no template name was supplied
 // or no source is configured — caller should treat that as "no template".
+// isDefaultTemplate reports whether name is the platform's default template —
+// the one the pool manufactures and the SDK sends when the caller did not ask
+// for anything. Creates naming it are treated exactly like creates naming
+// nothing: they resolve off the hot path, and failing to resolve is not a 404
+// (404-ing the default would fail every create on the cell).
+func isDefaultTemplate(name string) bool {
+	return name == poolTemplateName()
+}
+
 func (s *Server) resolveTemplate(ctx context.Context, orgID [16]byte, hasOrg bool, name string) (*db.DBTemplate, error) {
 	if name == "" {
 		return nil, nil
@@ -554,7 +563,35 @@ func (s *Server) resolveTemplate(ctx context.Context, orgID [16]byte, hasOrg boo
 		if hasOrg {
 			oid = uuid.UUID(orgID)
 		}
-		t, err := s.edge.LookupTemplate(ctx, oid, name)
+		fetch := func(fctx context.Context) (*db.DBTemplate, error) {
+			return s.edge.LookupTemplate(fctx, oid, name)
+		}
+
+		// The default template never blocks a create. It is the name virtually
+		// every create carries (the SDK sends "base" unless told otherwise), it
+		// is the shape the pool already manufactures, and nothing the create
+		// path does with the hot response depends on resolving it — which is
+		// precisely why a create that omits the name entirely was ~64us while
+		// one that named "base" was 580ms.
+		//
+		// Answer from cache, fill in the background, and treat "not resolved
+		// yet" the same as "no name given". isDefaultTemplate keeps the caller's
+		// not-found branch from turning that into a 404.
+		if isDefaultTemplate(name) {
+			return s.templateCache.lookupNonBlocking(oid, name, fetch), nil
+		}
+
+		// A named custom template DOES have to resolve before the create can
+		// proceed — its drive keys decide what the sandbox boots from, and a
+		// name that does not exist must 404 rather than silently boot a base
+		// box. Single-flighted and stale-while-revalidate, so only a name never
+		// seen before pays a round trip.
+		//
+		// Only positive results are cached. A miss means "no such template", and
+		// caching that would break the create-a-template-then-use-it sequence for
+		// the length of the TTL — a correctness bug traded for latency we can get
+		// another way.
+		t, err := s.templateCache.lookup(ctx, oid, name, fetch)
 		if err != nil {
 			if errors.Is(err, edgeclient.ErrNotFound) {
 				return nil, nil
@@ -803,6 +840,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// Edge-first when s.edge is configured (post-migration 041), local PG
 	// otherwise. Same return shape so the rest of the create flow doesn't
 	// care which path produced it.
+	tr := traceFrom(ctx)
+	tr.mark("region")
+
 	var templateRootfsKey, templateWorkspaceKey string
 	var templateID *uuid.UUID
 	tmpl, err := s.resolveTemplate(ctx, orgID, hasOrg, cfg.Template)
@@ -821,8 +861,14 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			templateWorkspaceKey = *tmpl.WorkspaceS3Key
 			log.Printf("sandbox: using snapshot template drives: rootfs=%s, workspace=%s", templateRootfsKey, templateWorkspaceKey)
 		}
-	} else if cfg.Template != "" {
+	} else if cfg.Template != "" && !isDefaultTemplate(cfg.Template) {
 		// Requested a template by name but it didn't resolve (not found).
+		//
+		// The default template is exempt: it resolves off the hot path and may
+		// legitimately read as nil before its first background fill lands. That
+		// is the same state as a create that named no template at all, which
+		// boots a base box — so 404-ing here would fail ordinary creates for a
+		// value the create does not use.
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "template not found: " + cfg.Template})
 	}
 
@@ -831,35 +877,55 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// try to claim a pre-warmed pooled box — resume + rebind, skipping the ~260ms
 	// cold restore. A miss or any ineligibility falls through to the cold create
 	// below, so it's never worse than the status quo.
-	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTarget() > 0 &&
-		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
-		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
-		// A no-template create wants a base-golden box, which is exactly what the
-		// pool manufactures. Default to poolTemplateName() (the same value the
-		// manufacture + reconciler use — "base" unless overridden) so the claim
-		// query matches the pooled rows; the prior hardcoded "default" never
-		// matched, sending every default-shape origin create to the cold path.
-		poolTemplate := cfg.Template
-		if poolTemplate == "" {
-			poolTemplate = poolTemplateName()
-		}
-		// This is the fleet's own warm pool, which lives in PG and is claimed by
-		// resume+rebind on a worker. A backend that keeps its own warm stock
-		// serves it from inside Claim instead, so there is nothing to branch on
-		// here — the create below is the same call either way.
-		if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
-			return resp
+	// Resolved BEFORE the pool fast-path below, because which backend serves this
+	// create decides whether that pool is even its supply. Safe to move earlier:
+	// Accepts is documented as a pure function of the request, so asking it here
+	// yields the same answer it would further down.
+	tr.mark("tmpl")
+	orgRuntime := runtimeFor(c)
+	backend, ok := s.claimBackend(placement{
+		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+	})
+
+	// This is the FLEET's warm pool: rows in this cell's Postgres, claimed by
+	// resume+rebind on a QEMU worker. A backend that keeps its own warm stock
+	// draws from somewhere else entirely, so for those creates this query is not
+	// a fast path — it is a guaranteed miss with a row-locking claim inside it.
+	//
+	// An earlier version of this comment said there was nothing to branch on
+	// here. That was wrong, and the cost was the largest single item on the
+	// create path: per-step tracing of a 20-way burst on a MicroVM cell put
+	// 49-78ms in this block while every other step in the handler — bind,
+	// backend selection, claim, activate, token — measured 1-35 MICROseconds.
+	// It ramped across the burst, which is the row lock, and it could never once
+	// have succeeded, because that cell has no QEMU pool to claim from.
+	//
+	// The guard is a property of the backend rather than a runtime name, so a
+	// future self-stocking backend gets it without touching this file.
+	if !ok || !servesOwnStock(backend) {
+		if s.store != nil && hasOrg && s.poolEnabled() && s.poolTarget() > 0 &&
+			templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
+			len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
+			// A no-template create wants a base-golden box, which is exactly what the
+			// pool manufactures. Default to poolTemplateName() (the same value the
+			// manufacture + reconciler use — "base" unless overridden) so the claim
+			// query matches the pooled rows; the prior hardcoded "default" never
+			// matched, sending every default-shape origin create to the cold path.
+			poolTemplate := cfg.Template
+			if poolTemplate == "" {
+				poolTemplate = poolTemplateName()
+			}
+			if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
+				return resp
+			}
 		}
 	}
+	tr.mark("pgpool")
 
 	// Everything below is runtime-independent: choose a host, write the row,
 	// start the host, promote. runCreate owns that order; the closures below own
 	// what each step means here. Before this the sequence was inline and the
 	// persist-before-activate constraint was a comment.
-	orgRuntime := runtimeFor(c)
-	backend, ok := s.claimBackend(placement{
-		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
-	})
 	if !ok {
 		// No registered backend can accept a sandbox. A cell in this state can
 		// still serve the ones it already has, so this is a capacity answer.
@@ -871,6 +937,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// Pre-generate the sandbox id: the row must carry it before the host boots,
 	// because the host looks its org up by this id while starting.
 	sandboxID := "sb-" + uuid.New().String()[:8]
+	tr.setSandboxID(sandboxID)
+	tr.mark("backend")
 
 	// Register inline webhooks at the edge (Svix) BEFORE the row and the boot, so
 	// the endpoint exists well before `created` is relayed. On this path `created`
@@ -881,6 +949,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
 	}
 
+	tr.mark("webhooks")
 	var host activated
 	workerID, err := runCreate(ctx, sandboxID, createSteps{
 		claim: func(ctx context.Context) (string, error) {
@@ -959,6 +1028,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			// started emits no events, so those endpoints simply sit idle.
 		},
 	})
+	tr.mark("runcreate")
 	if err != nil {
 		return respondCreateErr(c, err)
 	}
@@ -996,6 +1066,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 
 	// Reason text reaches customers through webhooks, so it says what happened
 	// rather than what ran it.
+	tr.mark("token")
 	s.emitEvent("create", sandboxID, workerID, "sandbox started")
 
 	resp := map[string]interface{}{
@@ -1615,10 +1686,11 @@ func (s *Server) setLimits(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
+	// respondManagerErr, not a bare 500: a runtime that has no sizing knob at all
+	// (MicroVM) must answer 501 so the caller stops retrying a resize that can
+	// never apply, rather than reading it as a transient server fault.
 	if err := s.manager.SetResourceLimits(ctx, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+		return respondManagerErr(c, err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1697,8 +1769,9 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	if s.manager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
+	// See the sibling handler: 501 for a runtime with no sizing knob.
 	if err := s.manager.SetResourceLimits(c.Request().Context(), id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return respondManagerErr(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"sandboxID":  id,

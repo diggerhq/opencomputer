@@ -94,3 +94,6 @@ cloudflare-workers/api-edge/wrangler.ci.toml
 # stray binaries from `go build ./cmd/...` without -o
 /microvm-hooks
 /microvm-harness
+
+.dev.vars*
+!.dev.vars.example

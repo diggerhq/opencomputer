@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -80,7 +81,31 @@ const AgentTunnelPath = agentTunnelPath
 // may be mid-resume, and blocking here would put connection setup on the
 // caller's critical path. gRPC connects lazily on the first RPC, and if the box
 // is suspended, Lambda holds that request while it auto-resumes.
-func dialAgent(endpoint string, port int32, token tokenProvider) (*agentConn, error) {
+// holdIdle selects the keepalive contract for a channel, and the two callers
+// want opposite things from it.
+//
+// A CUSTOMER sandbox should be allowed to fall idle and suspend — that is how
+// this backend stops billing compute for a box nobody is using — so its channel
+// must not ping when there are no active RPCs.
+//
+// POOL STOCK is the exact inverse: the pool's whole job is to keep a box warm
+// and reachable so the first exec doesn't pay a handshake, and it pays for that
+// on purpose. With PermitWithoutStream false, a stocked channel emits nothing
+// between the pool's 30s application pings, so a transport that dies in between
+// is discovered only by a ping that then has to rebuild it inside pingTimeout
+// (3s) — which is far less than a WebSocket upgrade plus guest attach. Two of
+// those in a row retire the channel, and gRPC's reconnect backoff climbs toward
+// ~2 minutes, so the box stays cold. Measured consequence: 96% of edge reserves
+// found warm_tunnel=false despite every box having been dialled successfully at
+// manufacture (7456 launches, zero pre-dial failures).
+type holdIdle bool
+
+const (
+	idleMaySuspend holdIdle = false // customer sandboxes
+	idleKeepWarm   holdIdle = true  // pool stock
+)
+
+func dialAgent(endpoint string, port int32, token tokenProvider, hold holdIdle) (*agentConn, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("awsvm: empty MicroVM endpoint")
 	}
@@ -125,14 +150,12 @@ func dialAgent(endpoint string, port int32, token tokenProvider) (*agentConn, er
 			grpc.MaxCallRecvMsgSize(256*1024*1024),
 			grpc.MaxCallSendMsgSize(256*1024*1024),
 		),
-		// Keepalive without permit-without-stream: an idle sandbox should be
-		// allowed to go idle and suspend, which is exactly how this backend
-		// stops billing compute for it. Pinging a suspended box would defeat
-		// the idle policy and keep it needlessly RUNNING.
+		// See holdIdle: pool stock keeps its transport alive between pings,
+		// customer sandboxes are allowed to fall idle and suspend.
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                60 * time.Second,
 			Timeout:             20 * time.Second,
-			PermitWithoutStream: false,
+			PermitWithoutStream: bool(hold),
 		}),
 	)
 	if err != nil {
@@ -147,9 +170,10 @@ func dialAgent(endpoint string, port int32, token tokenProvider) (*agentConn, er
 // demand by default, so a "pre-dialled" channel that was never forced open
 // would still hand the full handshake cost to the first exec.
 func (c *Client) DialAgentConnected(ctx context.Context, microvmID, endpoint string) (*agentConn, error) {
+	// Pool stock: hold the transport open between the pool's 30s pings.
 	a, err := dialAgent(endpoint, c.cfg.AgentPort, func(ctx context.Context) (string, error) {
 		return c.AuthToken(ctx, microvmID)
-	})
+	}, idleKeepWarm)
 	if err != nil {
 		return nil, err
 	}
@@ -199,10 +223,13 @@ func hostOnly(endpoint string) string {
 type agentPool struct {
 	mu    sync.Mutex
 	conns map[string]*agentConn
+	// failures counts CONSECUTIVE failed keepalive pings per sandbox. Reset by
+	// any success, and by dropping the channel. See pingTracked.
+	failures map[string]int
 }
 
 func newAgentPool() *agentPool {
-	return &agentPool{conns: make(map[string]*agentConn)}
+	return &agentPool{conns: make(map[string]*agentConn), failures: make(map[string]int)}
 }
 
 // get returns the cached channel for a sandbox, dialing if needed.
@@ -233,7 +260,8 @@ func (p *agentPool) get(sandboxID, endpoint string, port int32, token tokenProvi
 	// survive to the first exec, which is exactly the ~330ms TTI penalty we are
 	// hunting. Logged so the cold path is visible instead of merely slow.
 	log.Printf("awsvm: agent COLD DIAL for %s (%s) — no warm tunnel in pool", sandboxID, endpoint)
-	c, err := dialAgent(endpoint, port, token)
+	// Customer sandbox: let it fall idle and suspend.
+	c, err := dialAgent(endpoint, port, token, idleMaySuspend)
 	if err != nil {
 		return nil, err
 	}
@@ -296,11 +324,16 @@ func (p *agentPool) warm(sandboxIDs map[string]struct{}) int {
 	}
 	p.mu.Unlock()
 
+	// Only Idle is re-warmable here. Connect() is a no-op on a conn already in
+	// TransientFailure — it is retrying on gRPC's own backoff, which grows toward
+	// ~2 minutes — so counting those as "re-warmed" reports work that did not
+	// happen. Healing them is pingTracked's job: it retires the channel so the
+	// next get() re-dials.
 	n := 0
 	for _, c := range conns {
 		switch c.conn.GetState() {
-		case connectivity.Ready, connectivity.Connecting, connectivity.Shutdown:
-		default: // Idle, TransientFailure
+		case connectivity.Ready, connectivity.Connecting, connectivity.Shutdown, connectivity.TransientFailure:
+		default: // Idle
 			c.conn.Connect()
 			n++
 		}
@@ -344,9 +377,24 @@ func (p *agentPool) closeAll() {
 // (the WebSocket 101 comes from the proxy; the proxy only dials the guest when
 // payload first arrives).
 
+// A dead box must not be allowed to starve a live one of its keepalive.
+//
+// These two numbers together bound how long a maintenance tick can take, and
+// the worst case is every box failing: len(stock)/pingConcurrency * pingTimeout.
+// At 16/5s that is 130/16*5 = ~41s for a 130-box pool — longer than the 30s
+// tick period, so the tick overruns, the NEXT tick starts late, and the boxes
+// that were still healthy miss their keepalive and go idle too. That is not a
+// hypothetical: dev decayed 130 → 75 → 55 → 30 live tunnels over ten minutes
+// while the tick timestamps drifted off their 30s cadence, each dead box paying
+// a full 5s timeout and dragging the healthy ones down with it.
+//
+// At 64/3s the same all-dead pool costs 130/64*3 = ~6s, comfortably inside the
+// period. The timeout is still many times a healthy ping (single-digit ms
+// through an established tunnel), so it only bites on boxes that are already
+// gone.
 const (
-	pingConcurrency = 16
-	pingTimeout     = 5 * time.Second
+	pingConcurrency = 64
+	pingTimeout     = 3 * time.Second
 )
 
 func (a *agentConn) ping(ctx context.Context) error {
@@ -355,6 +403,80 @@ func (a *agentConn) ping(ctx context.Context) error {
 	}
 	_, err := a.client.Ping(ctx, &pb.PingRequest{})
 	return err
+}
+
+// proxyTouchPath is the guest endpoint the idle-timer touch requests. Served by
+// cmd/microvm-hooks on the declared hook port; cheap, side-effect free, and it
+// answers from the guest rather than the proxy, so a 200 also proves the whole
+// path is intact.
+const proxyTouchPath = "/healthz"
+
+// proxyTouchTimeout bounds one touch. Deliberately generous relative to how long
+// /healthz takes (single-digit ms): if the box has ALREADY suspended, this
+// request is what wakes it, and Lambda holds it for the length of a snapshot
+// restore. Timing out at a "reasonable" few seconds would abort our own resume
+// and leave the box suspended, which is the failure this exists to prevent.
+const proxyTouchTimeout = 30 * time.Second
+
+// proxyTouchClient is shared so touches reuse TCP/TLS connections instead of
+// paying a fresh handshake per box per tick.
+var proxyTouchClient = &http.Client{
+	Timeout: proxyTouchTimeout,
+	Transport: &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+	},
+}
+
+// proxyTouch sends one real HTTP request through a MicroVM's proxy endpoint, to
+// reset AWS's idle timer.
+//
+// This exists because our agent keepalive CANNOT do it, by construction. AWS
+// defines idleness as "no inbound traffic through the MicroVM proxy endpoint"
+// for maxIdleDurationSeconds — and the keepalive sends HTTP/2 PINGs INSIDE an
+// already-established WebSocket. Those are bytes on a connection the proxy
+// forwards opaquely; they are not new inbound requests, and they do not count.
+// The evidence is unambiguous: stocked boxes with a keepalive pinging them every
+// 30s still suspended at exactly the 15-minute idle window, then answered every
+// subsequent exec with 502, then were terminated 30 minutes later.
+//
+// So the touch has to be a fresh request at the proxy's own layer. It is the
+// only thing in this package that AWS's idle accounting can actually see.
+//
+// A non-2xx is returned as an error but is NOT proof the box is bad: a 502 here
+// means the proxy could not reach the guest AT THIS MOMENT, which includes a box
+// mid-resume. Callers log it; nothing evicts on it.
+func proxyTouch(ctx context.Context, endpoint string, port int32, token tokenProvider) error {
+	if endpoint == "" {
+		return fmt.Errorf("awsvm: empty MicroVM endpoint")
+	}
+	v, err := token(ctx)
+	if err != nil {
+		return fmt.Errorf("awsvm: auth token: %w", err)
+	}
+	host := hostOnly(endpoint)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+proxyTouchPath, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-aws-proxy-auth", v)
+	req.Header.Set("X-aws-proxy-port", fmt.Sprintf("%d", port))
+
+	resp, err := proxyTouchClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("awsvm: idle touch %s: %w", host, err)
+	}
+	// Drain before closing or the connection cannot be reused, which would turn
+	// every touch into a fresh TLS handshake.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("awsvm: idle touch %s: http %d", host, resp.StatusCode)
+	}
+	return nil
 }
 
 // warmShellTimeout bounds the manufacture-time warm-up. Generous, because it
@@ -389,48 +511,136 @@ func (a *agentConn) warmShell(ctx context.Context) error {
 	return err
 }
 
-// pingAll pings every channel, bounded so a large pool cannot open hundreds of
-// concurrent RPCs on a maintenance tick. Failures are counted, not returned: a
-// box that does not answer is the tick's problem to report, not to fix.
-func pingAll(ctx context.Context, conns []*agentConn) (ok, failed int) {
+// pingEach pings every channel and returns the outcome per index (nil = ok),
+// bounded so a large pool cannot open hundreds of concurrent RPCs on a
+// maintenance tick.
+//
+// Per-index rather than a bare tally because the caller has to be able to act on
+// a specific box: a channel that keeps failing has to be retired and re-dialled,
+// and that is impossible if all the tick knows is how many failed. Returning the
+// error rather than a bool matters for the same reason — "75 failed" with the
+// cause discarded is a number nobody can act on, which is exactly how a pool
+// decaying to a third of its tunnels stayed invisible in the log.
+func pingEach(ctx context.Context, conns []*agentConn) []error {
+	errs := make([]error, len(conns))
 	if len(conns) == 0 {
-		return 0, 0
+		return errs
 	}
 	sem := make(chan struct{}, pingConcurrency)
-	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, c := range conns {
+	for i, c := range conns {
 		wg.Add(1)
-		go func(c *agentConn) {
+		// Each goroutine owns its own slot, so no lock is needed.
+		go func(i int, c *agentConn) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
 			defer cancel()
-			err := c.ping(pctx)
-			mu.Lock()
-			if err != nil {
-				failed++
-			} else {
-				ok++
-			}
-			mu.Unlock()
-		}(c)
+			errs[i] = c.ping(pctx)
+		}(i, c)
 	}
 	wg.Wait()
+	return errs
+}
+
+// pingAll is the tally-only form, for callers with nothing to heal.
+func pingAll(ctx context.Context, conns []*agentConn) (ok, failed int) {
+	for _, err := range pingEach(ctx, conns) {
+		if err != nil {
+			failed++
+		} else {
+			ok++
+		}
+	}
 	return ok, failed
 }
 
 // pingTracked pings the channels held for the given sandbox ids (edge
-// reservations, which are the boxes customers actually claim).
-func (p *agentPool) pingTracked(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed int) {
+// reservations, which are the boxes customers actually claim) and RETIRES any
+// that keep failing.
+//
+// Same defect, same fix, as Pool.warmTunnels — see maxAgentPingFailures. A
+// channel that has gone bad was never replaced here either: warm() could only
+// call Connect(), which does nothing to a conn already in TransientFailure, and
+// get() explicitly leaves every non-Shutdown state alone on the theory that it
+// "does recover on its own". Measured on dev, it does not: a 130-box pool decayed
+// to 5 live tunnels and stayed there.
+//
+// This path matters more than stock's, not less. These boxes are one claim away
+// from a customer, so a dead channel here IS the cold dial on someone's first
+// exec. Dropping the entry closes the channel and forgets it, which is exactly
+// what get() needs to re-dial with a freshly minted token.
+func (p *agentPool) pingTracked(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed, retired int, sample error) {
 	p.mu.Lock()
+	ids := make([]string, 0, len(sandboxIDs))
 	conns := make([]*agentConn, 0, len(sandboxIDs))
 	for id := range sandboxIDs {
 		if c, found := p.conns[id]; found && c.conn != nil {
+			ids = append(ids, id)
 			conns = append(conns, c)
 		}
 	}
 	p.mu.Unlock()
-	return pingAll(ctx, conns)
+
+	errs := pingEach(ctx, conns)
+
+	type doomedConn struct {
+		id   string
+		conn *agentConn
+	}
+	var doomed []doomedConn
+	p.mu.Lock()
+	for i, err := range errs {
+		id := ids[i]
+		if err == nil {
+			delete(p.failures, id)
+			ok++
+			continue
+		}
+		failed++
+		if sample == nil {
+			sample = err
+		}
+		p.failures[id]++
+		if p.failures[id] >= maxAgentPingFailures {
+			doomed = append(doomed, doomedConn{id: id, conn: conns[i]})
+			delete(p.failures, id)
+		}
+	}
+	// A sandbox that stops being reserved while mid-failure would otherwise leave
+	// its count behind forever. Bounded cleanup, since the caller passes the full
+	// current set every tick.
+	for id := range p.failures {
+		if _, still := sandboxIDs[id]; !still {
+			delete(p.failures, id)
+		}
+	}
+	p.mu.Unlock()
+
+	// Retire only the exact channel that failed. A plain drop() would close
+	// whatever the map holds NOW, and if the box was claimed between the ping and
+	// here, put() has already installed a fresh channel for its new owner —
+	// closing that would hand the customer a broken tunnel instead of healing one.
+	for _, d := range doomed {
+		if p.dropIf(d.id, d.conn) {
+			retired++
+		}
+	}
+	return ok, failed, retired, sample
+}
+
+// dropIf closes and forgets a sandbox's channel only if it is still the one the
+// caller expects. Reports whether it did.
+func (p *agentPool) dropIf(sandboxID string, want *agentConn) bool {
+	p.mu.Lock()
+	c, found := p.conns[sandboxID]
+	if !found || c != want {
+		p.mu.Unlock()
+		return false
+	}
+	delete(p.conns, sandboxID)
+	p.mu.Unlock()
+	_ = c.Close()
+	return true
 }

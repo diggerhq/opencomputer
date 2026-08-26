@@ -71,3 +71,59 @@ describe("Sandbox checkpoint requests", () => {
     });
   });
 });
+
+describe("Sandbox.destroy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // The bug this exists to prevent: connect()+kill() reads a 404 from the GET
+  // as "already gone" and never issues the DELETE, leaking a live sandbox while
+  // reporting success. destroy() must go straight to the DELETE.
+  it("issues DELETE without a preceding GET", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+
+    await Sandbox.destroy("sb_1", { apiUrl: "https://api.example.test/api", apiKey: "osb_test" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://api.example.test/api/sandboxes/sb_1");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  // A 404 from the DELETE means the sandbox really is gone, which is the
+  // caller's desired end state.
+  it("treats a 404 from the DELETE as success", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
+
+    await expect(
+      Sandbox.destroy("sb_missing", { apiUrl: "https://api.example.test/api", apiKey: "osb_test" }),
+    ).resolves.toBeUndefined();
+  });
+
+  // Anything else must throw: a delete that did not happen must never look
+  // like one that did.
+  it("throws when the delete genuinely failed", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 500 }));
+
+    await expect(
+      Sandbox.destroy("sb_1", { apiUrl: "https://api.example.test/api", apiKey: "osb_test" }),
+    ).rejects.toThrow(/Failed to destroy sandbox sb_1: 500/);
+  });
+
+  it("forwards deleteSecretStore", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+
+    await Sandbox.destroy("sb_1", {
+      apiUrl: "https://api.example.test/api",
+      apiKey: "osb_test",
+      deleteSecretStore: true,
+    });
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.example.test/api/sandboxes/sb_1?deleteSecretStore=true",
+    );
+  });
+});

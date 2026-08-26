@@ -337,7 +337,18 @@ func (b *microvmBackend) warmReservedTunnels() {
 	// first exec. See the keepalive block in internal/awsvm/agent.go.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if ok, failed := b.manager.PingAgents(ctx, reserved); ok+failed > 0 {
-		log.Printf("microvm: keepalive pinged %d reserved box(es) (%d failed)", ok, failed)
+	if ok, failed, retired, sample := b.manager.PingAgents(ctx, reserved); ok+failed > 0 {
+		// The sampled cause is the point of the line. A bare failure count is what
+		// let the stock pool decay from 130 live tunnels to 5 without anything in
+		// the log naming a reason.
+		msg := fmt.Sprintf("microvm: keepalive pinged %d reserved box(es) (%d failed", ok, failed)
+		if retired > 0 {
+			msg += fmt.Sprintf(", %d channel(s) retired for re-dial", retired)
+		}
+		msg += ")"
+		if sample != nil {
+			msg += fmt.Sprintf("; first failure: %v", sample)
+		}
+		log.Print(msg)
 	}
 }

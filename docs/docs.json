@@ -98,7 +98,7 @@
               "sandboxes/patches",
               "sandboxes/preview-urls",
               "sandboxes/webhooks",
-              "sandboxes/elasticity",
+              "sandboxes/sizing",
               "sandboxes/burst-sandboxes",
               {
                 "group": "Usage",
@@ -150,7 +150,6 @@
             "pages": [
               "reference/typescript-sdk/overview",
               "reference/typescript-sdk/sandbox",
-              "reference/typescript-sdk/scaling",
               {
                 "group": "Usage & Tags",
                 "tag": "Preview",
@@ -170,7 +169,6 @@
             "pages": [
               "reference/python-sdk/overview",
               "reference/python-sdk/sandbox",
-              "reference/python-sdk/scaling",
               "reference/python-sdk/exec",
               "reference/python-sdk/filesystem",
               "reference/python-sdk/pty",
@@ -184,7 +182,6 @@
             "pages": [
               "reference/cli/overview",
               "reference/cli/sandbox",
-              "reference/cli/scaling",
               "reference/cli/exec",
               "reference/cli/shell",
               "reference/cli/checkpoint",

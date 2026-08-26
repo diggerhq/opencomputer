@@ -156,6 +156,17 @@ WORKER_ENV = "prod"
 # pool target FIRST, then this. See the SIZING INVARIANT in src/pool_stock.ts.
 POOL_STOCK_TARGET = "18"
 POOL_STOCK_LOW_WATER = "9"
+# Stated explicitly rather than inherited from the code default, because a shard
+# id is half of a DO NAME (`${cellID}#${gen}#${id}`) and therefore names a
+# different object — with different placement — in every cell. Sharing one
+# implicit list across environments silently asserted that prod's IAD placement
+# measurement also held for dev. It does not; dev now runs a single shard.
+#
+# These four are the prefix of the g5 set probed into IAD against THIS cell on
+# 2026-08-21. Do not extend without re-probing: of 64 candidates, only 27 landed
+# in IAD (EWR 17, ATL 9, MIA 7, ORD 4). No change in behaviour from before —
+# this is what the code default already resolved to.
+POOL_STOCK_SHARD_IDS = "1,4,6,12"
 # Cells eligible for new-org home assignment live in the D1 `cells` table
 # (`accepts_new_orgs` column), not an env list — toggle a row to onboard a cell,
 # no deploy. See pickHomeCell in src/index.ts.

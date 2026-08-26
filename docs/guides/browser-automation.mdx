@@ -233,7 +233,7 @@ The profile lives on the data disk, which survives sandbox hibernation. For cros
 
 ## Resource and concurrency limits
 
-- **Memory per VM** — default is ~1GB. Each headless Chromium uses ~300-500MB; headed full Chromium uses ~500-800MB. Pass `memoryMB: 16384` to `Sandbox.create` for browser-heavy work.
+- **Memory per VM** — default is ~1GB. Each headless Chromium uses ~300-500MB; headed full Chromium uses ~500-800MB. Pass `memoryMB: 8192` to `Sandbox.create` for browser-heavy work.
 - **File descriptors** — the default `nofile` limit of 1024 is too low for Chromium (which opens hundreds of FDs). Launch the server process under `sudo bash -c "ulimit -n 65535 && exec ..."` to raise it.
 - **Concurrency** — with default memory, run 2-3 browsers concurrently per sandbox. With 16GB and proper limits, 5+ works cleanly.
 

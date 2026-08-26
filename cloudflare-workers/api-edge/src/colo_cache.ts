@@ -54,3 +54,19 @@ export async function coloPut(kind: string, key: string, value: unknown, ttlSec:
     /* best-effort */
   }
 }
+
+// coloDelete drops an entry. Best-effort like the rest of this tier, with one
+// caller that genuinely needs it: a stale-while-revalidate refresh that learns
+// the underlying row is GONE (an API key revoked out of band). Letting that
+// entry age out on its own TTL would keep a revoked credential working for the
+// remainder of the stale window in this colo, which is the exact failure the
+// refresh exists to prevent — so the refresh evicts instead.
+export async function coloDelete(kind: string, key: string): Promise<void> {
+  const cache = cacheOrNull();
+  if (!cache) return;
+  try {
+    await cache.delete(BASE + kind + "/" + encodeURIComponent(key));
+  } catch {
+    /* best-effort */
+  }
+}

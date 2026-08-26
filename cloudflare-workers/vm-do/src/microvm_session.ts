@@ -21,7 +21,7 @@
 // control-plane path — they are not implemented here and calls for them should
 // never be routed to this DO.
 
-import { H2Grpc, encodeExecRequest, decodeExecResponse, type ExecReq } from "../../shared/h2grpc";
+import { H2Grpc, openTunnel, encodeExecRequest, decodeExecResponse, type ExecReq } from "../../shared/h2grpc";
 
 const EXEC_PATH = "/agent.SandboxAgent/Exec";
 const AGENT_TUNNEL_PATH = "/osb/agent-grpc"; // must match internal/awsvm.AgentTunnelPath
@@ -74,6 +74,45 @@ const MAX_KEEPALIVE_FAILURES = 5;
 // box which comes good is back on the fast cadence within a minute.
 const KEEPALIVE_BACKOFF_MS = 60_000;
 const PING_TIMEOUT_MS = 3_000;
+// Minimum gap between PINGs, which is NOT the same thing as the alarm cadence
+// and must not be conflated with it again.
+//
+// The alarm has two jobs with opposite constraints. Residency needs a tick
+// comfortably inside Cloudflare's ~10s idle eviction. But the agent's gRPC
+// server sets KeepaliveEnforcementPolicy{MinTime: 10s} (internal/agent/
+// server.go) — ping faster than that and Go's gRPC counts strikes, and at two
+// strikes it sends GOAWAY and drops the connection. Pinging on every 5s alarm
+// meant strikes at 5s and 10s and a GOAWAY at ~15s, forever: measured on dev
+// 2026-08-25, twelve consecutive tunnels died at 15039-15092ms to
+// "server sent GOAWAY". The keepalive was causing the disconnection it exists
+// to prevent.
+//
+// So: wake every KEEPALIVE_MS to stay resident, ping only every
+// PING_MIN_INTERVAL_MS to stay inside the agent's floor. 12s rather than 10s
+// because alarm delivery jitters and being 200ms early costs the whole channel.
+// Raising it further trades against whatever idle timeout the AWS proxy applies
+// to the guest attachment — which the h2grpc KILL log will name if we cross it.
+const PING_MIN_INTERVAL_MS = 12_000;
+// How stale the PERSISTED warmUntil may get before exec bothers to rewrite it.
+// Five minutes against a one-hour TTL: a re-created instance reading a value
+// this stale reaches the same decision, and in exchange the common exec does
+// zero storage writes. See the write site in exec().
+const WARM_PERSIST_SLACK_MS = 5 * 60 * 1000;
+// How long the WebSocket handshake and the guest's first SETTINGS frame may
+// take. Sized for a box that has SUSPENDED, not for a healthy one.
+//
+// AWS suspends a MicroVM after its configured idle window and, with auto-resume
+// on, the next inbound request through the proxy wakes it — Lambda holds that
+// request for the length of a snapshot restore. That is far longer than the
+// 3000ms this used to allow, so the old budget guaranteed the one outcome we
+// least wanted: we aborted our own resume, reported a dial failure, and left the
+// box suspended for the next caller to fail against too.
+//
+// The cost of the larger budget is bounded and lands in the right place. A dial
+// only happens when the channel is cold; a healthy box completes both legs in
+// tens of milliseconds and never approaches this.
+const DIAL_HANDSHAKE_MS = 20_000;
+const DIAL_READY_MS = 20_000;
 
 interface Creds {
   endpoint: string;
@@ -100,6 +139,14 @@ export class MicrovmSession {
   // Last dial cost, so the exec that triggered a dial can attribute it. Set by
   // dial(), consumed and cleared by exec().
   private lastDialMs = 0;
+  // When this instance last sent a PING, to hold the alarm to the agent's
+  // MinTime floor — see PING_MIN_INTERVAL_MS. In memory only: a fresh instance
+  // has a fresh channel too, so it owes no ping debt.
+  private lastPingAt = 0;
+  // What this instance last armed the alarm for, and what it last persisted as
+  // warmUntil. Both exist to keep storage OFF the exec path — see armKeepalive.
+  private alarmDueAt = 0;
+  private warmUntilPersisted = 0;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -211,10 +258,29 @@ export class MicrovmSession {
     // setAlarm overwrites, so this is also the re-arm. Only skip when one is
     // already due sooner than we would set it — a burst of attaches must not
     // push the next tick further out.
-    const due = await this.state.storage.getAlarm();
+    //
+    // The due time is read from MEMORY first, and that is a latency fix, not a
+    // micro-optimisation. Durable Object output gates hold a response until
+    // every pending storage write is confirmed durable, so a storage op on the
+    // exec path is paid by the CALLER, after the handler has already finished.
+    // It is invisible in `inside` and lands squarely in the edge's `dback`.
+    // Measured on dev 2026-08-25 with getAlarm+put on every exec: `dinside`
+    // never left 11-29ms while `mvmdo` swung 101->535ms, with the excursions in
+    // `dto`/`dback` (~200ms and ~300ms) and not in the handler.
+    //
+    // alarmDueAt is a cache of what this instance last armed. A fresh instance
+    // starts at 0 and falls through to the real read once, which is correct:
+    // it genuinely does not know. Being wrong in the stale direction only costs
+    // a redundant setAlarm, never a missed tick.
     const next = Date.now() + KEEPALIVE_MS;
-    if (due !== null && due <= next) return;
+    if (this.alarmDueAt > Date.now() && this.alarmDueAt <= next) return;
+    const due = this.alarmDueAt > 0 ? this.alarmDueAt : await this.state.storage.getAlarm();
+    if (due !== null && due > Date.now() && due <= next) {
+      this.alarmDueAt = due;
+      return;
+    }
     await this.state.storage.setAlarm(next);
+    this.alarmDueAt = next;
   }
 
   /**
@@ -232,6 +298,12 @@ export class MicrovmSession {
    * platform's schedule, not ours, and we would rather re-arm deliberately.
    */
   async alarm(): Promise<void> {
+    // Absolute stamps, to be read against exec's enter/exit. A Durable Object
+    // serializes its invocations, so an alarm that spends up to PING_TIMEOUT_MS
+    // failing a ping is a window in which an arriving exec cannot start. That is
+    // the leading explanation for the ~1s gap between the edge's mvmdo and this
+    // object's own `inside`, and it is only checkable if both are timestamped.
+    const tAlarm = Date.now();
     const creds = await this.loadCreds();
     if (!creds) return; // detached — let the loop end
     if (!this.warmUntil) this.warmUntil = (await this.state.storage.get<number>("warmUntil")) ?? 0;
@@ -243,8 +315,16 @@ export class MicrovmSession {
     }
     let next = KEEPALIVE_MS;
     try {
+      // Waking is unconditional — that is what keeps the object resident and so
+      // keeps the channel alive at all. PINGING is rate-limited to the agent's
+      // enforcement floor. A tick that only wakes is not a wasted tick; it is
+      // the majority of them, and it is doing the more important of the two jobs.
       const conn = await this.channel();
-      await conn.ping(PING_TIMEOUT_MS);
+      const sincePing = Date.now() - this.lastPingAt;
+      if (this.lastPingAt === 0 || sincePing >= PING_MIN_INTERVAL_MS) {
+        this.lastPingAt = Date.now();
+        await conn.ping(PING_TIMEOUT_MS);
+      }
       if (this.failures > 0) console.log(`mvm-do: keepalive recovered after ${this.failures}`);
       this.failures = 0;
     } catch (e) {
@@ -256,6 +336,7 @@ export class MicrovmSession {
       // the thing that ends this loop.
       if (this.failures >= MAX_KEEPALIVE_FAILURES) next = KEEPALIVE_BACKOFF_MS;
     }
+    console.log(`mvm-do: alarm span ${tAlarm}..${Date.now()} (${Date.now() - tAlarm}ms), next in ${next}ms`);
     await this.state.storage.setAlarm(Date.now() + next);
   }
 
@@ -277,24 +358,22 @@ export class MicrovmSession {
     const p = (async (): Promise<H2Grpc> => {
       const tDial = Date.now();
       const host = creds.endpoint.replace(/^https?:\/\//, "").split("/")[0];
-      const resp = await fetch(`https://${host}${AGENT_TUNNEL_PATH}`, {
-        signal: AbortSignal.timeout(3000),
-        headers: {
-          Upgrade: "websocket",
-          "X-aws-proxy-auth": creds.token,
-          "X-aws-proxy-port": String(creds.port),
-        },
-      });
-      const ws = (resp as unknown as { webSocket: WebSocket | null }).webSocket;
-      if (!ws) throw new Error(`agent tunnel upgrade failed (http ${resp.status})`);
-      ws.accept();
+      // openTunnel, NOT fetch with AbortSignal.timeout — see its docstring. The
+      // timeout here must bound the handshake; bound to the connection it kills
+      // the tunnel 3s after every dial, which is exactly what this keepalive
+      // exists to prevent and exactly what it was doing.
+      const { ws } = await openTunnel(
+        `https://${host}${AGENT_TUNNEL_PATH}`,
+        { "X-aws-proxy-auth": creds.token, "X-aws-proxy-port": String(creds.port) },
+        DIAL_HANDSHAKE_MS,
+      );
       this.ws = ws;
       const conn = new H2Grpc(ws, host);
       this.conn = conn;
       // Wait for the guest, not just the proxy — see H2Grpc.ready.
       await Promise.race([
         conn.ready,
-        new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), 8000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), DIAL_READY_MS)),
       ]);
       // Logged rather than dropped: a dial here is the ~1.1s guest-attach the
       // keepalive exists to keep off the customer's path, so a run of them is
@@ -394,12 +473,33 @@ export class MicrovmSession {
       // lapsed (TTL expiry, or a run of failures while the box was resuming).
       this.warmUntil = Date.now() + KEEPALIVE_TTL_MS;
       this.failures = 0;
-      await this.state.storage.put("warmUntil", this.warmUntil);
+      // Persist only when the durable copy has drifted far enough to matter.
+      // The in-memory value is what this instance actually uses; the stored one
+      // exists solely so a RE-CREATED instance knows whether to keep warming,
+      // and for that a value up to WARM_PERSIST_SLACK_MS stale is identical in
+      // effect. Writing on every exec put a storage op inside the output gate,
+      // which delays the RESPONSE — the caller pays it, and it shows up in the
+      // edge's `dback` rather than anywhere this object can see.
+      if (this.warmUntil - this.warmUntilPersisted >= WARM_PERSIST_SLACK_MS) {
+        this.warmUntilPersisted = this.warmUntil;
+        await this.state.storage.put("warmUntil", this.warmUntil);
+      }
       await this.armKeepalive();
       return json(decodeExecResponse(res), 200, {
         // live=1 means the channel survived from the last request or the
         // keepalive — the state this whole design is trying to be in.
-        "x-mvm-timing": `live=${wasLive ? 1 : 0},cold=${coldStart ? 1 : 0},dial=${this.lastDialMs},unary=${unaryMs},inside=${Date.now() - tEnter}`,
+        // enter/exit are ABSOLUTE epoch ms, not durations. The edge measures the
+        // whole round trip as one number (mvmdo) and this object measures its
+        // own work (inside); the difference has been over a SECOND on some
+        // execs while inside was 41-56ms, and a single opaque gap cannot say
+        // whether that second was spent getting here, queued outside this
+        // handler, or going back. Pairing these with the edge's own send/receive
+        // stamps splits it three ways.
+        //
+        // Both ends are Workers, so the clocks are the same source; Date.now()
+        // in a Worker only advances on I/O, which makes these unusable for
+        // anything small — and completely adequate against a 1000ms question.
+        "x-mvm-timing": `live=${wasLive ? 1 : 0},cold=${coldStart ? 1 : 0},dial=${this.lastDialMs},unary=${unaryMs},inside=${Date.now() - tEnter},enter=${tEnter},exit=${Date.now()}`,
         "x-mvm-colo": this.colo,
       });
     } catch (e) {

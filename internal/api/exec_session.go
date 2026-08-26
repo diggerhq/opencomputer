@@ -446,6 +446,13 @@ func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig
 		Timeout: req.Timeout,
 	}
 
+	// Exec is half of TTI and was the only leg with no per-step timing, so a
+	// burst that degraded here looked the same as one that degraded in create.
+	// `enter` separates "this handler is slow" from "the queue is upstream".
+	tr := newExecTrace()
+	tr.setSandboxID(id)
+	defer tr.emit()
+
 	var session *sandbox.ExecSessionHandle
 
 	routeOp := func(_ context.Context) error {
@@ -463,6 +470,8 @@ func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	}
+	// Everything up to here is route + CreateSession — the dial/bind to the box.
+	tr.mark("session")
 
 	// Fast-exec fold: hold the response briefly and, if the command exits inside
 	// the window, return the legacy inline result shape (no execId). The SDK's
@@ -472,13 +481,20 @@ func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig
 	// so the GetResult read below is final. Truncated output falls through to
 	// the handle shape — ProcessResult can't carry the truncated flag.
 	if hold := execHoldMs("OPENSANDBOX_EXEC_INLINE_HOLD_MS", 400*time.Millisecond); hold > 0 {
-		if res, ok := s.awaitExecDone(c.Request().Context(), id, session.ID, hold); ok && res.ExitCode != nil && !res.Truncated {
+		res, ok := s.awaitExecDone(c.Request().Context(), id, session.ID, hold)
+		// `hold` is the command actually running when it lands well under the
+		// budget, and the full hold budget when it does not — so a value pinned
+		// at the budget means the fold MISSED and the client fell onto its poll.
+		tr.mark("hold")
+		if ok && res.ExitCode != nil && !res.Truncated {
+			tr.mark("inline")
 			return c.JSON(http.StatusOK, types.ProcessResult{
 				ExitCode: *res.ExitCode,
 				Stdout:   string(res.Stdout),
 				Stderr:   string(res.Stderr),
 			})
 		}
+		tr.mark("holdmiss")
 	}
 
 	return c.JSON(http.StatusAccepted, types.ExecRunResponse{
@@ -501,6 +517,13 @@ func (s *Server) execResult(c echo.Context) error {
 
 	id := c.Param("id")
 	sessionID := c.Param("sessionID")
+
+	// A poll only happens when the inline fold missed, so these lines appearing
+	// at all is itself the signal — and their count says how deep the SDK's
+	// retry ladder went.
+	tr := newTrace("resulttrace")
+	tr.setSandboxID(id)
+	defer tr.emit()
 
 	var res *types.ExecSessionResult
 
@@ -526,11 +549,13 @@ func (s *Server) execResult(c echo.Context) error {
 	// retry ladder. Done closes only after ExitCode is captured, so the re-read
 	// is final. Route already ensured the sandbox is running; the re-read is a
 	// local scrollback+exit-code snapshot, no re-route needed.
+	tr.mark("read")
 	if res.Running {
 		if hold := execHoldMs("OPENSANDBOX_EXEC_RESULT_HOLD_MS", 500*time.Millisecond); hold > 0 {
 			if res2, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, hold); ok {
 				res = res2
 			}
+			tr.mark("longpoll")
 			if s.router != nil {
 				s.router.Touch(id) // the hold was interaction; keep the idle timer honest
 			}

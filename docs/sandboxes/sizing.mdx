@@ -1,0 +1,66 @@
+---
+title: "Sizing"
+description: "Choose a sandbox's memory and CPU at create time"
+---
+
+A sandbox's memory is chosen when you create it and stays fixed for the
+sandbox's lifetime. CPU is allocated proportionally to memory.
+
+| Memory | vCPU |
+| --- | --- |
+| 1 GB | best-effort |
+| 4 GB (default) | 1 |
+| 8 GB | 2 |
+
+Omitting `memoryMB` gives you the 4 GB default.
+
+## Choosing a size
+
+Pass `memoryMB` at create:
+
+<CodeGroup>
+```typescript TypeScript
+const sandbox = await Sandbox.create({ memoryMB: 8192 });
+```
+
+```bash CLI
+oc sandbox create --memory 8192
+```
+
+```bash HTTP
+curl -sf -X POST "$API/api/sandboxes" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"memoryMB": 8192}'
+```
+</CodeGroup>
+
+`cpuCount` may be given instead and the matching memory tier is inferred. If both
+are supplied they must describe the same tier.
+
+<Note>
+  The 1 GB tier provides CPU on a best-effort basis. For CPU-sensitive work, use
+  4 GB or above.
+</Note>
+
+## Sizes outside the table
+
+A request for a size that is not offered is **rejected**, not rounded down. You
+will never be quietly given a smaller sandbox than you asked for, and never
+billed for a size you did not receive.
+
+Sizes above 8 GB are not available self-serve. If you need more, contact us —
+larger configurations are handled out of band.
+
+## Size is fixed for the sandbox's lifetime
+
+Memory cannot be changed after a sandbox starts. Size is a property of the
+machine the sandbox runs on, decided when that machine boots, so there is no
+resize operation to call.
+
+If a workload needs more memory than it was created with, create a new sandbox
+at the larger tier. Where you need to carry work across, write what matters to
+the workspace and read it back on the new sandbox.
+
+Plan for the peak rather than the average: a sandbox that occasionally needs
+8 GB should be created at 8 GB.

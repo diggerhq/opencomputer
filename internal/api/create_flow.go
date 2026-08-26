@@ -100,9 +100,11 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 		}
 	}()
 
+	tr := traceFrom(ctx)
 	t := time.Now()
 	workerID, err = steps.claim(ctx)
 	claimMs = time.Since(t).Milliseconds()
+	tr.mark("claim")
 	if err != nil {
 		return "", err
 	}
@@ -115,6 +117,7 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 			t = time.Now()
 			aerr := steps.activate(ctx, workerID)
 			activateMs = time.Since(t).Milliseconds()
+			tr.mark("activate")
 			if aerr != nil {
 				if steps.cleanup != nil {
 					steps.cleanup(ctx, workerID, aerr)

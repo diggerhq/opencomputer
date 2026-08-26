@@ -198,6 +198,31 @@ type Placer interface {
 	Release(ctx context.Context, sandboxID, workerID string)
 }
 
+// SelfStocking is a Backend that keeps its own warm stock.
+//
+// The cell's Postgres pool belongs to the QEMU fleet: rows claimed by
+// resume+rebind on a worker. A backend that manufactures and holds its own boxes
+// has a different supply, and consulting that pool for one of its creates is not
+// a miss that costs nothing — the claim takes row locks, so under a burst it
+// serializes creates behind a query that could never have succeeded.
+//
+// Optional, and absent means "draws from the cell pool", so the QEMU fleet and
+// anything predating this interface behave exactly as before.
+type SelfStocking interface {
+	Backend
+
+	// ServesOwnStock reports that this backend supplies warm hosts from inside
+	// Claim, so the cell pool must not be consulted on its behalf.
+	ServesOwnStock() bool
+}
+
+// servesOwnStock reports whether a backend supplies its own warm hosts. False
+// for nil and for anything not implementing SelfStocking.
+func servesOwnStock(b Backend) bool {
+	ss, ok := b.(SelfStocking)
+	return ok && ss.ServesOwnStock()
+}
+
 // Hibernator is a Backend that parks and revives a sandbox in process.
 //
 // Optional in the same way Placer is, and for the same reason: the capability

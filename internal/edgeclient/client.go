@@ -46,13 +46,27 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// edgeIdleConns is the per-host idle-connection pool for control-plane→edge
+// calls.
+//
+// http.DefaultTransport keeps MaxIdleConnsPerHost=2. Every one of these calls
+// goes to a single host, so under any concurrency above two the surplus
+// connections are closed the moment they go idle and the next burst pays a
+// fresh TLS handshake for each — on a 2-vCPU control plane, against a TLS
+// endpoint, inside a create. Sized to cover a burst of concurrent creates with
+// headroom; idle sockets to one host are cheap, re-handshaking them is not.
+const edgeIdleConns = 128
+
 // New returns a Client with a sane default http.Client. Pass an explicit
 // http.Client (with a transport / timeout) for production use.
 func New(baseURL, secret string) *Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = edgeIdleConns
+	tr.MaxIdleConnsPerHost = edgeIdleConns
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Secret:  secret,
-		HTTP:    &http.Client{Timeout: 10 * time.Second},
+		HTTP:    &http.Client{Timeout: 10 * time.Second, Transport: tr},
 	}
 }
 
