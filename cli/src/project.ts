@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { Cron } from "croner";
+import { build as bundle } from "esbuild";
 import ts from "typescript";
 
 export interface AgentManifest {
@@ -1737,74 +1738,81 @@ interface AgentSourceModule {
 
 const AGENT_SOURCE_MODULE_PATTERN = /\.[cm]?[jt]sx?$/;
 
-async function collectAgentSourceModules(
+async function bundleAgentSourceModules(
   root: string,
+  runtime: string,
   entries: string[],
-): Promise<AgentSourceModule[]> {
-  const compilerOptions: ts.CompilerOptions = {
-    allowJs: true,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    resolveJsonModule: true,
-    target: ts.ScriptTarget.ES2022,
-  };
-  const pending = [...entries];
-  const seen = new Set<string>();
+): Promise<{ modules: AgentSourceModule[]; entryPaths: Set<string> }> {
+  const entryPoints: Record<string, string> = {};
+  const entryPaths = new Set<string>();
+  for (const entry of entries) {
+    const path = relative(root, resolve(entry)).split("\\").join("/");
+    const outputPath = compiledModulePath(path);
+    const outputName = outputPath.replace(/\.js$/, "");
+    if (entryPoints[outputName]) {
+      throw new Error(`Agent source modules emit the same path: ${outputPath}`);
+    }
+    entryPoints[outputName] = resolve(entry);
+    entryPaths.add(path);
+  }
+  const result = await bundle({
+    absWorkingDir: root,
+    bundle: true,
+    entryPoints,
+    format: "esm",
+    logLevel: "silent",
+    metafile: true,
+    outdir: runtime,
+    platform: "node",
+    target: "node22",
+    write: false,
+    plugins: [
+      {
+        name: "opencomputer-agent-runtime",
+        setup(build) {
+          build.onResolve(
+            { filter: /^@opencomputer\/agent$/ },
+            () => ({ path: "api", namespace: "opencomputer-agent-runtime" }),
+          );
+          build.onLoad(
+            { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
+            () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
+          );
+        },
+      },
+    ],
+  });
+
   const modules: AgentSourceModule[] = [];
-  while (pending.length > 0) {
-    const absolute = resolve(pending.pop()!);
-    if (seen.has(absolute)) continue;
-    seen.add(absolute);
+  for (const input of Object.keys(result.metafile.inputs)) {
+    if (input === "opencomputer-agent-runtime:api") continue;
+    const absolute = resolve(root, input);
     const path = relative(root, absolute).split("\\").join("/");
     if (!path || path === ".." || path.startsWith("../")) {
       throw new Error(
         "Agent source modules must stay inside the agent directory",
       );
     }
-    if (!AGENT_SOURCE_MODULE_PATTERN.test(path)) {
-      throw new Error(`Agent source module ${path} has an unsupported extension`);
-    }
-    const source = await readFile(absolute, "utf8");
-    modules.push({ path, source });
-    for (const imported of ts.preProcessFile(source, true, true).importedFiles) {
-      if (!imported.fileName.startsWith(".")) continue;
-      const resolved = ts.resolveModuleName(
-        imported.fileName,
-        absolute,
-        compilerOptions,
-        ts.sys,
-      ).resolvedModule?.resolvedFileName;
-      if (!resolved) {
-        throw new Error(
-          `${path} imports ${JSON.stringify(imported.fileName)}, which could not be resolved`,
-        );
-      }
-      const importedPath = relative(root, resolved).split("\\").join("/");
-      if (
-        !importedPath ||
-        importedPath === ".." ||
-        importedPath.startsWith("../")
-      ) {
-        throw new Error(
-          `${path} imports ${JSON.stringify(imported.fileName)} outside the agent directory`,
-        );
-      }
-      pending.push(resolved);
+    if (AGENT_SOURCE_MODULE_PATTERN.test(path)) {
+      modules.push({ path, source: await readFile(absolute, "utf8") });
     }
   }
-  return modules.sort((left, right) => left.path.localeCompare(right.path));
+  for (const output of result.outputFiles) {
+    const path = relative(runtime, output.path).split("\\").join("/");
+    if (!path || path === ".." || path.startsWith("../")) {
+      throw new Error("Agent compiler emitted a file outside the runtime");
+    }
+    await mkdir(dirname(output.path), { recursive: true });
+    await writeFile(output.path, output.contents);
+  }
+  return {
+    modules: modules.sort((left, right) => left.path.localeCompare(right.path)),
+    entryPaths,
+  };
 }
 
 function compiledModulePath(path: string): string {
   return path === "agent.ts" ? "agent.js" : path.replace(/\.[^.]+$/, ".js");
-}
-
-function runtimeAgentApiImport(runtime: string, outputPath: string): string {
-  const path = relative(
-    dirname(resolve(runtime, outputPath)),
-    resolve(runtime, "opencomputer-agent.js"),
-  ).split("\\").join("/");
-  return path.startsWith(".") ? path : `./${path}`;
 }
 
 export async function prepareAgent(root: string): Promise<string> {
@@ -1902,16 +1910,6 @@ the product or support surface presented to users.
     resolve(runtime, "package.json"),
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
   );
-  const transpile = (source: string, filename: string) =>
-    ts.transpileModule(source, {
-      fileName: filename,
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
-      },
-      reportDiagnostics: true,
-    });
   await writeFile(
     resolve(runtime, "opencomputer-agent.js"),
     agentApiRuntimeSource(),
@@ -1925,38 +1923,12 @@ the product or support surface presented to users.
       sourceEntries.push(resolve(sourceTools, entry.name));
     }
   }
-  const sourceModules = await collectAgentSourceModules(root, sourceEntries);
-  const outputPaths = new Set<string>();
-  for (const candidate of sourceModules) {
-    const outputPath = compiledModulePath(candidate.path);
-    if (outputPaths.has(outputPath)) {
-      throw new Error(`Agent source modules emit the same path: ${outputPath}`);
-    }
-    outputPaths.add(outputPath);
-    const compiled = transpile(candidate.source, candidate.path);
-    const diagnostics = compiled.diagnostics ?? [];
-    if (
-      diagnostics.some(
-        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-      )
-    ) {
-      throw new Error(
-        `${candidate.path} could not be compiled: ${diagnostics
-          .map((diagnostic) =>
-            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-          )
-          .join("; ")}`,
-      );
-    }
-    const output = compiled.outputText.replace(
-      /(["'])@opencomputer\/agent\1/g,
-      JSON.stringify(runtimeAgentApiImport(runtime, outputPath)),
-    );
-    await mkdir(dirname(resolve(runtime, outputPath)), { recursive: true });
-    await writeFile(resolve(runtime, outputPath), output);
-  }
-  const toolSources = sourceModules.filter((candidate) =>
-    candidate.path.startsWith("tools/"),
+  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries);
+  const sourceModules = bundled.modules;
+  const toolSources = sourceModules.filter(
+    (candidate) =>
+      bundled.entryPaths.has(candidate.path) &&
+      candidate.path.startsWith("tools/"),
   );
   const reactiveTools: string[] = [];
   const toolModules: string[] = [];

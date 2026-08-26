@@ -685,14 +685,10 @@ export default function Agent() {
     ) as { tools: string[]; toolModules: string[] };
     assert.ok(manifest.tools.includes("hacker_news"));
     assert.ok(manifest.toolModules.includes("../tools/hacker-news.js"));
-    assert.match(
-      await readFile(resolve(runtime, "tools", "hacker-news.js"), "utf8"),
-      /from "\.\.\/opencomputer-agent\.js"/,
-    );
-    assert.match(
-      await readFile(resolve(runtime, "agent.js"), "utf8"),
-      /useTool\(hackerNews\)/,
-    );
+    const tools = await import(
+      `${pathToFileURL(resolve(runtime, "tools", "hacker-news.js")).href}?test=${crypto.randomUUID()}`
+    ) as { hackerNews: { id: string } };
+    assert.equal(tools.hackerNews.id, "hacker_news");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -706,6 +702,7 @@ test("the compiler packages agent source modules outside the tools directory", a
     await writeFile(
       resolve(initialized.agentRoot, "config.ts"),
       `import { defineConnection } from "@opencomputer/agent";
+import settings from "./settings.json";
 
 export const github = defineConnection({
   id: "fixture-github",
@@ -713,12 +710,16 @@ export const github = defineConnection({
   methods: ["GET"],
   pathPrefix: "/repos/opencomputer/example/",
 });
-export const repository = "opencomputer/example";
+export const repository = settings.repository;
 `,
     );
     await writeFile(
+      resolve(initialized.agentRoot, "settings.json"),
+      `${JSON.stringify({ repository: "opencomputer/example" })}\n`,
+    );
+    await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
-      `import { repository } from "./config.js";
+      `import { repository } from "./config";
 
 export default function Agent() {
   return \`Review missing tests in \${repository}.\`;
@@ -730,21 +731,45 @@ export default function Agent() {
     const artifact = JSON.parse(built.body.toString("utf8")) as {
       files: Array<{ path: string }>;
     };
-    assert.ok(artifact.files.some((file) => file.path === "config.js"));
+    assert.ok(!artifact.files.some((file) => file.path === "config.js"));
+    assert.ok(!artifact.files.some((file) => file.path === "settings.json"));
+    assert.ok(artifact.files.some((file) => file.path === "agent.js"));
     assert.ok(built.connections.includes("fixture-github"));
-    assert.match(
-      await readFile(
-        resolve(initialized.agentRoot, ".opencomputer", "runtime", "config.js"),
-        "utf8",
-      ),
-      /opencomputer\/example/,
-    );
     const packaged = await import(
       `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "agent.js")).href}?test=${crypto.randomUUID()}`
     ) as { default(): string };
     assert.equal(
       packaged.default(),
       "Review missing tests in opencomputer/example.",
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects imports outside the agent directory", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-source-boundary-"),
+  );
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "..", "outside.ts"),
+      "export const value = 1;\n",
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { value } from "../outside";
+
+export default function Agent() {
+  return String(value);
+}
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /must stay inside the agent directory/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });
