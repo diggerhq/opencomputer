@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bot, Clock3, Loader2, TerminalSquare } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
@@ -27,6 +27,7 @@ function formatDate(value: string) {
 
 export default function ManagedSessionDetail() {
   const { projectId = '', sessionId = '' } = useParams()
+  const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState<'conversation' | 'events'>(
     'conversation',
@@ -44,7 +45,18 @@ export default function ManagedSessionDetail() {
   })
   const events = useQuery({
     queryKey: ['managed-agent-session-events', sessionId],
-    queryFn: () => getManagedAgentSessionEvents(sessionId),
+    queryFn: async () => {
+      const queryKey = ['managed-agent-session-events', sessionId]
+      const existing =
+        queryClient.getQueryData<
+          Awaited<ReturnType<typeof getManagedAgentSessionEvents>>
+        >(queryKey) ?? []
+      const next = await getManagedAgentSessionEvents(
+        sessionId,
+        existing[existing.length - 1]?.seq ?? 0,
+      )
+      return [...existing, ...next]
+    },
     enabled: Boolean(sessionId),
     refetchInterval: 1_000,
   })
