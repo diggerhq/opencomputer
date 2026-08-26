@@ -30,6 +30,8 @@ export { PoolStock } from "./pool_stock";
 // touching web/ or edge code) can't reset the DOs and sever the host-dialed
 // VM WebSockets.
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
+import { createViaCell } from "./create_batch";
+import type { CreateCallResult } from "./create_batch_types";
 import {
   ACTIVE_CELLS_SQL,
   CELL_STALE_MAX_MS,
@@ -150,6 +152,11 @@ export interface Env extends DashboardEnv {
   // keeps its warm set in process, where the stock DO can never be filled — see
   // createSandbox. Unset means edge-claim, which is prod.
   MICROVM_EDGE_CLAIM?: string;
+  // CREATE_BATCH=1 coalesces concurrent creates on the CP-fallback path into one
+  // request per isolate. Off by default: measured on dev with a settled pool it
+  // batched 26-at-a-time and saved nothing, because the edge->cell hop is round
+  // trip, not connection setup (CP handler is ~40us for a 132ms hop).
+  CREATE_BATCH?: string;
   // VM-DO exec data plane (vm_do_datapane_validation). One DO per sandbox holds a
   // persistent host-dialed WebSocket to the QEMU worker; exec routes edge→DO→VM
   // instead of tunnel→CP→worker, with automatic tunnel fallback when unconnected.
@@ -2212,13 +2219,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     }
   }
 
-  let cpResp: Response;
+  // Not a bare fetch: concurrent creates on this isolate coalesce into one
+  // request to the cell. A create with nothing else in flight still goes out
+  // immediately and alone, so sequential latency is unchanged — see
+  // create_batch.ts for why the gate is concurrency rather than a fixed window.
+  let cpCall: CreateCallResult;
   try {
-    cpResp = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
-      method: "POST",
-      headers: { authorization: "Bearer " + capToken, "content-type": "application/json" },
-      body: bodyText || "{}",
-    });
+    cpCall = await createViaCell(cell.base_url, capToken, bodyText, env.CREATE_BATCH === "1");
   } catch (e) {
     return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
   }
@@ -2228,9 +2235,14 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   // Everything before it is edge compute + D1.
   mark("cell");
 
-  const cpText = await cpResp.text();
+  const cpText = cpCall.text;
+  // Whether this create shared a request, how many it shared with, and how long
+  // it waited to be dispatched. Without these a batched burst and an unbatched
+  // one are indistinguishable in the timing header, and `cell` alone cannot say
+  // whether a slow create was queued or just slow.
+  phases.push(`cellbatch;dur=${cpCall.batchSize}`, `cellwait;dur=${cpCall.waitMs}`);
   mark("cellbody");
-  if (cpResp.status >= 200 && cpResp.status < 300) {
+  if (cpCall.status >= 200 && cpCall.status < 300) {
     let parsed: SandboxCreateResult = {};
     try {
       parsed = JSON.parse(cpText);
@@ -2252,12 +2264,24 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       ),
     );
   }
+  // Total wall time inside this handler, on the edge's OWN clock. Paired with
+  // the client's own (T4-T1) and the CP's own (createtrace total), this closes
+  // the attribution without ever comparing two different clocks: every term is a
+  // difference of two readings taken by the same machine, so skew cancels rather
+  // than contaminating the result.
+  //
+  // What these three deliberately do NOT cover is the answer we are chasing.
+  // Time spent queued before this handler ran is invisible to every mark in it —
+  // `tEntry` is stamped once we are already executing — so it can only ever show
+  // up as the residual (T4-T1) - hdl. That residual is the measurement; the marks
+  // are just what we subtract to expose it.
+  phases.push(`hdl;dur=${Date.now() - tEntry}`);
   if (env.DIAG === "1") console.log(`create-timing fallback ${cell.cell_id} ${phases.join(" ")}`);
   // Pass the CP's response through verbatim (status + body), plus the phase
   // breakdown — the edge-claim path above already returns one, and a fallback
   // create with no header is exactly the case that needed attributing.
   return new Response(cpText, {
-    status: cpResp.status,
+    status: cpCall.status,
     headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
   });
 }

@@ -40,6 +40,13 @@ var errSandboxNotAvailable = map[string]string{
 
 // Server holds the API server dependencies.
 type Server struct {
+	// createOverrideForTest substitutes the per-item handler the batch endpoint
+	// fans out to. Test-only seam: it lets create_batch_test exercise the
+	// batching contract (ordering, per-item isolation, limits) without standing
+	// up a backend, a store and a worker registry. Always nil in production,
+	// where batchedCreateHandler resolves to internalCreateSandbox.
+	createOverrideForTest func(echo.Context) error
+
 	echo               *echo.Echo
 	manager            sandbox.Manager
 	router             *sandbox.SandboxRouter // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
@@ -391,6 +398,13 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if s.capTokenIssuer != nil && s.workerRegistry != nil {
 		internal := e.Group("/internal", s.capTokenMiddleware)
 		internal.POST("/sandboxes/create", s.internalCreateSandbox)
+		// Same creates, one request. Serves the edge-side coalescer, which is
+		// DEFAULT OFF (CREATE_BATCH) because measurement falsified the premise:
+		// batching 26 creates into one request left the edge→cell hop unchanged
+		// (132ms vs 126ms solo), so that hop is round-trip bound, not connection
+		// bound. Endpoint kept because it is harmless and already deployed — see
+		// create_batch.go and the edge's create_batch.ts.
+		internal.POST("/sandboxes/create-batch", s.internalCreateSandboxBatch)
 		// Edge claim (see edge_claim.go): the api-edge PoolStock DO reserves
 		// pool boxes ahead of time and finalizes claims asynchronously.
 		internal.POST("/pool/edge-reserve", s.edgeReservePool)
