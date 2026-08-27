@@ -88,6 +88,34 @@ export interface McpServerDefinition extends ResourceReference {
   readonly connection?: ConnectionReference;
 }
 
+export type RepositorySourceAuth = "auto" | "public";
+
+export interface GitHubRepositorySource {
+  readonly kind: "github-repository";
+  readonly provider: "github";
+  readonly owner: string;
+  readonly name: string;
+  readonly auth: RepositorySourceAuth;
+}
+
+export interface RepositoryDefinition extends ResourceReference {
+  readonly kind: "repository";
+  readonly version: 1;
+  readonly source: GitHubRepositorySource;
+  readonly mirror: {
+    readonly mode: "managed";
+    readonly sync: "pull";
+  };
+  readonly workspace: {
+    readonly path: string;
+    readonly access: "read-only" | "read-write";
+    readonly refs: "session";
+  };
+  readonly publish: {
+    readonly mode: "disabled" | "actions-only";
+  };
+}
+
 export type SlackChannelEvent = "app_mention" | "message.im";
 export type ChannelTrigger = "mention" | "direct-message";
 
@@ -310,6 +338,7 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
+  useRepository(repository: string | ResourceReference): void;
 }
 
 interface ActionHooks {
@@ -504,6 +533,74 @@ export function defineMcpServer(input: {
     id: identifier(input.id, "defineMcpServer"),
     url: url.toString(),
     ...(input.connection ? { connection: input.connection } : {}),
+  });
+}
+
+export function githubRepository(input: {
+  owner: string;
+  name: string;
+  auth?: RepositorySourceAuth;
+}): GitHubRepositorySource {
+  const owner = identifier(input.owner, "githubRepository owner");
+  const name = identifier(input.name, "githubRepository name");
+  if (![owner, name].every((value) => /^[A-Za-z0-9_.-]+$/.test(value))) {
+    throw new Error(
+      "GitHub repository owners and names may contain only letters, numbers, underscores, periods, and hyphens",
+    );
+  }
+  const auth = input.auth ?? "auto";
+  if (auth !== "auto" && auth !== "public") {
+    throw new Error("githubRepository auth must be auto or public");
+  }
+  return Object.freeze({
+    kind: "github-repository" as const,
+    provider: "github" as const,
+    owner,
+    name,
+    auth,
+  });
+}
+
+export function defineRepository(input: {
+  id: string;
+  source: GitHubRepositorySource;
+  mirror?: { mode?: "managed"; sync?: "pull" };
+  workspace: {
+    path: string;
+    access: "read-only" | "read-write";
+    refs?: "session";
+  };
+  publish?: { mode: "disabled" | "actions-only" };
+}): RepositoryDefinition {
+  const id = identifier(input.id, "defineRepository");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+    throw new Error(
+      "defineRepository IDs must use lowercase letters, numbers, and single hyphens",
+    );
+  }
+  const path = input.workspace.path.trim().replace(/^\/+|\/+$/g, "");
+  if (
+    !path ||
+    path.split("/").some((segment) => segment === "." || segment === "..") ||
+    path.includes("\\")
+  ) {
+    throw new Error("Repository workspace paths must be safe relative paths");
+  }
+  return Object.freeze({
+    kind: "repository" as const,
+    version: 1 as const,
+    id,
+    source: input.source,
+    mirror: Object.freeze({
+      mode: input.mirror?.mode ?? "managed",
+      sync: input.mirror?.sync ?? "pull",
+    }),
+    workspace: Object.freeze({
+      path,
+      access: input.workspace.access,
+      refs: input.workspace.refs ?? "session",
+    }),
+    publish: Object.freeze(input.publish ?? { mode: "actions-only" }),
   });
 }
 
@@ -855,6 +952,8 @@ export const useSubagent = (agent: string | ResourceReference): void =>
   hooks().useSubagent(agent);
 export const useMcpServer = (server: string | ResourceReference): void =>
   hooks().useMcpServer(server);
+export const useRepository = (repository: string | ResourceReference): void =>
+  hooks().useRepository(repository);
 export function useSessionData<T extends DataValue>(
   key: string,
 ): T | undefined {

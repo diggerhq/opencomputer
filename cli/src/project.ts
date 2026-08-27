@@ -59,6 +59,23 @@ export interface ActionManifestDefinition {
   secrets: Record<string, string>;
 }
 
+export interface RepositoryManifestDefinition {
+  id: string;
+  source: {
+    provider: "github";
+    owner: string;
+    name: string;
+    auth: "auto" | "public";
+  };
+  mirror: { mode: "managed"; sync: "pull" };
+  workspace: {
+    path: string;
+    access: "read-only" | "read-write";
+    refs: "session";
+  };
+  publish: { mode: "disabled" | "actions-only" };
+}
+
 export interface ChannelDestinationManifest {
   type: "conversation";
   visibility: "public" | "private";
@@ -1194,6 +1211,153 @@ function staticJsonValue(expression: ts.Expression, label: string): unknown {
   throw new Error(`${label} must be a static JSON value`);
 }
 
+function definedRepositories(
+  source: string,
+  path: string,
+): RepositoryManifestDefinition[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const repositories: RepositoryManifestDefinition[] = [];
+  const object = (
+    expression: ts.Expression | undefined,
+    label: string,
+  ): ts.ObjectLiteralExpression => {
+    if (!expression || !ts.isObjectLiteralExpression(expression)) {
+      throw new Error(`${label} must be an object literal`);
+    }
+    return expression;
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineRepository"
+    ) {
+      const input = object(node.arguments[0], `${path} defineRepository()`);
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        `${path} repository id`,
+      );
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+        throw new Error(`${path} repository ${id} has an invalid id`);
+      }
+      const sourceExpression = objectProperty(input, "source");
+      if (
+        !sourceExpression ||
+        !ts.isCallExpression(sourceExpression) ||
+        !ts.isIdentifier(sourceExpression.expression) ||
+        sourceExpression.expression.text !== "githubRepository"
+      ) {
+        throw new Error(
+          `${path} repository ${id} source must call githubRepository()`,
+        );
+      }
+      const sourceInput = object(
+        sourceExpression.arguments[0],
+        `${path} repository ${id} GitHub source`,
+      );
+      const owner = literalStringValue(
+        objectProperty(sourceInput, "owner"),
+        `${path} repository ${id} owner`,
+      );
+      const name = literalStringValue(
+        objectProperty(sourceInput, "name"),
+        `${path} repository ${id} name`,
+      );
+      const authExpression = objectProperty(sourceInput, "auth");
+      const auth = authExpression
+        ? literalStringValue(authExpression, `${path} repository ${id} auth`)
+        : "auto";
+      if (auth !== "auto" && auth !== "public") {
+        throw new Error(`${path} repository ${id} auth must be auto or public`);
+      }
+      const mirrorExpression = objectProperty(input, "mirror");
+      const mirror = mirrorExpression
+        ? object(mirrorExpression, `${path} repository ${id} mirror`)
+        : undefined;
+      const modeExpression = mirror && objectProperty(mirror, "mode");
+      const mode = modeExpression
+        ? literalStringValue(modeExpression, `${path} repository ${id} mirror mode`)
+        : "managed";
+      const syncExpression = mirror && objectProperty(mirror, "sync");
+      const sync = syncExpression
+        ? literalStringValue(syncExpression, `${path} repository ${id} mirror sync`)
+        : "pull";
+      if (mode !== "managed" || sync !== "pull") {
+        throw new Error(
+          `${path} repository ${id} supports only managed pull mirrors`,
+        );
+      }
+      const workspace = object(
+        objectProperty(input, "workspace"),
+        `${path} repository ${id} workspace`,
+      );
+      const workspacePath = literalStringValue(
+        objectProperty(workspace, "path"),
+        `${path} repository ${id} workspace path`,
+      )
+        .trim()
+        .replace(/^\/+|\/+$/g, "");
+      if (
+        !workspacePath ||
+        workspacePath
+          .split("/")
+          .some((segment) => segment === "." || segment === "..") ||
+        workspacePath.includes("\\")
+      ) {
+        throw new Error(
+          `${path} repository ${id} workspace path must be a safe relative path`,
+        );
+      }
+      const access = literalStringValue(
+        objectProperty(workspace, "access"),
+        `${path} repository ${id} workspace access`,
+      );
+      if (access !== "read-only" && access !== "read-write") {
+        throw new Error(
+          `${path} repository ${id} workspace access must be read-only or read-write`,
+        );
+      }
+      const refsExpression = objectProperty(workspace, "refs");
+      const refs = refsExpression
+        ? literalStringValue(refsExpression, `${path} repository ${id} refs`)
+        : "session";
+      if (refs !== "session") {
+        throw new Error(`${path} repository ${id} supports only session refs`);
+      }
+      const publishExpression = objectProperty(input, "publish");
+      const publish = publishExpression
+        ? object(publishExpression, `${path} repository ${id} publish`)
+        : undefined;
+      const publishModeExpression = publish && objectProperty(publish, "mode");
+      const publishMode = publishModeExpression
+        ? literalStringValue(
+            publishModeExpression,
+            `${path} repository ${id} publish mode`,
+          )
+        : "actions-only";
+      if (publishMode !== "disabled" && publishMode !== "actions-only") {
+        throw new Error(
+          `${path} repository ${id} publish mode must be disabled or actions-only`,
+        );
+      }
+      repositories.push({
+        id,
+        source: { provider: "github", owner, name, auth },
+        mirror: { mode, sync },
+        workspace: {
+          path: workspacePath,
+          access,
+          refs,
+        },
+        publish: { mode: publishMode },
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return repositories.sort((left, right) => left.id.localeCompare(right.id));
+}
+
 function definedActions(source: string, path: string): ActionManifestDefinition[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   const actions: ActionManifestDefinition[] = [];
@@ -1800,6 +1964,29 @@ export const defineMcpServer = (input) => {
   if (url.protocol !== "https:") throw new Error("MCP server URLs must use HTTPS");
   return Object.freeze({ kind: "mcp", ...input, id: id(input.id, "defineMcpServer"), url: url.toString() });
 };
+export const githubRepository = (input) => {
+  const owner = id(input.owner, "githubRepository owner");
+  const name = id(input.name, "githubRepository name");
+  if (![owner, name].every((value) => /^[A-Za-z0-9_.-]+$/.test(value))) throw new Error("Invalid GitHub repository coordinate");
+  const auth = input.auth || "auto";
+  if (auth !== "auto" && auth !== "public") throw new Error("githubRepository auth must be auto or public");
+  return Object.freeze({ kind: "github-repository", provider: "github", owner, name, auth });
+};
+export const defineRepository = (input) => {
+  const repositoryId = id(input.id, "defineRepository");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(repositoryId)) throw new Error("Invalid repository id " + JSON.stringify(repositoryId));
+  const path = String(input.workspace.path).trim().replace(/^\\/+|\\/+$/g, "");
+  if (!path || path.split("/").some((segment) => segment === "." || segment === "..") || path.includes("\\\\")) throw new Error("Repository workspace paths must be safe relative paths");
+  return Object.freeze({
+    kind: "repository",
+    version: 1,
+    id: repositoryId,
+    source: input.source,
+    mirror: Object.freeze({ mode: input.mirror?.mode || "managed", sync: input.mirror?.sync || "pull" }),
+    workspace: Object.freeze({ path, access: input.workspace.access, refs: input.workspace.refs || "session" }),
+    publish: Object.freeze(input.publish || { mode: "actions-only" }),
+  });
+};
 export const defineTool = (input) => {
   const toolId = id(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
@@ -1847,6 +2034,7 @@ export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
+export const useRepository = (repository) => hooks().useRepository(repository);
 export const useSessionData = (key) => hooks().useSessionData(key);
 export const useAction = () => actionHooks().useAction();
 export const useGate = (gate) => actionHooks().useGate(gate);
@@ -2154,6 +2342,29 @@ the product or support surface presented to users.
       `MCP server id ${JSON.stringify(duplicateMcpServer.id)} is defined more than once`,
     );
   }
+  const repositories = definedRepositories(agentSource, "agent.ts");
+  const duplicateRepository = repositories.find(
+    (repository, index) =>
+      repositories.findIndex(
+        (candidate) => candidate.id === repository.id,
+      ) !== index,
+  );
+  if (duplicateRepository) {
+    throw new Error(
+      `Repository id ${JSON.stringify(duplicateRepository.id)} is defined more than once`,
+    );
+  }
+  const duplicateWorkspacePath = repositories.find(
+    (repository, index) =>
+      repositories.findIndex(
+        (candidate) => candidate.workspace.path === repository.workspace.path,
+      ) !== index,
+  );
+  if (duplicateWorkspacePath) {
+    throw new Error(
+      `Repository workspace path ${JSON.stringify(duplicateWorkspacePath.workspace.path)} is defined more than once`,
+    );
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -2179,6 +2390,7 @@ the product or support surface presented to users.
         ].sort(),
         mcpServerDefinitions,
         models: declaredModels,
+        ...(repositories.length ? { repositories } : {}),
         ...(actionsSource === undefined
           ? {}
           : {

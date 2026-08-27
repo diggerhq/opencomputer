@@ -465,6 +465,71 @@ useGate(() => request.effect === "write" ? deny("approval required") : allow());
   }
 });
 
+test("the compiler records managed repository mirrors", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-repositories-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import {
+  defineRepository,
+  githubRepository,
+  useRepository,
+} from "@opencomputer/agent";
+
+const application = defineRepository({
+  id: "application",
+  source: githubRepository({
+    owner: "diggerhq",
+    name: "opencomputer-example-unleash",
+  }),
+  mirror: { mode: "managed", sync: "pull" },
+  workspace: {
+    path: "repositories/application",
+    access: "read-write",
+    refs: "session",
+  },
+  publish: { mode: "actions-only" },
+});
+
+export default function Agent() {
+  useRepository(application);
+  return "Work in the repository checkout.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { repositories: Array<Record<string, unknown>> };
+    assert.deepEqual(manifest.repositories, [
+      {
+        id: "application",
+        source: {
+          provider: "github",
+          owner: "diggerhq",
+          name: "opencomputer-example-unleash",
+          auth: "auto",
+        },
+        mirror: { mode: "managed", sync: "pull" },
+        workspace: {
+          path: "repositories/application",
+          access: "read-write",
+          refs: "session",
+        },
+        publish: { mode: "actions-only" },
+      },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler preserves an explicit OpenAI model selection for Codex routing", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-openai-model-"));
   const root = resolve(parent, "app");
