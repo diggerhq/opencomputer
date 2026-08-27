@@ -107,7 +107,11 @@ func main() {
 
 	// Initialize PostgreSQL if configured
 	if cfg.DatabaseURL != "" {
-		store, err := db.NewStore(ctx, cfg.DatabaseURL)
+		// The control plane absorbs create bursts and runs exactly one pool, so
+		// it is the process that wants a pre-warmed idle floor — and the only
+		// one that can afford it. Workers open two pools each and there are
+		// several of them, so they stay on the low default.
+		store, err := db.NewStore(ctx, cfg.DatabaseURL, db.WithMinConns(20))
 		if err != nil {
 			log.Fatalf("failed to connect to database: %v", err)
 		}
