@@ -689,7 +689,6 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
         : "") +
       (actions ? `Action ledger: ${actions.ledger}\n` : "") +
       `Local API: ${state.url}\n` +
-      `React app: npm run dev:web (in another terminal)\n` +
       `Session: opencomputer session\n`,
   );
 
