@@ -22,7 +22,7 @@ Create a new sandbox from a checkpoint.
 </ParamField>
 
 <ParamField body="memoryMB" type="integer">
-  Memory for the forked sandbox, in MB. Clamped to a valid range: the floor is the checkpoint's own memory (a fork can't start smaller than the snapshot it restores, so a smaller value is ignored) and the ceiling is 8192 (8 GB; larger values are capped). The `memoryMB` field in the response reports the effective value after clamping.
+  Memory for the forked sandbox, in MB. Clamped to a valid range: the floor is the checkpoint's own memory (a fork can't start smaller than the snapshot it restores, so a smaller value is ignored) and the ceiling is 16384 (16 GB; larger values are capped). The `memoryMB` field in the response reports the effective value after clamping.
 </ParamField>
 
 <ResponseExample>

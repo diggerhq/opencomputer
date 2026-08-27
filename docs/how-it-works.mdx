@@ -65,7 +65,7 @@ See [Templates](/sandboxes/templates) for the full guide.
 
 ## Elasticity
 
-A sandbox's memory is chosen when it is created and stays fixed for its lifetime, with CPU allocated proportionally. See [Sizing](/sandboxes/sizing) for the available tiers.
+Sandboxes can scale memory at runtime via an internal metadata endpoint (`http://169.254.169.254/v1/scale`) accessible from inside the VM. CPU scales proportionally. This lets workloads request more resources before heavy tasks and release them after. See [Elasticity](/sandboxes/elasticity) for details.
 
 ## Networking
 

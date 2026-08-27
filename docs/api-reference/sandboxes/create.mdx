@@ -29,13 +29,6 @@ The 1 GB tier provides 1 vCPU on a best-effort basis. For guaranteed CPU allocat
 
 If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
 
-<Note>
-  `memoryMB` is the only opportunity to size a sandbox: the size is fixed for the
-  sandbox's lifetime and cannot be changed afterwards. A size outside the
-  supported tiers is rejected rather than rounded down, so you are never quietly
-  given less than you asked for. See [Sizing](/sandboxes/sizing).
-</Note>
-
 <ParamField body="envs" type="object">
   Environment variables as key-value pairs
 </ParamField>
