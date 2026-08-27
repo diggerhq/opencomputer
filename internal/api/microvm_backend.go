@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -115,60 +116,19 @@ func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointS
 	if !microvmEnabled() {
 		return nil, nil
 	}
-
-	image := os.Getenv("OPENSANDBOX_MICROVM_IMAGE_ARN")
-	if image == "" {
-		return nil, fmt.Errorf("OPENSANDBOX_MICROVM_ENABLED=1 but OPENSANDBOX_MICROVM_IMAGE_ARN is unset")
-	}
-	region := os.Getenv("OPENSANDBOX_MICROVM_REGION")
-	if region == "" {
-		region = "us-east-1"
+	// The direct-exec backend replaces this one rather than joining it — see the
+	// registration order in router.go. Returning nil here is what makes that
+	// exclusive: otherwise both pools would fill from the same regional quota.
+	if liteEnabled() {
+		log.Printf("microvm: agent-tunnel backend stood down — OPENSANDBOX_MICROVM_LITE=1 is serving this cell")
+		return nil, nil
 	}
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	client, err := newMicrovmClient(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("microvm: load AWS config: %w", err)
+		return nil, err
 	}
-
-	// Idle policy. Measured on dev: with idle=60s and suspended=300s, a sandbox
-	// was TERMINATED — disk and all — roughly six minutes after its last
-	// request. The old defaults (900/1800) put that at 45 minutes of inactivity,
-	// which silently destroys any sandbox a customer steps away from.
-	//
-	//   idle      seconds without inbound proxy traffic before AWS suspends.
-	//             A persistent agent tunnel does NOT count as traffic — only
-	//             requests through the proxy do, which is why an open connection
-	//             does not keep a box alive.
-	//   suspended seconds a box may stay suspended before AWS TERMINATES it.
-	//             This, not the 8h ceiling, is what actually bounds a parked
-	//             sandbox, and when it fires the disk goes with it.
-	//   resume    whether an inbound request wakes a suspended box. With this
-	//             off, nothing can reach a box during its suspended window, so
-	//             the window always runs out and the sandbox is destroyed.
-	//
-	// Default idle deliberately exceeds the pool's MaxBoxAge (7h) so stock never
-	// drifts into SUSPENDED while waiting — the pool's docstring requires that,
-	// and the previous 900s default did not deliver it. Auto-resume defaults ON
-	// so that anything which does suspend is recoverable rather than doomed.
-	idleSec := envInt("OPENSANDBOX_MICROVM_IDLE_SECONDS", 28_800)
-	// Default to the hard ceiling rather than 1800: AWS terminates a suspended
-	// box when this fires, taking its disk with it, so a 30-minute default made
-	// "hibernate" mean "deleted in half an hour". At the ceiling this timer
-	// never fires before the 8h total cap does, which leaves the cap as the
-	// single deadline to reason about — and the one the blob promotion works
-	// against.
-	suspendedSec := envInt("OPENSANDBOX_MICROVM_SUSPENDED_SECONDS", 28_800)
-	autoResume := os.Getenv("OPENSANDBOX_MICROVM_AUTO_RESUME") != "0"
-	client := awsvm.NewClient(awsCfg, awsvm.Config{
-		Region:                   region,
-		ImageIdentifier:          image,
-		ExecutionRoleArn:         os.Getenv("OPENSANDBOX_MICROVM_EXECUTION_ROLE_ARN"),
-		MaxIdleDurationSeconds:   int32(idleSec),
-		SuspendedDurationSeconds: int32(suspendedSec),
-		AutoResume:               autoResume,
-	})
-	log.Printf("microvm: idle policy — suspend after %ds idle, terminate after %ds suspended, auto-resume=%v",
-		idleSec, suspendedSec, autoResume)
+	region := client.Config().Region
 
 	poolCtx, stop := context.WithCancel(context.Background())
 
@@ -224,9 +184,91 @@ func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointS
 	go b.pool.Run(poolCtx)
 
 	log.Printf("microvm: backend enabled (region=%s image=%s poolTarget=%d)",
-		region, image, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
+		region, client.Config().ImageIdentifier, envInt("OPENSANDBOX_MICROVM_POOL_TARGET", 20))
 
 	return b, nil
+}
+
+// newMicrovmClient builds the AWS client from environment config.
+//
+// Shared by both MicroVM backends — the agent-tunnel one above and the direct
+// exec one in lite_backend.go — because they are two ways of TALKING to a box,
+// not two fleets. They launch from the same image, in the same region, under the
+// same idle policy and the same regional quota, and letting those drift apart
+// would make a measurement taken on one say nothing about the other.
+func newMicrovmClient(ctx context.Context) (*awsvm.Client, error) {
+	image := os.Getenv("OPENSANDBOX_MICROVM_IMAGE_ARN")
+	if image == "" {
+		return nil, fmt.Errorf("OPENSANDBOX_MICROVM_ENABLED=1 but OPENSANDBOX_MICROVM_IMAGE_ARN is unset")
+	}
+	region := os.Getenv("OPENSANDBOX_MICROVM_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("microvm: load AWS config: %w", err)
+	}
+
+	// Idle policy. Measured on dev: with idle=60s and suspended=300s, a sandbox
+	// was TERMINATED — disk and all — roughly six minutes after its last
+	// request. The old defaults (900/1800) put that at 45 minutes of inactivity,
+	// which silently destroys any sandbox a customer steps away from.
+	//
+	//   idle      seconds without inbound proxy traffic before AWS suspends.
+	//             A persistent agent tunnel does NOT count as traffic — only
+	//             requests through the proxy do, which is why an open connection
+	//             does not keep a box alive.
+	//   suspended seconds a box may stay suspended before AWS TERMINATES it.
+	//             This, not the 8h ceiling, is what actually bounds a parked
+	//             sandbox, and when it fires the disk goes with it.
+	//   resume    whether an inbound request wakes a suspended box. With this
+	//             off, nothing can reach a box during its suspended window, so
+	//             the window always runs out and the sandbox is destroyed.
+	//
+	// Default idle deliberately exceeds the pool's MaxBoxAge (7h) so stock never
+	// drifts into SUSPENDED while waiting — the pool's docstring requires that,
+	// and the previous 900s default did not deliver it. Auto-resume defaults ON
+	// so that anything which does suspend is recoverable rather than doomed.
+	idleSec := envInt("OPENSANDBOX_MICROVM_IDLE_SECONDS", 28_800)
+	// Default to the hard ceiling rather than 1800: AWS terminates a suspended
+	// box when this fires, taking its disk with it, so a 30-minute default made
+	// "hibernate" mean "deleted in half an hour". At the ceiling this timer
+	// never fires before the 8h total cap does, which leaves the cap as the
+	// single deadline to reason about — and the one the blob promotion works
+	// against.
+	suspendedSec := envInt("OPENSANDBOX_MICROVM_SUSPENDED_SECONDS", 28_800)
+	autoResume := os.Getenv("OPENSANDBOX_MICROVM_AUTO_RESUME") != "0"
+	sizeImages := parseSizeImages(os.Getenv("OPENSANDBOX_MICROVM_SIZE_IMAGES"))
+	defaultMemoryMB := envInt("OPENSANDBOX_MICROVM_DEFAULT_MEMORY_MB", 0)
+	// Empty pins nothing and takes the image's latest active version, which is
+	// what production wants. Setting it is for A/B: a republished image changes
+	// every box in the fleet at once, so without a way to pin an older version
+	// there is no way to tell "the image regressed" from "something else did".
+	imageVersion := os.Getenv("OPENSANDBOX_MICROVM_IMAGE_VERSION")
+	client := awsvm.NewClient(awsCfg, awsvm.Config{
+		Region:                   region,
+		ImageIdentifier:          image,
+		ImageVersion:             imageVersion,
+		DefaultMemoryMB:          defaultMemoryMB,
+		SizeImages:               sizeImages,
+		ExecutionRoleArn:         os.Getenv("OPENSANDBOX_MICROVM_EXECUTION_ROLE_ARN"),
+		MaxIdleDurationSeconds:   int32(idleSec),
+		SuspendedDurationSeconds: int32(suspendedSec),
+		AutoResume:               autoResume,
+	})
+	if len(sizeImages) > 0 {
+		log.Printf("microvm: size tiers — default %dMB pooled, cold-only: %v",
+			client.Config().DefaultMemoryMB, sortedTiers(sizeImages))
+	}
+	log.Printf("microvm: idle policy — suspend after %ds idle, terminate after %ds suspended, auto-resume=%v",
+		idleSec, suspendedSec, autoResume)
+	if imageVersion != "" {
+		log.Printf("microvm: image version PINNED to %s (unset OPENSANDBOX_MICROVM_IMAGE_VERSION for latest)", imageVersion)
+	}
+
+	return client, nil
 }
 
 // claimPooled binds a warm host to a sandbox id and returns whether one was
@@ -237,6 +279,18 @@ func newMicrovmBackend(ctx context.Context, checkpointStore *storage.CheckpointS
 // A miss is not an error here; Claim decides what to do about it.
 func (b *microvmBackend) claimPooled(sandboxID string, cfg types.SandboxConfig) (string, bool) {
 	if b == nil {
+		return "", false
+	}
+	// Only the default tier is pooled, so a request for any other size must miss
+	// the pool on purpose and cold-launch its own image.
+	//
+	// Without this the pool would happily hand a 16 GB request a default-size
+	// box: warm stock is manufactured from one image and carries no record of
+	// what it was asked for, so nothing downstream can tell the difference. The
+	// customer gets a box a quarter the size they asked for, metered at what
+	// they actually got, with no error anywhere.
+	if !b.client.Config().IsDefaultTier(cfg.MemoryMB) {
+		log.Printf("microvm: %s asked for %dMB — not the pooled tier, cold create", sandboxID, cfg.MemoryMB)
 		return "", false
 	}
 	entry, ok := b.pool.Claim()
@@ -295,8 +349,16 @@ func (b *microvmBackend) Claim(ctx context.Context, p placement) (string, error)
 	launchCtx, cancel := context.WithTimeout(ctx, coldCreateTimeout)
 	defer cancel()
 
+	// Resolve the tier's image. Refused rather than downgraded — see
+	// awsvm.Config.ImageForMemory.
+	image, _, ok := b.client.Config().ImageForMemory(cfg.MemoryMB)
+	if !ok {
+		return "", fmt.Errorf("microvm: %s: no image configured for %dMB: %w",
+			sandboxID, cfg.MemoryMB, awsvm.ErrUnsupported)
+	}
+
 	start := time.Now()
-	box, err := b.client.Run(launchCtx, "")
+	box, err := b.client.RunImage(launchCtx, "", image)
 	if err != nil {
 		return "", err // already classified (quota vs throttle) by awsvm
 	}
@@ -580,7 +642,13 @@ func (b *microvmBackend) sweepOrphans(ctx context.Context) {
 		known[id] = struct{}{}
 	}
 
-	ourImage := b.client.Config().ImageIdentifier
+	// Every image this cell launches from, not just the default: a box on a size
+	// tier is equally ours, and testing only the default image would leave every
+	// tier orphan uncollectable (it reads as another product's host).
+	ourImages := make(map[string]struct{}, 4)
+	for _, arn := range b.client.Config().OwnedImages() {
+		ourImages[arn] = struct{}{}
+	}
 	armed := envInt("OPENSANDBOX_MICROVM_ORPHAN_REAP", 0) == 1
 
 	var orphans []string
@@ -622,7 +690,7 @@ func (b *microvmBackend) sweepOrphans(ctx context.Context) {
 				arn = full.ImageArn
 			}
 		}
-		if ourImage == "" || arn != ourImage {
+		if _, ours := ourImages[arn]; len(ourImages) == 0 || !ours {
 			if arn == "" {
 				skippedUnprovable++
 			} else {
@@ -1121,9 +1189,10 @@ func (b *microvmBackend) Reconcile(ctx context.Context, store *db.Store) {
 //
 // The distinction matters to callers: a 500 invites a retry and reads as our
 // bug, while 501 says the operation will never succeed on this runtime. The
-// MicroVM backend returns ErrUnsupported for checkpoint/fork/reboot/power-cycle
-// — operations with no counterpart in a service where images are built through
-// an API rather than captured from a running VM.
+// MicroVM backend returns ErrUnsupported for checkpoint/fork (no counterpart in
+// a service where images are built through an API rather than captured from a
+// running VM) and for SetResourceLimits (sizing belongs to the image, so there
+// is no per-sandbox knob to turn).
 func respondManagerErr(c echo.Context, err error) error {
 	if errors.Is(err, awsvm.ErrUnsupported) {
 		return c.JSON(http.StatusNotImplemented, map[string]string{
@@ -1138,6 +1207,48 @@ func respondManagerErr(c echo.Context, err error) error {
 	})
 }
 
+// parseSizeImages reads the tier→image map from
+// OPENSANDBOX_MICROVM_SIZE_IMAGES, formatted "1024=arn:...,8192=arn:...".
+//
+// Only tiers listed here are offered beyond the default; an unlisted size is
+// refused at create rather than served from the default image. Malformed
+// entries are dropped with a log rather than failing startup — a typo in one
+// tier must not take the whole cell down, but it must not silently become a
+// wrong-size sandbox either, and dropping it makes that tier 501 instead.
+func parseSizeImages(raw string) map[int]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	out := map[int]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, found := strings.Cut(pair, "=")
+		mb, err := strconv.Atoi(strings.TrimSpace(k))
+		if !found || err != nil || mb <= 0 || strings.TrimSpace(v) == "" {
+			log.Printf("microvm: ignoring malformed SIZE_IMAGES entry %q — that tier will be refused, not downsized", pair)
+			continue
+		}
+		out[mb] = strings.TrimSpace(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// sortedTiers lists configured tier sizes in ascending order, for logging.
+func sortedTiers(m map[int]string) []int {
+	out := make([]int, 0, len(m))
+	for mb := range m {
+		out = append(out, mb)
+	}
+	sort.Ints(out)
+	return out
+}
+
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -1147,3 +1258,7 @@ func envInt(key string, def int) int {
 	}
 	return def
 }
+
+// ServesOwnStock: warm hosts come from this backend's own pool (awsvm.Pool),
+// claimed inside Claim, not from the cell's Postgres pool. See SelfStocking.
+func (b *microvmBackend) ServesOwnStock() bool { return true }

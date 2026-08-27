@@ -29,6 +29,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
+	"github.com/opensandbox/opensandbox/internal/reqtime"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/wsgateway"
@@ -40,6 +41,13 @@ var errSandboxNotAvailable = map[string]string{
 
 // Server holds the API server dependencies.
 type Server struct {
+	// createOverrideForTest substitutes the per-item handler the batch endpoint
+	// fans out to. Test-only seam: it lets create_batch_test exercise the
+	// batching contract (ordering, per-item isolation, limits) without standing
+	// up a backend, a store and a worker registry. Always nil in production,
+	// where batchedCreateHandler resolves to internalCreateSandbox.
+	createOverrideForTest func(echo.Context) error
+
 	echo               *echo.Echo
 	manager            sandbox.Manager
 	router             *sandbox.SandboxRouter // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
@@ -75,6 +83,10 @@ type Server struct {
 	redisClient        *redis.Client                     // nil if Redis not configured (for health checks)
 	adminEvents        *AdminEventBus                    // real-time event bus for admin dashboard
 	microvm            *microvmBackend                   // managed-host backend; nil unless enabled (see microvm_backend.go)
+	lite               *liteBackend                      // direct-exec managed-host backend; mutually exclusive with microvm (see lite_backend.go)
+	materialize        *materializer                     // memoizes per-org/user row creation off the create hot path (materialize.go)
+	orgRuntime         *orgRuntimeCache                  // memoizes orgs.runtime for the direct-to-cell create path (backend.go)
+	templateCache      *templateCache                    // caches name→template so create doesn't call the edge every time (template_cache.go)
 	// backends is the dispatch set for placement and routing (see backend.go).
 	// The worker path is deliberately absent — it is reached by falling through.
 	backends []Backend
@@ -116,6 +128,35 @@ func (s *Server) SetMigrator(m MigrationOrchestrator) {
 // constructing it with the right base URL + HMAC secret (CFEventSecret).
 func (s *Server) SetEdgeClient(c *edgeclient.Client) {
 	s.edge = c
+	s.prewarmPoolTemplate()
+}
+
+// prewarmPoolTemplate resolves the default template once at startup so no
+// customer create is ever the one that pays for it.
+//
+// Every SDK create carries a template name ("base" unless overridden), and the
+// first one to arrive after a restart would otherwise block on the edge round
+// trip — which, if that first create arrives as part of a burst, is the 580ms
+// case the template cache exists to prevent. Doing it here costs one request at
+// boot, off any hot path.
+//
+// Best effort by design: a failure just leaves the cache empty, which is
+// exactly the state this would have been in anyway. The public-template
+// fallback means the pool template resolves without an org.
+func (s *Server) prewarmPoolTemplate() {
+	if s.edge == nil || s.templateCache == nil {
+		return
+	}
+	name := poolTemplateName()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), templateRefreshTimeout)
+		defer cancel()
+		if _, err := s.templateCache.lookup(ctx, uuid.Nil, name, func(fctx context.Context) (*db.DBTemplate, error) {
+			return s.edge.LookupTemplate(fctx, uuid.Nil, name)
+		}); err != nil {
+			log.Printf("template cache: prewarm of %q failed: %v — first create will resolve it", name, err)
+		}
+	}()
 }
 
 // SetWSGateway wires the in-process WebSocket broker. When non-nil,
@@ -185,9 +226,12 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	e.HidePort = true
 
 	s := &Server{
-		echo:       e,
-		manager:    mgr,
-		ptyManager: ptyMgr,
+		echo:          e,
+		manager:       mgr,
+		ptyManager:    ptyMgr,
+		materialize:   newMaterializer(materializeTTL),
+		orgRuntime:    newOrgRuntimeCache(orgRuntimeTTL),
+		templateCache: newTemplateCache(),
 	}
 	// Mount service is only useful in combined mode (this process owns the
 	// sandbox manager). In server mode the CP proxies to a worker, which
@@ -260,6 +304,8 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// is on the response by the time obslog reads it. obslog replaces Echo's
 	// built-in Logger() — same access log line, but JSON with the host
 	// envelope and request_id/sandbox_id pulled from context.
+	// Outermost, so it brackets the whole chain including auth.
+	e.Use(reqtime.Middleware())
 	e.Use(observability.EchoMiddleware())
 	e.Use(middleware.Recover())
 	e.Use(middleware.RequestID())
@@ -806,6 +852,29 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 
 	// Serve web dashboard SPA at root (catch-all after API/auth routes)
 	s.serveDashboardUI(e, frontendURL)
+
+	// The direct-exec MicroVM backend (OPENSANDBOX_MICROVM_LITE=1). Selected
+	// INSTEAD of the agent-tunnel one below, never alongside it: both manufacture
+	// boxes from the same image against the same regional quota, and two fillers
+	// each believing they own the fleet would overrun it and starve each other.
+	//
+	// See lite_backend.go. The trade is total — no files, no hibernate, no
+	// streaming — so this is a measurement configuration, not a default.
+	if lite, err := newLiteBackend(context.Background()); err != nil {
+		log.Fatalf("opensandbox: vmhost-lite backend: %v", err)
+	} else if lite != nil {
+		s.lite = lite
+		s.registerBackend(lite)
+		// Rebuild sandbox→box bindings before serving. A restart otherwise
+		// leaves live sandboxes unroutable AND unreapable.
+		lite.Restore(context.Background(), s.store)
+		lite.StartReconciler(context.Background(), s.store)
+		lite.StartUsageTicker(context.Background(), s.sandboxDBs)
+		lite.StartEventPublisher(context.Background(), s.sandboxDBs, s.redisClient, s.cellID, s.store)
+		if s.workerRegistry == nil || s.workersDisabled {
+			lite.StartCapacityReporter(context.Background(), s.redisClient, s.cellID)
+		}
+	}
 
 	// AWS Lambda MicroVM backend. Disabled by default: this returns nil and no
 	// AWS call is ever made, so the QEMU fleet is unaffected. When it IS enabled

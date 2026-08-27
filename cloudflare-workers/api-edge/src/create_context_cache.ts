@@ -56,16 +56,52 @@ export interface OrgPolicy {
 
 // Freshness windows. The TTL is how long a value is used outright; the STALE
 // window is how long it may still gate a create while a refresh runs behind it.
-export const ORG_POLICY_TTL_MS = 5_000; // short: bounds is_halted / cap staleness
-export const ORG_STALE_MAX_MS = 60_000;
-export const CONCURRENCY_COUNT_TTL_MS = 1_500;
-export const CONCURRENCY_STALE_MAX_MS = 30_000;
-export const CELL_TTL_MS = 5_000;
+// 60s, not 5s. These three TTLs expire together, and D1.batch() is ONE round
+// trip — so the moment the shortest of them lapses, the create pays the full
+// read no matter how fresh the other two are. Measured under a burst-100 on
+// dev: ctxd1 245ms for a 3-statement batch against ctxcolo 14ms, i.e. the tier
+// that was supposed to absorb this was fast and EMPTY.
+//
+// Bounding is_halted staleness is still the job, and the stale-while-revalidate
+// window below (60s) has always been the real bound on that — this only changes
+// how long a value is used before a refresh is kicked off behind the response.
+//
+// WHY 60s AND NOT 15s. The three reads are single-flighted per isolate, so when
+// the context has expired ONE request runs the D1 batch and every other request
+// in the burst waits on it. That turns a single slow read into a fixed tax on
+// the whole burst: measured on dev at `ctx` 496ms on 18 of 20 requests with
+// `ctxn` = 3 on exactly one of them. It is what made burst-20 bimodal — 527ms
+// when the context was cached, 1.28s when it had just expired, with a spread of
+// only ~110ms INSIDE each run either way.
+//
+// The stale windows below (5 min) are what actually bound freshness; these
+// values only decide when a background refresh starts.
+export const ORG_POLICY_TTL_MS = 60_000;
+// 5 min, a DELIBERATE trade made 2026-08-26. This window is the bound on halt
+// latency: a stale-but-not-halted policy keeps gating creates while the refresh
+// runs behind it, so an org halted mid-window can keep creating for up to this
+// long. That was raised from 60s knowingly, in exchange for bursts never
+// blocking on the org read. Shorten it if halt enforcement ever needs to be
+// prompt again — it costs latency, not correctness.
+export const ORG_STALE_MAX_MS = 300_000;
+// 1.5s was deliberately shorter than a create→exec→destroy cycle, which meant
+// it expired BETWEEN benchmark-shaped creates by construction — every sequential
+// create dropped to the colo tier (or D1) for a number that had barely moved.
+// 5s matches ORG_POLICY_TTL_MS, is still a small fraction of the 30s stale
+// window the optimistic gate already relies on, and does not change the gate's
+// semantics: this is how long a count is used OUTRIGHT, and the cap has always
+// been approximate to ±CONCURRENCY_STALE_HEADROOM regardless.
+export const CONCURRENCY_COUNT_TTL_MS = 60_000;
+// Also 5 min, same trade. The cap has always been approximate to
+// ±CONCURRENCY_STALE_HEADROOM; this widens the window in which a fast creator
+// can overshoot it before the background refresh catches up.
+export const CONCURRENCY_STALE_MAX_MS = 300_000;
+export const CELL_TTL_MS = 60_000;
 // See the isHealthy() interaction noted at the cells stale-serve branch in
 // index.ts: reading capacity_updated_at from a ≤30s-stale snapshot stretches
 // the effective 120s freshness window to ~150s, still ~5× the CP's ~30s
 // capacity cadence.
-export const CELL_STALE_MAX_MS = 30_000;
+export const CELL_STALE_MAX_MS = 300_000;
 
 export const ORG_POLICY_SQL =
   "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider, runtime FROM orgs WHERE id = ?1";

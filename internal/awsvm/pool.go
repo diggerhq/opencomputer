@@ -3,6 +3,7 @@ package awsvm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -188,6 +189,29 @@ type StockEntry struct {
 	// customer's create→first-command path. Doing it here spends it while the
 	// box is idle in stock, for the same reason tokens are pre-minted.
 	agent *agentConn
+
+	// agentFailures counts CONSECUTIVE failed keepalive pings on the channel
+	// above. Reset by any success. Once it reaches maxAgentPingFailures the
+	// channel is retired and re-dialled — see warmTunnels.
+	agentFailures int
+
+	// redialFailures counts CONSECUTIVE failed attempts to give this box a
+	// tunnel back. Reset by any success.
+	//
+	// Retiring a channel used to be the end of the line: the box went
+	// tunnel-less, the re-dial failed silently, and it sat in stock — countable
+	// by Depth(), claimable by the edge, dead to every customer that got it —
+	// until MaxBoxAge (7h) evicted it on age alone. Measured on dev: 34 in stock
+	// against ONE live microVM in the whole account, and creates kept succeeding
+	// onto the corpses. A box whose tunnel cannot be rebuilt with a freshly
+	// minted token is not cold, it is gone, and stock must say so.
+	redialFailures int
+
+	// lastProxyTouch is when this box last received a real inbound request
+	// through its AWS proxy endpoint — the only kind of traffic AWS's idle
+	// accounting can see. Zero means "never since we started tracking", which
+	// makes the box due immediately. See Pool.touchIdleTimers.
+	lastProxyTouch time.Time
 
 	tokenMintedAt time.Time
 	launchedAt    time.Time
@@ -498,6 +522,11 @@ func (p *Pool) Run(ctx context.Context) {
 			p.refreshTokens(ctx)
 			p.retireAged(ctx)
 			p.warmTunnels(ctx)
+			// Runs in its own goroutine: a touch against a box that has already
+			// suspended is held by Lambda for the length of a snapshot restore,
+			// and blocking the maintenance tick on that would stall token
+			// refresh, retirement and reservation expiry behind it.
+			go p.touchIdleTimers(ctx)
 			if p.cfg.OnMaintain != nil {
 				p.cfg.OnMaintain()
 			}
@@ -776,10 +805,14 @@ func (p *Pool) retireAged(ctx context.Context) {
 func (p *Pool) warmTunnels(ctx context.Context) {
 	p.mu.Lock()
 	conns := make([]*agentConn, 0, len(p.stock))
+	// Kept aligned with conns so a ping failure can be attributed back to the
+	// entry that owns the channel, which is what makes retiring one possible.
+	live := make([]*StockEntry, 0, len(p.stock))
 	var missing []*StockEntry
 	for _, e := range p.stock {
 		if e.agent != nil {
 			conns = append(conns, e.agent)
+			live = append(live, e)
 			continue
 		}
 		// No tunnel at all. The common cause is a round trip through the edge:
@@ -804,18 +837,89 @@ func (p *Pool) warmTunnels(ctx context.Context) {
 	// AWS to suspend it. This is the expensive-on-purpose half of the trade —
 	// an unsuspended box bills compute while it waits — and it is what keeps a
 	// claim's first exec off the ~1s resume path.
-	if ok, failed := pingAll(ctx, conns); ok+failed > 0 {
-		log.Printf("awsvm: pool keepalive pinged %d stocked box(es) (%d failed)", ok, failed)
+	//
+	// A channel that keeps failing is RETIRED here rather than nudged. The
+	// re-warm loop below can only call ClientConn.Connect(), which moves an Idle
+	// conn to Connecting and does nothing at all to one already in
+	// TransientFailure — and gRPC's own reconnect backoff climbs toward ~2
+	// minutes, so a channel that went bad stays bad. Nothing else ever replaced
+	// it either: the re-dial path below heals a MISSING tunnel (e.agent == nil)
+	// and a dead-but-present one is not missing, so it was never a candidate.
+	//
+	// The result was a pool that decayed monotonically and never recovered —
+	// measured on dev at a 130-box pool: 75 live tunnels, then 55, then 30, with
+	// the tick reporting "re-warmed 75" every 30s while re-warming nothing. Every
+	// exec against one of those boxes pays a full cold dial (~1.1s guest attach),
+	// which is precisely the cost this pre-dial exists to avoid.
+	//
+	// Retiring means: close the channel, clear the field, and let the bounded
+	// re-dial above rebuild it on the next tick with a freshly minted token. That
+	// also covers the case Connect() could never have fixed — the token expired,
+	// so the WebSocket upgrade itself is being refused and only a new dial with a
+	// new credential can succeed.
+	ok, failed, retired, dead, sample := p.applyPingResults(live, pingEach(ctx, conns))
+	for _, a := range dead {
+		_ = a.Close()
+	}
+	if ok+failed > 0 {
+		// The sampled error is the point of the line. "75 failed" on its own is
+		// unactionable, and was: it took watching the count decay across ten
+		// minutes to work out that anything was wrong at all.
+		msg := fmt.Sprintf("awsvm: pool keepalive pinged %d stocked box(es) (%d failed", ok, failed)
+		if retired > 0 {
+			msg += fmt.Sprintf(", %d channel(s) retired for re-dial", retired)
+		}
+		msg += ")"
+		if sample != nil {
+			msg += fmt.Sprintf("; first failure: %v", sample)
+		}
+		log.Print(msg)
 	}
 
 	if p.preDial != nil {
+		redialed, redialFailed := 0, 0
+		var firstErr error
+		var firstErrBox string
+		var evicted []*StockEntry
 		for _, e := range missing {
 			dialCtx, cancel := context.WithTimeout(ctx, p.cfg.PreDialTimeout)
 			a, err := p.preDial(dialCtx, e.MicrovmID, e.Endpoint)
 			cancel()
 			if err != nil {
+				// The error was previously discarded here, and the line below
+				// reported len(missing) — boxes ATTEMPTED — so a tick that healed
+				// nothing logged identically to one that healed everything. That
+				// is why a pool sitting at 1 live box out of 34 in stock looked
+				// healthy: this is the only place that knows why a stocked box
+				// cannot get a tunnel, and it threw the reason away.
+				redialFailed++
+				if firstErr == nil {
+					firstErr, firstErrBox = err, e.MicrovmID
+				}
+				// Count it against the box, and evict once it is out of chances.
+				// The dial mints a fresh token first, so an expired credential
+				// cannot cause this; what remains is a box that is gone.
+				p.mu.Lock()
+				e.redialFailures++
+				doomed := e.redialFailures >= maxRedialFailures
+				if doomed {
+					for i, s := range p.stock {
+						if s == e {
+							p.stock = append(p.stock[:i], p.stock[i+1:]...)
+							break
+						}
+					}
+				}
+				p.mu.Unlock()
+				if doomed {
+					evicted = append(evicted, e)
+				}
 				continue // still usable cold; try again next tick
 			}
+			redialed++
+			p.mu.Lock()
+			e.redialFailures = 0
+			p.mu.Unlock()
 			// Re-check under the lock: the entry may have been reserved or
 			// terminated while we dialled, and installing a tunnel on an entry
 			// that has left stock would leak the channel.
@@ -834,11 +938,44 @@ func (p *Pool) warmTunnels(ctx context.Context) {
 			}
 		}
 		if len(missing) > 0 {
-			log.Printf("awsvm: pool re-dialled tunnels for %d tunnel-less stocked box(es)", len(missing))
+			// Successes and failures separately, plus a sampled error. A count of
+			// attempts cannot distinguish "stock is healing" from "stock is dead
+			// and every dial is refused", and those have completely different
+			// fixes. `capped` marks the ticks where warmDialPerTick truncated the
+			// work, so a backlog is visible rather than looking like a steady
+			// trickle of the same 32 boxes.
+			msg := fmt.Sprintf("awsvm: pool re-dial: %d healed, %d failed, of %d tunnel-less stocked box(es)",
+				redialed, redialFailed, len(missing))
+			if len(missing) >= warmDialPerTick {
+				msg += " (capped this tick — more are waiting)"
+			}
+			if len(evicted) > 0 {
+				msg += fmt.Sprintf("; EVICTED %d unreachable box(es) after %d consecutive failures", len(evicted), maxRedialFailures)
+			}
+			if firstErr != nil {
+				msg += fmt.Sprintf("; first failure %s: %v", firstErrBox, firstErr)
+			}
+			log.Print(msg)
+		}
+		// Outside the lock: terminate reaches AWS. These boxes are already out
+		// of stock, so nothing can claim them while this runs.
+		for _, e := range evicted {
+			go p.terminate(e)
 		}
 	}
 
-	rewarmed := 0
+	// Nudge Idle channels back to Connecting. This is a genuine, cheap win — an
+	// Idle conn has no transport but no problem either, and Connect() rebuilds it
+	// before a customer needs it.
+	//
+	// TransientFailure is counted SEPARATELY and deliberately not nudged.
+	// Connect() is documented as a no-op on a conn that is already trying, and
+	// these are already trying — on gRPC's own backoff, which grows toward ~2
+	// minutes. Lumping the two together is what produced "re-warmed 75 idle agent
+	// tunnel(s)" every 30s on a pool where nothing was being re-warmed and the
+	// live count was falling: the number described an intention, not an effect.
+	// Failing channels are healed by the retirement above, not here.
+	idle, failing := 0, 0
 	for _, a := range conns {
 		if a.conn == nil {
 			continue
@@ -848,14 +985,184 @@ func (p *Pool) warmTunnels(ctx context.Context) {
 			// Already warm, or already on its way.
 		case connectivity.Shutdown:
 			// Terminal — the entry is dead stock; retireAged/terminate owns it.
-		default: // Idle, TransientFailure
+		case connectivity.TransientFailure:
+			failing++
+		default: // Idle
 			a.conn.Connect()
-			rewarmed++
+			idle++
 		}
 	}
-	if rewarmed > 0 {
-		log.Printf("awsvm: pool re-warmed %d idle agent tunnel(s) of %d stocked", rewarmed, len(conns))
+	if idle > 0 || failing > 0 {
+		log.Printf("awsvm: pool tunnels of %d stocked: %d idle re-connected, %d in transient failure (awaiting retirement)",
+			len(conns), idle, failing)
 	}
+}
+
+// idleTouchConcurrency bounds how many idle-timer touches run at once. Lower
+// than pingConcurrency because these are full HTTPS requests to distinct hosts
+// rather than RPCs on channels we already hold, and because they are never
+// urgent: the pacing below gives every box a wide window to be served in.
+const idleTouchConcurrency = 16
+
+// idleTouchInterval is how often each stocked box must receive a real proxy
+// request, derived from the idle window AWS was actually configured with.
+//
+// A third of the window, so a box survives two consecutive missed touches — a
+// maintenance tick that is late, or a touch that fails — before AWS can suspend
+// it. Clamped at both ends: never more often than once a minute (this is a
+// network request per box and the pool can be large), and never less often than
+// every 15 minutes (at the 8h ceiling a third would be 2h40m, which is long
+// enough that a lowered idle window elsewhere would go unnoticed for hours).
+func (p *Pool) idleTouchInterval() time.Duration {
+	window := time.Duration(p.client.Config().MaxIdleDurationSeconds) * time.Second
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
+	iv := window / 3
+	if iv < time.Minute {
+		iv = time.Minute
+	}
+	if iv > 15*time.Minute {
+		iv = 15 * time.Minute
+	}
+	return iv
+}
+
+// touchIdleTimers sends one real inbound request through the proxy endpoint of
+// every stocked box that is due for one, so AWS never counts it idle.
+//
+// This is the half of the keepalive that AWS can see. warmTunnels keeps our own
+// agent channel healthy — which is what makes a claim's first exec fast — but it
+// does all of that INSIDE an established WebSocket, and AWS measures idleness by
+// inbound requests through the proxy endpoint. So the pool could hold a box
+// perfectly warm by every measure we had, while AWS independently decided nobody
+// had touched it in 15 minutes and suspended it. That is what produced stock
+// answering 502, and then stock being terminated outright 30 minutes later.
+//
+// Belt to the ceiling's braces: with maxIdleDurationSeconds now defaulted to the
+// 8h total-lifetime cap, no box should ever reach its idle window before
+// MaxBoxAge retires it anyway. This runs regardless, cheaply, because that
+// ceiling is a default someone can lower with an env var and the failure mode
+// when they do is silent, delayed, and destroys sandboxes.
+//
+// Failures are logged and nothing more. A failed touch is not evidence the box
+// is bad — a 502 here includes a box mid-resume — and warmTunnels already owns
+// the decision to retire or evict on evidence it can actually trust.
+func (p *Pool) touchIdleTimers(ctx context.Context) {
+	interval := p.idleTouchInterval()
+	now := time.Now()
+
+	p.mu.Lock()
+	due := make([]*StockEntry, 0, len(p.stock))
+	for _, e := range p.stock {
+		if e.lastProxyTouch.IsZero() || now.Sub(e.lastProxyTouch) >= interval {
+			due = append(due, e)
+		}
+	}
+	p.mu.Unlock()
+	if len(due) == 0 {
+		return
+	}
+
+	var (
+		mu        sync.Mutex
+		ok        int
+		failed    int
+		sample    error
+		sampleBox string
+		touched   []*StockEntry
+		wg        sync.WaitGroup
+	)
+	sem := make(chan struct{}, idleTouchConcurrency)
+	for _, e := range due {
+		wg.Add(1)
+		go func(e *StockEntry) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			err := proxyTouch(ctx, e.Endpoint, p.client.Config().AgentPort,
+				func(ctx context.Context) (string, error) {
+					return p.client.AuthToken(ctx, e.MicrovmID)
+				})
+
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failed++
+				if sample == nil {
+					sample, sampleBox = err, e.MicrovmID
+				}
+				return
+			}
+			ok++
+			touched = append(touched, e)
+		}(e)
+	}
+	wg.Wait()
+
+	// Stamped under the pool lock, and only on success: every other reader of
+	// lastProxyTouch holds p.mu, and a box whose touches keep failing must stay
+	// due on every tick rather than drift quietly toward suspension.
+	if len(touched) > 0 {
+		stamp := time.Now()
+		p.mu.Lock()
+		for _, e := range touched {
+			e.lastProxyTouch = stamp
+		}
+		p.mu.Unlock()
+	}
+
+	msg := fmt.Sprintf("awsvm: pool idle-timer touch: %d ok, %d failed, of %d due (every %s)",
+		ok, failed, len(due), interval)
+	if sample != nil {
+		msg += fmt.Sprintf("; first failure %s: %v", sampleBox, sample)
+	}
+	log.Print(msg)
+}
+
+// applyPingResults folds one tick's keepalive outcome back into the stock,
+// returning the channels the caller must close.
+//
+// Split out from warmTunnels so the retirement rule is testable without a live
+// gRPC channel: agentConn.ping talks to a real client, so the only way to
+// exercise "two consecutive failures retire the tunnel" in a unit test is to
+// drive the decision directly.
+//
+// errs is aligned with live by index — see pingEach.
+func (p *Pool) applyPingResults(live []*StockEntry, errs []error) (ok, failed, retired int, dead []*agentConn, sample error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, err := range errs {
+		if i >= len(live) {
+			break
+		}
+		e := live[i]
+		if err == nil {
+			e.agentFailures = 0
+			ok++
+			continue
+		}
+		failed++
+		if sample == nil {
+			sample = err
+		}
+		e.agentFailures++
+		if e.agentFailures < maxAgentPingFailures {
+			continue
+		}
+		// Only ever close what the entry STILL holds. Between the ping and here
+		// the box may have been claimed, and TrackClaimed transfers the channel
+		// to the manager and clears this field — closing the pinged conn blindly
+		// would tear down a live customer's tunnel.
+		if e.agent != nil {
+			dead = append(dead, e.agent)
+			e.agent = nil
+			e.agentFailures = 0
+			retired++
+		}
+	}
+	return ok, failed, retired, dead, sample
 }
 
 func (p *Pool) terminate(e *StockEntry) {
@@ -876,6 +1183,23 @@ func (p *Pool) terminate(e *StockEntry) {
 // healing a fully cold pool all at once would burst hundreds of them; spreading
 // the work costs a few ticks and keeps the pool's own traffic predictable.
 const warmDialPerTick = 32
+
+// maxAgentPingFailures is how many CONSECUTIVE failed keepalive pings retire a
+// stocked box's channel for re-dial. Two, at a 30s tick, means one blip is
+// forgiven and a genuinely dead channel is replaced within ~a minute.
+//
+// Not one: a single ping can lose to a box that is mid-resume, and churning a
+// working tunnel costs a full re-dial for nothing. Not five: every tick spent
+// waiting is a tick where any create landing on that box hands its customer a
+// cold dial.
+const maxAgentPingFailures = 2
+
+// maxRedialFailures is how many CONSECUTIVE failed re-dials evict a stocked box
+// entirely. Three, at a 30s tick, means ~90s of a box being unreachable with a
+// freshly minted token before the pool stops counting it as stock. Deliberately
+// larger than maxAgentPingFailures: retiring a channel is cheap and reversible,
+// while eviction terminates the box, so it should need more evidence.
+const maxRedialFailures = 3
 
 const terminateInterval = 125 * time.Millisecond
 

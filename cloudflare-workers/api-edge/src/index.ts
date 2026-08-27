@@ -22,14 +22,15 @@
 export { CreditAccount } from "../../shared/credit_account";
 // Shared with the vm-do worker's MicrovmSession: the same minimal HTTP/2 client,
 // used here only by the dev-only direct-exec probe.
-import { H2Grpc, encodeExecRequest, decodeExecResponse } from "../../shared/h2grpc";
+import { H2Grpc, openTunnel, encodeExecRequest, decodeExecResponse } from "../../shared/h2grpc";
 export { PoolStock } from "./pool_stock";
+import { mintPoolCapToken } from "./pool_stock";
 // VmSession (VM-DO exec data plane) lives in its own worker
 // (cloudflare-workers/vm-do) and is bound cross-script via VM_SESSIONS —
 // deliberately NOT exported here, so the edge's deploy cadence (every merge
 // touching web/ or edge code) can't reset the DOs and sever the host-dialed
 // VM WebSockets.
-import { coloGet, coloPut } from "./colo_cache";
+import { coloDelete, coloGet, coloPut } from "./colo_cache";
 import {
   ACTIVE_CELLS_SQL,
   CELL_STALE_MAX_MS,
@@ -131,6 +132,33 @@ export interface Env extends DashboardEnv {
   // origin round trips. EDGE_CLAIM="0" is the kill switch (default on).
   POOL_STOCK: DurableObjectNamespace;
   EDGE_CLAIM?: string;
+  // Which shard ids this environment uses, as a comma-separated list — e.g.
+  // "1,4,6,12" for the four-way prod set, or "1" for no sharding at all.
+  //
+  // This has to be per-environment because a shard id is not a number, it is
+  // half of a DO NAME (`${cellID}#${gen}#${id}`). The cell id is the other
+  // half, so the same id names a DIFFERENT object in every cell — and placement
+  // is a property of the object. The measured-into-IAD set below was probed
+  // against PROD's cell and carries no information whatsoever about where dev's
+  // objects of the same id landed. Sharing one hardcoded list across cells was
+  // silently asserting otherwise.
+  POOL_STOCK_SHARD_IDS?: string;
+  // "0" stops the edge answering MicroVM exec itself, handing it to the cell.
+  // Required for a cell whose boxes have no agent tunnel to dial — see the
+  // dispatch in proxyToCellSDK. Unset means the edge path, which is prod.
+  MICROVM_EDGE_EXEC?: string;
+  // "0" stops MicroVM creates attempting edge-claim. Required for a cell that
+  // keeps its warm set in process, where the stock DO can never be filled — see
+  // createSandbox. Unset means edge-claim, which is prod.
+  MICROVM_EDGE_CLAIM?: string;
+  // "0" makes a voucher create hold ZERO connections: no binding write, no
+  // finalize send. Diagnostic only — it leaves the sandbox with no row and no
+  // resolvable box, so exec 404s and the box leaks. It exists to test whether
+  // the unexplained ~150ms of burst create latency is our own waitUntil
+  // connection use. A Worker invocation may hold six connections and each
+  // waitUntil takes one, so the cost of holding them lands on the NEXT request
+  // to that isolate — i.e. inside the residual, invisible to `hdl`.
+  CREATE_WAITUNTIL?: string;
   // VM-DO exec data plane (vm_do_datapane_validation). One DO per sandbox holds a
   // persistent host-dialed WebSocket to the QEMU worker; exec routes edge→DO→VM
   // instead of tunnel→CP→worker, with automatic tunnel fallback when unconnected.
@@ -162,6 +190,7 @@ export interface FinalizeMsg {
   runtime: string;
   sandboxID: string;
   workerID: string;
+  /** Voucher creates only: the box to redeem against. Absent on every other path. */
   bodyText: string;
 }
 
@@ -384,8 +413,23 @@ function stripApiKeyQueryParam(target: string): string {
 // and throttle the last_used bump. Isolates recycle so entries are naturally
 // bounded; CACHE_MAX guards pathological key cardinality.
 const AUTH_TTL_MS = 60_000;
-// SWR window for org policy in the colo tier: a ≤60s-stale not-halted policy
-// may gate a create while a background refresh runs (see loadCreateContext).
+// SWR window for the auth entry, mirroring the org-policy and active-cells
+// gates in loadCreateContext. Auth was the LAST tier on the create path with no
+// stale-while-revalidate escape: every other cold miss serves a stale value and
+// refreshes behind the response, so a cold-isolate create still paid one
+// blocking D1 read — and it paid it FIRST, before the orgID is even known, so
+// it cannot be batched with the create-context reads. Measured on dev
+// 2026-08-25 (6 sequential creates): `auth` 26-49ms on the four cold isolates
+// while `ctx` was 7-9ms once its colo tier answered — auth was the larger of
+// the two, and for a worse reason.
+//
+// What this widens: revocation lag for a key deleted out of band goes from
+// AUTH_TTL_MS to AUTH_STALE_MAX_MS in the worst case — but only until the
+// background refresh lands (~one D1 read), because that refresh EVICTS both
+// tiers when the row is gone. Ordinary expiry is unaffected: expires_at travels
+// with the cached entry and is still checked inline on every request, stale or
+// not, so an expired key is rejected at the same instant it was before.
+const AUTH_STALE_MAX_MS = 600_000; // 10 min
 const LAST_USED_BUMP_MS = 60_000; // at most once/min/key/isolate
 const CACHE_MAX = 10_000;
 
@@ -470,7 +514,84 @@ function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): 
     .catch(() => {});
 }
 
-async function authenticate(req: Request, env: Env): Promise<Caller | null> {
+const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at,
+          CASE WHEN m.role IN ('owner', 'admin') THEN 'admin' ELSE m.role END AS role
+     FROM api_keys k
+     LEFT JOIN org_memberships m
+       ON m.org_id = k.org_id AND m.user_id = k.created_by
+    WHERE k.key_hash = ?1`;
+
+// One row shape for both readers. refreshAuth repopulates the same cache tiers
+// the hot path reads, so a role column present in one and absent in the other
+// would drop an admin to member on the first background refresh.
+type AuthRow = {
+  org_id: string;
+  created_by: string | null;
+  expires_at: number | null;
+  role: string | null;
+};
+
+// In-flight auth refreshes, keyed by hash — same single-flight shape as
+// createContextInflight and for the same reason: a burst that all lands stale
+// would otherwise fire one D1 read per request, which is precisely the
+// stampede the cache tiers exist to prevent.
+const authRefreshInflight = new Map<string, Promise<void>>();
+
+// refreshAuth re-reads the key row and repopulates both cache tiers. It runs
+// BEHIND a response that was already served from a stale entry, so its latency
+// is off the hot path; what matters is that it is authoritative — including
+// when the row is gone, where it evicts rather than leaving a revoked key
+// working until its TTL expires.
+function refreshAuth(env: Env, hash: string): Promise<void> {
+  const inflight = authRefreshInflight.get(hash);
+  if (inflight) return inflight;
+  const p = (async () => {
+    try {
+      const row = await env.OPENCOMPUTER_DB.prepare(AUTH_KEY_SQL)
+        .bind(hash)
+        .first<AuthRow>();
+      if (!row) {
+        authCache.delete(hash);
+        await coloDelete("auth", hash);
+        return;
+      }
+      const at = Date.now();
+      const caller: Caller = {
+        orgID: row.org_id,
+        userID: row.created_by,
+        ...(row.role ? { role: row.role } : {}),
+      };
+      if (authCache.size >= CACHE_MAX) authCache.clear();
+      authCache.set(hash, {
+        caller,
+        expiresAt: row.expires_at,
+        cachedAtMs: at,
+        lastBumpMs: authCache.get(hash)?.lastBumpMs ?? 0,
+      });
+      await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: at }, AUTH_STALE_MAX_MS / 1000);
+    } catch {
+      // Keep serving the stale entry; the next request retries. Failing closed
+      // here would turn a transient D1 blip into a 401 storm.
+    } finally {
+      authRefreshInflight.delete(hash);
+    }
+  })();
+  authRefreshInflight.set(hash, p);
+  return p;
+}
+
+// Which tier answered auth, and what the slow parts cost. `auth` is one mark
+// over four possible paths (isolate, colo, stale, D1) and a 226ms reading does
+// not say which — the same ambiguity that made `ctx` unfixable until it was
+// split. tier: 0 isolate, 1 colo, 2 stale, 3 D1.
+export interface AuthProbe {
+  tier: number;
+  coloMs: number;
+  d1Ms: number;
+  hashMs: number;
+}
+
+async function authenticate(req: Request, env: Env, ctx?: ExecutionContext, probe?: AuthProbe): Promise<Caller | null> {
   const apiKey = apiKeyFromRequest(req);
   if (!apiKey) return null;
   // Act-as-org provisioning token (sessions-api): a signed JWT, not an osb_ key.
@@ -484,13 +605,16 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   ) {
     return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
   }
+  const tHash = Date.now();
   const hash = await hashAPIKey(apiKey);
+  if (probe) probe.hashMs = Date.now() - tHash;
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
 
   const cached = authCache.get(hash);
   if (cached && nowMs - cached.cachedAtMs < AUTH_TTL_MS) {
     if (cached.expiresAt && cached.expiresAt < nowSec) return null;
+    if (probe) probe.tier = 0;
     bumpLastUsed(env, hash, cached, nowMs);
     return cached.caller;
   }
@@ -498,8 +622,11 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   // Colo tier: a fresh box's sub-ops usually land on isolates that never saw
   // this key. cachedAtMs travels with the entry so the total staleness bound
   // (revocation lag) stays AUTH_TTL_MS, not colo-TTL + isolate-TTL stacked.
+  const tColo = Date.now();
   const shared = await coloGet<{ caller: Caller; expiresAt: number | null; cachedAtMs: number }>("auth", hash);
+  if (probe) probe.coloMs = Date.now() - tColo;
   if (shared && nowMs - shared.cachedAtMs < AUTH_TTL_MS) {
+    if (probe) probe.tier = 1;
     if (shared.expiresAt && shared.expiresAt < nowSec) return null;
     if (authCache.size >= CACHE_MAX) authCache.clear();
     const entry: AuthEntry = { caller: shared.caller, expiresAt: shared.expiresAt, cachedAtMs: shared.cachedAtMs, lastBumpMs: 0 };
@@ -508,21 +635,41 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
     return shared.caller;
   }
 
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT k.org_id, k.created_by, k.expires_at,
-            CASE WHEN m.role IN ('owner', 'admin') THEN 'admin' ELSE m.role END AS role
-       FROM api_keys k
-       LEFT JOIN org_memberships m
-         ON m.org_id = k.org_id AND m.user_id = k.created_by
-      WHERE k.key_hash = ?1`,
-  )
+  // Stale-while-revalidate. Take the FRESHEST stale copy either tier holds —
+  // the isolate entry can outlive the colo entry or vice versa, and using the
+  // older of the two would shorten the window for no benefit. Serving it costs
+  // nothing; the refresh behind it is what keeps the entry honest.
+  const staleShared = shared && nowMs - shared.cachedAtMs < AUTH_STALE_MAX_MS ? shared : null;
+  const staleLocal = cached && nowMs - cached.cachedAtMs < AUTH_STALE_MAX_MS ? cached : null;
+  const stale =
+    staleShared && (!staleLocal || staleShared.cachedAtMs > staleLocal.cachedAtMs) ? staleShared : staleLocal;
+  if (stale) {
+    // Expiry is still enforced inline, exactly as on the fresh paths — the
+    // stale window widens revocation lag, never expiry.
+    if (stale.expiresAt && stale.expiresAt < nowSec) return null;
+    if (authCache.size >= CACHE_MAX) authCache.clear();
+    const entry: AuthEntry = {
+      caller: stale.caller,
+      expiresAt: stale.expiresAt,
+      cachedAtMs: stale.cachedAtMs,
+      lastBumpMs: cached?.lastBumpMs ?? 0,
+    };
+    authCache.set(hash, entry);
+    if (probe) probe.tier = 2;
+    const refresh = refreshAuth(env, hash);
+    if (ctx) ctx.waitUntil(refresh);
+    bumpLastUsed(env, hash, entry, nowMs);
+    return stale.caller;
+  }
+
+  const tD1 = Date.now();
+  const row = await env.OPENCOMPUTER_DB.prepare(AUTH_KEY_SQL)
     .bind(hash)
-    .first<{
-      org_id: string;
-      created_by: string | null;
-      expires_at: number | null;
-      role: string | null;
-    }>();
+    .first<AuthRow>();
+  if (probe) {
+    probe.tier = 3;
+    probe.d1Ms = Date.now() - tD1;
+  }
   if (!row) return null; // never cache negatives — a freshly-created key must work at once
   if (row.expires_at && row.expires_at < nowSec) return null;
 
@@ -534,7 +681,11 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   if (authCache.size >= CACHE_MAX) authCache.clear();
   const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
   authCache.set(hash, entry);
-  await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_TTL_MS / 1000);
+  // TTL is the STALE bound, not AUTH_TTL_MS: an entry that evaporates at 60s
+  // can never be stale-served, which would leave the SWR branch above reachable
+  // only from the isolate tier — i.e. never on the cross-isolate misses that
+  // are the whole reason the colo tier exists.
+  await coloPut("auth", hash, { caller, expiresAt: row.expires_at, cachedAtMs: nowMs }, AUTH_STALE_MAX_MS / 1000);
   bumpLastUsed(env, hash, entry, nowMs);
   return caller;
 }
@@ -567,7 +718,7 @@ async function listActiveCells(env: Env): Promise<CellRow[]> {
 // (fresh isolates, caches empty) that collapses ~3×D1-latency into one. Each
 // piece still honours + populates its existing per-isolate cache, so warm/
 // sustained traffic skips D1 entirely and only the cold misses are batched.
-type CreateContext = { org: OrgPolicy | null; activeCount: number; cells: CellRow[] };
+type CreateContext = { org: OrgPolicy | null; activeCount: number; cells: CellRow[]; cellsAtMs: number };
 
 // In-flight loads, keyed by org. The three cache tiers below only help a request
 // that arrives after some earlier request has already finished populating them —
@@ -582,12 +733,29 @@ type CreateContext = { org: OrgPolicy | null; activeCount: number; cells: CellRo
 // in a finally so a rejection can't wedge every later create for that org.
 const createContextInflight = new Map<string, Promise<CreateContext>>();
 
-function loadCreateContext(env: Env, orgID: string, ctx?: ExecutionContext): Promise<CreateContext> {
+// ctxProbe is filled in by the load below so the create handler can attribute
+// its `ctx` mark. `ctx` conflates three tiers — isolate map, colo cache, D1 —
+// and a 10.6s reading says nothing about WHICH, which is the only thing that
+// decides what to cut. Written, never read, by anything but telemetry.
+export interface CtxProbe {
+  coloMs: number;
+  d1Ms: number;
+  d1Stmts: number;
+  coalesced: boolean;
+}
+
+function loadCreateContext(env: Env, orgID: string, ctx?: ExecutionContext, probe?: CtxProbe): Promise<CreateContext> {
   const inflight = createContextInflight.get(orgID);
-  if (inflight) return inflight;
+  if (inflight) {
+    // Collapsed onto another request's read IN THIS ISOLATE. Distinguishing
+    // these matters: if a burst shows most requests coalesced and `ctx` is
+    // still large, the isolate fan-out is the problem, not the read.
+    if (probe) probe.coalesced = true;
+    return inflight;
+  }
   const p = (async () => {
     try {
-      return await loadCreateContextUncoalesced(env, orgID, ctx);
+      return await loadCreateContextUncoalesced(env, orgID, ctx, probe);
     } finally {
       createContextInflight.delete(orgID);
     }
@@ -600,7 +768,8 @@ async function loadCreateContextUncoalesced(
   env: Env,
   orgID: string,
   ctx?: ExecutionContext,
-): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }> {
+  probe?: CtxProbe,
+): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[]; cellsAtMs: number }> {
   const nowMs = Date.now();
   const oc = orgPolicyCache.get(orgID);
   const cc = concurrencyCountCache.get(orgID);
@@ -623,11 +792,13 @@ async function loadCreateContextUncoalesced(
   let staleCount: { count: number; cachedAtMs: number } | null =
     cc !== undefined && nowMs - cc.cachedAtMs < CONCURRENCY_STALE_MAX_MS ? cc : null;
   {
+    const tColo = Date.now();
     const [so, sc, scl] = await Promise.all([
       orgHave ? null : coloGet<{ policy: OrgPolicy | null; cachedAtMs: number }>("org", orgID),
       cntHave ? null : coloGet<{ count: number; cachedAtMs: number }>("count", orgID),
       cellsHave ? null : coloGet<{ cells: CellRow[]; cachedAtMs: number }>("cells", "active"),
     ]);
+    if (probe) probe.coloMs = Date.now() - tColo;
     if (so && nowMs - so.cachedAtMs < ORG_POLICY_TTL_MS) {
       org = so.policy;
       orgHave = true;
@@ -700,15 +871,20 @@ async function loadCreateContextUncoalesced(
   }
 
   // Optimistic concurrency gate: the COUNT read is the last per-create D1
-  // dependency once org+cells are cache-served (its 1.5s TTL is shorter than a
-  // typical create→exec→destroy cycle, so it expires between benchmark-shaped
-  // creates). When the org's policy is already known WITHOUT D1 and a stale
-  // (≤30s) count sits comfortably below the limit, use the stale value and
-  // refresh it in the background — the cap stays enforced within
-  // CONCURRENCY_STALE_HEADROOM of the limit, matching the gate's existing
-  // "index trails events, reads low under burst" approximate semantics. Near
-  // the limit (or with nothing cached) the blocking read still happens.
-  if (!cntHave && orgHave && staleCount) {
+  // dependency once org+cells are cache-served. When the org's policy is
+  // already known WITHOUT D1 and a stale (≤30s) count sits comfortably below
+  // the limit, use the stale value and refresh it in the background — the cap
+  // stays enforced within CONCURRENCY_STALE_HEADROOM of the limit, matching the
+  // gate's existing "index trails events, reads low under burst" approximate
+  // semantics. Near the limit the blocking read still happens.
+  //
+  // `orgHave` is deliberately NOT required any more. It was, and that coupling
+  // is what dragged this back onto D1 in exactly the case that hurts: a burst
+  // arriving on cold isolates has no org either, so the count joined the batch
+  // and every request paid the round trip. The org policy is fetched in that
+  // same batch, so by the time the limit is read below it is present regardless
+  // of which tier supplied it — waiting for it here bought nothing.
+  if (!cntHave && staleCount) {
     const limit = org?.max_concurrent_sandboxes ?? DEFAULT_MAX_CONCURRENT_SANDBOXES;
     if (staleCount.count + CONCURRENCY_STALE_HEADROOM <= limit) {
       activeCount = staleCount.count;
@@ -760,7 +936,12 @@ async function loadCreateContextUncoalesced(
   }
 
   if (stmts.length > 0) {
+    const tD1 = Date.now();
     const res = await env.OPENCOMPUTER_DB.batch(stmts);
+    if (probe) {
+      probe.d1Ms = Date.now() - tD1;
+      probe.d1Stmts = stmts.length;
+    }
     const puts: Promise<void>[] = [];
     for (let i = 0; i < kinds.length; i++) {
       if (kinds[i] === "org") {
@@ -784,32 +965,101 @@ async function loadCreateContextUncoalesced(
     }
     await Promise.all(puts);
   }
-  return { org, activeCount, cells };
+  // cellsAtMs is WHEN these rows were read, and callers must judge cell
+  // heartbeat freshness against it rather than against wall-clock now.
+  //
+  // Without it the stale tier defeats itself: it is allowed to serve a snapshot
+  // for CELL_STALE_MAX_MS (5 min) while isHealthy rejects any capacity_updated_at
+  // older than CAPACITY_FRESH_SEC (2 min) — so every create served a snapshot
+  // between those two ages got "no cells available with capacity" while the cell
+  // was perfectly healthy in D1. Reproduced at burst-100 as 100/100 creates
+  // failing instantly (hdl=0) seconds after a sequential run passed 5/5.
+  return { org, activeCount, cells, cellsAtMs: activeCellsCache?.cachedAtMs ?? nowMs };
 }
 
+const CELL_ROW_SQL =
+  `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
+     FROM cells WHERE cell_id = ?1`;
+
+// In-flight row reads, keyed by cell. Same single-flight shape as
+// createContextInflight and authRefreshInflight, for the same reason.
+const cellRowInflight = new Map<string, Promise<CellRow | null>>();
+
+function readCellRow(env: Env, cellID: string): Promise<CellRow | null> {
+  const inflight = cellRowInflight.get(cellID);
+  if (inflight) return inflight;
+  const p = (async () => {
+    try {
+      const cell = await env.OPENCOMPUTER_DB.prepare(CELL_ROW_SQL).bind(cellID).first<CellRow>();
+      const at = Date.now();
+      if (cellCache.size >= CACHE_MAX) cellCache.clear();
+      cellCache.set(cellID, { cell, cachedAtMs: at });
+      // Only a real row goes to the shared tier. Caching a null would let one
+      // failed read blind every isolate in the colo to a live cell.
+      if (cell) await coloPut("cell", cellID, { cell, cachedAtMs: at }, CELL_STALE_MAX_MS / 1000);
+      return cell;
+    } finally {
+      cellRowInflight.delete(cellID);
+    }
+  })();
+  cellRowInflight.set(cellID, p);
+  return p;
+}
+
+// lookupCell resolves one cell's row, through the same three tiers every other
+// hot read uses: isolate map, colo cache, then D1.
+//
+// It had ONLY the isolate map, and that was the largest remaining blocking read
+// on the exec path. A burst arrives on isolates that have never seen this cell,
+// so each one went straight to D1 for a row that changes almost never —
+// measured at `cell;dur=327` per exec across a burst-100, against `route;dur=9`
+// for the sandbox lookup right beside it that does have the tiers.
+//
+// SERVING STALE IS SAFE HERE, including for placement. The volatile fields are
+// available_workers and capacity_updated_at, and isHealthy() rejects a row whose
+// capacity_updated_at has aged past CAPACITY_FRESH_SEC — so an old row can only
+// ever make a cell look UNhealthy and be skipped. It cannot make a dead cell
+// look alive, which is the direction that would hurt.
 async function lookupCell(env: Env, cellID: string): Promise<CellRow | null> {
   const nowMs = Date.now();
   const c = cellCache.get(cellID);
   if (c && nowMs - c.cachedAtMs < CELL_TTL_MS) return c.cell;
-  const cell = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
-       FROM cells WHERE cell_id = ?1`,
-  )
-    .bind(cellID)
-    .first<CellRow>();
-  if (cellCache.size >= CACHE_MAX) cellCache.clear();
-  cellCache.set(cellID, { cell, cachedAtMs: nowMs });
-  return cell;
+
+  const shared = await coloGet<{ cell: CellRow; cachedAtMs: number }>("cell", cellID);
+  if (shared && nowMs - shared.cachedAtMs < CELL_TTL_MS) {
+    if (cellCache.size >= CACHE_MAX) cellCache.clear();
+    cellCache.set(cellID, { cell: shared.cell, cachedAtMs: shared.cachedAtMs });
+    return shared.cell;
+  }
+
+  // Stale-while-revalidate. Take the fresher of the two stale copies; either
+  // tier can outlive the other.
+  const staleShared = shared && nowMs - shared.cachedAtMs < CELL_STALE_MAX_MS ? shared : null;
+  const staleLocal = c && c.cell && nowMs - c.cachedAtMs < CELL_STALE_MAX_MS ? c : null;
+  const stale =
+    staleShared && (!staleLocal || staleShared.cachedAtMs > staleLocal.cachedAtMs)
+      ? { cell: staleShared.cell, cachedAtMs: staleShared.cachedAtMs }
+      : staleLocal;
+  if (stale && stale.cell) {
+    readCellRow(env, cellID).catch(() => {}); // refresh behind the response
+    return stale.cell;
+  }
+
+  return readCellRow(env, cellID);
 }
 
 // Freshness window — the CP emits capacity events every ~30s; 120s is a
 // generous 4× margin that covers a missed sample without flapping.
 const CAPACITY_FRESH_SEC = 120;
 
-function isHealthy(cell: CellRow, nowSec: number): boolean {
+// observedAtSec is when the row was READ. Heartbeat freshness is a property of
+// the reading, not of this moment — re-judging a cached snapshot against a later
+// clock makes every cache tier expire its own contents early. Defaults to
+// nowSec, so an uncached read behaves exactly as before.
+function isHealthy(cell: CellRow, nowSec: number, observedAtSec: number = nowSec): boolean {
   if (cell.status !== "active") return false;
   if (cell.capacity_updated_at == null) return false;
-  if (nowSec - cell.capacity_updated_at > CAPACITY_FRESH_SEC) return false;
+  if (observedAtSec - cell.capacity_updated_at > CAPACITY_FRESH_SEC) return false;
   if (cell.available_workers <= 0) return false;
   return true;
 }
@@ -864,8 +1114,10 @@ async function pickCell(
   homeCell: string,
   requestedCellID: string | null,
   prefetchedCells?: CellRow[],
+  cellsObservedAtMs?: number,
 ): Promise<CellRow | null> {
   const nowSec = Math.floor(Date.now() / 1000);
+  const observedSec = cellsObservedAtMs ? Math.floor(cellsObservedAtMs / 1000) : nowSec;
 
   // 0. Hard pin
   if (requestedCellID) {
@@ -883,7 +1135,7 @@ async function pickCell(
   let home = results.find((c) => c.cell_id === homeCell) ?? null;
   if (!home) home = await lookupCell(env, homeCell);
 
-  const healthy = results.filter((c) => isHealthy(c, nowSec));
+  const healthy = results.filter((c) => isHealthy(c, nowSec, prefetchedCells ? observedSec : nowSec));
   if (healthy.length === 0) return null;
 
   if (home) {
@@ -1308,18 +1560,88 @@ function indexSandboxFromSSE(
 // special about these indices; they are simply the ones that landed where we
 // want, which is the entire idea.
 const POOL_STOCK_SHARD_GEN = "g5";
-const POOL_STOCK_SHARD_IDS = [1, 4, 6, 12, 13, 14, 16, 17];
-const POOL_STOCK_SHARDS = POOL_STOCK_SHARD_IDS.length;
+// SHARD COUNT IS A FUNCTION OF POOL SIZE, not a free parameter. The sizing
+// invariant (pool_stock.ts) is SHARDS × TARGET_STOCK ≤ the cell pool, and it
+// binds from BOTH sides: too many shards against a small pool and every shard
+// sits at 0, so claims miss the DO and pay the control-plane fallback instead.
+// Measured on a 10-box dev pool with all eight shards at TARGET_STOCK=1:
+// stock p50=0, 4 of 10 creates took `claimmiss` at 859ms, and the burst median
+// went 886ms → 1.70s versus the same code on a 130-box pool.
+//
+// So take a PREFIX of the measured set rather than inventing indices — these are
+// the ones probed into the right colo, and a prefix keeps that property. Four
+// shards × TARGET_STOCK=2 = 8, inside a 10-box pool with headroom to spare.
+// Restore the full eight when the cell pool goes back above ~128.
+const POOL_STOCK_SHARD_IDS_ALL = [1, 4, 6, 12, 13, 14, 16, 17];
+const POOL_STOCK_SHARD_IDS_DEFAULT = POOL_STOCK_SHARD_IDS_ALL.slice(0, 4);
 // How many candidate names the probe route sweeps. Only the ones that report
-// the target colo get promoted into POOL_STOCK_SHARD_IDS above.
+// the target colo get promoted into the shard list.
 const POOL_STOCK_CANDIDATES = 64;
+
+// Resolved once per isolate. The value cannot change under a running isolate —
+// it comes from a binding, and a binding change means a redeploy, which means a
+// new isolate.
+let poolStockShardIdsCache: number[] | null = null;
+
+/**
+ * poolStockShardIds is the ordered list of shard ids this environment uses.
+ *
+ * SHARDING IS A THROUGHPUT TOOL AND IT IS NOT FREE. A shard is a separate
+ * single-threaded Durable Object, so N shards give N concurrent claims — but
+ * they also FRAGMENT the pool N ways, and a claim that lands on an empty shard
+ * pays a full DO round trip to learn nothing. Measured on dev 2026-08-25: a
+ * `claimmiss` cost 300-320ms at 4 shards against 84-98ms at 1, and even a
+ * successful claim cost ~150ms at dotry=2 versus ~88ms at dotry=1.
+ *
+ * The break-even is the sizing invariant (pool_stock.ts): SHARDS × TARGET_STOCK
+ * must be ≤ the cell's real pool. Below that line every extra shard is pure
+ * cost, because there is no concurrency to win — there are not enough boxes to
+ * keep one shard busy, let alone four. A single shard is therefore the correct
+ * configuration for a small pool, not a degraded one, and "1" here is a
+ * first-class setting rather than an emergency fallback.
+ *
+ * Above the line, add shards — but only ids that have been PROBED into the
+ * target colo for THAT CELL (see the gen note above). Never promote an id
+ * nobody has measured: it is a coin flip across five colos.
+ */
+function poolStockShardIds(env: Env): number[] {
+  if (poolStockShardIdsCache) return poolStockShardIdsCache;
+  const raw = (env.POOL_STOCK_SHARD_IDS ?? "").trim();
+  let ids = raw
+    .split(",")
+    .map((s) => Number.parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n >= 0);
+  if (ids.length === 0) {
+    if (raw !== "") {
+      // Loud, because silently serving the prod-measured set to a cell it was
+      // never measured against is precisely the failure this binding exists to
+      // stop.
+      console.error(`pool-stock: POOL_STOCK_SHARD_IDS=${JSON.stringify(raw)} parsed to nothing — falling back to the default set`);
+    }
+    ids = POOL_STOCK_SHARD_IDS_DEFAULT;
+  }
+  poolStockShardIdsCache = ids;
+  return ids;
+}
 
 function poolStockShardName(cellID: string, id: number): string {
   return `${cellID}#${POOL_STOCK_SHARD_GEN}#${id}`;
 }
 
+/**
+ * poolStockStub resolves a shard INDEX (0..shards-1) to its Durable Object.
+ *
+ * Index, never id. The two were conflated in runPoolKeepWarm, which mapped over
+ * the ID list and passed each id in here as though it were an index: with ids
+ * [1,4,6,12] the keep-warm touched {4,4,6,12}, hitting shard 4 twice and NEVER
+ * touching shard 1. That shard idle-decommissioned its stock after 30 minutes
+ * and its alarm lapsed after 6 hours, so it could not restock proactively and
+ * only ever re-armed on a claim that had already missed. One shard in four was
+ * structurally cold, and 1-in-4 claims paid a miss to discover it.
+ */
 function poolStockStub(env: Env, cellID: string, shard: number): DurableObjectStub {
-  const name = poolStockShardName(cellID, POOL_STOCK_SHARD_IDS[shard] ?? shard);
+  const ids = poolStockShardIds(env);
+  const name = poolStockShardName(cellID, ids[shard] ?? shard);
   // Deterministic placement hint: pin the stock DO to eastern North America
   // (covers eastus2 / the IAD leaderboard runner) so a claim never eats a
   // cross-colo hop even if the first touch comes from an off-metro edge. A
@@ -1369,43 +1691,111 @@ interface PoolBox {
 // stocked — the steady state, since each targets POOL_STOCK_TARGET — the first
 // call hits and a create costs exactly one DO round trip. The walk below is the
 // uneven-drain path, not the common one.
+// Per-shard stock hints, keyed by INDEX into POOL_STOCK_SHARD_IDS.
+//
+// Every claim response already reports how much stock the serving shard had
+// left, and until now the edge stamped it into server-timing and threw it away.
+// That is the exact information needed to stop walking into empty shards, and
+// it arrives for free on a response we are already waiting for — no extra round
+// trip, no extra storage, no extra subrequest.
+//
+// Why it matters: sharding fragments the pool N ways, so under burst some
+// shards are EMPTY BY CONSTRUCTION, and a claim that lands on one pays a full
+// Durable Object round trip to learn nothing. Measured on dev 2026-08-25:
+// `claimmiss` (all shards walked, none stocked) cost 300-320ms at 4 shards and
+// 84-98ms at 1, and even a successful claim cost ~150ms at dotry=2 against
+// ~88ms at dotry=1. The tax is one hop per empty shard, and it is paid on the
+// customer's create.
+//
+// Isolate-local on purpose. A colo-shared copy would help more isolates but
+// costs a Cache API read on the hot path, which is the thing this exists to
+// avoid; a burst lands on many isolates and each learns within its first claim.
+const poolStockHints = new Map<number, { stock: number; atMs: number }>();
+// Hints go stale fast because the control plane is actively restocking. Long
+// enough to steer the shards of one burst, short enough that a shard which has
+// just been refilled is not avoided. Being wrong only costs the walk we would
+// have done anyway — a stale "empty" shard is tried LAST, never skipped.
+const STOCK_HINT_TTL_MS = 1_500;
+
+function noteShardStock(shard: number, stock: number): void {
+  poolStockHints.set(shard, { stock, atMs: Date.now() });
+}
+
+// poolStockWalkOrder returns every shard index, ordered so ones believed to
+// hold stock come first. It never DROPS a shard: full coverage is what fixed
+// the earlier 3-attempt walk, where 56 of 100 concurrent creates fell through
+// to a cold control-plane launch while the shards still held 22-81 boxes.
+// Believed-empty shards are demoted, not excluded.
+//
+// Both groups are shuffled rather than sorted by stock. Sorting would send
+// every isolate in a burst to the same "best" shard and serialize them against
+// one single-threaded object — recreating, at the head of the walk, exactly the
+// contention sharding exists to spread.
+// With a single shard this collapses to [0] and every branch below is dead —
+// no hint bookkeeping, no shuffle, no walk. That is the point: at one shard
+// `dotry` is always 1 and a `claimmiss` means the pool is genuinely empty
+// rather than that we guessed the wrong object.
+function poolStockWalkOrder(shards: number): number[] {
+  if (shards <= 1) return [0];
+  const now = Date.now();
+  const likely: number[] = [];
+  const unlikely: number[] = [];
+  for (let i = 0; i < shards; i++) {
+    const h = poolStockHints.get(i);
+    // Unknown counts as likely: never having asked is not evidence of empty.
+    if (h && now - h.atMs < STOCK_HINT_TTL_MS && h.stock <= 0) unlikely.push(i);
+    else likely.push(i);
+  }
+  for (const g of [likely, unlikely]) {
+    for (let i = g.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [g[i], g[j]] = [g[j], g[i]];
+    }
+  }
+  return likely.concat(unlikely);
+}
+
 async function claimPoolBox(
   env: Env,
   cell: CellRow,
   orgID: string,
-): Promise<{ box: PoolBox; stock: number; doMs: number; doColo: string } | null> {
+): Promise<{ box: PoolBox; stock: number; doMs: number; doColo: string; attempts: number } | null> {
   const body = JSON.stringify({
     cell: { cellID: cell.cell_id, baseURL: cell.base_url },
     orgID,
     count: 1,
   });
-  let shard = Math.floor(Math.random() * POOL_STOCK_SHARDS);
-  // Odd stride only, so the walk is a full cycle of the 8 shards rather than a
-  // sub-orbit. An even stride shares a factor with POOL_STOCK_SHARDS and can
-  // only ever reach half of them (stride 2 visits 4, stride 4 visits 2), so a
-  // create could exhaust its attempts against shards that are empty while the
-  // ones holding stock were unreachable by construction.
-  const stride = 1 + 2 * Math.floor(Math.random() * (POOL_STOCK_SHARDS / 2));
-  // Walk every shard before giving up. Measured on dev: with a 3-attempt walk,
-  // 56 of 100 concurrent creates fell through to the control plane while the
-  // shards still held 22-81 boxes. Falling back to a cold MicroVM launch while
-  // warm stock is sitting one shard away is the expensive mistake here: those
-  // creates then serialize behind the RunMicrovm 5/s quota, which is what turns
-  // a burst into a 25s tail.
-  for (let attempt = 0; attempt < POOL_STOCK_SHARDS; attempt++) {
+  const order = poolStockWalkOrder(poolStockShardIds(env).length);
+  for (let attempt = 0; attempt < order.length; attempt++) {
+    const shard = order[attempt];
     try {
       const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/claim-batch", {
         method: "POST",
         body,
       });
-      shard = (shard + stride) % POOL_STOCK_SHARDS;
-      if (!r.ok) continue;
+      if (!r.ok) {
+        noteShardStock(shard, 0);
+        continue;
+      }
       const data = (await r.json()) as { boxes?: PoolBox[]; stock?: number; t?: number; colo?: string };
+      // Record what the shard reported BEFORE deciding, so a shard that handed
+      // out its last box is remembered as empty for the next create.
+      noteShardStock(shard, data.stock ?? 0);
       const b = data.boxes?.[0];
       if (!b) continue;
-      return { box: b, stock: data.stock ?? -1, doMs: data.t ?? -1, doColo: data.colo ?? "?" };
+      // attempts is 1-based: how many shards this claim had to touch to find a
+      // box. Every miss above is a FULL round trip to a DO, so this is the only
+      // way to tell an expensive hop from several cheap ones — `claim` alone
+      // cannot distinguish "one slow shard" from "four empty shards".
+      return {
+        box: b,
+        stock: data.stock ?? -1,
+        doMs: data.t ?? -1,
+        doColo: data.colo ?? "?",
+        attempts: attempt + 1,
+      };
     } catch {
-      shard = (shard + stride) % POOL_STOCK_SHARDS;
+      noteShardStock(shard, 0);
     }
   }
   return null;
@@ -1442,7 +1832,10 @@ async function runPoolKeepWarm(env: Env): Promise<void> {
   let failed = 0;
   await Promise.all(
     cells.flatMap((cell) =>
-      POOL_STOCK_SHARD_IDS.map(async (shard) => {
+      // Map over INDICES, not ids — poolStockStub takes an index. Mapping over
+      // the id list here is the bug described in poolStockStub's docstring: it
+      // left one live shard permanently un-warmed.
+      poolStockShardIds(env).map(async (_id, shard) => {
         try {
           const r = await poolStockStub(env, cell.cell_id, shard).fetch("https://pool-stock/touch", {
             method: "POST",
@@ -1525,7 +1918,10 @@ async function finalizeEdgeClaim(
       headers: { authorization: "Bearer " + capToken, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${detail}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await insertSandboxIndex(env, caller, cell.cell_id, { sandboxID, workerID, status: "running", memoryMB: 4096 }, 1, 4096).catch((e) =>
       console.error(`edge-claim: index insert failed for ${sandboxID}:`, e),
@@ -1543,7 +1939,7 @@ async function finalizeEdgeClaim(
   }
 }
 
-async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop?: number): Promise<Response> {
   // Per-phase timing → Server-Timing response header (Date.now advances on I/O
   // in Workers, so deltas attribute I/O waits; pure CPU shows ~0).
   const phases: string[] = [];
@@ -1559,6 +1955,11 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   //
   // Client-supplied clock, so it carries the client's skew — fine against a
   // ~700ms signal, useless for anything small. Absent header => no mark.
+  // `top` is OUR routing cost: Worker invocation -> this handler. Skew-free,
+  // unlike `pre` below, which needs a client clock. It splits the residual in
+  // two: anything before tTop happened before the isolate ran (admission,
+  // transport), anything between tTop and here is ours to cut.
+  if (typeof tTop === "number") phases.push(`top;dur=${tEntry - tTop}`);
   const clientSentMs = Number(req.headers.get("x-client-sent") ?? "");
   if (Number.isFinite(clientSentMs) && clientSentMs > 0) {
     phases.push(`pre;dur=${tEntry - clientSentMs}`);
@@ -1568,14 +1969,36 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     phases.push(`${name};dur=${t - tPrev}`);
     tPrev = t;
   };
-  const caller = await authenticate(req, env);
+  const authProbe: AuthProbe = { tier: 0, coloMs: 0, d1Ms: 0, hashMs: 0 };
+  const caller = await authenticate(req, env, ctx, authProbe);
   mark("auth");
+  // `autht` is a TIER, not a duration — 0 isolate, 1 colo, 2 stale, 3 D1.
+  // Which colo served this request. A miss in the colo-shared Cache API tier has
+  // two very different causes — the cache is not holding, or the burst is spread
+  // across colos so each one is legitimately cold — and they need opposite
+  // fixes. `desc` is a colo code, not a duration.
+  phases.push(`colo;desc=${req.headers.get("cf-ray")?.split("-")[1] ?? "?"}`);
+  phases.push(
+    `autht;dur=${authProbe.tier}`,
+    `authcolo;dur=${authProbe.coloMs}`,
+    `authd1;dur=${authProbe.d1Ms}`,
+    `authhash;dur=${authProbe.hashMs}`,
+  );
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
 
   // One batched D1 round-trip for org + running-count + active-cells (was three
   // serial reads on the create hot path). Cache-aware: warm isolates skip D1.
-  const { org, activeCount, cells } = await loadCreateContext(env, caller.orgID, ctx);
+  const ctxProbe: CtxProbe = { coloMs: 0, d1Ms: 0, d1Stmts: 0, coalesced: false };
+  const { org, activeCount, cells, cellsAtMs } = await loadCreateContext(env, caller.orgID, ctx, ctxProbe);
   mark("ctx");
+  // Which tier `ctx` actually spent its time in. `ctxn` is a statement COUNT,
+  // not a duration; Server-Timing has nowhere else to put it.
+  phases.push(
+    `ctxcolo;dur=${ctxProbe.coloMs}`,
+    `ctxd1;dur=${ctxProbe.d1Ms}`,
+    `ctxn;dur=${ctxProbe.d1Stmts}`,
+    `ctxco;dur=${ctxProbe.coalesced ? 1 : 0}`,
+  );
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -1640,7 +2063,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       memoryMB: bodyMemoryMB,
       diskMB: bodyDiskMB,
     }, activeCount),
-    pickCell(env, org.home_cell, requestedCellID, cells),
+    pickCell(env, org.home_cell, requestedCellID, cells, cellsAtMs),
   ]);
   mark("gatecell");
   if (gate) return gate;
@@ -1663,7 +2086,24 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   // need it (finalizeEdgeClaim mints its own off the response path), and the
   // HMAC sign was one of the larger CPU items driving isolate queueing at
   // burst-100. The CP-fallback path mints it below, after a miss.
-  if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText, parsedBody)) {
+  // MICROVM_EDGE_CLAIM=0 skips edge-claim for MicroVM orgs specifically.
+  //
+  // Edge-claim reserves boxes from the cell's pool through PoolStock. A cell
+  // running the direct-exec backend has no such pool — it keeps its warm set in
+  // process and does not implement EdgeReserve at all — so the DO can never hold
+  // stock for it. Every create then walks the shards, misses, and pays a CP
+  // round trip anyway: measured on dev at 81-87ms of `claimmiss` on EVERY
+  // create, for an outcome that was not merely unlikely but structurally
+  // impossible.
+  //
+  // Scoped to the runtime rather than reusing EDGE_CLAIM=0, which is global. A
+  // cell can serve both runtimes, and switching one cell's MicroVM data plane
+  // must not turn off edge-claim for the QEMU orgs sharing it.
+
+  const edgeClaimOn =
+    env.EDGE_CLAIM !== "0" &&
+    !(org.runtime === RUNTIME_MICROVM && env.MICROVM_EDGE_CLAIM === "0");
+  if (edgeClaimOn && env.POOL_STOCK && edgeClaimEligible(bodyText, parsedBody)) {
     try {
       // Sharded stock (see pool_stock.ts): a single DO serializes burst claims
       // (~2ms each → ~90ms queue tail at 100-way), so claims spread across
@@ -1686,6 +2126,8 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
         // so the remainder is the hop — see claimBatch. `doclo` is a colo name,
         // not a duration; Server-Timing has nowhere else to put it.
         phases.push(`doin;dur=${claimed.doMs}`, `doclo;desc=${claimed.doColo}`);
+        // Shards touched, as a count not a duration. See claimPoolBox.
+        phases.push(`dotry;dur=${claimed.attempts}`);
         const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
         sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
@@ -1828,13 +2270,19 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     }
   }
 
-  let cpResp: Response;
+  // One request per create, always. Coalescing concurrent creates into a
+  // shared request was tried and falsified: batching 26 creates left the
+  // edge→cell hop unchanged (132ms vs 126ms solo), so that hop is round-trip
+  // bound rather than connection bound, and making one Worker request depend
+  // on another's I/O cost 18% of a burst to CF error 1101.
+  let cpCall: { status: number; text: string };
   try {
-    cpResp = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
+    const r = await fetch(`${cell.base_url}/internal/sandboxes/create`, {
       method: "POST",
-      headers: { authorization: "Bearer " + capToken, "content-type": "application/json" },
-      body: bodyText || "{}",
+      headers: { "content-type": "application/json", authorization: `Bearer ${capToken}` },
+      body: bodyText,
     });
+    cpCall = { status: r.status, text: await r.text() };
   } catch (e) {
     return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
   }
@@ -1844,9 +2292,13 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   // Everything before it is edge compute + D1.
   mark("cell");
 
-  const cpText = await cpResp.text();
+  const cpText = cpCall.text;
+  // Whether this create shared a request, how many it shared with, and how long
+  // it waited to be dispatched. Without these a batched burst and an unbatched
+  // one are indistinguishable in the timing header, and `cell` alone cannot say
+  // whether a slow create was queued or just slow.
   mark("cellbody");
-  if (cpResp.status >= 200 && cpResp.status < 300) {
+  if (cpCall.status >= 200 && cpCall.status < 300) {
     let parsed: SandboxCreateResult = {};
     try {
       parsed = JSON.parse(cpText);
@@ -1868,12 +2320,24 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
       ),
     );
   }
+  // Total wall time inside this handler, on the edge's OWN clock. Paired with
+  // the client's own (T4-T1) and the CP's own (createtrace total), this closes
+  // the attribution without ever comparing two different clocks: every term is a
+  // difference of two readings taken by the same machine, so skew cancels rather
+  // than contaminating the result.
+  //
+  // What these three deliberately do NOT cover is the answer we are chasing.
+  // Time spent queued before this handler ran is invisible to every mark in it —
+  // `tEntry` is stamped once we are already executing — so it can only ever show
+  // up as the residual (T4-T1) - hdl. That residual is the measurement; the marks
+  // are just what we subtract to expose it.
+  phases.push(`hdl;dur=${Date.now() - tEntry}`);
   if (env.DIAG === "1") console.log(`create-timing fallback ${cell.cell_id} ${phases.join(" ")}`);
   // Pass the CP's response through verbatim (status + body), plus the phase
   // breakdown — the edge-claim path above already returns one, and a fallback
   // create with no header is exactly the case that needed attributing.
   return new Response(cpText, {
-    status: cpResp.status,
+    status: cpCall.status,
     headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
   });
 }
@@ -1990,6 +2454,51 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
   return json({ ...sandboxRowToJSON(row), cellEndpoint: cell ? cell.base_url : null });
 }
 
+/**
+ * Why an exec fell back to the tunnel.
+ *
+ * Both fast paths degrade to `return null`, and the dispatcher then labels the
+ * result `path;desc=tunnel` — which says a fallback happened but not which of
+ * the six exits took it. Under burst that share went 30% → 60% and there was no
+ * way to tell a DO that reported no channel from a DO that was never asked, a
+ * reach cache miss from a dial that threw. Each has a different fix.
+ *
+ * The DO already puts its reason on the wire ("channel unavailable: …") and the
+ * edge was discarding the body along with the status. This carries it out.
+ */
+// `why` is the FIRST thing that degraded (the DO, normally). `dial` is the
+// direct-dial leg's own outcome, kept separate because on the MicroVM path the
+// two are sequential: the DO declining is what makes the dial happen at all, so
+// collapsing them would hide whichever one is actually fixable.
+type Fallback = { why?: string; dial?: string };
+
+// Records the reason and returns null, so every degrade site stays a one-liner.
+// First writer wins: the outermost exit is the one that decided.
+function fallback(f: Fallback | undefined, why: string): null {
+  if (f && f.why === undefined) f.why = why;
+  return null;
+}
+
+// server-timing `desc` is a token: commas end the mark and spaces end the value,
+// so an un-sanitized exception message would corrupt every mark after it.
+const descSafe = (s: string): string => s.replace(/[^\w.:/-]+/g, "_").slice(0, 80);
+
+// tryVoucherExec settles ownership and runs the command in ONE round trip.
+//
+// Returns null whenever this is not a voucher sandbox, or the ladder ran out —
+// both mean "use the normal path", and neither is an error.
+//
+// The retry ladder is bounded and every attempt is independent. Nothing here
+// waits on another request's I/O: an earlier experiment that coalesced creates
+// bought 0ms and cost 18% of a burst to Cloudflare error 1101 when one
+// invocation's work was made to depend on another's.
+// Attempts against DIFFERENT boxes, each one claimed from the free list before
+// it is tried. Deep enough to ride out a handful of dead boxes without letting a
+// wedged colo walk the whole book on a customer's request.
+const VOUCHER_EXEC_ATTEMPTS = 6;
+
+
+
 // tryVmDoExec routes POST /:id/exec/run-async through the sandbox's VmSession
 // Durable Object (the VM-DO exec data plane, vm_do_datapane_validation) instead
 // of the tunnel→CP→worker chain. Returns a Response when the DO handled it (a
@@ -2000,8 +2509,8 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // short-circuits without polling — one edge→DO→host→agent hop. Authz mirrors
 // proxyToCellSDK exactly (same route lookup + org-ownership check) so the DO
 // path can't be used to exec on another org's sandbox. See vm_session.ts.
-async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0): Promise<Response | null> {
-  if (!env.VM_SESSIONS) return null; // binding absent mid-cutover → tunnel
+async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, fall?: Fallback): Promise<Response | null> {
+  if (!env.VM_SESSIONS) return fallback(fall, "no-binding"); // binding absent mid-cutover → tunnel
   // MicroVM-backed orgs never have a live VmSession: the host dialer that opens
   // the channel is a QEMU-worker component (internal/worker/dodialer.go), and a
   // MicroVM box has no worker behind it. So the DO can only ever answer "not
@@ -2013,7 +2522,25 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
   const tPol = Date.now();
   const orgPolicy = await loadOrgPolicy(env, caller.orgID, ctx);
   const polMs = Date.now() - tPol;
-  if (orgPolicy?.runtime === RUNTIME_MICROVM) return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs, polMs);
+  if (orgPolicy?.runtime === RUNTIME_MICROVM) {
+    // MICROVM_EDGE_EXEC=0 hands exec to the cell, skipping BOTH Durable
+    // Objects.
+    //
+    // Every edge-side fast path reaches the box by dialing its AGENT TUNNEL,
+    // which is what a session DO holds. A cell running the direct-exec backend
+    // has no tunnel in its story at all: it answers exec with one plain HTTPS
+    // POST, and its boxes are reachable no other way. Serving exec here would
+    // route around the very path such a cell exists to measure — silently,
+    // while still returning correct results, which is exactly how the first dev
+    // run produced a 3s exec with no trace of it in the cell's logs.
+    //
+    // It must return rather than fall through: below this line is the VmSession
+    // DO, whose 400ms entry grace is the cost the MicroVM branch was added to
+    // skip in the first place. Falling through measured 830ms of vmdo to be
+    // told `vm_not_connected` by a DO that could never have been connected.
+    if (env.MICROVM_EDGE_EXEC === "0") return fallback(fall, "cell-owns-exec");
+    return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs, polMs, fall);
+  }
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;
@@ -2050,8 +2577,8 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
           },
         });
       }
-      console.log(`vmdo-exec ${id}: DO rpc not-connected — tunnel fallback`);
-      return null;
+      console.log(`vmdo-exec ${id}: DO rpc not-connected (${res.error}) — tunnel fallback`);
+      return fallback(fall, `vmdo-rpc:${descSafe(res.error)}`);
     }
     const doResp = await stub.fetch("https://do/exec?sid=" + id, {
       method: "POST",
@@ -2073,10 +2600,11 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
       });
     }
     console.log(`vmdo-exec ${id}: DO ${doResp.status} — tunnel fallback`);
-  } catch {
+    return fallback(fall, `vmdo-status:${doResp.status}`);
+  } catch (e) {
     // DO unreachable — fall through to the tunnel.
+    return fallback(fall, `vmdo-throw:${descSafe(String(e))}`);
   }
-  return null;
 }
 
 /**
@@ -2107,7 +2635,7 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
  * SCOPE: one-shot Exec only. Streaming, PTY and file transfer stay on the
  * control-plane path via the null return.
  */
-async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, polMs = 0): Promise<Response | null> {
+async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string, authMs = 0, polMs = 0, fall?: Fallback): Promise<Response | null> {
   const tRoute = Date.now();
   const route = await resolveSandboxRoute(env, id);
   const routeMs = Date.now() - tRoute;
@@ -2126,7 +2654,7 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
   // what the control plane does for this backend rather than word-splitting
   // here, where quoting and redirection would be silently mangled.
   const cmd = typeof body.cmd === "string" ? body.cmd : typeof body.command === "string" ? body.command : "";
-  if (!cmd) return null;
+  if (!cmd) return fallback(fall, "no-cmd");
   // Two request shapes reach this endpoint and only one used to be handled.
   //
   //   string form: {cmd: "echo hi"}                  — cmd IS the shell line
@@ -2173,6 +2701,20 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
             .map((kv) => kv.split("="))
             .filter((kv) => kv.length === 2),
         ) as Record<string, string>;
+        // Split mvmdo three ways using the DO's absolute enter/exit stamps.
+        // mvmdo alone conflates the hop out, time spent QUEUED outside the DO's
+        // handler (a Durable Object runs one invocation at a time, so a keepalive
+        // alarm mid-ping blocks an arriving exec), the handler itself, and the
+        // hop back — and those have entirely different fixes. Measured on dev
+        // 2026-08-25: mvmdo 1098ms against dinside 56ms, with ddial only 42ms,
+        // i.e. a full second was outside everything the DO could see.
+        //
+        // Emitted only when the DO supplied both stamps, so an older vm-do
+        // deployment degrades to the previous header rather than to "0".
+        const dEnter = Number(t.enter);
+        const dExit = Number(t.exit);
+        const haveSpan = Number.isFinite(dEnter) && Number.isFinite(dExit) && dEnter > 0;
+        const span = haveSpan ? `, dto;dur=${dEnter - tDo}, dback;dur=${Date.now() - dExit}` : "";
         return new Response(dr.body, {
           status: 200,
           headers: {
@@ -2180,14 +2722,22 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
             "server-timing":
               `auth;dur=${authMs}, pol;dur=${polMs}, mvmdo;dur=${doMs}, ` +
               `dlive;dur=${t.live ?? -1}, dcold;dur=${t.cold ?? -1}, ddial;dur=${t.dial ?? -1}, ` +
-              `dunary;dur=${t.unary ?? -1}, dinside;dur=${t.inside ?? -1}, ` +
+              `dunary;dur=${t.unary ?? -1}, dinside;dur=${t.inside ?? -1}${span}, ` +
               `dcolo;desc=${dr.headers.get("x-mvm-colo") ?? "?"}`,
           },
         });
       }
-    } catch {
+      // Not 200. The DO puts the reason in the body ("channel unavailable: …",
+      // "exec failed: …") and this used to discard it along with the status,
+      // which is why a 60%-tunnel burst was unattributable. Reading the body
+      // costs nothing here: we are already on the slow branch.
+      fallback(fall, `do:${dr.status}:${descSafe(((await dr.json().catch(() => ({}))) as { error?: string }).error ?? "")}`);
+    } catch (e) {
       /* DO unreachable — the direct dial below is the fallback */
+      fallback(fall, `do-throw:${descSafe(String(e))}`);
     }
+  } else {
+    fallback(fall, "no-mvm-binding");
   }
 
   const tReach = Date.now();
@@ -2204,7 +2754,10 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
     // westus2) but self-healing, because we cache what it returns.
     reach = await fetchMvmReach(env, caller, route.cellID, id);
     reachFromCell = true;
-    if (!reach) return null; // not a MicroVM box, or the cell won't say — tunnel
+    if (!reach) {
+      if (fall) fall.dial = "reach-null";
+      return fallback(fall, "reach-null"); // not a MicroVM box, or the cell won't say — tunnel
+    }
   }
   const reachMs = Date.now() - tReach;
 
@@ -2251,7 +2804,8 @@ async function tryMicrovmDirectExec(req: Request, env: Env, ctx: ExecutionContex
     // tunnel still works. Logged rather than distinguished, because a path that
     // silently degrades is worse than one that is loudly slow.
     console.log(`microvm-direct-exec ${id}: ${e} — tunnel fallback`);
-    return null;
+    if (fall) fall.dial = descSafe(String(e));
+    return fallback(fall, `dial:${descSafe(String(e))}`);
   }
 }
 
@@ -2291,22 +2845,32 @@ let lastReadyMs = 0;
  * `ready` is the guest's first SETTINGS frame, which the AWS proxy cannot
  * produce until it has connected to the guest port. A slow dial is one or the
  * other, never both, and knowing which is the whole diagnosis.
+ *
+ * Both budgets are sized for a box that has SUSPENDED rather than a healthy one.
+ * AWS suspends a MicroVM after its idle window, and with auto-resume on the next
+ * inbound request through the proxy wakes it — Lambda holding the request for the
+ * length of a snapshot restore, which is longer than the 5s/8s this used to
+ * allow. Cutting it short there does not fail fast, it aborts our own resume and
+ * leaves the box suspended for the next caller to fail against as well. A healthy
+ * box finishes both legs in tens of milliseconds and never approaches these.
  */
+const DIAL_HANDSHAKE_MS = 20_000;
+const DIAL_READY_MS = 20_000;
+
 async function dialAgent(r: MvmReach): Promise<H2Grpc> {
   const host = r.endpoint.replace(/^https?:\/\//, "").split("/")[0];
   const tUp = Date.now();
-  const up = await fetch(`https://${host}/osb/agent-grpc`, {
-    signal: AbortSignal.timeout(5000),
-    headers: {
-      Upgrade: "websocket",
-      "X-aws-proxy-auth": r.token,
-      "X-aws-proxy-port": String(r.port),
-    },
-  });
-  const ws = (up as unknown as { webSocket: WebSocket | null }).webSocket;
-  if (!ws) throw new Error(`agent tunnel upgrade failed (http ${up.status})`);
+  // openTunnel, not fetch+AbortSignal.timeout — the latter kills the tunnel N ms
+  // after the DIAL, not after the handshake, so warmEdgeTunnel's whole purpose
+  // (hold a live connection from create until the customer's first exec) was
+  // being undone 5s later, every time. See openTunnel's docstring for the
+  // measurement.
+  const { ws } = await openTunnel(
+    `https://${host}/osb/agent-grpc`,
+    { "X-aws-proxy-auth": r.token, "X-aws-proxy-port": String(r.port) },
+    DIAL_HANDSHAKE_MS,
+  );
   lastUpgradeMs = Date.now() - tUp;
-  ws.accept();
   const tReady = Date.now();
   const conn = new H2Grpc(ws, host);
   // Wait for the GUEST, not just the AWS proxy: the 101 comes from the proxy,
@@ -2314,7 +2878,7 @@ async function dialAgent(r: MvmReach): Promise<H2Grpc> {
   // frame is the first proof the agent is actually there.
   await Promise.race([
     conn.ready,
-    new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), 8000)),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("guest did not answer")), DIAL_READY_MS)),
   ]);
   lastReadyMs = Date.now() - tReady;
   return conn;
@@ -2400,7 +2964,49 @@ async function directExecProbe(req: Request, env: Env, id: string): Promise<Resp
       },
     });
     const ws = (up as unknown as { webSocket: WebSocket | null }).webSocket;
-    if (!ws) return json({ error: `tunnel upgrade failed (${up.status})` }, 502);
+    // Report WHICH endpoint+port the upgrade was attempted against. A 502 from
+    // Lambda's proxy means "nothing is listening on the declared port of that
+    // microVM", and the two ways to get there — wrong port, or an endpoint that
+    // no longer belongs to a live box — are indistinguishable from the status
+    // alone. The token is only fingerprinted; it is a bearer credential.
+    if (!ws) {
+      // Same endpoint, same token, same colo — but an ORDINARY GET instead of
+      // an upgrade. /healthz is served by microvm-hooks on the declared port
+      // (cmd/microvm-hooks/main.go), so a 200 here proves the credential, the
+      // endpoint and the network path are all fine and isolates the failure to
+      // the WebSocket upgrade itself. A matching 502 means the box is simply
+      // not reachable and the upgrade is incidental.
+      let plain = "";
+      try {
+        const hz = await fetch(`https://${host}/healthz`, {
+          signal: AbortSignal.timeout(5000),
+          headers: { "X-aws-proxy-auth": info.token, "X-aws-proxy-port": String(info.port) },
+        });
+        plain = `${hz.status}: ${(await hz.text()).slice(0, 200)}`;
+      } catch (e) {
+        plain = `threw: ${e}`;
+      }
+      // Same GET with NO credential at all. AWS answers 403 to an unauthenticated
+      // caller (verified from outside), so a 403 here proves this Worker reaches
+      // AWS and the fault is ours; a 502 proves the subrequest never got there.
+      let noAuth = "";
+      try {
+        const na = await fetch(`https://${host}/healthz`, { signal: AbortSignal.timeout(5000) });
+        noAuth = `${na.status}: ${(await na.text()).slice(0, 120)}`;
+      } catch (e) {
+        noAuth = `threw: ${e}`;
+      }
+      return json({
+        error: `tunnel upgrade failed (${up.status})`,
+        upgradeBody: (await up.text().catch(() => "")).slice(0, 200),
+        healthzSameTokenSameEndpoint: plain,
+        healthzNoCredential: noAuth,
+        endpoint: host,
+        port: info.port,
+        path: info.path ?? "/osb/agent-grpc",
+        tokenLen: info.token?.length ?? 0,
+      }, 502);
+    }
     ws.accept();
     conn = new H2Grpc(ws, host);
     await Promise.race([
@@ -4192,8 +4798,29 @@ async function runPausedCapEnforcer(env: Env): Promise<void> {
   }
 }
 
+// Isolate identity, for telling COLD START apart from admission queueing.
+//
+// A burst's "colo_admit" (the benchmark's total minus our handler) is a residual,
+// not a measurement: it holds the wire leg, client-side H2 stream scheduling, CF
+// admission, isolate scheduling and the response path all at once. Within one
+// run it decayed 189ms → 86ms → 11ms across create/exec/delete at identical
+// concurrency, which is the shape of a warm-up curve rather than a load curve —
+// and every burst so far has been the first traffic after a deploy, so every
+// isolate serving it was born cold.
+//
+// These three marks settle it. ISO_AGE says how old the isolate was when the
+// request landed; ISO_SEQ says how many requests it had already served; ISO_T
+// stamps handler entry so the SPREAD of entry times across a burst can be
+// compared against what the client observed. If 100 handler entries span 180ms,
+// admission really is serializing. If they span 10ms, the time is somewhere the
+// edge cannot see.
+const ISO_BORN = Date.now();
+let ISO_SEQ = 0;
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const tTop = Date.now();
+    ISO_SEQ++;
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -4208,6 +4835,8 @@ export default {
     if (path === "/health") {
       return json({ ok: true, env: env.WORKER_ENV });
     }
+
+
 
     // VM-DO host dial: the QEMU worker host opens a persistent WebSocket to the
     // per-sandbox VmSession DO here (vm_session.ts). Auth is a per-sandbox connect
@@ -4468,7 +5097,7 @@ export default {
     // /api/sandboxes; replaces the legacy CP-side PG routes (deleted in
     // the same PR as migration 041).
     if (path === "/api/secret-stores") {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       if (req.method === "POST") return secretStores.createStore(req, env, caller);
       if (req.method === "GET") return secretStores.listStores(req, env, caller);
@@ -4482,7 +5111,7 @@ export default {
         const entryName = m[2];
         const isEntriesCollection = path.endsWith("/secrets");
         const isEntry = !!entryName;
-        const caller = await authenticate(req, env);
+        const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         if (isEntry) {
           if (req.method === "PUT") return secretStores.setEntry(req, env, caller, storeID, entryName);
@@ -4506,7 +5135,7 @@ export default {
     // an owning-cell outage). Create routes to the org home_cell with SSE
     // build-log streaming. Delete routes to the cell that owns the bytes.
     if (path === "/api/snapshots") {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listSnapshots(env, caller);
@@ -4522,7 +5151,7 @@ export default {
         const sub = m[2] ?? "";
         const isPatch = sub.startsWith("/patches");
         const isPublishToggle = sub === "/publish" || sub === "/unpublish";
-        const caller = await authenticate(req, env);
+        const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         { const g = provisionScopeGate(caller, path); if (g) return g; }
         // Patches, publish/unpublish, and delete are cell-work — route to the
@@ -4545,7 +5174,7 @@ export default {
       }
     }
     if (path === "/api/images") {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listImages(env, caller);
@@ -4597,7 +5226,7 @@ export default {
       path === "/api/managed-agents" ||
       path.startsWith("/api/managed-agents/")
     ) {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) {
         return json({ error: "missing or invalid API key" }, 401);
       }
@@ -4637,7 +5266,7 @@ export default {
 
     // /api/sandboxes and /api/sandboxes/:id[/...]
     if (path === "/api/sandboxes") {
-      if (req.method === "POST") return createSandbox(req, env, ctx);
+      if (req.method === "POST") return createSandbox(req, env, ctx, tTop);
       if (req.method === "GET") return listSandboxes(req, env);
       return json({ error: "method not allowed" }, 405);
     }
@@ -4651,7 +5280,7 @@ export default {
     {
       const fc = path.match(/^\/api\/sandboxes\/from-checkpoint\/([^/]+)$/);
       if (fc && req.method === "POST") {
-        const caller = await authenticate(req, env);
+        const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         const cpID = fc[1];
         const cpRow = await env.OPENCOMPUTER_DB.prepare(
@@ -4737,7 +5366,7 @@ export default {
     {
       const cpm = path.match(/^\/api\/sandboxes\/checkpoints\/([^/]+)(\/.*)?$/);
       if (cpm) {
-        const caller = await authenticate(req, env);
+        const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         { const g = provisionScopeGate(caller, path); if (g) return g; }
         const cpRow = await env.OPENCOMPUTER_DB.prepare(
@@ -4762,10 +5391,13 @@ export default {
       // exactly the blind spot that made create's burst regression unreadable
       // until `pre`/`hdl` landed (see createSandbox). `path` names the winner so
       // a fallback is counted rather than inferred.
-      const stampSub = (resp: Response, servedBy: string): Response => {
+      const stampSub = (resp: Response, servedBy: string, fall?: Fallback): Response => {
         // A WebSocket upgrade (pty) can't be reconstructed — pass it through.
         if (resp.status === 101 || (resp as unknown as { webSocket?: unknown }).webSocket) return resp;
         const extra = [`path;desc=${servedBy}`, `hdl;dur=${Date.now() - tSubEntry}`];
+        // Only meaningful on the tunnel branch, and only there is it set.
+        if (fall?.why) extra.push(`why;desc=${fall.why}`);
+        if (fall?.dial) extra.push(`dialfail;desc=${fall.dial}`);
         const clientSentMs = Number(req.headers.get("x-client-sent") ?? "");
         if (Number.isFinite(clientSentMs) && clientSentMs > 0) extra.unshift(`pre;dur=${tSubEntry - clientSentMs}`);
         const out = new Response(resp.body, resp);
@@ -4776,7 +5408,7 @@ export default {
       if (!rest) {
         if (req.method === "GET") return getSandbox(req, env, id);
         if (req.method === "DELETE") {
-          const caller = await authenticate(req, env);
+          const caller = await authenticate(req, env, ctx);
           if (!caller) return json({ error: "missing or invalid API key" }, 401);
           return proxyToCellSDK(req, env, ctx, caller, id);
         }
@@ -4787,7 +5419,7 @@ export default {
       // API-key middleware accepts that JWT shape) so we don't depend on the
       // SDK's api-key existing in cell PG.
       const tAuth = Date.now();
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       const authMs = Date.now() - tAuth;
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       // Exec/delete traffic is what keeps an org's create-context entries warm
@@ -4800,9 +5432,10 @@ export default {
       // roll out the host dialer. Gated only on SESSION_JWT_SECRET (present
       // wherever the DO auth can be verified at all).
       let vmdoMs = 0;
+      const fall: Fallback = {};
       if (env.SESSION_JWT_SECRET && req.method === "POST" && rest === "/exec/run-async") {
         const tVmdo = Date.now();
-        const doResp = await tryVmDoExec(req, env, ctx, caller, id, authMs);
+        const doResp = await tryVmDoExec(req, env, ctx, caller, id, authMs, fall);
         vmdoMs = Date.now() - tVmdo;
         // Name the winner from the marks it emitted rather than plumbing a label
         // back out of two functions that already disagree about their shape.
@@ -4813,7 +5446,7 @@ export default {
       }
       // vmdo = time spent deciding NOT to use the VM-DO path. For MicroVM orgs
       // that decision needs an org-policy lookup, so it is not free.
-      return stampSub(await proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs), "tunnel");
+      return stampSub(await proxyToCellSDK(req, env, ctx, caller, id, authMs, vmdoMs), "tunnel", fall);
     }
 
     // Generic /api/* fallback for SDK/CLI routes without a dedicated D1-native
@@ -4828,7 +5461,7 @@ export default {
     // trusted service resolve an osb_ key to its OC org without custodying it
     // (agent-sandbox-ownership Phase 0.5: sessions-api maps osb_ → oc-org:<id>).
     if (path === "/api/whoami" && req.method === "GET") {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       if (caller.scope) {
         return json({
@@ -4858,13 +5491,13 @@ export default {
     // all-at-edge). Same X-API-Key auth as the rest of the public API; must
     // precede the proxy catch-all below.
     if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       return webhooks.handleWebhooksAPI(req, env, caller, url);
     }
 
     if (path.startsWith("/api/")) {
-      const caller = await authenticate(req, env);
+      const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
       return proxyToCellAuthed(req, env, caller);
     }

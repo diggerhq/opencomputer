@@ -9,6 +9,17 @@
 # script rather than in copy-paste instructions is what stops that recurring.
 #
 #   ./deploy/microvm/publish.sh s3://bucket/agent-image.zip
+#
+# Size tiers: memory is a property of the IMAGE, so each tier is its own image
+# published from the SAME artifact with a different name and memory. Only the
+# default tier is pooled; the rest cold-launch.
+#
+#   MICROVM_IMAGE_NAME=opensandbox-agent-dev-8192 \
+#   MICROVM_IMAGE_MEMORY_MB=8192 \
+#     ./deploy/microvm/publish.sh s3://bucket/agent-image.zip
+#
+# Then point the cell at them:
+#   OPENSANDBOX_MICROVM_SIZE_IMAGES="8192=arn:...:microvm-image:opensandbox-agent-dev-8192"
 set -euo pipefail
 
 DEST="${1:-}"
@@ -60,9 +71,22 @@ JSON
 # to match; stating it explicitly here keeps the two from drifting apart silently.
 CPU='[{"architecture":"ARM_64"}]'
 
+# Memory is the ONLY sizing knob this platform has, and it lives here rather
+# than at launch: RunMicrovmInput carries no memory or vCPU field, so a size
+# tier IS an image. Offering N sizes means publishing N images and selecting one
+# per create (see awsvm.Config.SizeImages).
+#
 # 2048 MiB is the smallest baseline that still gets a full vCPU under Lambda's
-# baseline-peak model, and peak scales to 4x it.
-RESOURCES='[{"minimumMemoryInMiB":2048}]'
+# baseline-peak model, and peak scales to 4x it. Keep that as the floor: below
+# it a box may not get a full vCPU, and there is no way to ask for one.
+#
+# There is deliberately no vCPU setting to mirror. cpu-configurations carries an
+# architecture and nothing else; CPU is allocated as a function of memory.
+MEMORY_MB="${MICROVM_IMAGE_MEMORY_MB:-2048}"
+if (( MEMORY_MB < 2048 )); then
+  echo "warning: ${MEMORY_MB}MiB is below the 2048 baseline — this tier may not get a full vCPU" >&2
+fi
+RESOURCES="[{\"minimumMemoryInMiB\":${MEMORY_MB}}]"
 
 # Name the log group explicitly so build failures are greppable at a known path
 # instead of wherever the service would otherwise default.

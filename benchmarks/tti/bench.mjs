@@ -52,6 +52,177 @@ const CONCURRENCY = parseInt(flag('concurrency', 'CONCURRENCY', '100'), 10);
 const STAGGER_DELAY_MS = parseInt(flag('stagger-delay-ms', 'STAGGER_DELAY_MS', '200'), 10);
 const JSON_OUT = flag('json', 'JSON_OUT', '');
 
+// ---- server-timing capture ------------------------------------------------
+//
+// The SDK returns parsed results, not Responses, so the only place to read the
+// edge's server-timing header is the fetch layer. Without this the harness can
+// see that a burst is slow but not WHERE, which is how a slow run stays
+// ambiguous between "the tunnel was cold" and "the client was saturated".
+//
+// The marks that matter (see cloudflare-workers/vm-do/src/microvm_session.ts):
+//   dlive  1 = the DO already had a live channel; 0 = it had to dial
+//   ddial  ms spent dialing (0 when no dial happened)
+//   dcold  1 = the DO was constructed to serve this request (it had been evicted)
+//   dunary the RPC itself — transport PLUS the guest running the command
+//   mvmdo  the edge's view of the whole DO round trip
+const marks = [];
+// EVERY request the SDK makes, not just the ones that come back with
+// server-timing. A direct-fetch control does 2 requests per TTI iteration; if
+// the SDK does more, the extra ones are invisible in `marks` because a response
+// without a server-timing header is never recorded.
+const httpLog = [];
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = async function instrumentedFetch(input, init) {
+  const u = String(typeof input === 'string' ? input : input?.url ?? '');
+  const t0 = performance.now();
+  const resp = await nativeFetch(input, init);
+  httpLog.push({ method: init?.method ?? 'GET', url: u, ms: performance.now() - t0, status: resp.status });
+  const st = resp.headers?.get?.('server-timing');
+  if (st) {
+    const rec = { url: String(typeof input === 'string' ? input : input?.url ?? '') };
+    for (const part of st.split(',')) {
+      const m = part.trim().match(/^([a-z]+);(?:dur=([-\d.]+)|desc=(.+))$/i);
+      if (m) rec[m[1]] = m[2] !== undefined ? Number(m[2]) : m[3];
+    }
+    marks.push(rec);
+  }
+  return resp;
+};
+
+// markStats reports the distribution of one mark across every exec response.
+function markStats(name) {
+  const vals = marks.map((m) => m[name]).filter((v) => typeof v === 'number' && v >= 0);
+  if (vals.length === 0) return null;
+  vals.sort((a, b) => a - b);
+  const at = (p) => vals[Math.min(vals.length - 1, Math.max(0, Math.ceil((p / 100) * vals.length) - 1))];
+  return { n: vals.length, p50: at(50), p95: at(95), max: vals[vals.length - 1] };
+}
+
+function reportMarks(label) {
+  const live = marks.filter((m) => typeof m.dlive === 'number');
+  if (live.length === 0) {
+    process.stdout.write(`  ${label} marks: none captured (no server-timing on any response)\n`);
+    return;
+  }
+  const liveCount = live.filter((m) => m.dlive === 1).length;
+  process.stdout.write(
+    `  ${label} marks: dlive=1 on ${liveCount}/${live.length}` +
+      ` (${((liveCount / live.length) * 100).toFixed(0)}% warm channel)\n`,
+  );
+  // Report EVERY numeric mark seen, not a hardcoded list. The create response
+  // carries its own breakdown (pre/ctx/claim/mintseed/...) and a fixed list of
+  // exec marks silently discarded all of it — which is how a create leg that
+  // turned out to be the dominant cost stayed unattributed while we chased the
+  // exec leg. Exec marks first, then everything else, so the shape stays
+  // familiar.
+  const known = ['ddial', 'dunary', 'mvmdo', 'dcold'];
+  const seenNumeric = new Set();
+  for (const m of marks) {
+    for (const [k, v] of Object.entries(m)) {
+      if (typeof v === 'number' && k !== 'dlive') seenNumeric.add(k);
+    }
+  }
+  const order = [...known.filter((k) => seenNumeric.has(k)), ...[...seenNumeric].filter((k) => !known.includes(k)).sort()];
+  for (const n of order) {
+    const s = markStats(n);
+    if (s) process.stdout.write(`    ${n.padEnd(9)} p50=${s.p50} p95=${s.p95} max=${s.max} (n=${s.n})\n`);
+  }
+  // Request census by endpoint shape. A direct-fetch control needs exactly 2
+  // per iteration (create + run-async); anything beyond that is SDK overhead
+  // that no server-side mark can see.
+  if (httpLog.length) {
+    const byShape = {};
+    for (const h of httpLog) {
+      const shape = `${h.method} ${h.url
+        .replace(/^https?:\/\/[^/]+/, '')
+        .replace(/sb-[a-z0-9]+/gi, ':id')
+        .replace(/exec\/[^/]+\/result/, 'exec/:execId/result')}`;
+      (byShape[shape] ??= []).push(h.ms);
+    }
+    process.stdout.write(`    http: ${httpLog.length} request(s) total\n`);
+    for (const [shape, v] of Object.entries(byShape).sort((a, b) => b[1].length - a[1].length)) {
+      const s = [...v].sort((a, b) => a - b);
+      process.stdout.write(
+        `      ${String(v.length).padStart(4)}×  ${shape}  p50=${Math.round(s[Math.ceil(0.5 * s.length) - 1])}ms\n`,
+      );
+    }
+  }
+
+  // Every string-valued mark, not just dcolo. `doclo` (the PoolStock shard's
+  // colo) was being emitted by the edge on every create and dropped here, which
+  // is why the claim cost looked unattributable.
+  // `path` is the edge's own label for which exec route served the request
+  // (stampSub in index.ts): mvm-direct | vmdo | fast | tunnel. This is the
+  // ground truth for "did we take the fast path", and it is stamped on EVERY
+  // exec response — it was being captured all along and simply never printed.
+  // Cross-tabbed with dlive so a live channel can't be confused with a warm one.
+  const byPath = new Map();
+  for (const m of marks) {
+    if (typeof m.path !== 'string') continue;
+    const e = byPath.get(m.path) ?? { n: 0, live: 0, dialed: 0, noMark: 0 };
+    e.n++;
+    if (m.dlive === 1) e.live++;
+    else if (m.dlive === 0) e.dialed++;
+    else e.noMark++;
+    byPath.set(m.path, e);
+  }
+  if (byPath.size) {
+    process.stdout.write('    exec path (edge ground truth):\n');
+    for (const [p, e] of [...byPath.entries()].sort((a, b) => b[1].n - a[1].n)) {
+      process.stdout.write(
+        `      ${p.padEnd(11)} n=${String(e.n).padStart(3)}  dlive=1:${e.live}  dlive=0(dialed):${e.dialed}  no-dlive:${e.noMark}\n`,
+      );
+    }
+  }
+
+  // WHY each tunnel exec gave up on the fast path. `path=tunnel` says a fallback
+  // happened; these say which of the six exits took it, and they are disjoint
+  // fixes: a DO reporting no channel is a pre-warm coverage problem, a DO 409
+  // carrying a dial error is a reachability problem, `reach-null` is a cache
+  // problem. `dialfail` is the second leg — the direct dial's own outcome, which
+  // only runs after the DO declined.
+  for (const name of ['why', 'dialfail']) {
+    const reasons = {};
+    for (const m of marks) if (typeof m[name] === 'string') reasons[m[name]] = (reasons[m[name]] ?? 0) + 1;
+    const seen = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
+    if (!seen.length) continue;
+    process.stdout.write(`    ${name === 'why' ? 'fallback reason' : 'direct-dial outcome'}:\n`);
+    for (const [r, n] of seen) process.stdout.write(`      ${String(n).padStart(3)}×  ${r}\n`);
+  }
+
+  for (const name of ['dcolo', 'doclo']) {
+    const colos = {};
+    for (const m of marks) if (typeof m[name] === 'string') colos[m[name]] = (colos[m[name]] ?? 0) + 1;
+    const seen = Object.entries(colos).sort((a, b) => b[1] - a[1]);
+    if (seen.length) process.stdout.write(`    ${name.padEnd(9)} ${seen.map(([c, n]) => `${c}:${n}`).join(' ')}\n`);
+  }
+
+  // The decisive one: claim latency BUCKETED BY the colo that served it. `doin`
+  // is the DO's own half, so `claim - doin` is the hop. If in-metro shards
+  // answer in ~15ms and off-metro shards in ~80ms with doin=0 on both, the cost
+  // is placement, not Durable Objects — and no amount of removing the DO helps,
+  // because whatever replaces it still has to be reached.
+  const byColo = new Map();
+  for (const m of marks) {
+    if (typeof m.doclo !== 'string' || typeof m.claim !== 'number') continue;
+    if (!byColo.has(m.doclo)) byColo.set(m.doclo, []);
+    byColo.get(m.doclo).push({ claim: m.claim, doin: typeof m.doin === 'number' ? m.doin : 0 });
+  }
+  if (byColo.size) {
+    process.stdout.write('    claim by shard colo (hop = claim - doin):\n');
+    const rows = [...byColo.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [colo, rs] of rows) {
+      const cs = rs.map((r) => r.claim).sort((a, b) => a - b);
+      const hs = rs.map((r) => r.claim - r.doin).sort((a, b) => a - b);
+      const med = (v) => v[Math.max(0, Math.ceil(0.5 * v.length) - 1)];
+      const p95 = (v) => v[Math.max(0, Math.ceil(0.95 * v.length) - 1)];
+      process.stdout.write(
+        `      ${colo.padEnd(5)} n=${String(rs.length).padStart(3)}  claim p50=${med(cs)} p95=${p95(cs)}  hop p50=${med(hs)} p95=${p95(hs)}\n`,
+      );
+    }
+  }
+}
+
 // Per-op timeouts, matching the leaderboard's tti-task.ts.
 const CREATE_TIMEOUT_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -142,8 +313,16 @@ async function sweepOutstanding(where) {
 }
 
 /** One TTI iteration: create -> node -v (exit 0) -> destroy (untimed). */
+// One provider for the whole run, not one per iteration.
+//
+// This used to be constructed inside ttiTask, so a burst-100 built 100 provider
+// objects plus their wrapper churn on a single event loop — client-side CPU
+// competing with the very latency being measured. Providers are stateless
+// config holders, and the SDK caches its Sandbox class at module scope, so
+// sharing one is both cheaper and closer to how a real caller uses it.
+const compute = opencomputer({ apiKey: API_KEY, apiUrl: API_URL });
+
 async function ttiTask() {
-  const compute = opencomputer({ apiKey: API_KEY, apiUrl: API_URL });
   const start = performance.now();
   // Register off the underlying promise so a create that outruns our timeout is
   // still swept. Attaching to the raced promise instead would lose exactly the
@@ -173,6 +352,9 @@ async function runMode(label, { iterations, concurrency, staggerDelayMs }) {
     `\n== ${label}: iterations=${iterations} concurrency=${concurrency} staggerDelayMs=${staggerDelayMs} ==\n`,
   );
   const oks = []; // ttiMs of successes
+  // httpLog is global and never reset (a leaked-sandbox sweep between modes
+  // still needs to be visible in it), so remember where this mode started.
+  const httpStart = httpLog.length;
   let done = 0;
   let fails = 0;
   let active = 0;
@@ -203,7 +385,18 @@ async function runMode(label, { iterations, concurrency, staggerDelayMs }) {
   // mode a depleted pool and have its result read as a regression.
   await sweepOutstanding(label);
 
-  return summarize(label, { iterations, oks, fails });
+  reportMarks(label);
+  // Snapshot before the reset so --json can carry the per-request detail, not
+  // just the percentiles. The printed summary answers "how slow"; only the
+  // per-request sequence answers "which iteration, and which leg of it" — and
+  // in sequential mode the requests arrive in strict order, so position in
+  // these arrays IS iteration order. Without this, attributing one slow run
+  // means re-running and hoping it reproduces.
+  const modeMarks = marks.map((m) => ({ ...m }));
+  const modeHttp = httpLog.slice(httpStart);
+  marks.length = 0; // per-mode, so a burst isn't read through the sequential run's marks
+
+  return { ...summarize(label, { iterations, oks, fails }), marks: modeMarks, http: modeHttp };
 }
 
 // ---- stats + scoring (ported verbatim from the leaderboard) ---------------

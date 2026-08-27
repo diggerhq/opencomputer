@@ -58,6 +58,54 @@ var conformanceBackends = []conformanceBackend{
 			hostIDPrefix + "abc123",
 		},
 	},
+	{
+		// The direct-exec data plane over the SAME hosts. Its identity answers
+		// are deliberately identical to vmhost's — the worker_id names the box,
+		// and switching data planes must not orphan the other one's rows — so
+		// running the whole contract against it is what proves that stayed true.
+		name:          "vmhost-lite",
+		buildDisabled: func() Backend { return (*liteBackend)(nil) },
+		ownedWorkerID: microvmWorkerID("abc123"),
+		foreignWorkerIDs: []string{
+			"w-azure-osb-worker-2512f614",
+			"worker-eastus2-7",
+			"",
+			"vmhost:",
+			"vmhost",
+			"microvm:",
+			hostIDPrefix + "abc123",
+		},
+	},
+}
+
+// The two managed backends must never both be registered on a cell: they
+// manufacture from one image against one regional quota, and two fillers each
+// believing they own the fleet overrun it and starve each other. The exclusion
+// lives in newMicrovmBackend, which stands down when the lite flag is set.
+func TestManagedBackendsAreMutuallyExclusive(t *testing.T) {
+	t.Setenv("OPENSANDBOX_MICROVM_ENABLED", "1")
+	t.Setenv("OPENSANDBOX_MICROVM_IMAGE_ARN", "arn:aws:test:::image/x")
+	t.Setenv("OPENSANDBOX_MICROVM_LITE", "1")
+
+	// No AWS call is reached: the stand-down is checked before the client is
+	// built, which is also what makes this test runnable without credentials.
+	b, err := newMicrovmBackend(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("newMicrovmBackend: %v", err)
+	}
+	if b != nil {
+		t.Fatal("the agent-tunnel backend built itself while the direct-exec one is enabled — both would fill from the same quota")
+	}
+}
+
+// ...and with the flag off, nothing changes for the path production runs. A
+// regression here would silently take prod's MicroVM cells off their backend.
+func TestAgentBackendStillBuildsWithoutTheLiteFlag(t *testing.T) {
+	t.Setenv("OPENSANDBOX_MICROVM_ENABLED", "1")
+	t.Setenv("OPENSANDBOX_MICROVM_LITE", "")
+	if liteEnabled() {
+		t.Fatal("liteEnabled() is true with the flag unset")
+	}
 }
 
 // A backend must recognize what it owns. This is the durable identity question

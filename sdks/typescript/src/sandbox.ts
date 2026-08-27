@@ -417,6 +417,43 @@ export class Sandbox {
   }
 
   /**
+   * Delete a sandbox by id, without connecting to it first.
+   *
+   * `connect()` + `kill()` is the obvious way to do this and it is subtly
+   * wrong, because `connect()` is a GET whose result `kill()` never uses —
+   * killing needs only the id, the URL and the key. So the GET is a
+   * precondition that can fail on its own: during the create→finalize window,
+   * against a stale route cache, or on any transient miss it answers 404, and
+   * a caller that reads "404" as "already gone" skips the DELETE entirely and
+   * leaks a running sandbox that nothing will ever collect. That failure is
+   * silent by construction — the caller sees success.
+   *
+   * This issues the DELETE directly, so there is no GET to misread.
+   *
+   * Idempotent: a 404 from the DELETE itself means the sandbox is genuinely
+   * gone, which is the caller's desired end state, so it resolves rather than
+   * throwing. Every other non-2xx throws — a delete that did not happen must
+   * never look like one that did.
+   */
+  static async destroy(
+    sandboxId: string,
+    opts: Pick<SandboxOpts, "apiKey" | "apiUrl"> & SandboxKillOptions = {},
+  ): Promise<void> {
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
+    const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+    const query = opts.deleteSecretStore ? "?deleteSecretStore=true" : "";
+
+    const resp = await fetch(`${apiUrl}/sandboxes/${sandboxId}${query}`, {
+      method: "DELETE",
+      headers: apiKey ? { "X-API-Key": apiKey } : {},
+    });
+
+    if (!resp.ok && resp.status !== 404) {
+      throw new Error(`Failed to destroy sandbox ${sandboxId}: ${resp.status}`);
+    }
+  }
+
+  /**
    * Issue a new preview-URL bearer token and invalidate the previous one.
    *
    * Returns the new plaintext token (also written to `sandbox.previewAuthToken`).

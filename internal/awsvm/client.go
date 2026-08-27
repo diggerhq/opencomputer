@@ -59,8 +59,39 @@ type Config struct {
 
 	// ImageIdentifier is the MicroVM image ARN holding osb-agent plus the
 	// lifecycle hook server. ImageVersion empty means "latest active".
+	//
+	// This is also the DEFAULT SIZE TIER, and the only one the warm pool stocks.
+	// See SizeImages.
 	ImageIdentifier string
 	ImageVersion    string
+
+	// DefaultMemoryMB is how much memory ImageIdentifier actually delivers —
+	// its minimumMemoryInMiB. 0 means the built-in baseline.
+	//
+	// Configurable rather than constant because it is a property of an image we
+	// own and can raise with UpdateMicrovmImage (no rebuild), and because
+	// metering reads it: if it drifts from the image, every sandbox on that
+	// image is billed for the wrong size.
+	DefaultMemoryMB int
+
+	// SizeImages maps a requested memory tier (MB) to the image ARN that
+	// delivers it, for tiers OTHER than the default.
+	//
+	// Sizing is a property of the image on this platform — RunMicrovmInput has
+	// no memory or vCPU field, and the only knob anywhere is
+	// Resources.MinimumMemoryInMiB at image build/update time. So "offer more
+	// sizes" means "run more images", one per tier, selected at launch.
+	//
+	// Only the default tier is pooled. Every other tier cold-launches, which is
+	// the deliberate trade: warm stock is per-image, so N pooled tiers would
+	// either multiply idle spend by N or split one pool N ways and destroy the
+	// latency the pool exists for.
+	//
+	// A tier absent from this map is NOT silently served from the default
+	// image. It is rejected — see Manager.Create. Handing a 16 GB request a
+	// 4 GB box is the silent-wrong-size failure this whole path is built to
+	// avoid.
+	SizeImages map[int]string
 
 	// ExecutionRoleArn is assumed by the MicroVM itself, for the guest's own AWS
 	// access. It is NOT the role this worker uses to call the API.
@@ -102,14 +133,79 @@ func (c *Config) applyDefaults() {
 		c.MaxDurationSeconds = maxDurationCeilingSeconds
 	}
 	if c.MaxIdleDurationSeconds <= 0 {
-		c.MaxIdleDurationSeconds = 900
+		// Both idle timers default to the total-lifetime ceiling, which means
+		// neither can fire before the 8h cap does. That leaves ONE deadline to
+		// reason about instead of three interacting ones.
+		//
+		// The previous defaults (900 idle / 1800 suspended) were measured doing
+		// real damage. AWS counts a box idle when no request arrives through its
+		// PROXY ENDPOINT — an established agent tunnel carrying h2 PINGs is not
+		// proxy traffic and does not count — so pool stock suspended after 15
+		// minutes of waiting despite a keepalive that was pinging it every 30s.
+		// A suspended box answers the proxy with 502, which is exactly the 502
+		// that was failing customer execs, and 30 minutes later AWS terminated
+		// it outright. See Pool.touchIdleTimers for the other half of the fix.
+		c.MaxIdleDurationSeconds = maxDurationCeilingSeconds
 	}
 	if c.SuspendedDurationSeconds <= 0 {
 		// Suspended boxes bill snapshot storage rather than compute, so holding
 		// them is cheap — but they still count against the region's memory
 		// quota, which is what actually caps warm-pool depth.
-		c.SuspendedDurationSeconds = 1800
+		//
+		// Cheap is not the reason for the ceiling, though. When this timer fires
+		// AWS TERMINATES the box and takes its disk with it, so any value short
+		// of the cap silently converts "parked sandbox" into "deleted sandbox".
+		c.SuspendedDurationSeconds = maxDurationCeilingSeconds
 	}
+	if c.DefaultMemoryMB <= 0 {
+		c.DefaultMemoryMB = deliveredMicrovmMemoryMB
+	}
+}
+
+// ImageForMemory resolves which image delivers a requested memory tier, and how
+// much memory that image actually provides.
+//
+// memoryMB 0 means "unspecified" — the caller gets the default tier, which is
+// the pooled one. Anything matching the default's delivered size is also the
+// default tier, so a request that names the size it would get anyway still
+// takes the fast path rather than being pushed to a cold launch.
+//
+// ok=false means the tier is not offered here. Callers MUST surface that as an
+// error rather than falling back to the default image: the whole reason this
+// returns a bool instead of just defaulting is that a silent downgrade bills a
+// customer for one size and hands them another.
+func (c Config) ImageForMemory(memoryMB int) (image string, deliveredMB int, ok bool) {
+	if memoryMB == 0 || memoryMB == c.DefaultMemoryMB {
+		return c.ImageIdentifier, c.DefaultMemoryMB, true
+	}
+	if arn, found := c.SizeImages[memoryMB]; found && arn != "" {
+		return arn, memoryMB, true
+	}
+	return "", 0, false
+}
+
+// IsDefaultTier reports whether a request can be served from warm stock. Only
+// the default tier is pooled, so this is what gates a pool claim.
+func (c Config) IsDefaultTier(memoryMB int) bool {
+	return memoryMB == 0 || memoryMB == c.DefaultMemoryMB
+}
+
+// OwnedImages lists every image ARN this cell launches boxes from.
+//
+// The orphan sweep uses the image ARN as its ownership test, so it has to know
+// about every tier — a box launched from a tier image would otherwise look like
+// it belongs to nobody and be terminated underneath a live customer.
+func (c Config) OwnedImages() []string {
+	out := make([]string, 0, 1+len(c.SizeImages))
+	if c.ImageIdentifier != "" {
+		out = append(out, c.ImageIdentifier)
+	}
+	for _, arn := range c.SizeImages {
+		if arn != "" && arn != c.ImageIdentifier {
+			out = append(out, arn)
+		}
+	}
+	return out
 }
 
 // Box is one MicroVM as this package sees it.
@@ -186,8 +282,21 @@ func (c *Client) Config() Config { return c.cfg }
 // because a leaked VM burns regional memory quota until it ages out — and quota
 // is what caps warm-pool depth.
 func (c *Client) Run(ctx context.Context, clientToken string) (*Box, error) {
+	return c.RunImage(ctx, clientToken, c.cfg.ImageIdentifier)
+}
+
+// RunImage is Run against a specific image, for size tiers other than the
+// default (see Config.SizeImages). An empty image means the default.
+//
+// Separate entry point rather than a Config field so the warm pool keeps
+// launching the default image with no change: the pool is deliberately
+// single-tier, and a tier selected per-call must not be able to leak into it.
+func (c *Client) RunImage(ctx context.Context, clientToken, image string) (*Box, error) {
+	if image == "" {
+		image = c.cfg.ImageIdentifier
+	}
 	in := &lambdamicrovms.RunMicrovmInput{
-		ImageIdentifier:          aws.String(c.cfg.ImageIdentifier),
+		ImageIdentifier:          aws.String(image),
 		MaximumDurationInSeconds: aws.Int32(c.cfg.MaxDurationSeconds),
 		IdlePolicy: &types.IdlePolicy{
 			AutoResumeEnabled:        aws.Bool(c.cfg.AutoResume),
@@ -195,7 +304,10 @@ func (c *Client) Run(ctx context.Context, clientToken string) (*Box, error) {
 			SuspendedDurationSeconds: aws.Int32(c.cfg.SuspendedDurationSeconds),
 		},
 	}
-	if c.cfg.ImageVersion != "" {
+	// ImageVersion pins a version of the DEFAULT image. Version numbers are
+	// per-image, so carrying it onto a tier image would either pin an unrelated
+	// build or fail outright — a tier image takes its own latest active.
+	if c.cfg.ImageVersion != "" && image == c.cfg.ImageIdentifier {
 		in.ImageVersion = aws.String(c.cfg.ImageVersion)
 	}
 	if c.cfg.ExecutionRoleArn != "" {

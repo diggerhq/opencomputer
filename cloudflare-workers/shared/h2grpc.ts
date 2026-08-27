@@ -63,6 +63,51 @@ interface Call {
 }
 
 /**
+ * openTunnel performs the WebSocket upgrade and returns an accepted socket,
+ * with a timeout that bounds the HANDSHAKE ONLY.
+ *
+ * `AbortSignal.timeout(n)` cannot be used for this, and using it was a silent
+ * disaster. The signal stays bound to the request for as long as the request
+ * exists, and a WebSocket obtained from a fetch IS that request — so the
+ * timeout does not expire when the handshake completes, it expires `n`
+ * milliseconds later and tears down a perfectly healthy tunnel.
+ *
+ * Measured on dev 2026-08-25, with a 3000ms timeout on the MicroVM agent
+ * tunnel: across 127 observed closures, `dial_duration + tunnel_lifetime` was
+ * 3000ms EXACTLY, every time — a 19ms dial lived 2981ms, a 66ms dial lived
+ * 2934ms, a 2267ms dial lived 733ms. Every socket died at code 1006 with no
+ * Close frame, which reads as "the far end hung up" and is in fact us. The
+ * MicrovmSession keepalive runs on a 5s alarm, so it could never once find a
+ * live channel: the channel was guaranteed dead two seconds before every tick.
+ * 243 dials served 5 execs.
+ *
+ * An AbortController whose timer is CLEARED on completion is the whole fix:
+ * once the handshake resolves nothing can abort the connection any more.
+ */
+export async function openTunnel(
+  url: string,
+  headers: Record<string, string>,
+  handshakeTimeoutMs: number,
+): Promise<{ ws: WebSocket; status: number }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), handshakeTimeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { Upgrade: "websocket", ...headers },
+    });
+  } finally {
+    // The entire point. Leaving this timer armed is the bug described above.
+    clearTimeout(timer);
+  }
+  const ws = (resp as unknown as { webSocket: WebSocket | null }).webSocket;
+  if (!ws) throw new Error(`agent tunnel upgrade failed (http ${resp.status})`);
+  ws.accept();
+  return { ws, status: resp.status };
+}
+
+/**
  * H2Grpc drives one HTTP/2 connection over a WebSocket that carries a raw byte
  * stream. One instance per open tunnel; not safe to share across tunnels.
  */
@@ -75,6 +120,10 @@ export class H2Grpc {
   private pingSeq = 0;
   private nextStream = 1;
   private dead: Error | null = null;
+  // When this tunnel was opened, so kill() can report how long it survived.
+  // A channel whose whole purpose is to outlive the gap between requests needs
+  // its lifetime stated, not inferred from how often something re-dials.
+  private readonly openedAt = Date.now();
   private readyResolve: (() => void) | null = null;
   private readyReject: ((e: Error) => void) | null = null;
   /**
@@ -118,7 +167,15 @@ export class H2Grpc {
       }
       this.onBytes(new Uint8Array(data));
     });
-    ws.addEventListener("close", () => this.kill(new Error("h2grpc: tunnel closed")));
+    // The close CODE and REASON are the only evidence that distinguishes "the
+    // Durable Object was evicted and took this socket with it" from "the AWS
+    // proxy or the guest hung up on us" — and those two have completely
+    // different fixes. Both were being thrown away here, which is why a fleet
+    // re-dialling every 5s (measured on dev: 243 dials serving 5 execs) looked
+    // like an unexplained latency sawtooth rather than a stated fact.
+    ws.addEventListener("close", (ev: CloseEvent) =>
+      this.kill(new Error(`h2grpc: tunnel closed code=${ev?.code ?? "?"} reason=${ev?.reason || "(none)"} wasClean=${ev?.wasClean ?? "?"}`)),
+    );
     ws.addEventListener("error", () => this.kill(new Error("h2grpc: tunnel error")));
 
     // Preface, our SETTINGS, and a connection-level window bump, sent eagerly.
@@ -154,6 +211,13 @@ export class H2Grpc {
   private kill(e: Error): void {
     if (this.dead) return;
     this.dead = e;
+    // The reason a tunnel died was recorded here and never surfaced. That is
+    // how "the keepalive holds one channel open" and "the keepalive rebuilds a
+    // channel every 5s" stayed indistinguishable: both look like a working
+    // alarm loop from the outside. Age is the discriminator — a socket dying at
+    // ~5s is being reclaimed with its object, one dying at its idle timeout is
+    // being hung up on by the far end.
+    console.log(`h2grpc: KILL ${this.authority} after ${Date.now() - this.openedAt}ms — ${e.message}`);
     if (this.readyReject) {
       this.readyReject(e);
       this.readyReject = null;

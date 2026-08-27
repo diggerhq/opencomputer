@@ -97,7 +97,11 @@ func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
 	// Default pool is 4 connections — far too low for proxy-per-request pattern.
 	// Each proxied exec/file/pty call does a DB lookup before forwarding.
 	poolCfg.MaxConns = 50
-	poolCfg.MinConns = 5
+	// A burst arrives all at once, so a pool that idles low makes most of those
+	// requests wait on a fresh TCP connection plus a Postgres auth handshake
+	// before doing any work. Holding connections open costs almost nothing on a
+	// single control plane and removes that stampede.
+	poolCfg.MinConns = 20
 	// Recycle connections periodically to prevent stale/leaked connections from
 	// piling up on the Postgres server (e.g. after worker restarts/deletions).
 	poolCfg.MaxConnLifetime = 30 * time.Minute
@@ -202,6 +206,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{52, "migrations/052_paused_hibernation_mode.up.sql"},
 		{53, "migrations/053_default_org_concurrency_50.up.sql"},
 		{54, "migrations/054_sandbox_pool.up.sql"},
+		{55, "migrations/055_orgs_runtime.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -375,7 +380,24 @@ func (s *Store) GetOrgPlan(ctx context.Context, orgID string) (string, error) {
 // Plan from the cap-token wins on insert; on conflict we update plan so a
 // pro-upgrade reflected at the edge propagates to the cell on the next
 // sandbox-create round-trip without a separate sync job.
-func (s *Store) UpsertOrgFromCapToken(ctx context.Context, orgID uuid.UUID, plan, billingProvider string) error {
+// GetOrgRuntime returns the runtime this org's sandboxes should be placed on,
+// or "" (the QEMU fleet) when the org is unknown or unset.
+//
+// Only the direct-to-cell create path needs this — a create that came through
+// the edge carries the runtime on its capability token and never reads here.
+func (s *Store) GetOrgRuntime(ctx context.Context, orgID uuid.UUID) (string, error) {
+	var runtime string
+	err := s.pool.QueryRow(ctx, `SELECT runtime FROM orgs WHERE id = $1`, orgID).Scan(&runtime)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get org runtime: %w", err)
+	}
+	return runtime, nil
+}
+
+func (s *Store) UpsertOrgFromCapToken(ctx context.Context, orgID uuid.UUID, plan, billingProvider, runtime string) error {
 	if plan != "pro" {
 		plan = "free"
 	}
@@ -384,16 +406,21 @@ func (s *Store) UpsertOrgFromCapToken(ctx context.Context, orgID uuid.UUID, plan
 	// that doesn't set it) → keep the existing cell-PG value, and default a
 	// brand-new row to 'legacy'. So a wake/preview token can never clobber an
 	// org that the create path or backfill already flipped to 'autumn'.
+	// runtime follows the same "empty means keep" rule as billing_provider, and
+	// for the same reason: a token minted before runtime rode on it must not
+	// reset an org that is already flipped to a non-QEMU backend.
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO orgs (id, name, slug, plan, billing_provider)
-		 VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'legacy'))
+		`INSERT INTO orgs (id, name, slug, plan, billing_provider, runtime)
+		 VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'legacy'), COALESCE(NULLIF($6, ''), ''))
 		 ON CONFLICT (id) DO UPDATE SET
 		   plan = EXCLUDED.plan,
 		   billing_provider = CASE WHEN NULLIF($5, '') IS NULL THEN orgs.billing_provider ELSE $5 END,
+		   runtime = CASE WHEN NULLIF($6, '') IS NULL THEN orgs.runtime ELSE $6 END,
 		   updated_at = NOW()
 		 WHERE orgs.plan IS DISTINCT FROM EXCLUDED.plan
-		    OR (NULLIF($5, '') IS NOT NULL AND orgs.billing_provider IS DISTINCT FROM $5)`,
-		orgID, "org-"+orgID.String()[:8], orgID.String(), plan, billingProvider,
+		    OR (NULLIF($5, '') IS NOT NULL AND orgs.billing_provider IS DISTINCT FROM $5)
+		    OR (NULLIF($6, '') IS NOT NULL AND orgs.runtime IS DISTINCT FROM $6)`,
+		orgID, "org-"+orgID.String()[:8], orgID.String(), plan, billingProvider, runtime,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert org from cap-token: %w", err)
@@ -733,8 +760,16 @@ func (s *Store) ValidateAPIKey(ctx context.Context, keyPlaintext string) (uuid.U
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
 		return uuid.Nil, nil, fmt.Errorf("API key expired")
 	}
-	// Update last_used
-	_, _ = s.pool.Exec(ctx, `UPDATE api_keys SET last_used = now() WHERE key_hash = $1`, hash)
+	// last_used is stamped off the request's critical path. Done inline it was
+	// a second Postgres round trip on every authenticated call — a write, on
+	// the hot path, whose only consumer is a dashboard column. The request
+	// context is deliberately not reused: it is cancelled the moment the
+	// response is written, which would abort this most of the time.
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = s.pool.Exec(bg, `UPDATE api_keys SET last_used = now() WHERE key_hash = $1`, hash)
+	}()
 	return orgID, createdBy, nil
 }
 

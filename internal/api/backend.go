@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -196,6 +198,31 @@ type Placer interface {
 	// decides what giving it back means. Must be safe to call for a sandbox
 	// that was never claimed.
 	Release(ctx context.Context, sandboxID, workerID string)
+}
+
+// SelfStocking is a Backend that keeps its own warm stock.
+//
+// The cell's Postgres pool belongs to the QEMU fleet: rows claimed by
+// resume+rebind on a worker. A backend that manufactures and holds its own boxes
+// has a different supply, and consulting that pool for one of its creates is not
+// a miss that costs nothing — the claim takes row locks, so under a burst it
+// serializes creates behind a query that could never have succeeded.
+//
+// Optional, and absent means "draws from the cell pool", so the QEMU fleet and
+// anything predating this interface behave exactly as before.
+type SelfStocking interface {
+	Backend
+
+	// ServesOwnStock reports that this backend supplies warm hosts from inside
+	// Claim, so the cell pool must not be consulted on its behalf.
+	ServesOwnStock() bool
+}
+
+// servesOwnStock reports whether a backend supplies its own warm hosts. False
+// for nil and for anything not implementing SelfStocking.
+func servesOwnStock(b Backend) bool {
+	ss, ok := b.(SelfStocking)
+	return ok && ss.ServesOwnStock()
 }
 
 // Hibernator is a Backend that parks and revives a sandbox in process.
@@ -395,12 +422,82 @@ func (s *Server) claimBackend(p placement) (Placer, bool) {
 // come through the edge. That resolves to the QEMU fleet, which is the only
 // safe default: a create whose runtime we cannot establish must land on the
 // backend that can serve anything, never on a specialised one.
-func runtimeFor(c echo.Context) string {
+func (s *Server) runtimeFor(c echo.Context) string {
 	claims, _ := c.Get(capClaimsKey).(*auth.CapabilityClaims)
-	if claims == nil {
+	if claims != nil && claims.Runtime != "" {
+		return claims.Runtime
+	}
+	// No cap-token: this is the direct-to-cell create, authenticated with an
+	// API key against this cell rather than through the edge. D1 is still
+	// authoritative on org runtime, but there is no token here carrying it, so
+	// read the copy synced from the last cap-token create.
+	//
+	// Deliberately per-ORG, not per-cell. A cell-wide default would divert
+	// every unlabeled create — including QEMU orgs that simply have no runtime
+	// set — onto whichever backend the cell happened to prefer. Keying on the
+	// org means QEMU stays the default for everyone and orgs move over one at
+	// a time by setting this column.
+	orgID, ok := auth.GetOrgID(c)
+	if !ok || orgID == uuid.Nil || s.store == nil {
 		return ""
 	}
-	return claims.Runtime
+	if rt, ok := s.orgRuntime.get(orgID); ok {
+		return rt
+	}
+	rt, err := s.store.GetOrgRuntime(c.Request().Context(), orgID)
+	if err != nil {
+		// Unknown runtime resolves to QEMU, the backend that serves anything.
+		return ""
+	}
+	s.orgRuntime.put(orgID, rt)
+	return rt
+}
+
+// orgRuntimeTTL bounds how long a runtime flip in Postgres takes to reach this
+// cell's create path. Short enough to move an org over without a restart, long
+// enough that a burst does not re-read the same row 100 times.
+const orgRuntimeTTL = 30 * time.Second
+
+// orgRuntimeCache is a small TTL memo in front of the orgs.runtime read.
+//
+// The read is local Postgres and cheap, but it sits on the create path and a
+// burst asks the same question for the same org every time. The TTL is what
+// bounds how long a runtime flip takes to take effect on this cell.
+type orgRuntimeCache struct {
+	mu  sync.Mutex
+	ttl time.Duration
+	m   map[uuid.UUID]orgRuntimeEntry
+}
+
+type orgRuntimeEntry struct {
+	runtime string
+	expires time.Time
+}
+
+func newOrgRuntimeCache(ttl time.Duration) *orgRuntimeCache {
+	return &orgRuntimeCache{ttl: ttl, m: map[uuid.UUID]orgRuntimeEntry{}}
+}
+
+func (c *orgRuntimeCache) get(orgID uuid.UUID) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.m[orgID]
+	if !ok || time.Now().After(e.expires) {
+		return "", false
+	}
+	return e.runtime, true
+}
+
+func (c *orgRuntimeCache) put(orgID uuid.UUID, runtime string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[orgID] = orgRuntimeEntry{runtime: runtime, expires: time.Now().Add(c.ttl)}
 }
 
 // canPlace reports whether any registered backend would take a create for this

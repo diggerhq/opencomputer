@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -65,6 +66,13 @@ func (s *Server) capTokenMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 // return the same body as POST /api/sandboxes. The edge records the resulting
 // sandbox in D1's sandboxes_index — we don't touch any global tables.
 func (s *Server) internalCreateSandbox(c echo.Context) error {
+	// Started at the very top so `enter` reflects when this handler actually got
+	// the request — the gap between entries across a burst is what says whether
+	// the queue is in here or in front of us.
+	tr := newCreateTrace()
+	defer tr.emit()
+	c.SetRequest(c.Request().WithContext(withCreateTrace(c.Request().Context(), tr)))
+
 	claims, _ := c.Get(capClaimsKey).(*auth.CapabilityClaims)
 	if claims == nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "missing capability claims"})
@@ -85,7 +93,18 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// and lazily materialize the row here. Plan comes from the cap-token so
 	// the worker's event resolver can tag usage_tick events correctly.
 	if s.store != nil {
-		if upErr := s.store.UpsertOrgFromCapToken(c.Request().Context(), orgID, claims.Plan, claims.BillingProvider); upErr != nil {
+		// Memoized per org — see internal/api/materialize.go. Both statements
+		// below are an upsert against ONE row, so running them on every create
+		// made concurrent creates for an org queue on a Postgres row lock rather
+		// than run in parallel.
+		//
+		// The key carries the plan and provider, so a change to either misses the
+		// memo and writes through immediately instead of waiting out the TTL.
+		tr.mark("pre")
+		orgKey := "org:" + orgID.String() + ":" + claims.Plan + ":" + claims.BillingProvider + ":" + claims.Runtime
+		if upErr := s.materialize.ensure(c.Request().Context(), orgKey, func(ctx context.Context) error {
+			return s.store.UpsertOrgFromCapToken(ctx, orgID, claims.Plan, claims.BillingProvider, claims.Runtime)
+		}); upErr != nil {
 			// Non-fatal — the create may still succeed; downstream gates fall through
 			// when the row is missing. Logged so ops can investigate persistent failures.
 			c.Logger().Errorf("upsert org from cap-token: %v", upErr)
@@ -97,12 +116,20 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		// exec/wake/etc requests return "sandbox not found".
 		if claims.UserID != nil {
 			if uid, err := uuid.Parse(*claims.UserID); err == nil {
-				if upErr := s.store.UpsertUserFromCapToken(c.Request().Context(), uid, orgID); upErr != nil {
+				// Memoized too, and for a stronger reason: this one is
+				// ON CONFLICT DO NOTHING, so after the first create it is pure
+				// contention — every subsequent statement takes the lock, finds
+				// the row, and writes nothing.
+				if upErr := s.materialize.ensure(c.Request().Context(), "user:"+uid.String(), func(ctx context.Context) error {
+					return s.store.UpsertUserFromCapToken(ctx, uid, orgID)
+				}); upErr != nil {
 					c.Logger().Errorf("upsert user from cap-token: %v", upErr)
 				}
 			}
 		}
 	}
+
+	tr.mark("upsert")
 
 	var cfg types.SandboxConfig
 	if err := c.Bind(&cfg); err != nil {
@@ -130,6 +157,7 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	if cfg.DiskMB == 0 {
 		cfg.DiskMB = 20480
 	}
+	tr.mark("bind")
 	if err := types.ValidateResourceTier(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}

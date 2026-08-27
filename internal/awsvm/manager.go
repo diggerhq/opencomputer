@@ -26,11 +26,16 @@ import (
 // tens of thousands internal/qemu needs.
 //
 // Deliberately unsupported here (see ErrUnsupported): checkpoints, fork-from-
-// checkpoint, template/checkpoint caches, reboot and power-cycle. Those are
-// snapshot-and-disk operations with no counterpart in this service; a MicroVM
-// image is built through an API, not captured from a running box. They return a
-// typed error the control plane can turn into a clean 4xx rather than a panic
-// or, worse, a silent success.
+// checkpoint, and resource limits. The first two are snapshot-and-disk
+// operations with no counterpart in this service — a MicroVM image is built
+// through an API, not captured from a running box. The third has no knob to
+// turn: sizing belongs to the image, not the sandbox (see deliveredSize). They
+// return a typed error the control plane can turn into a clean 501 rather than
+// a panic or, worse, a silent success.
+//
+// Reboot and power-cycle ARE supported (PowerCycleSandbox delegates to
+// RebootSandbox); template/checkpoint caches are inert rather than erroring,
+// since "" is a truthful answer to "is it cached locally".
 
 // ErrUnsupported marks a Manager capability this backend does not implement.
 // Callers should surface it as "not available on this runtime", never retry it.
@@ -121,37 +126,87 @@ func (m *Manager) TrackClaimed(sandboxID string, e *StockEntry, cfg types.Sandbo
 // pro-tier metering prices on. Whatever is recorded here is what the customer
 // is billed for.
 //
-// 2048 MiB matches the image's minimumMemoryInMiB, and Lambda gives a full vCPU
-// at that baseline (peak scales to 4x).
+// The default image's minimumMemoryInMiB, used when Config.DefaultMemoryMB is
+// unset. MUST track the image or every box is metered at the wrong size.
+//
+// Raised 2048 → 4096 on 2026-08-24 (image version 12.0) so the backend actually
+// delivers the platform default: the API defaults a create to 4096 and QEMU
+// gives 4096, while this image gave 2048 — so every default create was silently
+// served half what it asked for, and metered at the half.
+//
+// Lambda gives a full vCPU from 2048 up (peak scales to 4x), so 4096 keeps the
+// 1-vCPU tier promise. Supported sizes are an ENUM, not a free integer:
+// [512, 1024, 2048, 4096, 8192] on base image al2023-1.
 const (
-	deliveredMicrovmMemoryMB = 2048
+	deliveredMicrovmMemoryMB = 4096
 	deliveredMicrovmCPUCount = 1
 )
 
-// deliveredSize reports what the platform actually provides, which on this
-// backend has nothing to do with what was requested.
+// vcpusForMemory reports the vCPU count that goes with a memory tier.
+//
+// We do NOT control this. There is no vCPU field anywhere in the API —
+// CpuConfiguration carries an Architecture (x86_64/arm64) and nothing else — so
+// the platform allocates CPU as a function of memory. The tier table is
+// therefore the honest reading of what a customer on that tier is buying, and
+// the same number QEMU delivers for it, which is what parity means here.
+//
+// Unknown tiers fall back to the baseline rather than guessing upward: over-
+// reporting cpuCount is an overcharge, and the meter reads this.
+//
+// NOT VALIDATED per tier. The proportional allocation is documented for the
+// default only; the 1024 tier is the one to check first, because it is the only
+// tier whose memory sits BELOW the baseline where a full vCPU is known good.
+func vcpusForMemory(memoryMB int) int {
+	for _, t := range types.AllowedResourceTiers {
+		if t.MemoryMB == memoryMB {
+			return t.VCPUs
+		}
+	}
+	return deliveredMicrovmCPUCount
+}
+
+// deliveredSize reports what the platform actually provides for a request,
+// given the memory the resolved image delivers.
 //
 // RunMicrovmInput has no memory or vCPU field — sizing is a property of the
-// IMAGE, and the seven-operation API has no way to change it before or after
-// launch. So a create asking for 8 GB gets the image baseline either way.
+// IMAGE. Offering more than one size means running more than one image and
+// picking at launch (Config.SizeImages); within a single image there is no knob
+// to turn at all.
 //
 // This used to record the REQUESTED size, which was never sent to AWS but was
 // still what the meter charged for: ask for 8 GB, receive the baseline, pay for
 // 8 GB. A silent overcharge that scaled with the size of the ask. Metering the
 // delivered size is the only honest reading, and the mismatch is logged rather
-// than swallowed so an operator can see demand the image cannot satisfy.
-func deliveredSize(sandboxID string, requestedMemoryMB, requestedCPUCount int) (memoryMB, cpuCount int) {
-	if requestedMemoryMB > deliveredMicrovmMemoryMB || requestedCPUCount > deliveredMicrovmCPUCount {
-		log.Printf("awsvm: %s requested %dMB/%dcpu but this backend delivers %dMB/%dcpu — "+
-			"metering the delivered size (the platform has no sizing knob)",
-			sandboxID, requestedMemoryMB, requestedCPUCount,
-			deliveredMicrovmMemoryMB, deliveredMicrovmCPUCount)
+// than swallowed so an operator can see demand the images cannot satisfy.
+func deliveredSize(sandboxID string, requestedMemoryMB, requestedCPUCount, deliveredMemoryMB int) (memoryMB, cpuCount int) {
+	if deliveredMemoryMB <= 0 {
+		deliveredMemoryMB = deliveredMicrovmMemoryMB
 	}
-	return deliveredMicrovmMemoryMB, deliveredMicrovmCPUCount
+	cpuCount = vcpusForMemory(deliveredMemoryMB)
+	if requestedMemoryMB > deliveredMemoryMB || requestedCPUCount > cpuCount {
+		log.Printf("awsvm: %s requested %dMB/%dcpu but this backend delivers %dMB/%dcpu — "+
+			"metering the delivered size (sizing is a property of the image)",
+			sandboxID, requestedMemoryMB, requestedCPUCount,
+			deliveredMemoryMB, cpuCount)
+	}
+	return deliveredMemoryMB, cpuCount
 }
 
-func (m *Manager) Track(sandboxID string, box *Box, cfg types.SandboxConfig) {
-	memoryMB, cpuCount := deliveredSize(sandboxID, cfg.MemoryMB, cfg.CpuCount)
+// Track records a sandbox→MicroVM binding and returns the size it recorded.
+//
+// The return values exist so callers can report the DELIVERED size rather than
+// the requested one. Get reads them back off the entry; Create used to echo
+// cfg.MemoryMB/cfg.CpuCount straight back instead, so a create asking for 8 GB
+// answered "8192" and the very next Get on the same sandbox answered "2048".
+// Same reasoning as deliveredSize itself: the requested number is not a fact
+// about this sandbox, and repeating it anywhere is how it ends up believed.
+func (m *Manager) Track(sandboxID string, box *Box, cfg types.SandboxConfig) (memoryMB, cpuCount int) {
+	// Which tier this box actually is. A request for a tier we do not offer is
+	// rejected in Create long before here; if one somehow reaches this point,
+	// resolving to the default is the safe direction (it is what the box
+	// physically is) and deliveredSize logs the mismatch.
+	_, deliveredMB, _ := m.config().ImageForMemory(cfg.MemoryMB)
+	memoryMB, cpuCount = deliveredSize(sandboxID, cfg.MemoryMB, cfg.CpuCount, deliveredMB)
 	m.mu.Lock()
 	m.byID[sandboxID] = &entry{
 		sandboxID: sandboxID,
@@ -163,6 +218,21 @@ func (m *Manager) Track(sandboxID string, box *Box, cfg types.SandboxConfig) {
 		startedAt: time.Now(),
 	}
 	m.mu.Unlock()
+	return memoryMB, cpuCount
+}
+
+// config returns the client's resolved config, tolerating a nil client.
+//
+// Track runs on paths that construct a Manager without one (tests, and the
+// bookkeeping-only callers that never talk to AWS), so reaching through
+// m.client unguarded turns a pure in-memory bind into a panic. Defaults applied
+// here match applyDefaults so an unconfigured Manager still resolves the
+// default tier rather than reporting 0 MB.
+func (m *Manager) config() Config {
+	if m == nil || m.client == nil {
+		return Config{DefaultMemoryMB: deliveredMicrovmMemoryMB}
+	}
+	return m.client.Config()
 }
 
 // MicrovmIDFor returns the AWS MicroVM id bound to a sandbox, from memory only.
@@ -207,20 +277,30 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	if sandboxID == "" {
 		return nil, fmt.Errorf("awsvm: create requires a pre-assigned sandbox id")
 	}
-	box, err := m.client.Run(ctx, sandboxID)
+	// Pick the image that delivers the requested size. A tier with no image
+	// configured is refused rather than served from the default: handing a 16 GB
+	// request a 4 GB box, and billing it as 4 GB, is a silent wrong-size
+	// delivery — the failure mode ErrUnsupported exists to make impossible.
+	image, _, ok := m.config().ImageForMemory(cfg.MemoryMB)
+	if !ok {
+		return nil, fmt.Errorf("awsvm: %s: no image configured for %dMB: %w",
+			sandboxID, cfg.MemoryMB, ErrUnsupported)
+	}
+	box, err := m.client.RunImage(ctx, sandboxID, image)
 	if err != nil {
 		return nil, err
 	}
-	m.Track(sandboxID, box, cfg)
+	memoryMB, cpuCount := m.Track(sandboxID, box, cfg)
 	log.Printf("awsvm: created %s (microvm=%s endpoint=%s)", sandboxID, box.ID, box.Endpoint)
 
+	// Delivered, not requested — see Track. Get answers from the same numbers.
 	return &types.Sandbox{
 		ID:        sandboxID,
 		Template:  cfg.Template,
 		Status:    types.SandboxStatusRunning,
 		StartedAt: time.Now(),
-		CpuCount:  cfg.CpuCount,
-		MemoryMB:  cfg.MemoryMB,
+		CpuCount:  cpuCount,
+		MemoryMB:  memoryMB,
 	}, nil
 }
 
@@ -693,8 +773,20 @@ func (m *Manager) restoreFromArchive(ctx context.Context, sandboxID, key string,
 // configuration, and cannot be resized in place the way virtio-mem allows.
 // Returning nil rather than an error keeps the control plane's post-claim grow
 // step harmless instead of failing every create.
+// SetResourceLimits cannot be honoured on this backend.
+//
+// Sizing is a property of the IMAGE (see deliveredSize): RunMicrovmInput has no
+// memory or vCPU field, and the only knob in the whole API is
+// Resources.MinimumMemoryInMiB at image build/update time — which is
+// account-wide for every box on that image, not per sandbox.
+//
+// This used to `return nil`, which made a resize request answer 200 OK and
+// change nothing. That is the failure mode ErrUnsupported exists to prevent: a
+// caller cannot tell a silent success apart from a real one, so it believes a
+// limit is in force that was never applied. 501 tells the truth — the operation
+// will never succeed on this runtime, so do not retry it.
 func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPids int32, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec int64) error {
-	return nil
+	return unsupported("SetResourceLimits")
 }
 
 // UpdateSandboxSecret injects or replaces a secret in a running sandbox.
@@ -963,6 +1055,10 @@ func (m *Manager) DirectInfo(ctx context.Context, sandboxID string) (endpoint, t
 
 // PingAgents keeps the given sandboxes' boxes out of AWS's idle policy. See the
 // keepalive block in agent.go for why an open connection is not enough.
-func (m *Manager) PingAgents(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed int) {
+//
+// Also retires channels that keep failing, so a reservation whose tunnel died
+// does not hand its eventual customer a cold dial. retired counts those; sample
+// is one representative failure, for the caller to log.
+func (m *Manager) PingAgents(ctx context.Context, sandboxIDs map[string]struct{}) (ok, failed, retired int, sample error) {
 	return m.agents.pingTracked(ctx, sandboxIDs)
 }

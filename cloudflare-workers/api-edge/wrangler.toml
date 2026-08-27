@@ -216,8 +216,67 @@ PAUSED_CAP = "10"
 # depth prod cannot have). 8 × 3 = 24 against 30, restoring the ratio this file
 # used to carry. The tuning above is kept because it is the reasoning that will
 # be needed again if dev ever takes the deep pool back.
-POOL_STOCK_TARGET = "3"
+#
+# 2026-08-24: dev takes the depth back — prod's MicroVM pool is at 0, so the
+# shared us-east-1 quota is free. 8 × 16 = 128 staged against a 130 pool.
+#
+# The 44% headroom the sizing above argues for (150 for a burst-100) is stale on
+# two counts, and neither survives in the current code:
+#   - The isolate-local "magazine" tier is GONE (index.ts:1319 — "could not be
+#     made correct: a magazine lives in isolate-local memory"). The uneven
+#     split-across-isolates argument died with it.
+#   - claimPoolBox now walks EVERY shard (index.ts:1367 — random start, odd
+#     stride so it is a guaranteed full cycle). The measurements that justified
+#     the slack ("56 of 100 concurrent creates fell through to the control plane
+#     while the shards still held 22-81 boxes") were taken under the old
+#     3-attempt walk, where a create landing on a drained shard gave up.
+# With a full ring walk, TOTAL staged stock is what matters, not per-shard
+# balance: a create landing on a drained shard still reaches stock, costing a
+# round trip rather than a cold launch. What is left to cover is only stock
+# depleted between probe and claim — hence ~2% headroom, not 44%.
+# SIZING INVARIANT: SHARDS x TARGET must stay <= the cell pool. With 8 shards
+# against a 10-box dev pool, the old 16 asked for 128 — every shard permanently
+# below LOW_WATER, restocking on every claim, and the measured latency becomes a
+# function of shard luck rather than of the system under test. 4 shards x 2 = 8 <= 10.
+# Raise both when the cell pool is raised.
+POOL_STOCK_TARGET = "4"
 POOL_STOCK_LOW_WATER = "2"
+# NO SHARDING ON DEV. Sharding buys concurrency against a single-threaded DO and
+# pays for it with pool fragmentation — one full DO round trip per empty shard,
+# on the customer's create. Dev's cell pool is 16 boxes and its bursts are a
+# handful of sequential creates, so there is no concurrency here to win and the
+# fragmentation is the only effect that survives. Measured on dev 2026-08-25:
+# claimmiss 300-320ms at 4 shards vs 84-98ms at 1; a dotry=2 claim ~150ms vs
+# ~88ms at dotry=1.
+#
+# The ids are also not portable. A shard id is half of a DO name
+# (`${cellID}#${gen}#${id}`), so the same id is a DIFFERENT object per cell, with
+# its own placement. The [1,4,6,12] default was probed into IAD against PROD's
+# cell and says nothing about dev's objects of the same id — which is why dev
+# creates were answered from ATL, IAD and ORD in a single four-request sample.
+#
+# Raise this only alongside the pool: SHARDS × POOL_STOCK_TARGET ≤ cell pool,
+# and only with ids probed into the target colo FOR THIS CELL.
+POOL_STOCK_SHARD_IDS = "1"
+# Dev's MicroVM cell runs the DIRECT-EXEC backend (OPENSANDBOX_MICROVM_LITE=1),
+# whose boxes are reachable only by a plain HTTPS POST — they hold no agent
+# tunnel for a session DO to dial. Answering exec at the edge would route around
+# the entire path this cell exists to measure while still returning correct
+# results, which is precisely how it went unnoticed for the first dev run: a 3s
+# exec, a correct answer, and not one line about it in the cell's logs.
+#
+# PROD LEAVES THIS UNSET. Its cells run the agent-tunnel backend, where the edge
+# path is both correct and much faster.
+MICROVM_EDGE_EXEC = "0"
+# Same cell, same reason, the create half. That backend keeps its warm set in
+# process and never implements EdgeReserve, so PoolStock cannot hold stock for
+# it — every create walked the shards, missed, and paid the control plane
+# anyway. Measured at 81-87ms of `claimmiss` on every single create, for an
+# outcome that was structurally impossible rather than merely unlikely.
+#
+# PROD LEAVES THIS UNSET: its MicroVM cells do fill the stock DO, and edge-claim
+# is what answers their creates at the edge.
+MICROVM_EDGE_CLAIM = "0"
 # Cells eligible for new-org home assignment are NOT configured here anymore —
 # it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.

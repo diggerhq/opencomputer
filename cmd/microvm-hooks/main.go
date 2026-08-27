@@ -72,6 +72,66 @@ const (
 	// agentTunnelPath is the WebSocket endpoint carrying gRPC to the agent.
 	// Must match internal/awsvm's dialer.
 	agentTunnelPath = "/osb/agent-grpc"
+
+	// runCmdPath executes one command and returns its result as ordinary JSON.
+	// Must match internal/awsvmlite.
+	runCmdPath = "/osb/run"
+)
+
+// runCmdRequest / runCmdResponse are the whole protocol of the direct exec path.
+//
+// PLAIN HTTP ON PURPOSE. Everything else in this file exists to carry gRPC into
+// the guest: the agent bridge, the WebSocket tunnel, the h2c handler. All of it
+// is there because gRPC reports its status in HTTP/2 trailers and Lambda's proxy
+// strips them, so a gRPC reply arrives with the command already executed and the
+// result missing.
+//
+// A JSON request/response has no trailers to lose. That single difference
+// removes the entire tunnel tier — no WebSocket, no persistent channel, no
+// keepalive, no re-dial, no Durable Object holding a socket open — and with it
+// every failure mode that tier has: measured on dev the same day this was
+// written, a box answering /healthz in 90ms with agentUp=true was simultaneously
+// logged by the control plane as tunnel-less with re-dial timing out at 30s.
+//
+// The cost is deliberate and total: no streaming, no PTY, no sessions, no file
+// transfer. One command, buffered output, one reply. Anything richer belongs on
+// the agent path.
+// The field names mirror types.ProcessConfig so the control plane forwards a
+// customer's exec request without reshaping it.
+type runCmdRequest struct {
+	Cmd string `json:"cmd"`
+	// Args, when present, makes Cmd an executable rather than a shell string —
+	// the same rule the agent's exec follows.
+	//
+	// Carried as real fields rather than folded into one shell string on the
+	// host, because building `cd %s && export %s=%s; %s` puts three separate
+	// quoting problems on the exec hot path: a path with a space, a value with a
+	// quote, and a command the customer wrote for a shell that isn't this one.
+	// exec.Cmd already has Dir and Env, and they cannot be escaped wrong.
+	Args []string          `json:"args,omitempty"`
+	Env  map[string]string `json:"envs,omitempty"`
+	Cwd  string            `json:"cwd,omitempty"`
+	// TimeoutSec bounds the command. Zero means runCmdDefaultTimeout.
+	TimeoutSec int `json:"timeoutSec,omitempty"`
+}
+
+type runCmdResponse struct {
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMs int64  `json:"durationMs"`
+	// TimedOut distinguishes "the command was killed at the deadline" from "the
+	// command exited non-zero", which are the same exit status otherwise.
+	TimedOut bool `json:"timedOut,omitempty"`
+}
+
+const (
+	runCmdDefaultTimeout = 30 * time.Second
+	runCmdMaxTimeout     = 10 * time.Minute
+	// runCmdMaxOutput caps each stream. Buffered in memory and returned in a
+	// JSON body, so an unbounded `cat /dev/urandom` would otherwise take the
+	// guest's memory and the reply with it.
+	runCmdMaxOutput = 1 << 20 // 1 MiB per stream
 )
 
 // runPayload is the body Lambda POSTs to /run. runHookPayload is per-MicroVM
@@ -129,14 +189,25 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		// The binding, reported so the CP's existing keepalive sweep can learn
+		// who owns each box WITHOUT the edge telling it. That makes host-side
+		// bookkeeping self-healing: a finalize message that never arrives is
+		// reconciled on the next touch instead of stranding the box.
+		claimedBy, claimedAt := boxClaim.current()
+		h := map[string]any{
 			"agentUp":    agentUp(),
 			"agentPid":   pid,
 			"agentAddr":  agentAddr,
 			"microvmId":  id,
 			"ranRunHook": id != "",
 			"uptimeSec":  int(time.Since(startedAt).Seconds()),
-		})
+			"claimed":    claimedBy != "",
+		}
+		if claimedBy != "" {
+			h["claimedBy"] = claimedBy
+			h["claimedAtUnix"] = claimedAt.Unix()
+		}
+		_ = json.NewEncoder(w).Encode(h)
 	})
 
 	// Diagnostic: emit an UNANNOUNCED HTTP/2 trailer, the way gRPC sends
@@ -186,6 +257,16 @@ func main() {
 	// agent unchanged. That is exactly why it preserves semantics an HTTP-level
 	// proxy could not — and why osb-agent needs no change at all.
 	mux.HandleFunc(agentTunnelPath, s.handleAgentTunnel)
+
+	// Direct exec. Registered before the catch-all below because ServeMux picks
+	// the longest matching pattern — without an explicit entry this path would
+	// be forwarded to osb-agent's gRPC listener, which answers a JSON POST with
+	// 415 and no explanation.
+	mux.HandleFunc(runCmdPath, s.handleRunCmd)
+	// Edge claim. See claim.go: the box is the only authority on who owns it,
+	// so these are the endpoints that actually decide it.
+	mux.HandleFunc(claimPath, s.handleClaim)
+	mux.HandleFunc(claimAndRunPath, s.handleClaimAndRun)
 
 	// Everything that is not a hook is forwarded to osb-agent.
 	//
@@ -313,6 +394,133 @@ func agentUp() bool {
 // tells Lambda to snapshot; 503 means retry. Return 503 immediately rather than
 // holding the request open — a held request that outlives the timeout kills the
 // whole build.
+// handleRunCmd runs one command and returns its result as JSON.
+//
+// See runCmdRequest for why this exists alongside the agent bridge rather than
+// through it.
+//
+// A command that fails is NOT an HTTP error: a non-zero exit is a perfectly
+// ordinary result and the caller needs the output either way. Only a malformed
+// request or a failure to start the process gets a 4xx/5xx, so the caller can
+// tell "your command exited 1" from "the sandbox could not run it".
+func (s *server) handleRunCmd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req runCmdRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Cmd) == "" {
+		http.Error(w, "cmd is required", http.StatusBadRequest)
+		return
+	}
+
+	out, err := runCmd(r.Context(), req)
+	if err != nil {
+		// Never started: no binary, no fork, nothing to report an exit code for.
+		http.Error(w, "could not start command: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// runCmd executes one command and reports the result.
+//
+// Split out of handleRunCmd so /osb/claim-and-run runs commands through the
+// EXACT same path rather than a second copy that can drift — the fused endpoint
+// differs from the plain one only in what it does before the command, never in
+// how the command runs.
+//
+// A non-nil error means the command never started (no binary, fork failure).
+// That is the only case a caller has to decide about; a command that ran and
+// exited non-zero is a result, and comes back in the response with its code.
+func runCmd(reqCtx context.Context, req runCmdRequest) (runCmdResponse, error) {
+	timeout := runCmdDefaultTimeout
+	if req.TimeoutSec > 0 {
+		timeout = time.Duration(req.TimeoutSec) * time.Second
+		if timeout > runCmdMaxTimeout {
+			timeout = runCmdMaxTimeout
+		}
+	}
+	// Bound by the request's context too, so a caller that gives up does not
+	// leave the command running in the guest.
+	ctx, cancel := context.WithTimeout(reqCtx, timeout)
+	defer cancel()
+
+	// `sh -lc` matches what the agent's exec does, so a command behaves the same
+	// on both paths — the login shell sources the same profile chain and finds
+	// the same PATH. With explicit args the command is an executable instead,
+	// which is also what the agent does.
+	started := time.Now()
+	name, args := "/bin/sh", []string{"-lc", req.Cmd}
+	if len(req.Args) > 0 {
+		name, args = req.Cmd, req.Args
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = req.Cwd
+	if len(req.Env) > 0 {
+		// Appended to the guest's environment, not substituted for it: replacing
+		// it would drop PATH and HOME, so every command that named a binary
+		// rather than a path would stop resolving.
+		env := os.Environ()
+		for k, v := range req.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
+	}
+	var stdout, stderr cappedBuffer
+	stdout.limit, stderr.limit = runCmdMaxOutput, runCmdMaxOutput
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	runErr := cmd.Run()
+	resp := runCmdResponse{
+		Stdout:     stdout.String(),
+		Stderr:     stderr.String(),
+		DurationMs: time.Since(started).Milliseconds(),
+		TimedOut:   ctx.Err() != nil,
+	}
+	switch {
+	case runErr == nil:
+		resp.ExitCode = 0
+	case cmd.ProcessState != nil:
+		// Ran and exited non-zero — a result, not an error.
+		resp.ExitCode = cmd.ProcessState.ExitCode()
+	default:
+		return runCmdResponse{}, runErr
+	}
+	return resp, nil
+}
+
+// cappedBuffer accumulates up to limit bytes and silently discards the rest.
+//
+// Discarding rather than erroring is deliberate: a command that prints more than
+// the cap has still done its work, and failing the whole call over trailing
+// output would turn a successful build into an error. The caller sees a
+// truncated stream, which is the same contract every log tail has.
+type cappedBuffer struct {
+	buf   []byte
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - len(b.buf); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		b.buf = append(b.buf, p[:room]...)
+	}
+	// Always report the full length: an io.Writer that under-reports makes
+	// os/exec treat a capped stream as a short write and fail the command.
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string { return string(b.buf) }
+
 func (s *server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	if !agentUp() {
 		http.Error(w, "agent not listening yet", http.StatusServiceUnavailable)

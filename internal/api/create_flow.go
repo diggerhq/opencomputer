@@ -100,9 +100,11 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 		}
 	}()
 
+	tr := traceFrom(ctx)
 	t := time.Now()
 	workerID, err = steps.claim(ctx)
 	claimMs = time.Since(t).Milliseconds()
+	tr.mark("claim")
 	if err != nil {
 		return "", err
 	}
@@ -115,6 +117,7 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 			t = time.Now()
 			aerr := steps.activate(ctx, workerID)
 			activateMs = time.Since(t).Milliseconds()
+			tr.mark("activate")
 			if aerr != nil {
 				if steps.cleanup != nil {
 					steps.cleanup(ctx, workerID, aerr)
@@ -122,6 +125,9 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 				return "", fmt.Errorf("create: activate %s on %s: %w", sandboxID, workerID, aerr)
 			}
 		}
+		// Deferred: the durable writes are off the response, so what this mark
+		// measures is the handoff, not the database.
+		tr.mark("deferpersist")
 		go persistAfterResponse(sandboxID, workerID, steps)
 		return workerID, nil
 	}
@@ -130,6 +136,7 @@ func runCreate(ctx context.Context, sandboxID string, steps createSteps) (worker
 		t = time.Now()
 		err := steps.persist(ctx, workerID)
 		persistMs = time.Since(t).Milliseconds()
+		tr.mark("persist")
 		if err != nil {
 			if steps.persistRequired {
 				// Nothing else knows this host exists, so continuing would hand
