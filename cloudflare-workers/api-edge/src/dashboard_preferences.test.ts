@@ -46,9 +46,9 @@ async function sessionToken(): Promise<string> {
   return `${header}.${payload}.${b64url(signature)}`;
 }
 
-function testEnv() {
+function testEnv(durableSessionsEnabled = false) {
   const preferences = {
-    durableSessionsEnabled: false,
+    durableSessionsEnabled,
     infrastructureEnabled: true,
   };
 
@@ -88,10 +88,7 @@ function testEnv() {
     async run() {
       if (this.sql.includes("UPDATE users")) {
         if (this.args[0] !== null) {
-          preferences.durableSessionsEnabled = this.args[0] === 1;
-        }
-        if (this.args[1] !== null) {
-          preferences.infrastructureEnabled = this.args[1] === 1;
+          preferences.infrastructureEnabled = this.args[0] === 1;
         }
       }
       return {};
@@ -119,14 +116,20 @@ async function request(body: unknown): Promise<Request> {
   });
 }
 
+async function meRequest(): Promise<Request> {
+  return new Request("https://app.test/api/dashboard/me", {
+    headers: { cookie: `oc_session=${await sessionToken()}` },
+  });
+}
+
 describe("dashboard navigation preferences", () => {
-  it("updates one preference without changing the other", async () => {
-    const { env, preferences } = testEnv();
+  it("reports the administrator-managed durable session navigation state", async () => {
+    const { env } = testEnv(true);
     const response = await handleDashboard(
-      await request({ durableSessionsEnabled: true }),
+      await meRequest(),
       env,
       {} as ExecutionContext,
-      "/api/dashboard/me/preferences",
+      "/api/dashboard/me",
     );
 
     expect(response.status).toBe(200);
@@ -134,11 +137,43 @@ describe("dashboard navigation preferences", () => {
       durableSessionsEnabled: true,
       infrastructureEnabled: true,
     });
+  });
+
+  it("updates one preference without changing the other", async () => {
+    const { env, preferences } = testEnv();
+    const response = await handleDashboard(
+      await request({ infrastructureEnabled: false }),
+      env,
+      {} as ExecutionContext,
+      "/api/dashboard/me/preferences",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      durableSessionsEnabled: false,
+      infrastructureEnabled: false,
+    });
     expect(preferences).toEqual({
-      durableSessionsEnabled: true,
-      infrastructureEnabled: true,
+      durableSessionsEnabled: false,
+      infrastructureEnabled: false,
     });
   });
+
+  it.each([true, false])(
+    "rejects attempts to set administrator-managed durable session navigation to %s",
+    async (durableSessionsEnabled) => {
+      const { env, preferences } = testEnv();
+      const response = await handleDashboard(
+        await request({ durableSessionsEnabled }),
+        env,
+        {} as ExecutionContext,
+        "/api/dashboard/me/preferences",
+      );
+
+      expect(response.status).toBe(403);
+      expect(preferences.durableSessionsEnabled).toBe(false);
+    },
+  );
 
   it("rejects non-boolean preferences", async () => {
     const { env, preferences } = testEnv();

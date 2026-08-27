@@ -67,6 +67,7 @@ import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
+import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
 
 type DetailTab =
@@ -78,6 +79,7 @@ type DetailTab =
   | 'schedules'
   | 'webhooks'
   | 'secrets'
+  | 'byok'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -483,6 +485,7 @@ export default function ManagedAgentDetail({
     'schedules',
     'webhooks',
     'secrets',
+    'byok',
   ])
   const activeTab = project
     ? routeTab && projectTabs.has(routeTab)
@@ -652,6 +655,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
+    ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
   ]
 
   return (
@@ -1043,6 +1047,13 @@ export default function ManagedAgentDetail({
           projectId={project.project.id}
           agents={project.project.agents}
           environment={environment}
+        />
+      ) : null}
+
+      {activeTab === 'byok' && project ? (
+        <ManagedProjectBYOK
+          projectId={project.project.id}
+          projectSlug={project.project.slug}
         />
       ) : null}
     </div>

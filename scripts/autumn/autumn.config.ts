@@ -74,6 +74,16 @@ export const agentRuntime = feature({
   consumable: true,
 });
 
+// Entitlement gate for connecting an external Claude/Codex subscription
+// (work 011). Boolean feature: present on a plan = allowed, absent = denied.
+// Not metered and not part of the credit system; subscription-routed model
+// inference carries no OpenComputer model charge by design.
+export const byoModelSubscriptions = feature({
+  id: "byo_model_subscriptions",
+  name: "byo_model_subscriptions",
+  type: "boolean",
+});
+
 export const credits = feature({
   id: "credits",
   name: "credits",
@@ -165,6 +175,9 @@ export const pro = plan({
       included: 200,
       reset: { interval: "month" },
     }),
+    item({
+      featureId: byoModelSubscriptions.id,
+    }),
   ],
 });
 
@@ -179,6 +192,9 @@ export const max = plan({
       featureId: credits.id,
       included: 2_000,
       reset: { interval: "month" },
+    }),
+    item({
+      featureId: byoModelSubscriptions.id,
     }),
   ],
 });

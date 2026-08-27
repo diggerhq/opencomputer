@@ -5,6 +5,7 @@ import {
   type ManagedSessionSnapshot,
 } from "./api.js";
 import { login, logout } from "./auth.js";
+import { codexLogin } from "./codex-oauth.js";
 import { resolveConfig } from "./config.js";
 import {
   publishProjectDeployment,
@@ -33,6 +34,17 @@ export interface GlobalOptions {
   apiKey?: string;
   json: boolean;
   verbose?: boolean;
+}
+
+export function deploymentAlias(requestedAlias?: string): string {
+  return requestedAlias ?? "development";
+}
+
+export function shouldBindModelAccessProject(
+  projectReference: string | undefined,
+  currentAgentRoot: string | null | undefined,
+): boolean {
+  return Boolean(projectReference || currentAgentRoot);
 }
 
 function printJSON(value: unknown): void {
@@ -72,6 +84,13 @@ function environmentOption(
   if (!value || value === "development") return "development";
   if (value === "production") return "production";
   throw new Error("--environment must be development or production");
+}
+
+function consumeModelAccessProvider(args: string[]): "claude" | "codex" {
+  if (args[0] === "claude" || args[0] === "codex") {
+    return args.shift() as "claude" | "codex";
+  }
+  return "codex";
 }
 
 async function readSecretValue(): Promise<string> {
@@ -343,6 +362,15 @@ async function attachSession(
   }
 }
 
+export function nextAgentEventDeadline(
+  deadline: number,
+  timeoutMs: number,
+  receivedEvents: number,
+  now = Date.now(),
+): number {
+  return receivedEvents > 0 ? now + timeoutMs : deadline;
+}
+
 async function waitForEvent(
   client: OpenComputerClient,
   sessionId: string,
@@ -351,10 +379,11 @@ async function waitForEvent(
   onEvent: (event: ManagedAgentEvent) => void,
   timeoutMs: number,
 ): Promise<{ event: ManagedAgentEvent; cursor: number }> {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   let cursor = after;
   while (Date.now() < deadline) {
-    for (const event of await client.events(sessionId, cursor)) {
+    const events = await client.events(sessionId, cursor);
+    for (const event of events) {
       cursor = Math.max(cursor, event.seq);
       onEvent(event);
       if (event.type === "runtime.disconnected") {
@@ -366,6 +395,10 @@ async function waitForEvent(
       }
       if (terminal(event)) return { event, cursor };
     }
+    // Long-running agent turns may exceed one fixed timeout window while
+    // continuing to emit useful progress. Timeout only after a full quiet
+    // window with no new durable session events.
+    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("Timed out waiting for the agent.");
@@ -511,12 +544,16 @@ export async function runCommand(
           `Directory: ${initialized.root}\n` +
           `Project:   choose or create one on the first watched deployment\n` +
           `Agents:    opencomputer/\n` +
-          (spa ? `Web app:   src/ (separate lifecycle)\n\n` : `App:       agent only\n\n`) +
+          (spa
+            ? `Web app:   src/ (separate lifecycle)\n\n`
+            : `App:       agent only\n\n`) +
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
           `  npm run deploy -- --watch  # deploy changes to Development\n` +
-          (spa ? `  npm run dev:web             # optional local web app\n` : ""),
+          (spa
+            ? `  npm run dev:web             # optional local web app\n`
+            : ""),
       );
     }
     return;
@@ -587,7 +624,7 @@ export async function runCommand(
     if (project || createProjectName) {
       throw new Error("--project and --create-project require --watch");
     }
-    const alias = requestedAlias ?? "production";
+    const alias = deploymentAlias(requestedAlias);
     const binding = await ensureProjectBinding(client, config, root, {
       interactive: !globals.json,
       select: true,
@@ -750,6 +787,110 @@ export async function runCommand(
       return;
     }
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
+  }
+
+  if (command === "model-access") {
+    const action = args.shift();
+    if (action === "connect") {
+      // Local Codex-account OAuth: open a localhost callback
+      // server, complete the flow in the user's browser, then relay the
+      // credential to OpenComputer as a connected account. Nothing secret
+      // is echoed or persisted locally.
+      const provider = consumeModelAccessProvider(args);
+      if (provider !== "codex") {
+        throw new Error(
+          "Claude account BYOK is not supported. Connect a Codex account instead.",
+        );
+      }
+      const projectReference = option(args, "--project");
+      const legacyEnvironment = option(args, "--environment");
+      if (legacyEnvironment && !projectReference)
+        throw new Error("--environment requires --project <id|slug>");
+      if (
+        legacyEnvironment &&
+        !["development", "production", "both"].includes(legacyEnvironment)
+      )
+        throw new Error("--environment must be development, production, or both");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const currentAgentRoot = projectReference ? null : await findAgentRoot();
+      const project =
+        shouldBindModelAccessProject(projectReference, currentAgentRoot)
+          ? await selectedProject(client, config, projectReference, false)
+          : undefined;
+      const environments = project
+        ? (["development", "production"] as const)
+        : [];
+      const receipt = await client.connectModelAccess({ provider: "openai" });
+      process.stdout.write(
+        "Opening a local callback and your browser to authorize your Codex account…\n",
+      );
+      const { credential, accountHint } = await codexLogin();
+      const connection = await client.relayModelAccess(receipt.connection.id, {
+        access_token: credential.access_token,
+        refresh_token: credential.refresh_token,
+        token_type: credential.token_type,
+        expires_at: credential.expires_at,
+      });
+      const bindings = project
+        ? await Promise.all(
+            environments.map((environment) =>
+              client.putModelAccessBinding({
+                projectId: project.projectId,
+                provider: "openai",
+                environment,
+                enabled: true,
+              }),
+            ),
+          )
+        : [];
+      if (globals.json)
+        printJSON({
+          ...connection,
+          external_account_hint: accountHint,
+          bindings,
+        });
+      else {
+        process.stdout.write(
+          `Connected Codex account as ${connection.label}; status ${connection.status}.\n`,
+        );
+        if (project) {
+          process.stdout.write(
+            `Enabled Codex for ${project.projectId} (development and production).\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (action === "list" || action === "ls" || action === undefined) {
+      const connections = await client.modelAccessConnections();
+      if (globals.json) printJSON(connections);
+      else if (!connections.length)
+        process.stdout.write("No model access connections.\n");
+      else {
+        for (const connection of connections) {
+          process.stdout.write(
+            `${connection.provider.padEnd(10)} ${connection.status.padEnd(18)} ` +
+              `${connection.label}${connection.externalAccountHint ? ` (${connection.externalAccountHint})` : ""}\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (action === "disconnect") {
+      const provider = consumeModelAccessProvider(args);
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connections = await client.modelAccessConnections();
+      const apiProvider = provider === "claude" ? "anthropic" : "openai";
+      const connection = connections.find((c) => c.provider === apiProvider);
+      if (!connection) throw new Error(`No ${provider} connection found.`);
+      const updated = await client.disconnectModelAccess(connection.id);
+      if (globals.json) printJSON(updated);
+      else process.stdout.write(`Disconnected ${connection.label}.\n`);
+      return;
+    }
+    throw new Error(
+      "Use `opencomputer model-access connect|list|disconnect`.",
+    );
   }
 
   if (command === "env") {

@@ -1,6 +1,6 @@
 ---
 title: "Models"
-description: "Select a managed model with useModel"
+description: "Select a model with useModel"
 ---
 
 `useModel()` selects the model that powers the next agent step. OpenComputer
@@ -74,3 +74,13 @@ the credential to agent code.
 
 For credentials used by your own HTTP tools instead of model inference, use
 [Secrets and outbound requests](/agents/secrets).
+
+## Use a connected model account
+
+Organizations on Pro or Max can connect a Codex account and route eligible
+OpenAI models through it. Use the native `openai` provider when you want the
+connected account; Managed OpenRouter models continue to use the
+`openrouter/provider/model` form.
+
+See [Bring your own model account (BYOK)](/agents/byok) for setup, project
+enablement, billing behavior, and troubleshooting.

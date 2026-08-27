@@ -1,9 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectManagedAgentEventPages,
   displayManagedAgentName,
+  managedAgentModelRoute,
   managedAgentRenderDebug,
   nextAgentEventDeadline,
 } from './api'
+
+describe('collectManagedAgentEventPages', () => {
+  it('follows event cursors until the API returns an empty page', async () => {
+    const cursors: number[] = []
+    const pages = new Map([
+      [0, [{ seq: 1 }, { seq: 500 }]],
+      [500, [{ seq: 501 }]],
+      [501, []],
+    ])
+
+    const events = await collectManagedAgentEventPages((after) => {
+      cursors.push(after)
+      return Promise.resolve(
+        (pages.get(after) ?? []).map(({ seq }) => ({
+          seq,
+          type: 'message.delta',
+          data: { text: String(seq) },
+        })),
+      )
+    })
+
+    expect(cursors).toEqual([0, 500, 501])
+    expect(events.map(({ seq }) => seq)).toEqual([1, 500, 501])
+  })
+})
 
 describe('nextAgentEventDeadline', () => {
   it('refreshes the inactivity deadline only when progress arrives', () => {
@@ -63,6 +90,41 @@ describe('managedAgentRenderDebug', () => {
     })
     expect(
       managedAgentRenderDebug({ ...event, type: 'runtime.log' }),
+    ).toBeUndefined()
+  })
+})
+
+describe('managedAgentModelRoute', () => {
+  it('parses Codex BYOK route attribution', () => {
+    const event = {
+      id: 'event-2',
+      seq: 2,
+      timestamp: '2026-08-24T00:00:00.000Z',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      type: 'model.route_resolved',
+      data: {
+        requested: { provider: 'openai', model: 'gpt-5.6-sol' },
+        effective: { provider: 'openai', model: 'gpt-5.6-sol' },
+        runtime: 'codex',
+        access: {
+          type: 'external_subscription',
+          connectionId: 'mac_1',
+          connectionKind: 'codex_subscription',
+        },
+        openComputerModelChargeUsd: 0,
+      },
+    }
+
+    expect(managedAgentModelRoute(event)).toMatchObject({
+      access: {
+        type: 'external_subscription',
+        connectionKind: 'codex_subscription',
+      },
+      openComputerModelChargeUsd: 0,
+    })
+    expect(
+      managedAgentModelRoute({ ...event, type: 'agent.rendered' }),
     ).toBeUndefined()
   })
 })

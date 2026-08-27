@@ -31,6 +31,9 @@ const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
 const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
+const ModelAccessCallback = lazy(
+  () => import('./managed-agents/ModelAccessCallback'),
+)
 
 export default function App() {
   return (
@@ -64,6 +67,10 @@ export default function App() {
             <Route
               path="managed-agents/channels"
               element={<ManagedAgentChannels />}
+            />
+            <Route
+              path="model-access/callback"
+              element={<ModelAccessCallback />}
             />
             <Route
               path="managed-agents/connections"

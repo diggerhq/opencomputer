@@ -336,6 +336,7 @@ async function mintSandboxToken(
 interface Caller {
   orgID: string;
   userID: string | null;
+  role?: string;
   // Set only for act-as-org provisioning tokens (sessions-api). Least-privilege:
   // the dispatch gates these to sandbox + secret-store routes (provisionScopeGate).
   scope?: "sandbox-provision";
@@ -513,7 +514,22 @@ function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): 
     .catch(() => {});
 }
 
-const AUTH_KEY_SQL = "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1";
+const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at,
+          CASE WHEN m.role IN ('owner', 'admin') THEN 'admin' ELSE m.role END AS role
+     FROM api_keys k
+     LEFT JOIN org_memberships m
+       ON m.org_id = k.org_id AND m.user_id = k.created_by
+    WHERE k.key_hash = ?1`;
+
+// One row shape for both readers. refreshAuth repopulates the same cache tiers
+// the hot path reads, so a role column present in one and absent in the other
+// would drop an admin to member on the first background refresh.
+type AuthRow = {
+  org_id: string;
+  created_by: string | null;
+  expires_at: number | null;
+  role: string | null;
+};
 
 // In-flight auth refreshes, keyed by hash — same single-flight shape as
 // createContextInflight and for the same reason: a burst that all lands stale
@@ -533,14 +549,18 @@ function refreshAuth(env: Env, hash: string): Promise<void> {
     try {
       const row = await env.OPENCOMPUTER_DB.prepare(AUTH_KEY_SQL)
         .bind(hash)
-        .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
+        .first<AuthRow>();
       if (!row) {
         authCache.delete(hash);
         await coloDelete("auth", hash);
         return;
       }
       const at = Date.now();
-      const caller: Caller = { orgID: row.org_id, userID: row.created_by };
+      const caller: Caller = {
+        orgID: row.org_id,
+        userID: row.created_by,
+        ...(row.role ? { role: row.role } : {}),
+      };
       if (authCache.size >= CACHE_MAX) authCache.clear();
       authCache.set(hash, {
         caller,
@@ -645,7 +665,7 @@ async function authenticate(req: Request, env: Env, ctx?: ExecutionContext, prob
   const tD1 = Date.now();
   const row = await env.OPENCOMPUTER_DB.prepare(AUTH_KEY_SQL)
     .bind(hash)
-    .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
+    .first<AuthRow>();
   if (probe) {
     probe.tier = 3;
     probe.d1Ms = Date.now() - tD1;
@@ -653,7 +673,11 @@ async function authenticate(req: Request, env: Env, ctx?: ExecutionContext, prob
   if (!row) return null; // never cache negatives — a freshly-created key must work at once
   if (row.expires_at && row.expires_at < nowSec) return null;
 
-  const caller: Caller = { orgID: row.org_id, userID: row.created_by };
+  const caller: Caller = {
+    orgID: row.org_id,
+    userID: row.created_by,
+    ...(row.role ? { role: row.role } : {}),
+  };
   if (authCache.size >= CACHE_MAX) authCache.clear();
   const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
   authCache.set(hash, entry);

@@ -59,6 +59,10 @@ export type {
   SandboxWebhook,
   SandboxWebhookDelivery,
   Credential,
+  ModelAccessConnection,
+  ModelAccessBinding,
+  ModelAccessConnectResponse,
+  EffectiveModelRoute,
   AgentSecurityNotification,
   AgentHook,
   AgentHookCreate,
@@ -348,7 +352,6 @@ export const updateOrg = (updates: OrgUpdate) =>
   )
 
 export type NavigationPreferenceUpdate = {
-  durableSessionsEnabled?: boolean
   infrastructureEnabled?: boolean
 }
 
@@ -993,6 +996,86 @@ export const rotateCredential = (id: string, key: string) =>
     `/v3/credentials/${id}`,
     { method: 'PATCH', body: JSON.stringify({ key }) },
     S.CredentialSchema,
+  )
+
+// ── Model access (work 011) — org-owned Claude/Codex subscription connections ──
+// The provider token is write-only; every response is normalized metadata only.
+// Secret-bearing provider callbacks terminate at the private credential boundary.
+export const getModelAccessConnections = () =>
+  apiFetch(
+    '/v3/model-access/connections',
+    {},
+    S.ModelAccessConnectionListSchema,
+  ).then((r) => r.data)
+
+// Starts the personal Codex subscription OAuth flow. Returns a pending intent
+// with an authorize_url the dashboard redirects to. No token is accepted here;
+// the provider credential never crosses the browser.
+export const connectModelAccess = (body: {
+  provider: 'openai' | 'anthropic'
+  token?: string
+  label?: string
+}) =>
+  apiFetch(
+    '/v3/model-access/connections',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.ModelAccessConnectResponseSchema,
+  )
+
+// Completes the OAuth callback (exchanged server-side at the private credential
+// boundary), returning the connected connection. The authorization code is a
+// one-time exchange value, not a stored credential.
+export const completeModelAccess = (id: string, code: string, state: string) =>
+  apiFetch(
+    `/v3/model-access/connections/${encodeURIComponent(id)}/complete`,
+    { method: 'POST', body: JSON.stringify({ code, state }) },
+    S.ModelAccessConnectionSchema,
+  )
+
+// Re-validate the held credential against the provider (refresh entitlement /
+// account hint / status). Never returns the token.
+export const validateModelAccessConnection = (id: string) =>
+  apiFetch(
+    `/v3/model-access/connections/${encodeURIComponent(id)}/validate`,
+    { method: 'POST' },
+    S.ModelAccessConnectionSchema,
+  )
+
+// Disconnect revokes at the provider when supported, then deletes local secret
+// material even if remote revocation fails.
+export const disconnectModelAccess = (id: string) =>
+  apiFetch<void>(`/v3/model-access/connections/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+
+// Project-environment enablement of the single org connection for a provider.
+export const getModelAccessBindings = (projectId: string) =>
+  apiFetch(
+    `/v3/projects/${encodeURIComponent(projectId)}/model-access/bindings`,
+    {},
+    S.ModelAccessBindingListSchema,
+  ).then((r) => r.data)
+
+export const putModelAccessBinding = (
+  projectId: string,
+  provider: 'anthropic' | 'openai',
+  environment: 'development' | 'production',
+  enabled: boolean,
+) =>
+  apiFetch(
+    `/v3/projects/${encodeURIComponent(projectId)}/model-access/bindings/${provider}/${environment}`,
+    { method: 'PUT', body: JSON.stringify({ enabled }) },
+    S.ModelAccessBindingSchema,
+  )
+
+export const deleteModelAccessBinding = (
+  projectId: string,
+  provider: 'anthropic' | 'openai',
+  environment: 'development' | 'production',
+) =>
+  apiFetch<void>(
+    `/v3/projects/${encodeURIComponent(projectId)}/model-access/bindings/${provider}/${environment}`,
+    { method: 'DELETE' },
   )
 
 // Sessions — the durable runs.

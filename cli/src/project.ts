@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { Cron } from "croner";
+import { build as bundle } from "esbuild";
 import ts from "typescript";
 
 export interface AgentManifest {
@@ -1582,6 +1583,56 @@ function definedToolIds(source: string): string[] {
     .sort();
 }
 
+function staticModelSelections(
+  source: string,
+): Array<{ provider: string; model: string }> {
+  const file = ts.createSourceFile(
+    "agent.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const selections: Array<{ provider: string; model: string }> = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "useModel"
+    ) {
+      const value = node.arguments[0];
+      if (value && ts.isStringLiteralLike(value)) {
+        selections.push({ provider: "openrouter", model: value.text });
+      } else if (value && ts.isObjectLiteralExpression(value)) {
+        let provider: string | undefined;
+        let model: string | undefined;
+        for (const property of value.properties) {
+          if (!ts.isPropertyAssignment(property)) continue;
+          const name = ts.isIdentifier(property.name)
+            ? property.name.text
+            : ts.isStringLiteralLike(property.name)
+              ? property.name.text
+              : undefined;
+          if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
+          if (name === "provider") provider = property.initializer.text;
+          if (name === "model") model = property.initializer.text;
+        }
+        if (provider && model) selections.push({ provider, model });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return selections.filter(
+    (selection, index) =>
+      selections.findIndex(
+        (candidate) =>
+          candidate.provider === selection.provider &&
+          candidate.model === selection.model,
+      ) === index,
+  );
+}
+
 function agentApiRuntimeSource(): string {
   return `function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
@@ -1680,6 +1731,90 @@ export const useSessionData = (key) => hooks().useSessionData(key);
 `;
 }
 
+interface AgentSourceModule {
+  path: string;
+  source: string;
+}
+
+const AGENT_SOURCE_MODULE_PATTERN = /\.[cm]?[jt]sx?$/;
+
+async function bundleAgentSourceModules(
+  root: string,
+  runtime: string,
+  entries: string[],
+): Promise<{ modules: AgentSourceModule[]; entryPaths: Set<string> }> {
+  const entryPoints: Record<string, string> = {};
+  const entryPaths = new Set<string>();
+  for (const entry of entries) {
+    const path = relative(root, resolve(entry)).split("\\").join("/");
+    const outputPath = compiledModulePath(path);
+    const outputName = outputPath.replace(/\.js$/, "");
+    if (entryPoints[outputName]) {
+      throw new Error(`Agent source modules emit the same path: ${outputPath}`);
+    }
+    entryPoints[outputName] = resolve(entry);
+    entryPaths.add(path);
+  }
+  const result = await bundle({
+    absWorkingDir: root,
+    bundle: true,
+    entryPoints,
+    format: "esm",
+    logLevel: "silent",
+    metafile: true,
+    outdir: runtime,
+    platform: "node",
+    target: "node22",
+    write: false,
+    plugins: [
+      {
+        name: "opencomputer-agent-runtime",
+        setup(build) {
+          build.onResolve(
+            { filter: /^@opencomputer\/agent$/ },
+            () => ({ path: "api", namespace: "opencomputer-agent-runtime" }),
+          );
+          build.onLoad(
+            { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
+            () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
+          );
+        },
+      },
+    ],
+  });
+
+  const modules: AgentSourceModule[] = [];
+  for (const input of Object.keys(result.metafile.inputs)) {
+    if (input === "opencomputer-agent-runtime:api") continue;
+    const absolute = resolve(root, input);
+    const path = relative(root, absolute).split("\\").join("/");
+    if (!path || path === ".." || path.startsWith("../")) {
+      throw new Error(
+        "Agent source modules must stay inside the agent directory",
+      );
+    }
+    if (AGENT_SOURCE_MODULE_PATTERN.test(path)) {
+      modules.push({ path, source: await readFile(absolute, "utf8") });
+    }
+  }
+  for (const output of result.outputFiles) {
+    const path = relative(runtime, output.path).split("\\").join("/");
+    if (!path || path === ".." || path.startsWith("../")) {
+      throw new Error("Agent compiler emitted a file outside the runtime");
+    }
+    await mkdir(dirname(output.path), { recursive: true });
+    await writeFile(output.path, output.contents);
+  }
+  return {
+    modules: modules.sort((left, right) => left.path.localeCompare(right.path)),
+    entryPaths,
+  };
+}
+
+function compiledModulePath(path: string): string {
+  return path === "agent.ts" ? "agent.js" : path.replace(/\.[^.]+$/, ".js");
+}
+
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = resolve(root, ".opencomputer", "runtime");
   await rm(runtime, { recursive: true, force: true });
@@ -1708,13 +1843,21 @@ the product or support surface presented to users.
 
 `,
   );
+  const declaredModels = staticModelSelections(agentSource);
   const openCodeConfig = resolve(root, "opencode.json");
-  if (await exists(openCodeConfig)) {
-    const parsed: unknown = JSON.parse(await readFile(openCodeConfig, "utf8"));
+  const hasOpenCodeConfig = await exists(openCodeConfig);
+  if (hasOpenCodeConfig || declaredModels.length === 1) {
+    const parsed: unknown = hasOpenCodeConfig
+      ? JSON.parse(await readFile(openCodeConfig, "utf8"))
+      : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("opencode.json must contain a JSON object");
     }
     const config = parsed as Record<string, unknown>;
+    const inferredModel =
+      declaredModels.length === 1
+        ? `${declaredModels[0]!.provider}/${declaredModels[0]!.model}`
+        : undefined;
     const configuredTools =
       config.tools &&
       typeof config.tools === "object" &&
@@ -1735,6 +1878,9 @@ the product or support surface presented to users.
       `${JSON.stringify(
         {
           ...config,
+          ...(config.model === undefined && inferredModel
+            ? { model: inferredModel }
+            : {}),
           tools: { ...configuredTools, question: !questionDenied },
           permission: {
             ...configuredPermission,
@@ -1764,55 +1910,28 @@ the product or support surface presented to users.
     resolve(runtime, "package.json"),
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
   );
-  const transpile = (source: string, filename: string) =>
-    ts.transpileModule(source, {
-      fileName: filename,
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
-      },
-      reportDiagnostics: true,
-    });
-  const compiledAgent = transpile(agentSource, "agent.ts");
-  const diagnostics = compiledAgent.diagnostics ?? [];
-  if (
-    diagnostics.some(
-      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-    )
-  ) {
-    throw new Error(
-      `agent.ts could not be compiled: ${diagnostics
-        .map((diagnostic) =>
-          ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-        )
-        .join("; ")}`,
-    );
-  }
-  const compiledSource = compiledAgent.outputText.replace(
-    /(["'])@opencomputer\/agent\1/g,
-    '"./opencomputer-agent.js"',
-  );
-  await writeFile(resolve(runtime, "agent.js"), compiledSource);
   await writeFile(
     resolve(runtime, "opencomputer-agent.js"),
     agentApiRuntimeSource(),
   );
-  const toolSources: Array<{ filename: string; source: string }> = [];
+  const sourceEntries = [resolve(root, "agent.ts")];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
     const entries = await readdir(sourceTools, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !/\.[cm]?[jt]s$/.test(entry.name)) continue;
-      toolSources.push({
-        filename: entry.name,
-        source: await readFile(resolve(sourceTools, entry.name), "utf8"),
-      });
+      sourceEntries.push(resolve(sourceTools, entry.name));
     }
   }
+  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries);
+  const sourceModules = bundled.modules;
+  const toolSources = sourceModules.filter(
+    (candidate) =>
+      bundled.entryPaths.has(candidate.path) &&
+      candidate.path.startsWith("tools/"),
+  );
   const reactiveTools: string[] = [];
   const toolModules: string[] = [];
-  await mkdir(resolve(runtime, "tools"), { recursive: true });
   for (const candidate of toolSources) {
     const ids = definedToolIds(candidate.source);
     const calls = [
@@ -1820,33 +1939,12 @@ the product or support surface presented to users.
     ].length;
     if (ids.length !== calls) {
       throw new Error(
-        `${candidate.filename} must give every defineTool() a literal string name`,
+        `${candidate.path} must give every defineTool() a literal string name`,
       );
     }
-    const compiledTool = transpile(candidate.source, candidate.filename);
-    const toolDiagnostics = compiledTool.diagnostics ?? [];
-    if (
-      toolDiagnostics.some(
-        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-      )
-    ) {
-      throw new Error(
-        `${candidate.filename} could not be compiled: ${toolDiagnostics
-          .map((diagnostic) =>
-            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-          )
-          .join("; ")}`,
-      );
-    }
-    const outputName = candidate.filename.replace(/\.[^.]+$/, ".js");
-    const output = compiledTool.outputText.replace(
-      /(["'])@opencomputer\/agent\1/g,
-      '"../opencomputer-agent.js"',
-    );
-    await writeFile(resolve(runtime, "tools", outputName), output);
     if (ids.length > 0) {
       reactiveTools.push(...ids);
-      toolModules.push(`../tools/${outputName}`);
+      toolModules.push(`../${compiledModulePath(candidate.path)}`);
     }
   }
   const duplicateTool = reactiveTools.find(
@@ -1857,14 +1955,8 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
-  const httpConnections = [
-    agentSource,
-    ...toolSources.map((item) => item.source),
-  ].flatMap((source, index) =>
-    definedHttpConnections(
-      source,
-      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename,
-    ),
+  const httpConnections = sourceModules.flatMap((module) =>
+    definedHttpConnections(module.source, module.path),
   );
   const duplicateConnection = httpConnections.find(
     (connection, index) =>
@@ -1878,12 +1970,7 @@ the product or support surface presented to users.
     );
   }
   const connectionBindings = new Map<string, HttpConnectionManifest>();
-  for (const [index, source] of [
-    agentSource,
-    ...toolSources.map((item) => item.source),
-  ].entries()) {
-    const filename =
-      index === 0 ? "agent.ts" : toolSources[index - 1]!.filename;
+  for (const { path: filename, source } of sourceModules) {
     for (const [name, definition] of definedConnectionBindings(
       source,
       filename,
@@ -1897,10 +1984,8 @@ the product or support surface presented to users.
       connectionBindings.set(name, definition);
     }
   }
-  const mcpServerDefinitions = definedMcpServers(
-    agentSource,
-    "agent.ts",
-    connectionBindings,
+  const mcpServerDefinitions = sourceModules.flatMap((module) =>
+    definedMcpServers(module.source, module.path, connectionBindings),
   );
   const duplicateMcpServer = mcpServerDefinitions.find(
     (server, index) =>
@@ -1937,6 +2022,7 @@ the product or support surface presented to users.
           ]),
         ].sort(),
         mcpServerDefinitions,
+        models: declaredModels,
       },
       null,
       2,

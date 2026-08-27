@@ -3,9 +3,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
+  hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
 } from "./managed_agents";
+
+function legacyPlanEnv(plan: string) {
+  return {
+    OPENCOMPUTER_DB: {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => ({ plan, billing_provider: "legacy" }),
+        }),
+      }),
+    } as unknown as D1Database,
+  };
+}
 
 function decodePayload(token: string): Record<string, unknown> {
   const payload = token.split(".")[1];
@@ -23,6 +36,7 @@ describe("managed agents proxy", () => {
     const token = await mintManagedAgentsAssertion("test-secret", {
       orgID: "org_test",
       userID: "user_test",
+      role: "admin",
     });
     const payload = decodePayload(token);
 
@@ -32,8 +46,227 @@ describe("managed agents proxy", () => {
       sub: "org_test",
       org_id: "org_test",
       user_id: "user_test",
+      role: "admin",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("allows BYOK for Pro and Max but not the base plan", async () => {
+    await expect(
+      hasBYOKPlanAccess(legacyPlanEnv("base"), "org_test"),
+    ).resolves.toBe(false);
+    await expect(
+      hasBYOKPlanAccess(legacyPlanEnv("pro"), "org_test"),
+    ).resolves.toBe(true);
+    await expect(
+      hasBYOKPlanAccess(legacyPlanEnv("max"), "org_test"),
+    ).resolves.toBe(true);
+  });
+
+  it("reads BYOK eligibility from an active Autumn subscription", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "org_test",
+          subscriptions: [
+            { plan_id: "base", add_on: false, status: "active" },
+            { plan_id: "pro", add_on: false, status: "active" },
+          ],
+        }),
+      ),
+    );
+    const autumnDB = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => ({
+            plan: "free",
+            billing_provider: "autumn",
+          }),
+        }),
+      }),
+    } as unknown as D1Database;
+
+    await expect(
+      hasBYOKPlanAccess(
+        {
+          OPENCOMPUTER_DB: autumnDB,
+          AUTUMN_SECRET_KEY: "autumn-test",
+          AUTUMN_BASE_URL: "https://autumn.test/v1",
+        },
+        "org_test",
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("returns the public model-access OAuth receipt without custody fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          connection: {
+            id: "mac_test",
+            organizationId: "org_test",
+            connectedByUserId: "user_test",
+            provider: "openai",
+            kind: "codex_subscription",
+            label: "Codex subscription",
+            status: "connecting",
+            credentialCiphertext: "must-not-leak",
+            oauthCodeVerifier: "must-not-leak",
+          },
+          status: "pending",
+          authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+          expires_at: "2026-08-24T00:15:00.000Z",
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ provider: "openai" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      status: "pending",
+      authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+      connection: {
+        id: "mac_test",
+        organizationId: "org_test",
+        connectedByUserId: "user_test",
+        provider: "openai",
+        status: "connecting",
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(
+      /credentialCiphertext|oauthCodeVerifier|must-not-leak/,
+    );
+  });
+
+  it("rejects unsupported Claude account connection", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider: "anthropic",
+            token: "must-not-be-returned",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      error: {
+        code: "unsupported_provider",
+        message: "Codex is the only supported BYOK account provider.",
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects BYOK connection and enablement on the base plan", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      ...legacyPlanEnv("base"),
+    };
+
+    const connect = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ provider: "openai" }),
+        },
+      ),
+      env,
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(connect.status).toBe(403);
+    await expect(connect.json()).resolves.toMatchObject({
+      error: { code: "model_access_plan_required" },
+    });
+
+    const enable = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-access/bindings/openai/development",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled: true }),
+        },
+      ),
+      env,
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(enable.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows a downgraded organization to disable BYOK", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        organizationId: "org_test",
+        projectId: "prj_test",
+        provider: "openai",
+        environment: "development",
+        enabled: false,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-access/bindings/openai/development",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("base"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   it("forwards webhook text and payload without requiring a user API key", async () => {

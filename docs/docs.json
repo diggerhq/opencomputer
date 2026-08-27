@@ -46,6 +46,7 @@
               "agents/channels",
               "agents/outboxes",
               "agents/secrets",
+              "agents/byok",
               "agents/deployments"
             ]
           },
@@ -70,7 +71,10 @@
             "group": "Examples",
             "pages": [
               "agents/examples/gtm-engineer",
-              "agents/examples/feature-flag-hygiene"
+              "agents/examples/feature-flag-hygiene",
+              "agents/examples/github-actions-triage",
+              "agents/examples/pr-review",
+              "agents/examples/test-coverage"
             ]
           }
         ]

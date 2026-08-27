@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bot, Clock3, Loader2, TerminalSquare } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
@@ -19,6 +19,7 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
+import { turnAssistantText } from './session-history'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -26,6 +27,7 @@ function formatDate(value: string) {
 
 export default function ManagedSessionDetail() {
   const { projectId = '', sessionId = '' } = useParams()
+  const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState<'conversation' | 'events'>(
     'conversation',
@@ -43,9 +45,20 @@ export default function ManagedSessionDetail() {
   })
   const events = useQuery({
     queryKey: ['managed-agent-session-events', sessionId],
-    queryFn: () => getManagedAgentSessionEvents(sessionId),
+    queryFn: async () => {
+      const queryKey = ['managed-agent-session-events', sessionId]
+      const existing =
+        queryClient.getQueryData<
+          Awaited<ReturnType<typeof getManagedAgentSessionEvents>>
+        >(queryKey) ?? []
+      const next = await getManagedAgentSessionEvents(
+        sessionId,
+        existing[existing.length - 1]?.seq ?? 0,
+      )
+      return [...existing, ...next]
+    },
     enabled: Boolean(sessionId),
-    refetchInterval: 2_000,
+    refetchInterval: 1_000,
   })
 
   if (project.isLoading || session.isLoading) {
@@ -78,9 +91,6 @@ export default function ManagedSessionDetail() {
     )
   }
 
-  const replies = (events.data ?? []).filter(
-    (event) => event.type === 'message.completed',
-  )
   const sessionPath = `/projects/${encodeURIComponent(projectId)}/sessions`
 
   return (
@@ -167,9 +177,11 @@ export default function ManagedSessionDetail() {
               <p className="text-muted-foreground text-sm">No turns yet.</p>
             ) : (
               session.data.turns.map((turn) => {
-                const response = replies.find(
-                  (event) => event.turnId === turn.id,
+                const responseText = turnAssistantText(
+                  events.data ?? [],
+                  turn.id,
                 )
+                const running = !['completed', 'failed'].includes(turn.status)
                 return (
                   <div key={turn.id} className="space-y-6">
                     <div>
@@ -184,8 +196,19 @@ export default function ManagedSessionDetail() {
                       <p className="text-muted-foreground mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold tracking-wider uppercase">
                         <Bot className="size-3" /> Agent
                       </p>
-                      {response && typeof response.data.text === 'string' ? (
-                        <AgentMarkdown>{response.data.text}</AgentMarkdown>
+                      {responseText ? (
+                        <div aria-live={running ? 'polite' : undefined}>
+                          <AgentMarkdown>{responseText}</AgentMarkdown>
+                          {running ? (
+                            <p className="text-muted-foreground mt-3 flex items-center gap-1.5 text-xs">
+                              <Loader2
+                                className="size-3 animate-spin"
+                                aria-hidden
+                              />
+                              Streaming response…
+                            </p>
+                          ) : null}
+                        </div>
                       ) : (
                         <p className="text-muted-foreground text-sm">
                           {turn.status === 'completed'

@@ -21,6 +21,8 @@ describe that call; they do not perform I/O or run the durable agent loop.
   human-in-the-loop prompt; interactive clarification remains a tool action.
 - `useModel()` chooses a model. A string uses OpenRouter and retains its normal
   `provider/model` spelling.
+- To select an OpenAI-native model that can use a project Codex subscription,
+  use an explicit provider: `useModel({ provider: "openai", model: "gpt-5" })`.
 - `useTool()` and `useSubagent()` select declared capabilities.
 - `useSessionData()` reads the current durable session-data snapshot.
 - `useMcpServer()` conditionally selects a declared MCP server.
