@@ -15,6 +15,7 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedConfig } from "./config.js";
+import { startLocalActionRuntime } from "./local-actions.js";
 import { provisionLocalRepositories } from "./local-mirror.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
 import { formatSessionEvent, runSessionPrompt } from "./session-prompt.js";
@@ -438,6 +439,11 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   const directory = await prepareAgent(root);
   const repositories = await provisionLocalRepositories(root, directory);
   const manifest = await readManifest(root);
+  const actions = await startLocalActionRuntime({
+    agentRoot: root,
+    runtime: directory,
+    agentId: manifest.id,
+  });
   const gateway = await startGateway(config);
   addBundledRuntimeToPath();
   const abortController = new AbortController();
@@ -462,8 +468,14 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
         },
         autoupdate: false,
         share: "disabled",
+        ...(actions
+          ? { mcp: { opencomputer_actions: actions.mcp } }
+          : {}),
       },
     });
+  } catch (error) {
+    await actions?.close();
+    throw error;
   } finally {
     if (previousConnectionsURL === undefined) {
       delete process.env.OPENCOMPUTER_CONNECTIONS_URL;
@@ -674,6 +686,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
             .map((repository) => `${repository.id} → ${repository.checkout}`)
             .join(", ")}\n`
         : "") +
+      (actions ? `Action ledger: ${actions.ledger}\n` : "") +
       `Local API: ${state.url}\n` +
       `React app: npm run dev:web (in another terminal)\n` +
       `Session: opencomputer session\n`,
@@ -688,6 +701,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   await new Promise<void>((done) => server.close(() => done()));
   abortController.abort();
   instance.server.close();
+  await actions?.close();
   await gateway.close();
 }
 
