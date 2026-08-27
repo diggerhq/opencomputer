@@ -41,8 +41,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/opensandbox/opensandbox/proto/agent"
-
-	"github.com/opensandbox/opensandbox/internal/vouchercache"
 )
 
 const (
@@ -78,9 +76,6 @@ const (
 	// runCmdPath executes one command and returns its result as ordinary JSON.
 	// Must match internal/awsvmlite.
 	runCmdPath = "/osb/run"
-	// cachePath is the prefix the voucher cache mounts under. Trailing slash:
-	// its routes are cachePath+"pop", +"fill", +"release", +"stats".
-	cachePath = "/osb/cache/"
 )
 
 // runCmdRequest / runCmdResponse are the whole protocol of the direct exec path.
@@ -160,11 +155,6 @@ type server struct {
 // launched box is expected and is itself a useful signal that we are looking at
 // a restored snapshot rather than a fresh boot.
 var startedAt = time.Now()
-
-// vcache is the in-region voucher cache this box serves, when it is being used
-// as a cache instance. Every box carries the code; only the ones the control
-// plane fills ever hold stock.
-var vcache *vouchercache.Server
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -275,16 +265,6 @@ func main() {
 	mux.HandleFunc(runCmdPath, s.handleRunCmd)
 	// Edge claim. See claim.go: the box is the only authority on who owns it,
 	// so these are the endpoints that actually decide it.
-	// In-region voucher cache (internal/vouchercache). Mounted on the agent's
-	// own listener because the AWS proxy forwards only to the port declared in
-	// the image hook config — a standalone service on a second port answers
-	// "403 Access to port denied", which is how this ended up here.
-	//
-	// Unauthenticated for the same reason /osb/run and /osb/claim are: reaching
-	// this box at all requires the per-box proxy JWE, which only the control
-	// plane and the edge hold. OSB_CACHE_SECRET adds a second factor when set.
-	vcache = vouchercache.New(os.Getenv("OSB_CACHE_SECRET"))
-	vcache.Mount(mux, cachePath)
 	mux.HandleFunc(claimPath, s.handleClaim)
 	mux.HandleFunc(claimAndRunPath, s.handleClaimAndRun)
 

@@ -25,26 +25,12 @@ export { CreditAccount } from "../../shared/credit_account";
 import { H2Grpc, openTunnel, encodeExecRequest, decodeExecResponse } from "../../shared/h2grpc";
 export { PoolStock } from "./pool_stock";
 import { mintPoolCapToken } from "./pool_stock";
-import {
-  takeVoucher,
-  resolveBinding,
-  drawReplacement,
-  evictVoucher,
-  bindVoucher,
-  purgeBooks,
-  peekVoucher,
-  lastResolveTier,
-} from "./voucher_book";
-import type { Draw } from "./voucher_book";
-import { popVoucher } from "./voucher_cache";
 // VmSession (VM-DO exec data plane) lives in its own worker
 // (cloudflare-workers/vm-do) and is bound cross-script via VM_SESSIONS —
 // deliberately NOT exported here, so the edge's deploy cadence (every merge
 // touching web/ or edge code) can't reset the DOs and sever the host-dialed
 // VM WebSockets.
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
-import { createViaCell } from "./create_batch";
-import type { CreateCallResult } from "./create_batch_types";
 import {
   ACTIVE_CELLS_SQL,
   CELL_STALE_MAX_MS,
@@ -165,14 +151,6 @@ export interface Env extends DashboardEnv {
   // keeps its warm set in process, where the stock DO can never be filled — see
   // createSandbox. Unset means edge-claim, which is prod.
   MICROVM_EDGE_CLAIM?: string;
-  // Zero-subrequest edge claim (voucher_book.ts). Default OFF; PoolStock stays
-  // the path for everything else until this is proven under burst.
-  LITE_VOUCHER_CLAIM?: string;
-  // CREATE_BATCH=1 coalesces concurrent creates on the CP-fallback path into one
-  // request per isolate. Off by default: measured on dev with a settled pool it
-  // batched 26-at-a-time and saved nothing, because the edge->cell hop is round
-  // trip, not connection setup (CP handler is ~40us for a 132ms hop).
-  CREATE_BATCH?: string;
   // "0" makes a voucher create hold ZERO connections: no binding write, no
   // finalize send. Diagnostic only — it leaves the sandbox with no row and no
   // resolvable box, so exec 404s and the box leaks. It exists to test whether
@@ -181,9 +159,6 @@ export interface Env extends DashboardEnv {
   // waitUntil takes one, so the cost of holding them lands on the NEXT request
   // to that isolate — i.e. inside the residual, invisible to `hdl`.
   CREATE_WAITUNTIL?: string;
-  // Shared token for the in-region voucher cache. Absent = tier 0 disabled and
-  // creates draw from the colo book exactly as before.
-  VOUCHER_CACHE_SECRET?: string;
   // VM-DO exec data plane (vm_do_datapane_validation). One DO per sandbox holds a
   // persistent host-dialed WebSocket to the QEMU worker; exec routes edge→DO→VM
   // instead of tunnel→CP→worker, with automatic tunnel fallback when unconnected.
@@ -216,7 +191,6 @@ export interface FinalizeMsg {
   sandboxID: string;
   workerID: string;
   /** Voucher creates only: the box to redeem against. Absent on every other path. */
-  microvmID?: string;
   bodyText: string;
 }
 
@@ -1894,7 +1868,6 @@ async function finalizeEdgeClaim(
   sandboxID: string,
   workerID: string,
   bodyText: string,
-  microvmID?: string,
 ): Promise<void> {
   // Index insert is DEFERRED below the finalize call + a short delay: D1 has a
   // single writer, and a create burst otherwise queues ~100 inserts exactly
@@ -1913,11 +1886,6 @@ async function finalizeEdgeClaim(
       /* eligibility already vetted the body; belt-and-braces */
     }
     body.sandboxID = sandboxID;
-    // Voucher creates carry the box, because the cell has nothing else to
-    // redeem against: the sandbox id was minted at the edge and the cell has
-    // never seen it. Omitted on every other path, where the cell finds its own
-    // reservation by sandbox id.
-    if (microvmID) body.microvmID = microvmID;
     // Bill/grow at the default create shape the box was manufactured as.
     if (!body.memoryMB) body.memoryMB = 4096;
     if (!body.cpuCount) body.cpuCount = 1;
@@ -1928,14 +1896,6 @@ async function finalizeEdgeClaim(
     });
     if (!r.ok) {
       const detail = await r.text();
-      // The cell disowned the box this create drew, which for a voucher means
-      // the book it came from belongs to a cell generation that no longer
-      // exists. Abandon it so the next create refills instead of drawing more
-      // vouchers for dead boxes.
-      if (r.status === 409 && detail.includes("voucher lost")) {
-        console.error(`voucher: cell disowned ${sandboxID} (box ${microvmID}) — purging the book`);
-        await purgeBooks();
-      }
       throw new Error(`${r.status} ${detail}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -2115,153 +2075,6 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // Scoped to the runtime rather than reusing EDGE_CLAIM=0, which is global. A
   // cell can serve both runtimes, and switching one cell's MicroVM data plane
   // must not turn off edge-claim for the QEMU orgs sharing it.
-  // ZERO-SUBREQUEST CLAIM. Answer out of the colo's voucher book — no Durable
-  // Object, no origin call, no route write. See voucher_book.ts for why that is
-  // the whole game: at burst-100 the edge→CP call cost 310ms while the CP's own
-  // handler took 75us, so the time was scheduling, not work, and the only way to
-  // stop paying it is to not make the call.
-  //
-  // Ownership is NOT established here. The voucher is a hint; the box settles it
-  // with a compare-and-swap fused onto the first exec. A miss falls through to
-  // everything below, which is exactly what runs today.
-  if (
-    env.LITE_VOUCHER_CLAIM === "1" &&
-    org.runtime === RUNTIME_MICROVM &&
-    edgeClaimEligible(bodyText, parsedBody)
-  ) {
-    try {
-      const colo = req.headers.get("cf-ray")?.split("-")[1] ?? "unknown";
-      const mintCap = () => mintPoolCapToken(env.SESSION_JWT_SECRET, cell.cell_id);
-
-      // Tier 0: the in-region voucher cache (voucher_cache.ts). A pop is
-      // atomic by construction — one process, one mutex — so unlike the colo
-      // book it cannot hand the same box to two concurrent creates, and it has
-      // no cold state to rebuild. Null here is ordinary and falls through to
-      // the book below, which still works exactly as it did.
-      let draw: Draw | null = null;
-      if (env.VOUCHER_CACHE_SECRET) {
-        const pop = await popVoucher(cell.base_url, env.VOUCHER_CACHE_SECRET, mintCap, (p) =>
-          ctx.waitUntil(p),
-        );
-        if (pop) {
-          phases.push(`vpop;dur=${pop.ms}`, `vptry;dur=${pop.tries}`, `vdisc;dur=${pop.discMs}`);
-          draw = {
-            voucher: pop.voucher,
-            readMs: pop.ms,
-            casMs: 0,
-            // Not a book draw: there is no memo, no free-list probe, and the
-            // instance's remaining depth is its business, not ours.
-            memoHit: 0,
-            remaining: -1,
-            probes: 0,
-          };
-        }
-      }
-      if (!draw) {
-        draw = await takeVoucher(
-          cell.base_url,
-          colo,
-          mintCap,
-          (p) => ctx.waitUntil(p),
-        );
-      }
-      mark("vdraw");
-      if (draw) {
-        phases.push(
-          `vstock;dur=${draw.remaining}`,
-          `vclaim;dur=${draw.probes}`,
-          `vread;dur=${draw.readMs}`,
-          `vcas;dur=${draw.casMs}`,
-          `vmemo;dur=${draw.memoHit}`,
-        );
-        // The sandbox ID is minted HERE, per create, and never read out of the
-        // voucher.
-        //
-        // That is what makes a duplicate draw survivable. The book is finite and
-        // a burst can exceed it, so by pigeonhole two creates WILL sometimes
-        // draw the same box; with the ID minted here they arrive at that box as
-        // two different sandboxes, the guest CAS picks one, and the loser
-        // retries against the next voucher. When the ID came from the voucher
-        // instead, the CAS saw one sandbox claiming its box twice, reported an
-        // idempotent replay, and both customers walked away holding the same
-        // sandbox.
-        const sandboxID = "sb-" + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
-        // The box's proxy token is deliberately NOT returned. It is a secret
-        // that reaches the AWS proxy directly, and the customer never needs it:
-        // the SDK falls back to X-API-Key when the sandbox token is empty
-        // (sdks/typescript/src/exec.ts), which the edge already authenticates.
-        const resp: Record<string, unknown> = {
-          sandboxID,
-          token: "",
-          status: "running",
-          region: cell.region ?? "",
-          workerID: "vmhost-lite:" + draw.voucher.microvmID,
-        };
-        // Seed the route. This is NOT optional bookkeeping — it is what makes
-        // the sandbox reachable at all.
-        //
-        // Dropping it was a real mistake, and an expensive one: a voucher create
-        // writes no D1 row (finalize rides a queue), so with no route entry the
-        // edge cannot resolve the sandbox to a cell and answers the customer's
-        // first exec with 404 "sandbox not found" — before the request ever
-        // reaches the control plane that could have fixed it. Measured at
-        // burst-100 as 98/100 execs failing while every create succeeded.
-        //
-        // Worth its connection: create is ~215ms with two waitUntils against a
-        // six-connection budget, and the alternative is a create that returns a
-        // sandbox nobody can use.
-        if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
-        sandboxRouteCache.set(sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
-        ctx.waitUntil(
-          coloPut("route", sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, MVM_REACH_TTL_SEC),
-        );
-        // Record which box this sandbox got. Only this invocation knows the
-        // pairing now that the id is minted here, so nothing else can write it.
-        // Bound below, once the finalize it may later need to correct exists.
-        // The finalize send. Each waitUntil holds an open connection and an
-        // invocation may hold six; this path spends two so a burst of creates
-        // does not queue behind its own bookkeeping.
-        const holdConnections = env.CREATE_WAITUNTIL !== "0";
-        phases.push(`wu;dur=${holdConnections ? 2 : 0}`);
-        if (env.FINALIZE_QUEUE && holdConnections) {
-          const msg: FinalizeMsg = {
-            orgID: caller.orgID,
-            userID: caller.userID ?? null,
-            cellID: cell.cell_id,
-            baseURL: cell.base_url,
-            plan,
-            billingProvider: org.billing_provider,
-            runtime: org.runtime ?? "",
-            sandboxID,
-            workerID: "vmhost-lite:" + draw.voucher.microvmID,
-            // The cell redeems the voucher BY BOX, because the box is the only
-            // identity a voucher has. Without this the finalize has nothing to
-            // redeem: measured as 473 consecutive "EDGE CLAIM FINALIZE LOST"
-            // and zero successes, i.e. every voucher create returned a sandbox
-            // that was never written to the database and could never be exec'd.
-            microvmID: draw.voucher.microvmID,
-            bodyText,
-          };
-          bindVoucher(sandboxID, draw.voucher, (p) => ctx.waitUntil(p), msg);
-          ctx.waitUntil(env.FINALIZE_QUEUE.send(msg).catch(() => {}));
-        } else {
-          bindVoucher(sandboxID, draw.voucher, (p) => ctx.waitUntil(p));
-        }
-        phases.push(
-          `hdl;dur=${Date.now() - tEntry}`,
-          `iso;dur=${tEntry - ISO_BORN}`,
-          `isn;dur=${ISO_SEQ}`,
-          `isot;dur=${tEntry % 10_000_000}`,
-        );
-        return new Response(JSON.stringify(resp), {
-          status: 201,
-          headers: { "content-type": "application/json", "server-timing": phases.join(", ") },
-        });
-      }
-    } catch (e) {
-      console.error("voucher-claim: falling through to the existing path:", e);
-    }
-  }
 
   const edgeClaimOn =
     env.EDGE_CLAIM !== "0" &&
@@ -2433,13 +2246,19 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
     }
   }
 
-  // Not a bare fetch: concurrent creates on this isolate coalesce into one
-  // request to the cell. A create with nothing else in flight still goes out
-  // immediately and alone, so sequential latency is unchanged — see
-  // create_batch.ts for why the gate is concurrency rather than a fixed window.
-  let cpCall: CreateCallResult;
+  // One request per create, always. Coalescing concurrent creates into a
+  // shared request was tried and falsified: batching 26 creates left the
+  // edge→cell hop unchanged (132ms vs 126ms solo), so that hop is round-trip
+  // bound rather than connection bound, and making one Worker request depend
+  // on another's I/O cost 18% of a burst to CF error 1101.
+  let cpCall: { status: number; text: string };
   try {
-    cpCall = await createViaCell(cell.base_url, capToken, bodyText, env.CREATE_BATCH === "1");
+    const r = await fetch(`${cell.base_url}/internal/sandboxes/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${capToken}` },
+      body: bodyText,
+    });
+    cpCall = { status: r.status, text: await r.text() };
   } catch (e) {
     return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
   }
@@ -2454,7 +2273,6 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // it waited to be dispatched. Without these a batched burst and an unbatched
   // one are indistinguishable in the timing header, and `cell` alone cannot say
   // whether a slow create was queued or just slow.
-  phases.push(`cellbatch;dur=${cpCall.batchSize}`, `cellwait;dur=${cpCall.waitMs}`);
   mark("cellbody");
   if (cpCall.status >= 200 && cpCall.status < 300) {
     let parsed: SandboxCreateResult = {};
@@ -2655,153 +2473,7 @@ const descSafe = (s: string): string => s.replace(/[^\w.:/-]+/g, "_").slice(0, 8
 // wedged colo walk the whole book on a customer's request.
 const VOUCHER_EXEC_ATTEMPTS = 6;
 
-async function tryVoucherExec(
-  req: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  sandboxID: string,
-  authMs: number,
-): Promise<Response | null> {
-  // Outer guard: returning null must ALWAYS be available as an answer.
-  //
-  // This path's whole safety argument is "a miss is never worse than today" —
-  // it falls through to the control-plane exec that has always worked. An
-  // exception escaping this function breaks that promise in the worst way: the
-  // customer gets a Cloudflare 1101 error page instead of their command output.
-  // Measured at burst-100 as 37/100 execs returning `500 <!DOCTYPE html>` while
-  // 100/100 creates succeeded.
-  try {
-    return await voucherExec(req, env, ctx, sandboxID, authMs);
-  } catch (e) {
-    console.log(`voucher-exec FELL THROUGH ${sandboxID} err=${String(e).slice(0, 200)}`);
-    return null;
-  }
-}
 
-async function voucherExec(
-  req: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  sandboxID: string,
-  authMs: number,
-): Promise<Response | null> {
-  const t0 = Date.now();
-  const bound = await resolveBinding(sandboxID);
-  let v = bound?.voucher ?? null;
-  if (!v) {
-    // Loud on purpose: a miss here sends the request to the tunnel, which for a
-    // voucher-created sandbox 404s (its D1 row rides the finalize queue). So a
-    // miss is not a graceful degradation, it is a failure, and it must be
-    // diagnosable without guessing from latency.
-    console.log(`voucher-resolve MISS ${sandboxID} tier=${lastResolveTier}`);
-    return null;
-  }
-  console.log(`voucher-resolve HIT ${sandboxID} tier=${lastResolveTier}`);
-
-  // Read from a CLONE. A Request body can be consumed exactly once, and every
-  // branch below can still decide to return null — at which point the caller
-  // hands this same Request to the normal exec path, which reads the body
-  // again. Consuming the original made that second read throw, and the throw
-  // surfaced to the customer as a Cloudflare 500 page.
-  //
-  // That is why the failure tracked the FALLBACK rate rather than the voucher
-  // logic: sequentially the ladder always won on its first try and nothing fell
-  // through (10/10), while at burst-100 the 409/502 branches fired and every
-  // request that took them died — 37/100, all with the identical error.
-  let body: Record<string, unknown>;
-  try {
-    body = (await req.clone().json()) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-
-  const marks: string[] = [`auth;dur=${authMs}`];
-  // Set once the ladder moves off the box the create handed out. A rebind is not
-  // just a retry: the control plane still has the FIRST box recorded against
-  // this sandbox, so it has to be corrected before anything acts on it.
-  let rebound = false;
-  for (let attempt = 0; attempt < VOUCHER_EXEC_ATTEMPTS && v; attempt++) {
-    try {
-      const r = await fetch(`https://${v.endpoint}/osb/claim-and-run`, {
-        method: "POST",
-        headers: {
-          "X-aws-proxy-auth": v.token,
-          "X-aws-proxy-port": String(v.port),
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ sandboxID, ...body }),
-      });
-      if (r.status !== 200) {
-        console.log(`voucher-exec BOXFAIL ${sandboxID} box=${v.microvmID} status=${r.status} body=${(await r.text()).slice(0, 160)}`);
-      }
-      if (r.status !== 200) {
-        // Two different failures, one response: someone else owns that box
-        // (409), or the box is gone — a 502 from the AWS proxy means terminated
-        // or unreachable. Neither is retryable against the SAME box, since a
-        // voucher names exactly one, so the ladder moves to another.
-        //
-        // A 409 is also a correctness signal and gets said out loud. Once the
-        // free list arbitrates draws it should be near-impossible: the create
-        // took this box by deleting its free-list entry, and Cache API delete
-        // has exactly one winner per colo.
-        if (r.status === 409) {
-          console.log(`voucher-exec CONFLICT ${sandboxID} box=${v.microvmID} — box owned by another sandbox`);
-        }
-        // A replacement is CLAIMED from the free list, so it is ours alone and
-        // will not lose the same race twice. Null means the colo's book is dry;
-        // fall back to the control plane rather than acquiring a cell handle
-        // here, which would cost the subrequest this path exists to avoid.
-        const next = await drawReplacement();
-        if (!next) {
-          // Nothing to move to. Drop the binding so no later exec retries this
-          // box; the cell settles who actually owns it (ReconcileVouchers).
-          ctx.waitUntil(evictVoucher(sandboxID));
-          break;
-        }
-        console.log(`voucher-exec REBIND ${sandboxID} ${v.microvmID} → ${next.microvmID} (${r.status})`);
-        v = next;
-        rebound = true;
-        continue;
-      }
-      const out = (await r.json()) as { run?: { stdout?: string; stderr?: string; exitCode?: number } };
-      const run = out.run ?? { stdout: "", stderr: "", exitCode: 0 };
-      if (rebound) {
-        // The sandbox lives on a different box than the create announced. Move
-        // the binding, and re-send the create's own finalize with the box that
-        // actually won — otherwise the control plane keeps pointing at the first
-        // box, and destroying this sandbox would terminate another customer's.
-        bindVoucher(sandboxID, v, (p) => ctx.waitUntil(p), bound?.fin);
-        const fin = bound?.fin as FinalizeMsg | undefined;
-        if (fin && env.FINALIZE_QUEUE) {
-          const corrected: FinalizeMsg = {
-            ...fin,
-            workerID: "vmhost-lite:" + v.microvmID,
-            microvmID: v.microvmID,
-          };
-          ctx.waitUntil(env.FINALIZE_QUEUE.send(corrected).catch(() => {}));
-        } else {
-          console.error(`voucher-exec REBIND ${sandboxID} has no finalize context — cell still names the old box`);
-        }
-      }
-      marks.push(`vexec;dur=${Date.now() - t0}`, `vtry;dur=${attempt + 1}`);
-      // The inline run-async shape the SDK short-circuits on, so exec.run()
-      // never enters its poll ladder.
-      return new Response(
-        JSON.stringify({ exitCode: run.exitCode ?? 0, stdout: run.stdout ?? "", stderr: run.stderr ?? "" }),
-        { status: 200, headers: { "content-type": "application/json", "server-timing": marks.join(", ") } },
-      );
-    } catch (e) {
-      console.log(`voucher-exec THROW ${sandboxID} box=${v.microvmID} err=${String(e).slice(0, 200)}`);
-      break;
-    }
-  }
-  // NOTE: nothing is handed back here, deliberately. A 409 means the BOX is
-  // owned by a different sandbox, so our voucher's box is live — returning it
-  // would re-pool a box a customer is using. The cell settles expired vouchers
-  // by asking each box who owns it (ReconcileVouchers); the edge is not in a
-  // position to assert anything about ownership, and must not pretend to be.
-  return null;
-}
 
 // tryVmDoExec routes POST /:id/exec/run-async through the sandbox's VmSession
 // Durable Object (the VM-DO exec data plane, vm_do_datapane_validation) instead
@@ -5140,80 +4812,7 @@ export default {
       return json({ ok: true, env: env.WORKER_ENV });
     }
 
-    // Dev-only: drop this colo's voucher book so the next create refills from
-    // the cell.
-    //
-    // Exists for measurement hygiene. A pool reset terminates every box the
-    // current book names, and nothing in the book records liveness — `usable`
-    // only checks expiry — so the next burst would claim corpses and spend its
-    // whole ladder discovering that. Until now the only way to force a fresh
-    // book was to bump BOOK_GEN and redeploy, which also discards every warm
-    // isolate, making "fresh book" and "warm isolates" mutually exclusive and
-    // quietly turning every measured burst into a first-traffic-after-deploy
-    // run. That is the confound this route removes.
-    if (path === "/internal/_purgebook") {
-      if (env.WORKER_ENV === "production") return json({ error: "not found" }, 404);
-      await purgeBooks();
-      return json({ purged: true, colo: (req as { cf?: { colo?: string } }).cf?.colo ?? "unknown" });
-    }
 
-    // Dev-only: time this colo's round trip to an arbitrary origin.
-    //
-    // Exists to size the in-region voucher cache. Every latency number we have
-    // for the edge→AWS path (vexec = 78ms p50) is contaminated by guest work and
-    // the claim CAS, so it cannot answer the only question the cache design
-    // turns on: what does a bare request from this colo to a box in us-east-1
-    // cost? A pop-per-create is only viable if that is single-digit ms;
-    // otherwise the edge has to pop batches and hand them out locally.
-    //
-    // Reports EVERY iteration, not an average, because the first one pays TLS
-    // and the rest reuse the pooled connection — and it is the warm number the
-    // design depends on.
-    if (path === "/internal/_rtt") {
-      if (env.WORKER_ENV === "production") return json({ error: "not found" }, 404);
-      const u = new URL(req.url);
-      let target = u.searchParams.get("target");
-      let auto: Record<string, string> = {};
-      if (!target) {
-        // No explicit target: address a real pool box through the AWS proxy.
-        // /healthz is the cheapest thing behind that proxy, so what is left is
-        // network + proxy — the leg the cache would pay on every pop.
-        const v = await peekVoucher();
-        if (!v) return json({ error: "no voucher in book; pass ?target=" }, 503);
-        target = `https://${v.endpoint}/healthz`;
-        auto = { "X-aws-proxy-auth": v.token, "X-aws-proxy-port": String(v.port) };
-      }
-      const n = Math.min(20, Math.max(1, Number(u.searchParams.get("n") ?? 6)));
-      const headers: Record<string, string> = { ...auto };
-      const tok = u.searchParams.get("auth");
-      const port = u.searchParams.get("port");
-      if (tok) headers["X-aws-proxy-auth"] = tok;
-      if (port) headers["X-aws-proxy-port"] = port;
-      const ms: number[] = [];
-      const codes: number[] = [];
-      for (let i = 0; i < n; i++) {
-        const t = Date.now();
-        try {
-          const r = await fetch(target, { headers });
-          await r.arrayBuffer();
-          codes.push(r.status);
-        } catch (e) {
-          codes.push(-1);
-          console.log(`_rtt THROW ${String(e).slice(0, 120)}`);
-        }
-        ms.push(Date.now() - t);
-      }
-      const warm = ms.slice(1).sort((a, b) => a - b);
-      return json({
-        colo: (req as { cf?: { colo?: string } }).cf?.colo ?? "unknown",
-        target,
-        ms,
-        codes,
-        cold: ms[0],
-        warmMedian: warm.length ? warm[Math.floor(warm.length / 2)] : null,
-        warmMin: warm.length ? warm[0] : null,
-      });
-    }
 
     // VM-DO host dial: the QEMU worker host opens a persistent WebSocket to the
     // per-sandbox VmSession DO here (vm_session.ts). Auth is a per-sandbox connect
@@ -5803,18 +5402,6 @@ export default {
       // in THIS colo between its bursts. Off the hot path (waitUntil) and a
       // no-op unless an entry is actually aging.
       keepCreateContextWarm(env.OPENCOMPUTER_DB, ctx, caller.orgID);
-      // FUSED CLAIM+EXEC. If this sandbox came from a voucher, its box has not
-      // been bound to anyone yet — ownership is settled right here, on the exec
-      // that had to reach the box regardless. That is what lets create cost zero
-      // round trips: the claim rides along instead of buying its own transit.
-      //
-      // A 409 means another isolate drew the same voucher first. Expected, not
-      // exceptional: draw the next one and retry. Exhausting the ladder falls
-      // through to everything below, which is the path that runs today.
-      if (env.LITE_VOUCHER_CLAIM === "1" && req.method === "POST" && rest === "/exec/run-async") {
-        const fusedResp = await tryVoucherExec(req, env, ctx, id, authMs);
-        if (fusedResp) return stampSub(fusedResp, "voucher");
-      }
       // VM-DO exec fast path: route POST /:id/exec/run-async through the
       // sandbox's VmSession DO. Automatic tunnel fallback (no flag) whenever the
       // channel isn't live (DO 409) — so this is safe even before/while workers
@@ -5958,7 +5545,6 @@ export default {
             b.sandboxID,
             b.workerID,
             b.bodyText,
-            b.microvmID,
           );
         } catch (e) {
           console.error(`finalize-queue: ${b.sandboxID} failed:`, e);

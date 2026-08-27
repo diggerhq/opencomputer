@@ -403,26 +403,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if s.capTokenIssuer != nil && s.workerRegistry != nil {
 		internal := e.Group("/internal", s.capTokenMiddleware)
 		internal.POST("/sandboxes/create", s.internalCreateSandbox)
-		// Same creates, one request. Serves the edge-side coalescer, which is
-		// DEFAULT OFF (CREATE_BATCH) because measurement falsified the premise:
-		// batching 26 creates into one request left the edge→cell hop unchanged
-		// (132ms vs 126ms solo), so that hop is round-trip bound, not connection
-		// bound. Endpoint kept because it is harmless and already deployed — see
-		// create_batch.go and the edge's create_batch.ts.
-		internal.POST("/sandboxes/create-batch", s.internalCreateSandboxBatch)
 		// Edge claim (see edge_claim.go): the api-edge PoolStock DO reserves
 		// pool boxes ahead of time and finalizes claims asynchronously.
 		internal.POST("/pool/edge-reserve", s.edgeReservePool)
 		internal.POST("/pool/edge-release", s.edgeReleasePool)
 		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
-		// Zero-subrequest edge claim (see voucher_claim.go): the edge pulls a
-		// book of pre-paired boxes per colo OFF the hot path, then answers
-		// creates locally. Never on a customer's critical path.
-		internal.GET("/pool/vouchers", s.publishVouchers)
-		// Cold-start discovery for the in-region voucher cache. Steady-state
-		// discovery rides on pop responses, so this is hit once per cold
-		// isolate rather than once per create.
-		internal.GET("/pool/cache-peers", s.publishCachePeers)
 		// Direct-path seam (see microvm_direct.go): lets the edge dial a
 		// MicroVM's agent itself instead of relaying exec through this process.
 		internal.GET("/microvm/direct/:id", s.microvmDirectInfo)

@@ -937,29 +937,6 @@ func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID st
 	return session, nil
 }
 
-// UpdateSandboxSessionWorker moves a running sandbox to a different worker.
-//
-// The voucher path needs this: the edge finalizes a create against the box it
-// drew, but the exec ladder can end up on a DIFFERENT box (the first one was
-// dead, or already owned) and re-sends the finalize naming the box that actually
-// took the claim. Without this the row keeps pointing at the first box, and
-// destroying the sandbox would terminate one belonging to someone else.
-//
-// Guarded on status='running' so a finalize arriving after a destroy cannot
-// resurrect or re-point a terminated row.
-func (s *Store) UpdateSandboxSessionWorker(ctx context.Context, sandboxID, workerID string) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE sandbox_sessions SET worker_id = $2 WHERE sandbox_id = $1 AND status = 'running'`,
-		sandboxID, workerID)
-	if err != nil {
-		return fmt.Errorf("failed to rebind sandbox worker: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no running sandbox %s to rebind", sandboxID)
-	}
-	return nil
-}
-
 func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string) error {
 	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, "")
 }

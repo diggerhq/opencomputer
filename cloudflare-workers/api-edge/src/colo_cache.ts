@@ -76,7 +76,7 @@ export async function coloPut(kind: string, key: string, value: unknown, ttlSec:
 // its free-list entry, so at most one isolate should observe `true`. Cloudflare
 // does not document delete() as atomic under concurrency, so the book treats a
 // win as a strong hint and lets the guest CAS arbitrate for real — see
-// voucher_book.ts claimFree.
+// a colo-shared free list.
 export async function coloDelete(kind: string, key: string): Promise<boolean> {
   const cache = cacheOrNull();
   if (!cache) return false;
