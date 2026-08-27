@@ -1154,6 +1154,68 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("rejects an environment that does not inherit from the approved runtime", async () => {
+    const source = JSON.stringify({ version: 1, files: [] });
+    const environment = JSON.stringify({
+      version: 1,
+      architecture: "linux/arm64",
+      baseImage: "registry.opencomputer.dev/serverless-agent:0.6.5",
+      files: [
+        {
+          path: "Dockerfile",
+          content: btoa("FROM ubuntu:24.04\n"),
+        },
+      ],
+    });
+    const digest = async (value: string) =>
+      Array.from(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+        ),
+      )
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/deployments", {
+        method: "POST",
+        body: JSON.stringify({
+          agentId: "custom-agent",
+          alias: "development",
+          source: {
+            digest: await digest(source),
+            size: source.length,
+            contentType: "application/vnd.opencomputer.agent+json",
+            body: source,
+          },
+          environmentSource: {
+            digest: await digest(environment),
+            size: environment.length,
+            contentType: "application/vnd.opencomputer.agent-environment+json",
+            body: environment,
+            baseImage: "registry.opencomputer.dev/serverless-agent:0.6.5",
+            architecture: "linux/arm64",
+          },
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_deployment",
+        message: "The agent environment failed runtime validation.",
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("forwards managed secret metadata and aggregate logs through the public contract", async () => {
     const fetchSpy = vi
       .fn()
