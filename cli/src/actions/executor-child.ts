@@ -7,6 +7,10 @@ interface ExecutionEnvelope {
   requestOid: string;
   input: Record<string, unknown>;
   secrets: Record<string, string>;
+  repositories: Record<
+    string,
+    { id: string; remote: string; defaultBranch: string }
+  >;
 }
 
 async function main(): Promise<void> {
@@ -35,6 +39,7 @@ async function main(): Promise<void> {
     requestOid: envelope.requestOid,
     input: envelope.input,
     secrets: envelope.secrets,
+    repositories: envelope.repositories,
   });
   if (output === undefined) throw new Error("Action executors must return JSON data");
   process.stdout.write(`${JSON.stringify({ ok: true, output })}\n`);
@@ -46,4 +51,3 @@ main().catch((error: unknown) => {
   );
   process.exitCode = 1;
 });
-

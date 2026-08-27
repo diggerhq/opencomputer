@@ -34,7 +34,19 @@ export interface IsolatedExecutor {
     requestOid: string;
     actionInput: Record<string, DataValue>;
     secrets: Record<string, string>;
+    repositories: Record<
+      string,
+      { id: string; remote: string; defaultBranch: string }
+    >;
   }): Promise<DataValue>;
+}
+
+export interface ActionRepositoryProvider {
+  resolve(id: string): Promise<{
+    id: string;
+    remote: string;
+    defaultBranch: string;
+  }>;
 }
 
 export class ChildProcessActionExecutor implements IsolatedExecutor {
@@ -53,6 +65,10 @@ export class ChildProcessActionExecutor implements IsolatedExecutor {
     requestOid: string;
     actionInput: Record<string, DataValue>;
     secrets: Record<string, string>;
+    repositories: Record<
+      string,
+      { id: string; remote: string; defaultBranch: string }
+    >;
   }): Promise<DataValue> {
     return new Promise<DataValue>((resolvePromise, reject) => {
       const childArguments = this.childEntry.endsWith(".ts")
@@ -107,6 +123,7 @@ export class ChildProcessActionExecutor implements IsolatedExecutor {
           requestOid: input.requestOid,
           input: input.actionInput,
           secrets: input.secrets,
+          repositories: input.repositories,
         }),
       );
     });
@@ -122,6 +139,7 @@ export class LocalActionWorker {
     private readonly policyEvaluator: ActionPolicyEvaluator,
     private readonly secretProvider: ActionSecretProvider,
     private readonly executor: IsolatedExecutor,
+    private readonly repositoryProvider?: ActionRepositoryProvider,
   ) {
     this.definitions = new Map(
       definitions.map((definition) => [definition.id, definition]),
@@ -186,6 +204,16 @@ export class LocalActionWorker {
           requestOid: requestEntry.oid,
           actionInput: requestEntry.record.input,
           secrets,
+          repositories:
+            typeof requestEntry.record.input.repositoryId === "string" &&
+            this.repositoryProvider
+              ? {
+                  [requestEntry.record.input.repositoryId]:
+                    await this.repositoryProvider.resolve(
+                      requestEntry.record.input.repositoryId,
+                    ),
+                }
+              : {},
         });
         outcome = { status: "succeeded", output };
       } catch (error) {

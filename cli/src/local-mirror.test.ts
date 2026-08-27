@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -70,6 +77,12 @@ test("local repository mirrors use the local Git client and expose only the mirr
     assert.ok(repository);
     assert.equal(repository.defaultBranch, "main");
     assert.equal(repository.sessionBranch, "opencomputer/sessions/test-session");
+    const { stdout: runtimeRoot } = await execFileAsync(
+      "git",
+      ["rev-parse", "--show-toplevel"],
+      { cwd: runtime },
+    );
+    assert.equal(await realpath(runtimeRoot.trim()), await realpath(runtime));
     assert.equal(
       await readFile(resolve(repository.checkout, "flags.json"), "utf8"),
       '{"checkout-v2":true}\n',

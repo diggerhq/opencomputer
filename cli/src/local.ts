@@ -443,6 +443,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     agentRoot: root,
     runtime: directory,
     agentId: manifest.id,
+    repositories,
   });
   const gateway = await startGateway(config);
   addBundledRuntimeToPath();
@@ -808,7 +809,7 @@ async function ensureDevService(
     OPENCOMPUTER_NO_OPEN: "1",
   };
   if (config.apiKey) environment.OPENCOMPUTER_API_KEY = config.apiKey;
-  const child = spawn(process.execPath, [process.argv[1]!, "dev"], {
+  const child = spawn(process.execPath, [process.argv[1]!, "local", "dev"], {
     cwd: root,
     env: environment,
     stdio: ["ignore", "ignore", "pipe"],

@@ -26,8 +26,12 @@ test("the local action runtime exposes compiled actions through MCP", async () =
   effect: "write",
   duration: "inline",
   secrets: { token: { kind: "secret", id: "LOCAL_ACTION_TEST_TOKEN" } },
-  async run({ input, secrets }) {
-    return { value: input.value, tokenPresent: secrets.token === "local-fixture-token" };
+  async run({ input, secrets, repositories }) {
+    return {
+      value: input.value,
+      tokenPresent: secrets.token === "local-fixture-token",
+      mirror: repositories.application.remote,
+    };
   },
 });
 
@@ -62,6 +66,13 @@ export default function Actions() {
       agentRoot: root,
       runtime,
       agentId: "fixture-agent",
+      repositories: [
+        {
+          id: "application",
+          mirror: "/local/application.git",
+          defaultBranch: "main",
+        },
+      ],
     });
     assert.ok(actions);
     const mcp = spawn(actions.mcp.command[0]!, actions.mcp.command.slice(1), {
@@ -91,7 +102,10 @@ export default function Actions() {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "fixture_verify", arguments: { value: "works" } },
+          params: {
+            name: "fixture_verify",
+            arguments: { value: "works", repositoryId: "application" },
+          },
         })}\n`,
       );
       const message = await response;
@@ -103,7 +117,11 @@ export default function Actions() {
       };
       assert.deepEqual(result.structuredContent.outcome, {
         status: "succeeded",
-        output: { value: "works", tokenPresent: true },
+        output: {
+          value: "works",
+          tokenPresent: true,
+          mirror: "/local/application.git",
+        },
       });
       assert.deepEqual(result.structuredContent.secretVersions, [
         {

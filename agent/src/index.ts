@@ -309,6 +309,16 @@ export interface ActionExecutionContext<
   readonly requestOid: string;
   readonly input: Readonly<Record<string, DataValue>>;
   readonly secrets: MaterializedSecrets<Secrets>;
+  readonly repositories: Readonly<
+    Record<
+      string,
+      {
+        readonly id: string;
+        readonly remote: string;
+        readonly defaultBranch: string;
+      }
+    >
+  >;
   readonly signal?: AbortSignal;
 }
 

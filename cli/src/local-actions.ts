@@ -46,6 +46,11 @@ export async function startLocalActionRuntime(input: {
   agentRoot: string;
   runtime: string;
   agentId: string;
+  repositories?: Array<{
+    id: string;
+    mirror: string;
+    defaultBranch: string;
+  }>;
 }): Promise<LocalActionRuntime | undefined> {
   const manifestPath = resolve(
     input.runtime,
@@ -86,6 +91,23 @@ export async function startLocalActionRuntime(input: {
   }
   const secretsFile = resolve(stateRoot, "secrets.json");
   await writeFile(secretsFile, `${JSON.stringify(secrets)}\n`, { mode: 0o600 });
+  const repositoriesFile = resolve(stateRoot, "repositories.json");
+  await writeFile(
+    repositoriesFile,
+    `${JSON.stringify(
+      Object.fromEntries(
+        (input.repositories ?? []).map((repository) => [
+          repository.id,
+          {
+            id: repository.id,
+            remote: repository.mirror,
+            defaultBranch: repository.defaultBranch,
+          },
+        ]),
+      ),
+    )}\n`,
+    { mode: 0o600 },
+  );
 
   const bundle = resolve(dirname(manifestPath), manifest.actions.entry);
   const policyDigest = `sha256:${createHash("sha256")
@@ -102,6 +124,7 @@ export async function startLocalActionRuntime(input: {
     TMPDIR: process.env.TMPDIR ?? "/tmp",
     LANG: process.env.LANG ?? "C",
     OPENCOMPUTER_ACTION_SECRETS_FILE: secretsFile,
+    OPENCOMPUTER_ACTION_REPOSITORIES_FILE: repositoriesFile,
     OPENCOMPUTER_REACTIVE_MANIFEST_PATH: manifestPath,
     OPENCOMPUTER_ACTION_REPOSITORY: workerRepository,
     OPENCOMPUTER_ACTION_BUNDLE: bundle,
@@ -141,6 +164,7 @@ export async function startLocalActionRuntime(input: {
     async close() {
       await stop(worker);
       await rm(secretsFile, { force: true });
+      await rm(repositoriesFile, { force: true });
     },
   };
 }

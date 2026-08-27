@@ -74,6 +74,10 @@ export async function provisionLocalRepositories(
   await mkdir(stateRoot, { recursive: true });
   const checkouts: LocalRepositoryCheckout[] = [];
 
+  if (repositories.length) {
+    await git(["init", runtime]);
+  }
+
   for (const repository of repositories) {
     const mirror = inside(stateRoot, `${repository.id}.git`, "Mirror path");
     const source = options.sourceURL?.(repository) ?? githubURL(repository);

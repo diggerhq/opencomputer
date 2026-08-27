@@ -20,6 +20,14 @@ const reactiveManifest = JSON.parse(
 if (!reactiveManifest.actions) {
   throw new Error("Deployment does not declare actions");
 }
+const repositories = process.env.OPENCOMPUTER_ACTION_REPOSITORIES_FILE
+  ? (JSON.parse(
+      await readFile(process.env.OPENCOMPUTER_ACTION_REPOSITORIES_FILE, "utf8"),
+    ) as Record<
+      string,
+      { id: string; remote: string; defaultBranch: string }
+    >)
+  : {};
 
 const worker = new LocalActionWorker(
   new GitActionLedger(required("OPENCOMPUTER_ACTION_REPOSITORY")),
@@ -35,6 +43,13 @@ const worker = new LocalActionWorker(
     },
   },
   new ChildProcessActionExecutor(),
+  {
+    async resolve(id) {
+      const repository = repositories[id];
+      if (!repository) throw new Error(`Local repository ${id} is unavailable`);
+      return repository;
+    },
+  },
 );
 
 const pollMs = Number(process.env.OPENCOMPUTER_ACTION_POLL_MS ?? 100);
