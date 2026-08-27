@@ -242,9 +242,15 @@ func newMicrovmClient(ctx context.Context) (*awsvm.Client, error) {
 	autoResume := os.Getenv("OPENSANDBOX_MICROVM_AUTO_RESUME") != "0"
 	sizeImages := parseSizeImages(os.Getenv("OPENSANDBOX_MICROVM_SIZE_IMAGES"))
 	defaultMemoryMB := envInt("OPENSANDBOX_MICROVM_DEFAULT_MEMORY_MB", 0)
+	// Empty pins nothing and takes the image's latest active version, which is
+	// what production wants. Setting it is for A/B: a republished image changes
+	// every box in the fleet at once, so without a way to pin an older version
+	// there is no way to tell "the image regressed" from "something else did".
+	imageVersion := os.Getenv("OPENSANDBOX_MICROVM_IMAGE_VERSION")
 	client := awsvm.NewClient(awsCfg, awsvm.Config{
 		Region:                   region,
 		ImageIdentifier:          image,
+		ImageVersion:             imageVersion,
 		DefaultMemoryMB:          defaultMemoryMB,
 		SizeImages:               sizeImages,
 		ExecutionRoleArn:         os.Getenv("OPENSANDBOX_MICROVM_EXECUTION_ROLE_ARN"),
@@ -258,6 +264,9 @@ func newMicrovmClient(ctx context.Context) (*awsvm.Client, error) {
 	}
 	log.Printf("microvm: idle policy — suspend after %ds idle, terminate after %ds suspended, auto-resume=%v",
 		idleSec, suspendedSec, autoResume)
+	if imageVersion != "" {
+		log.Printf("microvm: image version PINNED to %s (unset OPENSANDBOX_MICROVM_IMAGE_VERSION for latest)", imageVersion)
+	}
 
 	return client, nil
 }

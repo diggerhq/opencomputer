@@ -89,7 +89,12 @@ async function one(i) {
     t.tti = performance.now() - s;
   } catch (err) { t.err = String(err).slice(0, 90); }
   iters.push(t);
-  try { if (sb) await sb.destroy(); } catch {}
+  // kill(), NOT destroy() — the SDK has no destroy method, so this line used to
+  // throw into the swallowing catch below and leak EVERY sandbox the run made.
+  // 100 boxes per burst, silently, while the run reported success. Log failures
+  // rather than swallowing them: a teardown that fails quietly is how a
+  // benchmark ends up measuring a fleet 2x over its own box ceiling.
+  try { if (sb) await sb.kill(); } catch (e) { console.error("LEAK: kill failed for", t.i, String(e).slice(0, 80)); }
 }
 
 // Let the SDK's import-time connection prewarm finish so it is not racing the
