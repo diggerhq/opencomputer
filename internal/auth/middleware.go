@@ -3,10 +3,12 @@ package auth
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/reqtime"
 )
 
 type contextKey string
@@ -123,6 +125,9 @@ func GetUserID(c echo.Context) *uuid.UUID {
 // The JWT can arrive in `Authorization: Bearer <jwt>` or as the X-API-Key
 // value (detected by the two-dot signature pattern).
 func PGAPIKeyMiddleware(store *db.Store, staticKey string, jwtIssuer *JWTIssuer, capTokenIssuer *JWTIssuer, cellID string) echo.MiddlewareFunc {
+	// Built once per middleware construction, which is once per server, so the
+	// cache is shared across every request rather than per-connection.
+	keyCache := newAPIKeyCache()
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			// Try static API key first (backward compat for combined mode)
@@ -204,8 +209,10 @@ func PGAPIKeyMiddleware(store *db.Store, staticKey string, jwtIssuer *JWTIssuer,
 
 			// Validate against PG if store is available
 			if store != nil {
-				orgID, userID, err := store.ValidateAPIKey(c.Request().Context(), key)
-				if err != nil {
+				authStart := time.Now()
+				orgID, userID, ok := keyCache.validate(c.Request().Context(), store, key)
+				reqtime.AddAuth(c, time.Since(authStart))
+				if !ok {
 					return c.JSON(http.StatusForbidden, map[string]string{
 						"error": "invalid API key",
 					})

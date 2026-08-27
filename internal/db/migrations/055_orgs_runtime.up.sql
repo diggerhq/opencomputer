@@ -1,0 +1,12 @@
+-- Per-org runtime for the direct-to-cell create path.
+--
+-- D1's orgs.runtime stays authoritative: the edge stamps it onto every
+-- capability token, and a cap-token create reads it from there without
+-- touching this column. But a create that authenticates with an API key
+-- straight against this cell has no token to carry it, and org runtime is not
+-- otherwise knowable here. This is that value, synced from the token whenever
+-- an edge create comes through.
+--
+-- '' is the QEMU fleet, matching runtimeFor's documented default, so adding
+-- this column changes nothing for any existing org until it is set.
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS runtime TEXT NOT NULL DEFAULT '';

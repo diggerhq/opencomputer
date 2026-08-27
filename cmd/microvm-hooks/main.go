@@ -41,6 +41,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/opensandbox/opensandbox/proto/agent"
+
+	"github.com/opensandbox/opensandbox/internal/vouchercache"
 )
 
 const (
@@ -76,6 +78,9 @@ const (
 	// runCmdPath executes one command and returns its result as ordinary JSON.
 	// Must match internal/awsvmlite.
 	runCmdPath = "/osb/run"
+	// cachePath is the prefix the voucher cache mounts under. Trailing slash:
+	// its routes are cachePath+"pop", +"fill", +"release", +"stats".
+	cachePath = "/osb/cache/"
 )
 
 // runCmdRequest / runCmdResponse are the whole protocol of the direct exec path.
@@ -156,6 +161,11 @@ type server struct {
 // a restored snapshot rather than a fresh boot.
 var startedAt = time.Now()
 
+// vcache is the in-region voucher cache this box serves, when it is being used
+// as a cache instance. Every box carries the code; only the ones the control
+// plane fills ever hold stock.
+var vcache *vouchercache.Server
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("microvm-hooks: starting (pid=%d)", os.Getpid())
@@ -189,14 +199,25 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		// The binding, reported so the CP's existing keepalive sweep can learn
+		// who owns each box WITHOUT the edge telling it. That makes host-side
+		// bookkeeping self-healing: a finalize message that never arrives is
+		// reconciled on the next touch instead of stranding the box.
+		claimedBy, claimedAt := boxClaim.current()
+		h := map[string]any{
 			"agentUp":    agentUp(),
 			"agentPid":   pid,
 			"agentAddr":  agentAddr,
 			"microvmId":  id,
 			"ranRunHook": id != "",
 			"uptimeSec":  int(time.Since(startedAt).Seconds()),
-		})
+			"claimed":    claimedBy != "",
+		}
+		if claimedBy != "" {
+			h["claimedBy"] = claimedBy
+			h["claimedAtUnix"] = claimedAt.Unix()
+		}
+		_ = json.NewEncoder(w).Encode(h)
 	})
 
 	// Diagnostic: emit an UNANNOUNCED HTTP/2 trailer, the way gRPC sends
@@ -252,6 +273,20 @@ func main() {
 	// be forwarded to osb-agent's gRPC listener, which answers a JSON POST with
 	// 415 and no explanation.
 	mux.HandleFunc(runCmdPath, s.handleRunCmd)
+	// Edge claim. See claim.go: the box is the only authority on who owns it,
+	// so these are the endpoints that actually decide it.
+	// In-region voucher cache (internal/vouchercache). Mounted on the agent's
+	// own listener because the AWS proxy forwards only to the port declared in
+	// the image hook config — a standalone service on a second port answers
+	// "403 Access to port denied", which is how this ended up here.
+	//
+	// Unauthenticated for the same reason /osb/run and /osb/claim are: reaching
+	// this box at all requires the per-box proxy JWE, which only the control
+	// plane and the edge hold. OSB_CACHE_SECRET adds a second factor when set.
+	vcache = vouchercache.New(os.Getenv("OSB_CACHE_SECRET"))
+	vcache.Mount(mux, cachePath)
+	mux.HandleFunc(claimPath, s.handleClaim)
+	mux.HandleFunc(claimAndRunPath, s.handleClaimAndRun)
 
 	// Everything that is not a hook is forwarded to osb-agent.
 	//
@@ -403,6 +438,28 @@ func (s *server) handleRunCmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	out, err := runCmd(r.Context(), req)
+	if err != nil {
+		// Never started: no binary, no fork, nothing to report an exit code for.
+		http.Error(w, "could not start command: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// runCmd executes one command and reports the result.
+//
+// Split out of handleRunCmd so /osb/claim-and-run runs commands through the
+// EXACT same path rather than a second copy that can drift — the fused endpoint
+// differs from the plain one only in what it does before the command, never in
+// how the command runs.
+//
+// A non-nil error means the command never started (no binary, fork failure).
+// That is the only case a caller has to decide about; a command that ran and
+// exited non-zero is a result, and comes back in the response with its code.
+func runCmd(reqCtx context.Context, req runCmdRequest) (runCmdResponse, error) {
 	timeout := runCmdDefaultTimeout
 	if req.TimeoutSec > 0 {
 		timeout = time.Duration(req.TimeoutSec) * time.Second
@@ -412,7 +469,7 @@ func (s *server) handleRunCmd(w http.ResponseWriter, r *http.Request) {
 	}
 	// Bound by the request's context too, so a caller that gives up does not
 	// leave the command running in the guest.
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithTimeout(reqCtx, timeout)
 	defer cancel()
 
 	// `sh -lc` matches what the agent's exec does, so a command behaves the same
@@ -454,14 +511,9 @@ func (s *server) handleRunCmd(w http.ResponseWriter, r *http.Request) {
 		// Ran and exited non-zero — a result, not an error.
 		resp.ExitCode = cmd.ProcessState.ExitCode()
 	default:
-		// Never started: no binary, no fork, nothing to report an exit code for.
-		http.Error(w, "could not start command: "+runErr.Error(), http.StatusInternalServerError)
-		return
+		return runCmdResponse{}, runErr
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	return resp, nil
 }
 
 // cappedBuffer accumulates up to limit bytes and silently discards the rest.

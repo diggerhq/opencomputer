@@ -8,6 +8,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/opensandbox/opensandbox/internal/reqtime"
 )
 
 // create_trace.go — per-create step timing, for finding serialization.
@@ -121,6 +125,59 @@ func (t *createTrace) emit() {
 		fmt.Fprintf(&b, " %s=%dus", m.label, m.dur.Microseconds())
 	}
 	log.Print(b.String())
+}
+
+// serverTiming renders the marks as a Server-Timing header value.
+//
+// The log line is the right shape for reading one request; it is the wrong
+// shape for a benchmark, which has to attribute a p50 across a hundred of
+// them. The direct-to-cell path made that gap obvious: with no edge Worker in
+// front, every harness column that came from Server-Timing read 0, so a 483ms
+// exec was a single opaque number with no way to tell a slow dial from a
+// burned inline hold.
+//
+// Durations are milliseconds because that is what Server-Timing specifies and
+// what the harness parses; the log line keeps microsecond resolution.
+func (t *createTrace) serverTiming() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var b strings.Builder
+	fmt.Fprintf(&b, "tot;dur=%d", time.Since(t.start).Milliseconds())
+	for _, m := range t.marks {
+		fmt.Fprintf(&b, ", %s;dur=%d", m.label, m.dur.Milliseconds())
+	}
+	return b.String()
+}
+
+// emitServerTiming arranges for this trace to ride out on the response.
+//
+// Registered as a Before hook rather than written at each return: these
+// handlers have several exits (inline fold, handle shape, and every error
+// path), and a header set at only some of them is worse than none — the
+// missing ones read as zero rather than as absent.
+func (t *createTrace) emitServerTiming(c echo.Context) {
+	if t == nil {
+		return
+	}
+	c.Response().Before(func() {
+		v := t.serverTiming()
+		if v == "" {
+			return
+		}
+		// gotot brackets the entire middleware chain, so gotot minus tot is
+		// everything Go did before the handler was entered — auth above all.
+		// Without it a handler that reports tot=0 while the client measures
+		// 200ms is unattributable: the time is either upstream of the handler
+		// or upstream of Go itself, and those need opposite fixes.
+		if rt := reqtime.From(c); rt != nil {
+			v = fmt.Sprintf("gotot;dur=%d, auth;dur=%d, ",
+				rt.Since().Milliseconds(), rt.Auth().Milliseconds()) + v
+		}
+		c.Response().Header().Set("Server-Timing", v)
+	})
 }
 
 func withCreateTrace(ctx context.Context, t *createTrace) context.Context {

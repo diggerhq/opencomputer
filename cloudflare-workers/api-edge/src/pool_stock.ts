@@ -191,7 +191,12 @@ async function mintSandboxTokenDO(
   return signingInput + "." + b64url(sig);
 }
 
-async function mintPoolCapToken(secret: string, cellID: string): Promise<string> {
+// Exported so the voucher path (voucher_book.ts, via index.ts) can authenticate
+// its off-hot-path refill with the same synthetic pool identity PoolStock uses.
+// The refill hits /internal/pool/vouchers on the same cell and the CP applies
+// the same internal check, so a second token shape would be a second thing to
+// keep correct for no gain.
+export async function mintPoolCapToken(secret: string, cellID: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const enc = new TextEncoder();
   const header = { alg: "HS256", typ: "JWT" };

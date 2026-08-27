@@ -250,6 +250,9 @@ func (s *Server) claimFinalize(c echo.Context) error {
 	var req struct {
 		types.SandboxConfig
 		SandboxID string `json:"sandboxID"`
+		// Voucher creates only. The edge minted the sandbox id, so it has to say
+		// which box that sandbox drew — nothing here can look it up.
+		MicrovmID string `json:"microvmID"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
@@ -278,6 +281,67 @@ func (s *Server) claimFinalize(c echo.Context) error {
 
 	cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
 	metadataJSON, _ := json.Marshal(cfg.Metadata)
+
+	// Voucher stock: the edge answered this create out of a local book without
+	// calling us at all, so there is no reservation to find — the binding
+	// arrives here, in this request, or it never happens.
+	//
+	// Without this branch the request fell through to ClaimReservedSession,
+	// which looks for a reserved ROW a voucher create never writes. On dev that
+	// was 473 consecutive "FINALIZE LOST" and zero successes: every create
+	// returned a sandbox id with no row behind it, so every exec 404'd while the
+	// cell sat at bound=0. Create looked perfect and nothing worked.
+	if req.MicrovmID != "" {
+		if vb, ok := s.voucherRedeemer(); ok {
+			workerID, rebound, err := vb.RedeemVoucher(req.MicrovmID, cfg.SandboxID, cfg)
+			if err != nil {
+				log.Printf("sandbox: VOUCHER FINALIZE LOST %s box=%s (%v)", cfg.SandboxID, req.MicrovmID, err)
+				finalizeErr = err
+				return c.JSON(http.StatusConflict, map[string]string{"error": "voucher lost"})
+			}
+			template := cfg.Template
+			if template == "" {
+				template = "default"
+			}
+			if s.store != nil && rebound {
+				// The row already exists and names the box the CREATE drew. The
+				// exec ladder moved this sandbox elsewhere, so correct the row
+				// instead of inserting a second one — leaving it would point a
+				// destroy at a box belonging to someone else.
+				if err := s.store.UpdateSandboxSessionWorker(ctx, cfg.SandboxID, workerID); err != nil {
+					log.Printf("sandbox: voucher rebind %s → %s failed: %v", cfg.SandboxID, workerID, err)
+					finalizeErr = err
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				}
+				s.emitEvent("create", cfg.SandboxID, workerID, "rebound to another box (edge)")
+				finalizeErr = nil
+				return c.JSON(http.StatusOK, map[string]string{
+					"sandboxID": cfg.SandboxID,
+					"workerID":  workerID,
+					"status":    "running",
+				})
+			}
+			if s.store != nil {
+				if _, err := s.store.CreateSandboxSessionWithStatus(ctx, cfg.SandboxID, orgID, auth.GetUserID(c),
+					template, s.poolStockRegion(), workerID, cfgJSON, metadataJSON, "running", nil); err != nil {
+					// The box is live and the customer already holds its id, so
+					// failing here does not take it back. Report it and let the
+					// orphan sweep reclaim a box with no row.
+					log.Printf("sandbox: voucher finalize row insert %s failed: %v", cfg.SandboxID, err)
+					finalizeErr = err
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				}
+			}
+			s.emitEvent("create", cfg.SandboxID, workerID, "claimed from voucher (edge)")
+			finalizeErr = nil
+			return c.JSON(http.StatusOK, map[string]string{
+				"sandboxID": cfg.SandboxID,
+				"workerID":  workerID,
+				"status":    "running",
+			})
+		}
+		log.Printf("sandbox: VOUCHER FINALIZE LOST %s box=%s (this cell does not serve vouchers)", cfg.SandboxID, req.MicrovmID)
+	}
 
 	// Backend-owned stock: redeem the reservation in memory, then write the row
 	// the QEMU path flips instead of inserts. There is no ClaimSandbox call and

@@ -164,6 +164,14 @@ crons = ["*/5 * * * *"]
 
 [vars]
 WORKER_ENV = "dev"
+# Zero-subrequest edge claim for the direct-exec (lite) lane — see
+# src/voucher_book.ts. Creates are answered out of a colo-shared voucher book
+# with NO subrequest and one waitUntil; ownership is settled by a
+# compare-and-swap at the box, fused onto the first exec.
+#
+# Dev-only while it is proven under burst. PoolStock stays the path for every
+# other org, untouched.
+LITE_VOUCHER_CLAIM = "1"
 # Dev override of the per-org paused-sandbox cap (prod defaults to 100) so the
 # promotion path can be exercised without pausing hundreds of boxes.
 PAUSED_CAP = "10"

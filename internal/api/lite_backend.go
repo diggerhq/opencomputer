@@ -52,6 +52,9 @@ type liteBackend struct {
 	// dispatch through. One instance, shared: it holds no state of its own.
 	sm *awsvmlite.SandboxManager
 
+	// cache is the in-region voucher cache fleet, nil when not configured.
+	cache *awsvmlite.CacheFleet
+
 	stopRun     context.CancelFunc
 	usageTicker *worker.UsageTicker
 	eventPub    *worker.RedisEventPublisher
@@ -82,6 +85,20 @@ func newLiteBackend(ctx context.Context) (*liteBackend, error) {
 	runCtx, stop := context.WithCancel(context.Background())
 	b := &liteBackend{client: client, mgr: mgr, sm: awsvmlite.NewSandboxManager(mgr), stopRun: stop}
 	go mgr.Run(runCtx)
+
+	// In-region voucher cache (see awsvmlite/cache_fleet.go). Opt-in: without a
+	// binary URL there is nothing to install, and the edge falls back to the
+	// colo book exactly as before.
+	if os.Getenv("OPENSANDBOX_VOUCHER_CACHE") == "1" {
+		b.cache = awsvmlite.NewCacheFleet(mgr, awsvmlite.CacheConfig{
+			Enabled:  true,
+			Replicas: envInt("OPENSANDBOX_VOUCHER_CACHE_REPLICAS", 2),
+			Target:   envInt("OPENSANDBOX_VOUCHER_CACHE_TARGET", warm),
+			FillInterval: time.Duration(
+				envInt("OPENSANDBOX_VOUCHER_CACHE_FILL_SECONDS", 10)) * time.Second,
+		})
+		go b.cache.Run(runCtx)
+	}
 
 	log.Printf("vmhost-lite: backend enabled (region=%s warm=%d) — direct exec, no agent tunnel",
 		client.Config().Region, warm)
@@ -478,3 +495,50 @@ func (b *liteBackend) Status() map[string]any {
 // cell's Postgres pool is not its supply. See SelfStocking — consulting that
 // pool for these creates measured 49-78ms of guaranteed miss per create.
 func (b *liteBackend) ServesOwnStock() bool { return true }
+
+// Vouchers promises warm boxes to one colo so the edge can answer creates out of
+// a local cache instead of calling this process. See voucher_claim.go.
+func (b *liteBackend) Vouchers(colo string, n int) []awsvmlite.Voucher {
+	if b == nil || b.mgr == nil {
+		return nil
+	}
+	return b.mgr.Vouchers(colo, n)
+}
+
+// RedeemVoucher binds a voucher-created sandbox to the box it drew.
+//
+// This is the bookkeeping half of a zero-subrequest create, and until it existed
+// the voucher path had no bookkeeping at all: finalize fell through to
+// ClaimReservedSession, which looks for a reserved ROW that a voucher create
+// never writes. Measured on dev as 473 consecutive "EDGE CLAIM FINALIZE LOST"
+// against zero successes, with the cell reporting bound=0 while a hundred
+// customers held sandbox ids — every one of them unusable, because the row that
+// makes a sandbox exist was never written.
+//
+// Keyed by box, because the box is the only identity a voucher has: the sandbox
+// id was minted at the edge and this process is seeing it for the first time.
+// The `rebound` return says this sandbox was already bound to a DIFFERENT box
+// and has just been moved — the caller has a row to correct, not one to insert.
+func (b *liteBackend) RedeemVoucher(microvmID, sandboxID string, cfg types.SandboxConfig) (string, bool, error) {
+	if b == nil || b.mgr == nil {
+		return "", false, errors.New("vmhost-lite: backend disabled")
+	}
+	box, ok, rebound := b.mgr.RedeemVoucher(microvmID, sandboxID, awsvmlite.Meta{
+		Template: cfg.Template,
+		MemoryMB: cfg.MemoryMB,
+		CPUCount: cfg.CpuCount,
+	})
+	if !ok {
+		return "", false, errors.New("vmhost-lite: no voucher outstanding for box " + microvmID)
+	}
+	return microvmWorkerID(box.MicrovmID), rebound, nil
+}
+
+// CachePeers reports the in-region voucher cache instances the edge may pop
+// from. Empty when no cache is configured or none has finished filling.
+func (b *liteBackend) CachePeers() []awsvmlite.CachePeer {
+	if b == nil || b.cache == nil {
+		return nil
+	}
+	return b.cache.Peers()
+}

@@ -101,9 +101,9 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		// The key carries the plan and provider, so a change to either misses the
 		// memo and writes through immediately instead of waiting out the TTL.
 		tr.mark("pre")
-		orgKey := "org:" + orgID.String() + ":" + claims.Plan + ":" + claims.BillingProvider
+		orgKey := "org:" + orgID.String() + ":" + claims.Plan + ":" + claims.BillingProvider + ":" + claims.Runtime
 		if upErr := s.materialize.ensure(c.Request().Context(), orgKey, func(ctx context.Context) error {
-			return s.store.UpsertOrgFromCapToken(ctx, orgID, claims.Plan, claims.BillingProvider)
+			return s.store.UpsertOrgFromCapToken(ctx, orgID, claims.Plan, claims.BillingProvider, claims.Runtime)
 		}); upErr != nil {
 			// Non-fatal — the create may still succeed; downstream gates fall through
 			// when the row is missing. Logged so ops can investigate persistent failures.

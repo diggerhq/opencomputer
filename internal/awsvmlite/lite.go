@@ -188,6 +188,12 @@ type Manager struct {
 	mu    sync.Mutex
 	warm  []*Box
 	bound map[string]*Box // sandboxID → box
+	// vouchered holds boxes promised to a colo but not yet redeemed — see
+	// voucher.go. Deliberately a third state, not a flavour of bound: these can
+	// still be taken back, and bound ones never can.
+	vouchered map[string]*voucherEntry
+	// lastStateLog rate-limits the periodic state line — see logState.
+	lastStateLog time.Time
 	// inflight counts launches in progress, so the filler targets committed
 	// boxes rather than landed ones and does not overshoot WarmTarget by
 	// however many are mid-launch.
@@ -219,10 +225,16 @@ func New(client *awsvm.Client, cfg Config) *Manager {
 }
 
 // Depth reports how many boxes are ready to hand out.
+// Depth is unclaimed stock: warm PLUS vouchered.
+//
+// Vouchered boxes have left m.warm but nobody owns them, so counting only warm
+// would make the filler manufacture a replacement for every box the edge is
+// merely holding a promise on — turning a 100-box target into a fleet bounded
+// by the account quota instead.
 func (m *Manager) Depth() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.warm)
+	return len(m.warm) + len(m.vouchered)
 }
 
 // Run drives the warm set: top it up, and keep every box in it non-idle.
@@ -248,7 +260,8 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		case <-launch.C:
 			m.mu.Lock()
-			committed := len(m.warm) + m.inflight
+			// Vouchered boxes are stock too — see Depth.
+			committed := len(m.warm) + len(m.vouchered) + m.inflight
 			m.mu.Unlock()
 			if committed >= m.cfg.WarmTarget {
 				continue
@@ -259,6 +272,22 @@ func (m *Manager) Run(ctx context.Context) {
 				}
 			}()
 		case <-touch.C:
+			// Periodic state line.
+			//
+			// Added because this backend was diagnosable only when something
+			// happened: counts were logged on voucher issue and on reconcile,
+			// so a QUIET manager was completely opaque. That cost real time —
+			// the keepalive touching 49 boxes while AWS showed 100 running was
+			// impossible to explain without knowing how many were vouchered,
+			// and nothing was printing it. A steady heartbeat of the three
+			// states is what makes "the filler thinks it is at target" and
+			// "half the fleet is promised" distinguishable at a glance.
+			m.logState()
+			// Settle expired promises before touching. This ASKS each box who
+			// owns it rather than assuming an unredeemed voucher means an
+			// unclaimed box — see ReconcileVouchers for why that distinction is
+			// load-bearing. Own goroutine: it makes network calls.
+			go m.ReconcileVouchers(ctx)
 			// In its own goroutine: a touch against an already-suspended box is
 			// held by Lambda for the length of a restore, and blocking the tick
 			// on that would stall the filler behind it.
@@ -499,9 +528,25 @@ func (m *Manager) Alive(ctx context.Context, sandboxID string) (bool, error) {
 // BoxFor returns the box bound to a sandbox.
 func (m *Manager) BoxFor(sandboxID string) (*Box, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	b, ok := m.bound[sandboxID]
-	return b, ok
+	m.mu.Unlock()
+	if ok {
+		return b, true
+	}
+	// A vouchered box is NOT redeemable from here, and that is deliberate.
+	//
+	// A voucher is keyed by BOX, because the edge mints the sandbox id and the
+	// cell has never seen it until a finalize arrives carrying both. So there is
+	// nothing to look up: this process genuinely does not know which box that
+	// sandbox drew.
+	//
+	// The window this used to paper over is now closed at the source — finalize
+	// redeems the voucher for real (it previously could not, and logged 473
+	// consecutive losses against zero successes). What remains is the narrow case
+	// of an exec reaching the cell BEFORE its finalize lands, which only happens
+	// when the edge's direct-to-box path has already failed. It surfaces as a
+	// clean not-found rather than a wrong box.
+	return nil, false
 }
 
 // Exec runs one command in a sandbox and returns its result.
@@ -600,6 +645,18 @@ func (m *Manager) DrainWarm(ctx context.Context) int {
 	m.mu.Lock()
 	warm := m.warm
 	m.warm = nil
+	// Vouchered boxes drain too. They are unclaimed stock that simply left
+	// m.warm when it was promised to a colo, and the promise dies with this
+	// process — the edge's book is about to be answered by a CP that has never
+	// heard of these boxes. Draining only m.warm abandoned every one of them on
+	// each restart, which is a leak with no upper bound but the account quota.
+	//
+	// Bound boxes are still left alone: they belong to customers, and the
+	// reconciler re-adopts them on the way back up.
+	for id, e := range m.vouchered {
+		warm = append(warm, e.box)
+		delete(m.vouchered, id)
+	}
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -673,6 +730,14 @@ func (m *Manager) touchIdle(ctx context.Context) {
 	// either, which is the failure that ends in a suspended box and a full
 	// snapshot restore rather than a slow request.
 	for _, b := range m.warm {
+		if b.lastTouch.IsZero() || now.Sub(b.lastTouch) >= m.cfg.TouchInterval {
+			due = append(due, b)
+		}
+	}
+	// Vouchered boxes sit idle exactly like warm ones and need the same touch;
+	// skipping them would let AWS suspend the very stock the edge is about to
+	// hand out.
+	for _, b := range m.voucherBoxesLocked() {
 		if b.lastTouch.IsZero() || now.Sub(b.lastTouch) >= m.cfg.TouchInterval {
 			due = append(due, b)
 		}

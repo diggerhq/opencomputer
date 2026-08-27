@@ -29,6 +29,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
+	"github.com/opensandbox/opensandbox/internal/reqtime"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/wsgateway"
@@ -84,6 +85,7 @@ type Server struct {
 	microvm            *microvmBackend                   // managed-host backend; nil unless enabled (see microvm_backend.go)
 	lite               *liteBackend                      // direct-exec managed-host backend; mutually exclusive with microvm (see lite_backend.go)
 	materialize        *materializer                     // memoizes per-org/user row creation off the create hot path (materialize.go)
+	orgRuntime         *orgRuntimeCache                  // memoizes orgs.runtime for the direct-to-cell create path (backend.go)
 	templateCache      *templateCache                    // caches name→template so create doesn't call the edge every time (template_cache.go)
 	// backends is the dispatch set for placement and routing (see backend.go).
 	// The worker path is deliberately absent — it is reached by falling through.
@@ -228,6 +230,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		manager:       mgr,
 		ptyManager:    ptyMgr,
 		materialize:   newMaterializer(materializeTTL),
+		orgRuntime:    newOrgRuntimeCache(orgRuntimeTTL),
 		templateCache: newTemplateCache(),
 	}
 	// Mount service is only useful in combined mode (this process owns the
@@ -301,6 +304,8 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// is on the response by the time obslog reads it. obslog replaces Echo's
 	// built-in Logger() — same access log line, but JSON with the host
 	// envelope and request_id/sandbox_id pulled from context.
+	// Outermost, so it brackets the whole chain including auth.
+	e.Use(reqtime.Middleware())
 	e.Use(observability.EchoMiddleware())
 	e.Use(middleware.Recover())
 	e.Use(middleware.RequestID())
@@ -410,6 +415,14 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		internal.POST("/pool/edge-reserve", s.edgeReservePool)
 		internal.POST("/pool/edge-release", s.edgeReleasePool)
 		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
+		// Zero-subrequest edge claim (see voucher_claim.go): the edge pulls a
+		// book of pre-paired boxes per colo OFF the hot path, then answers
+		// creates locally. Never on a customer's critical path.
+		internal.GET("/pool/vouchers", s.publishVouchers)
+		// Cold-start discovery for the in-region voucher cache. Steady-state
+		// discovery rides on pop responses, so this is hit once per cold
+		// isolate rather than once per create.
+		internal.GET("/pool/cache-peers", s.publishCachePeers)
 		// Direct-path seam (see microvm_direct.go): lets the edge dial a
 		// MicroVM's agent itself instead of relaying exec through this process.
 		internal.GET("/microvm/direct/:id", s.microvmDirectInfo)

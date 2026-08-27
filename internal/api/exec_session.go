@@ -363,7 +363,17 @@ func (s *Server) execRunAsyncRoute(c echo.Context) error {
 // the SDK short-circuit its poll loop — the same contract as the worker path's
 // inline-hold fast path, reached without the hold.
 func (s *Server) execRunMicrovm(c echo.Context, mgr sandbox.Manager, sandboxID string, req types.ProcessConfig) error {
+	// This path, not execRunAsync, is what a MicroVM exec actually runs — which
+	// is why the exec leg produced no Server-Timing at all while it was the
+	// larger half of TTI, and why the inline hold could not have been costing
+	// anything here: there is no hold on this path to burn.
+	tr := newExecTrace()
+	tr.setSandboxID(sandboxID)
+	tr.emitServerTiming(c)
+	defer tr.emit()
+
 	res, err := mgr.Exec(c.Request().Context(), sandboxID, req)
+	tr.mark("mgrexec")
 	if err != nil {
 		log.Printf("microvm: exec %s failed: %v", sandboxID, err)
 		return respondManagerErr(c, err)
@@ -371,6 +381,7 @@ func (s *Server) execRunMicrovm(c echo.Context, mgr sandbox.Manager, sandboxID s
 	if s.router != nil {
 		s.router.Touch(sandboxID) // keep the idle timer honest, as the worker path does
 	}
+	tr.mark("touch")
 	return c.JSON(http.StatusOK, types.ExecRunResult{
 		Running:  false,
 		ExitCode: &res.ExitCode,
@@ -451,6 +462,7 @@ func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig
 	// `enter` separates "this handler is slow" from "the queue is upstream".
 	tr := newExecTrace()
 	tr.setSandboxID(id)
+	tr.emitServerTiming(c)
 	defer tr.emit()
 
 	var session *sandbox.ExecSessionHandle
@@ -523,6 +535,7 @@ func (s *Server) execResult(c echo.Context) error {
 	// retry ladder went.
 	tr := newTrace("resulttrace")
 	tr.setSandboxID(id)
+	tr.emitServerTiming(c)
 	defer tr.emit()
 
 	var res *types.ExecSessionResult

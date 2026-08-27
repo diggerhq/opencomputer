@@ -56,6 +56,17 @@ func shouldPromoteCheckpoint(kind string, promoteToFull *bool) bool {
 }
 
 func (s *Server) createSandbox(c echo.Context) error {
+	// The direct-to-cell create had no trace at all: it was built as the
+	// legacy/combined-mode entrypoint, and every measured create came through
+	// internalCreateSandbox instead. Now that the SDK can talk straight to a
+	// cell, this is the hot path and needs the same per-step attribution —
+	// createSandboxRemote's marks already exist and only need a trace in the
+	// context to land on.
+	tr := newCreateTrace()
+	tr.emitServerTiming(c)
+	defer tr.emit()
+	c.SetRequest(c.Request().WithContext(withCreateTrace(c.Request().Context(), tr)))
+
 	var cfg types.SandboxConfig
 	if err := c.Bind(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -189,7 +200,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 	// condition is backend registration, not the worker registry: a cell served
 	// by a backend has no registry and no local manager, so gating on the
 	// registry made every create there fail with "server-only mode".
-	if s.canPlace(uuid.UUID(orgID), runtimeFor(c), cfg) {
+	if s.canPlace(uuid.UUID(orgID), s.runtimeFor(c), cfg) {
 		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg, secretStoreID)
 	}
 
@@ -882,7 +893,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// Accepts is documented as a pure function of the request, so asking it here
 	// yields the same answer it would further down.
 	tr.mark("tmpl")
-	orgRuntime := runtimeFor(c)
+	orgRuntime := s.runtimeFor(c)
 	backend, ok := s.claimBackend(placement{
 		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
 	})
