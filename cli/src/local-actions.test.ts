@@ -11,9 +11,11 @@ test("the local action runtime exposes compiled actions through MCP", async () =
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-local-actions-"));
   const runtime = resolve(root, ".opencomputer", "runtime");
   const manifestDirectory = resolve(runtime, ".opencomputer");
-  const previousSecret = process.env.LOCAL_ACTION_TEST_TOKEN;
-  process.env.LOCAL_ACTION_TEST_TOKEN = "local-fixture-token";
   try {
+    await writeFile(
+      resolve(root, ".env.local"),
+      "LOCAL_ACTION_TEST_TOKEN=local-fixture-token\n",
+    );
     await mkdir(manifestDirectory, { recursive: true });
     await writeFile(
       resolve(runtime, "actions.js"),
@@ -135,8 +137,6 @@ export default function Actions() {
       await actions.close();
     }
   } finally {
-    if (previousSecret === undefined) delete process.env.LOCAL_ACTION_TEST_TOKEN;
-    else process.env.LOCAL_ACTION_TEST_TOKEN = previousSecret;
     await rm(root, { recursive: true, force: true });
   }
 });

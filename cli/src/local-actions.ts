@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 
@@ -85,8 +86,23 @@ export async function startLocalActionRuntime(input: {
     ),
   ];
   const secrets: Record<string, string> = {};
+  const localSecretFiles = [
+    resolve(input.agentRoot, ".env.local"),
+    resolve(input.agentRoot, "..", "..", ".env.local"),
+  ];
+  const fileValues: Record<string, string | undefined> = {};
+  for (const path of localSecretFiles) {
+    try {
+      const parsed = parseEnv(await readFile(path, "utf8"));
+      for (const name of names) {
+        if (!fileValues[name] && parsed[name]) fileValues[name] = parsed[name];
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   for (const name of names) {
-    const value = process.env[name];
+    const value = process.env[name] ?? fileValues[name];
     if (value) secrets[name] = value;
   }
   const secretsFile = resolve(stateRoot, "secrets.json");
