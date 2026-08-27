@@ -51,6 +51,9 @@ Usage:
   opencomputer link
   opencomputer deploy --watch [--project <id|slug> | --create-project <name>]
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
+  opencomputer local dev
+  opencomputer local run <prompt>
+  opencomputer local shell
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
   opencomputer session create [prompt] [--agent <project-agent>] [--keep]
   opencomputer session list

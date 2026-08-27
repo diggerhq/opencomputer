@@ -2034,7 +2034,7 @@ export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
-export const useRepository = (repository) => hooks().useRepository(repository);
+export const useRepository = (repository) => hooks().useRepository?.(repository);
 export const useSessionData = (key) => hooks().useSessionData(key);
 export const useAction = () => actionHooks().useAction();
 export const useGate = (gate) => actionHooks().useGate(gate);

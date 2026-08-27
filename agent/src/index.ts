@@ -338,7 +338,7 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
-  useRepository(repository: string | ResourceReference): void;
+  useRepository?(repository: string | ResourceReference): void;
 }
 
 interface ActionHooks {
@@ -953,7 +953,7 @@ export const useSubagent = (agent: string | ResourceReference): void =>
 export const useMcpServer = (server: string | ResourceReference): void =>
   hooks().useMcpServer(server);
 export const useRepository = (repository: string | ResourceReference): void =>
-  hooks().useRepository(repository);
+  hooks().useRepository?.(repository);
 export function useSessionData<T extends DataValue>(
   key: string,
 ): T | undefined {

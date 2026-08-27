@@ -15,6 +15,7 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedConfig } from "./config.js";
+import { provisionLocalRepositories } from "./local-mirror.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
 import { formatSessionEvent, runSessionPrompt } from "./session-prompt.js";
 
@@ -435,6 +436,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     throw new Error(`OpenComputer dev is already running at ${existing.url}`);
   }
   const directory = await prepareAgent(root);
+  const repositories = await provisionLocalRepositories(root, directory);
   const manifest = await readManifest(root);
   const gateway = await startGateway(config);
   addBundledRuntimeToPath();
@@ -667,6 +669,11 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   process.stdout.write(
     `OpenComputer dev service ready\n` +
       `Agent: ${manifest.name} (${manifest.id})\n` +
+      (repositories.length
+        ? `Repositories: ${repositories
+            .map((repository) => `${repository.id} → ${repository.checkout}`)
+            .join(", ")}\n`
+        : "") +
       `Local API: ${state.url}\n` +
       `React app: npm run dev:web (in another terminal)\n` +
       `Session: opencomputer session\n`,

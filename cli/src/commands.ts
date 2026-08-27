@@ -28,6 +28,7 @@ import {
   resolveProjectAgent,
 } from "./session-command.js";
 import { formatSessionEvent } from "./session-prompt.js";
+import { runLocalAgent } from "./local.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -478,6 +479,11 @@ export async function runCommand(
   const args = [...rawArgs];
   const config = await resolveConfig(globals);
   const client = new OpenComputerClient(config);
+
+  if (command === "local") {
+    await runLocalAgent(args, config, { verbose: globals.verbose });
+    return;
+  }
 
   if (command === "login") {
     const identity = await login(config, {
