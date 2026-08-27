@@ -88,8 +88,20 @@ func (s *Store) Encryptor() *crypto.Encryptor {
 	return s.encryptor
 }
 
+// StoreOption adjusts the connection pool before it is opened.
+type StoreOption func(*pgxpool.Config)
+
+// WithMinConns raises the pool's idle floor. A burst otherwise leaves most
+// requests waiting on a fresh TCP connection plus a Postgres auth handshake
+// before doing any work. Worth it for the control plane, which absorbs bursts
+// and runs a single pool; not for processes that open several, or that there
+// are many of.
+func WithMinConns(n int32) StoreOption {
+	return func(c *pgxpool.Config) { c.MinConns = n }
+}
+
 // NewStore creates a new Store with a connection pool.
-func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
+func NewStore(ctx context.Context, databaseURL string, opts ...StoreOption) (*Store, error) {
 	poolCfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
@@ -97,11 +109,18 @@ func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
 	// Default pool is 4 connections — far too low for proxy-per-request pattern.
 	// Each proxied exec/file/pty call does a DB lookup before forwarding.
 	poolCfg.MaxConns = 50
-	// A burst arrives all at once, so a pool that idles low makes most of those
-	// requests wait on a fresh TCP connection plus a Postgres auth handshake
-	// before doing any work. Holding connections open costs almost nothing on a
-	// single control plane and removes that stampede.
-	poolCfg.MinConns = 20
+	// Idle floor, deliberately low here and raised per-caller.
+	//
+	// This constructor is not control-plane only — cmd/worker opens two pools of
+	// its own — so a floor set here multiplies by (workers × 2 + control
+	// planes). On prod that is 5 workers × 2 + 1 CP = 11 pools against
+	// max_connections=200, so a floor of 20 would sit at 220 idle before serving
+	// a request. WithMinConns lets the one process that benefits ask for it,
+	// instead of every process inheriting it by linking this package.
+	poolCfg.MinConns = 5
+	for _, opt := range opts {
+		opt(poolCfg)
+	}
 	// Recycle connections periodically to prevent stale/leaked connections from
 	// piling up on the Postgres server (e.g. after worker restarts/deletions).
 	poolCfg.MaxConnLifetime = 30 * time.Minute
@@ -724,6 +743,10 @@ type APIKey struct {
 }
 
 // HashAPIKey returns the SHA-256 hash of a plaintext API key.
+// lastUsedSlots caps concurrent last_used writes, sized well under MaxConns so
+// this bookkeeping can never be what exhausts the pool.
+var lastUsedSlots = make(chan struct{}, 4)
+
 func HashAPIKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:])
@@ -765,11 +788,22 @@ func (s *Store) ValidateAPIKey(ctx context.Context, keyPlaintext string) (uuid.U
 	// the hot path, whose only consumer is a dashboard column. The request
 	// context is deliberately not reused: it is cancelled the moment the
 	// response is written, which would abort this most of the time.
-	go func() {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = s.pool.Exec(bg, `UPDATE api_keys SET last_used = now() WHERE key_hash = $1`, hash)
-	}()
+	//
+	// Bounded, and dropped rather than queued at the bound. Callers normally
+	// memoize validation so these are rare, but with that memo disabled this
+	// runs per request; unbounded, a burst would detach a goroutine per request,
+	// each competing for the same pool with no backpressure. A missed timestamp
+	// on a dashboard column is not worth a connection.
+	select {
+	case lastUsedSlots <- struct{}{}:
+		go func() {
+			defer func() { <-lastUsedSlots }()
+			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = s.pool.Exec(bg, `UPDATE api_keys SET last_used = now() WHERE key_hash = $1`, hash)
+		}()
+	default:
+	}
 	return orgID, createdBy, nil
 }
 
