@@ -424,3 +424,49 @@ describe("safeReturnTo — deferred-action deep-link validation", () => {
     expect(safeReturnTo(undefined)).toBeNull();
   });
 });
+
+// /internal/warm-org pre-populates this colo's auth + create-context caches so a
+// key used rarely (a weekly benchmark) is not cold when it matters. It is
+// HMAC-auth'd because it reads every API-key hash on an org, so the auth gate is
+// the part worth pinning down — a warm cache is an optimisation, but an open
+// route that enumerates key material is not.
+describe("/internal/warm-org — auth boundary", () => {
+  const ADMIN = "admin-secret";
+  const authEnv = { ...env, CF_ADMIN_SECRET: ADMIN } as unknown as Env;
+  const sign = async (secret: string, ts: string, body: string): Promise<string> => {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
+    return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const post = async (o: { secret?: string; ts?: string; sig?: string; body?: string } = {}) => {
+    const body = o.body ?? JSON.stringify({ org_id: "org-x" });
+    const ts = o.ts ?? Math.floor(Date.now() / 1000).toString();
+    const sig = o.sig ?? (await sign(o.secret ?? ADMIN, ts, body));
+    return worker.fetch(
+      new Request("https://app.opencomputer.dev/internal/warm-org", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Timestamp": ts, "X-Signature": sig },
+        body,
+      }),
+      authEnv,
+      ctx,
+    );
+  };
+
+  it("rejects a wrong signature", async () => {
+    expect((await post({ secret: "not-the-admin-secret" })).status).toBe(401);
+  });
+
+  it("rejects a stale timestamp even with a valid signature", async () => {
+    const ts = (Math.floor(Date.now() / 1000) - 3600).toString();
+    expect((await post({ ts })).status).toBe(401);
+  });
+
+  it("requires org_id", async () => {
+    expect((await post({ body: JSON.stringify({}) })).status).toBe(400);
+  });
+
+  it("authorizes with the admin secret", async () => {
+    expect((await post()).status).not.toBe(401);
+  });
+});

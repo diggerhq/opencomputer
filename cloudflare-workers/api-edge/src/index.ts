@@ -42,6 +42,7 @@ import {
   ORG_STALE_MAX_MS,
   RUNNING_COUNT_SQL,
   keepCreateContextWarm,
+  warmCreateContextColo,
   type CellRow,
   type OrgPolicy,
 } from "./create_context_cache";
@@ -5010,6 +5011,75 @@ export default {
       const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(parsed.org_id));
       const r = await stub.fetch(`https://do/mark-free?org_id=${encodeURIComponent(parsed.org_id)}`, { method: "POST" });
       return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
+    }
+
+    // /internal/warm-org — pre-populate this colo's caches for one org.
+    //
+    // The auth and create-context tiers live in the colo cache, and every entry
+    // in them expires (auth 10min, org/cells/count 5min). An API key used once
+    // a week is therefore always cold when it matters, and a cold miss costs a
+    // D1 read against a primary in WNAM while the request runs in IAD —
+    // measured at 340ms, paid by EVERY request in a burst because the cold path
+    // is not single-flighted. On a burst-100 that is the difference between a
+    // 339ms TTI and a 1585ms one.
+    //
+    // Warming has to run IN the colo it warms: the cache is per-colo, and a
+    // Worker cron fires wherever Cloudflare puts it. So this is a route, driven
+    // from a host in the target metro, rather than a scheduled handler.
+    //
+    // Keys are warmed by HASH, read from D1 — the plaintext never leaves the
+    // database and the caller never needs it. That also means every key on the
+    // org is warmed, so this keeps working when a key is rotated.
+    //
+    // HMAC-auth'd with CF_ADMIN_SECRET, same scheme as do-mark-free.
+    if (path === "/internal/warm-org" && req.method === "POST") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      const parsed = JSON.parse(body) as { org_id?: string };
+      if (!parsed.org_id) return json({ error: "org_id required" }, 400);
+
+      // Same projection resolveCaller caches, so a warmed entry is byte-for-byte
+      // what a real miss would have written. Drift here would be invisible: the
+      // cache would hit and serve a subtly different caller.
+      const rows = await env.OPENCOMPUTER_DB.prepare(
+        `SELECT k.key_hash, k.org_id, k.created_by, k.expires_at,
+                CASE WHEN m.role IN ('owner', 'admin') THEN 'admin' ELSE m.role END AS role
+           FROM api_keys k
+           LEFT JOIN org_memberships m
+             ON m.org_id = k.org_id AND m.user_id = k.created_by
+          WHERE k.org_id = ?1`,
+      ).bind(parsed.org_id).all<{
+        key_hash: string;
+        org_id: string;
+        created_by: string | null;
+        expires_at: number | null;
+        role: string | null;
+      }>();
+
+      const at = Date.now();
+      let warmed = 0;
+      for (const row of rows.results ?? []) {
+        const caller: Caller = {
+          orgID: row.org_id,
+          userID: row.created_by,
+          ...(row.role ? { role: row.role } : {}),
+        };
+        await coloPut("auth", row.key_hash, { caller, expiresAt: row.expires_at, cachedAtMs: at }, AUTH_STALE_MAX_MS / 1000);
+        warmed++;
+      }
+      // org policy + concurrency count + the active-cell list, the other three
+      // reads a cold create pays.
+      await warmCreateContextColo(env.OPENCOMPUTER_DB, [parsed.org_id]);
+
+      return json({
+        warmed,
+        org_id: parsed.org_id,
+        colo: (req as { cf?: { colo?: string } }).cf?.colo ?? "unknown",
+      });
     }
 
     // /internal/model-billing/enable|disable — operator-triggered managed-billing
