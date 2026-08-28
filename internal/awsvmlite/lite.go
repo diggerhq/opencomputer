@@ -679,10 +679,17 @@ func (m *Manager) do(ctx context.Context, b *Box, method, path string, body []by
 // for one — warm stock and bound sandboxes alike — so neither AWS's idle timer
 // nor our keep-alive connection lapses. See Config.TouchInterval.
 //
-// Failures are logged and nothing more. A non-200 here is not proof the box is
-// bad — a 502 includes a box mid-resume — and this backend deliberately has no
-// eviction ladder to feed. A box that is genuinely gone fails its next claim,
-// which is the only place the distinction matters.
+// A failed touch is not itself proof the box is bad — a 502 covers a box
+// mid-resume — so a failure is never enough to evict on. But "it fails its next
+// claim" was not a sufficient answer either: nothing removed a dead box from the
+// warm set, so Depth() kept counting it, the filler saw itself at target and
+// launched nothing, and every claim popped a corpse. AWS terminates a microvm at
+// its 8h service cap, so the whole pool reaches that state at once, roughly 8h
+// after it was filled, and stays there until someone restarts this process.
+//
+// So: touch failures are only a SUSPICION. Each one is confirmed against AWS,
+// and only a box AWS reports as gone is evicted — which is what lets the filler
+// see the gap and refill it.
 func (m *Manager) touchIdle(ctx context.Context) {
 	now := time.Now()
 	m.mu.Lock()
@@ -715,6 +722,7 @@ func (m *Manager) touchIdle(ctx context.Context) {
 		failed  int
 		sample  error
 		touched []*Box
+		suspect []*Box
 	)
 	sem := make(chan struct{}, 16)
 	for _, b := range due {
@@ -746,6 +754,7 @@ func (m *Manager) touchIdle(ctx context.Context) {
 				if sample == nil {
 					sample = fmt.Errorf("%s: %w", b.MicrovmID, err)
 				}
+				suspect = append(suspect, b)
 				return
 			}
 			ok++
@@ -771,6 +780,57 @@ func (m *Manager) touchIdle(ctx context.Context) {
 		msg += fmt.Sprintf("; first failure %v", sample)
 	}
 	log.Print(msg)
+
+	if len(suspect) > 0 {
+		m.evictDead(ctx, suspect)
+	}
+}
+
+// evictDead asks AWS about boxes whose touch failed and drops the ones that are
+// genuinely gone from the warm set.
+//
+// Only warm stock is evicted. A bound box belongs to a customer, and its row is
+// the reconciler's business — dropping it here would strand the sandbox rather
+// than close it.
+func (m *Manager) evictDead(ctx context.Context, suspect []*Box) {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		dead = make(map[string]struct{}, len(suspect))
+	)
+	sem := make(chan struct{}, 16)
+	for _, b := range suspect {
+		wg.Add(1)
+		go func(b *Box) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			box, err := m.client.Get(ctx, b.MicrovmID)
+			// An error here is ambiguous — a throttle reads the same as a gone
+			// box — so it is left alone and re-checked on the next tick. Only a
+			// definite not-alive is acted on.
+			if err != nil || box.Alive() {
+				return
+			}
+			mu.Lock()
+			dead[b.MicrovmID] = struct{}{}
+			mu.Unlock()
+		}(b)
+	}
+	wg.Wait()
+	if len(dead) == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	evicted := m.dropWarmLocked(dead)
+	depth := len(m.warm)
+	m.mu.Unlock()
+
+	if evicted > 0 {
+		log.Printf("awsvmlite: evicted %d dead box(es) from warm (depth=%d/%d) — filler will replace them",
+			evicted, depth, m.cfg.WarmTarget)
+	}
 }
 
 func (m *Manager) terminate(id string) {
@@ -810,4 +870,31 @@ func (m *Manager) logState() {
 	m.mu.Unlock()
 	log.Printf("awsvmlite: state warm=%d bound=%d inflight=%d depth=%d/%d",
 		warm, bound, inflight, warm, m.cfg.WarmTarget)
+}
+
+// dropWarmLocked removes the named boxes from the warm set and reports how many
+// went. Caller holds m.mu.
+//
+// Split out from evictDead so the part that can silently corrupt the pool — the
+// slice rebuild — is testable without an AWS client. Bound boxes are not
+// considered: this only ever shortens warm stock.
+func (m *Manager) dropWarmLocked(dead map[string]struct{}) int {
+	if len(dead) == 0 {
+		return 0
+	}
+	kept := m.warm[:0]
+	evicted := 0
+	for _, b := range m.warm {
+		if _, gone := dead[b.MicrovmID]; gone {
+			evicted++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	// Clear the tail so evicted boxes are not retained by the backing array.
+	for i := len(kept); i < len(m.warm); i++ {
+		m.warm[i] = nil
+	}
+	m.warm = kept
+	return evicted
 }

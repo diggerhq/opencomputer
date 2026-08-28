@@ -88,3 +88,41 @@ func TestDeliveredSizeFallsBackToTheImageRatherThanZero(t *testing.T) {
 		t.Fatalf("delivered = %dMB/%dcpu, want the requested 8192MB/4cpu", got.MemoryMB, got.CPUCount)
 	}
 }
+
+// A box AWS has terminated must leave the warm set, or Depth() keeps counting it,
+// the filler believes it is at target and launches nothing, and every claim pops
+// a corpse. AWS terminates a microvm at its 8h service cap, so a pool filled in
+// one go reaches that state all at once — the failure is total, not gradual.
+func TestDropWarmLockedRemovesOnlyTheDeadBoxes(t *testing.T) {
+	m := &Manager{warm: []*Box{
+		{MicrovmID: "a"}, {MicrovmID: "b"}, {MicrovmID: "c"}, {MicrovmID: "d"},
+	}}
+	got := m.dropWarmLocked(map[string]struct{}{"b": {}, "d": {}})
+	if got != 2 {
+		t.Fatalf("evicted %d, want 2", got)
+	}
+	var left []string
+	for _, b := range m.warm {
+		left = append(left, b.MicrovmID)
+	}
+	if len(left) != 2 || left[0] != "a" || left[1] != "c" {
+		t.Fatalf("warm = %v, want [a c]", left)
+	}
+	// The survivors must not be nil — a botched in-place rebuild shows up here
+	// rather than as a panic on the next claim.
+	for i, b := range m.warm {
+		if b == nil {
+			t.Fatalf("warm[%d] is nil after eviction", i)
+		}
+	}
+}
+
+func TestDropWarmLockedIsANoOpWhenNothingIsDead(t *testing.T) {
+	m := &Manager{warm: []*Box{{MicrovmID: "a"}, {MicrovmID: "b"}}}
+	if got := m.dropWarmLocked(nil); got != 0 {
+		t.Fatalf("evicted %d, want 0", got)
+	}
+	if len(m.warm) != 2 {
+		t.Fatalf("warm len %d, want 2", len(m.warm))
+	}
+}
