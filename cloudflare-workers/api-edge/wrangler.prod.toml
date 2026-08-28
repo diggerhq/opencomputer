@@ -172,6 +172,23 @@ POOL_STOCK_SHARD_IDS = "1,4,6,12"
 # no deploy. See pickHomeCell in src/index.ts.
 # Optional alpha route for Burst Sandboxes. Leave empty to disable.
 BURST_CELL_ID = "aws-us-east-2-burst-prod"
+# The MicroVM cell now runs the direct-exec (lite) backend, whose boxes have no
+# agent tunnel and whose warm set lives in the cell process. Both edge fast
+# paths assume the opposite, and neither can succeed against it:
+#
+#   EDGE_CLAIM — the stock DO can never be filled by a cell that holds its own
+#   warm set, so every create walked the shards and paid a CP round trip anyway.
+#   Measured on prod at 123ms of `claimmiss` on every create.
+#
+#   EDGE_EXEC — the session DO reaches a box by dialing its agent tunnel. With
+#   no tunnel to dial it can only answer vm_not_connected, after paying its
+#   entry grace. Measured on prod at 224ms of `vmdo` on every exec.
+#
+# Both scoped to the MicroVM runtime, so QEMU orgs sharing this edge keep the
+# edge-claim and DO exec paths untouched.
+MICROVM_EDGE_CLAIM = "0"
+MICROVM_EDGE_EXEC = "0"
+
 MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
