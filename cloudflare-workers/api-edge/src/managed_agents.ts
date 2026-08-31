@@ -206,6 +206,21 @@ function strings(value: unknown): string[] {
 
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
+  const status =
+    deployment.status === "pending" ||
+    deployment.status === "ready" ||
+    deployment.status === "failed"
+      ? deployment.status
+      : undefined;
+  const stage =
+    deployment.stage === "validating" ||
+    deployment.stage === "uploading" ||
+    deployment.stage === "building" ||
+    deployment.stage === "snapshotting" ||
+    deployment.stage === "verifying" ||
+    deployment.stage === "ready"
+      ? deployment.stage
+      : undefined;
   return {
     id: deployment.id,
     agentId: deployment.agentId,
@@ -213,6 +228,11 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(status ? { status } : {}),
+    ...(stage ? { stage } : {}),
+    ...(typeof deployment.environmentDigest === "string"
+      ? { environmentDigest: deployment.environmentDigest }
+      : {}),
     ...(deployment.projectDeployment
       ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
       : {}),

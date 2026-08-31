@@ -1077,6 +1077,9 @@ describe("managed agents proxy", () => {
               },
             ],
             createdAt: "2026-07-30T00:00:00.000Z",
+            status: "pending",
+            stage: "building",
+            environmentDigest: "e".repeat(64),
             artifact: { bucket: "private-bucket" },
             imageArn: "arn:aws:private",
           },
@@ -1149,7 +1152,13 @@ describe("managed agents proxy", () => {
         }),
       ],
     });
-    expect(JSON.stringify(await response.json())).not.toMatch(
+    const deployment = await response.json();
+    expect(deployment).toMatchObject({
+      status: "pending",
+      stage: "building",
+      environmentDigest: "e".repeat(64),
+    });
+    expect(JSON.stringify(deployment)).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,
     );
   });
