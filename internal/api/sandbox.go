@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/awsvm"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/edgeclient"
@@ -894,9 +895,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// yields the same answer it would further down.
 	tr.mark("tmpl")
 	orgRuntime := s.runtimeFor(c)
-	backend, ok := s.claimBackend(placement{
-		region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
-	})
+	place := placement{region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg}
+	backend, ok := s.claimBackend(place)
 
 	// This is the FLEET's warm pool: rows in this cell's Postgres, claimed by
 	// resume+rebind on a QEMU worker. A backend that keeps its own warm stock
@@ -938,8 +938,16 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// what each step means here. Before this the sequence was inline and the
 	// persist-before-activate constraint was a comment.
 	if !ok {
-		// No registered backend can accept a sandbox. A cell in this state can
-		// still serve the ones it already has, so this is a capacity answer.
+		// Ask first whether a backend refused for a reason a retry can never
+		// fix — an unavailable size being the one that matters, since telling
+		// that customer to wait for capacity sends them to support about a
+		// shortage that does not exist.
+		if why := s.explainRefusal(place); why != nil {
+			return respondCreateErr(c, why)
+		}
+		// Otherwise no registered backend can accept a sandbox. A cell in this
+		// state can still serve the ones it already has, so this is a capacity
+		// answer.
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "out of capacity: no sandbox capacity is currently available in this region",
 		})
@@ -1024,6 +1032,14 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			if host.goldenVersion != "" {
 				_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, host.goldenVersion)
 			}
+			// The host's hard deadline, stamped BEFORE the status flip for the
+			// same reason as the golden: once the row reads `running` it is
+			// live to every other reader, and a running row with no deadline is
+			// exactly the leak this closes. No-ops when the runtime has no such
+			// deadline, which is every QEMU sandbox.
+			if !host.endAt.IsZero() {
+				_ = s.store.SetSandboxEndAt(ctx, sandboxID, host.endAt)
+			}
 			return s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "running", nil)
 		},
 
@@ -1087,6 +1103,13 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		"region":    region,
 		"workerID":  workerID,
 	}
+	// The provider's hard deadline, so the index the edge reads can carry it.
+	// Already stamped on the PG row above, but PG is per-cell and the
+	// customer-facing read is answered from D1 — without this the stamp is
+	// invisible to the only reader that matters.
+	if !host.endAt.IsZero() {
+		resp["endAt"] = host.endAt.UTC().Format(time.RFC3339)
+	}
 	if s.sandboxDomain != "" {
 		resp["sandboxDomain"] = s.sandboxDomain
 	}
@@ -1102,6 +1125,17 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 
 func (s *Server) getSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// The holding backend knows the live state; the worker registry does not
+	// know this sandbox exists. Asking AWS rather than the local binding is
+	// deliberate — see awsvmlite's Get.
+	if mgr, ok := s.execManagerFor(id); ok {
+		sb, err := mgr.Get(c.Request().Context(), id)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+		}
+		return c.JSON(http.StatusOK, sb)
+	}
 
 	// Server mode with worker registry: look up from PG and issue fresh token
 	if s.workerRegistry != nil {
@@ -1511,10 +1545,6 @@ func (s *Server) listSandboxesRemote(c echo.Context) error {
 }
 
 func (s *Server) setTimeout(c echo.Context) error {
-	if s.router == nil {
-		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
-	}
-
 	id := c.Param("id")
 
 	var req types.TimeoutRequest
@@ -1531,8 +1561,34 @@ func (s *Server) setTimeout(c echo.Context) error {
 			"error": "timeout must be non-negative (0 disables auto-hibernate)",
 		})
 	}
+	want := time.Duration(req.Timeout) * time.Second
 
-	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
+	// A managed backend owns its own idle policy, because s.router only tracks
+	// sandboxes the QEMU fleet holds — a managed sandbox is not in it, so the
+	// call below would silently do nothing and the customer's timeout would
+	// never fire.
+	if session, err := s.store.GetSandboxSession(c.Request().Context(), id); err == nil && session != nil {
+		if t, ok := s.idleTimeouterFor(session.WorkerID); ok {
+			effective, err := t.SetIdleTimeout(id, want)
+			if err != nil {
+				return respondManagerErr(c, err)
+			}
+			// Reported rather than assumed: a runtime whose provider destroys
+			// hosts on its own schedule cannot honour a timeout longer than the
+			// host has left, so the answer may not be what was asked for. The
+			// sandbox's end_at carries when it actually dies.
+			return c.JSON(http.StatusOK, map[string]interface{}{
+				"timeout":   int(effective.Seconds()),
+				"requested": req.Timeout,
+				"applied":   effective == want,
+			})
+		}
+	}
+
+	if s.router == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+	s.router.SetTimeout(id, want)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -1649,6 +1705,13 @@ func (s *Server) effectiveBillingProvider(c echo.Context, orgID uuid.UUID) strin
 
 func (s *Server) setLimits(c echo.Context) error {
 	id := c.Param("id")
+
+	// Sizing is a property of the image on the managed runtimes, so this is a
+	// 501 rather than a failed worker dispatch. Answering it here is what makes
+	// the difference visible to a caller instead of looking like an outage.
+	if _, ok := s.execManagerFor(id); ok {
+		return respondManagerErr(c, fmt.Errorf("set resource limits: %w", awsvm.ErrUnsupported))
+	}
 	ctx := c.Request().Context()
 
 	var req struct {
@@ -1756,6 +1819,27 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
 	cpuMaxUsec := int64(cpuPercent) * 1000
 	cpuPeriodUsec := int64(100000)
+
+	// Ask the runtime that owns the sandbox BEFORE anything is written.
+	//
+	// Placed here rather than next to the worker dispatch below for two
+	// reasons. It has to be before the autoscale-disable, or a scale that the
+	// runtime cannot perform still turns the customer's autoscaling off — a
+	// side effect from a request that then fails. And it has to be before the
+	// registry branch, because a managed cell still HAS a worker registry (it
+	// answers worker_id lookups) with no workers in it, so falling through
+	// answers "no gRPC connection to worker vmhost:..." for a runtime whose
+	// real answer is "sizing is a property of the image and cannot change".
+	if mgr, ok := s.execManagerFor(id); ok {
+		if err := mgr.SetResourceLimits(c.Request().Context(), id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"sandboxID":  id,
+			"memoryMB":   req.MemoryMB,
+			"cpuPercent": cpuPercent,
+		})
+	}
 
 	// Manual scale disables autoscale. Rationale: a user explicitly setting a
 	// size has signalled they want predictability — letting the autoscaler
@@ -2582,6 +2666,19 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 func (s *Server) rebootSandbox(c echo.Context) error {
 	id := c.Param("id")
 
+	// A backend that holds this sandbox serves the reboot itself. Checked
+	// BEFORE the registry branch: a managed sandbox has no registered worker,
+	// so the remote path below can only answer "no gRPC connection to worker
+	// vmhost:…" — which is what it did, for a runtime whose manager implements
+	// RebootSandbox perfectly well. Found on dev; the manager code was correct
+	// and simply unreachable.
+	if mgr, ok := s.execManagerFor(id); ok {
+		if err := mgr.RebootSandbox(c.Request().Context(), id); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	if s.workerRegistry != nil {
 		return s.rebootSandboxRemote(c, id)
 	}
@@ -2625,6 +2722,14 @@ func (s *Server) rebootSandboxRemote(c echo.Context, sandboxID string) error {
 // POST /api/sandboxes/:id/power-cycle
 func (s *Server) powerCycleSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// Backend first, for the same reason as rebootSandbox above.
+	if mgr, ok := s.execManagerFor(id); ok {
+		if _, err := mgr.PowerCycleSandbox(c.Request().Context(), id); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 
 	if s.workerRegistry != nil {
 		return s.powerCycleSandboxRemote(c, id)
@@ -2710,9 +2815,24 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
 	}
+	// Whether the CUSTOMER chose a kind, before any defaulting. The difference
+	// decides whether an impossible kind is an error or just the wrong default:
+	// asking for "full" is a request to refuse, while asking for "a checkpoint"
+	// on a runtime that only makes one sort is a request to satisfy.
+	kindWasExplicit := req.Kind != ""
+	noMemoryCapture := s.checkpointKindUnsupported(session.WorkerID)
+
 	kind := req.Kind
 	if kind == "" {
+		// Default follows the runtime. `full` is right for the fleet, but on a
+		// runtime that cannot capture RAM it would turn every plain
+		// createCheckpoint(name) — the call the SDK makes when the caller says
+		// nothing — into a 501, leaving that runtime with no working checkpoint
+		// API at all.
 		kind = "full"
+		if noMemoryCapture {
+			kind = "disk_only"
+		}
 	}
 	if kind != "full" && kind != "disk_only" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "kind must be full or disk_only"})
@@ -2721,6 +2841,37 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "promoteToFull is only supported for disk_only checkpoints"})
 	}
 	shouldPromoteToFull := shouldPromoteCheckpoint(kind, req.PromoteToFull)
+
+	// A runtime with no memory-state capture can produce neither a full
+	// checkpoint nor a promotion of one, because both mean "boot a VM from this
+	// and capture its RAM". Refuse here, where there is still a response to
+	// carry the reason.
+	//
+	// Without this the request is accepted, the disk half succeeds, and the
+	// promotion is handed to a background goroutine that reaches for a worker
+	// this cell does not have — so the customer is told their checkpoint is
+	// being promoted and it silently never is. A 501 saying the operation does
+	// not exist here is the truthful answer, and the disk-only checkpoint they
+	// can have is one flag away.
+	if noMemoryCapture {
+		// Only an EXPLICIT ask is refused, on both axes. A plain disk_only
+		// request defaults to promoteToFull=nil, which shouldPromoteCheckpoint
+		// reads as yes; and a plain createCheckpoint(name) sends no kind at all.
+		// Refusing either would reject the ordinary checkpoint this runtime
+		// makes perfectly well, which is the one customers actually use.
+		explicitlyWantsMemory := (kindWasExplicit && kind == "full") ||
+			(req.PromoteToFull != nil && *req.PromoteToFull)
+		if explicitlyWantsMemory {
+			return c.JSON(http.StatusNotImplemented, map[string]string{
+				"error": "checkpoints on this sandbox capture the filesystem; live memory state cannot be captured on this runtime",
+			})
+		}
+		// Asked for by default rather than by the customer: take the disk-only
+		// checkpoint and skip a promotion that cannot happen, instead of
+		// queueing a background job that reaches for a worker this cell has
+		// none of and fails out of sight.
+		shouldPromoteToFull = false
+	}
 
 	// Enforce checkpoint limits per kind. Full checkpoints are heavier because
 	// they include memory/CPU state; disk-only checkpoints are cheaper and get
@@ -2798,7 +2949,21 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	pending := &pendingCreate{ready: make(chan struct{})}
 	s.pendingCreates.Store(sandboxID, pending)
 
-	if s.workerRegistry != nil {
+	// Who actually takes the checkpoint. A backend holding this sandbox runs it
+	// in-process; the worker path cannot, because such a sandbox has no entry in
+	// the registry and the dispatch below could only report the worker missing.
+	//
+	// Everything above this line — the retention sweep, the checkpoint row, the
+	// pending-create gate — is identical either way and stays where it is. Only
+	// the dispatch differs, and the in-process branch further down was already
+	// written for exactly this; it just reached for s.manager, which is nil on a
+	// control plane.
+	cpManager, cpManaged := s.execManagerFor(sandboxID)
+	if !cpManaged {
+		cpManager = s.manager
+	}
+
+	if s.workerRegistry != nil && !cpManaged {
 		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 		if err != nil {
 			s.pendingCreates.Delete(sandboxID)
@@ -2870,7 +3035,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				"kind": kind,
 			})
 		}()
-	} else if s.manager != nil {
+	} else if cpManager != nil {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
@@ -2882,14 +3047,14 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				type diskOnlyCheckpointer interface {
 					CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (string, string, int64, error)
 				}
-				diskMgr, ok := s.manager.(diskOnlyCheckpointer)
+				diskMgr, ok := cpManager.(diskOnlyCheckpointer)
 				if !ok {
 					err = fmt.Errorf("manager does not support disk-only checkpoints")
 				} else {
 					rootfsKey, workspaceKey, sizeBytes, err = diskMgr.CreateDiskOnlyCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
 				}
 			} else {
-				rootfsKey, workspaceKey, sizeBytes, err = s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+				rootfsKey, workspaceKey, sizeBytes, err = cpManager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
 			}
 
 			// Signal sandbox usable
@@ -3124,7 +3289,14 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
 	}
 
-	if s.workerRegistry != nil {
+	// Same seam as createCheckpoint: a backend holding this sandbox restores it
+	// in-process. Nothing else in this handler changes.
+	rsManager, rsManaged := s.execManagerFor(sandboxID)
+	if !rsManaged {
+		rsManager = s.manager
+	}
+
+	if s.workerRegistry != nil && !rsManaged {
 		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 		if err != nil {
 			s.pendingCreates.Delete(sandboxID)
@@ -3145,9 +3317,16 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 			pending.err = restoreErr
 			close(pending.ready)
 		}()
-	} else if s.manager != nil {
+	} else if rsManager != nil {
 		go func() {
-			restoreErr := s.manager.RestoreFromCheckpoint(context.Background(), sandboxID, checkpointID.String())
+			// BOUNDED, like the gRPC branch above. pendingCreates gates every
+			// subsequent request to this sandbox until ready is closed, so an
+			// unbounded restore that wedges does not merely fail — it makes the
+			// sandbox unreachable forever, and the caller sees its own connection
+			// time out rather than an error anyone can act on.
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			restoreErr := rsManager.RestoreFromCheckpoint(bgCtx, sandboxID, checkpointID.String())
 			if restoreErr != nil {
 				log.Printf("api: async restore %s/%s failed: %v", sandboxID, checkpointID, restoreErr)
 			}

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/pkg/types"
+
+	"github.com/opensandbox/opensandbox/internal/storage"
 )
 
 // backend.go — the seam between sandbox runtimes.
@@ -86,7 +90,7 @@ type Backend interface {
 // cmd/server before any Server exists, and because its predicate should cover
 // backends that are currently disabled: rows written while one was enabled
 // outlive the flag, and forgetting them would reap live sandboxes.
-var knownBackends = []Backend{(*microvmBackend)(nil)}
+var knownBackends = []Backend{(*liteBackend)(nil)}
 
 // ManagedWorkerIDPrefixes is the union of every known backend's worker_id
 // prefixes, for callers that must recognize managed sandboxes in SQL before the
@@ -275,6 +279,74 @@ func (s *Server) hibernatorFor(workerID string) (Hibernator, bool) {
 	return h, ok
 }
 
+// IdleTimeouter is a backend that can park a sandbox after a period of
+// customer inactivity.
+//
+// Separate from Hibernator because the two answer different questions: that one
+// parks on demand, this one decides WHEN. A runtime may honour a timeout only
+// partly — a provider that destroys hosts on its own schedule caps what any
+// timeout can promise — so the setter reports the value actually in force
+// rather than echoing the request.
+type IdleTimeouter interface {
+	// SetIdleTimeout applies a timeout and returns the one now in effect.
+	// Zero means no timeout is running, whether because the caller asked for
+	// none or because the runtime could not honour the one requested.
+	SetIdleTimeout(sandboxID string, d time.Duration) (time.Duration, error)
+}
+
+// checkpointKindUnsupported reports whether the runtime holding a sandbox is
+// unable to capture memory state, which is what a "full" checkpoint is.
+//
+// Asked of the backend rather than hardcoded per runtime: the property being
+// tested is "can this host's RAM be snapshotted", and only the backend knows.
+// A worker-held sandbox answers false and every existing QEMU path is
+// unchanged.
+func (s *Server) checkpointKindUnsupported(workerID string) bool {
+	b, ok := s.backendForWorkerID(workerID)
+	if !ok {
+		return false
+	}
+	c, ok := b.(MemoryStateCapturer)
+	return ok && !c.CapturesMemoryState()
+}
+
+// MemoryStateCapturer is a backend that can say whether its hosts support
+// snapshotting RAM. Absent means "yes", so a backend that never thought about
+// it keeps today's behaviour.
+type MemoryStateCapturer interface {
+	CapturesMemoryState() bool
+}
+
+// dispatchIdleTimeout sends a timeout request to the backend that owns the
+// sandbox, falling back to the proxy for a worker-held one.
+//
+// Needed because the proxy route is wrapped in refuseIfManaged, which 501s
+// every managed sandbox — correct while this runtime had no idle policy, and
+// wrong now that it does. Without this the customer's timeout is rejected
+// outright. Mirrors dispatchPTY.
+func (s *Server) dispatchIdleTimeout(local, proxied echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if s.store != nil {
+			if session, err := s.store.GetSandboxSession(c.Request().Context(), c.Param("id")); err == nil && session != nil {
+				if _, ok := s.idleTimeouterFor(session.WorkerID); ok {
+					return local(c)
+				}
+			}
+		}
+		return proxied(c)
+	}
+}
+
+// idleTimeouterFor resolves the backend that owns a sandbox's idle policy.
+func (s *Server) idleTimeouterFor(workerID string) (IdleTimeouter, bool) {
+	b, ok := s.backendForWorkerID(workerID)
+	if !ok {
+		return nil, false
+	}
+	t, ok := b.(IdleTimeouter)
+	return t, ok
+}
+
 // placement is the request-scoped input to Claim.
 //
 // Region is here rather than on the backend because it is a property of the
@@ -329,6 +401,11 @@ type activated struct {
 	sandboxID     string
 	status        string
 	goldenVersion string
+	// endAt is when the runtime's provider will destroy this host regardless of
+	// anything we do, or zero when there is no such deadline (the QEMU fleet) or
+	// it cannot be determined. Stamped on the row so that a row outliving its
+	// host stops being something a sweep has to notice — see migration 056.
+	endAt time.Time
 }
 
 // registerBackend adds a runtime to the dispatch set.
@@ -401,6 +478,87 @@ func (s *Server) backendForWorkerID(workerID string) (Backend, bool) {
 // First-accept rather than best-match: there is no scoring here, and there
 // should not be. Placement has to be decidable from the request alone, because
 // the decision is permanent — see Accepts.
+// HaltRestoreSpec is the shape a halted sandbox has to come back as. Carried
+// explicitly rather than re-read from the runtime, because by resume time the
+// runtime holds nothing: the host was released at halt.
+type HaltRestoreSpec struct {
+	Template string
+	MemoryMB int
+	CPUCount int
+}
+
+// haltArchiver is implemented by a backend whose sandboxes can be parked in a
+// way that OUTLIVES their host — the state goes to durable storage and the host
+// is given back entirely.
+//
+// This exists because suspending is not enough on every runtime. The MicroVM
+// provider counts suspended time against the same hard lifetime cap as running
+// time, so a suspended sandbox still dies at the cap and takes its disk with
+// it. A credit halt routinely lasts days, so parking that way would quietly
+// destroy the data of every org that failed to pay within one lifetime.
+//
+// The three methods are deliberately NOT one call. Archiving and releasing are
+// separated so the caller can durably record the archive while the host is
+// still alive: releasing first would mean a failed record write leaves an
+// archive nothing points at and a host that no longer exists, which is
+// unrecoverable. Everything else in this file that destroys something records
+// it first for the same reason.
+type haltArchiver interface {
+	// ArchiveForHalt writes durable state to the checkpoint store and does NOT
+	// touch the host.
+	ArchiveForHalt(ctx context.Context, sandboxID string, store *storage.CheckpointStore) (key string, sizeBytes int64, err error)
+	// ReleaseForHalt terminates the host. The point of no return — only safe
+	// once the archive from ArchiveForHalt has been recorded.
+	ReleaseForHalt(ctx context.Context, sandboxID string) error
+	// RestoreForResume gives the sandbox a NEW host and lays the archive back
+	// onto it, returning the worker id now serving it.
+	RestoreForResume(ctx context.Context, sandboxID, key string, store *storage.CheckpointStore, spec HaltRestoreSpec) (workerID string, err error)
+}
+
+// haltArchiverFor resolves the backend that can deep-park a sandbox, keyed by
+// the worker id on its row.
+//
+// Keyed by worker id rather than by a live lookup because at RESUME time the
+// sandbox has no host at all — the id is the only surviving evidence of which
+// runtime was serving it.
+func (s *Server) haltArchiverFor(workerID string) (haltArchiver, bool) {
+	b, ok := s.backendForWorkerID(workerID)
+	if !ok {
+		return nil, false
+	}
+	ha, ok := b.(haltArchiver)
+	return ha, ok
+}
+
+// placementExplainer is implemented by a Placer that can say WHY it refused a
+// create, when the reason is permanent.
+//
+// Without it every refusal collapses into "out of capacity", which is both
+// wrong and actively misleading for a request we are never going to serve: a
+// customer asking for a size this region does not offer is told to wait for
+// capacity and retry, and no amount of waiting or retrying will change the
+// answer. Only permanent reasons belong here — a transient shortage really is
+// a capacity answer and should stay one.
+type placementExplainer interface {
+	ExplainRefusal(p placement) error
+}
+
+// explainRefusal asks every registered backend whether it refused this create
+// for a permanent reason, returning the first such reason. Nil means no
+// backend claimed a permanent objection, so the refusal is a capacity answer.
+func (s *Server) explainRefusal(p placement) error {
+	for _, b := range s.backends {
+		ex, ok := b.(placementExplainer)
+		if !ok {
+			continue
+		}
+		if err := ex.ExplainRefusal(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) claimBackend(p placement) (Placer, bool) {
 	for _, b := range s.backends {
 		placer, ok := b.(Placer)
@@ -526,6 +684,29 @@ func (s *Server) dispatchDataPlane(local, proxied echo.HandlerFunc) echo.Handler
 	return func(c echo.Context) error {
 		if _, mgr, ok := s.backendFor(c.Request().Context(), c.Param("id")); ok && mgr != nil {
 			return local(c)
+		}
+		return proxied(c)
+	}
+}
+
+// refuseIfManaged wraps a proxy-only route so a sandbox held by a registered
+// backend is answered rather than proxied.
+//
+// The routes this guards — PTY, agent sessions, mounts, timeout, token refresh,
+// bidi exec streaming — are the ones no managed backend implements, so they go
+// straight to the worker proxy. That was not a graceful degradation. The proxy
+// resolves through the worker registry, a managed sandbox has no entry there,
+// and it concludes the worker was lost and writes the row to `stopped`: one PTY
+// request would destroy a healthy sandbox and every later request would 410.
+//
+// 501 is the honest answer — this runtime will never serve this — as opposed to
+// a 5xx that invites a retry against a sandbox that is fine.
+func (s *Server) refuseIfManaged(proxied echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if b, _, ok := s.backendFor(c.Request().Context(), c.Param("id")); ok {
+			return c.JSON(http.StatusNotImplemented, map[string]string{
+				"error": fmt.Sprintf("%s sandboxes do not support this operation", b.Name()),
+			})
 		}
 		return proxied(c)
 	}

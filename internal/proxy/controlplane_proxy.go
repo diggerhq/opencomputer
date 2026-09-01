@@ -28,6 +28,11 @@ type ControlPlaneProxy struct {
 	store      *db.Store
 	registry   *controlplane.RedisWorkerRegistry
 	transport  *http.Transport
+	// managedPreview resolves how to reach a guest port on a runtime this
+	// control plane holds in-process. nil, or a false return, sends the
+	// request down the worker path below unchanged — which is every QEMU
+	// sandbox. See preview_managed.go.
+	managedPreview func(sandboxID string) (ManagedPreview, bool)
 }
 
 // NewControlPlaneProxy creates a proxy for control plane subdomain routing.
@@ -122,6 +127,21 @@ func (p *ControlPlaneProxy) doProxy(c echo.Context, sandboxID string, port int) 
 			return c.JSON(http.StatusUnauthorized, map[string]string{
 				"error": "invalid preview token",
 			})
+		}
+	}
+
+	// A managed runtime holds its sandbox in this process and publishes no host
+	// port for it — the guest is reached through the runtime's own proxy, over
+	// TLS, with the customer's port carried in the path. Nothing below can
+	// serve that: the worker lookup would find no registered worker.
+	//
+	// Placed AFTER the preview-auth gate so a protected preview URL is still
+	// protected, and before the hibernation branch because a suspended MicroVM
+	// auto-resumes on the inbound request — there is no archive to restore and
+	// no worker to pick.
+	if p.managedPreview != nil {
+		if t, ok := p.managedPreview(sandboxID); ok {
+			return p.serveManagedPreview(c, sandboxID, port, t)
 		}
 	}
 

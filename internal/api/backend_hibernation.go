@@ -29,7 +29,7 @@ import (
 // registry (it still answers worker_id lookups) with no workers in it. So every
 // hibernate and wake on such a cell dispatched into an empty fleet and failed
 // with "no workers available", which is why the MicroVM tiered hibernation was
-// reachable from cmd/microvm-harness and from nothing else.
+// implemented and unreachable over HTTP.
 //
 // What is deliberately NOT shared with the QEMU path: the row-side bookkeeping
 // below is written out again rather than factored into a helper both call. The
