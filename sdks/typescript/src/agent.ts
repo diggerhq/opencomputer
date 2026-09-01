@@ -1,3 +1,4 @@
+import { openWebSocket } from "./websocket.js";
 export interface SandboxAgentEvent {
   type:
     | "ready"
@@ -111,8 +112,7 @@ export class SandboxAgent {
         : "";
     const wsEndpoint = `${wsUrl}/sandboxes/${this.sandboxId}/exec/${sessionId}${authParam}`;
 
-    const ws = new WebSocket(wsEndpoint);
-    ws.binaryType = "arraybuffer";
+    const ws = await openWebSocket(wsEndpoint);
 
     let gotExit = false;
     let resolveDone: (code: number) => void;
