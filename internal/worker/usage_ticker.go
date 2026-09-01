@@ -467,6 +467,20 @@ func (t *UsageTicker) flushSlice(sandboxID string, memoryMB, cpuCount int, start
 		"interval_s": intervalSec,
 		"memory_mb":  memoryMB,
 		"cpu_count":  cpuCount,
+		// final marks the last billable slice of this sandbox's life — the one
+		// emitted BY a destroy or hibernate rather than by the periodic sampler.
+		//
+		// The consumer needs it because it cannot infer it. events-ingest drops
+		// usage_ticks for sandboxes that are already terminal in its index — a
+		// good rule for a straggler from a dead sandbox, and exactly wrong for
+		// this tick, which is *supposed* to arrive as the sandbox ends. Without
+		// the flag the closing slice was silently discarded, so every sandbox
+		// that lived and died between two 20s samples billed nothing at all.
+		//
+		// Derived from dropState rather than passed in by each hook on purpose:
+		// dropState ALREADY means "this sandbox stops being billable now", so
+		// the two cannot drift, and a hook added later cannot forget to set it.
+		"final": dropState,
 	}); err != nil {
 		log.Printf("usage_ticker: flushSlice %s: LogEvent failed: %v", sandboxID, err)
 	}
