@@ -38,6 +38,9 @@ export interface ManagedAgentDeployment {
   projectDeploymentId?: string;
   localAgentId?: string;
   createdAt: string;
+  status?: "pending" | "ready" | "failed";
+  stage?: "validating" | "uploading" | "building" | "snapshotting" | "verifying" | "ready";
+  environmentDigest?: string;
 }
 
 export interface ManagedAgentEvent {
@@ -560,6 +563,14 @@ export class OpenComputerClient {
       size: number;
       contentType: string;
       body: string;
+    };
+    environmentSource?: {
+      digest: string;
+      size: number;
+      contentType: string;
+      body: string;
+      baseImage: string;
+      architecture: "linux/arm64";
     };
   }) {
     return this.request<ManagedAgentDeployment>(

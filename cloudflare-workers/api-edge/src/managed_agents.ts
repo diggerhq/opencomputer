@@ -16,6 +16,9 @@ export interface ManagedAgentsCaller {
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
 const MAX_AGENT_SOURCE_BYTES = 10 * 1024 * 1024;
+const MAX_AGENT_ENVIRONMENT_BYTES = 28 * 1024 * 1024;
+const APPROVED_AGENT_RUNTIME =
+  /^registry\.opencomputer\.dev\/serverless-agent:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export async function hasBYOKPlanAccess(
   env: ManagedAgentsEnv,
@@ -203,6 +206,21 @@ function strings(value: unknown): string[] {
 
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
+  const status =
+    deployment.status === "pending" ||
+    deployment.status === "ready" ||
+    deployment.status === "failed"
+      ? deployment.status
+      : undefined;
+  const stage =
+    deployment.stage === "validating" ||
+    deployment.stage === "uploading" ||
+    deployment.stage === "building" ||
+    deployment.stage === "snapshotting" ||
+    deployment.stage === "verifying" ||
+    deployment.stage === "ready"
+      ? deployment.stage
+      : undefined;
   return {
     id: deployment.id,
     agentId: deployment.agentId,
@@ -210,6 +228,11 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(status ? { status } : {}),
+    ...(stage ? { stage } : {}),
+    ...(typeof deployment.environmentDigest === "string"
+      ? { environmentDigest: deployment.environmentDigest }
+      : {}),
     ...(deployment.projectDeployment
       ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
       : {}),
@@ -849,6 +872,97 @@ async function sha256Hex(value: Uint8Array): Promise<string> {
     .join("");
 }
 
+function validateAgentEnvironment(bytes: Uint8Array): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
+  const environment = record(value);
+  if (
+    environment?.version !== 1 ||
+    environment.architecture !== "linux/arm64" ||
+    typeof environment.baseImage !== "string" ||
+    !APPROVED_AGENT_RUNTIME.test(environment.baseImage) ||
+    !Array.isArray(environment.files)
+  ) return undefined;
+  const dockerfileEntry = environment.files.find((entry) => {
+    const file = record(entry);
+    return file?.path === "Dockerfile" && typeof file.content === "string";
+  });
+  const encoded = record(dockerfileEntry)?.content;
+  if (typeof encoded !== "string") return undefined;
+  let dockerfile: string;
+  try {
+    dockerfile = atob(encoded);
+  } catch {
+    return undefined;
+  }
+  if (/^\s*#\s*syntax\s*=/im.test(dockerfile)) return undefined;
+  const stages = new Map<string, string | undefined>();
+  let approvedBase: string | undefined;
+  const logical = dockerfile
+    .replaceAll("\r\n", "\n")
+    .replace(/\\\s*\n/g, " ")
+    .split("\n");
+  for (const raw of logical) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const [instruction = "", ...rest] = line.split(/\s+/);
+    if (instruction.toUpperCase() !== "FROM") continue;
+    const tokens = rest.filter((token) => !token.startsWith("--platform="));
+    const image = tokens[0];
+    if (!image || image.includes("$")) return undefined;
+    approvedBase = APPROVED_AGENT_RUNTIME.test(image)
+      ? image
+      : stages.get(image.toLowerCase());
+    if (tokens[1]?.toUpperCase() === "AS" && tokens[2]) {
+      stages.set(tokens[2].toLowerCase(), approvedBase);
+    }
+  }
+  return approvedBase === environment.baseImage ? approvedBase : undefined;
+}
+
+async function uploadDeploymentSource(
+  base: string,
+  upstreamHeaders: Headers,
+  agentId: string,
+  source: Record<string, unknown>,
+  bytes: Uint8Array,
+  kind: "agent" | "environment",
+): Promise<Record<string, unknown> | Response> {
+  const uploadResponse = await fetch(`${base}/v1/deployment-uploads`, {
+    method: "POST",
+    headers: upstreamHeaders,
+    body: JSON.stringify({
+      agentId,
+      digest: source.digest,
+      size: source.size,
+      contentType: source.contentType,
+      kind,
+    }),
+    redirect: "manual",
+  });
+  if (!uploadResponse.ok) return publicErrorResponse(uploadResponse);
+  const upload = record(await uploadResponse.json().catch(() => null));
+  const artifact = record(upload?.artifact);
+  const uploadURL = typeof upload?.uploadUrl === "string" ? new URL(upload.uploadUrl) : null;
+  if (!uploadURL || uploadURL.protocol !== "https:" || upload?.method !== "PUT" || !artifact) {
+    return Response.json({ error: "managed agents service is unavailable" }, { status: 502 });
+  }
+  const stored = await fetch(uploadURL, {
+    method: "PUT",
+    headers: { "content-type": String(source.contentType) },
+    body: bytes,
+    redirect: "manual",
+  });
+  if (!stored.ok) {
+    return Response.json({ error: "managed agents service is unavailable" }, { status: 502 });
+  }
+  return artifact;
+}
+
 async function deploySourceAgent(
   request: Request,
   base: string,
@@ -856,6 +970,7 @@ async function deploySourceAgent(
 ): Promise<Response> {
   const body = record(await request.json().catch(() => null));
   const source = record(body?.source);
+  const environmentSource = record(body?.environmentSource);
   if (
     !body ||
     typeof body.agentId !== "string" ||
@@ -878,47 +993,38 @@ async function deploySourceAgent(
       "The agent source size or digest did not match.",
     );
   }
+  let environmentBytes: Uint8Array | undefined;
+  if (environmentSource) {
+    if (
+      typeof environmentSource.digest !== "string" ||
+      typeof environmentSource.size !== "number" ||
+      typeof environmentSource.contentType !== "string" ||
+      typeof environmentSource.body !== "string"
+    ) return invalidDeploymentResponse("The agent environment was invalid.");
+    environmentBytes = new TextEncoder().encode(environmentSource.body);
+    const baseImage = validateAgentEnvironment(environmentBytes);
+    if (
+      environmentBytes.byteLength !== environmentSource.size ||
+      environmentBytes.byteLength > MAX_AGENT_ENVIRONMENT_BYTES ||
+      (await sha256Hex(environmentBytes)) !== environmentSource.digest ||
+      baseImage !== environmentSource.baseImage ||
+      environmentSource.architecture !== "linux/arm64"
+    ) return invalidDeploymentResponse("The agent environment failed runtime validation.");
+  }
 
   const uploadHeaders = new Headers(upstreamHeaders);
   uploadHeaders.set("content-type", "application/json");
-  const uploadResponse = await fetch(`${base}/v1/deployment-uploads`, {
-    method: "POST",
-    headers: uploadHeaders,
-    body: JSON.stringify({
-      agentId: body.agentId,
-      digest: source.digest,
-      size: source.size,
-      contentType: source.contentType,
-    }),
-    redirect: "manual",
-  });
-  if (!uploadResponse.ok) return publicErrorResponse(uploadResponse);
-  const upload = record(await uploadResponse.json().catch(() => null));
-  const artifact = record(upload?.artifact);
-  const uploadURL =
-    typeof upload?.uploadUrl === "string" ? new URL(upload.uploadUrl) : null;
-  if (
-    !uploadURL ||
-    uploadURL.protocol !== "https:" ||
-    upload?.method !== "PUT" ||
-    !artifact
-  ) {
-    return Response.json(
-      { error: "managed agents service is unavailable" },
-      { status: 502 },
+  const artifact = await uploadDeploymentSource(
+    base, uploadHeaders, body.agentId, source, bytes, "agent",
+  );
+  if (artifact instanceof Response) return artifact;
+  let environmentArtifact: Record<string, unknown> | undefined;
+  if (environmentSource && environmentBytes) {
+    const uploaded = await uploadDeploymentSource(
+      base, uploadHeaders, body.agentId, environmentSource, environmentBytes, "environment",
     );
-  }
-  const stored = await fetch(uploadURL, {
-    method: "PUT",
-    headers: { "content-type": source.contentType },
-    body: bytes,
-    redirect: "manual",
-  });
-  if (!stored.ok) {
-    return Response.json(
-      { error: "managed agents service is unavailable" },
-      { status: 502 },
-    );
+    if (uploaded instanceof Response) return uploaded;
+    environmentArtifact = uploaded;
   }
 
   const deploymentResponse = await fetch(`${base}/v1/deployments`, {
@@ -940,6 +1046,16 @@ async function deploySourceAgent(
         ? { projectDeployment: body.projectDeployment }
         : {}),
       artifact,
+      ...(environmentArtifact
+        ? {
+            environment: {
+              artifact: environmentArtifact,
+              digest: environmentSource!.digest,
+              baseImage: environmentSource!.baseImage,
+              architecture: "linux/arm64",
+            },
+          }
+        : {}),
     }),
     redirect: "manual",
   });

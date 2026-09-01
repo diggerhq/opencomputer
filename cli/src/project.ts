@@ -12,6 +12,10 @@ import { basename, dirname, relative, resolve } from "node:path";
 import { Cron } from "croner";
 import { build as bundle } from "esbuild";
 import ts from "typescript";
+import {
+  buildAgentEnvironment,
+  type AgentEnvironmentSource,
+} from "./environment.js";
 
 export interface AgentManifest {
   schema: 1;
@@ -28,6 +32,7 @@ export interface BuiltAgentArtifact {
   body: Buffer;
   digest: string;
   elapsedMs: number;
+  environment?: AgentEnvironmentSource;
 }
 
 export interface HttpConnectionManifest {
@@ -2063,6 +2068,7 @@ export async function buildAgentArtifact(
   ) as { connections?: string[]; httpConnections?: HttpConnectionManifest[] };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
+  const environment = await buildAgentEnvironment(root);
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -2079,5 +2085,6 @@ export async function buildAgentArtifact(
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
+    ...(environment ? { environment } : {}),
   };
 }

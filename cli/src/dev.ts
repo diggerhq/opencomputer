@@ -257,6 +257,18 @@ async function registerBuiltDeployment(
       contentType: "application/vnd.opencomputer.agent+json",
       body: built.body.toString("utf8"),
     },
+    ...(built.environment
+      ? {
+          environmentSource: {
+            digest: built.environment.digest,
+            size: built.environment.size,
+            contentType: built.environment.contentType,
+            body: built.environment.body.toString("utf8"),
+            baseImage: built.environment.baseImage,
+            architecture: built.environment.architecture,
+          },
+        }
+      : {}),
   });
   return { built, deployment };
 }
@@ -307,6 +319,7 @@ export async function publishProjectDeployment(
         agents: builtAgents.map(({ source, built }) => ({
           id: source.localId,
           artifact: built.digest,
+          environment: built.environment?.digest,
         })),
       }),
     )
