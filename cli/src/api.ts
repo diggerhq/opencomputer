@@ -136,10 +136,18 @@ export interface TemplateInspection {
   expiresAt: string;
 }
 
+interface TemplateInspectionPreparing {
+  id: string;
+  status: "preparing";
+  repositoryUrl: string;
+  retryAfterMs: number;
+}
+
 export interface TemplateInstallation {
   id: string;
   inspectionId: string;
   projectId: string;
+  projectAgentId: string;
   projectUrl: string;
   state:
     | "awaiting_configuration"
@@ -319,14 +327,28 @@ export class OpenComputerClient {
     });
   }
 
-  inspectTemplate(repositoryUrl: string) {
-    return this.request<TemplateInspection>(
-      "/api/managed-agents/template-inspections",
-      {
+  async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {
+    const deadline = Date.now() + 10 * 60_000;
+    for (;;) {
+      const result = await this.request<
+        TemplateInspection | TemplateInspectionPreparing
+      >("/api/managed-agents/template-inspections", {
         method: "POST",
         body: JSON.stringify({ repositoryUrl }),
-      },
-    );
+      });
+      if ((result as TemplateInspectionPreparing).status !== "preparing") {
+        return result as TemplateInspection;
+      }
+      const preparing = result as TemplateInspectionPreparing;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          "Template preparation is still running; try again shortly",
+        );
+      }
+      await new Promise((resolvePromise) =>
+        setTimeout(resolvePromise, Math.max(500, preparing.retryAfterMs)),
+      );
+    }
   }
 
   createTemplateInstallation(input: {

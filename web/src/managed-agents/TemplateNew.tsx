@@ -79,11 +79,15 @@ export default function TemplateNew() {
         projectName: projectName.trim(),
         idempotencyKey: commandKey.current,
       })
+      const installationAgentId = (localAgentId?: string) =>
+        !localAgentId || localAgentId === reviewed.agents[0]?.id
+          ? installation.projectAgentId
+          : `${installation.projectAgentId}--${localAgentId}`
       for (const requirement of reviewed.requirements.secrets) {
         await putManagedProjectSecret({
           projectId: installation.projectId,
           environment: 'development',
-          agentId: requirement.agentId,
+          agentId: installationAgentId(requirement.agentId),
           name: requirement.name,
           value: secrets[requirement.name] ?? '',
           allowedOrigins: requirement.allowedOrigins,
@@ -96,7 +100,7 @@ export default function TemplateNew() {
         await putAgentRuntimeVariable({
           projectId: installation.projectId,
           environment: 'development',
-          agentId: requirement.agentId,
+          agentId: installationAgentId(requirement.agentId),
           name: requirement.name,
           value,
         })

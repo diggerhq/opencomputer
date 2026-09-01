@@ -513,6 +513,14 @@ function publicEventData(
 
 function publicTemplateInspection(value: unknown): Record<string, unknown> {
   const inspection = record(value) ?? {};
+  if (inspection.status === "preparing") {
+    return {
+      id: inspection.id,
+      status: "preparing",
+      repositoryUrl: inspection.repositoryUrl,
+      retryAfterMs: inspection.retryAfterMs,
+    };
+  }
   const repository = record(inspection.repository) ?? {};
   const template = record(inspection.template) ?? {};
   const firstRun = record(template.firstRun);
@@ -593,6 +601,7 @@ function publicTemplateInstallation(value: unknown): Record<string, unknown> {
     id: installation.id,
     inspectionId: installation.inspectionId,
     projectId: installation.projectId,
+    projectAgentId: installation.projectAgentId,
     projectUrl: installation.projectUrl,
     state: installation.state,
     ...(error ? { error: { stage: error.stage, message: error.message } } : {}),

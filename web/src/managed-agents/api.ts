@@ -135,10 +135,18 @@ const templateInspectionSchema = z.object({
   expiresAt: z.string(),
 })
 
+const templateInspectionPreparingSchema = z.object({
+  id: z.string(),
+  status: z.literal('preparing'),
+  repositoryUrl: z.string().url(),
+  retryAfterMs: z.number().positive(),
+})
+
 const templateInstallationSchema = z.object({
   id: z.string(),
   inspectionId: z.string(),
   projectId: z.string(),
+  projectAgentId: z.string(),
   projectUrl: z.string(),
   state: z.enum([
     'awaiting_configuration',
@@ -548,12 +556,31 @@ export async function createManagedProject(name: string) {
   )
 }
 
-export async function inspectManagedTemplate(repositoryUrl: string) {
-  return apiFetch(
-    '/managed-agents/template-inspections',
-    { method: 'POST', body: JSON.stringify({ repositoryUrl }) },
-    templateInspectionSchema,
-  )
+export async function inspectManagedTemplate(
+  repositoryUrl: string,
+): Promise<z.infer<typeof templateInspectionSchema>> {
+  const deadline = Date.now() + 10 * 60_000
+  for (;;) {
+    const result = await apiFetch(
+      '/managed-agents/template-inspections',
+      { method: 'POST', body: JSON.stringify({ repositoryUrl }) },
+      z.union([templateInspectionSchema, templateInspectionPreparingSchema]),
+    )
+    if ((result as { status?: string }).status !== 'preparing') {
+      return result as z.infer<typeof templateInspectionSchema>
+    }
+    const preparing = result as z.infer<
+      typeof templateInspectionPreparingSchema
+    >
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'Template preparation is still running; try again shortly',
+      )
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(500, preparing.retryAfterMs)),
+    )
+  }
 }
 
 export async function createManagedTemplateInstallation(input: {

@@ -29,6 +29,7 @@ import {
 } from "./session-command.js";
 import { formatSessionEvent } from "./session-prompt.js";
 import {
+  buildTemplateProject,
   normalizeTemplateRepositoryUrl,
   readTemplateManifest,
   templateDeployUrl,
@@ -504,6 +505,24 @@ export async function runCommand(
     return;
   }
 
+  if (command === "template" && args[0] === "build") {
+    args.shift();
+    const output = option(args, "--output");
+    const directory = args.shift() ?? process.cwd();
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const bundle = await buildTemplateProject(directory);
+    const serialized = `${JSON.stringify(bundle)}\n`;
+    if (output) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(output, serialized, { mode: 0o600 });
+      if (!globals.json)
+        process.stdout.write(`Built template bundle: ${output}\n`);
+    } else {
+      process.stdout.write(serialized);
+    }
+    return;
+  }
+
   const config = await resolveConfig(globals);
   const client = new OpenComputerClient(config);
 
@@ -596,6 +615,10 @@ export async function runCommand(
       projectName,
       idempotencyKey: crypto.randomUUID(),
     });
+    const installationAgentId = (localAgentId?: string) =>
+      !localAgentId || localAgentId === inspection.agents[0]?.id
+        ? installation.projectAgentId
+        : `${installation.projectAgentId}--${localAgentId}`;
     for (const requirement of inspection.requirements.secrets) {
       process.stderr.write(`${requirement.name}\n`);
       const value = await readSecretValue();
@@ -604,7 +627,7 @@ export async function runCommand(
         name: requirement.name,
         value,
         environment: "development",
-        agentId: requirement.agentId,
+        agentId: installationAgentId(requirement.agentId),
         allowedOrigins: requirement.allowedOrigins,
       });
     }
@@ -616,7 +639,7 @@ export async function runCommand(
         name: requirement.name,
         value,
         environment: "development",
-        agentId: requirement.agentId,
+        agentId: installationAgentId(requirement.agentId),
       });
     }
     let current = await client.finalizeTemplateInstallation(installation.id);

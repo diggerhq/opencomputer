@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  buildTemplateProject,
   normalizeTemplateRepositoryUrl,
   parseTemplateManifest,
   templateDeployUrl,
 } from "./template.js";
+import { initializeAgentProject } from "./project.js";
 
 const example = `schema = 1
 
@@ -113,4 +118,41 @@ test("builds the canonical dashboard handoff without a ref", () => {
     templateDeployUrl("https://github.com/diggerhq/opencomputer"),
     "https://app.opencomputer.dev/new?repository-url=https%3A%2F%2Fgithub.com%2Fdiggerhq%2Fopencomputer",
   );
+});
+
+test("builds reusable project artifacts without customer configuration", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-template-build-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.root, "oc-template.toml"),
+      `schema = 1
+[template]
+name = "Hello template"
+description = "A reusable hello-world project."
+default_project_name = "hello-template"
+[template.first_run]
+agent = "hello-world"
+prompt = "Say hello."
+`,
+    );
+    const bundle = await buildTemplateProject(initialized.root);
+    assert.equal(bundle.schema, 1);
+    assert.equal(bundle.template.name, "Hello template");
+    assert.deepEqual(bundle.agents, [
+      { id: "hello-world", name: "Hello World" },
+    ]);
+    assert.equal(bundle.artifacts.length, 1);
+    assert.match(bundle.artifacts[0]!.digest, /^[0-9a-f]{64}$/);
+    assert.ok(bundle.artifacts[0]!.size > 0);
+    assert.deepEqual(bundle.requirements, {
+      secrets: [],
+      runtimeVariables: [],
+      connections: [],
+    });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 });

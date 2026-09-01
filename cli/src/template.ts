@@ -1,5 +1,12 @@
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import {
+  buildAgentArtifact,
+  readProjectAgents,
+  readProjectResources,
+  type HttpConnectionManifest,
+  type ProjectResourceManifest,
+} from "./project.js";
 
 const TEMPLATE_FILE = "oc-template.toml";
 const MAX_TEMPLATE_BYTES = 64 * 1024;
@@ -27,6 +34,45 @@ export interface TemplateManifest {
     secrets: Record<string, TemplateRequirementAnnotation>;
     runtimeVariables: Record<string, TemplateRuntimeVariable>;
     connections: Record<string, TemplateRequirementAnnotation>;
+  };
+}
+
+export interface TemplateBuildArtifact {
+  localAgentId: string;
+  name: string;
+  digest: string;
+  size: number;
+  contentType: "application/vnd.opencomputer.agent+json";
+  body: string;
+  connections: string[];
+  httpConnections: HttpConnectionManifest[];
+}
+
+export interface TemplateBuildBundle {
+  schema: 1;
+  template: TemplateManifest["template"];
+  agents: Array<{ id: string; name: string }>;
+  artifacts: TemplateBuildArtifact[];
+  resources: ProjectResourceManifest;
+  requirements: {
+    secrets: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      localAgentId: string;
+      allowedOrigins: string[];
+    }>;
+    runtimeVariables: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      required: boolean;
+      example?: string;
+    }>;
+    connections: Array<{
+      id: string;
+      description?: string;
+    }>;
   };
 }
 
@@ -243,6 +289,126 @@ export async function readTemplateManifest(
   if (metadata.size > MAX_TEMPLATE_BYTES)
     fail(`file exceeds ${MAX_TEMPLATE_BYTES} bytes`);
   return parseTemplateManifest(await readFile(path, "utf8"));
+}
+
+export async function buildTemplateProject(
+  root = process.cwd(),
+): Promise<TemplateBuildBundle> {
+  const template = await readTemplateManifest(root);
+  const sources = await readProjectAgents(root);
+  const projectResources = await readProjectResources(root);
+  const artifacts: TemplateBuildArtifact[] = [];
+  const secretRequirements = new Map<
+    string,
+    {
+      name: string;
+      description?: string;
+      documentation?: string;
+      localAgentId: string;
+      allowedOrigins: Set<string>;
+    }
+  >();
+  const compiledConnections = new Set<string>();
+  for (const source of sources) {
+    const built = await buildAgentArtifact(source.root);
+    artifacts.push({
+      localAgentId: source.localId,
+      name: built.name,
+      digest: built.digest,
+      size: built.body.byteLength,
+      contentType: "application/vnd.opencomputer.agent+json",
+      body: built.body.toString("utf8"),
+      connections: built.connections,
+      httpConnections: built.httpConnections,
+    });
+    for (const connection of built.connections)
+      compiledConnections.add(connection);
+    for (const connection of built.httpConnections) {
+      compiledConnections.add(connection.id);
+      for (const header of Object.values(connection.headers)) {
+        if (typeof header === "string") continue;
+        const key = `${source.localId}:${header.name}`;
+        const annotation = template.template.secrets[header.name];
+        const requirement = secretRequirements.get(key) ?? {
+          name: header.name,
+          ...(annotation?.description
+            ? { description: annotation.description }
+            : {}),
+          ...(annotation?.documentation
+            ? { documentation: annotation.documentation }
+            : {}),
+          localAgentId: source.localId,
+          allowedOrigins: new Set<string>(),
+        };
+        requirement.allowedOrigins.add(connection.origin);
+        secretRequirements.set(key, requirement);
+      }
+    }
+  }
+  const compiledSecretNames = new Set(
+    [...secretRequirements.values()].map((requirement) => requirement.name),
+  );
+  for (const name of Object.keys(template.template.secrets)) {
+    if (!compiledSecretNames.has(name)) {
+      throw new Error(
+        `${TEMPLATE_FILE}: template.secrets.${name} is not referenced by a compiled connection`,
+      );
+    }
+  }
+  for (const id of Object.keys(template.template.connections)) {
+    if (!compiledConnections.has(id)) {
+      throw new Error(
+        `${TEMPLATE_FILE}: template.connections.${id} is not present in the compiled project`,
+      );
+    }
+  }
+  if (
+    template.template.firstRun &&
+    !sources.some(
+      (source) => source.localId === template.template.firstRun?.agent,
+    )
+  ) {
+    throw new Error(
+      `${TEMPLATE_FILE}: template.first_run.agent does not name a project agent`,
+    );
+  }
+  return {
+    schema: 1,
+    template: template.template,
+    agents: sources.map((source) => ({
+      id: source.localId,
+      name: source.manifest.name,
+    })),
+    artifacts,
+    resources: projectResources.manifest,
+    requirements: {
+      secrets: [...secretRequirements.values()].map((requirement) => ({
+        ...requirement,
+        allowedOrigins: [...requirement.allowedOrigins].sort(),
+      })),
+      runtimeVariables: Object.entries(template.template.runtimeVariables).map(
+        ([name, requirement]) => ({
+          name,
+          ...(requirement.description
+            ? { description: requirement.description }
+            : {}),
+          ...(requirement.documentation
+            ? { documentation: requirement.documentation }
+            : {}),
+          required: requirement.required ?? false,
+          ...(requirement.example ? { example: requirement.example } : {}),
+        }),
+      ),
+      connections: Object.entries(template.template.connections).map(
+        ([id, requirement]) => ({
+          id,
+          ...(requirement.description
+            ? { description: requirement.description }
+            : {}),
+        }),
+      ),
+    },
+  };
 }
 
 export function normalizeTemplateRepositoryUrl(value: string): string {
