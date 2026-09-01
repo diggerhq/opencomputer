@@ -226,6 +226,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{53, "migrations/053_default_org_concurrency_50.up.sql"},
 		{54, "migrations/054_sandbox_pool.up.sql"},
 		{55, "migrations/055_orgs_runtime.up.sql"},
+		{56, "migrations/056_sandbox_end_at.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -1561,9 +1562,16 @@ func (s *Store) ListSandboxSessions(ctx context.Context, orgID uuid.UUID, status
 	var rows pgx.Rows
 	var err error
 	if status != "" {
+		// A caller asking for 'running' means "alive", so a row past its
+		// deadline is excluded here rather than waiting for a sweep to relabel
+		// it — otherwise the dashboard shows sandboxes the customer no longer
+		// has. Other statuses are terminal and carry no deadline, so the
+		// predicate is a no-op for them.
 		rows, err = s.pool.Query(ctx,
 			`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version
-			 FROM sandbox_sessions WHERE org_id = $1 AND status = $2 ORDER BY started_at DESC LIMIT $3 OFFSET $4`,
+			 FROM sandbox_sessions
+			 WHERE org_id = $1 AND status = $2 AND ($2 <> 'running' OR end_at IS NULL OR end_at > now())
+			 ORDER BY started_at DESC LIMIT $3 OFFSET $4`,
 			orgID, status, limit, offset)
 	} else {
 		rows, err = s.pool.Query(ctx,
@@ -1611,6 +1619,10 @@ type MicrovmSessionRef struct {
 	// price on memory/cpu, so a restore that dropped them would silently
 	// re-meter every surviving sandbox at the backend's default.
 	Config []byte
+	// EndAt is the host's known death time, or zero if it has none. A row past
+	// it can be closed with NO provider call — which is the point: the pass
+	// that tidies up must not itself depend on the provider being reachable.
+	EndAt time.Time
 }
 
 // ListMicrovmSessions returns running MicroVM-backed sandboxes.
@@ -1630,7 +1642,10 @@ func (s *Store) ListMicrovmSessions(ctx context.Context, prefixes []string) ([]M
 		// so adding a runtime cannot leave this predicate behind — the failure
 		// that would look like sandboxes surviving a restart unroutable, with
 		// their hosts running and nothing able to reap them.
-		`SELECT sandbox_id, worker_id, config FROM sandbox_sessions
+		// Deliberately NOT deadline-filtered: this is the one query that WANTS
+		// expired rows, because closing them is its job. Every other read hides
+		// them; this one collects them.
+		`SELECT sandbox_id, worker_id, config, end_at FROM sandbox_sessions
 		 WHERE worker_id LIKE ANY($1) AND status = 'running'
 		 ORDER BY started_at DESC
 		 LIMIT 1000`, likePatterns(prefixes))
@@ -1643,10 +1658,15 @@ func (s *Store) ListMicrovmSessions(ctx context.Context, prefixes []string) ([]M
 	for rows.Next() {
 		var sandboxID, workerID string
 		var config []byte
-		if err := rows.Scan(&sandboxID, &workerID, &config); err != nil {
+		var endAt *time.Time
+		if err := rows.Scan(&sandboxID, &workerID, &config, &endAt); err != nil {
 			return nil, err
 		}
-		out = append(out, MicrovmSessionRef{SandboxID: sandboxID, WorkerID: workerID, Config: config})
+		ref := MicrovmSessionRef{SandboxID: sandboxID, WorkerID: workerID, Config: config}
+		if endAt != nil {
+			ref.EndAt = *endAt
+		}
+		out = append(out, ref)
 	}
 	return out, rows.Err()
 }
@@ -1708,10 +1728,18 @@ func (s *Store) ListSandboxIDsByWorkerStatus(ctx context.Context, workerID, stat
 	return ids, rows.Err()
 }
 
+// CountActiveSandboxes is what the org concurrency limit is enforced against,
+// which makes it the read where a leaked row hurts a customer most: a row still
+// saying `running` for a host that no longer exists consumes a slot, and the
+// customer is refused a create they are entitled to.
+//
+// The deadline check is what makes that impossible to reach rather than
+// something a sweep has to get to in time. See migration 056.
 func (s *Store) CountActiveSandboxes(ctx context.Context, orgID uuid.UUID) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM sandbox_sessions WHERE org_id = $1 AND status = 'running'`, orgID,
+		`SELECT COUNT(*) FROM sandbox_sessions
+		 WHERE org_id = $1 AND status = 'running' AND (end_at IS NULL OR end_at > now())`, orgID,
 	).Scan(&count)
 	return count, err
 }
@@ -2757,6 +2785,23 @@ func (s *Store) SetSandboxGoldenVersion(ctx context.Context, sandboxID, goldenVe
 	_, err := s.pool.Exec(ctx,
 		`UPDATE sandbox_sessions SET golden_version = $1 WHERE sandbox_id = $2`,
 		goldenVersion, sandboxID)
+	return err
+}
+
+// SetSandboxEndAt stamps the host's hard deadline on the row.
+//
+// Guarded on status: a sandbox that already reached a terminal state must not
+// have a future deadline written onto it, because the gated reads only consult
+// end_at for running rows and a resurrected-looking row is worse than a stale
+// one. See migration 056 for what the column buys.
+func (s *Store) SetSandboxEndAt(ctx context.Context, sandboxID string, endAt time.Time) error {
+	if endAt.IsZero() {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET end_at = $1
+		 WHERE sandbox_id = $2 AND status IN ('pending', 'running')`,
+		endAt, sandboxID)
 	return err
 }
 

@@ -348,6 +348,8 @@ interface SandboxCreateResult {
   workerID?: string;
   status?: string;
   memoryMB?: number;
+  // RFC3339, present only when the serving runtime enforces a hard deadline.
+  endAt?: string;
 }
 
 function isWebSocketUpgrade(req: Request): boolean {
@@ -1406,13 +1408,13 @@ async function insertSandboxIndex(
   // create the row doesn't exist yet, so the plain INSERT branch runs.
   await env.OPENCOMPUTER_DB.prepare(
     `INSERT INTO sandboxes_index
-       (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+       (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at, end_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
      ON CONFLICT(id) DO UPDATE SET
        org_id=excluded.org_id, user_id=excluded.user_id, cell_id=excluded.cell_id,
        worker_id=excluded.worker_id, status=excluded.status,
        cpu_count=excluded.cpu_count, memory_mb=excluded.memory_mb,
-       last_event_at=excluded.last_event_at
+       last_event_at=excluded.last_event_at, end_at=excluded.end_at
      WHERE sandboxes_index.status NOT IN ('stopped', 'error')`,
   )
     .bind(
@@ -1425,6 +1427,7 @@ async function insertSandboxIndex(
       fallbackCpuCount,
       parsed.memoryMB ?? fallbackMemoryMB,
       Math.floor(Date.now() / 1000),
+      unixFromISO(parsed.endAt),
     )
     .run();
 }
@@ -2366,6 +2369,18 @@ interface SandboxRow {
   created_at: number;
   last_event_at: number | null;
   stopped_at: number | null;
+  end_at: number | null;
+}
+
+// unixFromISO turns the control plane's RFC3339 deadline into the unix seconds
+// the index stores. Anything unparseable becomes NULL rather than a guess: a
+// bogus deadline in the past would make a live sandbox look expired to every
+// reader that treats this column as terminal.
+function unixFromISO(v: unknown): number | null {
+  if (typeof v !== "string" || v === "") return null;
+  const ms = Date.parse(v);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.floor(ms / 1000);
 }
 
 function isoFromUnix(secs: number | null): string {
@@ -2384,7 +2399,11 @@ function sandboxRowToJSON(r: SandboxRow): Record<string, unknown> {
     cpuCount: r.cpu_count ?? 0,
     memoryMB: r.memory_mb ?? 0,
     startedAt: isoFromUnix(r.created_at),
-    endAt: isoFromUnix(r.stopped_at),
+    // "When does this sandbox end" — the actual end once it has ended, and
+    // otherwise the deadline its provider will enforce. Previously this was
+    // stopped_at alone, which meant a running sandbox always reported the Go
+    // zero time here no matter how close it was to being terminated.
+    endAt: isoFromUnix(r.stopped_at ?? r.end_at),
   };
 }
 
@@ -2393,7 +2412,7 @@ async function listSandboxes(req: Request, env: Env): Promise<Response> {
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, cell_id, worker_id, status, template_id, cpu_count, memory_mb,
-            created_at, last_event_at, stopped_at
+            created_at, last_event_at, stopped_at, end_at
        FROM sandboxes_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
   )
     .bind(caller.orgID)
@@ -2406,7 +2425,7 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, org_id, cell_id, worker_id, status, template_id, cpu_count, memory_mb,
-            created_at, last_event_at, stopped_at
+            created_at, last_event_at, stopped_at, end_at
        FROM sandboxes_index WHERE id = ?1`,
   )
     .bind(id)
@@ -5395,17 +5414,17 @@ export default {
         });
         const fcText = await fcResp.text();
         if (fcResp.status >= 200 && fcResp.status < 300) {
-          let parsed: { sandboxID?: string; workerID?: string; status?: string; memoryMB?: number } = {};
+          let parsed: SandboxCreateResult = {};
           try {
-            parsed = JSON.parse(fcText);
+            parsed = JSON.parse(fcText) as SandboxCreateResult;
           } catch {
             /* leave empty */
           }
           if (parsed.sandboxID) {
             await env.OPENCOMPUTER_DB.prepare(
               `INSERT OR REPLACE INTO sandboxes_index
-                 (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+                 (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at, end_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)`,
             )
               .bind(
                 parsed.sandboxID,
@@ -5417,6 +5436,7 @@ export default {
                 fcCpu,
                 parsed.memoryMB ?? fcMem,
                 Math.floor(Date.now() / 1000),
+                unixFromISO(parsed.endAt),
               )
               .run();
           }
