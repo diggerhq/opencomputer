@@ -134,6 +134,8 @@ deleted_classes = ["VmSession"]
 #                            browser-session proxy requests
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend
+#   DATA_ANALYST_API_TOKEN — dedicated bearer secret for the GET-only internal
+#                            data-analyst billing and session routes
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 

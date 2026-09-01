@@ -78,8 +78,12 @@ import {
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
 } from "./managed_agents";
+import { handleDataAnalystAPI } from "./data_analyst";
 
 export interface Env extends DashboardEnv {
+  // Dedicated bearer secret for the GET-only internal data-analyst API.
+  // It is not a customer API key and must not be reused for other routes.
+  DATA_ANALYST_API_TOKEN?: string;
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -5281,6 +5285,10 @@ export default {
     // Auth via the oc_session cookie minted at /auth/callback.
     if (path.startsWith("/api/dashboard")) {
       return handleDashboard(req, env, ctx, path);
+    }
+
+    if (path.startsWith("/api/internal/data-analyst/")) {
+      return handleDataAnalystAPI(req, env, path);
     }
 
     // Managed Agents public API. Customers authenticate with their ordinary

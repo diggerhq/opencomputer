@@ -1549,7 +1549,7 @@ const AUTUMN_USAGE_PLANS: Record<string, number> = {
 // GET /api/dashboard/billing/autumn — prepaid credit balance + concurrency plan.
 // Re-syncs Autumn → D1 on the way (this is the checkout-return / page-view resume
 // trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
-async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+export async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
   let r;
   try {
