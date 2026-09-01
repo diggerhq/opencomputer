@@ -28,6 +28,12 @@ import {
   resolveProjectAgent,
 } from "./session-command.js";
 import { formatSessionEvent } from "./session-prompt.js";
+import {
+  normalizeTemplateRepositoryUrl,
+  readTemplateManifest,
+  templateDeployUrl,
+} from "./template.js";
+import { createInterface } from "node:readline/promises";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -476,8 +482,166 @@ export async function runCommand(
   globals: GlobalOptions,
 ): Promise<void> {
   const args = [...rawArgs];
+
+  if (command === "template" && args[0] === "validate") {
+    args.shift();
+    const repositoryUrl = option(args, "--repository-url");
+    const appUrl = option(args, "--app-url");
+    const directory = args.shift() ?? process.cwd();
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const manifest = await readTemplateManifest(directory);
+    const deployUrl = repositoryUrl
+      ? templateDeployUrl(repositoryUrl, appUrl)
+      : undefined;
+    if (globals.json) {
+      printJSON({ file: "oc-template.toml", manifest, deployUrl });
+    } else {
+      process.stdout.write(
+        `Valid template: ${manifest.template.name}\n` +
+          (deployUrl ? `Deploy URL: ${deployUrl}\n` : ""),
+      );
+    }
+    return;
+  }
+
   const config = await resolveConfig(globals);
   const client = new OpenComputerClient(config);
+
+  if (command === "template") {
+    const action = args.shift();
+    if (action !== "deploy") {
+      throw new Error(
+        "Usage: opencomputer template deploy <repository-url> [--project-name <name>] [--yes]",
+      );
+    }
+    const projectNameOption = option(args, "--project-name");
+    const confirmed = flag(args, "--yes");
+    const repositoryUrl = args.shift();
+    if (!repositoryUrl) {
+      throw new Error("A GitHub repository URL is required");
+    }
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const inspection = await client.inspectTemplate(
+      normalizeTemplateRepositoryUrl(repositoryUrl),
+    );
+    if (!globals.json) {
+      process.stdout.write(
+        `\n${inspection.template.name}\n${inspection.template.description}\n` +
+          `Source: ${inspection.repository.fullName}@${inspection.repository.commitSha.slice(0, 12)}\n` +
+          `Agents: ${inspection.agents.map((agent) => agent.name).join(", ")}\n` +
+          `Target: Development\n\n`,
+      );
+    }
+    if (inspection.requirements.connections.length) {
+      throw new Error(
+        "This template needs an interactive provider connection. Open its deploy URL in the dashboard to continue.",
+      );
+    }
+    if (!process.stdin.isTTY && inspection.requirements.secrets.length) {
+      throw new Error(
+        `Secret ${inspection.requirements.secrets[0]!.name} requires an interactive terminal; secret values are never accepted as command-line arguments`,
+      );
+    }
+    if ((!process.stdin.isTTY || !process.stdout.isTTY) && !projectNameOption) {
+      throw new Error("--project-name is required in non-interactive mode");
+    }
+    const terminal =
+      process.stdin.isTTY && process.stdout.isTTY
+        ? createInterface({ input: process.stdin, output: process.stdout })
+        : undefined;
+    let projectName =
+      projectNameOption ??
+      inspection.template.defaultProjectName ??
+      inspection.template.name;
+    if (terminal && !projectNameOption) {
+      projectName =
+        (await terminal.question(`Project name [${projectName}]: `)).trim() ||
+        projectName;
+    }
+    if (terminal && !confirmed) {
+      const answer = (
+        await terminal.question("Create this Development project? [y/N] ")
+      )
+        .trim()
+        .toLowerCase();
+      if (answer !== "y" && answer !== "yes") {
+        terminal.close();
+        throw new Error("Template deployment cancelled");
+      }
+    }
+    const runtimeValues = new Map<string, string>();
+    for (const requirement of inspection.requirements.runtimeVariables) {
+      if (!terminal) {
+        if (requirement.required) {
+          throw new Error(
+            `Runtime variable ${requirement.name} requires an interactive terminal`,
+          );
+        }
+        continue;
+      }
+      const hint = requirement.example ? ` [${requirement.example}]` : "";
+      const value =
+        (await terminal.question(`${requirement.name}${hint}: `)).trim() ||
+        requirement.example ||
+        "";
+      if (requirement.required && !value) {
+        terminal.close();
+        throw new Error(`${requirement.name} is required`);
+      }
+      if (value) runtimeValues.set(requirement.name, value);
+    }
+    terminal?.close();
+    const installation = await client.createTemplateInstallation({
+      inspectionId: inspection.id,
+      projectName,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    for (const requirement of inspection.requirements.secrets) {
+      process.stderr.write(`${requirement.name}\n`);
+      const value = await readSecretValue();
+      await client.putSecret({
+        projectId: installation.projectId,
+        name: requirement.name,
+        value,
+        environment: "development",
+        agentId: requirement.agentId,
+        allowedOrigins: requirement.allowedOrigins,
+      });
+    }
+    for (const requirement of inspection.requirements.runtimeVariables) {
+      const value = runtimeValues.get(requirement.name);
+      if (!value) continue;
+      await client.putRuntimeVariable({
+        projectId: installation.projectId,
+        name: requirement.name,
+        value,
+        environment: "development",
+        agentId: requirement.agentId,
+      });
+    }
+    let current = await client.finalizeTemplateInstallation(installation.id);
+    const deadline = Date.now() + 10 * 60_000;
+    while (
+      !["ready", "failed"].includes(current.state) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+      current = await client.templateInstallation(current.id);
+      if (!globals.json)
+        process.stderr.write(`Template installation: ${current.state}\r`);
+    }
+    if (current.state === "failed") {
+      throw new Error(current.error?.message ?? "Template installation failed");
+    }
+    if (current.state !== "ready") {
+      throw new Error(
+        `Template installation is still ${current.state}; ${current.projectUrl}`,
+      );
+    }
+    if (globals.json) printJSON(current);
+    else process.stdout.write(`\nReady: ${current.projectUrl}\n`);
+    return;
+  }
 
   if (command === "login") {
     const identity = await login(config, {
@@ -810,13 +974,17 @@ export async function runCommand(
         legacyEnvironment &&
         !["development", "production", "both"].includes(legacyEnvironment)
       )
-        throw new Error("--environment must be development, production, or both");
+        throw new Error(
+          "--environment must be development, production, or both",
+        );
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const currentAgentRoot = projectReference ? null : await findAgentRoot();
-      const project =
-        shouldBindModelAccessProject(projectReference, currentAgentRoot)
-          ? await selectedProject(client, config, projectReference, false)
-          : undefined;
+      const project = shouldBindModelAccessProject(
+        projectReference,
+        currentAgentRoot,
+      )
+        ? await selectedProject(client, config, projectReference, false)
+        : undefined;
       const environments = project
         ? (["development", "production"] as const)
         : [];
@@ -888,9 +1056,7 @@ export async function runCommand(
       else process.stdout.write(`Disconnected ${connection.label}.\n`);
       return;
     }
-    throw new Error(
-      "Use `opencomputer model-access connect|list|disconnect`.",
-    );
+    throw new Error("Use `opencomputer model-access connect|list|disconnect`.");
   }
 
   if (command === "env") {

@@ -87,6 +87,70 @@ const projectSchema = z.object({
 
 const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
 
+const templateInspectionSchema = z.object({
+  id: z.string(),
+  repository: z.object({
+    url: z.string().url(),
+    fullName: z.string(),
+    defaultBranch: z.literal('main'),
+    commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+  }),
+  template: z.object({
+    name: z.string(),
+    description: z.string(),
+    documentation: z.string().url().optional(),
+    defaultProjectName: z.string().optional(),
+    firstRun: z.object({ agent: z.string(), prompt: z.string() }).optional(),
+  }),
+  agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  requirements: z.object({
+    secrets: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string().optional(),
+        documentation: z.string().url().optional(),
+        agentId: z.string().optional(),
+        allowedOrigins: z.array(z.string().url()),
+      }),
+    ),
+    runtimeVariables: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string().optional(),
+        documentation: z.string().url().optional(),
+        required: z.boolean(),
+        example: z.string().optional(),
+        agentId: z.string().optional(),
+      }),
+    ),
+    connections: z.array(
+      z.object({
+        id: z.string(),
+        description: z.string().optional(),
+        provider: z.string(),
+        permissions: z.array(z.string()),
+      }),
+    ),
+  }),
+  expiresAt: z.string(),
+})
+
+const templateInstallationSchema = z.object({
+  id: z.string(),
+  inspectionId: z.string(),
+  projectId: z.string(),
+  projectUrl: z.string(),
+  state: z.enum([
+    'awaiting_configuration',
+    'creating_project',
+    'building',
+    'deploying',
+    'ready',
+    'failed',
+  ]),
+  error: z.object({ stage: z.string(), message: z.string() }).optional(),
+})
+
 const secretSchema = z.object({
   name: z.string(),
   projectId: z.string(),
@@ -447,6 +511,8 @@ export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
 >
 export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
+export type TemplateInspection = z.infer<typeof templateInspectionSchema>
+export type TemplateInstallation = z.infer<typeof templateInstallationSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -479,6 +545,42 @@ export async function createManagedProject(name: string) {
     '/managed-agents/projects',
     { method: 'POST', body: JSON.stringify({ name }) },
     projectSchema,
+  )
+}
+
+export async function inspectManagedTemplate(repositoryUrl: string) {
+  return apiFetch(
+    '/managed-agents/template-inspections',
+    { method: 'POST', body: JSON.stringify({ repositoryUrl }) },
+    templateInspectionSchema,
+  )
+}
+
+export async function createManagedTemplateInstallation(input: {
+  inspectionId: string
+  projectName: string
+  idempotencyKey: string
+}) {
+  return apiFetch(
+    '/managed-agents/template-installations',
+    { method: 'POST', body: JSON.stringify(input) },
+    templateInstallationSchema,
+  )
+}
+
+export async function finalizeManagedTemplateInstallation(id: string) {
+  return apiFetch(
+    `/managed-agents/template-installations/${encodeURIComponent(id)}/finalize`,
+    { method: 'POST' },
+    templateInstallationSchema,
+  )
+}
+
+export async function getManagedTemplateInstallation(id: string) {
+  return apiFetch(
+    `/managed-agents/template-installations/${encodeURIComponent(id)}`,
+    undefined,
+    templateInstallationSchema,
   )
 }
 

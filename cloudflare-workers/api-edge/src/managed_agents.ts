@@ -511,6 +511,94 @@ function publicEventData(
   );
 }
 
+function publicTemplateInspection(value: unknown): Record<string, unknown> {
+  const inspection = record(value) ?? {};
+  const repository = record(inspection.repository) ?? {};
+  const template = record(inspection.template) ?? {};
+  const firstRun = record(template.firstRun);
+  const requirements = record(inspection.requirements) ?? {};
+  return {
+    id: inspection.id,
+    repository: {
+      url: repository.url,
+      fullName: repository.fullName,
+      defaultBranch: repository.defaultBranch,
+      commitSha: repository.commitSha,
+    },
+    template: {
+      name: template.name,
+      description: template.description,
+      ...(template.documentation
+        ? { documentation: template.documentation }
+        : {}),
+      ...(template.defaultProjectName
+        ? { defaultProjectName: template.defaultProjectName }
+        : {}),
+      ...(firstRun
+        ? { firstRun: { agent: firstRun.agent, prompt: firstRun.prompt } }
+        : {}),
+    },
+    agents: Array.isArray(inspection.agents)
+      ? inspection.agents.map((value) => {
+          const agent = record(value) ?? {};
+          return { id: agent.id, name: agent.name };
+        })
+      : [],
+    requirements: {
+      secrets: Array.isArray(requirements.secrets)
+        ? requirements.secrets.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              name: requirement.name,
+              description: requirement.description,
+              documentation: requirement.documentation,
+              agentId: requirement.agentId,
+              allowedOrigins: strings(requirement.allowedOrigins),
+            };
+          })
+        : [],
+      runtimeVariables: Array.isArray(requirements.runtimeVariables)
+        ? requirements.runtimeVariables.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              name: requirement.name,
+              description: requirement.description,
+              documentation: requirement.documentation,
+              required: requirement.required === true,
+              example: requirement.example,
+              agentId: requirement.agentId,
+            };
+          })
+        : [],
+      connections: Array.isArray(requirements.connections)
+        ? requirements.connections.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              id: requirement.id,
+              description: requirement.description,
+              provider: requirement.provider,
+              permissions: strings(requirement.permissions),
+            };
+          })
+        : [],
+    },
+    expiresAt: inspection.expiresAt,
+  };
+}
+
+function publicTemplateInstallation(value: unknown): Record<string, unknown> {
+  const installation = record(value) ?? {};
+  const error = record(installation.error);
+  return {
+    id: installation.id,
+    inspectionId: installation.inspectionId,
+    projectId: installation.projectId,
+    projectUrl: installation.projectUrl,
+    state: installation.state,
+    ...(error ? { error: { stage: error.stage, message: error.message } } : {}),
+  };
+}
+
 function publicSuccessBody(
   method: string,
   suffix: string,
@@ -611,6 +699,17 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/me") {
     return stripPrivateValues(body);
+  }
+  if (method === "POST" && suffix === "/template-inspections") {
+    return publicTemplateInspection(body);
+  }
+  if (
+    (method === "POST" && suffix === "/template-installations") ||
+    (method === "GET" && /^\/template-installations\/[^/]+$/.test(suffix)) ||
+    (method === "POST" &&
+      /^\/template-installations\/[^/]+\/finalize$/.test(suffix))
+  ) {
+    return publicTemplateInstallation(body);
   }
   if (method === "GET" && suffix === "/model-access/connections") {
     return {
@@ -950,6 +1049,17 @@ async function deploySourceAgent(
 }
 
 function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
+  if (method === "POST" && suffix === "/template-inspections") return true;
+  if (method === "POST" && suffix === "/template-installations") return true;
+  if (method === "GET" && /^\/template-installations\/[^/]+$/.test(suffix)) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/template-installations\/[^/]+\/finalize$/.test(suffix)
+  ) {
+    return true;
+  }
   if (method === "GET" && suffix === "/agents") return true;
   if (method === "GET" && suffix === "/me") return true;
   if ((method === "GET" || method === "POST") && suffix === "/projects") {

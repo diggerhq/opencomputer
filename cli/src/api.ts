@@ -94,6 +94,63 @@ export interface AgentRuntimeVariableMetadata {
   updatedAt: string;
 }
 
+export interface TemplateInspection {
+  id: string;
+  repository: {
+    url: string;
+    fullName: string;
+    defaultBranch: "main";
+    commitSha: string;
+  };
+  template: {
+    name: string;
+    description: string;
+    documentation?: string;
+    defaultProjectName?: string;
+    firstRun?: { agent: string; prompt: string };
+  };
+  agents: Array<{ id: string; name: string }>;
+  requirements: {
+    secrets: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      agentId?: string;
+      allowedOrigins: string[];
+    }>;
+    runtimeVariables: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      required: boolean;
+      example?: string;
+      agentId?: string;
+    }>;
+    connections: Array<{
+      id: string;
+      description?: string;
+      provider: string;
+      permissions: string[];
+    }>;
+  };
+  expiresAt: string;
+}
+
+export interface TemplateInstallation {
+  id: string;
+  inspectionId: string;
+  projectId: string;
+  projectUrl: string;
+  state:
+    | "awaiting_configuration"
+    | "creating_project"
+    | "building"
+    | "deploying"
+    | "ready"
+    | "failed";
+  error?: { stage: string; message: string };
+}
+
 export interface ManagedAgentWebhook {
   id: string;
   projectId: string;
@@ -260,6 +317,40 @@ export class OpenComputerClient {
       method: "POST",
       body: JSON.stringify({ name, slug }),
     });
+  }
+
+  inspectTemplate(repositoryUrl: string) {
+    return this.request<TemplateInspection>(
+      "/api/managed-agents/template-inspections",
+      {
+        method: "POST",
+        body: JSON.stringify({ repositoryUrl }),
+      },
+    );
+  }
+
+  createTemplateInstallation(input: {
+    inspectionId: string;
+    projectName: string;
+    idempotencyKey: string;
+  }) {
+    return this.request<TemplateInstallation>(
+      "/api/managed-agents/template-installations",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  finalizeTemplateInstallation(installationId: string) {
+    return this.request<TemplateInstallation>(
+      `/api/managed-agents/template-installations/${encodeURIComponent(installationId)}/finalize`,
+      { method: "POST" },
+    );
+  }
+
+  templateInstallation(installationId: string) {
+    return this.request<TemplateInstallation>(
+      `/api/managed-agents/template-installations/${encodeURIComponent(installationId)}`,
+    );
   }
 
   async secrets(input: {
