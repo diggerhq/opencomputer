@@ -1,6 +1,8 @@
 package awsvmlite
 
 import (
+	"context"
+	"github.com/opensandbox/opensandbox/internal/awsvm"
 	"testing"
 	"time"
 )
@@ -124,5 +126,88 @@ func TestDropWarmLockedIsANoOpWhenNothingIsDead(t *testing.T) {
 	}
 	if len(m.warm) != 2 {
 		t.Fatalf("warm len %d, want 2", len(m.warm))
+	}
+}
+
+// ── size tiers ──────────────────────────────────────────────────────────────
+//
+// Only the default size is pooled. Another tier is a different IMAGE, because
+// a MicroVM's memory is a property of the image it launched from — so an
+// off-tier create must cold-launch rather than pop warm stock, and a tier with
+// no image must be refused rather than quietly served at the default size.
+
+func TestOffTierClaimNeverTakesWarmStock(t *testing.T) {
+	cfg := awsvm.Config{
+		ImageIdentifier: "arn:default",
+		DefaultMemoryMB: 4096,
+		SizeImages:      map[int]string{8192: "arn:8192"},
+	}
+	// The default tier, and a request naming the size it would get anyway, both
+	// belong on the pooled path.
+	for _, mb := range []int{0, 4096} {
+		if !cfg.IsDefaultTier(mb) {
+			t.Errorf("memory %d treated as off-tier — it would cold-launch instead of claiming warm stock", mb)
+		}
+	}
+	if cfg.IsDefaultTier(8192) {
+		t.Error("8192 treated as the default tier — it would be served from a 4096 MB warm box")
+	}
+}
+
+func TestUnofferedTierIsRefusedNotDowngraded(t *testing.T) {
+	cfg := awsvm.Config{
+		ImageIdentifier: "arn:default",
+		DefaultMemoryMB: 4096,
+		SizeImages:      map[int]string{8192: "arn:8192"},
+	}
+	if _, _, ok := cfg.ImageForMemory(16384); ok {
+		t.Error("an unpublished tier resolved to an image — the customer would be billed for 16 GB and handed 4 GB")
+	}
+	image, delivered, ok := cfg.ImageForMemory(8192)
+	if !ok || image != "arn:8192" || delivered != 8192 {
+		t.Errorf("published tier resolved to (%q, %d, %v), want the 8192 image", image, delivered, ok)
+	}
+}
+
+// ── stale binding eviction ──────────────────────────────────────────────────
+
+// The bug this pins: a sandbox that is BOTH held in memory AND has a database
+// row was never liveness-checked. The reconciler's adopt loop skipped it
+// because it was held; the forget loop skipped it because a row existed. So
+// when AWS reaped the box at the 8h cap the binding survived forever.
+//
+// Measured on prod: bound=15 against exactly one live box. That count is what
+// Capacity() publishes as the cell's running total, so it is not cosmetic —
+// the edge routes on it.
+//
+// The reconciler lives in internal/api, so what is pinned here is the property
+// it depends on: a liveness lookup that distinguishes "gone" from "unknown".
+func TestLiveMicrovmIDsDistinguishesGoneFromUnknown(t *testing.T) {
+	// A nil client is the stand-in for "the lookup could not be made". The
+	// reconciler must treat that as unknown and drop nothing — returning an
+	// empty set instead would tell it every sandbox on the cell is dead.
+	m := &Manager{bound: map[string]*Box{}}
+	_, err := m.LiveMicrovmIDs(context.Background())
+	if err == nil {
+		t.Fatal("a failed fleet lookup returned no error — the reconciler would read it as 'nothing is alive' and close out every live sandbox")
+	}
+}
+
+// Forget must actually drop the binding, since that is what shrinks the count
+// Capacity() reports.
+func TestForgetDropsTheBinding(t *testing.T) {
+	m := &Manager{bound: map[string]*Box{
+		"sbx-live": {MicrovmID: "mvm-live"},
+		"sbx-dead": {MicrovmID: "mvm-dead"},
+	}}
+	if got := len(m.Bound()); got != 2 {
+		t.Fatalf("Bound() = %d, want 2", got)
+	}
+	m.Forget("sbx-dead")
+	if got := len(m.Bound()); got != 1 {
+		t.Errorf("Bound() = %d after Forget, want 1 — a stale binding inflates the cell's running count", got)
+	}
+	if _, ok := m.Bindings()["sbx-dead"]; ok {
+		t.Error("Bindings() still reports the forgotten sandbox")
 	}
 }
