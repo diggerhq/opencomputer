@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/opensandbox/opensandbox/pkg/types"
 	"log"
 	"sync"
 	"time"
@@ -77,9 +79,10 @@ func (s *Server) HaltOrg(ctx context.Context, orgIDStr, reason string) (int, err
 	if s.store == nil {
 		return 0, fmt.Errorf("database not configured")
 	}
-	if s.workerRegistry == nil {
-		return 0, fmt.Errorf("worker registry not configured")
-	}
+	// Deliberately NOT gated on workerRegistry. A cell whose sandboxes all live
+	// on a managed backend has no registry, and refusing here meant a halted
+	// org's sandboxes kept running — billed and reachable — for the rest of
+	// their lives. haltOne picks the right mechanism per sandbox.
 	orgID, err := uuid.Parse(orgIDStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid org_id: %w", err)
@@ -114,7 +117,7 @@ func (s *Server) HaltOrg(ctx context.Context, orgIDStr, reason string) (int, err
 		defer cancel()
 		for i := range sessions {
 			sess := &sessions[i]
-			if err := s.hibernateForHalt(bgCtx, sess.SandboxID, sess.WorkerID, sess.Region, sess.Template, sess.Config, orgID); err != nil {
+			if err := s.haltOne(bgCtx, sess, orgID); err != nil {
 				log.Printf("admin: halt-org %s: hibernate sandbox %s failed: %v (reason=%s)", orgIDStr, sess.SandboxID, err, reason)
 				continue
 			}
@@ -136,9 +139,8 @@ func (s *Server) ResumeOrg(ctx context.Context, orgIDStr string, skipResume bool
 	if s.store == nil {
 		return 0, fmt.Errorf("database not configured")
 	}
-	if s.workerRegistry == nil {
-		return 0, fmt.Errorf("worker registry not configured")
-	}
+	// Not gated on workerRegistry — see HaltOrg. An org that could be halted on
+	// this cell has to be resumable on it.
 	orgID, err := uuid.Parse(orgIDStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid org_id: %w", err)
@@ -225,6 +227,22 @@ func (s *Server) wakeForResume(ctx context.Context, sandboxID string) error {
 		return fmt.Errorf("sandbox %s is not hibernated (status=%s)", sandboxID, session.Status)
 	}
 
+	// A managed backend that archived this sandbox has no host to wake — the
+	// host was released at halt, and the worker id on the row names a box that
+	// no longer exists. Asking the registry for it yields "worker unreachable"
+	// for a sandbox that is perfectly restorable.
+	//
+	// A NON-EMPTY hibernation key is what distinguishes the two ways a managed
+	// sandbox can be parked: an idle park suspends the box and records no key,
+	// so it is woken; a halt archives and records the archive's key, so it is
+	// restored onto a fresh host.
+	if ha, ok := s.haltArchiverFor(session.WorkerID); ok && hibernation.HibernationKey != "" {
+		return s.resumeViaArchive(ctx, ha, session, hibernation)
+	}
+	if s.workerRegistry == nil {
+		return fmt.Errorf("no backend and no worker registry can revive sandbox %s", sandboxID)
+	}
+
 	region := hibernation.Region
 	uploadComplete := hibernation.UploadedAt != nil
 	var workerClient pb.SandboxWorkerClient
@@ -267,5 +285,121 @@ func (s *Server) wakeForResume(ctx context.Context, sandboxID string) error {
 		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
 	}
 	// Worker's WakeSandbox handler emits "woke"; events-ingest sets D1 to running.
+	return nil
+}
+
+// haltOne parks a single sandbox for an org halt, using whichever mechanism its
+// runtime actually supports.
+//
+// The QEMU fleet hibernates: a full checkpoint to blob, worker freed, wakeable
+// forever. A managed backend that can only SUSPEND cannot express that — the
+// MicroVM provider counts suspended time against the same 8h lifetime cap as
+// running time, so suspending would hand every halted org a sandbox that
+// silently dies within the day and takes its disk with it. Those runtimes
+// archive the workspace and give the host back instead, which stops the charge
+// immediately and survives a halt of any length.
+func (s *Server) haltOne(ctx context.Context, sess *db.SandboxSession, orgID uuid.UUID) error {
+	if ha, ok := s.haltArchiverFor(sess.WorkerID); ok {
+		return s.haltViaArchive(ctx, ha, sess, orgID)
+	}
+	if s.workerRegistry == nil {
+		return fmt.Errorf("no backend and no worker registry holds sandbox %s", sess.SandboxID)
+	}
+	return s.hibernateForHalt(ctx, sess.SandboxID, sess.WorkerID, sess.Region, sess.Template, sess.Config, orgID)
+}
+
+// haltViaArchive is archive → record → release, and the order is the whole
+// design.
+//
+// Releasing the host is irreversible: there is no memory or disk export on this
+// runtime, so once the box is gone the archive is the only copy of the
+// customer's data. Every step that could fail therefore happens while the box
+// is still alive and the operation is still abandonable. A halt that gives up
+// halfway leaves a running sandbox, which the halt reconciler simply retries on
+// its next tick — the one outcome that must never happen is a terminated host
+// with nothing pointing at its archive.
+func (s *Server) haltViaArchive(ctx context.Context, ha haltArchiver, sess *db.SandboxSession, orgID uuid.UUID) error {
+	// 1. Archive. Box untouched; a failure here costs nothing but a retry.
+	key, size, err := ha.ArchiveForHalt(ctx, sess.SandboxID, s.checkpointStore)
+	if err != nil {
+		return fmt.Errorf("archive for halt: %w", err)
+	}
+
+	// 2. Record, still before anything destructive. If this fails the archive
+	// is orphaned in blob storage — wasteful, but the sandbox is untouched and
+	// the next tick tries again. Reversed, it would be unrecoverable.
+	if _, superseded, cErr := s.store.CreateHibernation(ctx, sess.SandboxID, orgID, key, size,
+		sess.Region, sess.Template, sess.Config); cErr != nil {
+		return fmt.Errorf("record hibernation (archive %s left orphaned, sandbox untouched): %w", key, cErr)
+	} else {
+		s.deleteSupersededHibernation(superseded)
+	}
+
+	// 3. Release. Past this line the archive is the only copy.
+	if rErr := ha.ReleaseForHalt(ctx, sess.SandboxID); rErr != nil {
+		// The row still says running and the record now exists. Leaving the
+		// status alone is right: the box may genuinely still be alive, and
+		// calling it hibernated would make a live sandbox invisible.
+		return fmt.Errorf("release host after archiving to %s: %w", key, rErr)
+	}
+
+	if uErr := s.store.UpdateSandboxSessionStatus(ctx, sess.SandboxID, "hibernated", nil); uErr != nil {
+		log.Printf("admin: halt %s: archived and released but status flip failed: %v", sess.SandboxID, uErr)
+	}
+	// Carries the transition to D1, which is what customer-facing reads answer
+	// from. Postgres alone would leave every surface reporting `running` for a
+	// sandbox whose host no longer exists — the same gap the idle park hit.
+	if s.sandboxDBs != nil {
+		if sdb, dbErr := s.sandboxDBs.Get(sess.SandboxID); dbErr == nil {
+			_ = sdb.LogEvent("hibernated", map[string]string{
+				"sandbox_id":     sess.SandboxID,
+				"checkpoint_key": key,
+			})
+		}
+		_ = s.sandboxDBs.Remove(sess.SandboxID)
+	}
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sess.SandboxID)
+	}
+	log.Printf("admin: halted %s — archived %d bytes to %s and released its host", sess.SandboxID, size, key)
+	return nil
+}
+
+// resumeViaArchive is the other half: a new host, the archive laid back onto
+// it, and the row repointed at wherever it landed.
+func (s *Server) resumeViaArchive(ctx context.Context, ha haltArchiver, sess *db.SandboxSession, hib *db.SandboxHibernation) error {
+	// Size is not a column — it lives in the session's stored config, which is
+	// the same blob the QEMU restore path reads. A zero here is not a problem:
+	// it means "the default tier", which is what the sandbox was created at.
+	var cfg types.SandboxConfig
+	if len(sess.Config) > 0 {
+		if uErr := json.Unmarshal(sess.Config, &cfg); uErr != nil {
+			log.Printf("admin: resume %s: unreadable stored config (%v) — restoring at the default size", sess.SandboxID, uErr)
+		}
+	}
+	workerID, err := ha.RestoreForResume(ctx, sess.SandboxID, hib.HibernationKey, s.checkpointStore, HaltRestoreSpec{
+		Template: sess.Template,
+		MemoryMB: cfg.MemoryMB,
+		CPUCount: cfg.CpuCount,
+	})
+	if err != nil {
+		return fmt.Errorf("restore from archive: %w", err)
+	}
+	// The sandbox is on a DIFFERENT host than before the halt, so the row has
+	// to be repointed. Skipping this leaves every later request routed at a
+	// terminated box.
+	if uErr := s.store.UpdateSandboxSessionForWake(ctx, sess.SandboxID, workerID); uErr != nil {
+		log.Printf("admin: resume %s: restored onto %s but could not repoint the row: %v", sess.SandboxID, workerID, uErr)
+	}
+	_ = s.store.MarkHibernationRestored(ctx, sess.SandboxID)
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sess.SandboxID)
+	}
+	if s.sandboxDBs != nil {
+		if sdb, dbErr := s.sandboxDBs.Get(sess.SandboxID); dbErr == nil {
+			_ = sdb.LogEvent("woke", map[string]string{"sandbox_id": sess.SandboxID})
+		}
+	}
+	log.Printf("admin: resumed %s from %s onto %s", sess.SandboxID, hib.HibernationKey, workerID)
 	return nil
 }
