@@ -24,6 +24,11 @@ From the project directory:
 npm run deploy -- --alias production
 ```
 
+Every deploy first runs `opencomputer doctor`, a local static scan for invalid
+connection origins, misplaced tools, inconsistent channel declarations, and
+missing secret declarations. Run `opencomputer doctor --json` directly to get
+structured diagnostics before invoking a deployment agent.
+
 The CLI builds the current source, creates an immutable deployment, and moves
 the `production` alias to it. Development remains available for further work.
 

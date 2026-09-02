@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 
 import { runCommand, type GlobalOptions } from "./commands.js";
+import { structuredError } from "./errors.js";
 
 const VERSION = String(
   (
@@ -48,7 +49,8 @@ Usage:
   opencomputer whoami
   opencomputer agents
   opencomputer init <directory|.>
-  opencomputer link
+  opencomputer link (--project <id|slug> | --create-project <name>)
+  opencomputer doctor
   opencomputer deploy --watch [--project <id|slug> | --create-project <name>]
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
@@ -58,10 +60,10 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer secrets set <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer env set <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
   opencomputer model-access connect codex [--project <id|slug>]
@@ -74,6 +76,8 @@ Usage:
   opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
   opencomputer webhooks remove <webhook-id> [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
+  opencomputer channels status [--agent <agent>] [--environment development|production]
+  opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]
   opencomputer deploy [--alias development|production] [--watch]
   opencomputer run <agent> <prompt> [--keep]
 
@@ -81,6 +85,7 @@ Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)
   --api-key <key>   API key (or OPENCOMPUTER_API_KEY)
   --json            Print machine-readable output
+  --idempotency-key <key>  Stable retry key for mutating commands
   --verbose         Print session events
   --help            Show this help
   --version         Show the CLI version
@@ -102,6 +107,7 @@ async function main(): Promise<void> {
     apiKey: takeOption(args, "--api-key"),
     json: takeFlag(args, "--json"),
     verbose: takeFlag(args, "--verbose"),
+    idempotencyKey: takeOption(args, "--idempotency-key"),
   };
   const command = args.shift();
   if (!command) {
@@ -112,8 +118,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(
-    `opencomputer: ${error instanceof Error ? error.message : String(error)}\n`,
-  );
+  const failure = structuredError(error);
+  if (process.argv.includes("--json")) {
+    process.stderr.write(`${JSON.stringify({ error: failure })}\n`);
+  } else {
+    process.stderr.write(`opencomputer: ${failure.message}\nfix: ${failure.hint}\n`);
+  }
   process.exitCode = 1;
 });

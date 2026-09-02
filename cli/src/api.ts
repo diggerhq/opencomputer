@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ResolvedConfig } from "./config.js";
 import type { ProjectResourceManifest } from "./project.js";
 
@@ -121,6 +123,29 @@ export interface ManagedAgentLog {
   data: Record<string, unknown>;
 }
 
+export interface ManagedChannelStatus {
+  id: string;
+  channel: "slack";
+  channelId?: string;
+  agentId: string;
+  alias: string;
+  appName?: string;
+  teamName?: string;
+  status: string;
+  verifiedAt?: string;
+  lastEventAt?: string;
+  lastDelivery?: {
+    status: "delivered" | "failed";
+    at: string;
+  };
+  lastError?: {
+    category: string;
+    at: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ManagedSessionSnapshot {
   id: string;
   status: string;
@@ -166,7 +191,10 @@ function errorMessage(body: unknown, status: number): string {
 }
 
 export class OpenComputerClient {
-  constructor(private readonly config: ResolvedConfig) {}
+  constructor(
+    private readonly config: ResolvedConfig,
+    private readonly idempotencyKey?: string,
+  ) {}
 
   private async request<T>(
     path: string,
@@ -184,6 +212,21 @@ export class OpenComputerClient {
         );
       }
       headers.set("x-api-key", this.config.apiKey);
+    }
+    const method = (init.method ?? "GET").toUpperCase();
+    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
+      headers.set(
+        "idempotency-key",
+        createHash("sha256")
+          .update(this.idempotencyKey)
+          .update("\0")
+          .update(method)
+          .update("\0")
+          .update(path)
+          .update("\0")
+          .update(typeof init.body === "string" ? init.body : "")
+          .digest("hex"),
+      );
     }
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
@@ -521,6 +564,13 @@ export class OpenComputerClient {
     );
   }
 
+  async channels(): Promise<ManagedChannelStatus[]> {
+    const result = await this.request<{ channels: ManagedChannelStatus[] }>(
+      "/api/managed-agents/channels",
+    );
+    return result.channels;
+  }
+
   registerDeployment(input: {
     agentId: string;
     name: string;
@@ -588,14 +638,18 @@ export class OpenComputerClient {
     );
   }
 
-  createTurn(sessionId: string, input: string) {
+  createTurn(
+    sessionId: string,
+    input: string,
+    idempotencyKey: string = crypto.randomUUID(),
+  ) {
     return this.request<{ turnId: string; duplicate: boolean }>(
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
       {
         method: "POST",
         body: JSON.stringify({
           input,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey,
         }),
       },
     );
