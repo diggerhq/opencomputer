@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
@@ -77,7 +77,10 @@ import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
-import { templateCloneCommand } from './template-continuation'
+import {
+  templateCloneCommand,
+  templateFirstRunPrompt,
+} from './template-continuation'
 
 type DetailTab =
   | 'playground'
@@ -198,11 +201,15 @@ function PlaygroundChat({
   agentId,
   session,
   events,
+  initialPrompt,
+  onInitialPromptConsumed,
   onSessionFinished,
 }: {
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
+  initialPrompt?: string
+  onInitialPromptConsumed?: () => void
   onSessionFinished?: (sessionId: string) => void
 }) {
   const queryClient = useQueryClient()
@@ -216,6 +223,7 @@ function PlaygroundChat({
   const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
   const initializedScrollRef = useRef(false)
+  const initialPromptSentRef = useRef(false)
   const initialMessages = useMemo(
     () => historicalMessages(session, events),
     [events, session],
@@ -258,6 +266,14 @@ function PlaygroundChat({
     running ||
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
+
+  useEffect(() => {
+    if (!initialPrompt || session || initialPromptSentRef.current) return
+    initialPromptSentRef.current = true
+    onInitialPromptConsumed?.()
+    followOutputRef.current = true
+    void sendMessage({ text: initialPrompt })
+  }, [initialPrompt, onInitialPromptConsumed, sendMessage, session])
 
   useLayoutEffect(() => {
     const timeline = timelineRef.current
@@ -507,6 +523,7 @@ export default function ManagedAgentDetail({
       ? 'production'
       : 'development'
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
+  const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
 
   const agents = useQuery({
@@ -918,6 +935,13 @@ export default function ManagedAgentDetail({
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
+                initialPrompt={firstRunPrompt}
+                onInitialPromptConsumed={() => {
+                  void navigate(
+                    { pathname: location.pathname, search: location.search },
+                    { replace: true, state: null },
+                  )
+                }}
                 onSessionFinished={selectPlaygroundSession}
               />
             )}

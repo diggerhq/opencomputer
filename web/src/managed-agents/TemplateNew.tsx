@@ -22,7 +22,10 @@ import {
   putManagedProjectSecret,
 } from './api'
 import { templateInspectionError } from './template-inspection-error'
-import { templatePlaygroundPath } from './template-continuation'
+import {
+  installedTemplateAgentId,
+  templatePlaygroundPath,
+} from './template-continuation'
 
 const GITHUB_REPOSITORY =
   /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]+$/
@@ -82,9 +85,11 @@ export default function TemplateNew() {
         idempotencyKey: commandKey.current,
       })
       const installationAgentId = (localAgentId?: string) =>
-        !localAgentId || localAgentId === reviewed.agents[0]?.id
-          ? installation.projectAgentId
-          : `${installation.projectAgentId}--${localAgentId}`
+        installedTemplateAgentId({
+          projectAgentId: installation.projectAgentId,
+          localAgentId,
+          primaryLocalAgentId: reviewed.agents[0]?.id,
+        })
       for (const requirement of reviewed.requirements.secrets) {
         const value = secrets[requirement.name]
         if (!value && !requirement.required) continue
@@ -132,7 +137,20 @@ export default function TemplateNew() {
         void navigate(result.projectUrl)
         return
       }
-      void navigate(templatePlaygroundPath(result))
+      const firstRun = inspection.data?.template.firstRun
+      const projectAgentId = installedTemplateAgentId({
+        projectAgentId: result.projectAgentId,
+        localAgentId: firstRun?.agent,
+        primaryLocalAgentId: inspection.data?.agents[0]?.id,
+      })
+      void navigate(
+        templatePlaygroundPath({ projectId: result.projectId, projectAgentId }),
+        {
+          state: firstRun
+            ? { templateFirstRunPrompt: firstRun.prompt }
+            : undefined,
+        },
+      )
     },
     onError: (error) => notifyError("Couldn't deploy the template.", error),
   })
