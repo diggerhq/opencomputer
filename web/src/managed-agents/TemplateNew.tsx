@@ -51,7 +51,6 @@ export default function TemplateNew() {
   const quickStart = searchParams.get('quick-start') === '1'
   const validRepository = GITHUB_REPOSITORY.test(repositoryUrl)
   const commandKey = useRef(crypto.randomUUID())
-  const quickStartSubmitted = useRef(false)
   const [projectName, setProjectName] = useState('')
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [variables, setVariables] = useState<Record<string, string>>({})
@@ -65,8 +64,10 @@ export default function TemplateNew() {
   useEffect(() => {
     if (!inspection.data || projectName) return
     setProjectName(
-      inspection.data.template.defaultProjectName ??
-        inspection.data.template.name,
+      quickStart
+        ? 'My agent'
+        : (inspection.data.template.defaultProjectName ??
+            inspection.data.template.name),
     )
     setVariables(
       Object.fromEntries(
@@ -75,7 +76,7 @@ export default function TemplateNew() {
           .map((requirement) => [requirement.name, requirement.example!]),
       ),
     )
-  }, [inspection.data, projectName])
+  }, [inspection.data, projectName, quickStart])
 
   const install = useMutation({
     mutationFn: async () => {
@@ -157,24 +158,6 @@ export default function TemplateNew() {
     onError: (error) => notifyError("Couldn't deploy the template.", error),
   })
 
-  useEffect(() => {
-    if (
-      !quickStart ||
-      quickStartSubmitted.current ||
-      !inspection.data ||
-      !projectName.trim()
-    ) {
-      return
-    }
-    const hasConfiguration =
-      inspection.data.requirements.secrets.length > 0 ||
-      inspection.data.requirements.runtimeVariables.length > 0 ||
-      inspection.data.requirements.connections.length > 0
-    if (hasConfiguration) return
-    quickStartSubmitted.current = true
-    install.mutate()
-  }, [inspection.data, projectName, quickStart])
-
   function submit(event: FormEvent) {
     event.preventDefault()
     install.mutate()
@@ -242,39 +225,47 @@ export default function TemplateNew() {
   return (
     <form className="space-y-6" onSubmit={submit}>
       <PageHeader
-        title={reviewed.template.name}
-        description={reviewed.template.description}
+        title={quickStart ? 'Create your first agent' : reviewed.template.name}
+        description={
+          quickStart
+            ? 'Choose a name, then start its first Debug session.'
+            : reviewed.template.description
+        }
       />
+      {!quickStart ? (
+        <Panel>
+          <PanelHeader>
+            <PanelTitle>Source and deployment</PanelTitle>
+          </PanelHeader>
+          <PanelContent className="space-y-3 text-sm">
+            <a
+              className="inline-flex items-center gap-2 underline underline-offset-4"
+              href={reviewed.repository.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {reviewed.repository.fullName}
+              <ExternalLink className="size-3.5" />
+            </a>
+            <p className="text-muted-foreground font-mono text-xs">
+              main @ {reviewed.repository.commitSha.slice(0, 12)}
+            </p>
+            <p>
+              {reviewed.agents.length} agent
+              {reviewed.agents.length === 1 ? '' : 's'} · Development only
+            </p>
+          </PanelContent>
+        </Panel>
+      ) : null}
       <Panel>
         <PanelHeader>
-          <PanelTitle>Source and deployment</PanelTitle>
-        </PanelHeader>
-        <PanelContent className="space-y-3 text-sm">
-          <a
-            className="inline-flex items-center gap-2 underline underline-offset-4"
-            href={reviewed.repository.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {reviewed.repository.fullName}
-            <ExternalLink className="size-3.5" />
-          </a>
-          <p className="text-muted-foreground font-mono text-xs">
-            main @ {reviewed.repository.commitSha.slice(0, 12)}
-          </p>
-          <p>
-            {reviewed.agents.length} agent
-            {reviewed.agents.length === 1 ? '' : 's'} · Development only
-          </p>
-        </PanelContent>
-      </Panel>
-      <Panel>
-        <PanelHeader>
-          <PanelTitle>Configure project</PanelTitle>
+          <PanelTitle>
+            {quickStart ? 'Name your agent' : 'Configure project'}
+          </PanelTitle>
         </PanelHeader>
         <PanelContent className="space-y-4">
           <label className="block space-y-1.5 text-sm">
-            <span>Project name</span>
+            <span>{quickStart ? 'Agent name' : 'Project name'}</span>
             <Input
               value={projectName}
               onChange={(event) => setProjectName(event.target.value)}
@@ -344,7 +335,13 @@ export default function TemplateNew() {
           ) : (
             <Rocket />
           )}
-          {install.isPending ? 'Deploying…' : 'Deploy to Development'}
+          {install.isPending
+            ? quickStart
+              ? 'Creating…'
+              : 'Deploying…'
+            : quickStart
+              ? 'Create agent'
+              : 'Deploy to Development'}
         </Button>
       </div>
     </form>
