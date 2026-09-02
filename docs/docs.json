@@ -22,684 +22,340 @@
   },
   "favicon": "/images/favicon.svg",
   "navigation": {
-    "versions": [
+    "tabs": [
       {
-        "version": "v2",
-        "tabs": [
+        "tab": "Serverless Agents",
+        "groups": [
           {
-            "tab": "Serverless Agents",
-            "groups": [
-              {
-                "group": "Getting started",
-                "pages": [
-                  "agents/overview",
-                  "agents/mental-model",
-                  "agents/quickstart",
-                  "agents/projects"
-                ]
-              },
-              {
-                "group": "Concepts",
-                "pages": [
-                  "agents/reactive-agents",
-                  "agents/sessions",
-                  "agents/schedules",
-                  "agents/webhooks",
-                  "agents/capabilities",
-                  "agents/channels",
-                  "agents/outboxes",
-                  "agents/secrets",
-                  "agents/byok",
-                  "agents/deployments"
-                ]
-              },
-              {
-                "group": "Agent API",
-                "pages": [
-                  "agents/hooks",
-                  "agents/inputs",
-                  "agents/models",
-                  "agents/tools",
-                  "agents/mcp",
-                  "agents/skills",
-                  "agents/subagents",
-                  "agents/session-data"
-                ]
-              },
-              {
-                "group": "Test and operate",
-                "pages": [
-                  "agents/playground",
-                  "agents/logs"
-                ]
-              },
-              {
-                "group": "Examples",
-                "pages": [
-                  "agents/examples/gtm-engineer",
-                  "agents/examples/feature-flag-hygiene",
-                  "agents/examples/github-actions-triage",
-                  "agents/examples/pr-review",
-                  "agents/examples/test-coverage"
-                ]
-              }
+            "group": "Getting started",
+            "pages": [
+              "agents/overview",
+              "agents/mental-model",
+              "agents/quickstart",
+              "agents/projects"
             ]
           },
           {
-            "tab": "Sandboxes",
-            "groups": [
-              {
-                "group": "Getting Started",
-                "pages": [
-                  "v2/introduction",
-                  "v2/quickstart",
-                  "v2/how-it-works",
-                  "v2/migrating-from-v1"
-                ]
-              },
-              {
-                "group": "Sandboxes",
-                "pages": [
-                  "v2/sandboxes/overview",
-                  "v2/sandboxes/running-commands",
-                  "v2/sandboxes/working-with-files",
-                  "v2/sandboxes/mounts",
-                  "v2/sandboxes/signed-urls",
-                  "v2/sandboxes/interactive-terminals",
-                  "v2/sandboxes/lifetime",
-                  "v2/sandboxes/sizes",
-                  "v2/sandboxes/timeout",
-                  "v2/sandboxes/checkpoints",
-                  "v2/sandboxes/templates",
-                  "v2/sandboxes/secrets",
-                  "v2/sandboxes/patches",
-                  "v2/sandboxes/preview-urls",
-                  "v2/sandboxes/webhooks",
-                  "v2/sandboxes/elasticity",
-                  "v2/sandboxes/burst-sandboxes",
-                  {
-                    "group": "Usage",
-                    "tag": "Preview",
-                    "expanded": true,
-                    "pages": [
-                      "v2/sandboxes/usage"
-                    ]
-                  }
-                ]
-              },
-              {
-                "group": "Browser Sessions",
-                "tag": "Preview",
-                "pages": [
-                  "v2/browser-sessions/overview"
-                ]
-              },
-              {
-                "group": "Reserved Capacity",
-                "tag": "Preview",
-                "pages": [
-                  "v2/reserved-capacity/overview",
-                  "v2/reserved-capacity/concepts",
-                  "v2/reserved-capacity/calendar",
-                  "v2/reserved-capacity/reserving",
-                  "v2/reserved-capacity/usage-and-overage"
-                ]
-              },
-              {
-                "group": "CLI",
-                "pages": [
-                  "v2/cli/overview",
-                  "v2/cli/sandbox",
-                  "v2/cli/exec",
-                  "v2/cli/shell",
-                  "v2/cli/checkpoint",
-                  "v2/cli/patch",
-                  "v2/cli/preview",
-                  "v2/cli/secrets"
-                ]
-              },
-              {
-                "group": "Guides",
-                "pages": [
-                  "v2/guides/build-a-lovable-clone",
-                  "v2/guides/browser-automation",
-                  "v2/guides/agent-skill"
-                ]
-              },
-              {
-                "group": "TypeScript SDK",
-                "pages": [
-                  "v2/reference/typescript-sdk/overview",
-                  "v2/reference/typescript-sdk/sandbox",
-                  "v2/reference/typescript-sdk/scaling",
-                  {
-                    "group": "Usage & Tags",
-                    "tag": "Preview",
-                    "expanded": true,
-                    "pages": [
-                      "v2/reference/typescript-sdk/usage"
-                    ]
-                  },
-                  "v2/reference/typescript-sdk/exec",
-                  "v2/reference/typescript-sdk/filesystem",
-                  "v2/reference/typescript-sdk/pty",
-                  "v2/reference/typescript-sdk/image",
-                  "v2/reference/typescript-sdk/snapshots",
-                  "v2/reference/typescript-sdk/secrets"
-                ]
-              },
-              {
-                "group": "Python SDK",
-                "pages": [
-                  "v2/reference/python-sdk/overview",
-                  "v2/reference/python-sdk/sandbox",
-                  "v2/reference/python-sdk/scaling",
-                  "v2/reference/python-sdk/exec",
-                  "v2/reference/python-sdk/filesystem",
-                  "v2/reference/python-sdk/pty",
-                  "v2/reference/python-sdk/image",
-                  "v2/reference/python-sdk/snapshots",
-                  "v2/reference/python-sdk/secrets"
-                ]
-              },
-              {
-                "group": "CLI Reference",
-                "pages": [
-                  "v2/reference/cli/overview",
-                  "v2/reference/cli/sandbox",
-                  "v2/reference/cli/scaling",
-                  "v2/reference/cli/exec",
-                  "v2/reference/cli/shell",
-                  "v2/reference/cli/checkpoint",
-                  "v2/reference/cli/patch",
-                  "v2/reference/cli/preview",
-                  "v2/reference/cli/agent",
-                  "v2/reference/cli/auth",
-                  "v2/reference/cli/config"
-                ]
-              },
-              {
-                "group": "API Reference",
-                "pages": [
-                  "v2/api-reference/overview",
-                  {
-                    "group": "Sandboxes",
-                    "pages": [
-                      "v2/api-reference/sandboxes/create",
-                      "v2/api-reference/sandboxes/list",
-                      "v2/api-reference/sandboxes/get",
-                      "v2/api-reference/sandboxes/delete",
-                      "v2/api-reference/sandboxes/set-timeout",
-                      "v2/api-reference/sandboxes/hibernate",
-                      "v2/api-reference/sandboxes/wake",
-                      {
-                        "group": "Tags",
-                        "tag": "Preview",
-                        "pages": [
-                          "v2/api-reference/sandboxes/get-tags",
-                          "v2/api-reference/sandboxes/set-tags"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "group": "Webhooks",
-                    "tag": "Preview",
-                    "pages": [
-                      "v2/api-reference/webhooks/create",
-                      "v2/api-reference/webhooks/list",
-                      "v2/api-reference/webhooks/get",
-                      "v2/api-reference/webhooks/update",
-                      "v2/api-reference/webhooks/delete",
-                      "v2/api-reference/webhooks/test",
-                      {
-                        "group": "Deliveries",
-                        "pages": [
-                          "v2/api-reference/webhooks/deliveries-list",
-                          "v2/api-reference/webhooks/delivery-get",
-                          "v2/api-reference/webhooks/redeliver"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "group": "Usage",
-                    "tag": "Preview",
-                    "pages": [
-                      "v2/api-reference/usage/get-usage",
-                      "v2/api-reference/usage/get-sandbox-usage",
-                      "v2/api-reference/usage/list-tags"
-                    ]
-                  },
-                  {
-                    "group": "Reserved Capacity",
-                    "pages": [
-                      "v2/api-reference/capacity/get-calendar",
-                      "v2/api-reference/capacity/create-reservations",
-                      "v2/api-reference/capacity/list-reservations"
-                    ]
-                  },
-                  {
-                    "group": "Commands",
-                    "pages": [
-                      "v2/api-reference/exec/run",
-                      "v2/api-reference/exec/create-session",
-                      "v2/api-reference/exec/list-sessions",
-                      "v2/api-reference/exec/kill-session"
-                    ]
-                  },
-                  {
-                    "group": "Filesystem",
-                    "pages": [
-                      "v2/api-reference/files/read",
-                      "v2/api-reference/files/write",
-                      "v2/api-reference/files/list-directory",
-                      "v2/api-reference/files/mkdir",
-                      "v2/api-reference/files/delete",
-                      "v2/api-reference/files/generate-download-url",
-                      "v2/api-reference/files/generate-upload-url",
-                      "v2/api-reference/files/signed-download",
-                      "v2/api-reference/files/signed-upload"
-                    ]
-                  },
-                  {
-                    "group": "Checkpoints",
-                    "pages": [
-                      "v2/api-reference/checkpoints/create",
-                      "v2/api-reference/checkpoints/list",
-                      "v2/api-reference/checkpoints/restore",
-                      "v2/api-reference/checkpoints/fork",
-                      "v2/api-reference/checkpoints/delete"
-                    ]
-                  },
-                  {
-                    "group": "Patches",
-                    "pages": [
-                      "v2/api-reference/patches/create",
-                      "v2/api-reference/patches/list",
-                      "v2/api-reference/patches/delete"
-                    ]
-                  },
-                  {
-                    "group": "Preview URLs",
-                    "pages": [
-                      "v2/api-reference/preview/create",
-                      "v2/api-reference/preview/list",
-                      "v2/api-reference/preview/delete",
-                      "v2/api-reference/preview/rotate-auth"
-                    ]
-                  },
-                  {
-                    "group": "Snapshots",
-                    "pages": [
-                      "v2/api-reference/snapshots/create",
-                      "v2/api-reference/snapshots/list",
-                      "v2/api-reference/snapshots/get",
-                      "v2/api-reference/snapshots/delete"
-                    ]
-                  },
-                  {
-                    "group": "PTY",
-                    "pages": [
-                      "v2/api-reference/pty/create",
-                      "v2/api-reference/pty/resize",
-                      "v2/api-reference/pty/kill"
-                    ]
-                  }
-                ]
-              },
-              {
-                "group": "Resources",
-                "pages": [
-                  "v2/troubleshooting"
-                ]
-              },
-              {
-                "group": "Self-hosting",
-                "pages": [
-                  "v2/self-hosting/overview",
-                  "v2/self-hosting/gcp-development"
-                ]
-              }
+            "group": "Concepts",
+            "pages": [
+              "agents/reactive-agents",
+              "agents/sessions",
+              "agents/schedules",
+              "agents/webhooks",
+              "agents/capabilities",
+              "agents/channels",
+              "agents/outboxes",
+              "agents/secrets",
+              "agents/byok",
+              "agents/deployments"
+            ]
+          },
+          {
+            "group": "Agent API",
+            "pages": [
+              "agents/hooks",
+              "agents/inputs",
+              "agents/models",
+              "agents/tools",
+              "agents/mcp",
+              "agents/skills",
+              "agents/subagents",
+              "agents/session-data"
+            ]
+          },
+          {
+            "group": "Test and operate",
+            "pages": [
+              "agents/playground",
+              "agents/logs"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "agents/examples/gtm-engineer",
+              "agents/examples/feature-flag-hygiene",
+              "agents/examples/github-actions-triage",
+              "agents/examples/pr-review",
+              "agents/examples/test-coverage"
             ]
           }
         ]
       },
       {
-        "version": "v1",
-        "tabs": [
+        "tab": "Sandboxes",
+        "groups": [
           {
-            "tab": "Serverless Agents",
-            "groups": [
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works",
+              "migrating-from-v1"
+            ]
+          },
+          {
+            "group": "Sandboxes",
+            "pages": [
+              "sandboxes/overview",
+              "sandboxes/running-commands",
+              "sandboxes/working-with-files",
+              "sandboxes/mounts",
+              "sandboxes/signed-urls",
+              "sandboxes/interactive-terminals",
+              "sandboxes/lifetime",
+              "sandboxes/sizes",
+              "sandboxes/timeout",
+              "sandboxes/checkpoints",
+              "sandboxes/templates",
+              "sandboxes/secrets",
+              "sandboxes/patches",
+              "sandboxes/preview-urls",
+              "sandboxes/webhooks",
+              "sandboxes/elasticity",
+              "sandboxes/burst-sandboxes",
               {
-                "group": "Getting started",
+                "group": "Usage",
+                "tag": "Preview",
+                "expanded": true,
                 "pages": [
-                  "agents/overview",
-                  "agents/mental-model",
-                  "agents/quickstart",
-                  "agents/projects"
-                ]
-              },
-              {
-                "group": "Concepts",
-                "pages": [
-                  "agents/reactive-agents",
-                  "agents/sessions",
-                  "agents/schedules",
-                  "agents/webhooks",
-                  "agents/capabilities",
-                  "agents/channels",
-                  "agents/outboxes",
-                  "agents/secrets",
-                  "agents/byok",
-                  "agents/deployments"
-                ]
-              },
-              {
-                "group": "Agent API",
-                "pages": [
-                  "agents/hooks",
-                  "agents/inputs",
-                  "agents/models",
-                  "agents/tools",
-                  "agents/mcp",
-                  "agents/skills",
-                  "agents/subagents",
-                  "agents/session-data"
-                ]
-              },
-              {
-                "group": "Test and operate",
-                "pages": [
-                  "agents/playground",
-                  "agents/logs"
-                ]
-              },
-              {
-                "group": "Examples",
-                "pages": [
-                  "agents/examples/gtm-engineer",
-                  "agents/examples/feature-flag-hygiene",
-                  "agents/examples/github-actions-triage",
-                  "agents/examples/pr-review",
-                  "agents/examples/test-coverage"
+                  "sandboxes/usage"
                 ]
               }
             ]
           },
           {
-            "tab": "Sandboxes",
-            "groups": [
+            "group": "Browser Sessions",
+            "tag": "Preview",
+            "pages": [
+              "browser-sessions/overview"
+            ]
+          },
+          {
+            "group": "Reserved Capacity",
+            "tag": "Preview",
+            "pages": [
+              "reserved-capacity/overview",
+              "reserved-capacity/concepts",
+              "reserved-capacity/calendar",
+              "reserved-capacity/reserving",
+              "reserved-capacity/usage-and-overage"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "cli/overview",
+              "cli/sandbox",
+              "cli/exec",
+              "cli/shell",
+              "cli/checkpoint",
+              "cli/patch",
+              "cli/preview",
+              "cli/secrets"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/build-a-lovable-clone",
+              "guides/browser-automation",
+              "guides/agent-skill"
+            ]
+          },
+          {
+            "group": "TypeScript SDK",
+            "pages": [
+              "reference/typescript-sdk/overview",
+              "reference/typescript-sdk/sandbox",
+              "reference/typescript-sdk/scaling",
               {
-                "group": "Getting Started",
+                "group": "Usage & Tags",
+                "tag": "Preview",
+                "expanded": true,
                 "pages": [
-                  "introduction",
-                  "quickstart",
-                  "how-it-works"
+                  "reference/typescript-sdk/usage"
                 ]
               },
+              "reference/typescript-sdk/exec",
+              "reference/typescript-sdk/filesystem",
+              "reference/typescript-sdk/pty",
+              "reference/typescript-sdk/image",
+              "reference/typescript-sdk/snapshots",
+              "reference/typescript-sdk/secrets"
+            ]
+          },
+          {
+            "group": "Python SDK",
+            "pages": [
+              "reference/python-sdk/overview",
+              "reference/python-sdk/sandbox",
+              "reference/python-sdk/scaling",
+              "reference/python-sdk/exec",
+              "reference/python-sdk/filesystem",
+              "reference/python-sdk/pty",
+              "reference/python-sdk/image",
+              "reference/python-sdk/snapshots",
+              "reference/python-sdk/secrets"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "reference/cli/overview",
+              "reference/cli/sandbox",
+              "reference/cli/scaling",
+              "reference/cli/exec",
+              "reference/cli/shell",
+              "reference/cli/checkpoint",
+              "reference/cli/patch",
+              "reference/cli/preview",
+              "reference/cli/agent",
+              "reference/cli/auth",
+              "reference/cli/config"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api-reference/overview",
               {
                 "group": "Sandboxes",
                 "pages": [
-                  "sandboxes/overview",
-                  "sandboxes/running-commands",
-                  "sandboxes/working-with-files",
-                  "sandboxes/mounts",
-                  "sandboxes/signed-urls",
-                  "sandboxes/interactive-terminals",
-                  "sandboxes/timeout",
-                  "sandboxes/checkpoints",
-                  "sandboxes/templates",
-                  "sandboxes/secrets",
-                  "sandboxes/patches",
-                  "sandboxes/preview-urls",
-                  "sandboxes/webhooks",
-                  "sandboxes/elasticity",
-                  "sandboxes/burst-sandboxes",
+                  "api-reference/sandboxes/create",
+                  "api-reference/sandboxes/list",
+                  "api-reference/sandboxes/get",
+                  "api-reference/sandboxes/delete",
+                  "api-reference/sandboxes/set-timeout",
+                  "api-reference/sandboxes/hibernate",
+                  "api-reference/sandboxes/wake",
                   {
-                    "group": "Usage",
+                    "group": "Tags",
                     "tag": "Preview",
-                    "expanded": true,
                     "pages": [
-                      "sandboxes/usage"
+                      "api-reference/sandboxes/get-tags",
+                      "api-reference/sandboxes/set-tags"
                     ]
                   }
                 ]
               },
               {
-                "group": "Browser Sessions",
+                "group": "Webhooks",
                 "tag": "Preview",
                 "pages": [
-                  "browser-sessions/overview"
+                  "api-reference/webhooks/create",
+                  "api-reference/webhooks/list",
+                  "api-reference/webhooks/get",
+                  "api-reference/webhooks/update",
+                  "api-reference/webhooks/delete",
+                  "api-reference/webhooks/test",
+                  {
+                    "group": "Deliveries",
+                    "pages": [
+                      "api-reference/webhooks/deliveries-list",
+                      "api-reference/webhooks/delivery-get",
+                      "api-reference/webhooks/redeliver"
+                    ]
+                  }
+                ]
+              },
+              {
+                "group": "Usage",
+                "tag": "Preview",
+                "pages": [
+                  "api-reference/usage/get-usage",
+                  "api-reference/usage/get-sandbox-usage",
+                  "api-reference/usage/list-tags"
                 ]
               },
               {
                 "group": "Reserved Capacity",
-                "tag": "Preview",
                 "pages": [
-                  "reserved-capacity/overview",
-                  "reserved-capacity/concepts",
-                  "reserved-capacity/calendar",
-                  "reserved-capacity/reserving",
-                  "reserved-capacity/usage-and-overage"
+                  "api-reference/capacity/get-calendar",
+                  "api-reference/capacity/create-reservations",
+                  "api-reference/capacity/list-reservations"
                 ]
               },
               {
-                "group": "CLI",
+                "group": "Commands",
                 "pages": [
-                  "cli/overview",
-                  "cli/sandbox",
-                  "cli/exec",
-                  "cli/shell",
-                  "cli/checkpoint",
-                  "cli/patch",
-                  "cli/preview",
-                  "cli/secrets"
+                  "api-reference/exec/run",
+                  "api-reference/exec/create-session",
+                  "api-reference/exec/list-sessions",
+                  "api-reference/exec/kill-session"
                 ]
               },
               {
-                "group": "Guides",
+                "group": "Filesystem",
                 "pages": [
-                  "guides/build-a-lovable-clone",
-                  "guides/browser-automation",
-                  "guides/agent-skill"
+                  "api-reference/files/read",
+                  "api-reference/files/write",
+                  "api-reference/files/list-directory",
+                  "api-reference/files/mkdir",
+                  "api-reference/files/delete",
+                  "api-reference/files/generate-download-url",
+                  "api-reference/files/generate-upload-url",
+                  "api-reference/files/signed-download",
+                  "api-reference/files/signed-upload"
                 ]
               },
               {
-                "group": "TypeScript SDK",
+                "group": "Checkpoints",
                 "pages": [
-                  "reference/typescript-sdk/overview",
-                  "reference/typescript-sdk/sandbox",
-                  "reference/typescript-sdk/scaling",
-                  {
-                    "group": "Usage & Tags",
-                    "tag": "Preview",
-                    "expanded": true,
-                    "pages": [
-                      "reference/typescript-sdk/usage"
-                    ]
-                  },
-                  "reference/typescript-sdk/exec",
-                  "reference/typescript-sdk/filesystem",
-                  "reference/typescript-sdk/pty",
-                  "reference/typescript-sdk/image",
-                  "reference/typescript-sdk/snapshots",
-                  "reference/typescript-sdk/secrets"
+                  "api-reference/checkpoints/create",
+                  "api-reference/checkpoints/list",
+                  "api-reference/checkpoints/restore",
+                  "api-reference/checkpoints/fork",
+                  "api-reference/checkpoints/delete"
                 ]
               },
               {
-                "group": "Python SDK",
+                "group": "Patches",
                 "pages": [
-                  "reference/python-sdk/overview",
-                  "reference/python-sdk/sandbox",
-                  "reference/python-sdk/scaling",
-                  "reference/python-sdk/exec",
-                  "reference/python-sdk/filesystem",
-                  "reference/python-sdk/pty",
-                  "reference/python-sdk/image",
-                  "reference/python-sdk/snapshots",
-                  "reference/python-sdk/secrets"
+                  "api-reference/patches/create",
+                  "api-reference/patches/list",
+                  "api-reference/patches/delete"
                 ]
               },
               {
-                "group": "CLI Reference",
+                "group": "Preview URLs",
                 "pages": [
-                  "reference/cli/overview",
-                  "reference/cli/sandbox",
-                  "reference/cli/scaling",
-                  "reference/cli/exec",
-                  "reference/cli/shell",
-                  "reference/cli/checkpoint",
-                  "reference/cli/patch",
-                  "reference/cli/preview",
-                  "reference/cli/agent",
-                  "reference/cli/auth",
-                  "reference/cli/config"
+                  "api-reference/preview/create",
+                  "api-reference/preview/list",
+                  "api-reference/preview/delete",
+                  "api-reference/preview/rotate-auth"
                 ]
               },
               {
-                "group": "API Reference",
+                "group": "Snapshots",
                 "pages": [
-                  "api-reference/overview",
-                  {
-                    "group": "Sandboxes",
-                    "pages": [
-                      "api-reference/sandboxes/create",
-                      "api-reference/sandboxes/list",
-                      "api-reference/sandboxes/get",
-                      "api-reference/sandboxes/delete",
-                      "api-reference/sandboxes/set-timeout",
-                      "api-reference/sandboxes/hibernate",
-                      "api-reference/sandboxes/wake",
-                      {
-                        "group": "Tags",
-                        "tag": "Preview",
-                        "pages": [
-                          "api-reference/sandboxes/get-tags",
-                          "api-reference/sandboxes/set-tags"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "group": "Webhooks",
-                    "tag": "Preview",
-                    "pages": [
-                      "api-reference/webhooks/create",
-                      "api-reference/webhooks/list",
-                      "api-reference/webhooks/get",
-                      "api-reference/webhooks/update",
-                      "api-reference/webhooks/delete",
-                      "api-reference/webhooks/test",
-                      {
-                        "group": "Deliveries",
-                        "pages": [
-                          "api-reference/webhooks/deliveries-list",
-                          "api-reference/webhooks/delivery-get",
-                          "api-reference/webhooks/redeliver"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "group": "Usage",
-                    "tag": "Preview",
-                    "pages": [
-                      "api-reference/usage/get-usage",
-                      "api-reference/usage/get-sandbox-usage",
-                      "api-reference/usage/list-tags"
-                    ]
-                  },
-                  {
-                    "group": "Reserved Capacity",
-                    "pages": [
-                      "api-reference/capacity/get-calendar",
-                      "api-reference/capacity/create-reservations",
-                      "api-reference/capacity/list-reservations"
-                    ]
-                  },
-                  {
-                    "group": "Commands",
-                    "pages": [
-                      "api-reference/exec/run",
-                      "api-reference/exec/create-session",
-                      "api-reference/exec/list-sessions",
-                      "api-reference/exec/kill-session"
-                    ]
-                  },
-                  {
-                    "group": "Filesystem",
-                    "pages": [
-                      "api-reference/files/read",
-                      "api-reference/files/write",
-                      "api-reference/files/list-directory",
-                      "api-reference/files/mkdir",
-                      "api-reference/files/delete",
-                      "api-reference/files/generate-download-url",
-                      "api-reference/files/generate-upload-url",
-                      "api-reference/files/signed-download",
-                      "api-reference/files/signed-upload"
-                    ]
-                  },
-                  {
-                    "group": "Checkpoints",
-                    "pages": [
-                      "api-reference/checkpoints/create",
-                      "api-reference/checkpoints/list",
-                      "api-reference/checkpoints/restore",
-                      "api-reference/checkpoints/fork",
-                      "api-reference/checkpoints/delete"
-                    ]
-                  },
-                  {
-                    "group": "Patches",
-                    "pages": [
-                      "api-reference/patches/create",
-                      "api-reference/patches/list",
-                      "api-reference/patches/delete"
-                    ]
-                  },
-                  {
-                    "group": "Preview URLs",
-                    "pages": [
-                      "api-reference/preview/create",
-                      "api-reference/preview/list",
-                      "api-reference/preview/delete",
-                      "api-reference/preview/rotate-auth"
-                    ]
-                  },
-                  {
-                    "group": "Snapshots",
-                    "pages": [
-                      "api-reference/snapshots/create",
-                      "api-reference/snapshots/list",
-                      "api-reference/snapshots/get",
-                      "api-reference/snapshots/delete"
-                    ]
-                  },
-                  {
-                    "group": "PTY",
-                    "pages": [
-                      "api-reference/pty/create",
-                      "api-reference/pty/resize",
-                      "api-reference/pty/kill"
-                    ]
-                  }
+                  "api-reference/snapshots/create",
+                  "api-reference/snapshots/list",
+                  "api-reference/snapshots/get",
+                  "api-reference/snapshots/delete"
                 ]
               },
               {
-                "group": "Resources",
+                "group": "PTY",
                 "pages": [
-                  "troubleshooting"
-                ]
-              },
-              {
-                "group": "Self-hosting",
-                "pages": [
-                  "self-hosting/overview",
-                  "self-hosting/gcp-development"
+                  "api-reference/pty/create",
+                  "api-reference/pty/resize",
+                  "api-reference/pty/kill"
                 ]
               }
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "troubleshooting"
+            ]
+          },
+          {
+            "group": "Self-hosting",
+            "pages": [
+              "self-hosting/overview",
+              "self-hosting/gcp-development"
             ]
           }
         ]

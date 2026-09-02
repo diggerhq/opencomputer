@@ -6,8 +6,8 @@ description: "Every breaking change between v1 and v2, and how to find out wheth
 v2 is the same API with the same SDK calls. Most code runs unchanged. What follows is the
 complete list of behaviour that differs, ordered by how likely it is to matter.
 
-Nothing changes for you until your org is moved to v2. The [v1 docs](/introduction) stay
-accurate until then — switch versions with the selector at the top of the page.
+Nothing changes for you until your org is moved to v2. The v1 documentation stays accurate
+until then and is archived permanently at [docs-v1.opencomputer.dev](https://docs-v1.opencomputer.dev).
 
 ## Am I affected?
 
@@ -16,15 +16,15 @@ Seven questions. If every answer is "no", your migration is a configuration chan
 <Steps>
   <Step title="Does any sandbox need to live longer than 8 hours?">
     v2 sandboxes have a hard 8-hour lifetime, counting hibernated time. See
-    [Sandbox lifetime](/v2/sandboxes/lifetime).
+    [Sandbox lifetime](/sandboxes/lifetime).
   </Step>
   <Step title="Do you restore checkpoints expecting a running process?">
     v2 checkpoints capture the filesystem only. Restoring gives a fresh boot with your files,
-    not a resumed process tree. See [Checkpoints](/v2/sandboxes/checkpoints).
+    not a resumed process tree. See [Checkpoints](/sandboxes/checkpoints).
   </Step>
   <Step title="Do you use templates built on v1?">
     A template that carries a rootfs image is refused. Most v1 templates do. See
-    [Templates](/v2/sandboxes/templates).
+    [Templates](/sandboxes/templates).
   </Step>
   <Step title="Do you run sandboxes larger than 8 GB?">
     The 16 GB tier does not exist in v2, and memory cannot change after launch.
@@ -126,7 +126,7 @@ work exactly as in v1, and your code does not change.
 The difference is where the real values are held: in v2 the substituting proxy runs inside your
 sandbox as a root-owned process, rather than outside it. Your code runs unprivileged and cannot
 read them, but a privilege escalation **inside** a sandbox now reaches the secrets scoped to
-that sandbox. See [Secrets](/v2/sandboxes/secrets).
+that sandbox. See [Secrets](/sandboxes/secrets).
 
 ### Not available in v2
 
