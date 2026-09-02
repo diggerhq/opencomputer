@@ -15,7 +15,7 @@ Everything not listed here behaves identically, and the same SDK code runs on bo
 | Hibernate | checkpoint to storage, wake anywhere | suspend in place |
 | Hibernated time | does not count against a lifetime | **counts against the 8 hours** |
 | Resize a running sandbox | supported | not supported |
-| Sizes | any memory value at create | a fixed enum, 512 MB – 8 GB, default 4 GB |
+| Sizes | any memory value at create | fixed steps, 2 GB – 8 GB, default 4 GB |
 | CPU | selectable via `cpuCount`, scales with memory | allocated by the platform; `cpuCount` is not a control |
 | Disk | 20 GB default, up to 256 GB via `diskMB` | **fixed ~16 GB**; `diskMB` is ignored |
 | Existing templates | work | **refused if they carry a rootfs** — most do |

@@ -12,41 +12,23 @@ fixed list rather than any number you like, and a size cannot change after launc
 
 ## Sizes the platform supports
 
-These are the only values that can exist, on the `al2023-1` base image:
+Memory belongs to the image, so a size only exists if we have published an image for it. The
+practical range is **2 GB to 8 GB**, in these steps:
 
-| Memory |
-|---|
-| 512 MB |
-| 1024 MB |
-| 2048 MB |
-| **4096 MB** — default |
-| 8192 MB |
+| Memory | |
+|---|---|
+| 2048 MB | smallest size that reliably gets a full vCPU |
+| **4096 MB** | **default** — the only size served from the warm pool |
+| 8192 MB | largest available |
 
 <Note>
-This is an enum, not a range. `3072` and `16384` are not "not yet published" — they cannot be
-published, because the platform does not offer them. The largest sandbox available is 8 GB.
+This is a set of steps, not a range. `3072` is not a size — it is either published or it is not,
+and nothing in between exists. 8 GB is the ceiling.
 </Note>
 
-## CPU
-
-CPU is **not separately selectable** on this runtime. The platform allocates it in proportion to
-the memory size, and there is no knob for it.
-
-<Warning>
-`cpuCount` is accepted by the create API for compatibility, but it is **not a control** on this
-runtime — the platform's launch call has no CPU parameter, so the value cannot reach it.
-</Warning>
-
-Worse than useless: passing `cpuCount` greater than 1 makes a create **slower**. Only the
-standard shape is served from the warm pool, so a create carrying a non-default `cpuCount` opts
-out of the fast path and cold-launches — in exchange for nothing, because the sandbox is
-identical either way.
-
-Leave it unset.
-
-Measuring CPU from inside the guest is misleading: `nproc` and `/proc/cpuinfo` report the
-underlying machine rather than your sandbox's share, so a 4 GB sandbox may report 8 processors.
-Benchmark actual throughput rather than reading the core count.
+Smaller images (1024 MB and below) are technically publishable but we do not offer them: CPU is
+allocated as a function of memory, so below 2 GB a sandbox may not get a full vCPU and there is
+no way to ask for one.
 
 ## Disk
 
