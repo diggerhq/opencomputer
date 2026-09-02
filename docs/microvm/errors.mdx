@@ -9,7 +9,7 @@ The runtime tries to make "retry" versus "change your request" obvious from the 
 
 | Status | Meaning | Retry? |
 |---|---|---|
-| `400` requested size not available | The size has no published image here. The message lists the sizes that do exist. | No — pick a listed size. |
+| `400` requested size not available | That size is not published in this region, or is not one the platform offers at all. The message lists the sizes that do exist. | No — pick a listed size. |
 | `503` out of capacity | A genuine shortage. | Yes, once something frees up. No `Retry-After`, because hammering a full region only adds rate limiting. |
 | `503` rate limited | Creates are arriving faster than the provider accepts. | Yes — a `Retry-After: 1` header is set. |
 | `429` concurrent sandbox limit | Your org is at its concurrency cap. | Yes, after ending a sandbox. |

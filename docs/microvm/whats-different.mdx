@@ -15,7 +15,7 @@ Everything not listed here behaves identically, and the same SDK code runs on bo
 | Hibernate | checkpoint to storage, wake anywhere | suspend in place |
 | Hibernated time | does not count against a lifetime | **counts against the 8 hours** |
 | Resize a running sandbox | supported | not supported |
-| Sizes | requested at create | fixed per published size tier |
+| Sizes | any memory value at create | a fixed enum, 512 MB – 8 GB, default 4 GB |
 | Mounts (FUSE/NFS/overlay) | supported | not possible |
 | Image builds | supported | not yet |
 | Fork from a checkpoint | supported | not yet |
@@ -24,12 +24,16 @@ Everything not listed here behaves identically, and the same SDK code runs on bo
 | Live migration | supported | not applicable |
 | Exec, files, PTY, preview URLs, webhooks, signed URLs | — | identical |
 
-## The two that will bite
+## The three that will bite
 
 **The 8-hour ceiling** is the one to plan around. It is a property of the platform underneath,
 not a quota we can raise, and it counts hibernated time. A sandbox you hibernate for the night
 does not come back in the morning. If you have work that assumes a long-lived box, read
 [Sandbox lifetime](/microvm/lifetime) before anything else.
+
+**Memory tops out at 8 GB** and cannot be changed after launch. On the current runtime you ask
+for whatever you need and can resize later; here the sizes are a fixed enum and the largest is
+8 GB. See [Sandbox sizes](/microvm/sizes).
 
 **Checkpoints don't capture memory.** If you use checkpoints to freeze a warmed-up process —
 a loaded model, an open connection pool, a debugger mid-session — restoring will not give that

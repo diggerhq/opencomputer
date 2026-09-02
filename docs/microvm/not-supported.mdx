@@ -39,7 +39,7 @@ These are gaps in our implementation, not the platform's.
 | **Hibernate** | Suspends in place; hibernated time counts against the lifetime ceiling. |
 | **Org halt** | Archives the filesystem and releases the host, rather than parking the sandbox. |
 | **Idle timeout** | Clamped to the lifetime ceiling; the response tells you whether it was applied. |
-| **Sizes** | Only published size tiers can be served. An unavailable size is refused with the list of sizes that exist. |
+| **Sizes** | A fixed enum (512 MB – 8 GB, default 4 GB), and only the tiers published in your region. Anything else is refused with the list that exists. |
 
 ## If something here blocks you
 

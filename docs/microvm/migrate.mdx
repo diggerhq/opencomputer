@@ -8,7 +8,7 @@ out ahead of time whether that move is a non-event or something you need to plan
 
 ## Step 1 — answer four questions
 
-Most workloads are unaffected. These four are what separate the two cases:
+Most workloads are unaffected. These five are what separate the two cases:
 
 <Steps>
   <Step title="Does any sandbox need to live longer than 8 hours?">
@@ -20,6 +20,12 @@ Most workloads are unaffected. These four are what separate the two cases:
     restore will not bring it back. If they capture an installed environment, you are fine.
     See [Checkpoints](/microvm/checkpoints).
   </Step>
+  <Step title="Does any sandbox need more than 8 GB of memory?">
+    8 GB is the largest size the platform offers, and memory cannot be changed after launch.
+    If you run bigger sandboxes today, that work needs to fit in 8 GB or be split up. See
+    [Sandbox sizes](/microvm/sizes).
+  </Step>
+
   <Step title="Do you call scale, autoscale, or mount anything?">
     None of these exist on the new runtime. See [What's not supported](/microvm/not-supported).
   </Step>
@@ -28,7 +34,7 @@ Most workloads are unaffected. These four are what separate the two cases:
   </Step>
 </Steps>
 
-If all four are "no", your migration is a configuration change and you can stop reading here.
+If all five are "no", your migration is a configuration change and you can stop reading here.
 
 ## Step 2 — find the calls in your code
 
