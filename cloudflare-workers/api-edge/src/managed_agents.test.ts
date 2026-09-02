@@ -63,6 +63,40 @@ describe("managed agents proxy", () => {
     ).resolves.toBe(true);
   });
 
+  it("streams project source without exposing upstream headers", async () => {
+    const fetchSpy = vi.fn(async (target: RequestInfo | URL) => {
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/projects/prj_test/source-archive",
+      );
+      return new Response("project archive", {
+        headers: {
+          "content-type": "application/gzip",
+          "content-disposition": 'attachment; filename="project.tar.gz"',
+          "x-storage-provider": "private",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/source-archive",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("project archive");
+    expect(response.headers.get("content-type")).toBe("application/gzip");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-storage-provider")).toBeNull();
+  });
+
   it("reads BYOK eligibility from an active Autumn subscription", async () => {
     vi.stubGlobal(
       "fetch",

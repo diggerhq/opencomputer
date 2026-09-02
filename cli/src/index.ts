@@ -52,6 +52,7 @@ Usage:
   opencomputer template build [directory] [--output <path>]
   opencomputer template deploy <repository-url> [--project-name <name>] [--directory <path>]
   opencomputer template clone <repository-url> --commit <sha> --project <id> [--directory <path>]
+  opencomputer project clone <project-id> [--directory <path>]
   opencomputer link
   opencomputer deploy --watch [--project <id|slug> | --create-project <name>]
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)

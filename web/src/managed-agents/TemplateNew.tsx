@@ -48,8 +48,10 @@ export default function TemplateNew() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const repositoryUrl = searchParams.get('repository-url')?.trim() ?? ''
+  const quickStart = searchParams.get('quick-start') === '1'
   const validRepository = GITHUB_REPOSITORY.test(repositoryUrl)
   const commandKey = useRef(crypto.randomUUID())
+  const quickStartSubmitted = useRef(false)
   const [projectName, setProjectName] = useState('')
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [variables, setVariables] = useState<Record<string, string>>({})
@@ -155,6 +157,24 @@ export default function TemplateNew() {
     onError: (error) => notifyError("Couldn't deploy the template.", error),
   })
 
+  useEffect(() => {
+    if (
+      !quickStart ||
+      quickStartSubmitted.current ||
+      !inspection.data ||
+      !projectName.trim()
+    ) {
+      return
+    }
+    const hasConfiguration =
+      inspection.data.requirements.secrets.length > 0 ||
+      inspection.data.requirements.runtimeVariables.length > 0 ||
+      inspection.data.requirements.connections.length > 0
+    if (hasConfiguration) return
+    quickStartSubmitted.current = true
+    install.mutate()
+  }, [inspection.data, projectName, quickStart])
+
   function submit(event: FormEvent) {
     event.preventDefault()
     install.mutate()
@@ -177,6 +197,18 @@ export default function TemplateNew() {
       <div className="flex min-h-64 items-center justify-center">
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
       </div>
+    )
+  }
+
+  if (quickStart && install.isPending) {
+    return (
+      <Panel>
+        <EmptyState
+          icon={Rocket}
+          title="Deploying Hello World"
+          description="Creating your project and opening its first Debug session…"
+        />
+      </Panel>
     )
   }
 

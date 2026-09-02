@@ -234,11 +234,11 @@ function errorMessage(body: unknown, status: number): string {
 export class OpenComputerClient {
   constructor(private readonly config: ResolvedConfig) {}
 
-  private async request<T>(
+  private async response(
     path: string,
     init: RequestInit = {},
     authenticated = true,
-  ): Promise<T> {
+  ): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
@@ -257,11 +257,21 @@ export class OpenComputerClient {
       redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
-    if (response.status === 204) return undefined as T;
-    const body: unknown = await response.json().catch(() => undefined);
     if (!response.ok) {
+      const body: unknown = await response.json().catch(() => undefined);
       throw new APIError(errorMessage(body, response.status), response.status);
     }
+    return response;
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    authenticated = true,
+  ): Promise<T> {
+    const response = await this.response(path, init, authenticated);
+    if (response.status === 204) return undefined as T;
+    const body: unknown = await response.json().catch(() => undefined);
     return body as T;
   }
 
@@ -326,6 +336,12 @@ export class OpenComputerClient {
       method: "POST",
       body: JSON.stringify({ name, slug }),
     });
+  }
+
+  projectSourceArchive(projectId: string): Promise<Response> {
+    return this.response(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/source-archive`,
+    );
   }
 
   async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {

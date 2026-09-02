@@ -78,7 +78,7 @@ import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
-  templateCloneCommand,
+  projectCloneCommand,
   templateFirstRunPrompt,
 } from './template-continuation'
 
@@ -594,12 +594,7 @@ export default function ManagedAgentDetail({
     enabled: Boolean(selectedPlaygroundId),
   })
   const continuationCommand =
-    project?.templateSource &&
-    templateCloneCommand({
-      repositoryUrl: project.templateSource.repositoryUrl,
-      commitSha: project.templateSource.commitSha,
-      projectId: project.project.id,
-    })
+    project?.templateSource && projectCloneCommand(project.project.id)
 
   const selectPlaygroundSession = (sessionId?: string) => {
     void navigate({

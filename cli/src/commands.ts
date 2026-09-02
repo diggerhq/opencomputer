@@ -38,6 +38,7 @@ import {
   defaultTemplateDirectory,
   materializeTemplateCheckout,
 } from "./template-local.js";
+import { materializeProjectArchive } from "./project-local.js";
 import { createInterface } from "node:readline/promises";
 
 export interface GlobalOptions {
@@ -529,6 +530,37 @@ export async function runCommand(
 
   const config = await resolveConfig(globals);
   const client = new OpenComputerClient(config);
+
+  if (command === "project" && args[0] === "clone") {
+    args.shift();
+    const directory = option(args, "--directory");
+    const projectId = args.shift();
+    if (!projectId || args.length) {
+      throw new Error(
+        "Usage: opencomputer project clone <project-id> [--directory <path>]",
+      );
+    }
+    const project = (await client.projects()).find(
+      (candidate) => candidate.id === projectId,
+    );
+    if (!project) throw new Error(`Project not found: ${projectId}`);
+    const checkout = await materializeProjectArchive({
+      response: await client.projectSourceArchive(project.id),
+      directory: directory ?? project.slug,
+    });
+    const binding = await ensureProjectBinding(client, config, checkout.directory, {
+      project: project.id,
+      interactive: false,
+    });
+    if (globals.json) printJSON({ checkout, binding });
+    else {
+      process.stdout.write(
+        `Cloned ${binding.projectName} (${binding.projectId}).\n\n` +
+          `Next:\n  cd ${checkout.directory}\n  npm install\n  npm run deploy -- --watch\n`,
+      );
+    }
+    return;
+  }
 
   if (command === "template") {
     const action = args.shift();

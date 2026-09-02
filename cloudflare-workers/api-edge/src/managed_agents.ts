@@ -1104,6 +1104,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/source-archive$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
   ) {
@@ -1574,6 +1580,24 @@ export async function proxyManagedAgents(
     const upstream = await fetch(target, init);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
+    if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+      const responseHeaders = new Headers();
+      for (const name of [
+        "content-type",
+        "content-length",
+        "content-disposition",
+        "etag",
+      ]) {
+        const value = upstream.headers.get(name);
+        if (value) responseHeaders.set(name, value);
+      }
+      responseHeaders.set("cache-control", "private, no-store");
+      return new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    }
     if (suffix.startsWith("/openrouter/")) {
       return upstream;
     }
