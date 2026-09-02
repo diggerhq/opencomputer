@@ -608,6 +608,54 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("reports a missing root template manifest without leaking builder details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "template_sync_failed",
+              message:
+                "/usr/local/bin/node failed: opencomputer: oc-template.toml: expected a regular file at /tmp/template/source/oc-template.toml",
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/template-inspections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            repositoryUrl: "https://github.com/diggerhq/not-a-template",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: "template_manifest_missing",
+        message:
+          "This is not a valid template: oc-template.toml is missing from the repository root.",
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(/\/tmp\/|\/usr\/local|trigger/i);
+  });
+
   it("exposes a sanitized active deployment for agent details", async () => {
     vi.stubGlobal(
       "fetch",

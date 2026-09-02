@@ -109,17 +109,15 @@ function errorMessage(body: unknown, status: number): string {
   return `Request failed: ${status}`
 }
 
-// The typed discriminator sessions-api puts on `{error:{type,…}}` (e.g.
-// "insufficient_credits"), so callers can branch on the reason, not the status alone.
+// The typed discriminator APIs put on `{error:{type,…}}` or
+// `{error:{code,…}}`, so callers can branch on the reason, not the status alone.
 function errorType(body: unknown): string | undefined {
   if (body && typeof body === 'object') {
     const err = (body as Record<string, unknown>).error
-    if (
-      err &&
-      typeof err === 'object' &&
-      typeof (err as Record<string, unknown>).type === 'string'
-    ) {
-      return (err as Record<string, unknown>).type as string
+    if (err && typeof err === 'object') {
+      const structured = err as Record<string, unknown>
+      if (typeof structured.type === 'string') return structured.type
+      if (typeof structured.code === 'string') return structured.code
     }
   }
   return undefined

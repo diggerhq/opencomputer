@@ -21,6 +21,7 @@ import {
   putAgentRuntimeVariable,
   putManagedProjectSecret,
 } from './api'
+import { templateInspectionError } from './template-inspection-error'
 
 const GITHUB_REPOSITORY =
   /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]+$/
@@ -159,16 +160,13 @@ export default function TemplateNew() {
   }
 
   if (inspection.isError || !inspection.data) {
+    const error = templateInspectionError(inspection.error)
     return (
       <Panel>
         <EmptyState
           icon={FolderGit2}
-          title="This template could not be inspected"
-          description={
-            inspection.error instanceof Error
-              ? inspection.error.message
-              : 'Check the repository and try again.'
-          }
+          title={error.title}
+          description={error.description}
           action={
             <Button variant="outline" onClick={() => void inspection.refetch()}>
               Try again

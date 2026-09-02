@@ -132,15 +132,29 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     typeof (body as { error: unknown }).error === "object"
       ? (body as { error: Record<string, unknown> }).error
       : null;
-  const backendCode =
-    typeof backendError?.code === "string" &&
-    /^[a-z][a-z0-9_]{0,63}$/.test(backendError.code)
+  const backendErrorType =
+    typeof backendError?.code === "string"
       ? backendError.code
-      : "agent_request_failed";
+      : typeof backendError?.type === "string"
+        ? backendError.type
+        : "";
+  const backendCode = /^[a-z][a-z0-9_]{0,63}$/.test(backendErrorType)
+    ? backendErrorType
+    : "agent_request_failed";
   const backendMessage =
     typeof backendError?.message === "string" ? backendError.message : "";
+  const missingTemplateManifest =
+    backendCode === "template_sync_failed" &&
+    backendMessage.includes("oc-template.toml") &&
+    backendMessage.includes("expected a regular file");
+  const publicCode = missingTemplateManifest
+    ? "template_manifest_missing"
+    : backendCode;
   let message = "The agent request could not be completed.";
-  if (upstream.status === 400) {
+  if (missingTemplateManifest) {
+    message =
+      "This is not a valid template: oc-template.toml is missing from the repository root.";
+  } else if (upstream.status === 400) {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
@@ -184,7 +198,7 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("retry-after", retryAfter);
   return new Response(
-    JSON.stringify({ error: { code: backendCode, message } }),
+    JSON.stringify({ error: { code: publicCode, message } }),
     { status: upstream.status, headers },
   );
 }
