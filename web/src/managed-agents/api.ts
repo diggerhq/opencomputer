@@ -494,6 +494,7 @@ const projectOverviewSchema = z.object({
     .object({
       repositoryUrl: z.string().url(),
       commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+      cloneReady: z.boolean().optional().default(false),
     })
     .optional(),
   sessions: z.array(sessionSchema),

@@ -716,6 +716,7 @@ function publicSuccessBody(
             templateSource: {
               repositoryUrl: templateSource.repositoryUrl,
               commitSha: templateSource.commitSha,
+              cloneReady: templateSource.cloneReady === true,
             },
           }
         : {}),
@@ -1103,10 +1104,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
-  if (
-    method === "GET" &&
-    /^\/projects\/[^/]+\/source-archive$/.test(suffix)
-  ) {
+  if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }
   if (

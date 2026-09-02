@@ -594,7 +594,10 @@ export default function ManagedAgentDetail({
     enabled: Boolean(selectedPlaygroundId),
   })
   const continuationCommand =
-    project?.templateSource && projectCloneCommand(project.project.id)
+    project?.templateSource?.cloneReady &&
+    projectCloneCommand(project.project.id)
+  const continuationPreparing =
+    project?.templateSource && !project.templateSource.cloneReady
 
   const selectPlaygroundSession = (sessionId?: string) => {
     void navigate({
@@ -747,6 +750,10 @@ export default function ManagedAgentDetail({
                 </div>
               </DialogContent>
             </Dialog>
+          ) : project && continuationPreparing ? (
+            <Button variant="outline" size="sm" disabled>
+              <Loader2 className="animate-spin" /> Preparing local checkout
+            </Button>
           ) : !project ? (
             <Button asChild variant="outline" size="sm">
               <Link to="/">All projects</Link>

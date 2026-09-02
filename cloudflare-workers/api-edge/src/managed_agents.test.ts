@@ -605,6 +605,7 @@ describe("managed agents proxy", () => {
           templateSource: {
             repositoryUrl: "https://github.com/diggerhq/example",
             commitSha: "a".repeat(40),
+            cloneReady: true,
             mirrorRepoId: "must-not-leak",
           },
           sessions: [],
@@ -635,6 +636,7 @@ describe("managed agents proxy", () => {
       templateSource: {
         repositoryUrl: "https://github.com/diggerhq/example",
         commitSha: "a".repeat(40),
+        cloneReady: true,
       },
     });
     expect(JSON.stringify(body)).not.toContain("mirrorRepoId");
