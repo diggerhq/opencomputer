@@ -33,9 +33,16 @@ CPU is **not separately selectable** on this runtime. The platform allocates it 
 the memory size, and there is no knob for it.
 
 <Warning>
-`cpuCount` is accepted by the create API for compatibility, but it does not size the sandbox
-here. Do not rely on it — set `memoryMB` and let CPU follow.
+`cpuCount` is accepted by the create API for compatibility, but it is **not a control** on this
+runtime — the platform's launch call has no CPU parameter, so the value cannot reach it.
 </Warning>
+
+Worse than useless: passing `cpuCount` greater than 1 makes a create **slower**. Only the
+standard shape is served from the warm pool, so a create carrying a non-default `cpuCount` opts
+out of the fast path and cold-launches — in exchange for nothing, because the sandbox is
+identical either way.
+
+Leave it unset.
 
 Measuring CPU from inside the guest is misleading: `nproc` and `/proc/cpuinfo` report the
 underlying machine rather than your sandbox's share, so a 4 GB sandbox may report 8 processors.
