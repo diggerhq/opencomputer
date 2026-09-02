@@ -34,6 +34,10 @@ import {
   readTemplateManifest,
   templateDeployUrl,
 } from "./template.js";
+import {
+  defaultTemplateDirectory,
+  materializeTemplateCheckout,
+} from "./template-local.js";
 import { createInterface } from "node:readline/promises";
 
 export interface GlobalOptions {
@@ -528,12 +532,45 @@ export async function runCommand(
 
   if (command === "template") {
     const action = args.shift();
+    if (action === "clone") {
+      const commitSha = option(args, "--commit");
+      const project = option(args, "--project");
+      const directory = option(args, "--directory");
+      const repositoryUrl = args.shift();
+      if (!repositoryUrl || !commitSha || !project || args.length) {
+        throw new Error(
+          "Usage: opencomputer template clone <repository-url> --commit <sha> --project <id> [--directory <path>]",
+        );
+      }
+      const normalized = normalizeTemplateRepositoryUrl(repositoryUrl);
+      const checkout = await materializeTemplateCheckout(
+        normalized,
+        commitSha,
+        directory,
+      );
+      const binding = await ensureProjectBinding(
+        client,
+        config,
+        checkout.directory,
+        { project, interactive: false },
+      );
+      if (globals.json) printJSON({ checkout, binding });
+      else {
+        process.stdout.write(
+          `Cloned ${normalized}@${commitSha.slice(0, 12)}\n` +
+            `Linked to ${binding.projectName} (${binding.projectId}).\n\n` +
+            `Next:\n  cd ${checkout.directory}\n  npm install\n  npm run deploy -- --watch\n`,
+        );
+      }
+      return;
+    }
     if (action !== "deploy") {
       throw new Error(
-        "Usage: opencomputer template deploy <repository-url> [--project-name <name>] [--yes]",
+        "Usage: opencomputer template <deploy|clone> ...",
       );
     }
     const projectNameOption = option(args, "--project-name");
+    const directoryOption = option(args, "--directory");
     const confirmed = flag(args, "--yes");
     const repositoryUrl = args.shift();
     if (!repositoryUrl) {
@@ -556,9 +593,12 @@ export async function runCommand(
         "This template needs an interactive provider connection. Open its deploy URL in the dashboard to continue.",
       );
     }
-    if (!process.stdin.isTTY && inspection.requirements.secrets.length) {
+    const requiredSecrets = inspection.requirements.secrets.filter(
+      (requirement) => requirement.required !== false,
+    );
+    if (!process.stdin.isTTY && requiredSecrets.length) {
       throw new Error(
-        `Secret ${inspection.requirements.secrets[0]!.name} requires an interactive terminal; secret values are never accepted as command-line arguments`,
+        `Secret ${requiredSecrets[0]!.name} requires an interactive terminal; secret values are never accepted as command-line arguments`,
       );
     }
     if ((!process.stdin.isTTY || !process.stdout.isTTY) && !projectNameOption) {
@@ -588,6 +628,11 @@ export async function runCommand(
         throw new Error("Template deployment cancelled");
       }
     }
+    const checkout = await materializeTemplateCheckout(
+      inspection.repository.url,
+      inspection.repository.commitSha,
+      directoryOption ?? defaultTemplateDirectory(inspection.repository.url),
+    );
     const runtimeValues = new Map<string, string>();
     for (const requirement of inspection.requirements.runtimeVariables) {
       if (!terminal) {
@@ -619,7 +664,7 @@ export async function runCommand(
       !localAgentId || localAgentId === inspection.agents[0]?.id
         ? installation.projectAgentId
         : `${installation.projectAgentId}--${localAgentId}`;
-    for (const requirement of inspection.requirements.secrets) {
+    for (const requirement of requiredSecrets) {
       process.stderr.write(`${requirement.name}\n`);
       const value = await readSecretValue();
       await client.putSecret({
@@ -661,8 +706,18 @@ export async function runCommand(
         `Template installation is still ${current.state}; ${current.projectUrl}`,
       );
     }
-    if (globals.json) printJSON(current);
-    else process.stdout.write(`\nReady: ${current.projectUrl}\n`);
+    const binding = await ensureProjectBinding(client, config, checkout.directory, {
+      project: current.projectId,
+      interactive: false,
+    });
+    if (globals.json) printJSON({ installation: current, checkout, binding });
+    else {
+      process.stdout.write(
+        `\nReady: ${current.projectUrl}\n` +
+          `Local: ${checkout.directory}\n\n` +
+          `Next:\n  cd ${checkout.directory}\n  npm install\n  npm run deploy -- --watch\n`,
+      );
+    }
     return;
   }
 

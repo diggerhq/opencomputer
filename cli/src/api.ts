@@ -115,6 +115,7 @@ export interface TemplateInspection {
       name: string;
       description?: string;
       documentation?: string;
+      required?: boolean;
       agentId?: string;
       allowedOrigins: string[];
     }>;

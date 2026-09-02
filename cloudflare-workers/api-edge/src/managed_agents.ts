@@ -574,6 +574,9 @@ function publicTemplateInspection(value: unknown): Record<string, unknown> {
               name: requirement.name,
               description: requirement.description,
               documentation: requirement.documentation,
+              ...(typeof requirement.required === "boolean"
+                ? { required: requirement.required }
+                : {}),
               agentId: requirement.agentId,
               allowedOrigins: strings(requirement.allowedOrigins),
             };

@@ -109,6 +109,7 @@ const templateInspectionSchema = z.object({
         name: z.string(),
         description: z.string().optional(),
         documentation: z.string().url().optional(),
+        required: z.boolean().default(true),
         agentId: z.string().optional(),
         allowedOrigins: z.array(z.string().url()),
       }),

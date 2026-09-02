@@ -16,6 +16,7 @@ const REQUIREMENT_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 export interface TemplateRequirementAnnotation {
   description?: string;
   documentation?: string;
+  required?: boolean;
 }
 
 export interface TemplateRuntimeVariable extends TemplateRequirementAnnotation {
@@ -59,6 +60,7 @@ export interface TemplateBuildBundle {
       name: string;
       description?: string;
       documentation?: string;
+      required: boolean;
       localAgentId: string;
       allowedOrigins: string[];
     }>;
@@ -192,7 +194,7 @@ function annotations(
     }
     const allowed = runtimeVariable
       ? ["description", "documentation", "required", "example"]
-      : ["description", "documentation"];
+      : ["description", "documentation", "required"];
     if (!allowed.includes(field)) fail(`unknown field ${key}`, entry.line);
     const target = (result[name] ??= {});
     if (field === "required") {
@@ -304,6 +306,7 @@ export async function buildTemplateProject(
       name: string;
       description?: string;
       documentation?: string;
+      required: boolean;
       localAgentId: string;
       allowedOrigins: Set<string>;
     }
@@ -337,6 +340,7 @@ export async function buildTemplateProject(
           ...(annotation?.documentation
             ? { documentation: annotation.documentation }
             : {}),
+          required: annotation?.required ?? true,
           localAgentId: source.localId,
           allowedOrigins: new Set<string>(),
         };
