@@ -1,0 +1,39 @@
+---
+title: "Templates"
+description: "Starting from a prepared environment"
+---
+
+Named templates work on this runtime.
+
+```typescript
+const sandbox = await Sandbox.create({ templateID: "my-template" });
+```
+
+A template create claims a standard pooled sandbox and unpacks the template's workspace onto
+it. That means a template costs an archive rather than a separately published machine image,
+and new templates are available immediately rather than after an image build.
+
+## What a template carries
+
+The workspace — your files, installed dependencies, anything on disk. It does not carry a
+memory image, for the same reason [checkpoints](/microvm/checkpoints) do not.
+
+## Image builds are not available yet
+
+<Warning>
+Declarative image manifests (`image:` on create) and the image build pipeline are **not
+supported** on this runtime. They depend on a build fleet that this runtime does not have.
+</Warning>
+
+If you build images today, that workflow needs an alternative before you migrate. The two that
+work now:
+
+<CardGroup cols={2}>
+  <Card title="Templates" icon="layer-group">
+    Prepare a workspace once and start sandboxes from it.
+  </Card>
+  <Card title="Checkpoints" icon="camera">
+    Install into a sandbox, checkpoint it, and restore that checkpoint when you need the
+    environment again.
+  </Card>
+</CardGroup>

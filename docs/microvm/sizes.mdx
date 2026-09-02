@@ -1,0 +1,50 @@
+---
+title: "Sandbox sizes"
+description: "Choosing memory, and what happens when a size is unavailable"
+---
+
+On this runtime, a sandbox's memory is a property of the image it launches from. Each size we
+offer in a region is a separately published image.
+
+```typescript
+const sandbox = await Sandbox.create({ memoryMB: 4096 });
+```
+
+Omitting `memoryMB` gives you the region's default size, which is the one kept in the warm pool
+and therefore the fastest to start.
+
+## Unavailable sizes are refused
+
+If you ask for a size that has no published image in that region, the create is refused — with
+the sizes that *are* available:
+
+```json
+{
+  "error": "requested sandbox size is not available in this region: 16384MB was requested; this region offers 4096 MB",
+  "hint": "request one of the listed sizes, or contact support to have another published"
+}
+```
+
+<Note>
+This is a `400`, not a `503`. The request names something that does not exist, so retrying will
+never help — as opposed to a genuine capacity shortage, which is reported separately and is
+worth retrying.
+</Note>
+
+The important property is that you are never *silently* given a different size than you asked
+for. Memory cannot be adjusted after launch, so a quiet downgrade would bill you for one size
+and hand you another with no later point at which the mistake could be corrected.
+
+## Non-default sizes start colder
+
+Only the default size is kept warm. Another size has to cold-launch from its own image, which
+takes noticeably longer than a pooled create. If start latency matters, prefer the default.
+
+## Resizing is not possible
+
+<Warning>
+`scale()` and autoscaling are not supported. Memory is fixed at launch by the image, so a
+running sandbox cannot be resized.
+</Warning>
+
+If you size sandboxes dynamically today, decide the size at create time instead.

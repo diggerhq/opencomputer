@@ -1,0 +1,56 @@
+---
+title: "FAQ"
+description: "Questions worth answering before you migrate"
+---
+
+<AccordionGroup>
+  <Accordion title="Does anything change for me right now?">
+    No. Your sandboxes keep running on the current runtime until your org is moved, and the
+    existing [Sandboxes](/introduction) docs stay accurate for as long as that is true.
+  </Accordion>
+
+  <Accordion title="Can the 8-hour limit be raised for my account?">
+    No. It is enforced by the platform underneath, not by a quota on our side, and it counts
+    hibernated time as well as running time. If you have work that needs a longer-lived
+    sandbox, it needs restructuring — see [Sandbox lifetime](/microvm/lifetime).
+  </Accordion>
+
+  <Accordion title="Will my existing checkpoints still work?">
+    Filesystem checkpoints restore normally. Checkpoints that captured live memory restore
+    their filesystem only — the memory image is ignored, and you get a fresh boot with your
+    files.
+  </Accordion>
+
+  <Accordion title="Do I need to change my code?">
+    For most workloads, no. Check for `scale`, `setAutoscale`, mounts, image builds and
+    `createFromCheckpoint`, and review anywhere you assume a sandbox lives indefinitely. The
+    checklist is on [Prepare to migrate](/microvm/migrate).
+  </Accordion>
+
+  <Accordion title="Is it faster?">
+    Creates are, because sandboxes come from a warm pool rather than being scheduled onto a
+    host. Command execution and file operations are comparable.
+  </Accordion>
+
+  <Accordion title="Why can't I mount anything?">
+    The guest runs without `CAP_SYS_ADMIN`, and it is absent from the capability bounding set,
+    so `mount` cannot be performed even by root. The same restriction removes a large class of
+    escape techniques. Copy data in, or read it over the network instead.
+  </Accordion>
+
+  <Accordion title="What happens to my sandboxes if my org is halted?">
+    Each one is archived to durable storage and its host released, so charges stop. When the
+    org resumes they are restored onto new hosts with their files intact. Running processes are
+    not preserved.
+  </Accordion>
+
+  <Accordion title="Can I run on both runtimes at once?">
+    Not within a single org — an org is on one runtime at a time. Testing against a separate
+    non-production org is the usual approach, and the same code runs against both.
+  </Accordion>
+
+  <Accordion title="Something I depend on is in the 'not available yet' list.">
+    Tell us. That list is prioritised work, not a fixed decision, and knowing what is blocking
+    a real migration is what changes the order.
+  </Accordion>
+</AccordionGroup>

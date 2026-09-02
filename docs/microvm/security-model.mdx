@@ -1,0 +1,65 @@
+---
+title: "Security model"
+description: "Isolation, egress, and the one place this runtime is weaker"
+---
+
+## Isolation
+
+Each sandbox is its own microVM with its own kernel, on managed infrastructure. Your code runs
+as the unprivileged `sandbox` user inside it. Sandboxes do not share a kernel with each other.
+
+The guest deliberately runs without `CAP_SYS_ADMIN`, which is why
+[mounts are impossible](/microvm/files) — the same restriction that removes a large class of
+container-escape techniques also removes `mount`.
+
+## Egress and secrets
+
+Outbound HTTPS can be restricted to an allowlist, and secrets are substituted only for the
+hosts each secret is scoped to. Because the sandbox holds sealed placeholders rather than real
+values, ignoring the proxy and dialing an upstream directly leaks nothing — the request carries
+a worthless string.
+
+The sandbox also cannot use the proxy to reach cloud instance metadata; that is blocked
+explicitly.
+
+## Where this runtime is weaker
+
+<Warning>
+The process holding your real secret values runs **inside your sandbox** as root, rather than
+on a separate machine outside it.
+</Warning>
+
+On the current runtime, the substituting proxy runs on the VM host. A privilege escalation
+inside a sandbox would not reach it, because it was on the other side of the VM boundary.
+
+Here there is no host of ours to put it on, so it runs as a root-owned process in the guest.
+Customer code runs unprivileged and cannot read root's memory — but if code in your sandbox
+escalates to root, it can reach the secrets scoped to that sandbox.
+
+### Why we chose this
+
+The alternative was a shared regional proxy service. That would have been a single service
+holding every customer's secrets and a single point of failure on every customer's egress path —
+bought precisely because we removed the host that made it unnecessary. Concentrating every
+tenant's secrets in one place to protect against escalation within a single tenant is a worse
+trade.
+
+### What to do about it
+
+For most workloads this is not a meaningful change: if untrusted code can escalate to root in
+your sandbox, the secrets that sandbox is allowed to use are usually not the most interesting
+thing it can reach.
+
+If you do model this risk:
+
+- Scope each secret to the narrowest set of hosts that works, so a compromised sandbox reaches
+  only what it needed.
+- Give sandboxes running untrusted code their own store, rather than sharing one with trusted
+  workloads.
+- Prefer short-lived credentials, which the 8-hour lifetime ceiling makes natural.
+
+## Data lifetime
+
+A sandbox's disk is destroyed with it, and every sandbox ends within 8 hours. Anything that
+should persist has to be checkpointed or written somewhere durable — see
+[Sandbox lifetime](/microvm/lifetime).

@@ -1,0 +1,49 @@
+---
+title: "Hibernate and wake"
+description: "Suspending a sandbox in place, and what that does not do"
+---
+
+```typescript
+await sandbox.hibernate();
+// ... later
+await sandbox.wake();
+```
+
+Hibernating suspends the host. The filesystem, the process tree and anything in memory are all
+exactly as you left them when you wake it.
+
+## What is different here
+
+On the current runtime, hibernation writes a checkpoint to storage and releases the host, so a
+sandbox can stay hibernated indefinitely and wake anywhere.
+
+Here it is a suspend in place, which has two consequences:
+
+<Warning>
+**Hibernated time counts against the 8-hour ceiling.** A sandbox hibernated overnight reaches
+its deadline while asleep and is destroyed. It does not wake up the next morning.
+</Warning>
+
+**The sandbox stays on its host.** It does not move, which is why waking is fast — but it also
+means hibernation is not a way to park something long-term.
+
+## When to use it
+
+Hibernation is for gaps measured in minutes to a few hours: an agent waiting on a human, a
+session between turns, a build waiting for input. Combined with an
+[idle timeout](/microvm/idle-timeout) it is a cost control.
+
+It is not a way to preserve a sandbox across days. For that, checkpoint the filesystem and
+create a fresh sandbox later — see [Checkpoints](/microvm/checkpoints).
+
+## Waking a sandbox that has ended
+
+If a hibernated sandbox reached its ceiling, it is gone. Waking it fails, and the sandbox
+reports as stopped. Check `endAt` before relying on a wake:
+
+```typescript
+const info = await getSandbox(sandboxId);
+if (Date.parse(info.endAt) < Date.now()) {
+  // the sandbox is past its deadline — restore from a checkpoint instead
+}
+```

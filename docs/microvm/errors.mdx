@@ -1,0 +1,42 @@
+---
+title: "Errors"
+description: "What the distinct failures mean and whether retrying helps"
+---
+
+The runtime tries to make "retry" versus "change your request" obvious from the status code.
+
+## Creates
+
+| Status | Meaning | Retry? |
+|---|---|---|
+| `400` requested size not available | The size has no published image here. The message lists the sizes that do exist. | No — pick a listed size. |
+| `503` out of capacity | A genuine shortage. | Yes, once something frees up. No `Retry-After`, because hammering a full region only adds rate limiting. |
+| `503` rate limited | Creates are arriving faster than the provider accepts. | Yes — a `Retry-After: 1` header is set. |
+| `429` concurrent sandbox limit | Your org is at its concurrency cap. | Yes, after ending a sandbox. |
+
+The distinction between the first two matters: an unavailable size is permanent for that
+request, and reporting it as capacity would send you to support about a shortage that does not
+exist.
+
+## Operations on a sandbox
+
+| Status | Meaning |
+|---|---|
+| `501` not supported for this sandbox | The operation does not exist on this runtime — `scale`, a `full` checkpoint, mounts. See [What's not supported](/microvm/not-supported). |
+| `404` | The sandbox is gone. If it was hibernated, it may have reached its lifetime ceiling — check `endAt`. |
+| `502` could not attach | The connection to the sandbox failed. Usually transient; retry once. |
+
+<Note>
+A `501` is a statement about the runtime, not about your sandbox. Retrying will not change it,
+and neither will recreating the sandbox.
+</Note>
+
+## Things that used to be silent
+
+Several failures that previously looked like success now report honestly. If you have code that
+assumed a `200` meant the operation happened, these are worth knowing about:
+
+- Asking for an idle timeout longer than the lifetime ceiling returns `applied: false` rather
+  than accepting a value that could never fire.
+- A `full` checkpoint is refused rather than quietly producing a disk-only one.
+- An unavailable size is refused rather than silently serving a different size.

@@ -1,0 +1,38 @@
+---
+title: "Interactive terminals"
+description: "PTY sessions over WebSocket"
+---
+
+Terminals work the same as on the current runtime.
+
+```typescript
+const pty = await sandbox.pty.create({
+  onOutput: (data) => process.stdout.write(new TextDecoder().decode(data)),
+});
+
+pty.send("whoami\n");
+// ... later
+pty.close();
+```
+
+`pty.create()` resolves once the connection is open, so it is safe to `send` immediately after
+awaiting it.
+
+## Requirements
+
+Terminals and streaming exec sessions use WebSockets.
+
+<Note>
+Use SDK **v0.15.8 or later**. Earlier versions configured an HTTP/2 connection pool that also
+captured WebSocket upgrades, which cannot be negotiated over HTTP/2 — terminals would fail to
+connect. Newer versions give WebSockets their own HTTP/1.1 connection.
+</Note>
+
+If you are driving the socket yourself rather than through the SDK, connect over HTTP/1.1.
+
+## What travels over the socket
+
+Raw terminal bytes in both directions. Resize is a separate call rather than an inline control
+message, which keeps the stream a plain byte pipe.
+
+The wire format is identical on both runtimes — the same client code works against either.

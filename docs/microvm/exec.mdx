@@ -1,0 +1,72 @@
+---
+title: "Running commands"
+description: "One-shot commands and streaming sessions"
+---
+
+Command execution is unchanged from the current runtime. The same calls, the same semantics.
+
+## One-shot
+
+```typescript
+const r = await sandbox.exec.run("ls -la /home/sandbox");
+r.stdout;   // captured
+r.stderr;   // captured separately
+r.exitCode; // the real exit code, not thrown
+```
+
+A non-zero exit is a value, not an exception — `exit 42` gives you `exitCode: 42`.
+
+Options work as you would expect:
+
+```typescript
+await sandbox.exec.run("pwd && echo $TOKEN", {
+  cwd: "/tmp",
+  env: { TOKEN: "abc" },
+  timeout: 120,
+});
+```
+
+## Streaming
+
+For long-running commands, or when you want output as it happens:
+
+```typescript
+const session = await sandbox.exec.start("npm", {
+  args: ["run", "build"],
+  onStdout: (chunk) => process.stdout.write(new TextDecoder().decode(chunk)),
+  onStderr: (chunk) => process.stderr.write(new TextDecoder().decode(chunk)),
+  onExit:   (code) => console.log("exited", code),
+});
+
+const exitCode = await session.done;
+```
+
+Stdout and stderr stay distinguishable, which matters if you redirect one and not the other.
+
+## Background work
+
+A session can outlive the call that started it:
+
+```typescript
+const session = await sandbox.exec.background("python", { args: ["worker.py"] });
+
+const sessions = await sandbox.exec.list();
+await sandbox.exec.kill(session.sessionId);
+```
+
+<Note>
+The handle returned by `start`/`background` exposes `sessionId`, while entries from
+`exec.list()` use `sessionID`. Both are typed correctly, but the casing differs — worth knowing
+before you write a `.find()` against it.
+</Note>
+
+## Reattaching
+
+```typescript
+const session = await sandbox.exec.attach(sessionId, {
+  onStdout: (chunk) => { /* ... */ },
+});
+```
+
+Attaching replays recent scrollback and then streams live output, so a client that reconnects
+sees what it missed.

@@ -1,0 +1,48 @@
+---
+title: "What's not supported"
+description: "Permanent limits and in-progress gaps, kept separate on purpose"
+---
+
+Two lists, because the difference matters when you are planning. The first will not change.
+The second is work.
+
+## Permanent limits
+
+These come from the platform underneath. We are not going to ship them.
+
+| | Why |
+|---|---|
+| **Sandboxes living past 8 hours** | The provider destroys the host at its lifetime ceiling, counting running and hibernated time together. |
+| **Live-memory checkpoints** | The platform exposes no snapshot or memory-export operation. A filesystem archive is the only checkpoint that can exist. |
+| **Mounts (FUSE, NFS, overlay, 9p)** | The guest does not have `CAP_SYS_ADMIN`, and it is absent from the bounding set, so `mount` cannot be performed at all. |
+| **Resizing a running sandbox** | Memory is a property of the image a sandbox launched from. It cannot be changed after launch. |
+| **Live migration** | There are no hosts of ours to migrate between. |
+
+Calls into these surfaces are **refused**, not silently ignored. `scale()` returns a clear
+"not supported for this sandbox" rather than reporting success and doing nothing.
+
+## Not available yet
+
+These are gaps in our implementation, not the platform's.
+
+| | Status |
+|---|---|
+| **Fork from a checkpoint** | `createFromCheckpoint` fails. Restore into an existing sandbox instead. In progress. |
+| **Image builds** | Declarative `image:` manifests and the build pipeline are unavailable. Use [templates](/microvm/templates) or checkpoints. |
+| **Checkpoint patches** | The patch API is not wired to this runtime. |
+| **Promoting a checkpoint to full** | Depends on memory capture, so it is blocked behind a permanent limit. |
+
+## Behaves differently rather than missing
+
+| | |
+|---|---|
+| **Hibernate** | Suspends in place; hibernated time counts against the lifetime ceiling. |
+| **Org halt** | Archives the filesystem and releases the host, rather than parking the sandbox. |
+| **Idle timeout** | Clamped to the lifetime ceiling; the response tells you whether it was applied. |
+| **Sizes** | Only published size tiers can be served. An unavailable size is refused with the list of sizes that exist. |
+
+## If something here blocks you
+
+The permanent list is genuinely fixed, but the priority order of the second list is not. If one
+of those gaps is what stands between you and migrating, say so — that is useful information and
+it changes what we work on next.
