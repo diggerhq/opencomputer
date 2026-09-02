@@ -35,6 +35,14 @@ import {
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -69,6 +77,7 @@ import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
+import { templateCloneCommand } from './template-continuation'
 
 type DetailTab =
   | 'playground'
@@ -475,6 +484,7 @@ export default function ManagedAgentDetail({
   const agentId = agentIdOverride ?? params.agentId ?? ''
   const [standaloneTab, setStandaloneTab] = useState<DetailTab>('playground')
   const [starterCopied, setStarterCopied] = useState(false)
+  const [continuationCopied, setContinuationCopied] = useState(false)
   const routeTab = params.tab as DetailTab | undefined
   const projectTabs = new Set<DetailTab>([
     'playground',
@@ -566,6 +576,13 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
   })
+  const continuationCommand =
+    project?.templateSource &&
+    templateCloneCommand({
+      repositoryUrl: project.templateSource.repositoryUrl,
+      commitSha: project.templateSource.commitSha,
+      projectId: project.project.id,
+    })
 
   const selectPlaygroundSession = (sessionId?: string) => {
     void navigate({
@@ -679,11 +696,50 @@ export default function ManagedAgentDetail({
               : 'Loading active deployment…'
         }
         actions={
-          project ? undefined : (
+          project && continuationCommand ? (
+            <Dialog
+              onOpenChange={(open) => {
+                if (!open) setContinuationCopied(false)
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <TerminalSquare /> Continue locally
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Continue locally</DialogTitle>
+                  <DialogDescription>
+                    Clone the exact source deployed here and link it to this
+                    existing project.
+                  </DialogDescription>
+                </DialogHeader>
+                <pre className="overflow-x-auto rounded-md border p-3 text-xs leading-5">
+                  <code>{continuationCommand}</code>
+                </pre>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(continuationCommand)
+                        .then(() => setContinuationCopied(true))
+                        .catch((error) =>
+                          notifyError("Couldn't copy the command.", error),
+                        )
+                    }}
+                  >
+                    {continuationCopied ? <Check /> : <Clipboard />}
+                    {continuationCopied ? 'Copied' : 'Copy command'}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          ) : !project ? (
             <Button asChild variant="outline" size="sm">
               <Link to="/">All projects</Link>
             </Button>
-          )
+          ) : undefined
         }
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />

@@ -490,6 +490,12 @@ const sessionsResponseSchema = z.object({ sessions: z.array(sessionSchema) })
 
 const projectOverviewSchema = z.object({
   project: projectSchema,
+  templateSource: z
+    .object({
+      repositoryUrl: z.string().url(),
+      commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+    })
+    .optional(),
   sessions: z.array(sessionSchema),
   deployments: z.array(deploymentSchema),
   connections: z.array(connectionSchema),

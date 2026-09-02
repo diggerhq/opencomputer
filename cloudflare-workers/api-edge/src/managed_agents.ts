@@ -706,8 +706,19 @@ function publicSuccessBody(
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) {
     const project = publicProject(body.project);
+    const templateSource = record(body.templateSource);
     return {
       project,
+      ...(templateSource &&
+      typeof templateSource.repositoryUrl === "string" &&
+      typeof templateSource.commitSha === "string"
+        ? {
+            templateSource: {
+              repositoryUrl: templateSource.repositoryUrl,
+              commitSha: templateSource.commitSha,
+            },
+          }
+        : {}),
       sessions: stripPrivateValues(body.sessions ?? []),
       deployments: Array.isArray(body.deployments)
         ? body.deployments.map(publicDeployment)

@@ -554,6 +554,58 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
+  it("exposes public template provenance on a project overview", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          project: {
+            id: "prj_test",
+            slug: "example",
+            name: "Example",
+            environments: [],
+            agents: [{ id: "reviewer", name: "Reviewer" }],
+            createdAt: "2026-09-02",
+            updatedAt: "2026-09-02",
+          },
+          templateSource: {
+            repositoryUrl: "https://github.com/diggerhq/example",
+            commitSha: "a".repeat(40),
+            mirrorRepoId: "must-not-leak",
+          },
+          sessions: [],
+          deployments: [],
+          connections: [],
+          channels: [],
+          schedules: [],
+          files: [],
+          schema: {},
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    const body = await response.json();
+    expect(body).toMatchObject({
+      templateSource: {
+        repositoryUrl: "https://github.com/diggerhq/example",
+        commitSha: "a".repeat(40),
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("mirrorRepoId");
+  });
+
   it("proxies template inspection through the authenticated managed-agent boundary", async () => {
     const fetchSpy = vi.fn(
       async (_request: URL | RequestInfo, init?: RequestInit) => {

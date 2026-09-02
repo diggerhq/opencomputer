@@ -16,3 +16,10 @@ export function templateCloneCommand(input: {
     shellQuote(input.projectId),
   ].join(' ')
 }
+
+export function templatePlaygroundPath(input: {
+  projectId: string
+  projectAgentId: string
+}): string {
+  return `/projects/${encodeURIComponent(input.projectId)}/playground/${encodeURIComponent(input.projectAgentId)}`
+}

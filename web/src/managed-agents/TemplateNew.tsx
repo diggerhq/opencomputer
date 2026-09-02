@@ -1,13 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import {
-  CheckCircle2,
-  Copy,
-  ExternalLink,
-  FolderGit2,
-  Loader2,
-  Rocket,
-} from 'lucide-react'
+import { ExternalLink, FolderGit2, Loader2, Rocket } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -29,7 +22,7 @@ import {
   putManagedProjectSecret,
 } from './api'
 import { templateInspectionError } from './template-inspection-error'
-import { templateCloneCommand } from './template-continuation'
+import { templatePlaygroundPath } from './template-continuation'
 
 const GITHUB_REPOSITORY =
   /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]+$/
@@ -57,10 +50,6 @@ export default function TemplateNew() {
   const [projectName, setProjectName] = useState('')
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [variables, setVariables] = useState<Record<string, string>>({})
-  const [installedProject, setInstalledProject] = useState<{
-    projectId: string
-    projectUrl: string
-  } | null>(null)
   const inspection = useQuery({
     queryKey: ['managed-template-inspection', repositoryUrl],
     queryFn: () => inspectManagedTemplate(repositoryUrl),
@@ -143,10 +132,7 @@ export default function TemplateNew() {
         void navigate(result.projectUrl)
         return
       }
-      setInstalledProject({
-        projectId: result.projectId,
-        projectUrl: result.projectUrl,
-      })
+      void navigate(templatePlaygroundPath(result))
     },
     onError: (error) => notifyError("Couldn't deploy the template.", error),
   })
@@ -195,48 +181,6 @@ export default function TemplateNew() {
   }
 
   const reviewed = inspection.data
-  if (installedProject) {
-    const cloneCommand = templateCloneCommand({
-      repositoryUrl: reviewed.repository.url,
-      commitSha: reviewed.repository.commitSha,
-      projectId: installedProject.projectId,
-    })
-    return (
-      <div className="space-y-6">
-        <PageHeader
-          title={`${reviewed.template.name} is ready`}
-          description="The Development deployment is live. Open it in the cloud or continue from the exact deployed source locally."
-        />
-        <Panel>
-          <PanelHeader>
-            <PanelTitle className="flex items-center gap-2">
-              <CheckCircle2 className="size-4" /> Continue from local
-            </PanelTitle>
-          </PanelHeader>
-          <PanelContent className="space-y-4">
-            <p className="text-muted-foreground text-sm">
-              This clones the pinned commit and links the checkout to this
-              existing project.
-            </p>
-            <pre className="overflow-x-auto rounded-md border p-3 text-xs">
-              <code>{cloneCommand}</code>
-            </pre>
-            <div className="flex flex-wrap gap-2">
-              <Button asChild>
-                <a href={installedProject.projectUrl}>Open project</a>
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => void navigator.clipboard.writeText(cloneCommand)}
-              >
-                <Copy className="size-4" /> Copy command
-              </Button>
-            </div>
-          </PanelContent>
-        </Panel>
-      </div>
-    )
-  }
   const missingRequiredVariable = reviewed.requirements.runtimeVariables.some(
     (requirement) =>
       requirement.required && !variables[requirement.name]?.trim(),
