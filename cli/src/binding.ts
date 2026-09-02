@@ -1,6 +1,5 @@
-import { createInterface } from "node:readline/promises";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import type { ManagedProject, OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
@@ -19,8 +18,6 @@ export interface ProjectBinding {
 export interface ProjectBindingOptions {
   project?: string;
   createProjectName?: string;
-  interactive?: boolean;
-  select?: boolean;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -73,30 +70,6 @@ async function readBinding(
   }
 }
 
-async function chooseProject(
-  projects: ManagedProject[],
-  defaultName: string,
-): Promise<{ project?: ManagedProject; createName?: string }> {
-  const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    process.stdout.write("\nConnect this app to a Development (Cloud) project:\n\n");
-    process.stdout.write(`  1) Create a new project\n`);
-    projects.forEach((project, index) => {
-      process.stdout.write(`  ${String(index + 2)}) ${project.name} (${project.slug})\n`);
-    });
-    const answer = (await terminal.question("\nSelect [1]: ")).trim() || "1";
-    const selected = Number.parseInt(answer, 10);
-    if (!Number.isInteger(selected) || selected < 1 || selected > projects.length + 1) {
-      throw new Error("Choose one of the numbered project options.");
-    }
-    if (selected > 1) return { project: projects[selected - 2] };
-    const name = (await terminal.question(`Project name [${defaultName}]: `)).trim();
-    return { createName: name || defaultName };
-  } finally {
-    terminal.close();
-  }
-}
-
 async function persistBinding(
   projectRoot: string,
   config: ResolvedConfig,
@@ -132,7 +105,7 @@ export async function ensureProjectBinding(
   }
   const projectRoot = await findOpenComputerProjectRoot(agentRoot);
   const projects = await client.projects();
-  if (!options.project && !options.createProjectName && !options.select) {
+  if (!options.project && !options.createProjectName) {
     const existing = await readBinding(projectRoot, config.apiUrl);
     if (
       existing &&
@@ -156,15 +129,14 @@ export async function ensureProjectBinding(
     throw new Error(`Project ${options.project} was not found in this account.`);
   }
   let createName = options.createProjectName;
+  if (!project && createName) {
+    const slug = agentIdFromName(createName);
+    project = projects.find((candidate) => candidate.slug === slug);
+  }
   if (!project && !createName) {
-    if (options.interactive === false || !process.stdin.isTTY || !process.stdout.isTTY) {
-      throw new Error(
-        "This app is not connected to a cloud project. Run `opencomputer link`.",
-      );
-    }
-    const choice = await chooseProject(projects, basename(projectRoot));
-    project = choice.project;
-    createName = choice.createName;
+    throw new Error(
+      "This app is not connected to a cloud project. Run `opencomputer link --project <id|slug>` or `opencomputer link --create-project <name>`.",
+    );
   }
   project ??= await client.createProject(
     createName!,

@@ -90,6 +90,16 @@ member of the selected conversation. OpenComputer does not request
 Adding a scope in code changes the generated manifest. Update and reinstall
 the Slack app so its granted scopes satisfy the current deployment.
 
+Inspect delivery health without opening the dashboard:
+
+```bash
+opencomputer channels status --environment development --json
+```
+
+The result reports the last accepted provider event, the latest outbound
+delivery status, and the latest redacted error category. It never includes
+message content, provider responses, tokens, or signing secrets.
+
 ## Environment isolation
 
 Development and Production never share Slack credentials, destination

@@ -44,22 +44,24 @@ The source scaffold and cloud project are separate. `opencomputer init` writes
 local source. Link it to a cloud project with:
 
 ```bash
-npx --package @opencomputer/cli opencomputer link
+npx --package @opencomputer/cli opencomputer link --project <project-id-or-slug>
+# Or create one explicitly:
+npx --package @opencomputer/cli opencomputer link --create-project "Support agents"
 ```
 
-The command asks whether to create a project or select an existing one. If you
-skip it, the first project-scoped command shows the same prompt.
+There is no project picker. If you skip linking, project-scoped commands return
+a structured `binding_required` error with the explicit command to run.
 
-For non-interactive use:
+You can also link as part of a watched deploy:
 
 ```bash
 npx --package @opencomputer/cli opencomputer deploy --watch --project <project-id-or-slug>
 npx --package @opencomputer/cli opencomputer deploy --watch --create-project "Support agents"
 ```
 
-Later commands reuse `.opencomputer/project.json`. Run `opencomputer link`
-again when you intentionally want this source directory to target another
-project.
+Later commands reuse `.opencomputer/project.json`. Run `opencomputer link` with
+an explicit selector again when you intentionally want this source directory
+to target another project.
 
 ## Add another agent
 
