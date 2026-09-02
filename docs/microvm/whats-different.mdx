@@ -15,7 +15,7 @@ Everything not listed here behaves identically, and the same SDK code runs on bo
 | Hibernate | checkpoint to storage, wake anywhere | suspend in place |
 | Hibernated time | does not count against a lifetime | **counts against the 8 hours** |
 | Resize a running sandbox | supported | not supported |
-| Sizes | any memory value at create | fixed steps, 2 GB – 8 GB, default 4 GB |
+| Sizes | any memory value at create | fixed steps, 1–8 GB, default 4 GB; no 16 GB |
 | CPU | selectable via `cpuCount`, scales with memory | allocated by the platform; `cpuCount` is not a control |
 | Disk | 20 GB default, up to 256 GB via `diskMB` | **fixed ~16 GB**; `diskMB` is ignored |
 | Existing templates | work | **refused if they carry a rootfs** — most do |
@@ -34,10 +34,10 @@ not a quota we can raise, and it counts hibernated time. A sandbox you hibernate
 does not come back in the morning. If you have work that assumes a long-lived box, read
 [Sandbox lifetime](/microvm/lifetime) before anything else.
 
-**Memory tops out at 8 GB** and cannot be changed after launch. On the current runtime you ask
-for whatever you need and can resize later; here the sizes are a fixed enum and the largest is
-8 GB. CPU is no longer selectable either — `cpuCount` is accepted but does not size the sandbox.
-See [Sandbox sizes](/microvm/sizes).
+**Memory tops out at 8 GB** and cannot be changed after launch. The 1 GB, 4 GB and 8 GB tiers
+carry over; the 16 GB tier does not exist here, and there is no resizing to fall back on. CPU is
+no longer selectable either — `cpuCount` is accepted but does not size the sandbox. See
+[Sandbox sizes](/microvm/sizes).
 
 **Checkpoints don't capture memory.** If you use checkpoints to freeze a warmed-up process —
 a loaded model, an open connection pool, a debugger mid-session — restoring will not give that

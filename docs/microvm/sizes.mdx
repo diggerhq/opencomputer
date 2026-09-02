@@ -12,23 +12,25 @@ fixed list rather than any number you like, and a size cannot change after launc
 
 ## Sizes the platform supports
 
-Memory belongs to the image, so a size only exists if we have published an image for it. The
-practical range is **2 GB to 8 GB**, in these steps:
+Memory belongs to the image, so a size exists only if we have published an image for it. The
+sizes mirror the current runtime's tiers as closely as the platform allows:
 
-| Memory | |
-|---|---|
-| 2048 MB | smallest size that reliably gets a full vCPU |
-| **4096 MB** | **default** — the only size served from the warm pool |
-| 8192 MB | largest available |
+| Memory | On the current runtime | On MicroVM |
+|---|---|---|
+| 1 GB | 1 vCPU (best-effort) | same — CPU is best-effort at this size |
+| 2 GB | — | available (no equivalent tier today) |
+| **4 GB** | 1 vCPU | **default**, and the only size served from the warm pool |
+| 8 GB | 2 vCPU | available |
+| 16 GB | 4 vCPU | **not available** — 8 GB is the ceiling |
 
 <Note>
-This is a set of steps, not a range. `3072` is not a size — it is either published or it is not,
-and nothing in between exists. 8 GB is the ceiling.
+These are steps, not a range. `3072` is not a size — a tier is either published or it is not,
+and nothing in between exists.
 </Note>
 
-Smaller images (1024 MB and below) are technically publishable but we do not offer them: CPU is
-allocated as a function of memory, so below 2 GB a sandbox may not get a full vCPU and there is
-no way to ask for one.
+The one gap is **16 GB**. If you run 16 GB sandboxes today, that work has to fit in 8 GB or be
+split before you migrate — memory cannot be raised after launch either. See
+[Prepare to migrate](/microvm/migrate).
 
 ## Disk
 

@@ -35,16 +35,27 @@ MICROVM_IMAGE_MEMORY_MB=8192 \
 `publish.sh` polls until the build leaves `CREATING` and prints `latestActiveImageVersion`.
 A tier is not usable until that appears.
 
-### Memory floor
+### Tiers we offer, and the sub-2048 warning
 
-`MICROVM_IMAGE_MEMORY_MB` defaults to **2048**, and the script warns below it:
+Publish these to mirror the current runtime's tiers as closely as the platform allows:
+
+| Tier | Why |
+|---|---|
+| 1024 | matches the current 1 GB tier, which is already documented as best-effort CPU |
+| 2048 | smallest size that reliably gets a full vCPU |
+| 4096 | the default; also the only pooled tier |
+| 8192 | matches the current 8 GB tier, and is the platform ceiling |
+
+There is no 16384 — the current runtime's 16 GB tier has no equivalent here.
+
+`publish.sh` **warns** when `MICROVM_IMAGE_MEMORY_MB` is below 2048:
 
 > 2048 MiB is the smallest baseline that still gets a full vCPU under Lambda's baseline-peak
-> model, and peak scales to 4x it. Keep that as the floor — below it a box may not get a full
-> vCPU, and there is no way to ask for one.
+> model, and peak scales to 4x it.
 
-512 and 1024 tiers are publishable but should be treated as unsupported: CPU is allocated as a
-function of memory, so a sub-2048 tier may not get a full vCPU and nothing can compensate.
+That warning is **expected and safe to ignore for the 1024 tier**. CPU is allocated as a
+function of memory, so a 1 GB box gets best-effort CPU — which is exactly what the current
+runtime's 1 GB tier already provides, so it is not a regression. Do not publish below 1024.
 
 ### Naming
 
