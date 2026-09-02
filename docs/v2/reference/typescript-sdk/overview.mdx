@@ -1,0 +1,57 @@
+---
+title: "TypeScript SDK"
+description: "Complete TypeScript SDK reference"
+---
+
+## Installation
+
+<CodeGroup>
+```bash npm
+npm install @opencomputer/sdk
+```
+```bash yarn
+yarn add @opencomputer/sdk
+```
+```bash pnpm
+pnpm add @opencomputer/sdk
+```
+</CodeGroup>
+
+```typescript
+import { Sandbox } from "@opencomputer/sdk";
+import { Image, Snapshots } from "@opencomputer/sdk/node";
+```
+
+> Note: The SDK is ESM-only. Use Node 18+ with `"type": "module"` (or `.mjs/.mts`) and top-level `await`, or use `const { Sandbox } = await import("@opencomputer/sdk"); const { Image, Snapshots } = await import("@opencomputer/sdk/node");` in CommonJS.
+
+## Modules
+
+<CardGroup cols={2}>
+  <Card title="Sandbox" icon="box" href="/v2/reference/typescript-sdk/sandbox">
+    Create, connect, and manage sandbox lifecycle
+  </Card>
+  <Card title="Usage & Tags" icon="gauge" href="/v2/reference/typescript-sdk/usage">
+    Query usage, group by tag, and manage sandbox tags
+  </Card>
+  <Card title="Exec" icon="terminal" href="/v2/reference/typescript-sdk/exec">
+    Run commands and manage exec sessions
+  </Card>
+  <Card title="Sandbox agent" icon="robot" href="/reference/typescript-sdk/agent">
+    Start and manage an agent session inside a sandbox (low-level; deprecated)
+  </Card>
+  <Card title="Filesystem" icon="folder" href="/v2/reference/typescript-sdk/filesystem">
+    Read, write, and manage files
+  </Card>
+  <Card title="PTY" icon="rectangle-terminal" href="/v2/reference/typescript-sdk/pty">
+    Interactive terminal sessions
+  </Card>
+  <Card title="Image" icon="layer-group" href="/v2/reference/typescript-sdk/image">
+    Declarative sandbox image builder
+  </Card>
+  <Card title="Snapshots" icon="camera" href="/v2/reference/typescript-sdk/snapshots">
+    Pre-built sandbox environments
+  </Card>
+  <Card title="Secret Stores" icon="key" href="/v2/reference/typescript-sdk/secrets">
+    Manage secrets and egress control
+  </Card>
+</CardGroup>

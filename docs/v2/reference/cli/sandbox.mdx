@@ -1,0 +1,159 @@
+---
+title: "oc sandbox"
+description: "Manage sandbox lifecycle"
+---
+
+## `oc sandbox create`
+
+Create a new sandbox. **Alias:** `oc create`
+
+[HTTP API →](/v2/api-reference/sandboxes/create)
+
+<ParamField query="--timeout" type="int" default="300">
+  Idle timeout in seconds
+</ParamField>
+
+<ParamField query="--cpu" type="int" default="0">
+  CPU cores (0 = platform default)
+</ParamField>
+
+<ParamField query="--memory" type="int" default="0">
+  Memory in MB (0 = platform default)
+</ParamField>
+
+<ParamField query="--env" type="string">
+  Environment variable `KEY=VALUE` (repeatable)
+</ParamField>
+
+<ParamField query="--metadata" type="string">
+  Metadata `KEY=VALUE` (repeatable)
+</ParamField>
+
+<ParamField query="--preview-auth" type="bool">
+  Require a bearer token on the sandbox's preview URLs. The server generates a 256-bit random token and prints it once. See [Preview-URL authentication](/v2/sandboxes/preview-urls#authentication).
+</ParamField>
+
+<ParamField query="--preview-auth-token" type="string">
+  Bring your own preview-URL bearer token (≥16 characters). Implies `--preview-auth`. Useful when your gateway already has a shared secret.
+</ParamField>
+
+```bash
+oc create --timeout 600 --cpu 2 --memory 1024 --env NODE_ENV=production
+oc create --preview-auth                                    # server-generated token
+oc create --preview-auth-token "$GATEWAY_TOKEN"             # bring your own
+```
+
+---
+
+## `oc sandbox list`
+
+List all running sandboxes. **Alias:** `oc ls`
+
+[HTTP API →](/v2/api-reference/sandboxes/list)
+
+Output columns: `ID`, `TEMPLATE`, `STATUS`, `CPU`, `MEM`, `AGE`
+
+```bash
+oc ls
+oc ls --json
+```
+
+---
+
+## `oc sandbox get <id>`
+
+Show detailed information for a sandbox. [HTTP API →](/v2/api-reference/sandboxes/get)
+
+Output: ID, Template, Status, CPU, Memory, Started, Ends.
+
+---
+
+## `oc sandbox kill <id>`
+
+Terminate and remove a sandbox. [HTTP API →](/v2/api-reference/sandboxes/delete)
+
+---
+
+## `oc sandbox hibernate <id>`
+
+Snapshot VM state and stop the sandbox. Displays snapshot size on success. [HTTP API →](/v2/api-reference/sandboxes/hibernate)
+
+---
+
+## `oc sandbox wake <id>`
+
+Resume a hibernated sandbox. [HTTP API →](/v2/api-reference/sandboxes/wake)
+
+<ParamField query="--timeout" type="int" default="300">
+  Idle timeout in seconds after wake
+</ParamField>
+
+---
+
+## `oc sandbox set-timeout <id> <seconds>`
+
+Update the idle timeout for a running sandbox. [HTTP API →](/v2/api-reference/sandboxes/set-timeout)
+
+```bash
+oc sandbox set-timeout sb-abc123 600
+```
+
+---
+
+For commands that resize a sandbox or freeze its size — `scale`, `autoscale`, `lock`, `unlock`, `lock-status` — see [Scaling](/v2/reference/cli/scaling).
+
+---
+
+## `oc sandbox allowed-hosts <id>`
+
+Show the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/v2/sandboxes/secrets) config separately.
+
+Sandboxes created without `--secret-store` return an empty allowlist — the sandbox has no per-store egress restriction.
+
+```bash
+oc sandbox allowed-hosts sb-abc123
+# Sandbox sb-abc123 (secret store: my-store)
+#
+# Egress allowlist:
+#   • api.openai.com
+#   • api.anthropic.com
+#
+# Per-secret allowed hosts:
+#   OPENAI_API_KEY:
+#     • api.openai.com
+```
+
+Use `--json` for the structured form:
+
+```bash
+oc sandbox allowed-hosts sb-abc123 --json
+```
+
+```json
+{
+  "sandboxID": "sb-abc123",
+  "secretStore": "my-store",
+  "egressAllowlist": ["api.openai.com", "api.anthropic.com"],
+  "perSecretAllowedHosts": {
+    "OPENAI_API_KEY": ["api.openai.com"]
+  }
+}
+```
+
+### Layered forks
+
+When a fork layers an additional `--secret-store` on top of an inherited one, `egressAllowlist` is the **union** of both stores' allowlists (matches what the runtime proxy enforces). The response includes both store names — `secretStore` is the primary (whose secrets shadow the base on env-name collisions), `baseSecretStore` is the inherited parent:
+
+```json
+{
+  "sandboxID": "sb-fork456",
+  "secretStore": "fork-override",
+  "baseSecretStore": "fork-parent",
+  "egressAllowlist": ["api.openai.com", "api.anthropic.com", "api.example.com"],
+  "perSecretAllowedHosts": {
+    "OPENAI_API_KEY": ["api.openai.com"]
+  }
+}
+```
+
+`baseSecretStore` is omitted in the single-store case (no layering).

@@ -1,0 +1,14 @@
+---
+title: "Elasticity"
+description: "Not available in v2"
+---
+
+<Warning>
+**Not available in v2.** A sandbox's memory is fixed by the image it launched from and cannot be changed afterwards, so there is nothing to scale. `scale()`, `setAutoscale()` and the in-VM scale endpoint all return `501`.
+</Warning>
+
+Choose the size at create time instead — see [Sandbox sizes](/v2/sandboxes/sizes). Sizes are fixed steps from 1 GB to 8 GB.
+
+This page exists so the v2 docs mirror v1 page-for-page. See
+[Migrating from v1](/v2/migrating-from-v1) for the full list of removed and changed behaviour,
+and [the v1 page](/sandboxes/elasticity) for how this worked before.

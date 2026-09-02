@@ -1,0 +1,86 @@
+---
+title: "Sandbox lifetime"
+description: "The 8-hour ceiling, endAt, and how to design around them"
+---
+
+Every v2 sandbox has a hard end time. When it arrives, the provider destroys the host and
+the sandbox's disk goes with it.
+
+<Warning>
+The ceiling is **8 hours**, and it counts **running and hibernated time together**. It cannot be
+extended, and hibernating does not pause it.
+</Warning>
+
+This is the single largest behavioural difference from the current runtime, where a sandbox
+lives until something ends it.
+
+## Reading the deadline
+
+Every sandbox reports when it will end:
+
+```typescript
+const info = await fetch(`${apiUrl}/api/sandboxes/${sandboxId}`, {
+  headers: { "X-API-Key": apiKey },
+}).then((r) => r.json());
+
+console.log(info.status);  // "running"
+console.log(info.endAt);   // "2026-09-02T04:30:26Z"
+```
+
+`endAt` means *when this sandbox ends*: the scheduled deadline while it is alive, and the actual
+end time once it has stopped.
+
+<Note>
+**Do not compute the deadline yourself.** Sandboxes are served from a warm pool, so the host
+often started before your create did. A sandbox may report seven and a half hours remaining
+rather than eight. `endAt` is the truth; `createdAt + 8h` is not.
+</Note>
+
+## Designing around it
+
+The ceiling is only a problem for work that assumes a sandbox is where state lives. Two shapes
+work:
+
+### Checkpoint and recreate
+
+Before the deadline, checkpoint the filesystem, create a fresh sandbox and restore onto it.
+
+```typescript
+const remainingMs = Date.parse(info.endAt) - Date.now();
+
+if (remainingMs < 30 * 60 * 1000) {          // half an hour left
+  const cp = await sandbox.createCheckpoint(`rollover-${Date.now()}`);
+  // wait for the checkpoint to report ready, then create a new sandbox
+  // and restore onto it before this one ends
+}
+```
+
+You pay a restart, and anything that was only in memory is gone. Files survive.
+
+### Externalise the state
+
+The alternative is to stop caring: keep durable state in object storage or a database, and
+treat every sandbox as disposable. Work that already looks like this needs no changes at all —
+the ceiling stops being visible.
+
+## What happens at the deadline
+
+The host is destroyed. The sandbox's API row moves to a terminal state and `endAt` becomes the
+time it actually ended. Requests to it after that point fail like any other stopped sandbox.
+
+There is no grace period and no warning event. If you need to act before the deadline, poll
+`endAt` and act on the margin yourself.
+
+## Hibernation does not buy time
+
+On the current runtime, hibernating a sandbox parks it indefinitely. Here it suspends the host
+in place — and suspended time counts against the same 8 hours.
+
+A sandbox hibernated overnight will not be there in the morning. See
+[Hibernate and wake](/v2/sandboxes/timeout).
+
+## Idle timeouts are clamped to the ceiling
+
+You can ask for an idle timeout, but not one that outlives the sandbox. A request above the
+ceiling is reported back as not applied rather than silently accepted — see
+[Idle timeout](/v2/sandboxes/timeout).

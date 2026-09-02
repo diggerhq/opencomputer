@@ -1,0 +1,91 @@
+---
+title: "Introduction"
+description: "Cloud sandboxes for AI apps"
+---
+
+OpenComputer gives you a full Linux VM in the cloud. Each sandbox is an isolated virtual machine with its own filesystem, network, and process space — persistent, long-running, and capable of hibernating when idle. Write files, install packages, run commands, and build complete projects inside secure, isolated environments.
+
+<CardGroup cols={2}>
+  <Card title="Full Linux VM" icon="server">
+    Not a container. Real VM with its own kernel, memory, and disk. Hardware-level isolation via KVM.
+  </Card>
+  <Card title="Long-running" icon="clock">
+    Hours or days, not minutes. Install packages, build projects, run test suites, iterate — no cold starts between steps.
+  </Card>
+  <Card title="Checkpoint & fork" icon="code-branch">
+    Named snapshots you can fork from. Try five approaches in parallel from the same starting point — like git branches for VMs.
+  </Card>
+  <Card title="Elastic compute" icon="gauge-high">
+    Scale memory and CPU at runtime. Request more resources for heavy tasks and release them after.
+  </Card>
+</CardGroup>
+
+## Install
+
+<CodeGroup>
+
+```bash npm
+npm install @opencomputer/sdk
+```
+
+```bash pip
+pip install opencomputer-sdk
+```
+
+```bash CLI
+# Installs to ~/.local/bin (no sudo). See cli/overview for manual install.
+curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/scripts/install.sh | bash
+```
+
+</CodeGroup>
+
+```bash
+export OPENCOMPUTER_API_KEY=your-api-key
+```
+
+<Tip>Grab your API key from [app.opencomputer.dev](https://app.opencomputer.dev)</Tip>
+
+## Quick Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+const result = await sandbox.commands.run("echo 'Hello World from OpenSandbox!'");
+console.log(result.stdout);
+await sandbox.kill();
+```
+
+```python Python
+import asyncio
+from opencomputer import Sandbox
+
+async def main():
+    sandbox = await Sandbox.create()
+    result = await sandbox.commands.run("echo 'Hello World from OpenSandbox!'")
+    print(result.stdout)
+    await sandbox.kill()
+
+asyncio.run(main())
+```
+
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/v2/quickstart">
+    Create your first sandbox in 2 minutes
+  </Card>
+  <Card title="How It Works" icon="microchip" href="/v2/how-it-works">
+    Architecture: VMs, hibernation, checkpoints
+  </Card>
+  <Card title="Sandboxes" icon="box" href="/v2/sandboxes/overview">
+    The compute primitive
+  </Card>
+  <Card title="Working with Files" icon="file" href="/v2/sandboxes/working-with-files">
+    Upload, download, and manage files
+  </Card>
+</CardGroup>

@@ -1,0 +1,75 @@
+---
+title: "Quickstart"
+description: "Create your first sandbox in 2 minutes"
+---
+
+## Prerequisites
+
+An OpenComputer API key and the SDK installed. See [Introduction](/v2/introduction) for install instructions.
+
+```bash
+export OPENCOMPUTER_API_KEY=your-api-key
+```
+
+<Tip>Grab your API key from [app.opencomputer.dev](https://app.opencomputer.dev)</Tip>
+
+## Create Your First Sandbox
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+
+// Run a command inside the sandbox
+const result = await sandbox.commands.run("echo 'Hello World from OpenSandbox!'");
+console.log(result.stdout);
+
+await sandbox.kill();
+```
+
+```python Python
+import asyncio
+from opencomputer import Sandbox
+
+async def main():
+    sandbox = await Sandbox.create()
+
+    # Run a command inside the sandbox
+    result = await sandbox.commands.run("echo 'Hello World from OpenSandbox!'")
+    print(result.stdout)
+
+    await sandbox.kill()
+
+asyncio.run(main())
+```
+
+</CodeGroup>
+
+Running this will print:
+
+```
+Hello World from OpenSandbox!
+```
+
+<Note>
+Your sandboxes stay alive as long as you need them. They don't shut down after a command finishes — you can keep running commands, installing packages, and building projects for hours or days. Sandboxes only stop when you explicitly kill them or when the idle timeout expires (default 5 minutes, configurable).
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Elastic Compute" icon="gauge-high" href="/v2/sandboxes/elasticity">
+    Scale memory and CPU at runtime based on workload
+  </Card>
+  <Card title="Upload & Download Files" icon="file-arrow-up" href="/v2/sandboxes/working-with-files">
+    Read, write, and transfer files to and from sandboxes
+  </Card>
+  <Card title="Custom Sandboxes" icon="palette" href="/v2/sandboxes/templates">
+    Build custom environments with your own packages and tools
+  </Card>
+  <Card title="Checkpoints" icon="code-branch" href="/v2/sandboxes/checkpoints">
+    Snapshot and fork VMs for parallel experimentation
+  </Card>
+</CardGroup>

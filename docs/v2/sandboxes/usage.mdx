@@ -1,0 +1,186 @@
+---
+title: "Usage Monitoring"
+description: "Inspect a sandbox's memory allocation and actual utilization over time"
+---
+
+[`GET /api/sandboxes/:id/usage`](/v2/api-reference/usage/get-sandbox-usage)
+returns a per-minute time series of a sandbox's memory — both the
+tier you provisioned and what the process actually consumed —
+together with envelope totals. Use it to answer "am I over-paying for
+this sandbox" or "when did memory spike?" For cross-sandbox
+leaderboards (rank by usage, group by tag) see the aggregator at
+[`GET /api/usage`](/v2/api-reference/usage/get-usage) instead.
+
+<Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
+## Example
+
+Allocated tier as a step line (it changes only on resize), measured
+usage as a smooth curve. The gap between them is paid-for headroom.
+
+<svg viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg" style={{width: "100%", height: "auto", maxWidth: "800px", display: "block", margin: "1.5em auto"}} role="img" aria-label="Example chart: a sandbox's allocated and used memory over 24 hours, showing a mid-day resize event, a load-test peak, and a brief stop">
+  <g stroke="#e5e7eb" strokeWidth="1">
+    <line x1="70" y1="50"  x2="760" y2="50" />
+    <line x1="70" y1="102" x2="760" y2="102" />
+    <line x1="70" y1="154" x2="760" y2="154" />
+    <line x1="70" y1="206" x2="760" y2="206" />
+    <line x1="70" y1="258" x2="760" y2="258" />
+    <line x1="70" y1="310" x2="760" y2="310" stroke="#9ca3af" />
+  </g>
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#6b7280" textAnchor="end">
+    <text x="64" y="54">2500</text>
+    <text x="64" y="106">2000</text>
+    <text x="64" y="158">1500</text>
+    <text x="64" y="210">1000</text>
+    <text x="64" y="262">500</text>
+    <text x="64" y="314">0</text>
+  </g>
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#6b7280" textAnchor="middle">
+    <text x="70"  y="330">00:00</text>
+    <text x="185" y="330">04:00</text>
+    <text x="300" y="330">08:00</text>
+    <text x="415" y="330">12:00</text>
+    <text x="530" y="330">16:00</text>
+    <text x="645" y="330">20:00</text>
+    <text x="760" y="330">24:00</text>
+  </g>
+
+  <text x="18" y="180" fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#6b7280" transform="rotate(-90 18 180)" textAnchor="middle">Memory (MiB)</text>
+
+  <path d="M 70,310 L 84,289 L 128,247 L 185,235 L 242,237 L 271,195 L 300,164 L 358,154 L 386,159 L 415,195 L 444,216 L 501,211 L 559,214 L 582,289 L 587,310 L 610,310 L 616,299 L 645,227 L 702,221 L 760,218 L 760,310 L 70,310 Z" fill="#10b981" fillOpacity="0.12" />
+
+  <path d="M 70,203 L 242,203 L 242,97 L 760,97" fill="none" stroke="#6366f1" strokeWidth="2" strokeDasharray="6 4" />
+
+  <path d="M 70,310 L 84,289 L 128,247 L 185,235 L 242,237 L 271,195 L 300,164 L 358,154 L 386,159 L 415,195 L 444,216 L 501,211 L 559,214 L 582,289 L 587,310 L 610,310 L 616,299 L 645,227 L 702,221 L 760,218" fill="none" stroke="#10b981" strokeWidth="2" />
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#374151">
+    <circle cx="242" cy="150" r="3" fill="#6366f1" />
+    <line x1="245" y1="148" x2="295" y2="120" stroke="#9ca3af" strokeWidth="1" />
+    <text x="298" y="118">Resize 1 → 2 GiB</text>
+  </g>
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#374151">
+    <circle cx="358" cy="154" r="3" fill="#10b981" />
+    <line x1="361" y1="150" x2="410" y2="125" stroke="#9ca3af" strokeWidth="1" />
+    <text x="413" y="123">Load-test peak (1500 MiB)</text>
+  </g>
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#374151">
+    <line x1="598" y1="310" x2="598" y2="285" stroke="#9ca3af" strokeWidth="1" />
+    <text x="603" y="283">Stopped briefly</text>
+  </g>
+
+  <g fontSize="11" fontFamily="ui-sans-serif, system-ui, sans-serif" fill="#374151">
+    <line x1="510" y1="62" x2="535" y2="62" stroke="#6366f1" strokeWidth="2" strokeDasharray="6 4" />
+    <text x="540" y="66">allocatedMemoryMb</text>
+    <line x1="665" y1="62" x2="690" y2="62" stroke="#10b981" strokeWidth="2" />
+    <text x="695" y="66">usedMemoryMbAvg</text>
+  </g>
+</svg>
+
+Everything on the chart — the resize step, the peak, the brief gap —
+falls out of `points[]` directly: `allocatedMemoryMb` is the step,
+`usedMemoryMbPeak` finds the peak, `uptimeSeconds: 0` marks downtime.
+
+## Request
+
+```http
+GET /api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z
+```
+
+Path carries the sandbox ID. `from` and `to` are optional and accept
+ISO dates (`YYYY-MM-DD`, interpreted as UTC midnight) or RFC3339
+timestamps; omit them for the last hour. Max window is **30 days**.
+Full param reference: the
+[API page](/v2/api-reference/usage/get-sandbox-usage).
+
+## Response
+
+```json
+{
+  "sandboxId": "sb-abc",
+  "alias": "my-agent",
+  "from": "2026-05-27T00:00:00Z",
+  "to":   "2026-05-27T01:00:00Z",
+  "totals": {
+    "memoryAllocatedGbSeconds": 3600,
+    "memoryUsedGbSeconds":      2180,
+    "uptimeSeconds":            3600,
+    "memoryAllocatedPeakMb":    1024,
+    "memoryUsedPeakMb":          742
+  },
+  "points": [
+    { "ts": "2026-05-27T00:00:00Z", "memoryAllocatedGbSeconds": 60, "memoryUsedGbSeconds": 35.86, "uptimeSeconds": 60, "allocatedMemoryMb": 1024, "usedMemoryMbAvg": 612, "usedMemoryMbPeak": 720 },
+    { "ts": "2026-05-27T00:01:00Z", "memoryAllocatedGbSeconds": 60, "memoryUsedGbSeconds": 40.02, "uptimeSeconds": 60, "allocatedMemoryMb": 1024, "usedMemoryMbAvg": 683, "usedMemoryMbPeak": 742 }
+  ]
+}
+```
+
+`totals` is the server-side sum of `points[]` — summing any
+additive field across the array reproduces the matching `totals.*`
+exactly. Full field semantics live in the
+[API reference](/v2/api-reference/usage/get-sandbox-usage).
+
+## Allocated vs used
+
+- **`memoryAllocatedGbSeconds`** — the tier you provisioned, integrated
+  over time. Same physical quantity the bill is computed from.
+  Resize mid-window shows up as a time-weighted blend in the affected
+  bucket.
+- **`memoryUsedGbSeconds`** — measured resident memory, sampled every
+  60s and integrated. The headroom signal: low ratio of used over
+  allocated means you're over-provisioned.
+
+Both are in **GiB-seconds** (binary, 2<sup>30</sup> bytes/GiB), so
+`used / allocated` gives a clean utilization fraction.
+
+## Calling it
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Usage } from "@opencomputer/sdk";
+
+const usage = new Usage(
+  "https://app.opencomputer.dev",
+  process.env.OPENCOMPUTER_API_KEY!,
+);
+
+// Default window = last 1 hour. Pass `from`/`to` for up to 30 days.
+const r = await usage.forSandbox("sb-abc");
+const pct = 100 * r.totals.memoryUsedGbSeconds / r.totals.memoryAllocatedGbSeconds;
+console.log(`${pct.toFixed(0)}% utilization`);
+
+for (const p of r.points) {
+  // p.ts, p.usedMemoryMbAvg, p.allocatedMemoryMb — ready to chart
+}
+```
+
+```bash cURL
+curl -s "$OPENCOMPUTER_API_URL/api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z" \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" | jq '.totals'
+```
+
+</CodeGroup>
+
+Full TypeScript SDK reference: [Usage & Tags](/v2/reference/typescript-sdk/usage).
+
+## Bucket semantics
+
+- Buckets are **1 minute, UTC-aligned**; boundary buckets clamp to
+  the original window so a mid-minute `from` doesn't over-report.
+- Minutes where the sandbox isn't running emit zero-points — gaps
+  read as continuous flat zero on a chart, not nulls.
+- If a measurement is missed, `uptimeSeconds` still reads 60 (the
+  sandbox was running) but `usedMemoryMbAvg` reads 0 — visible as a
+  brief dip under an otherwise continuous allocated line.
+- The first non-zero `usedMemoryMbAvg` for a freshly-created sandbox
+  appears a few minutes in. Workloads that finish faster than that
+  may not register any measured usage even though they ran.
+- Window max is **30 days**.
