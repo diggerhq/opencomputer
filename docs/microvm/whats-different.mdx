@@ -16,6 +16,7 @@ Everything not listed here behaves identically, and the same SDK code runs on bo
 | Hibernated time | does not count against a lifetime | **counts against the 8 hours** |
 | Resize a running sandbox | supported | not supported |
 | Sizes | any memory value at create | a fixed enum, 512 MB – 8 GB, default 4 GB |
+| CPU | selectable via `cpuCount`, scales with memory | allocated by the platform; `cpuCount` is not a control |
 | Mounts (FUSE/NFS/overlay) | supported | not possible |
 | Image builds | supported | not yet |
 | Fork from a checkpoint | supported | not yet |
@@ -33,7 +34,8 @@ does not come back in the morning. If you have work that assumes a long-lived bo
 
 **Memory tops out at 8 GB** and cannot be changed after launch. On the current runtime you ask
 for whatever you need and can resize later; here the sizes are a fixed enum and the largest is
-8 GB. See [Sandbox sizes](/microvm/sizes).
+8 GB. CPU is no longer selectable either — `cpuCount` is accepted but does not size the sandbox.
+See [Sandbox sizes](/microvm/sizes).
 
 **Checkpoints don't capture memory.** If you use checkpoints to freeze a warmed-up process —
 a loaded model, an open connection pool, a debugger mid-session — restoring will not give that

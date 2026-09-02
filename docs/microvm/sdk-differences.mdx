@@ -32,6 +32,8 @@ connection pool captured the upgrade, and WebSockets cannot be negotiated over H
 | `sandbox.restoreCheckpoint(id)` | Restores files onto a fresh boot — no live process state. |
 | `sandbox.setTimeout(seconds)` | Clamped to the lifetime ceiling; check `applied` in the response. |
 | `Sandbox.create({ memoryMB })` | A fixed enum up to 8 GB, and only tiers published in your region; anything else is refused with the list. |
+| `Sandbox.create({ cpuCount })` | Accepted, but not a control — CPU is allocated with memory. |
+| `Sandbox.create({ diskMB })` | Not a control here; disk comes from the image. |
 
 ## Unchanged
 

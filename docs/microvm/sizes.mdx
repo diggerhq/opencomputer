@@ -14,22 +14,32 @@ fixed list rather than any number you like, and a size cannot change after launc
 
 These are the only values that can exist, on the `al2023-1` base image:
 
-| Memory | vCPU | Notes |
-|---|---|---|
-| 512 MB | shared | |
-| 1024 MB | shared | |
-| 2048 MB | 1 | first size with a full vCPU |
-| **4096 MB** | 1 | **default** |
-| 8192 MB | 1 (peak to 4×) | largest available |
+| Memory |
+|---|
+| 512 MB |
+| 1024 MB |
+| 2048 MB |
+| **4096 MB** — default |
+| 8192 MB |
 
 <Note>
 This is an enum, not a range. `3072` and `16384` are not "not yet published" — they cannot be
 published, because the platform does not offer them. The largest sandbox available is 8 GB.
 </Note>
 
-CPU is not separately selectable. The platform allocates it with memory: a full vCPU from
-2048 MB upwards, with peak bursting to roughly 4× on the largest size. **4096 MB is the default
-specifically because it is the smallest size that reliably delivers a full vCPU.**
+## CPU
+
+CPU is **not separately selectable** on this runtime. The platform allocates it in proportion to
+the memory size, and there is no knob for it.
+
+<Warning>
+`cpuCount` is accepted by the create API for compatibility, but it does not size the sandbox
+here. Do not rely on it — set `memoryMB` and let CPU follow.
+</Warning>
+
+Measuring CPU from inside the guest is misleading: `nproc` and `/proc/cpuinfo` report the
+underlying machine rather than your sandbox's share, so a 4 GB sandbox may report 8 processors.
+Benchmark actual throughput rather than reading the core count.
 
 ## Which sizes are available to you
 
