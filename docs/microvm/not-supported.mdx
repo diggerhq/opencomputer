@@ -16,6 +16,7 @@ These come from the platform underneath. We are not going to ship them.
 | **Live-memory checkpoints** | The platform exposes no snapshot or memory-export operation. A filesystem archive is the only checkpoint that can exist. |
 | **Mounts (FUSE, NFS, overlay, 9p)** | The guest does not have `CAP_SYS_ADMIN`, and it is absent from the bounding set, so `mount` cannot be performed at all. |
 | **Resizing a running sandbox** | Memory is a property of the image a sandbox launched from. It cannot be changed after launch. |
+| **Choosing disk size** | Disk comes from the image and is fixed at ~16 GB. `diskMB` is accepted but ignored. |
 | **Live migration** | There are no hosts of ours to migrate between. |
 
 Calls into these surfaces are **refused**, not silently ignored. `scale()` returns a clear
@@ -31,6 +32,7 @@ These are gaps in our implementation, not the platform's.
 | **Image builds** | Declarative `image:` manifests and the build pipeline are unavailable. Use [templates](/microvm/templates) or checkpoints. |
 | **Checkpoint patches** | The patch API is not wired to this runtime. |
 | **Promoting a checkpoint to full** | Depends on memory capture, so it is blocked behind a permanent limit. |
+| **Templates carrying a rootfs image** | Refused at create. Templates built on the current runtime capture the whole disk; this runtime can only replay the workspace. See [Templates](/microvm/templates). |
 
 ## Behaves differently rather than missing
 

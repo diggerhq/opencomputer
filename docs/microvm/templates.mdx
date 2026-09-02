@@ -1,36 +1,69 @@
 ---
 title: "Templates"
-description: "Starting from a prepared environment"
+description: "Which templates carry over, and which do not"
 ---
 
-Named templates work on this runtime.
+Templates work on this runtime, but **the templates you have today probably do not.** This is
+the migration issue most likely to affect you, and it is worth checking before anything moves.
+
+## How a template is applied here
+
+A template create claims a standard pooled sandbox and unpacks the template's **workspace
+archive** on top of it. That keeps the fast pooled create and makes a template cost a tarball
+rather than a separately published machine image.
 
 ```typescript
 const sandbox = await Sandbox.create({ templateID: "my-template" });
 ```
 
-A template create claims a standard pooled sandbox and unpacks the template's workspace onto
-it. That means a template costs an archive rather than a separately published machine image,
-and new templates are available immediately rather than after an image build.
+## The catch: rootfs templates are refused
 
-## What a template carries
+<Warning>
+A template that carries a **rootfs image** cannot be used on this runtime. The create fails with
+*"template … carries a rootfs image, which this runtime cannot restore."*
+</Warning>
 
-The workspace — your files, installed dependencies, anything on disk. It does not carry a
-memory image, for the same reason [checkpoints](/microvm/checkpoints) do not.
+Templates built on the current runtime capture the **whole disk** — every system-level change,
+not just your workspace. This runtime can only replay the workspace half, and doing that
+silently would hand you your files while dropping every system change the template existed for:
+a template that looks like it worked and hasn't.
 
-## Image builds are not available yet
+So it refuses instead. That is the right failure, but it means:
+
+**Any template that installed system packages, changed system configuration, or was built
+before your org moved will need rebuilding on the new runtime.**
+
+## What to do
+
+<Steps>
+  <Step title="List your templates and try each one">
+    A refused template fails loudly at create with the message above. That is the fastest audit
+    — you do not need to inspect anything.
+  </Step>
+  <Step title="Rebuild the ones that fail">
+    Start a sandbox on the new runtime, install what the template provided, and capture it as a
+    [checkpoint](/microvm/checkpoints) or a new template. What can be captured is the
+    filesystem, so anything you can install with files and packages carries over.
+  </Step>
+  <Step title="Move system-level setup into the image, or into your startup">
+    If the template depended on changes outside the workspace, they need to live somewhere else
+    — either in a published image (talk to us) or as a step your sandbox runs on boot.
+  </Step>
+</Steps>
+
+## Image builds are not available
 
 <Warning>
 Declarative image manifests (`image:` on create) and the image build pipeline are **not
-supported** on this runtime. They depend on a build fleet that this runtime does not have.
+supported** on this runtime. They depend on a build fleet it does not have.
 </Warning>
 
-If you build images today, that workflow needs an alternative before you migrate. The two that
-work now:
+If you build images today, that workflow needs an alternative before you migrate:
 
 <CardGroup cols={2}>
-  <Card title="Templates" icon="layer-group">
-    Prepare a workspace once and start sandboxes from it.
+  <Card title="Workspace templates" icon="layer-group">
+    Prepare a workspace once and start sandboxes from it — as long as it does not need a
+    rootfs.
   </Card>
   <Card title="Checkpoints" icon="camera">
     Install into a sandbox, checkpoint it, and restore that checkpoint when you need the

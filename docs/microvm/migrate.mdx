@@ -8,7 +8,7 @@ out ahead of time whether that move is a non-event or something you need to plan
 
 ## Step 1 — answer four questions
 
-Most workloads are unaffected. These five are what separate the two cases:
+Most workloads are unaffected. These seven are what separate the two cases:
 
 <Steps>
   <Step title="Does any sandbox need to live longer than 8 hours?">
@@ -26,6 +26,17 @@ Most workloads are unaffected. These five are what separate the two cases:
     [Sandbox sizes](/microvm/sizes).
   </Step>
 
+  <Step title="Do you use templates built on the current runtime?">
+    A template that carries a rootfs image is refused outright. Most existing templates do.
+    They need rebuilding as workspace-only templates or checkpoints. See
+    [Templates](/microvm/templates).
+  </Step>
+
+  <Step title="Does any sandbox need more than ~16 GB of disk?">
+    Disk is fixed at roughly 16 GB and `diskMB` is ignored — less than the 20 GB you get today.
+    Data beyond that needs to live outside the sandbox.
+  </Step>
+
   <Step title="Do you call scale, autoscale, or mount anything?">
     None of these exist on the new runtime. See [What's not supported](/microvm/not-supported).
   </Step>
@@ -34,7 +45,7 @@ Most workloads are unaffected. These five are what separate the two cases:
   </Step>
 </Steps>
 
-If all five are "no", your migration is a configuration change and you can stop reading here.
+If all seven are "no", your migration is a configuration change and you can stop reading here.
 
 ## Step 2 — find the calls in your code
 

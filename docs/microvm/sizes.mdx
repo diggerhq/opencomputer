@@ -48,6 +48,22 @@ Measuring CPU from inside the guest is misleading: `nproc` and `/proc/cpuinfo` r
 underlying machine rather than your sandbox's share, so a 4 GB sandbox may report 8 processors.
 Benchmark actual throughput rather than reading the core count.
 
+## Disk
+
+Disk is **fixed at roughly 16 GB** and is not configurable. It comes from the image, the same
+way memory does.
+
+<Warning>
+`diskMB` is accepted by the create API and has **no effect** — asking for 64 GB returns `201`
+and gives you the standard ~16 GB. Do not rely on it.
+</Warning>
+
+This is smaller than the current runtime's 20 GB default, and much smaller than the 256 GB
+ceiling it allows. If any workload needs more disk than 16 GB, it needs somewhere else to put
+the data — object storage, or a service it streams from — before you migrate.
+
+Roughly 14 GB of the 16 GB is free on a fresh sandbox; the rest is the base image.
+
 ## Which sizes are available to you
 
 Every size above is *possible*; which ones are *published in your region* is configuration.

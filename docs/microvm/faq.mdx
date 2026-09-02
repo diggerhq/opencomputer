@@ -21,6 +21,19 @@ description: "Questions worth answering before you migrate"
     files.
   </Accordion>
 
+  <Accordion title="Will my existing templates work?">
+    Probably not. A template that carries a rootfs image — which is what templates built on the
+    current runtime are — is refused at create with a clear error, because this runtime can only
+    replay the workspace half and silently dropping the rest would give you a template that
+    looks like it worked and hasn't. Rebuild them as workspace templates or checkpoints. See
+    [Templates](/microvm/templates).
+  </Accordion>
+
+  <Accordion title="How much disk do I get?">
+    About 16 GB, fixed. `diskMB` is accepted but ignored, so you cannot ask for more. That is
+    less than the 20 GB default on the current runtime, and well under its 256 GB ceiling.
+  </Accordion>
+
   <Accordion title="Do I need to change my code?">
     For most workloads, no. Check for `scale`, `setAutoscale`, mounts, image builds and
     `createFromCheckpoint`, and review anywhere you assume a sandbox lives indefinitely. The
