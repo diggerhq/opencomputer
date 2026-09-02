@@ -511,6 +511,12 @@ func (m *Manager) popLocked(sandboxID string, meta Meta) *Box {
 	return b
 }
 
+// deliveredCPUCount is what a box actually provides, and the only value that
+// may reach metering. CPU is not selectable on this runtime; it scales with the
+// memory tier, so there is one honest number to record rather than a per-tier
+// table we cannot verify from inside the guest.
+const deliveredCPUCount = 1
+
 // delivered resolves what the customer will actually get, which is not always
 // what they asked for: every box in the warm set is built from one image, so a
 // request for another tier is served at the image's size or not at all.
@@ -530,8 +536,26 @@ func (m *Manager) delivered(meta Meta) Meta {
 			meta.MemoryMB = cfg.DefaultMemoryMB
 		}
 	}
-	if meta.CPUCount <= 0 {
-		meta.CPUCount = 1
+	// CPU gets the same treatment as memory, and for the same reason. This
+	// platform has no CPU knob at all — RunMicrovmInput carries no vCPU field,
+	// and cpu-configurations at image-publish time takes an architecture and
+	// nothing else. CPU is allocated as a function of memory.
+	//
+	// So a customer-supplied cpuCount cannot be honoured, and carrying it
+	// through would put a number the customer chose into the usage record this
+	// function exists to keep truthful — the CPU equivalent of billing a 4 GB
+	// box as the 16 GB that was asked for. It is discarded rather than
+	// recorded.
+	//
+	// Logged when a request is dropped, because "cpuCount did nothing" is
+	// otherwise invisible: the create succeeds, the sandbox is correct, and
+	// only the meter would have been wrong.
+	if meta.CPUCount != deliveredCPUCount {
+		if meta.CPUCount > 0 {
+			log.Printf("awsvmlite: cpuCount=%d requested but this runtime does not size CPU — metering as %d",
+				meta.CPUCount, deliveredCPUCount)
+		}
+		meta.CPUCount = deliveredCPUCount
 	}
 	return meta
 }

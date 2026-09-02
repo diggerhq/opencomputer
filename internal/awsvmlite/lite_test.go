@@ -84,10 +84,19 @@ func TestDeliveredSizeFallsBackToTheImageRatherThanZero(t *testing.T) {
 			got.CPUCount)
 	}
 
-	// An explicitly requested size must survive when there is nothing to resolve
-	// it against, rather than being zeroed.
-	if got := m.delivered(Meta{MemoryMB: 8192, CPUCount: 4}); got.MemoryMB != 8192 || got.CPUCount != 4 {
-		t.Fatalf("delivered = %dMB/%dcpu, want the requested 8192MB/4cpu", got.MemoryMB, got.CPUCount)
+	// An explicitly requested MEMORY size must survive when there is nothing to
+	// resolve it against, rather than being zeroed.
+	//
+	// CPU is deliberately not symmetric with it. Memory is a real property of
+	// the image, so a request for it can be honoured or refused; CPU has no
+	// knob on this platform at all, so a requested count is discarded rather
+	// than carried into the meter. See deliveredCPUCount.
+	if got := m.delivered(Meta{MemoryMB: 8192, CPUCount: 4}); got.MemoryMB != 8192 {
+		t.Fatalf("delivered %dMB, want the requested 8192MB to survive", got.MemoryMB)
+	}
+	if got := m.delivered(Meta{MemoryMB: 8192, CPUCount: 4}); got.CPUCount != deliveredCPUCount {
+		t.Fatalf("delivered %dcpu, want %d — a requested CPU count must not reach metering",
+			got.CPUCount, deliveredCPUCount)
 	}
 }
 
