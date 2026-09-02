@@ -269,6 +269,10 @@ export default function TemplateNew() {
             <Input
               value={projectName}
               onChange={(event) => setProjectName(event.target.value)}
+              autoFocus={quickStart}
+              onFocus={(event) => {
+                if (quickStart) event.currentTarget.select()
+              }}
               required
             />
           </label>
