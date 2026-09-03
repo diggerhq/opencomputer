@@ -36,7 +36,9 @@ Seven questions. If every answer is "no", your migration is a configuration chan
     None of these exist in v2.
   </Step>
   <Step title="Do you build images or fork from checkpoints?">
-    Image builds are unavailable. Fork is unavailable today and being worked on.
+    Image builds work, but only ahead of time — see [Templates](/sandboxes/templates).
+    Passing `image:` directly to a create is refused. Fork is unavailable today and being
+    worked on.
   </Step>
 </Steps>
 
@@ -134,7 +136,7 @@ that sandbox. See [Secrets](/sandboxes/secrets).
 |---|---|
 | `scale()`, `setAutoscale()` | memory is fixed at launch |
 | Mounts (FUSE, NFS, overlay) | the guest cannot perform `mount` |
-| Image builds (`image:`) | no build pipeline in v2 |
+| Inline `image:` on create | build ahead of time instead — see [Templates](/sandboxes/templates) |
 | Fork from a checkpoint | in progress |
 | Checkpoint patches | not wired up |
 | Live migration | not applicable |

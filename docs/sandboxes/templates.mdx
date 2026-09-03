@@ -1,72 +1,137 @@
 ---
 title: "Templates"
-description: "Which templates carry over, and which do not"
+description: "Two ways to prepare an environment, and which one you need"
 ---
 
-Templates work on v2, but **the templates you have today probably do not.** This is
-the migration issue most likely to affect you, and it is worth checking before anything moves.
+A template is an environment prepared once and reused by many sandboxes. v2 has **two
+mechanisms**, and which one you need depends on a single question: does your setup write
+outside the home directory?
 
-## How a template is applied here
+| Your setup | Mechanism | Create speed |
+| --- | --- | --- |
+| Python/Node packages, files, env vars | **Workspace template** | Full pooled speed |
+| System packages (`apt`/`dnf`), anything in `/usr` | **Custom image** | Cold start, a few seconds |
 
-A template create claims a standard pooled sandbox and unpacks the template's **workspace
-archive** on top of it. That keeps the fast pooled create and makes a template cost a tarball
-rather than a separately published machine image.
+If a workspace template covers you, use it — it is faster at create time and has no limits
+worth worrying about.
+
+## Workspace templates
+
+A workspace template claims a standard pooled sandbox and unpacks your saved workspace on top
+of it. You keep the fast pooled create, and the template costs nothing but a tarball.
 
 ```typescript
 const sandbox = await Sandbox.create({ templateID: "my-template" });
 ```
 
-## The catch: rootfs templates are refused
+This captures **everything under your home directory**. That is more than it sounds: `pip` and
+`npm` are configured to install there, so a Python or Node toolchain is captured for free.
+
+```typescript
+// Both of these are captured by a workspace template.
+await sandbox.exec.run("pip install pandas");
+await sandbox.exec.run("npm install -g typescript");
+```
+
+What it does **not** capture is anything outside your home directory — `dnf install` writing to
+`/usr`, system services, files in `/etc`. For those you need a custom image.
+
+## Custom images
+
+A custom image bakes your setup into the machine image the sandbox boots from, so system-level
+changes persist. You define it with the same `Image` builder v1 uses:
+
+```typescript
+import { Image, Snapshots, Sandbox } from "@opencomputer/sdk";
+
+const snapshots = new Snapshots();
+
+await snapshots.create({
+  name: "video-tools",
+  image: Image.base()
+    .aptInstall(["ffmpeg"])
+    .pipInstall(["numpy"]),
+});
+
+// Building takes minutes — wait for it before using it.
+await snapshots.waitUntilReady("video-tools");
+
+const sandbox = await Sandbox.create({ template: "video-tools" });
+```
+
+### Four things to know
+
+<Warning>
+**Builds take minutes, not seconds.** The image is built by the platform, not in your sandbox.
+Build once, then start as many sandboxes from it as you like.
+</Warning>
+
+**Sandboxes from a custom image cold-start.** The warm pool holds standard sandboxes, so a
+custom-image create takes a few seconds instead of milliseconds. If create latency matters more
+than system packages, prefer a workspace template.
+
+**The base is Amazon Linux 2023, not Ubuntu.** `aptInstall` still works — package names are
+translated where they differ (`build-essential` becomes `gcc gcc-c++ make`) — but a package that
+exists only on Debian will fail the build, and the error names the package.
+
+**Everything runs on ARM64.** A build step that downloads an x86-64 binary will fail. Use your
+package manager, or fetch the `aarch64`/`arm64` build.
+
+### Limits
+
+Custom images are a limited resource, so each org can hold **10** at a time. Delete one you are
+no longer using to make room.
+
+Two identical definitions share a single image, so rebuilding an unchanged template costs
+nothing and returns immediately.
+
+## Building inline is not supported
+
+<Warning>
+Passing `image:` directly to `Sandbox.create()` is refused on v2. Create the image first, then
+create sandboxes from it by name.
+</Warning>
+
+A build takes minutes; a create that waited for one would time out. The refusal names the
+supported path rather than quietly handing you a sandbox without your packages.
+
+```typescript
+// Refused on v2
+await Sandbox.create({ image: Image.base().aptInstall(["ffmpeg"]) });
+
+// Do this instead
+await snapshots.create({ name: "tools", image: Image.base().aptInstall(["ffmpeg"]) });
+await snapshots.waitUntilReady("tools");
+await Sandbox.create({ template: "tools" });
+```
+
+## Migrating a v1 template
 
 <Warning>
 A template that carries a **rootfs image** cannot be used on v2. The create fails with
 *"template … carries a rootfs image, which v2 cannot restore."*
 </Warning>
 
-Templates built on v1 capture the **whole disk** — every system-level change,
-not just your workspace. This runtime can only replay the workspace half, and doing that
-silently would hand you your files while dropping every system change the template existed for:
-a template that looks like it worked and hasn't.
-
-So it refuses instead. That is the right failure, but it means:
-
-**Any template that installed system packages, changed system configuration, or was built
-before your org moved will need rebuilding on the new runtime.**
-
-## What to do
+v1 templates capture the whole disk. v2 cannot replay that, and replaying only the workspace half
+would hand you your files while dropping every system change the template existed for — a
+template that looks like it worked and hasn't. So it refuses instead.
 
 <Steps>
-  <Step title="List your templates and try each one">
-    A refused template fails loudly at create with the message above. That is the fastest audit
-    — you do not need to inspect anything.
+  <Step title="Try each template">
+    A template that cannot be used fails loudly at create with the message above. That is the
+    fastest audit — nothing to inspect.
   </Step>
-  <Step title="Rebuild the ones that fail">
-    Start a sandbox on the new runtime, install what the template provided, and capture it as a
-    [checkpoint](/sandboxes/checkpoints) or a new template. What can be captured is the
-    filesystem, so anything you can install with files and packages carries over.
-  </Step>
-  <Step title="Move system-level setup into the image, or into your startup">
-    If the template depended on changes outside the workspace, they need to live somewhere else
-    — either in a published image (talk to us) or as a step your sandbox runs on boot.
+  <Step title="Rebuild it in the right place">
+    Packages installed into your home directory become a workspace template. System packages
+    become a custom image, using the same `Image` definition you already have.
   </Step>
 </Steps>
 
-## Image builds are not available
-
-<Warning>
-Declarative image manifests (`image:` on create) and the image build pipeline are **not
-supported** on v2. They depend on a build fleet it does not have.
-</Warning>
-
-If you build images today, that workflow needs an alternative before you migrate:
-
 <CardGroup cols={2}>
-  <Card title="Workspace templates" icon="layer-group">
-    Prepare a workspace once and start sandboxes from it — as long as it does not need a
-    rootfs.
+  <Card title="Checkpoints" icon="camera" href="/sandboxes/checkpoints">
+    Save a running sandbox's workspace and restore it later.
   </Card>
-  <Card title="Checkpoints" icon="camera">
-    Install into a sandbox, checkpoint it, and restore that checkpoint when you need the
-    environment again.
+  <Card title="Migrating from v1" icon="arrow-right" href="/migrating-from-v1">
+    Every behaviour that differs between v1 and v2.
   </Card>
 </CardGroup>
