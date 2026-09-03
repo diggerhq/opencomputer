@@ -107,10 +107,10 @@ func (s *Server) createSnapshot(c echo.Context) error {
 				log.Printf("snapshot: microvm template %q failed: %v", name, err)
 			}
 		}()
-		return c.JSON(http.StatusAccepted, map[string]string{
-			"name":   name,
-			"status": "processing",
-		})
+		return c.JSON(http.StatusAccepted, snapshotViewOfTemplate(&db.DBTemplate{
+			OrgID: &orgID, Name: name, Status: db.TemplateStatusProcessing,
+			CreatedAt: time.Now(),
+		}))
 	}
 
 	// SSE streaming path
@@ -337,6 +337,20 @@ func (s *Server) getSnapshot(c echo.Context) error {
 	}
 
 	name := c.Param("name")
+
+	// On the MicroVM runtime a snapshot IS a template row, not an image_cache
+	// entry. Without this the lookup 404s forever — and the SDK's
+	// waitUntilReady treats 404 as "still building", so a customer waiting on a
+	// perfectly healthy template would poll until their timeout, or forever if
+	// they passed none.
+	if s.runtimeFor(c) == runtimeMicrovm {
+		tmpl, err := s.store.GetTemplateByName(c.Request().Context(), orgID, name)
+		if err != nil || tmpl == nil || tmpl.TemplateType != db.TemplateTypeMicrovmImage {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "snapshot not found"})
+		}
+		return c.JSON(http.StatusOK, snapshotViewOfTemplate(tmpl))
+	}
+
 	snapshot, err := s.store.GetImageCacheByName(c.Request().Context(), orgID, name)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "snapshot not found"})
@@ -573,4 +587,33 @@ func (s *Server) deleteImagePatch(c echo.Context) error {
 	c.SetParamNames("checkpointId", "patchId")
 	c.SetParamValues(checkpointID.String(), patchId)
 	return s.deleteCheckpointPatch(c)
+}
+
+// snapshotViewOfTemplate renders a MicroVM image template in the shape the SDK
+// types as SnapshotInfo.
+//
+// The SDK's waitUntilReady reads exactly one field — status — and compares it
+// against "ready" and "failed", which the template statuses already match. The
+// rest are populated because create() and get() are typed as returning a
+// SnapshotInfo, and a caller reading .id off a half-filled object gets
+// undefined rather than an error.
+//
+// checkpointId is deliberately empty: there is no checkpoint on this runtime,
+// and inventing one would hand callers an ID that resolves to nothing.
+func snapshotViewOfTemplate(t *db.DBTemplate) map[string]any {
+	org := ""
+	if t.OrgID != nil {
+		org = t.OrgID.String()
+	}
+	return map[string]any{
+		"id":           t.ID.String(),
+		"orgId":        org,
+		"name":         t.Name,
+		"contentHash":  t.Tag,
+		"checkpointId": "",
+		"status":       t.Status,
+		"manifest":     map[string]any{},
+		"createdAt":    t.CreatedAt.UTC().Format(time.RFC3339),
+		"lastUsedAt":   t.CreatedAt.UTC().Format(time.RFC3339),
+	}
 }
