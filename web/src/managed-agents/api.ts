@@ -87,6 +87,79 @@ const projectSchema = z.object({
 
 const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
 
+const templateInspectionSchema = z.object({
+  id: z.string(),
+  repository: z.object({
+    url: z.string().url(),
+    fullName: z.string(),
+    defaultBranch: z.literal('main'),
+    commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+  }),
+  template: z.object({
+    name: z.string(),
+    description: z.string(),
+    documentation: z.string().url().optional(),
+    defaultProjectName: z.string().optional(),
+    firstRun: z.object({ agent: z.string(), prompt: z.string() }).optional(),
+  }),
+  agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  requirements: z.object({
+    secrets: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string().optional(),
+        documentation: z.string().url().optional(),
+        required: z.boolean().default(true),
+        agentId: z.string().optional(),
+        allowedOrigins: z.array(z.string().url()),
+      }),
+    ),
+    runtimeVariables: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string().optional(),
+        documentation: z.string().url().optional(),
+        required: z.boolean(),
+        example: z.string().optional(),
+        agentId: z.string().optional(),
+      }),
+    ),
+    connections: z.array(
+      z.object({
+        id: z.string(),
+        description: z.string().optional(),
+        provider: z.string(),
+        permissions: z.array(z.string()),
+      }),
+    ),
+  }),
+  expiresAt: z.string(),
+})
+
+const templateInspectionPreparingSchema = z.object({
+  id: z.string(),
+  status: z.literal('preparing'),
+  repositoryUrl: z.string().url(),
+  retryAfterMs: z.number().positive(),
+})
+
+const templateInstallationSchema = z.object({
+  id: z.string(),
+  inspectionId: z.string(),
+  projectId: z.string(),
+  projectAgentId: z.string(),
+  projectUrl: z.string(),
+  state: z.enum([
+    'awaiting_configuration',
+    'creating_project',
+    'building',
+    'deploying',
+    'ready',
+    'failed',
+  ]),
+  error: z.object({ stage: z.string(), message: z.string() }).optional(),
+})
+
 const secretSchema = z.object({
   name: z.string(),
   projectId: z.string(),
@@ -417,6 +490,13 @@ const sessionsResponseSchema = z.object({ sessions: z.array(sessionSchema) })
 
 const projectOverviewSchema = z.object({
   project: projectSchema,
+  templateSource: z
+    .object({
+      repositoryUrl: z.string().url(),
+      commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+      cloneReady: z.boolean().optional().default(false),
+    })
+    .optional(),
   sessions: z.array(sessionSchema),
   deployments: z.array(deploymentSchema),
   connections: z.array(connectionSchema),
@@ -447,6 +527,8 @@ export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
 >
 export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
+export type TemplateInspection = z.infer<typeof templateInspectionSchema>
+export type TemplateInstallation = z.infer<typeof templateInstallationSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -479,6 +561,61 @@ export async function createManagedProject(name: string) {
     '/managed-agents/projects',
     { method: 'POST', body: JSON.stringify({ name }) },
     projectSchema,
+  )
+}
+
+export async function inspectManagedTemplate(
+  repositoryUrl: string,
+): Promise<z.infer<typeof templateInspectionSchema>> {
+  const deadline = Date.now() + 10 * 60_000
+  for (;;) {
+    const result = await apiFetch(
+      '/managed-agents/template-inspections',
+      { method: 'POST', body: JSON.stringify({ repositoryUrl }) },
+      z.union([templateInspectionSchema, templateInspectionPreparingSchema]),
+    )
+    if ((result as { status?: string }).status !== 'preparing') {
+      return result as z.infer<typeof templateInspectionSchema>
+    }
+    const preparing = result as z.infer<
+      typeof templateInspectionPreparingSchema
+    >
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'Template preparation is still running; try again shortly',
+      )
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(500, preparing.retryAfterMs)),
+    )
+  }
+}
+
+export async function createManagedTemplateInstallation(input: {
+  inspectionId: string
+  projectName: string
+  idempotencyKey: string
+}) {
+  return apiFetch(
+    '/managed-agents/template-installations',
+    { method: 'POST', body: JSON.stringify(input) },
+    templateInstallationSchema,
+  )
+}
+
+export async function finalizeManagedTemplateInstallation(id: string) {
+  return apiFetch(
+    `/managed-agents/template-installations/${encodeURIComponent(id)}/finalize`,
+    { method: 'POST' },
+    templateInstallationSchema,
+  )
+}
+
+export async function getManagedTemplateInstallation(id: string) {
+  return apiFetch(
+    `/managed-agents/template-installations/${encodeURIComponent(id)}`,
+    undefined,
+    templateInstallationSchema,
   )
 }
 

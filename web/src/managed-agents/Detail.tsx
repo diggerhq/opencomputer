@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
@@ -35,6 +35,14 @@ import {
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -69,6 +77,10 @@ import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
+import {
+  projectCloneCommand,
+  templateFirstRunPrompt,
+} from './template-continuation'
 
 type DetailTab =
   | 'playground'
@@ -189,11 +201,15 @@ function PlaygroundChat({
   agentId,
   session,
   events,
+  initialPrompt,
+  onInitialPromptConsumed,
   onSessionFinished,
 }: {
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
+  initialPrompt?: string
+  onInitialPromptConsumed?: () => void
   onSessionFinished?: (sessionId: string) => void
 }) {
   const queryClient = useQueryClient()
@@ -207,6 +223,7 @@ function PlaygroundChat({
   const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
   const initializedScrollRef = useRef(false)
+  const initialPromptSentRef = useRef(false)
   const initialMessages = useMemo(
     () => historicalMessages(session, events),
     [events, session],
@@ -249,6 +266,14 @@ function PlaygroundChat({
     running ||
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
+
+  useEffect(() => {
+    if (!initialPrompt || session || initialPromptSentRef.current) return
+    initialPromptSentRef.current = true
+    onInitialPromptConsumed?.()
+    followOutputRef.current = true
+    void sendMessage({ text: initialPrompt })
+  }, [initialPrompt, onInitialPromptConsumed, sendMessage, session])
 
   useLayoutEffect(() => {
     const timeline = timelineRef.current
@@ -475,6 +500,7 @@ export default function ManagedAgentDetail({
   const agentId = agentIdOverride ?? params.agentId ?? ''
   const [standaloneTab, setStandaloneTab] = useState<DetailTab>('playground')
   const [starterCopied, setStarterCopied] = useState(false)
+  const [continuationCopied, setContinuationCopied] = useState(false)
   const routeTab = params.tab as DetailTab | undefined
   const projectTabs = new Set<DetailTab>([
     'playground',
@@ -497,6 +523,7 @@ export default function ManagedAgentDetail({
       ? 'production'
       : 'development'
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
+  const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
 
   const agents = useQuery({
@@ -566,6 +593,11 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
   })
+  const continuationCommand =
+    project?.templateSource?.cloneReady &&
+    projectCloneCommand(project.project.id)
+  const continuationPreparing =
+    project?.templateSource && !project.templateSource.cloneReady
 
   const selectPlaygroundSession = (sessionId?: string) => {
     void navigate({
@@ -679,11 +711,54 @@ export default function ManagedAgentDetail({
               : 'Loading active deployment…'
         }
         actions={
-          project ? undefined : (
+          project && continuationCommand ? (
+            <Dialog
+              onOpenChange={(open) => {
+                if (!open) setContinuationCopied(false)
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <TerminalSquare /> Continue locally
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Continue locally</DialogTitle>
+                  <DialogDescription>
+                    Clone the exact source deployed here and link it to this
+                    existing project.
+                  </DialogDescription>
+                </DialogHeader>
+                <pre className="overflow-x-auto rounded-md border p-3 text-xs leading-5">
+                  <code>{continuationCommand}</code>
+                </pre>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(continuationCommand)
+                        .then(() => setContinuationCopied(true))
+                        .catch((error) =>
+                          notifyError("Couldn't copy the command.", error),
+                        )
+                    }}
+                  >
+                    {continuationCopied ? <Check /> : <Clipboard />}
+                    {continuationCopied ? 'Copied' : 'Copy command'}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          ) : project && continuationPreparing ? (
+            <Button variant="outline" size="sm" disabled>
+              <Loader2 className="animate-spin" /> Preparing local checkout
+            </Button>
+          ) : !project ? (
             <Button asChild variant="outline" size="sm">
               <Link to="/">All projects</Link>
             </Button>
-          )
+          ) : undefined
         }
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}
       />
@@ -862,6 +937,13 @@ export default function ManagedAgentDetail({
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
                 events={selectedPlaygroundEvents.data ?? []}
+                initialPrompt={firstRunPrompt}
+                onInitialPromptConsumed={() => {
+                  void navigate(
+                    { pathname: location.pathname, search: location.search },
+                    { replace: true, state: null },
+                  )
+                }}
                 onSessionFinished={selectPlaygroundSession}
               />
             )}

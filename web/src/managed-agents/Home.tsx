@@ -1,16 +1,16 @@
 import { FormEvent, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Check,
+  ChevronLeft,
   ChevronRight,
-  Clipboard,
+  FolderGit2,
   FolderKanban,
   Loader2,
   Plus,
+  Rocket,
   Sparkles,
 } from 'lucide-react'
-import { toast } from 'sonner'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Panel, PanelContent } from '@/components/panel'
@@ -23,46 +23,41 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { notifyError } from '@/lib/errors'
-import { createManagedProject, getManagedProjects } from './api'
-import { starterCommandBlock, starterCopyCommand } from './onboarding'
+import { getManagedProjects } from './api'
+import {
+  CURATED_TEMPLATES,
+  HELLO_WORLD_TEMPLATE_REPOSITORY,
+  templateDeployPath,
+} from './templates'
+
+type CreateStep = 'choose' | 'templates'
 
 export default function ProjectsHome() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [name, setName] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [createStep, setCreateStep] = useState<CreateStep>('choose')
+  const [repositoryUrl, setRepositoryUrl] = useState('')
   const projects = useQuery({
     queryKey: ['managed-projects'],
     queryFn: getManagedProjects,
   })
-  const createProject = useMutation({
-    mutationFn: createManagedProject,
-    onSuccess: async (project) => {
-      await queryClient.invalidateQueries({ queryKey: ['managed-projects'] })
-      setDialogOpen(false)
-      setName('')
-      navigate(`/projects/${encodeURIComponent(project.id)}`)
-    },
-    onError: (error) => notifyError("Couldn't create the project.", error),
-  })
   const items = projects.data ?? []
 
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    const value = name.trim()
-    if (value) createProject.mutate(value)
+  function openCreate() {
+    setCreateStep('choose')
+    setRepositoryUrl('')
+    setDialogOpen(true)
   }
 
-  async function copyCommand() {
-    try {
-      await navigator.clipboard.writeText(starterCopyCommand('hello-world'))
-      setCopied(true)
-      toast.success('Command copied')
-    } catch (error) {
-      notifyError("Couldn't copy the command.", error)
-    }
+  function openTemplate(url: string) {
+    setDialogOpen(false)
+    void navigate(templateDeployPath(url))
+  }
+
+  function submitRepository(event: FormEvent) {
+    event.preventDefault()
+    const url = repositoryUrl.trim()
+    if (url) openTemplate(url)
   }
 
   return (
@@ -72,7 +67,7 @@ export default function ProjectsHome() {
         description="Choose a project to open its agent playground, deployments, sessions, and resources."
         actions={
           items.length > 0 ? (
-            <Button onClick={() => setDialogOpen(true)}>
+            <Button onClick={openCreate}>
               <Plus /> New project
             </Button>
           ) : undefined
@@ -103,22 +98,15 @@ export default function ProjectsHome() {
               <Sparkles className="size-3.5" /> Your first project
             </div>
             <h2 className="text-3xl font-semibold tracking-tight">
-              Create your first project
+              Create your first agent
             </h2>
             <p className="text-muted-foreground mt-3 max-w-xl text-sm leading-6">
-              Start with one hello-world agent. Your OpenComputer project is
-              ready for more agents as it grows.
+              Start from a ready-to-run Hello World or choose an example. We’ll
+              deploy it and open its first Debug session.
             </p>
-            <pre className="bg-foreground text-background mt-5 overflow-x-auto rounded-lg px-4 py-3 text-sm leading-7">
-              <code>{starterCommandBlock('hello-world')}</code>
-            </pre>
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button onClick={() => setDialogOpen(true)}>
+            <div className="mt-6">
+              <Button onClick={openCreate}>
                 <Plus /> Create project
-              </Button>
-              <Button variant="outline" onClick={() => void copyCommand()}>
-                {copied ? <Check /> : <Clipboard />}
-                {copied ? 'Copied' : 'Copy command'}
               </Button>
             </div>
           </div>
@@ -157,43 +145,99 @@ export default function ProjectsHome() {
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create project</DialogTitle>
+            <DialogTitle>
+              {createStep === 'choose'
+                ? 'Create project'
+                : 'Start from a template'}
+            </DialogTitle>
             <DialogDescription>
-              Projects can contain multiple agents and share channels, files,
-              and schedules.
+              {createStep === 'choose'
+                ? 'Deploy a working first agent now. You can add more agents later.'
+                : 'Choose an example or deploy another public GitHub repository.'}
             </DialogDescription>
           </DialogHeader>
-          <form className="space-y-4" onSubmit={submit}>
-            <Input
-              autoFocus
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="My first project"
-              aria-label="Project name"
-            />
-            <div className="flex justify-end gap-2">
+
+          {createStep === 'choose' ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                autoFocus
+                className="hover:bg-muted/40 focus-visible:ring-ring/50 rounded-lg border p-5 text-left outline-none focus-visible:ring-3"
+                onClick={() => {
+                  setDialogOpen(false)
+                  void navigate(
+                    templateDeployPath(HELLO_WORLD_TEMPLATE_REPOSITORY, true),
+                  )
+                }}
+              >
+                <Rocket className="text-primary mb-4 size-5" />
+                <p className="font-medium">From scratch</p>
+                <p className="text-muted-foreground mt-1 text-sm leading-5">
+                  Deploy a minimal Hello World and start its first Debug
+                  session.
+                </p>
+                <span className="text-primary mt-4 inline-flex items-center gap-1 text-sm font-medium">
+                  Quick start <ChevronRight className="size-4" />
+                </span>
+              </button>
+              <button
+                type="button"
+                className="hover:bg-muted/40 focus-visible:ring-ring/50 rounded-lg border p-5 text-left outline-none focus-visible:ring-3"
+                onClick={() => setCreateStep('templates')}
+              >
+                <FolderGit2 className="text-primary mb-4 size-5" />
+                <p className="font-medium">Start from a template</p>
+                <p className="text-muted-foreground mt-1 text-sm leading-5">
+                  Begin with a complete example and configure its integrations.
+                </p>
+                <span className="text-primary mt-4 inline-flex items-center gap-1 text-sm font-medium">
+                  Browse templates <ChevronRight className="size-4" />
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid max-h-[45vh] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                {CURATED_TEMPLATES.map((template) => (
+                  <button
+                    key={template.repositoryUrl}
+                    type="button"
+                    className="hover:bg-muted/40 focus-visible:ring-ring/50 rounded-lg border p-4 text-left outline-none focus-visible:ring-3"
+                    onClick={() => openTemplate(template.repositoryUrl)}
+                  >
+                    <p className="text-sm font-medium">{template.name}</p>
+                    <p className="text-muted-foreground mt-1 text-xs leading-5">
+                      {template.description}
+                    </p>
+                  </button>
+                ))}
+              </div>
+              <form
+                className="flex gap-2 border-t pt-4"
+                onSubmit={submitRepository}
+              >
+                <Input
+                  value={repositoryUrl}
+                  onChange={(event) => setRepositoryUrl(event.target.value)}
+                  placeholder="https://github.com/owner/repository"
+                  aria-label="Template repository URL"
+                />
+                <Button type="submit" disabled={!repositoryUrl.trim()}>
+                  Continue
+                </Button>
+              </form>
               <Button
                 type="button"
-                variant="outline"
-                onClick={() => setDialogOpen(false)}
+                variant="ghost"
+                size="sm"
+                onClick={() => setCreateStep('choose')}
               >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={!name.trim() || createProject.isPending}
-              >
-                {createProject.isPending ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <Plus />
-                )}
-                Create project
+                <ChevronLeft /> Back
               </Button>
             </div>
-          </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>

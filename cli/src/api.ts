@@ -96,6 +96,72 @@ export interface AgentRuntimeVariableMetadata {
   updatedAt: string;
 }
 
+export interface TemplateInspection {
+  id: string;
+  repository: {
+    url: string;
+    fullName: string;
+    defaultBranch: "main";
+    commitSha: string;
+  };
+  template: {
+    name: string;
+    description: string;
+    documentation?: string;
+    defaultProjectName?: string;
+    firstRun?: { agent: string; prompt: string };
+  };
+  agents: Array<{ id: string; name: string }>;
+  requirements: {
+    secrets: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      required?: boolean;
+      agentId?: string;
+      allowedOrigins: string[];
+    }>;
+    runtimeVariables: Array<{
+      name: string;
+      description?: string;
+      documentation?: string;
+      required: boolean;
+      example?: string;
+      agentId?: string;
+    }>;
+    connections: Array<{
+      id: string;
+      description?: string;
+      provider: string;
+      permissions: string[];
+    }>;
+  };
+  expiresAt: string;
+}
+
+interface TemplateInspectionPreparing {
+  id: string;
+  status: "preparing";
+  repositoryUrl: string;
+  retryAfterMs: number;
+}
+
+export interface TemplateInstallation {
+  id: string;
+  inspectionId: string;
+  projectId: string;
+  projectAgentId: string;
+  projectUrl: string;
+  state:
+    | "awaiting_configuration"
+    | "creating_project"
+    | "building"
+    | "deploying"
+    | "ready"
+    | "failed";
+  error?: { stage: string; message: string };
+}
+
 export interface ManagedAgentWebhook {
   id: string;
   projectId: string;
@@ -196,11 +262,11 @@ export class OpenComputerClient {
     private readonly idempotencyKey?: string,
   ) {}
 
-  private async request<T>(
+  private async response(
     path: string,
     init: RequestInit = {},
     authenticated = true,
-  ): Promise<T> {
+  ): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
@@ -234,11 +300,21 @@ export class OpenComputerClient {
       redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
-    if (response.status === 204) return undefined as T;
-    const body: unknown = await response.json().catch(() => undefined);
     if (!response.ok) {
+      const body: unknown = await response.json().catch(() => undefined);
       throw new APIError(errorMessage(body, response.status), response.status);
     }
+    return response;
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    authenticated = true,
+  ): Promise<T> {
+    const response = await this.response(path, init, authenticated);
+    if (response.status === 204) return undefined as T;
+    const body: unknown = await response.json().catch(() => undefined);
     return body as T;
   }
 
@@ -303,6 +379,60 @@ export class OpenComputerClient {
       method: "POST",
       body: JSON.stringify({ name, slug }),
     });
+  }
+
+  projectSourceArchive(projectId: string): Promise<Response> {
+    return this.response(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/source-archive`,
+    );
+  }
+
+  async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {
+    const deadline = Date.now() + 10 * 60_000;
+    for (;;) {
+      const result = await this.request<
+        TemplateInspection | TemplateInspectionPreparing
+      >("/api/managed-agents/template-inspections", {
+        method: "POST",
+        body: JSON.stringify({ repositoryUrl }),
+      });
+      if ((result as TemplateInspectionPreparing).status !== "preparing") {
+        return result as TemplateInspection;
+      }
+      const preparing = result as TemplateInspectionPreparing;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          "Template preparation is still running; try again shortly",
+        );
+      }
+      await new Promise((resolvePromise) =>
+        setTimeout(resolvePromise, Math.max(500, preparing.retryAfterMs)),
+      );
+    }
+  }
+
+  createTemplateInstallation(input: {
+    inspectionId: string;
+    projectName: string;
+    idempotencyKey: string;
+  }) {
+    return this.request<TemplateInstallation>(
+      "/api/managed-agents/template-installations",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  finalizeTemplateInstallation(installationId: string) {
+    return this.request<TemplateInstallation>(
+      `/api/managed-agents/template-installations/${encodeURIComponent(installationId)}/finalize`,
+      { method: "POST" },
+    );
+  }
+
+  templateInstallation(installationId: string) {
+    return this.request<TemplateInstallation>(
+      `/api/managed-agents/template-installations/${encodeURIComponent(installationId)}`,
+    );
   }
 
   async secrets(input: {

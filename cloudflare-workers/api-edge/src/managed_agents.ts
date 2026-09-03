@@ -132,15 +132,29 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     typeof (body as { error: unknown }).error === "object"
       ? (body as { error: Record<string, unknown> }).error
       : null;
-  const backendCode =
-    typeof backendError?.code === "string" &&
-    /^[a-z][a-z0-9_]{0,63}$/.test(backendError.code)
+  const backendErrorType =
+    typeof backendError?.code === "string"
       ? backendError.code
-      : "agent_request_failed";
+      : typeof backendError?.type === "string"
+        ? backendError.type
+        : "";
+  const backendCode = /^[a-z][a-z0-9_]{0,63}$/.test(backendErrorType)
+    ? backendErrorType
+    : "agent_request_failed";
   const backendMessage =
     typeof backendError?.message === "string" ? backendError.message : "";
+  const missingTemplateManifest =
+    backendCode === "template_sync_failed" &&
+    backendMessage.includes("oc-template.toml") &&
+    backendMessage.includes("expected a regular file");
+  const publicCode = missingTemplateManifest
+    ? "template_manifest_missing"
+    : backendCode;
   let message = "The agent request could not be completed.";
-  if (upstream.status === 400) {
+  if (missingTemplateManifest) {
+    message =
+      "This is not a valid template: oc-template.toml is missing from the repository root.";
+  } else if (upstream.status === 400) {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
@@ -184,7 +198,7 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("retry-after", retryAfter);
   return new Response(
-    JSON.stringify({ error: { code: backendCode, message } }),
+    JSON.stringify({ error: { code: publicCode, message } }),
     { status: upstream.status, headers },
   );
 }
@@ -530,6 +544,106 @@ function publicEventData(
   );
 }
 
+function publicTemplateInspection(value: unknown): Record<string, unknown> {
+  const inspection = record(value) ?? {};
+  if (inspection.status === "preparing") {
+    return {
+      id: inspection.id,
+      status: "preparing",
+      repositoryUrl: inspection.repositoryUrl,
+      retryAfterMs: inspection.retryAfterMs,
+    };
+  }
+  const repository = record(inspection.repository) ?? {};
+  const template = record(inspection.template) ?? {};
+  const firstRun = record(template.firstRun);
+  const requirements = record(inspection.requirements) ?? {};
+  return {
+    id: inspection.id,
+    repository: {
+      url: repository.url,
+      fullName: repository.fullName,
+      defaultBranch: repository.defaultBranch,
+      commitSha: repository.commitSha,
+    },
+    template: {
+      name: template.name,
+      description: template.description,
+      ...(template.documentation
+        ? { documentation: template.documentation }
+        : {}),
+      ...(template.defaultProjectName
+        ? { defaultProjectName: template.defaultProjectName }
+        : {}),
+      ...(firstRun
+        ? { firstRun: { agent: firstRun.agent, prompt: firstRun.prompt } }
+        : {}),
+    },
+    agents: Array.isArray(inspection.agents)
+      ? inspection.agents.map((value) => {
+          const agent = record(value) ?? {};
+          return { id: agent.id, name: agent.name };
+        })
+      : [],
+    requirements: {
+      secrets: Array.isArray(requirements.secrets)
+        ? requirements.secrets.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              name: requirement.name,
+              description: requirement.description,
+              documentation: requirement.documentation,
+              ...(typeof requirement.required === "boolean"
+                ? { required: requirement.required }
+                : {}),
+              agentId: requirement.agentId,
+              allowedOrigins: strings(requirement.allowedOrigins),
+            };
+          })
+        : [],
+      runtimeVariables: Array.isArray(requirements.runtimeVariables)
+        ? requirements.runtimeVariables.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              name: requirement.name,
+              description: requirement.description,
+              documentation: requirement.documentation,
+              required: requirement.required === true,
+              example: requirement.example,
+              agentId: requirement.agentId,
+            };
+          })
+        : [],
+      connections: Array.isArray(requirements.connections)
+        ? requirements.connections.map((value) => {
+            const requirement = record(value) ?? {};
+            return {
+              id: requirement.id,
+              description: requirement.description,
+              provider: requirement.provider,
+              permissions: strings(requirement.permissions),
+            };
+          })
+        : [],
+    },
+    expiresAt: inspection.expiresAt,
+  };
+}
+
+function publicTemplateInstallation(value: unknown): Record<string, unknown> {
+  const installation = record(value) ?? {};
+  const error = record(installation.error);
+  return {
+    id: installation.id,
+    inspectionId: installation.inspectionId,
+    projectId: installation.projectId,
+    projectAgentId: installation.projectAgentId,
+    projectUrl: installation.projectUrl,
+    state: installation.state,
+    ...(error ? { error: { stage: error.stage, message: error.message } } : {}),
+  };
+}
+
 function publicSuccessBody(
   method: string,
   suffix: string,
@@ -611,8 +725,20 @@ function publicSuccessBody(
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) {
     const project = publicProject(body.project);
+    const templateSource = record(body.templateSource);
     return {
       project,
+      ...(templateSource &&
+      typeof templateSource.repositoryUrl === "string" &&
+      typeof templateSource.commitSha === "string"
+        ? {
+            templateSource: {
+              repositoryUrl: templateSource.repositoryUrl,
+              commitSha: templateSource.commitSha,
+              cloneReady: templateSource.cloneReady === true,
+            },
+          }
+        : {}),
       sessions: stripPrivateValues(body.sessions ?? []),
       deployments: Array.isArray(body.deployments)
         ? body.deployments.map(publicDeployment)
@@ -630,6 +756,17 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/me") {
     return stripPrivateValues(body);
+  }
+  if (method === "POST" && suffix === "/template-inspections") {
+    return publicTemplateInspection(body);
+  }
+  if (
+    (method === "POST" && suffix === "/template-installations") ||
+    (method === "GET" && /^\/template-installations\/[^/]+$/.test(suffix)) ||
+    (method === "POST" &&
+      /^\/template-installations\/[^/]+\/finalize$/.test(suffix))
+  ) {
+    return publicTemplateInstallation(body);
   }
   if (method === "GET" && suffix === "/model-access/connections") {
     return {
@@ -969,12 +1106,26 @@ async function deploySourceAgent(
 }
 
 function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
+  if (method === "POST" && suffix === "/template-inspections") return true;
+  if (method === "POST" && suffix === "/template-installations") return true;
+  if (method === "GET" && /^\/template-installations\/[^/]+$/.test(suffix)) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/template-installations\/[^/]+\/finalize$/.test(suffix)
+  ) {
+    return true;
+  }
   if (method === "GET" && suffix === "/agents") return true;
   if (method === "GET" && suffix === "/me") return true;
   if ((method === "GET" || method === "POST") && suffix === "/projects") {
     return true;
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    return true;
+  }
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
@@ -1446,6 +1597,24 @@ export async function proxyManagedAgents(
     const upstream = await fetch(target, init);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
+    if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+      const responseHeaders = new Headers();
+      for (const name of [
+        "content-type",
+        "content-length",
+        "content-disposition",
+        "etag",
+      ]) {
+        const value = upstream.headers.get(name);
+        if (value) responseHeaders.set(name, value);
+      }
+      responseHeaders.set("cache-control", "private, no-store");
+      return new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    }
     if (suffix.startsWith("/openrouter/")) {
       return upstream;
     }

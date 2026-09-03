@@ -63,6 +63,40 @@ describe("managed agents proxy", () => {
     ).resolves.toBe(true);
   });
 
+  it("streams project source without exposing upstream headers", async () => {
+    const fetchSpy = vi.fn(async (target: RequestInfo | URL) => {
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/projects/prj_test/source-archive",
+      );
+      return new Response("project archive", {
+        headers: {
+          "content-type": "application/gzip",
+          "content-disposition": 'attachment; filename="project.tar.gz"',
+          "x-storage-provider": "private",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/source-archive",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("project archive");
+    expect(response.headers.get("content-type")).toBe("application/gzip");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-storage-provider")).toBeNull();
+  });
+
   it("reads BYOK eligibility from an active Autumn subscription", async () => {
     vi.stubGlobal(
       "fetch",
@@ -552,6 +586,162 @@ describe("managed agents proxy", () => {
       ],
     });
     expect(JSON.stringify(body)).not.toContain("private-account");
+  });
+
+  it("exposes public template provenance on a project overview", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          project: {
+            id: "prj_test",
+            slug: "example",
+            name: "Example",
+            environments: [],
+            agents: [{ id: "reviewer", name: "Reviewer" }],
+            createdAt: "2026-09-02",
+            updatedAt: "2026-09-02",
+          },
+          templateSource: {
+            repositoryUrl: "https://github.com/diggerhq/example",
+            commitSha: "a".repeat(40),
+            cloneReady: true,
+            mirrorRepoId: "must-not-leak",
+          },
+          sessions: [],
+          deployments: [],
+          connections: [],
+          channels: [],
+          schedules: [],
+          files: [],
+          schema: {},
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    const body = await response.json();
+    expect(body).toMatchObject({
+      templateSource: {
+        repositoryUrl: "https://github.com/diggerhq/example",
+        commitSha: "a".repeat(40),
+        cloneReady: true,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("mirrorRepoId");
+  });
+
+  it("proxies template inspection through the authenticated managed-agent boundary", async () => {
+    const fetchSpy = vi.fn(
+      async (_request: URL | RequestInfo, init?: RequestInit) => {
+        expect(
+          new Headers(init?.headers).get("x-opencomputer-agent-token"),
+        ).toBeTruthy();
+        return Response.json({
+          id: "tin_test",
+          repository: {
+            url: "https://github.com/diggerhq/example",
+            fullName: "diggerhq/example",
+            defaultBranch: "main",
+            commitSha: "a".repeat(40),
+          },
+          template: { name: "Example", description: "Example agent" },
+          agents: [{ id: "example", name: "Example" }],
+          requirements: {
+            secrets: [],
+            runtimeVariables: [],
+            connections: [],
+          },
+          expiresAt: "2026-09-01T01:00:00.000Z",
+          builderCredential: "must-not-leak",
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/template-inspections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            repositoryUrl: "https://github.com/diggerhq/example",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(JSON.stringify(await response.json())).not.toContain(
+      "builderCredential",
+    );
+  });
+
+  it("reports a missing root template manifest without leaking builder details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "template_sync_failed",
+              message:
+                "/usr/local/bin/node failed: opencomputer: oc-template.toml: expected a regular file at /tmp/template/source/oc-template.toml",
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/template-inspections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            repositoryUrl: "https://github.com/diggerhq/not-a-template",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: "template_manifest_missing",
+        message:
+          "This is not a valid template: oc-template.toml is missing from the repository root.",
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(/\/tmp\/|\/usr\/local|trigger/i);
   });
 
   it("exposes a sanitized active deployment for agent details", async () => {

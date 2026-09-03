@@ -37,4 +37,32 @@ describe('api errors', () => {
       },
     })
   })
+
+  it('accepts code as the typed discriminator for edge API errors', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json(
+            {
+              error: {
+                code: 'template_manifest_missing',
+                message: 'The root manifest is missing.',
+              },
+            },
+            { status: 422 },
+          ),
+        ),
+      ),
+    )
+
+    const error = await apiFetch('/managed-agents/template-inspections').catch(
+      (caught: unknown) => caught,
+    )
+    expect(error).toMatchObject({
+      status: 422,
+      type: 'template_manifest_missing',
+      message: 'The root manifest is missing.',
+    })
+  })
 })
