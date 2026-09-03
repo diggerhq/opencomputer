@@ -33,6 +33,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/awsvm"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/edgeclient"
 )
 
 // microvmImageBuilder is what this needs from the AWS client, narrowed to two
@@ -79,10 +80,35 @@ func (s *Server) buildMicrovmImageTemplate(
 	}
 	contentHash := computeManifestHash(&manifest)
 
-	// 1. Dedupe.
-	if existing, err := s.store.FindMicrovmImageTemplateByTag(ctx, orgID, contentHash); err == nil && existing != nil {
-		log.Printf("microvm-template: %q reuses image %s (hash %s)", name, existing.ImageRef, contentHash[:12])
-		return existing, nil
+	// 1. Dedupe — reuse the IMAGE, not the row.
+	//
+	// Returning the existing row was wrong and cost a full end-to-end run to
+	// find: the customer asked for THIS name, and handing back a row named
+	// something else leaves nothing resolvable under the name they used. The
+	// template then reports ready (the status mirror publishes the new name)
+	// and 404s at create, which is worse than failing outright.
+	//
+	// So a dedupe hit still creates a row for the requested name; it just skips
+	// the build and points at the image that already exists.
+	if existing, err := s.store.FindMicrovmImageTemplateByTag(ctx, orgID, contentHash); err == nil && existing != nil && existing.ImageRef != "" {
+		if existing.Name == name {
+			s.mirrorTemplateToIndex(ctx, existing, manifestJSON)
+			s.registerTemplateWithEdge(ctx, existing)
+			return existing, nil
+		}
+		alias, err := s.store.CreateMicrovmImageTemplate(ctx, uuid.New(), &orgID, name, contentHash)
+		if err != nil {
+			return nil, fmt.Errorf("create template row for %q: %w", name, err)
+		}
+		if err := s.store.SetMicrovmTemplateImage(ctx, alias.ID, existing.ImageRef); err != nil {
+			return nil, fmt.Errorf("point %q at existing image %s: %w", name, existing.ImageRef, err)
+		}
+		alias.ImageRef = existing.ImageRef
+		alias.Status = db.TemplateStatusReady
+		s.mirrorTemplateToIndex(ctx, alias, manifestJSON)
+		s.registerTemplateWithEdge(ctx, alias)
+		log.Printf("microvm-template: %q reuses image %s (hash %s) — no build", name, existing.ImageRef, contentHash[:12])
+		return alias, nil
 	}
 
 	// 2. Quota.
@@ -100,6 +126,10 @@ func (s *Server) buildMicrovmImageTemplate(
 	if err != nil {
 		return nil, fmt.Errorf("create template row: %w", err)
 	}
+	// Publish 'processing' immediately so a client that polls straight away
+	// gets a status rather than a 404 it would read as "still building" — the
+	// same answer, but only by accident.
+	s.mirrorTemplateToIndex(ctx, tmpl, manifestJSON)
 
 	// 4. Render + build.
 	dockerfile, files, err := RenderMicrovmDockerfile(manifest)
@@ -129,6 +159,9 @@ func (s *Server) buildMicrovmImageTemplate(
 		if mErr := s.store.SetTemplateFailed(markCtx, id); mErr != nil {
 			log.Printf("microvm-template: %q build failed AND could not be marked failed: %v (build error: %v)", name, mErr, err)
 		}
+		// Mirror the failure, or the customer polls a dead build forever.
+		tmpl.Status = db.TemplateStatusFailed
+		s.mirrorTemplateToIndex(markCtx, tmpl, manifestJSON)
 		return nil, fmt.Errorf("build template image %q: %w", name, err)
 	}
 
@@ -140,8 +173,77 @@ func (s *Server) buildMicrovmImageTemplate(
 	}
 	tmpl.ImageRef = arn
 	tmpl.Status = db.TemplateStatusReady
+	s.mirrorTemplateToIndex(readyCtx, tmpl, manifestJSON)
+	s.registerTemplateWithEdge(readyCtx, tmpl)
 	log.Printf("microvm-template: %q ready as %s (hash %s)", name, arn, contentHash[:12])
 	return tmpl, nil
+}
+
+// mirrorTemplateToIndex publishes a template's status so the EDGE can answer
+// for it.
+//
+// This is not optional bookkeeping — it is the only way a customer learns the
+// build finished. GET /api/snapshots/:name is served ENTIRELY BY THE EDGE from
+// D1's images_index and never reaches this cell; a template that exists only in
+// cell PG reads as 404, and the SDK's waitUntilReady treats 404 as "still
+// building", so a customer polls a finished template until their timeout. That
+// is exactly what the first end-to-end run did: ready in 3 minutes, still
+// polling at 20.
+//
+// Reuses the image_cache event the QEMU snapshot path already publishes, so the
+// same events-ingest -> D1 sync carries it and the edge needs no change. A
+// template has no checkpoint, so checkpoint_id is simply absent; the SDK reads
+// only status.
+func (s *Server) mirrorTemplateToIndex(ctx context.Context, t *db.DBTemplate, manifestJSON json.RawMessage) {
+	if t == nil || t.OrgID == nil {
+		return
+	}
+	name := t.Name
+	s.publishImageCacheReadyFrom(ctx, &db.ImageCache{
+		ID:          t.ID,
+		OrgID:       *t.OrgID,
+		ContentHash: t.Tag,
+		Name:        &name,
+		Manifest:    manifestJSON,
+		Status:      t.Status,
+		CreatedAt:   t.CreatedAt,
+		LastUsedAt:  t.CreatedAt,
+	})
+}
+
+// registerTemplateWithEdge publishes the template to the edge's own index, so
+// Sandbox.create({template}) can RESOLVE it.
+//
+// A second, separate index from the one mirrorTemplateToIndex writes, and the
+// distinction is easy to miss: the snapshot endpoints read images_index (status
+// polling), while template resolution at create reads the edge's templates
+// table. Populating only the first produces a template that reports "ready" and
+// then 404s at create — which is exactly what the second end-to-end run did.
+//
+// Registered only once the image ARN exists. A template advertised before its
+// build finishes would resolve at create and have nothing to launch from.
+func (s *Server) registerTemplateWithEdge(ctx context.Context, t *db.DBTemplate) {
+	if s.edge == nil || t == nil || t.ImageRef == "" {
+		return
+	}
+	if _, err := s.edge.RegisterTemplate(ctx, edgeclient.RegisterArgs{
+		ID:           t.ID,
+		OrgID:        t.OrgID,
+		Name:         t.Name,
+		Tag:          t.Tag,
+		TemplateType: db.TemplateTypeMicrovmImage,
+		ImageRef:     t.ImageRef,
+		Status:       t.Status,
+		// Only this cell can launch it: the image lives in one region, and the
+		// resolution path uses this to avoid sending a create to a cell that
+		// cannot serve the template.
+		CellsAvailable: []string{s.cellID},
+	}); err != nil {
+		// Loud, not fatal. The template IS built and usable from this cell; what
+		// fails is discovery, and a retry (rebuild under the same name) is
+		// cheap because dedupe returns the existing image.
+		log.Printf("microvm-template: %q built but edge registration failed: %v — create-by-name will 404 until this succeeds", t.Name, err)
+	}
 }
 
 // ErrInlineManifestUnsupported is returned when a create carries an inline
