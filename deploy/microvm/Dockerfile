@@ -69,13 +69,6 @@ RUN set -eux; \
     cd /tmp && unzip -q rclone.zip && cp rclone-*-linux-${rc}/rclone /usr/local/bin/rclone; \
     chmod +x /usr/local/bin/rclone; rm -rf /tmp/rclone.zip /tmp/rclone-*-linux-${rc}
 
-# osb-agent is the same binary the QEMU backend runs in-guest; only its
-# listener differs (TCP here, virtio-serial there), selected by the env var the
-# hook server sets when it spawns the agent.
-COPY osb-agent /usr/local/bin/osb-agent
-COPY microvm-hooks /usr/local/bin/microvm-hooks
-RUN chmod +x /usr/local/bin/osb-agent /usr/local/bin/microvm-hooks
-
 # A sandbox user so customer commands do not run as root — matching the QEMU
 # backend, where exec deliberately runs unprivileged. internal/agent runs every
 # exec as this user with cwd /home/sandbox, so both must exist.
@@ -90,6 +83,30 @@ RUN useradd --create-home --shell /bin/bash sandbox \
 # config it writes, so without this the mounts feature fails at its second step.
 RUN echo 'sandbox ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sandbox \
  && chmod 0440 /etc/sudoers.d/sandbox
+
+# ==== OSB_CUSTOM_TEMPLATE_LAYERS ====
+# Custom-template layers are spliced in HERE, and nowhere else.
+#
+# This position is load-bearing in three ways:
+#   - AFTER useradd/sudoers, so a customer step can chown to `sandbox` and
+#     write into /home/sandbox.
+#   - BEFORE the ENV block below, so a customer `pip install` at build time
+#     runs WITHOUT PIP_USER=1 and lands system-wide, visible to the sandbox
+#     user. With PIP_USER set it would install into /root/.local and simply
+#     not exist for the customer — a silent "my template did not apply".
+#   - BEFORE the agent COPY and ENTRYPOINT below, so no customer layer can
+#     remove or shadow the agent, and ENTRYPOINT is always ours.
+#
+# Splitting the real image definition here (rather than duplicating a prologue
+# in Go) is what guarantees a custom-template box is the pool box plus the
+# customer's layers, and cannot drift from it.
+
+# osb-agent is the same binary the QEMU backend runs in-guest; only its
+# listener differs (TCP here, virtio-serial there), selected by the env var the
+# hook server sets when it spawns the agent.
+COPY osb-agent /usr/local/bin/osb-agent
+COPY microvm-hooks /usr/local/bin/microvm-hooks
+RUN chmod +x /usr/local/bin/osb-agent /usr/local/bin/microvm-hooks
 
 # User-space install defaults.
 #
