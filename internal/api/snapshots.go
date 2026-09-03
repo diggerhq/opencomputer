@@ -78,6 +78,41 @@ func (s *Server) createSnapshot(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// CT-0: on the MicroVM runtime a snapshot's artifact is an IMAGE, not a
+	// checkpoint, so the whole build takes a different path. Dispatched here —
+	// before any of the checkpoint machinery below — rather than inside
+	// resolveImageManifest, whose uuid return value IS a checkpoint ID and has
+	// no meaning on this runtime.
+	//
+	// 501 only when the cell has no artifact location configured — the feature
+	// is off, rather than broken. Anything else here would silently build a
+	// QEMU checkpoint this runtime can never restore.
+	if s.runtimeFor(c) == runtimeMicrovm {
+		builder, objects, prefix, ok := s.lite.templateBuilder()
+		if !ok {
+			return c.JSON(http.StatusNotImplemented, map[string]string{
+				"error": "custom template images are not enabled on this cell (set OPENSANDBOX_MICROVM_TEMPLATE_ARTIFACT_PREFIX)",
+			})
+		}
+		// ASYNC, always. An image build takes minutes (measured: ~29s for one
+		// dnf package, plus image creation), so a synchronous reply would time
+		// out at every layer between the customer and here. The template row is
+		// created inside the build with status=processing before anything slow
+		// happens, so a client that polls sees it immediately.
+		go func() {
+			// Detached context: the request is gone long before the build ends.
+			bctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+			defer cancel()
+			if _, err := s.buildMicrovmImageTemplate(bctx, orgID, name, image, builder, objects, prefix); err != nil {
+				log.Printf("snapshot: microvm template %q failed: %v", name, err)
+			}
+		}()
+		return c.JSON(http.StatusAccepted, map[string]string{
+			"name":   name,
+			"status": "processing",
+		})
+	}
+
 	// SSE streaming path
 	if c.Request().Header.Get("Accept") == "text/event-stream" {
 		return s.createSnapshotWithSSE(c, ctx, orgID, name, image)
