@@ -1,72 +1,106 @@
 ---
 title: "Templates"
-description: "Which templates carry over, and which do not"
+description: "Same API as v1, with two differences worth knowing"
 ---
 
-Templates work on v2, but **the templates you have today probably do not.** This is
-the migration issue most likely to affect you, and it is worth checking before anything moves.
-
-## How a template is applied here
-
-A template create claims a standard pooled sandbox and unpacks the template's **workspace
-archive** on top of it. That keeps the fast pooled create and makes a template cost a tarball
-rather than a separately published machine image.
+Templates work on v2, and **the contract is unchanged**. You define an environment once,
+give it a name, and start sandboxes from that name:
 
 ```typescript
-const sandbox = await Sandbox.create({ templateID: "my-template" });
+import { Image, Snapshots, Sandbox } from "@opencomputer/sdk";
+
+const snapshots = new Snapshots();
+
+await snapshots.create({
+  name: "video-tools",
+  image: Image.base()
+    .aptInstall(["ffmpeg"])
+    .pipInstall(["numpy"]),
+});
+
+await snapshots.waitUntilReady("video-tools");
+
+const sandbox = await Sandbox.create({ template: "video-tools" });
 ```
 
-## The catch: rootfs templates are refused
+Same `Image` builder, same names, same `list` / `get` / `delete`. Your existing definitions
+carry over as written — what changes is how they are built underneath, and two consequences of
+that are visible to you.
+
+## 1. Build ahead of time
+
+A template is built into a machine image before any sandbox uses it, which takes minutes rather
+than seconds. So the build is a separate step from the create, and you wait for it once:
+
+```typescript
+await snapshots.create({ name: "tools", image });
+await snapshots.waitUntilReady("tools");   // minutes, once
+await Sandbox.create({ template: "tools" }); // fast, every time after
+```
+
+<Warning>
+Passing `image:` directly to `Sandbox.create()` is refused on v2. A create that waited for a
+build would time out, so the error names the two-step path instead of returning a sandbox
+without your packages.
+</Warning>
+
+## 2. Sandboxes from a template cold-start
+
+Standard sandboxes come from a warm pool. A sandbox built on your template does not, because the
+pool holds standard sandboxes — so expect a few seconds rather than milliseconds on create.
+
+Everything the template installed is already baked in, so this is paid at create, not on your
+first command.
+
+## What your definitions run on
+
+The environment underneath is Amazon Linux 2023 on ARM64, so two things in an existing
+definition can need attention:
+
+<CardGroup cols={2}>
+  <Card title="Package names" icon="box">
+    `aptInstall` works and common Debian names are translated — `build-essential` becomes
+    `gcc gcc-c++ make`. A package that exists only on Debian fails the build, and the error
+    names it.
+  </Card>
+  <Card title="Architecture" icon="microchip">
+    A step that downloads an x86-64 binary fails. Use your package manager, or fetch the
+    `aarch64` build.
+  </Card>
+</CardGroup>
+
+Each org holds up to **10** templates at a time; delete one to make room. Two identical
+definitions share one build, so rebuilding an unchanged template returns immediately.
+
+## Templates built on v1
 
 <Warning>
 A template that carries a **rootfs image** cannot be used on v2. The create fails with
 *"template … carries a rootfs image, which v2 cannot restore."*
 </Warning>
 
-Templates built on v1 capture the **whole disk** — every system-level change,
-not just your workspace. This runtime can only replay the workspace half, and doing that
-silently would hand you your files while dropping every system change the template existed for:
-a template that looks like it worked and hasn't.
+v1 templates capture the whole disk. Replaying only part of that would hand you your files while
+dropping every system change the template existed for — a template that looks like it worked and
+hasn't — so it refuses instead.
 
-So it refuses instead. That is the right failure, but it means:
-
-**Any template that installed system packages, changed system configuration, or was built
-before your org moved will need rebuilding on the new runtime.**
-
-## What to do
+Rebuilding is the fix, and usually means re-running the `Image` definition you already have.
 
 <Steps>
-  <Step title="List your templates and try each one">
-    A refused template fails loudly at create with the message above. That is the fastest audit
-    — you do not need to inspect anything.
+  <Step title="Try each template">
+    One that cannot be used fails loudly at create with the message above. That is the fastest
+    audit — nothing to inspect.
   </Step>
-  <Step title="Rebuild the ones that fail">
-    Start a sandbox on the new runtime, install what the template provided, and capture it as a
-    [checkpoint](/sandboxes/checkpoints) or a new template. What can be captured is the
-    filesystem, so anything you can install with files and packages carries over.
-  </Step>
-  <Step title="Move system-level setup into the image, or into your startup">
-    If the template depended on changes outside the workspace, they need to live somewhere else
-    — either in a published image (talk to us) or as a step your sandbox runs on boot.
+  <Step title="Rebuild it">
+    Create it again by name with the same definition, wait for the build, and point your creates
+    at it.
   </Step>
 </Steps>
 
-## Image builds are not available
-
-<Warning>
-Declarative image manifests (`image:` on create) and the image build pipeline are **not
-supported** on v2. They depend on a build fleet it does not have.
-</Warning>
-
-If you build images today, that workflow needs an alternative before you migrate:
-
 <CardGroup cols={2}>
-  <Card title="Workspace templates" icon="layer-group">
-    Prepare a workspace once and start sandboxes from it — as long as it does not need a
-    rootfs.
+  <Card title="Checkpoints" icon="camera" href="/sandboxes/checkpoints">
+    Save a running sandbox and restore it later.
   </Card>
-  <Card title="Checkpoints" icon="camera">
-    Install into a sandbox, checkpoint it, and restore that checkpoint when you need the
-    environment again.
+  <Card title="Migrating from v1" icon="arrow-right" href="/migrating-from-v1">
+    Every behaviour that differs between v1 and v2.
   </Card>
 </CardGroup>
