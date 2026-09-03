@@ -2848,7 +2848,7 @@ type DBTemplate struct {
 	ImageRef           string     `json:"-"`
 	Dockerfile         *string    `json:"dockerfile,omitempty"`
 	IsPublic           bool       `json:"isPublic"`
-	TemplateType       string     `json:"templateType"` // "dockerfile" or "sandbox"
+	TemplateType       string     `json:"templateType"` // "dockerfile", "sandbox", or TemplateTypeMicrovmImage
 	RootfsS3Key        *string    `json:"-"`
 	WorkspaceS3Key     *string    `json:"-"`
 	CreatedBySandboxID *string    `json:"createdBySandboxId,omitempty"`
@@ -2876,6 +2876,192 @@ func (s *Store) CreateSandboxTemplate(ctx context.Context, id uuid.UUID, orgID *
 		return nil, fmt.Errorf("failed to create sandbox template: %w", err)
 	}
 	return t, nil
+}
+
+// TemplateTypeMicrovmImage is a template backed by a MicroVM image resource
+// rather than by a rootfs snapshot.
+//
+// The QEMU runtime stores a template as rootfs_s3_key + workspace_s3_key,
+// because a QEMU checkpoint captures the whole disk. The MicroVM runtime
+// cannot: /oc/workspace/export archives /home/sandbox only, so anything a
+// template installs outside the home directory has to be baked into an image,
+// and what we persist is that image's ARN. Same templates table, same customer
+// -facing name/tag/status — only the artifact differs, which is why this reuses
+// image_ref rather than adding a column.
+const TemplateTypeMicrovmImage = "microvm_image"
+
+// Template status values shared by both runtimes. A MicroVM image build is
+// asynchronous and takes minutes, so unlike the sandbox-snapshot path it can
+// also terminate in 'failed'.
+const (
+	TemplateStatusProcessing = "processing"
+	TemplateStatusReady      = "ready"
+	TemplateStatusFailed     = "failed"
+)
+
+// CreateMicrovmImageTemplate inserts a MicroVM image template (status=processing).
+//
+// image_ref is EMPTY at this point and filled in by SetMicrovmTemplateImage once
+// the asynchronous build produces an ARN. The row exists first so a build that
+// dies partway is visible as a stuck 'processing' template rather than as
+// nothing at all — an invisible failed build is indistinguishable from a
+// template the customer never created.
+func (s *Store) CreateMicrovmImageTemplate(ctx context.Context, id uuid.UUID, orgID *uuid.UUID, name, tag string) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`INSERT INTO templates (id, org_id, name, tag, image_ref, is_public, template_type, status)
+		 VALUES ($1, $2, $3, $4, '', false, '`+TemplateTypeMicrovmImage+`', '`+TemplateStatusProcessing+`')
+		 RETURNING `+templateColumns,
+		id, orgID, name, tag,
+	), t)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create microvm image template: %w", err)
+	}
+	return t, nil
+}
+
+// SetMicrovmTemplateImage records the built image ARN and marks the template
+// ready, in ONE statement.
+//
+// Deliberately not two: a template that is 'ready' with an empty image_ref
+// would be resolved at create time and have nothing to launch from, and the
+// caller would have to guess whether to fall back to the base image — which is
+// exactly the silent-wrong-image failure this path exists to prevent. The
+// guard on image_ref <> ” makes "ready" and "has an ARN" the same fact.
+func (s *Store) SetMicrovmTemplateImage(ctx context.Context, id uuid.UUID, imageARN string) error {
+	if imageARN == "" {
+		return fmt.Errorf("refusing to mark template %s ready with an empty image ARN", id)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE templates SET image_ref = $2, status = '`+TemplateStatusReady+`'
+		  WHERE id = $1 AND template_type = '`+TemplateTypeMicrovmImage+`'`,
+		id, imageARN)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no microvm image template %s to mark ready", id)
+	}
+	return nil
+}
+
+// SetTemplateFailed records a terminal build failure and the reason.
+//
+// image_ref must stay an ARN or empty, so the failure reason is not stored
+// there — the caller logs it. What matters here is that the row leaves
+// 'processing', so a customer polling status gets an answer instead of waiting
+// forever on a build that is never coming back.
+func (s *Store) SetTemplateFailed(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE templates SET status = '`+TemplateStatusFailed+`' WHERE id = $1`, id)
+	return err
+}
+
+// ListMicrovmImageARNs returns every image ARN this org's ready templates
+// launch from.
+//
+// This exists for ownership tests. awsvm.Config.OwnedImages() answers the same
+// question from static configuration (the base image plus the size tiers) and
+// therefore CANNOT see custom templates. Any sweep that decides a box is
+// orphaned by looking at its image ARN must union the two, or every box running
+// on a customer template looks like it belongs to nobody.
+//
+// NOTE: as of this commit nothing calls OwnedImages — the image-ARN orphan
+// sweep was removed along with microvm_backend.go. This is here so that the
+// sweep cannot be re-armed (see the per-env image/tagging work) without a
+// registry-aware source of truth already available.
+func (s *Store) ListMicrovmImageARNs(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT image_ref FROM templates
+		  WHERE template_type = '`+TemplateTypeMicrovmImage+`' AND image_ref <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var arn string
+		if err := rows.Scan(&arn); err != nil {
+			return nil, err
+		}
+		out = append(out, arn)
+	}
+	return out, rows.Err()
+}
+
+// FindMicrovmImageTemplateByTag finds an existing image template by its
+// content tag, for DEDUPE.
+//
+// Two customers asking for the same environment should share one image, not
+// burn two slots out of an account capped at 100 MicroVM images. The tag is the
+// manifest hash (computeManifestHash, which matches the SDK's Image.cacheKey),
+// so an identical manifest resolves to an identical tag.
+//
+// Scoped to the org DESPITE the hash being global. Sharing one image across
+// orgs would be cheaper still, but it leaks one org's build cadence to another
+// (a create that is suspiciously fast reveals someone else built the same
+// image) and it entangles deletion: GC for one org would pull an image another
+// org's sandboxes are launching from. Per-org is the conservative default; a
+// global cache is a later decision, not an accident.
+func (s *Store) FindMicrovmImageTemplateByTag(ctx context.Context, orgID uuid.UUID, tag string) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`SELECT `+templateColumns+` FROM templates
+		  WHERE org_id = $1 AND tag = $2 AND template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND status = '`+TemplateStatusReady+`' AND image_ref <> ''
+		  LIMIT 1`, orgID, tag), t)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// CountMicrovmImageTemplates counts an org's image templates that hold, or are
+// about to hold, an image slot.
+//
+// Counts 'processing' as well as 'ready' deliberately: a build in flight has
+// already been handed to AWS, so excluding it lets an org start N builds
+// concurrently and blow through the cap before any of them finishes.
+func (s *Store) CountMicrovmImageTemplates(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM templates
+		  WHERE org_id = $1 AND template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND status IN ('`+TemplateStatusReady+`','`+TemplateStatusProcessing+`')`,
+		orgID).Scan(&n)
+	return n, err
+}
+
+// ListUnusedMicrovmImageTemplates returns image templates older than olderThan
+// that no live sandbox was created from — GC candidates.
+//
+// The join is what makes this safe to act on. Deleting an image a running
+// sandbox was launched from does not stop that sandbox, but it does mean the
+// template can never be launched again and any later create fails with an AWS
+// error naming a resource the customer never heard of.
+func (s *Store) ListUnusedMicrovmImageTemplates(ctx context.Context, olderThan time.Time) ([]DBTemplate, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+templateColumns+` FROM templates t
+		  WHERE t.template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND t.created_at < $1
+		    AND NOT EXISTS (
+		          SELECT 1 FROM sandbox_sessions ss
+		           WHERE ss.based_on_template_id = t.id
+		             AND ss.status NOT IN ('stopped','errored','destroyed')
+		        )`, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DBTemplate
+	for rows.Next() {
+		var t DBTemplate
+		if err := scanTemplate(rows, &t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // SetTemplateReady marks a template as ready for use.
