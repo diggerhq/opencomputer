@@ -2,30 +2,42 @@
  *
  * Mintlify has no per-tab banner: `extractBannersFromConfig` keys banners only
  * by language (navigation.languages[].banner) or `global` (the root banner
- * key), so the config-level banner is necessarily site-wide. Scoping it to the
- * Sandboxes tab therefore has to happen in CSS.
+ * key), so the config banner is site-wide by construction. Scoping it to the
+ * Sandboxes tab has to happen here.
  *
  * `data-current-path` is maintained on <html> from usePathname(), so it tracks
- * the live route. Serverless Agents is the only other tab and every one of its
- * 29 pages sits under /agents, which makes hiding cheaper and more robust than
- * enumerating the Sandboxes tab's 13 separate prefixes.
+ * the live route. Serverless Agents is the only other tab and all 29 of its
+ * pages sit under /agents, so hiding there is far more robust than
+ * allow-listing the Sandboxes tab's 13 separate prefixes.
  */
+
 #banner {
   /* The banner inherits bg-primary-dark (colors.dark, near-black); recolour it
    * here rather than via colors.dark, which would repaint the whole site.
-   * Violet-600 not a pastel: white on a genuinely light purple lands near 3:1
-   * and fails WCAG AA for 14px text. This clears AA at ~5.7:1. */
+   * Violet-600 rather than a pastel: white on a genuinely light purple lands
+   * near 3:1 and fails WCAG AA for 14px text. This clears AA at ~5.7:1. */
   background-color: #7c3aed !important;
 }
 
-html[data-current-path^="/agents"] #banner {
-  display: none !important;
-}
+/* MUST stay inside @layer components.
+ *
+ * Mintlify ships `[data-banner-state="visible"] #banner { display: flex
+ * !important }` in that layer. Cascade-layer precedence INVERTS for !important
+ * declarations, so a layered !important beats an unlayered one no matter how
+ * specific the unlayered selector is — an unlayered copy of this rule parses,
+ * matches, and still loses. Joining the same layer puts both declarations on
+ * equal footing so specificity decides, and this selector is (1,1,1) against
+ * their (1,1,0).
+ */
+@layer components {
+  html[data-current-path^="/agents"] #banner {
+    display: none !important;
+  }
 
-/* An inline script stamps --banner-height from the banner's offsetHeight before
- * the route is known, so without this the layout keeps reserving that space and
- * Agents pages open with an empty purple-less gap. !important is required: the
- * script writes the variable as an inline style on <html>. */
-html[data-current-path^="/agents"] {
-  --banner-height: 0px !important;
+  /* An inline script stamps --banner-height from offsetHeight before the route
+   * is known, so without this the layout keeps reserving the space and Agents
+   * pages open with an empty gap where the banner would be. */
+  html[data-current-path^="/agents"] {
+    --banner-height: 0px !important;
+  }
 }
