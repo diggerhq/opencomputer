@@ -151,6 +151,14 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if !hasOrg {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required for image/snapshot creation"})
 		}
+		// CT-0: an inline manifest resolves to a CHECKPOINT below, and this
+		// runtime has none — its artifact is an image ARN. Refusing names the
+		// supported path; the alternatives are both worse. Falling through
+		// would hand back a base-image box with none of the customer's
+		// packages, and building inline would block the create for minutes.
+		if s.runtimeFor(c) == runtimeMicrovm && len(cfg.ImageManifest) > 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": ErrInlineManifestUnsupported.Error()})
+		}
 		// Check if the client wants build log streaming (SSE)
 		wantsSSE := c.Request().Header.Get("Accept") == "text/event-stream"
 
@@ -855,7 +863,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	tr := traceFrom(ctx)
 	tr.mark("region")
 
-	var templateRootfsKey, templateWorkspaceKey string
+	var templateRootfsKey, templateWorkspaceKey, templateImageARN string
 	var templateID *uuid.UUID
 	tmpl, err := s.resolveTemplate(ctx, orgID, hasOrg, cfg.Template)
 	if err != nil {
@@ -868,7 +876,22 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	} else if tmpl != nil {
 		templateID = &tmpl.ID
 		log.Printf("sandbox: resolved template %q (type=%s, id=%s)", cfg.Template, tmpl.TemplateType, tmpl.ID)
-		if tmpl.TemplateType == "sandbox" && tmpl.RootfsS3Key != nil && tmpl.WorkspaceS3Key != nil {
+		if tmpl.TemplateType == db.TemplateTypeMicrovmImage {
+			// An image-backed template carries neither drive. Without this
+			// branch it matches no case below, and the create silently
+			// produces a box with none of the customer's template applied.
+			// A template still building, or one marked ready with no ARN, has
+			// nothing to launch. Refusing beats falling through to the default
+			// image, which would hand back a box the customer cannot tell apart
+			// from a working one.
+			if tmpl.Status != db.TemplateStatusReady || tmpl.ImageRef == "" {
+				return c.JSON(http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("template %q is not ready (status=%s)", cfg.Template, tmpl.Status),
+				})
+			}
+			templateImageARN = tmpl.ImageRef
+			log.Printf("sandbox: using microvm image template: %s", templateImageARN)
+		} else if tmpl.TemplateType == "sandbox" && tmpl.RootfsS3Key != nil && tmpl.WorkspaceS3Key != nil {
 			templateRootfsKey = *tmpl.RootfsS3Key
 			templateWorkspaceKey = *tmpl.WorkspaceS3Key
 			log.Printf("sandbox: using snapshot template drives: rootfs=%s, workspace=%s", templateRootfsKey, templateWorkspaceKey)
@@ -895,7 +918,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// yields the same answer it would further down.
 	tr.mark("tmpl")
 	orgRuntime := s.runtimeFor(c)
-	place := placement{region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg}
+	place := placement{region: region, orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+		templateImageARN: templateImageARN}
 	backend, ok := s.claimBackend(place)
 
 	// This is the FLEET's warm pool: rows in this cell's Postgres, claimed by
@@ -975,6 +999,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			return backend.Claim(ctx, placement{
 				sandboxID: sandboxID, region: region,
 				orgID: uuid.UUID(orgID), runtime: orgRuntime, cfg: cfg,
+				// Must be set HERE, not only on the activation: Claim is what
+				// chooses the box, and an empty value silently takes the warm
+				// pool — which holds default-image boxes, not this template's.
+				templateImageARN: templateImageARN,
 			})
 		},
 
@@ -1015,6 +1043,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 				cfg:                  cfg,
 				templateRootfsKey:    templateRootfsKey,
 				templateWorkspaceKey: templateWorkspaceKey,
+				templateImageARN:     templateImageARN,
 				connectToken:         auth.MintVMDOConnectToken(s.sessionJWTSecret, sandboxID),
 			})
 			return err

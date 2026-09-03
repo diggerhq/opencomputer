@@ -368,6 +368,11 @@ type placement struct {
 	// an update silently serves that org on the wrong runtime.
 	runtime string
 	cfg     types.SandboxConfig
+
+	// templateImageARN is set when the named template is backed by its own
+	// MicroVM image. Carried on placement rather than resolved in the backend
+	// because only the caller has the template row.
+	templateImageARN string
 }
 
 // activation is everything needed to start a host Claim already chose.
@@ -386,6 +391,11 @@ type activation struct {
 	// drives, empty for a base-golden create.
 	templateRootfsKey    string
 	templateWorkspaceKey string
+
+	// templateImageARN is set when the template is an image rather than a
+	// tarball. The box was already launched FROM this image by Claim; it is
+	// carried here so Activate can refuse loudly if the two ever disagree.
+	templateImageARN string
 
 	// connectToken authorizes the host's outbound data-plane dial back to us.
 	connectToken string

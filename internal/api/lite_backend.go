@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,7 +56,16 @@ func liteEnabled() bool {
 
 type liteBackend struct {
 	client *awsvm.Client
-	mgr    *awsvmlite.Manager
+
+	// objects and artifactPrefix are the custom-template build dependencies.
+	//
+	// Both nil/empty unless OPENSANDBOX_MICROVM_TEMPLATE_ARTIFACT_PREFIX is
+	// set, which is what gates the feature: a cell with no artifact location
+	// configured refuses template builds with a clear message instead of
+	// failing deep inside an S3 call.
+	objects        awsvm.ObjectStore
+	artifactPrefix string
+	mgr            *awsvmlite.Manager
 	// sm is the sandbox.Manager face the control plane's data-plane routes
 	// dispatch through. One instance, shared: it holds no state of its own.
 	sm *awsvmlite.SandboxManager
@@ -94,6 +105,18 @@ func newLiteBackend(ctx context.Context, checkpointStore *storage.CheckpointStor
 	b := &liteBackend{client: client, mgr: mgr,
 		sm:      awsvmlite.NewSandboxManager(mgr).WithCheckpointStore(checkpointStore),
 		stopRun: stop}
+
+	// Custom-template builds. Loaded from the same region as the MicroVM client
+	// so credentials and region cannot drift between the two API surfaces.
+	if prefix := os.Getenv("OPENSANDBOX_MICROVM_TEMPLATE_ARTIFACT_PREFIX"); prefix != "" {
+		s3cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(client.Config().Region))
+		if err != nil {
+			return nil, fmt.Errorf("vmhost-lite: load AWS config for template artifacts: %w", err)
+		}
+		b.objects = awsvm.NewS3Store(s3cfg)
+		b.artifactPrefix = strings.TrimSuffix(prefix, "/")
+		log.Printf("vmhost-lite: custom template builds enabled (artifacts at %s)", b.artifactPrefix)
+	}
 	go mgr.Run(runCtx)
 
 	log.Printf("vmhost-lite: backend enabled (region=%s warm=%d) — direct exec, no agent tunnel",
@@ -263,6 +286,9 @@ func (b *liteBackend) Claim(ctx context.Context, p placement) (string, error) {
 		Template: p.cfg.Template,
 		MemoryMB: p.cfg.MemoryMB,
 		CPUCount: p.cfg.CpuCount,
+		// Non-empty forces a cold launch from the template's own image; the
+		// warm pool holds default-image boxes only.
+		TemplateImageARN: p.templateImageARN,
 	})
 	if err != nil {
 		return "", err
@@ -314,6 +340,22 @@ func (b *liteBackend) Activate(ctx context.Context, a activation) (activated, er
 	if a.templateWorkspaceKey != "" {
 		if err := b.mgr.RestoreWorkspaceKey(ctx, a.sandboxID, a.templateWorkspaceKey); err != nil {
 			return activated{}, fmt.Errorf("vmhost-lite: restore template into %s: %w", a.sandboxID, err)
+		}
+	}
+	// An image-backed template needs nothing applied here — Claim already
+	// launched the box FROM that image. What this checks is that it actually
+	// did: if the bound box is running a different image, the customer asked
+	// for a template and got something else, and every later symptom (a missing
+	// binary, a failing build) would point somewhere unrelated.
+	if a.templateImageARN != "" {
+		box, ok := b.mgr.BoxFor(a.sandboxID)
+		if !ok {
+			return activated{}, fmt.Errorf("vmhost-lite: no box bound to %s for image template", a.sandboxID)
+		}
+		if got := box.Meta.TemplateImageARN; got != a.templateImageARN {
+			return activated{}, fmt.Errorf(
+				"vmhost-lite: %s was launched for template image %q but activation expects %q",
+				a.sandboxID, got, a.templateImageARN)
 		}
 	}
 
@@ -1009,4 +1051,17 @@ func (b *liteBackend) RestoreForResume(ctx context.Context, sandboxID, key strin
 		return "", fmt.Errorf("vmhost-lite: restore %s from %s: %w", sandboxID, key, err)
 	}
 	return microvmWorkerID(box.MicrovmID), nil
+}
+
+// templateBuilder exposes what buildMicrovmImageTemplate needs.
+//
+// ok=false means this cell cannot build templates — either there is no lite
+// backend at all, or no artifact prefix is configured. Callers must surface
+// that rather than proceeding: the alternative is a build that fails several
+// AWS calls deep with an error naming a bucket nobody configured.
+func (b *liteBackend) templateBuilder() (microvmImageBuilder, awsvm.ObjectStore, string, bool) {
+	if b == nil || b.client == nil || b.objects == nil || b.artifactPrefix == "" {
+		return nil, nil, "", false
+	}
+	return b.client, b.objects, b.artifactPrefix, true
 }

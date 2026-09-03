@@ -187,6 +187,15 @@ type Meta struct {
 	Template string
 	MemoryMB int
 	CPUCount int
+
+	// TemplateImageARN is set when the template is backed by its OWN MicroVM
+	// image rather than by a workspace tarball.
+	//
+	// Such a box can never come from the warm pool: pooled stock is manufactured
+	// from the default image, and a template's whole purpose is to differ from
+	// it. Claim therefore treats a non-empty value as a forced cold launch —
+	// the same trade already made for off-tier sizes.
+	TemplateImageARN string
 }
 
 // RunRequest mirrors cmd/microvm-hooks' runCmdRequest. Field-for-field with
@@ -433,6 +442,15 @@ func (m *Manager) launchBox(ctx context.Context, image string) (*Box, error) {
 // Returns the box and whether it came from the warm set — the caller wants that
 // in its timing, because the two differ by the entire cold-launch cost.
 func (m *Manager) Claim(ctx context.Context, sandboxID string, meta Meta) (*Box, bool, error) {
+	// A template with its own image is served by launching THAT image. Checked
+	// before anything reaches the warm set: a pooled box is the default image
+	// by construction, so handing one to a template request would return a box
+	// without the customer's template and look like a successful create — the
+	// silent-wrong-image failure the size path already guards against.
+	if meta.TemplateImageARN != "" {
+		b, err := m.claimTemplateImage(ctx, sandboxID, meta)
+		return b, false, err
+	}
 	// The size the customer ASKED for, before delivered() rewrites it to what
 	// the image provides. That rewrite is what makes metering truthful, and it
 	// is also what would hide an off-tier request from the check below.
@@ -467,6 +485,40 @@ func (m *Manager) Claim(ctx context.Context, sandboxID string, meta Meta) (*Box,
 	// The box we just launched was taken by a concurrent claim. Rare, and the
 	// caller retrying is better than launching again inside a lock.
 	return nil, false, fmt.Errorf("awsvmlite: no box available for %s", sandboxID)
+}
+
+// claimTemplateImage cold-launches a box from a custom template's own image.
+//
+// Deliberately a sibling of claimOffTier rather than a branch inside it: both
+// cold-launch a named image, but the reasons differ (a size tier is OUR image,
+// a template is the customer's) and so does the error a caller must surface.
+// Sharing the body would make one error message wrong for one of them.
+//
+// Never falls back to the default image. A template that cannot be launched is
+// an error, not a plain box — the customer asked for their environment and a
+// box without it is indistinguishable from a working one until their code
+// fails.
+func (m *Manager) claimTemplateImage(ctx context.Context, sandboxID string, meta Meta) (*Box, error) {
+	start := time.Now()
+	b, err := m.launchBox(ctx, meta.TemplateImageARN)
+	if err != nil {
+		return nil, fmt.Errorf("awsvmlite: cold launch template image %s for %s: %w",
+			meta.TemplateImageARN, sandboxID, err)
+	}
+	// Metered at the default tier: a template image is published at the default
+	// memory floor (see the image builder), so the delivered size is the
+	// default one regardless of what the template installed.
+	if meta.MemoryMB == 0 {
+		meta.MemoryMB = m.client.Config().DefaultMemoryMB
+	}
+	b.Meta = meta
+	b.boundAt = time.Now()
+	m.mu.Lock()
+	m.bound[sandboxID] = b
+	m.mu.Unlock()
+	log.Printf("awsvmlite: TEMPLATE-IMAGE CREATE %s -> %s from %s in %s",
+		sandboxID, b.MicrovmID, meta.TemplateImageARN, time.Since(start).Round(time.Millisecond))
+	return b, nil
 }
 
 // claimOffTier cold-launches a box of a non-default size and binds it.
