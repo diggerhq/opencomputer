@@ -556,7 +556,8 @@ export async function runCommand(
     else {
       process.stdout.write(
         `Cloned ${binding.projectName} (${binding.projectId}).\n\n` +
-          `Next:\n  cd ${checkout.directory}\n  npm install\n  npm run deploy -- --watch\n`,
+          `Next:\n  cd ${checkout.directory}\n  npm install\n` +
+          `  npm run deploy -- --watch --api-url ${config.apiUrl}\n`,
       );
     }
     return;
