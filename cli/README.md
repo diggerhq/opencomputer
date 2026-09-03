@@ -7,7 +7,7 @@ npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
-npx --package @opencomputer/cli opencomputer link
+npx --package @opencomputer/cli opencomputer link --project <id-or-slug>
 ```
 
 Agent definitions live under `opencomputer/agents/`. The default initializer
@@ -19,12 +19,10 @@ Watch source and deploy changes to Development (Cloud):
 npm run deploy -- --watch
 ```
 
-`opencomputer link` asks whether to create a project or select an existing
-project from the authenticated account. Later commands reuse that local binding.
-If you skip this step, the first project-scoped command prompts you to link.
-Use `opencomputer deploy --watch --project <id|slug>` for non-interactive
-selection or `opencomputer deploy --watch --create-project <name>` to create
-one explicitly.
+`opencomputer link --project <id|slug>` links an existing project;
+`opencomputer link --create-project <name>` creates and links one. Later
+commands reuse that local binding without prompting. An unlinked command fails
+with the exact link command needed to proceed.
 
 The production cloud API (`https://app.opencomputer.dev`) is the default.
 Override it only with `--api-url` or `OPENCOMPUTER_API_URL`.
@@ -61,21 +59,21 @@ structured payload is available to agent code as `input.payload`.
 
 ## Secrets and managed egress
 
-Secret values are read from a hidden prompt, or from standard input in CI.
+Secret values are accepted only from standard input with `--value-stdin`.
 They are write-only: list output contains names, scope, environment, and
-allowed origins, never values.
+allowed origins, never values or command-line arguments.
 
-During development, put agent secrets in `opencomputer/.env.local`. The CLI
-syncs only names referenced by `useSecret()` and limits each value to origins
-declared by `defineConnection()`. It asks before the first upload, watches for
-changes, and skips unrelated variables rather than granting wildcard access.
+During development, `opencomputer doctor` checks names referenced by
+`useSecret()` against `opencomputer/.env.example` and the ignored
+`opencomputer/.env.local`. Upload values explicitly with `secrets set`; the CLI
+infers and enforces origins declared by `defineConnection()`.
 
 ```bash
 # Project-level development secret. Allowed origins are inferred from code.
-opencomputer secrets set GITHUB_TOKEN
+printf %s "$GITHUB_TOKEN" | opencomputer secrets set GITHUB_TOKEN --value-stdin
 
 # Agent-level production override.
-opencomputer secrets set GITHUB_TOKEN \
+printf %s "$GITHUB_TOKEN" | opencomputer secrets set GITHUB_TOKEN --value-stdin \
   --agent current \
   --environment production
 
@@ -88,8 +86,8 @@ environment, use encrypted agent runtime variables. They require no source
 declaration and apply to newly started runtimes:
 
 ```bash
-opencomputer env set DATABASE_URL
-opencomputer env set DATABASE_URL --agent current --environment production
+printf %s "$DATABASE_URL" | opencomputer env set DATABASE_URL --value-stdin
+printf %s "$DATABASE_URL" | opencomputer env set DATABASE_URL --value-stdin --agent current --environment production
 opencomputer env list --environment development
 opencomputer env remove DATABASE_URL --environment development
 ```
@@ -109,3 +107,9 @@ opencomputer logs
 opencomputer logs --agent my-agent --environment development --follow
 opencomputer logs --session <session-id> --json
 ```
+
+Use `opencomputer sessions tail <session-id> --json` for durable NDJSON session
+events and `opencomputer channels status --json` for the last accepted event,
+delivery outcome, and redacted error category. All commands accept `--json`;
+mutations accept `--idempotency-key <stable-retry-key>`. Run
+`opencomputer doctor --json` for the sub-second local pre-deploy scan.

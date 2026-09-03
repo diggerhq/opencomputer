@@ -326,6 +326,20 @@ function publicModelAccessBinding(value: unknown): Record<string, unknown> {
 
 function publicChannel(value: unknown): Record<string, unknown> {
   const channel = record(value) ?? {};
+  const lastDelivery = record(channel.lastDelivery);
+  const lastError = record(channel.lastError);
+  const publicLastDelivery =
+    lastDelivery &&
+    (lastDelivery.status === "delivered" || lastDelivery.status === "failed") &&
+    typeof lastDelivery.at === "string"
+      ? { status: lastDelivery.status, at: lastDelivery.at }
+      : undefined;
+  const publicLastError =
+    lastError &&
+    typeof lastError.category === "string" &&
+    typeof lastError.at === "string"
+      ? { category: lastError.category, at: lastError.at }
+      : undefined;
   return {
     id: channel.id,
     channel: "slack",
@@ -337,6 +351,11 @@ function publicChannel(value: unknown): Record<string, unknown> {
     teamName: channel.teamName,
     verifiedAt: channel.verifiedAt,
     verificationError: channel.verificationError,
+    ...(typeof channel.lastEventAt === "string"
+      ? { lastEventAt: channel.lastEventAt }
+      : {}),
+    ...(publicLastDelivery ? { lastDelivery: publicLastDelivery } : {}),
+    ...(publicLastError ? { lastError: publicLastError } : {}),
     status: channel.status,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,

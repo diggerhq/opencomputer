@@ -685,12 +685,12 @@ Start the web app separately:
 npm run dev:web
 \`\`\`
 
-The first run asks you to create a cloud project or select an existing one.
-That choice is saved for later watched deployments.
+Link once with \`opencomputer link --project <id|slug>\` or
+\`opencomputer link --create-project <name>\`. Later commands reuse that binding.
 
-Development secrets can be placed in \`opencomputer/.env.local\`. Only values
-referenced by \`useSecret()\` are synchronized, and their allowed origins are
-inferred from \`defineConnection()\` declarations.
+Declare required names in \`opencomputer/.env.example\` and set values with
+\`opencomputer secrets set <name> --value-stdin\`. Allowed origins are inferred
+from \`defineConnection()\` declarations.
 `
       : `# Hello World OpenComputer agent
 
@@ -702,12 +702,12 @@ Deploy agent changes to Development (Cloud):
 npm run deploy -- --watch
 \`\`\`
 
-The first run asks you to create a cloud project or select an existing one.
-That choice is saved for later watched deployments.
+Link once with \`opencomputer link --project <id|slug>\` or
+\`opencomputer link --create-project <name>\`. Later commands reuse that binding.
 
-Development secrets can be placed in \`opencomputer/.env.local\`. Only values
-referenced by \`useSecret()\` are synchronized, and their allowed origins are
-inferred from \`defineConnection()\` declarations.
+Declare required names in \`opencomputer/.env.example\` and set values with
+\`opencomputer secrets set <name> --value-stdin\`. Allowed origins are inferred
+from \`defineConnection()\` declarations.
 `,
   );
 

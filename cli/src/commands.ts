@@ -40,12 +40,15 @@ import {
 } from "./template-local.js";
 import { materializeProjectArchive } from "./project-local.js";
 import { createInterface } from "node:readline/promises";
+import { doctorProject, type DoctorResult } from "./doctor.js";
+import { CLIError } from "./errors.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
   apiKey?: string;
   json: boolean;
   verbose?: boolean;
+  idempotencyKey?: string;
 }
 
 export function deploymentAlias(requestedAlias?: string): string {
@@ -61,6 +64,10 @@ export function shouldBindModelAccessProject(
 
 function printJSON(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function printJSONLine(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 function flag(args: string[], name: string): boolean {
@@ -105,15 +112,13 @@ function consumeModelAccessProvider(args: string[]): "claude" | "codex" {
   return "codex";
 }
 
-async function readSecretValue(): Promise<string> {
+async function readTemplateSecretValue(): Promise<string> {
   if (!process.stdin.isTTY) {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const value = Buffer.concat(chunks)
-      .toString("utf8")
-      .replace(/\r?\n$/, "");
+    const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
     if (!value) throw new Error("Secret value was empty");
     return value;
   }
@@ -143,11 +148,48 @@ async function readSecretValue(): Promise<string> {
   });
 }
 
+async function readStdinValue(enabled: boolean): Promise<string> {
+  if (!enabled) {
+    throw new CLIError(
+      "value_stdin_required",
+      "A value must be supplied through standard input.",
+      "Pipe the value into this command and add `--value-stdin`.",
+    );
+  }
+  if (process.stdin.isTTY) {
+    throw new CLIError(
+      "value_stdin_required",
+      "--value-stdin requires piped standard input.",
+      "Use `printf %s \"$VALUE\" | opencomputer ... --value-stdin`.",
+    );
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  if (!value) throw new Error("Standard-input value was empty");
+  return value;
+}
+
+function printDoctor(result: DoctorResult, json: boolean): void {
+  if (json) return printJSON(result);
+  for (const item of result.diagnostics) {
+    process.stdout.write(
+      `${item.severity.toUpperCase()} ${item.code} ${item.file}${item.line ? `:${item.line}` : ""}\n` +
+        `  ${item.message}\n  fix: ${item.hint}\n`,
+    );
+  }
+  process.stdout.write(
+    `${result.ok ? "Doctor passed" : "Doctor failed"}: ${result.summary.errors} errors, ` +
+      `${result.summary.warnings} warnings in ${result.durationMs}ms.\n`,
+  );
+}
+
 async function selectedProject(
   client: OpenComputerClient,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   reference?: string,
-  interactive = true,
 ): Promise<{ projectId: string; agentId: string }> {
   if (reference) {
     const project = (await client.projects()).find(
@@ -159,9 +201,7 @@ async function selectedProject(
     return { projectId: project.id, agentId: agent.id };
   }
   const root = await findOpenComputerProjectRoot(process.cwd());
-  const binding = await ensureProjectBinding(client, config, root, {
-    interactive,
-  });
+  const binding = await ensureProjectBinding(client, config, root);
   return { projectId: binding.projectId, agentId: binding.agentId };
 }
 
@@ -283,6 +323,7 @@ async function sendAgentTurn(
   prompt: string,
   keep: boolean,
   json: boolean,
+  idempotencyKey?: string,
 ): Promise<{ turnId: string; output?: string }> {
   const existing = await client.events(sessionId, 0);
   let cursor = existing.at(-1)?.seq ?? 0;
@@ -300,7 +341,7 @@ async function sendAgentTurn(
     );
     cursor = connected.cursor;
   }
-  const turn = await client.createTurn(sessionId, prompt);
+  const turn = await client.createTurn(sessionId, prompt, idempotencyKey);
   let streamedText = "";
   let completedText = "";
   const completed = await waitForEvent(
@@ -374,6 +415,40 @@ async function attachSession(
   }
 }
 
+async function tailSession(
+  client: OpenComputerClient,
+  sessionId: string,
+  after: number,
+  follow: boolean,
+  json: boolean,
+): Promise<void> {
+  let cursor = after;
+  let stopped = false;
+  const stop = (): void => {
+    stopped = true;
+  };
+  process.once("SIGINT", stop);
+  try {
+    do {
+      const events = await client.events(sessionId, cursor);
+      for (const event of events) {
+        cursor = Math.max(cursor, event.seq);
+        if (json) printJSONLine({ sessionId, cursor: event.seq, ...event });
+        else {
+          process.stdout.write(
+            `${event.seq} ${event.type} ${JSON.stringify(event.data)}\n`,
+          );
+        }
+      }
+      if (follow && !stopped) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } while (follow && !stopped);
+  } finally {
+    process.off("SIGINT", stop);
+  }
+}
+
 export function nextAgentEventDeadline(
   deadline: number,
   timeoutMs: number,
@@ -423,6 +498,7 @@ async function runAgent(
   keep: boolean,
   json: boolean,
   verbose: boolean,
+  idempotencyKey?: string,
 ): Promise<unknown> {
   const created = await client.createSession(agent);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -434,7 +510,7 @@ async function runAgent(
     (event) => printSessionProgress(event, json, verbose),
     90_000,
   );
-  const turn = await client.createTurn(created.session.id, prompt);
+  const turn = await client.createTurn(created.session.id, prompt, idempotencyKey);
   let streamed = false;
   let streamedText = "";
   let completedText = "";
@@ -529,7 +605,7 @@ export async function runCommand(
   }
 
   const config = await resolveConfig(globals);
-  const client = new OpenComputerClient(config);
+  const client = new OpenComputerClient(config, globals.idempotencyKey);
 
   if (command === "project" && args[0] === "clone") {
     args.shift();
@@ -550,7 +626,6 @@ export async function runCommand(
     });
     const binding = await ensureProjectBinding(client, config, checkout.directory, {
       project: project.id,
-      interactive: false,
     });
     if (globals.json) printJSON({ checkout, binding });
     else {
@@ -585,7 +660,7 @@ export async function runCommand(
         client,
         config,
         checkout.directory,
-        { project, interactive: false },
+        { project },
       );
       if (globals.json) printJSON({ checkout, binding });
       else {
@@ -699,7 +774,7 @@ export async function runCommand(
         : `${installation.projectAgentId}--${localAgentId}`;
     for (const requirement of requiredSecrets) {
       process.stderr.write(`${requirement.name}\n`);
-      const value = await readSecretValue();
+      const value = await readTemplateSecretValue();
       await client.putSecret({
         projectId: installation.projectId,
         name: requirement.name,
@@ -741,7 +816,6 @@ export async function runCommand(
     }
     const binding = await ensureProjectBinding(client, config, checkout.directory, {
       project: current.projectId,
-      interactive: false,
     });
     if (globals.json) printJSON({ installation: current, checkout, binding });
     else {
@@ -817,7 +891,7 @@ export async function runCommand(
       process.stdout.write(
         `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Project:   choose or create one on the first watched deployment\n` +
+          `Project:   link explicitly with --project or --create-project\n` +
           `Agents:    opencomputer/\n` +
           (spa
             ? `Web app:   src/ (separate lifecycle)\n\n`
@@ -855,12 +929,31 @@ export async function runCommand(
     return;
   }
 
+  if (command === "doctor") {
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const root = await findOpenComputerProjectRoot(process.cwd());
+    const result = await doctorProject(root);
+    if (!result.ok) {
+      if (!globals.json) printDoctor(result, false);
+      throw new CLIError(
+        "doctor_failed",
+        "Local project diagnostics failed.",
+        "Fix the reported errors and rerun `opencomputer doctor --json`.",
+        result,
+      );
+    }
+    printDoctor(result, globals.json);
+    return;
+  }
+
   if (command === "link") {
+    const project = option(args, "--project");
+    const createProjectName = option(args, "--create-project");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const root = await findOpenComputerProjectRoot(process.cwd());
     const binding = await ensureProjectBinding(client, config, root, {
-      interactive: !globals.json,
-      select: true,
+      project,
+      createProjectName,
     });
     if (globals.json) printJSON(binding);
     else {
@@ -883,6 +976,15 @@ export async function runCommand(
         "No OpenComputer project found. Run `opencomputer init <directory>` first.",
       );
     }
+    const diagnosis = await doctorProject(root);
+    if (!diagnosis.ok) {
+      throw new CLIError(
+        "doctor_failed",
+        "Deploy stopped because local project diagnostics failed.",
+        "Run `opencomputer doctor --json`, fix the errors, and deploy again.",
+        diagnosis,
+      );
+    }
     if (watch) {
       if (requestedAlias && requestedAlias !== "development") {
         throw new Error(
@@ -892,7 +994,6 @@ export async function runCommand(
       await runDeploymentWatch(client, config, root, {
         project,
         createProjectName,
-        interactive: !globals.json,
       });
       return;
     }
@@ -900,10 +1001,7 @@ export async function runCommand(
       throw new Error("--project and --create-project require --watch");
     }
     const alias = deploymentAlias(requestedAlias);
-    const binding = await ensureProjectBinding(client, config, root, {
-      interactive: !globals.json,
-      select: true,
-    });
+    const binding = await ensureProjectBinding(client, config, root);
     const results = await publishProjectDeployment(
       client,
       root,
@@ -942,6 +1040,7 @@ export async function runCommand(
       keep,
       globals.json,
       globals.verbose === true,
+      globals.idempotencyKey,
     );
     if (globals.json) printJSON(result);
     return;
@@ -954,14 +1053,23 @@ export async function runCommand(
     process.stderr.write(
       "`opencomputer dev` is deprecated. Use `opencomputer deploy --watch`; start any web app separately.\n",
     );
+    const root = await findOpenComputerProjectRoot(process.cwd());
+    const diagnosis = await doctorProject(root);
+    if (!diagnosis.ok) {
+      throw new CLIError(
+        "doctor_failed",
+        "Deploy stopped because local project diagnostics failed.",
+        "Run `opencomputer doctor --json`, fix the errors, and deploy again.",
+        diagnosis,
+      );
+    }
     await runCloudDevelopment(
       client,
       config,
-      await findOpenComputerProjectRoot(process.cwd()),
+      root,
       {
         project,
         createProjectName,
-        interactive: !globals.json,
       },
     );
     return;
@@ -976,7 +1084,6 @@ export async function runCommand(
       client,
       config,
       projectReference,
-      !globals.json,
     );
     const agentId = agentOption
       ? agentOption === "current"
@@ -1009,6 +1116,7 @@ export async function runCommand(
     }
     if (action === "set") {
       const explicitOrigins = options(args, "--allow-origin");
+      const valueStdin = flag(args, "--value-stdin");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       let allowedOrigins = explicitOrigins;
       if (!allowedOrigins.length) {
@@ -1035,7 +1143,7 @@ export async function runCommand(
       const secret = await client.putSecret({
         projectId: project.projectId,
         name,
-        value: await readSecretValue(),
+        value: await readStdinValue(valueStdin),
         environment,
         ...(agentId ? { agentId } : {}),
         allowedOrigins,
@@ -1090,12 +1198,10 @@ export async function runCommand(
         );
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const currentAgentRoot = projectReference ? null : await findAgentRoot();
-      const project = shouldBindModelAccessProject(
-        projectReference,
-        currentAgentRoot,
-      )
-        ? await selectedProject(client, config, projectReference, false)
-        : undefined;
+      const project =
+        shouldBindModelAccessProject(projectReference, currentAgentRoot)
+          ? await selectedProject(client, config, projectReference)
+          : undefined;
       const environments = project
         ? (["development", "production"] as const)
         : [];
@@ -1179,7 +1285,6 @@ export async function runCommand(
       client,
       config,
       projectReference,
-      !globals.json,
     );
     const agentId = agentOption
       ? agentOption === "current"
@@ -1211,11 +1316,12 @@ export async function runCommand(
       throw new Error("Use `opencomputer env set|list|remove <name>`.");
     }
     if (action === "set") {
+      const valueStdin = flag(args, "--value-stdin");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const variable = await client.putRuntimeVariable({
         projectId: project.projectId,
         name,
-        value: await readSecretValue(),
+        value: await readStdinValue(valueStdin),
         environment,
         ...(agentId ? { agentId } : {}),
       });
@@ -1253,7 +1359,6 @@ export async function runCommand(
       client,
       config,
       projectReference,
-      !globals.json,
     );
     const agentId = await selectedSessionAgent(
       client,
@@ -1284,19 +1389,27 @@ export async function runCommand(
       if (!name || args.length) {
         throw new Error("Use `opencomputer webhooks create <name>`.");
       }
-      const webhook = await client.createWebhook({
+      const existing = (await client.webhooks({
         projectId: project.projectId,
-        name,
         environment,
         agentId,
-      });
-      if (globals.json) printJSON(webhook);
+      })).find((candidate) => candidate.name === name);
+      const webhook =
+        existing ??
+        (await client.createWebhook({
+          projectId: project.projectId,
+          name,
+          environment,
+          agentId,
+        }));
+      if (globals.json) printJSON({ ...webhook, reused: Boolean(existing) });
       else {
         process.stdout.write(
-          `Created ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
+          `${existing ? "Reused" : "Created"} ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
             `URL: ${webhook.invocationUrl}\n` +
-            `Token: ${webhook.token ?? "unavailable"}\n` +
-            "Save this token now. It will not be shown again.\n",
+            (existing
+              ? "The existing token remains unchanged.\n"
+              : `Token: ${webhook.token ?? "unavailable"}\nSave this token now. It will not be shown again.\n`),
         );
       }
       return;
@@ -1369,7 +1482,7 @@ export async function runCommand(
       }
       if (insideProject) {
         agentId = (
-          await selectedProject(client, config, undefined, !globals.json)
+          await selectedProject(client, config)
         ).agentId;
       }
     }
@@ -1400,7 +1513,58 @@ export async function runCommand(
     return;
   }
 
-  if (command === "session") {
+  if (command === "channels") {
+    const action = args.shift();
+    if (action !== "status") {
+      throw new Error("Use `opencomputer channels status`.");
+    }
+    const projectReference = option(args, "--project");
+    const agentOption = option(args, "--agent");
+    const environment = environmentOption(option(args, "--environment"));
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const project = await selectedProject(
+      client,
+      config,
+      projectReference,
+    );
+    const agentId = await selectedSessionAgent(
+      client,
+      project,
+      !agentOption || agentOption === "current" ? undefined : agentOption,
+    );
+    const channels = (await client.channels()).filter(
+      (channel) => channel.agentId === agentId && channel.alias === environment,
+    );
+    if (globals.json) printJSON({ projectId: project.projectId, environment, channels });
+    else if (!channels.length) process.stdout.write("No matching channels.\n");
+    else {
+      for (const channel of channels) {
+        process.stdout.write(
+          `${channel.id} ${channel.status} ${channel.channel} ${channel.agentId}@${channel.alias}\n` +
+            `  last event: ${channel.lastEventAt ?? "—"}\n` +
+            `  last delivery: ${channel.lastDelivery ? `${channel.lastDelivery.status} at ${channel.lastDelivery.at}` : "—"}\n` +
+            `  last error: ${channel.lastError ? `${channel.lastError.category} at ${channel.lastError.at}` : "—"}\n`,
+        );
+      }
+    }
+    return;
+  }
+
+  if (command === "session" || command === "sessions") {
+    if (args[0] === "tail") {
+      args.shift();
+      const sessionId = args.shift();
+      const afterValue = option(args, "--after");
+      const follow = !flag(args, "--no-follow");
+      if (!sessionId) throw new Error("A session ID is required.");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const after = afterValue ? Number.parseInt(afterValue, 10) : 0;
+      if (!Number.isFinite(after) || after < 0) {
+        throw new Error("--after must be a non-negative event cursor");
+      }
+      await tailSession(client, sessionId, after, follow, globals.json);
+      return;
+    }
     const session = parseSessionCommand(args);
     const sessionArgs = session.args;
     if (session.action === "list") {
@@ -1418,7 +1582,6 @@ export async function runCommand(
         client,
         config,
         undefined,
-        !globals.json,
       );
       const agentId = await selectedSessionAgent(
         client,
@@ -1434,6 +1597,7 @@ export async function runCommand(
           session.keep,
           globals.json,
           globals.verbose === true,
+          globals.idempotencyKey,
         );
         if (globals.json) printJSON(result);
         return;
@@ -1491,6 +1655,7 @@ export async function runCommand(
         prompt,
         session.keep,
         globals.json,
+        globals.idempotencyKey,
       );
       if (globals.json) {
         printJSON({ sessionId, ...result, status: "completed" });

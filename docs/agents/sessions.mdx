@@ -56,6 +56,14 @@ npm run session -- send <session-id> "Continue"
 npm run session -- end <session-id>
 ```
 
+Follow the durable event log directly. With `--json`, each event is one NDJSON
+record suitable for a coding agent or log processor:
+
+```bash
+opencomputer sessions tail <session-id> --after 0 --json
+opencomputer sessions tail <session-id> --after 42 --no-follow --json
+```
+
 Project scripts resolve the `opencomputer` binary from the installed
 `@opencomputer/cli` package. For a one-off invocation outside those scripts,
 select the scoped package explicitly:

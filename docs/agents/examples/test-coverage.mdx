@@ -84,10 +84,10 @@ repository files cannot redirect the publishing tool to another repository.
 
 Create a short-lived, fine-grained GitHub token restricted to the fixture
 repository with **Contents: read and write** and **Pull requests: read and
-write**. Store it as a Development secret through the hidden prompt:
+write**. Pipe it into the stdin-only Development secret command:
 
 ```bash
-npm run opencomputer -- secrets set GITHUB_PAT \
+printf %s "$GITHUB_PAT" | npm run opencomputer -- secrets set GITHUB_PAT --value-stdin \
   --environment development \
   --agent current
 ```

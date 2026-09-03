@@ -821,6 +821,17 @@ describe("managed agents proxy", () => {
               botUserId: "bot_private",
               verifiedAt: "2026-07-31T00:30:00.000Z",
               verificationError: null,
+              lastEventAt: "2026-07-31T00:45:00.000Z",
+              lastDelivery: {
+                status: "delivered",
+                at: "2026-07-31T00:46:00.000Z",
+                responseBody: "private",
+              },
+              lastError: {
+                category: "turn_delivery_failed",
+                at: "2026-07-31T00:40:00.000Z",
+                message: "private",
+              },
               status: "connected",
               createdAt: "2026-07-31T00:00:00.000Z",
               updatedAt: "2026-07-31T01:00:00.000Z",
@@ -879,6 +890,15 @@ describe("managed agents proxy", () => {
           teamName: "OpenComputer",
           verifiedAt: "2026-07-31T00:30:00.000Z",
           verificationError: null,
+          lastEventAt: "2026-07-31T00:45:00.000Z",
+          lastDelivery: {
+            status: "delivered",
+            at: "2026-07-31T00:46:00.000Z",
+          },
+          lastError: {
+            category: "turn_delivery_failed",
+            at: "2026-07-31T00:40:00.000Z",
+          },
           status: "connected",
           createdAt: "2026-07-31T00:00:00.000Z",
           updatedAt: "2026-07-31T01:00:00.000Z",

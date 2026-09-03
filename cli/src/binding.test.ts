@@ -42,7 +42,7 @@ test("first dev can select an existing project and later reuses its binding", as
       client,
       config,
       initialized.agentRoot,
-      { project: "existing-project", interactive: false },
+      { project: "existing-project" },
     );
     assert.equal(selected.projectId, "prj_existing");
     assert.equal(selected.agentId, "agent-cloud");
@@ -62,7 +62,7 @@ test("first dev can select an existing project and later reuses its binding", as
       client,
       config,
       initialized.agentRoot,
-      { interactive: false },
+      {},
     );
     assert.deepEqual(reused, selected);
     assert.equal(creates, 0);
@@ -87,10 +87,36 @@ test("non-interactive commands direct an unlinked app to link", async () => {
         },
         { apiUrl: "https://app.opencomputer.dev" },
         initialized.agentRoot,
-        { interactive: false },
+        {},
       ),
       /opencomputer link/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit project creation reuses the existing slug on retry", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    let creates = 0;
+    const binding = await ensureProjectBinding(
+      {
+        async projects() {
+          return [project()];
+        },
+        async createProject() {
+          creates += 1;
+          return project();
+        },
+      },
+      { apiUrl: "https://app.opencomputer.dev" },
+      initialized.agentRoot,
+      { createProjectName: "Existing Project" },
+    );
+    assert.equal(binding.projectId, "prj_existing");
+    assert.equal(creates, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
