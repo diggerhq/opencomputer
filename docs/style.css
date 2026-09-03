@@ -1,0 +1,14 @@
+/* Pre-cutover notice for the v2 docs.
+ *
+ * The banner takes its background from `bg-primary-dark` (colors.dark, a
+ * near-black), so it can only be recoloured here — changing colors.dark would
+ * repaint the whole site. Text is already forced white by the banner's own
+ * utilities, so only the background needs overriding.
+ *
+ * Violet-600 rather than a pastel: white on a genuinely light purple lands
+ * around 3:1 and fails WCAG AA for 14px text. This reads purple and clears AA
+ * at ~5.7:1.
+ */
+#banner {
+  background-color: #7c3aed !important;
+}

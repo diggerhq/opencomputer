@@ -362,6 +362,10 @@
       }
     ]
   },
+  "banner": {
+    "content": "✨ You are viewing the **v2** SDK docs, which have not gone into effect yet. For the docs that describe the platform as it works today, go to [docs-v1.opencomputer.dev](https://docs-v1.opencomputer.dev).",
+    "dismissible": false
+  },
   "logo": {
     "light": "/images/logo-light.svg",
     "dark": "/images/logo-dark.svg",
