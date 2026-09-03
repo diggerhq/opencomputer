@@ -93,6 +93,21 @@ type Config struct {
 	// avoid.
 	SizeImages map[int]string
 
+	// TemplateBaseImageArn and TemplateBuildRoleArn are the two ARNs
+	// create-microvm-image requires when building a CUSTOM TEMPLATE image.
+	//
+	// They mirror deploy/microvm/publish.sh (MICROVM_BASE_IMAGE_ARN defaulting
+	// to the AWS-owned al2023-1 base, and the build role it passes). The base
+	// is service-owned and snapshot-compatible, which is why a customer cannot
+	// choose their own FROM: the image must derive from it.
+	//
+	// TemplateBuildRoleArn is the role AWS assumes to RUN THE CUSTOMER'S
+	// DOCKERFILE. It is the one place customer-authored commands execute with
+	// credentials of ours, so it must carry the minimum needed to pull the
+	// artifact and write logs — never the role used elsewhere in this package.
+	TemplateBaseImageArn string
+	TemplateBuildRoleArn string
+
 	// ExecutionRoleArn is assumed by the MicroVM itself, for the guest's own AWS
 	// access. It is NOT the role this worker uses to call the API.
 	ExecutionRoleArn string
@@ -272,11 +287,27 @@ type API interface {
 	CreateMicrovmAuthToken(context.Context, *lambdamicrovms.CreateMicrovmAuthTokenInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error)
 }
 
+// ImageAPI is the image-MANAGEMENT surface, kept separate from API on purpose.
+//
+// API is the runtime surface every cell exercises on the hot path, and several
+// tests implement it in full. Image management is used only by the custom
+// template builder, so folding these in would force every existing fake to grow
+// four methods it never calls. A cell with no builder configured simply leaves
+// this nil.
+type ImageAPI interface {
+	CreateMicrovmImage(context.Context, *lambdamicrovms.CreateMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmImageOutput, error)
+	GetMicrovmImage(context.Context, *lambdamicrovms.GetMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageOutput, error)
+	GetMicrovmImageVersion(context.Context, *lambdamicrovms.GetMicrovmImageVersionInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageVersionOutput, error)
+	GetMicrovmImageBuild(context.Context, *lambdamicrovms.GetMicrovmImageBuildInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageBuildOutput, error)
+	DeleteMicrovmImage(context.Context, *lambdamicrovms.DeleteMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.DeleteMicrovmImageOutput, error)
+}
+
 // Client wraps the MicroVM API with the bits every caller needs: idempotent
 // runs, a token cache, and state translation.
 type Client struct {
-	api API
-	cfg Config
+	api      API
+	imageAPI ImageAPI
+	cfg      Config
 
 	mu     sync.Mutex
 	tokens map[string]*cachedToken
@@ -291,10 +322,12 @@ type cachedToken struct {
 // NewClient builds a Client from an already-resolved AWS config.
 func NewClient(awsCfg aws.Config, cfg Config) *Client {
 	cfg.applyDefaults()
+	svc := lambdamicrovms.NewFromConfig(awsCfg)
 	return &Client{
-		api:    lambdamicrovms.NewFromConfig(awsCfg),
-		cfg:    cfg,
-		tokens: make(map[string]*cachedToken),
+		api:      svc,
+		imageAPI: svc,
+		cfg:      cfg,
+		tokens:   make(map[string]*cachedToken),
 	}
 }
 
@@ -302,6 +335,13 @@ func NewClient(awsCfg aws.Config, cfg Config) *Client {
 func NewClientWithAPI(api API, cfg Config) *Client {
 	cfg.applyDefaults()
 	return &Client{api: api, cfg: cfg, tokens: make(map[string]*cachedToken)}
+}
+
+// WithImageAPI attaches the image-management surface. Separate from
+// NewClientWithAPI so existing fakes keep working unchanged.
+func (c *Client) WithImageAPI(api ImageAPI) *Client {
+	c.imageAPI = api
+	return c
 }
 
 // Config exposes the resolved configuration (defaults applied).
