@@ -1,340 +1,72 @@
 ---
 title: "Templates"
-description: "Define sandbox environments programmatically with the Image builder and Snapshots"
+description: "Which templates carry over, and which do not"
 ---
 
-<Warning>Templates are an alpha, experimental feature. APIs, behavior, and manifest formats may change without notice.</Warning>
+Templates work on v2, but **the templates you have today probably do not.** This is
+the migration issue most likely to affect you, and it is worth checking before anything moves.
 
-Templates provide a code-first approach to defining sandbox environments. Instead of configuring images manually, you define them programmatically using the SDK.
+## How a template is applied here
 
-The system supports two workflows:
+A template create claims a standard pooled sandbox and unpacks the template's **workspace
+archive** on top of it. That keeps the fast pooled create and makes a template cost a tarball
+rather than a separately published machine image.
 
-1. **Declarative images** — build images with varying dependencies _on demand_ when creating sandboxes
-2. **Pre-built snapshots** — create and register _ready-to-use_ snapshots that can be shared across multiple sandboxes
-
-## Declarative image building
-
-Build images on-the-fly when creating sandboxes. Ideal for iterating quickly without creating separate snapshots.
-
-Declarative images are **cached by content hash** — identical manifests produce the same image. Subsequent runs reuse the cached image instantly.
-
-<CodeGroup>
-
-```typescript TypeScript
-import { Sandbox } from '@opencomputer/sdk';
-import { Image } from '@opencomputer/sdk/node';
-
-// Define an image with packages, env vars, and files
-const image = Image.base()
-  .aptInstall(['curl', 'jq'])
-  .pipInstall(['requests', 'pandas'])
-  .env({ PROJECT_ROOT: '/workspace' })
-  .workdir('/workspace');
-
-// Create a sandbox — the image is built on first run, cached after
-const sandbox = await Sandbox.create({
-  image,
-  timeout: 300,
-  onBuildLog: (log) => console.log(`build: ${log}`),
-});
-
-const result = await sandbox.exec.run('which curl');
-console.log(result.exitCode); // 0
+```typescript
+const sandbox = await Sandbox.create({ templateID: "my-template" });
 ```
 
-```python Python
-from opencomputer import Sandbox, Image
-
-# Define an image with packages, env vars, and files
-image = (
-    Image.base()
-    .apt_install(["curl", "jq"])
-    .pip_install(["requests", "pandas"])
-    .env({"PROJECT_ROOT": "/workspace"})
-    .workdir("/workspace")
-)
-
-# Create a sandbox — the image is built on first run, cached after
-sandbox = await Sandbox.create(
-    image=image,
-    timeout=300,
-    on_build_log=lambda log: print(f"build: {log}"),
-)
-
-result = await sandbox.exec.run("which curl")
-print(result.exit_code)  # 0
-```
-
-```bash curl
-curl -X POST https://app.opencomputer.dev/api/sandboxes \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "image": {
-      "steps": [
-        {"type": "apt_install", "packages": ["curl", "jq"]},
-        {"type": "pip_install", "packages": ["requests", "pandas"]},
-        {"type": "env", "vars": {"PROJECT_ROOT": "/workspace"}},
-        {"type": "workdir", "path": "/workspace"}
-      ]
-    },
-    "timeout": 300
-  }'
-```
-
-</CodeGroup>
-
-When you pass an `image` to `Sandbox.create()`, the server:
-
-1. Hashes the image manifest to compute a **cache key**
-2. If cached, creates the sandbox from the existing checkpoint instantly
-3. If not cached, boots a build sandbox, executes each step, checkpoints the result, then creates your sandbox from it
-
-### Build memory
-
-Images build in a **4 GB** sandbox by default. If a build runs out of memory (heavy `apt`/`pip`/`npm`, compiling a large toolchain), raise the build-phase RAM with **`.builderMemory(mb)` / `.builder_memory(mb)`**.
-
-This only affects the build. The resulting image is unchanged — you size the actual sandbox when you create it, via `memoryMB`:
-
-<CodeGroup>
-
-```typescript TypeScript
-// 8 GB to build…
-const image = Image.base()
-  .aptInstall(['build-essential', 'cmake'])
-  .runCommands('make -j')
-  .builderMemory(8192);
-
-// …but the sandbox runs at whatever you ask for
-const sandbox = await Sandbox.create({ image, memoryMB: 4096 });
-```
-
-```python Python
-image = (
-    Image.base()
-    .apt_install(["build-essential", "cmake"])
-    .run_commands("make -j")
-    .builder_memory(8192)
-)
-sandbox = await Sandbox.create(image=image)  # size via the HTTP API's memoryMB
-```
-
-</CodeGroup>
-
-`builderMemory` doesn't change the cache key — it's a build resource, not image content.
-
-## Creating pre-built snapshots
-
-Create named snapshots that persist permanently and can be shared across sandboxes. Snapshots are visible in the dashboard and don't need to be rebuilt.
-
-<CodeGroup>
-
-```typescript TypeScript
-import { Image, Snapshots } from '@opencomputer/sdk/node';
-
-const snapshots = new Snapshots();
-
-// Define the image
-const image = Image.base()
-  .aptInstall(['python3-pip'])
-  .pipInstall(['pandas', 'numpy', 'scikit-learn'])
-  .workdir('/workspace');
-
-// Create a named snapshot with build log streaming
-await snapshots.create({
-  name: 'data-science',
-  image,
-  onBuildLogs: (log) => console.log(`build: ${log}`),
-});
-
-// Now create sandboxes from the snapshot — instant, no build step
-const sandbox = await Sandbox.create({ snapshot: 'data-science' });
-```
-
-```python Python
-from opencomputer import Image, Snapshots
-
-snapshots = Snapshots()
-
-# Define the image
-image = (
-    Image.base()
-    .apt_install(["python3-pip"])
-    .pip_install(["pandas", "numpy", "scikit-learn"])
-    .workdir("/workspace")
-)
-
-# Create a named snapshot with build log streaming
-await snapshots.create(
-    name="data-science",
-    image=image,
-    on_build_logs=lambda log: print(f"build: {log}"),
-)
-
-# Now create sandboxes from the snapshot — instant, no build step
-sandbox = await Sandbox.create(snapshot="data-science")
-```
-
-```bash curl
-# Create a named snapshot
-curl -X POST https://app.opencomputer.dev/api/snapshots \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "data-science",
-    "image": {
-      "steps": [
-        {"type": "apt_install", "packages": ["python3-pip"]},
-        {"type": "pip_install", "packages": ["pandas", "numpy", "scikit-learn"]},
-        {"type": "workdir", "path": "/workspace"}
-      ]
-    }
-  }'
-
-# Create sandbox from the snapshot — instant
-curl -X POST https://app.opencomputer.dev/api/sandboxes \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"snapshot": "data-science"}'
-```
-
-</CodeGroup>
-
-### Sizing a fork's memory
-
-A sandbox created from a snapshot inherits the snapshot's memory by default. Pass `memoryMB` to give it more RAM — useful when one branch needs more headroom than the base.
-
-<CodeGroup>
-
-```typescript TypeScript
-// Fork the snapshot with 8 GB instead of its captured size
-const sandbox = await Sandbox.create({ snapshot: 'data-science', memoryMB: 8192 });
-```
-
-```python Python
-# Fork the snapshot with 8 GB instead of its captured size
-sandbox = await Sandbox.create(snapshot="data-science", memory_mb=8192)
-```
-
-```bash curl
-curl -X POST https://app.opencomputer.dev/api/sandboxes \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"snapshot": "data-science", "memoryMB": 8192}'
-```
-
-</CodeGroup>
-
-`memoryMB` is clamped to a valid range, and the response's `memoryMB` reports the effective value:
-
-- **Floor — the snapshot's own memory.** A smaller request is ignored; a fork can't start smaller than the snapshot it restores. A 4 GB snapshot forked with `memoryMB: 1024` still boots at ~4 GB.
-- **Ceiling.** Larger requests are capped to the maximum platform tier.
-
-The same `memoryMB` field works when [forking from a checkpoint](/api-reference/checkpoints/fork).
-
-### Managing snapshots
-
-<CodeGroup>
-
-```typescript TypeScript
-const snapshots = new Snapshots();
-
-// List all snapshots
-const list = await snapshots.list();
-for (const s of list) {
-  console.log(`${s.name} — ${s.status}`);
-}
-
-// Get a specific snapshot
-const snapshot = await snapshots.get('data-science');
-console.log(snapshot.status); // "ready"
-
-// Delete a snapshot
-await snapshots.delete('data-science');
-```
-
-```python Python
-snapshots = Snapshots()
-
-# List all snapshots
-snapshot_list = await snapshots.list()
-for s in snapshot_list:
-    print(f"{s['name']} — {s['status']}")
-
-# Get a specific snapshot
-snapshot = await snapshots.get("data-science")
-print(snapshot["status"])  # "ready"
-
-# Delete a snapshot
-await snapshots.delete("data-science")
-```
-
-```bash curl
-# List all snapshots
-curl https://app.opencomputer.dev/api/snapshots \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY"
-
-# Get a specific snapshot
-curl https://app.opencomputer.dev/api/snapshots/data-science \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY"
-
-# Delete a snapshot
-curl -X DELETE https://app.opencomputer.dev/api/snapshots/data-science \
-  -H "X-API-Key: $OPENCOMPUTER_API_KEY"
-```
-
-</CodeGroup>
-
----
-
-## Default template
-
-Sandboxes use the default template when no image or snapshot is specified. It includes:
-
-- **Ubuntu 22.04**
-- **Python 3** with pip, venv, setuptools
-- **Node.js 20 LTS** with npm
-- **Build tools:** build-essential, cmake, pkg-config
-- **CLI tools:** git, git-lfs, curl, wget, jq, rsync, htop, tree
-- **Editors:** nano, vim-tiny
-- **Database:** sqlite3
-- **Networking:** openssh-client, iproute2, net-tools, dnsutils
-- **Claude Agent SDK** and claude-code (pre-installed for agent sessions)
-
----
-
-## Image configuration
-
-The `Image` class provides a fluent, immutable API for defining sandbox environments. Each method returns a **new** `Image` instance — the original is never modified.
-
-| Method | Description |
-| --- | --- |
-| `Image.base()` | Start from the default OpenSandbox environment |
-| `.aptInstall(packages)` / `.apt_install(packages)` | Install system packages via apt-get |
-| `.pipInstall(packages)` / `.pip_install(packages)` | Install Python packages via pip |
-| `.runCommands(...cmds)` / `.run_commands(*cmds)` | Run shell commands during build |
-| `.env(vars)` | Set environment variables (written to `/etc/environment`) |
-| `.workdir(path)` | Set default working directory |
-| `.addFile(path, content)` / `.add_file(path, content)` | Embed a file with inline content |
-| `.addLocalFile(local, remote)` / `.add_local_file(local, remote)` | Read a local file into the image |
-| `.addLocalDir(local, remote)` / `.add_local_dir(local, remote)` | Read a local directory into the image |
-| `.builderMemory(mb)` / `.builder_memory(mb)` | RAM for the build phase (default 4 GB; doesn't affect the resulting sandbox) |
-| `.toJSON()` / `.to_dict()` | Return the image manifest |
-| `.cacheKey()` / `.cache_key()` | Compute SHA-256 content hash |
-
-## SnapshotInfo
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | string | Unique snapshot identifier |
-| `name` | string | Snapshot name |
-| `status` | string | `"building"`, `"ready"`, or `"failed"` |
-| `contentHash` | string | SHA-256 hash of the image manifest |
-| `checkpointId` | string | Linked checkpoint ID |
-| `manifest` | object | The declarative image manifest |
-| `createdAt` | string | ISO 8601 creation timestamp |
-| `lastUsedAt` | string | ISO 8601 last usage timestamp |
-
-<Tip>
-  Full SDK reference: [TypeScript SDK](/sdks/typescript/templates) · [Python SDK](/sdks/python/templates) · [HTTP API](/reference/api#snapshots).
-</Tip>
+## The catch: rootfs templates are refused
+
+<Warning>
+A template that carries a **rootfs image** cannot be used on v2. The create fails with
+*"template … carries a rootfs image, which v2 cannot restore."*
+</Warning>
+
+Templates built on v1 capture the **whole disk** — every system-level change,
+not just your workspace. This runtime can only replay the workspace half, and doing that
+silently would hand you your files while dropping every system change the template existed for:
+a template that looks like it worked and hasn't.
+
+So it refuses instead. That is the right failure, but it means:
+
+**Any template that installed system packages, changed system configuration, or was built
+before your org moved will need rebuilding on the new runtime.**
+
+## What to do
+
+<Steps>
+  <Step title="List your templates and try each one">
+    A refused template fails loudly at create with the message above. That is the fastest audit
+    — you do not need to inspect anything.
+  </Step>
+  <Step title="Rebuild the ones that fail">
+    Start a sandbox on the new runtime, install what the template provided, and capture it as a
+    [checkpoint](/sandboxes/checkpoints) or a new template. What can be captured is the
+    filesystem, so anything you can install with files and packages carries over.
+  </Step>
+  <Step title="Move system-level setup into the image, or into your startup">
+    If the template depended on changes outside the workspace, they need to live somewhere else
+    — either in a published image (talk to us) or as a step your sandbox runs on boot.
+  </Step>
+</Steps>
+
+## Image builds are not available
+
+<Warning>
+Declarative image manifests (`image:` on create) and the image build pipeline are **not
+supported** on v2. They depend on a build fleet it does not have.
+</Warning>
+
+If you build images today, that workflow needs an alternative before you migrate:
+
+<CardGroup cols={2}>
+  <Card title="Workspace templates" icon="layer-group">
+    Prepare a workspace once and start sandboxes from it — as long as it does not need a
+    rootfs.
+  </Card>
+  <Card title="Checkpoints" icon="camera">
+    Install into a sandbox, checkpoint it, and restore that checkpoint when you need the
+    environment again.
+  </Card>
+</CardGroup>

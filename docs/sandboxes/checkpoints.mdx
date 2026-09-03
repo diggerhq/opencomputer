@@ -1,224 +1,66 @@
 ---
 title: "Checkpoints"
-description: "Snapshot and fork sandbox state"
+description: "Filesystem snapshots — what they capture, and what they do not"
 ---
 
-A checkpoint is a named snapshot of a running sandbox. Fork new sandboxes from it to start from a known-good environment — like git branches for VMs.
-
-## Checkpoint Types
-
-OpenComputer supports two checkpoint modes:
-
-| Type | Preserves | Use when |
-| --- | --- | --- |
-| Full checkpoint | Disk, memory, and CPU state | You want the fastest fork or restore path from an exact running VM state. This is best for templates, important milestones, and branches you expect to fork often. |
-| Disk-only checkpoint | Rootfs and workspace disk state | You want lightweight, frequent snapshots of files, installed packages, and workspace changes. Forks boot from the saved disks, so they are cheaper to keep but may take longer to become ready. |
-
-Full checkpoints are the default. Use `kind: "disk_only"` when creating autosaves or high-frequency checkpoints where disk state is enough.
-
-<CodeGroup>
-
-```typescript TypeScript
-import { Sandbox } from "@opencomputer/sdk";
-
-const sandbox = await Sandbox.create();
-await sandbox.exec.run("npm install && npm run build", { cwd: "/app" });
-
-// Checkpoint after setup
-const cp = await sandbox.createCheckpoint("after-build");
-
-// Fork two independent sandboxes
-const a = await Sandbox.createFromCheckpoint(cp.id);
-const b = await Sandbox.createFromCheckpoint(cp.id);
-
-await a.exec.run("npm run test:unit", { cwd: "/app" });
-await b.exec.run("npm run test:e2e", { cwd: "/app" });
-```
-
-```python Python
-from opencomputer import Sandbox
-
-sandbox = await Sandbox.create()
-await sandbox.exec.run("npm install && npm run build", cwd="/app")
-
-cp = await sandbox.create_checkpoint("after-build")
-
-a = await Sandbox.create_from_checkpoint(cp["id"])
-b = await Sandbox.create_from_checkpoint(cp["id"])
-
-await a.exec.run("npm run test:unit", cwd="/app")
-await b.exec.run("npm run test:e2e", cwd="/app")
-```
-
-</CodeGroup>
-
-## Checkpoints vs Hibernation
-
-| | Checkpoint | Hibernation |
-| --- | --- | --- |
-| Purpose | Fork new sandboxes from saved state | Pause and resume the **same** sandbox |
-| Original sandbox | Keeps running | Stopped |
-| Can fork | Yes — unlimited new sandboxes | No |
-| Count | Up to 10 per sandbox, with optional oldest-checkpoint cleanup | One hibernation state |
-| Use case | Parallel testing, branching experiments | Cost savings, idle timeout |
-
-## What Gets Preserved
-
-Checkpoints capture the filesystem and installed state. Forked sandboxes start with a fresh boot from that disk state — the platform attempts warm restore when possible, but may fall back to a cold boot. Don't assume running processes carry over.
-
-## API Reference
-
-### Create Checkpoint
-
-<CodeGroup>
-
-```typescript TypeScript
-const checkpoint = await sandbox.createCheckpoint("before-migration");
-// checkpoint.id, checkpoint.status ("processing" → "ready")
-```
-
-```python Python
-checkpoint = await sandbox.create_checkpoint("before-migration")
-# checkpoint["id"], checkpoint["status"]
-```
-
-```bash CLI
-oc cp create sb-abc123 --name before-migration
-```
-
-</CodeGroup>
-
-Checkpoint name must be unique within the sandbox. Status transitions from `processing` to `ready` (or `failed`).
-
-Each sandbox can have up to 10 full checkpoints and up to 100 disk-only checkpoints. To create a new checkpoint without failing at the limit, pass a retention policy that deletes the oldest eligible checkpoint of the same type first:
-
-<CodeGroup>
-
-```typescript TypeScript
-const checkpoint = await sandbox.createCheckpoint("autosave", {
-  kind: "disk_only",
-  retentionPolicy: { mode: "delete_oldest", maxCount: 100 },
-});
-```
-
-```python Python
-checkpoint = await sandbox.create_checkpoint(
-    "autosave",
-    kind="disk_only",
-    retention_policy={"mode": "delete_oldest", "maxCount": 100},
-)
-```
-
-```bash CLI
-oc cp create sb-abc123 \
-  --name autosave \
-  --kind disk_only \
-  --retention-policy delete_oldest \
-  --retention-max-count 100
-```
-
-</CodeGroup>
-
-Retention skips checkpoints that are public, have patches, or are still referenced by forked sandboxes. If no eligible checkpoint of the requested type can be deleted, creation fails instead of deleting protected state.
-
-### List Checkpoints
-
-<CodeGroup>
-
-```typescript TypeScript
-const checkpoints = await sandbox.listCheckpoints();
-```
-
-```python Python
-checkpoints = await sandbox.list_checkpoints()
-```
-
-</CodeGroup>
-
-### Fork from Checkpoint
-
-Creates a new sandbox from a checkpoint:
-
-<CodeGroup>
-
-```typescript TypeScript
-const forked = await Sandbox.createFromCheckpoint(checkpointId, {
-  timeout: 600,
-});
-```
-
-```python Python
-forked = await Sandbox.create_from_checkpoint(checkpoint_id, timeout=600)
-```
-
-</CodeGroup>
-
-### Restore Checkpoint
-
-Revert a sandbox in-place. All changes since the checkpoint are lost:
-
-<CodeGroup>
-
-```typescript TypeScript
-await sandbox.restoreCheckpoint(checkpointId);
-```
-
-```python Python
-await sandbox.restore_checkpoint(checkpoint_id)
-```
-
-</CodeGroup>
-
-### Delete Checkpoint
-
-<CodeGroup>
-
-```typescript TypeScript
-await sandbox.deleteCheckpoint(checkpointId);
-```
-
-```python Python
-await sandbox.delete_checkpoint(checkpoint_id)
-```
-
-</CodeGroup>
-
-## CheckpointInfo
-
-| Field | TypeScript | Python | Description |
-| --- | --- | --- | --- |
-| ID | `id` | `id` | Checkpoint UUID |
-| Sandbox ID | `sandboxId` | `sandboxID` | Source sandbox |
-| Name | `name` | `name` | Human-readable name |
-| Status | `status` | `status` | `processing`, `ready`, or `failed` |
-| Size | `sizeBytes` | `sizeBytes` | Snapshot size in bytes |
-| Created | `createdAt` | `createdAt` | Timestamp |
-
-<Note>
-  The TypeScript SDK returns typed `CheckpointInfo` objects. Python returns raw dictionaries with the HTTP API field names.
-</Note>
-
-## Example: Parallel Exploration
-
-Try multiple approaches from the same starting point:
+A checkpoint captures the sandbox's **filesystem**. Restoring puts those files back.
 
 ```typescript
-const sandbox = await Sandbox.create();
-await sandbox.exec.run("git clone https://github.com/user/repo /app");
-const cp = await sandbox.createCheckpoint("fresh-clone");
+const cp = await sandbox.createCheckpoint("after-install");
+// wait for status "ready"
 
-// Try three different migration strategies in parallel
-const strategies = ["--strategy=ours", "--strategy=theirs", "--strategy=recursive"];
-const results = await Promise.all(
-  strategies.map(async (strategy) => {
-    const fork = await Sandbox.createFromCheckpoint(cp.id);
-    const result = await fork.exec.run(`cd /app && git merge origin/main ${strategy}`);
-    await fork.kill();
-    return { strategy, exitCode: result.exitCode };
-  }),
-);
+await sandbox.restoreCheckpoint(cp.checkpointId);
 ```
 
-<Tip>
-  CLI equivalent: [`oc checkpoint`](/cli/checkpoint). Full reference: [TypeScript SDK](/reference/typescript-sdk#sandbox) · [Python SDK](/reference/python-sdk#sandbox) · [HTTP API](/reference/api#checkpoints).
-</Tip>
+<Warning>
+Checkpoints on v2 **do not capture live memory**. Restoring gives you your files back
+on a freshly booted sandbox — not a process tree resumed mid-execution.
+</Warning>
+
+## Why
+
+The current runtime can snapshot a running VM's memory because we operate the hypervisor. The
+v2 platform exposes no snapshot or memory-export operation at all, so a filesystem archive
+is the only checkpoint that can exist here. This is an API ceiling, not a missing feature.
+
+## What this changes for you
+
+**If you checkpoint an installed environment** — dependencies, a built toolchain, a seeded
+database directory — nothing changes. That is a filesystem, and it restores exactly.
+
+**If you checkpoint a warmed process** — a loaded model, an open connection pool, a debugger
+paused at a breakpoint — that state is gone on restore. Your process starts again from scratch,
+with its files in place.
+
+The practical test: if you would be happy with the result of `reboot` plus your files, a
+checkpoint gives you that.
+
+## The `kind` argument
+
+The current runtime accepts `kind: "full"` for a memory-inclusive checkpoint. Here:
+
+- omitting `kind`, or asking for `disk_only`, works and produces a filesystem checkpoint
+- explicitly asking for `full` is **refused**, rather than quietly giving you a disk-only
+  checkpoint under a name that promises more
+
+```typescript
+await sandbox.createCheckpoint("env");                         // fine
+await sandbox.createCheckpoint("env", { kind: "disk_only" });  // fine
+await sandbox.createCheckpoint("env", { kind: "full" });       // refused
+```
+
+## Restore is in-place
+
+`restoreCheckpoint` rolls the current sandbox's filesystem back to the checkpoint. It does not
+create a new sandbox.
+
+<Note>
+**Forking a new sandbox from a checkpoint is not available yet.** `createFromCheckpoint` fails
+on v2. It is being worked on. Until then, restore into an existing sandbox.
+</Note>
+
+## Checkpoints outlive their sandbox
+
+A checkpoint is stored durably and is not bound to the sandbox that produced it. That makes it
+the tool for surviving the [8-hour ceiling](/sandboxes/lifetime): checkpoint before the deadline,
+then restore onto a sandbox you create later.

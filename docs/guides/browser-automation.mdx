@@ -31,7 +31,7 @@ If the site has a good API, use the API. A browser is slower, heavier, and flaki
 
 ## Step 1: Build a snapshot with Chromium pre-installed
 
-Browser setup is heavy (apt packages + Chromium binary is ~500MB). Bake it into a [named snapshot](/sandboxes/snapshots) once, launch sandboxes from it in seconds.
+Browser setup is heavy (apt packages + Chromium binary is ~500MB). Bake it into a [template](/sandboxes/templates) once, launch sandboxes from it in seconds.
 
 ```typescript build-snapshot.ts
 import { Image, Snapshots } from "@opencomputer/sdk/node";
@@ -227,7 +227,7 @@ await run("npx", ["libretto", "save", "app.example.com", "--session", "login"], 
 // → writes /home/sandbox/.libretto/profiles/app.example.com.json
 ```
 
-The profile lives on the data disk, which survives sandbox hibernation. For cross-sandbox persistence, [snapshot the sandbox](/sandboxes/snapshots) after login and launch future sandboxes from that warm snapshot — they'll boot already logged in.
+The profile lives on the data disk, which survives sandbox hibernation. For cross-sandbox persistence, [checkpoint the sandbox](/sandboxes/checkpoints) after login and launch future sandboxes from that warm snapshot — they'll boot already logged in.
 
 ---
 
@@ -280,5 +280,5 @@ OC's preview-URL edge buffers response bodies — streaming chunks don't reach t
 ## Next steps
 
 - Read the [libretto docs](https://libretto.sh/docs) for the full CLI + library reference.
-- See [Snapshots](/sandboxes/snapshots) for how to checkpoint a warmed-up browser VM.
+- See [Checkpoints](/sandboxes/checkpoints) for how to checkpoint a warmed-up browser VM.
 - See [Secret Stores](/sandboxes/secrets) for scoping egress and sealing real credentials.
