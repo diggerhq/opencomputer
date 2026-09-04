@@ -31,7 +31,9 @@ const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
 const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
-const ManagedTemplateNew = lazy(() => import('./managed-agents/TemplateNew'))
+const ManagedProjectOnboarding = lazy(
+  () => import('./managed-agents/ProjectOnboarding'),
+)
 const ModelAccessCallback = lazy(
   () => import('./managed-agents/ModelAccessCallback'),
 )
@@ -79,9 +81,9 @@ export default function App() {
             />
             <Route
               path="managed-agents/new"
-              element={<Navigate to="/" replace />}
+              element={<Navigate to="/new" replace />}
             />
-            <Route path="new" element={<ManagedTemplateNew />} />
+            <Route path="new" element={<ManagedProjectOnboarding />} />
             <Route
               path="projects/:projectId"
               element={<ManagedProjectDetail />}
