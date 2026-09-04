@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencomputer-sdk"
-version = "0.6.9"
+# Read from opencomputer/version.py, which is also what the SDK announces to the
+# server in x-oc-sdk-version. One source, so the published version and the
+# routed-on version cannot disagree.
+dynamic = ["version"]
 description = "Python SDK for OpenComputer - cloud sandbox platform"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +43,9 @@ Homepage = "https://github.com/diggerhq/opensandbox"
 Repository = "https://github.com/diggerhq/opensandbox"
 Documentation = "https://github.com/diggerhq/opensandbox/tree/main/sdks/python"
 Issues = "https://github.com/diggerhq/opensandbox/issues"
+
+[tool.hatch.version]
+path = "opencomputer/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["opencomputer"]
