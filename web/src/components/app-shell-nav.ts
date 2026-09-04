@@ -12,6 +12,7 @@ import {
   Radio,
   Rocket,
   Send,
+  Settings2,
   Webhook,
   type LucideIcon,
 } from 'lucide-react'
@@ -91,6 +92,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/byok`,
             label: 'BYOK',
             icon: BrainCircuit,
+          },
+          {
+            to: `${projectPath}/settings`,
+            label: 'Settings',
+            icon: Settings2,
           },
           {
             to: projectPath,

@@ -1,6 +1,6 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Loader2, Trash2 } from 'lucide-react'
+import { KeyRound, Loader2, Pencil, Trash2 } from 'lucide-react'
 import {
   Panel,
   PanelContent,
@@ -19,6 +19,7 @@ import {
   getManagedProjectSecrets,
   putAgentRuntimeVariable,
   putManagedProjectSecret,
+  type ManagedProjectSecret,
 } from './api'
 
 type Environment = 'development' | 'production'
@@ -43,6 +44,8 @@ export function ManagedProjectSecrets({
   const [value, setValue] = useState('')
   const [origins, setOrigins] = useState('')
   const [agentId, setAgentId] = useState('')
+  const [editing, setEditing] = useState<ManagedProjectSecret | null>(null)
+  const valueInput = useRef<HTMLInputElement>(null)
   const queryKey = ['managed-project-secrets', projectId, environment]
   const secrets = useQuery({
     queryKey,
@@ -54,6 +57,8 @@ export function ManagedProjectSecrets({
       setName('')
       setValue('')
       setOrigins('')
+      setAgentId('')
+      setEditing(null)
       await queryClient.invalidateQueries({ queryKey })
       notifySuccess('Secret saved.', 'Its value remains write-only.')
     },
@@ -68,6 +73,27 @@ export function ManagedProjectSecrets({
     onError: (error) => notifyError("Couldn't remove the secret.", error),
   })
   const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]))
+
+  function edit(secret: ManagedProjectSecret) {
+    setEditing(secret)
+    setName(secret.name)
+    setValue('')
+    setOrigins(
+      secret.allowedOrigins.includes('*')
+        ? ''
+        : secret.allowedOrigins.join(', '),
+    )
+    setAgentId(secret.agentId ?? '')
+    requestAnimationFrame(() => valueInput.current?.focus())
+  }
+
+  function cancelEdit() {
+    setEditing(null)
+    setName('')
+    setValue('')
+    setOrigins('')
+    setAgentId('')
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -98,7 +124,9 @@ export function ManagedProjectSecrets({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Secrets</PanelTitle>
+            <PanelTitle>
+              {editing ? `Edit ${editing.name}` : 'Secrets'}
+            </PanelTitle>
             <PanelDescription className="mt-1">
               Write-only values injected by the managed egress gateway for the
               selected environment. Values never enter agent runtimes or logs.
@@ -118,6 +146,7 @@ export function ManagedProjectSecrets({
                 onChange={(event) => setName(event.target.value.toUpperCase())}
                 placeholder="GITHUB_TOKEN"
                 autoComplete="off"
+                disabled={Boolean(editing)}
               />
             </div>
             <div className="space-y-2">
@@ -126,6 +155,7 @@ export function ManagedProjectSecrets({
                 id="secret-scope"
                 value={agentId}
                 onChange={(event) => setAgentId(event.target.value)}
+                disabled={Boolean(editing)}
                 className="border-input bg-background h-8 w-full rounded-md border px-2.5 text-sm outline-none"
               >
                 <option value="">Entire project</option>
@@ -140,6 +170,7 @@ export function ManagedProjectSecrets({
               <Label htmlFor="secret-value">Value</Label>
               <Input
                 id="secret-value"
+                ref={valueInput}
                 type="password"
                 value={value}
                 onChange={(event) => setValue(event.target.value)}
@@ -181,8 +212,19 @@ export function ManagedProjectSecrets({
                 ) : (
                   <KeyRound />
                 )}
-                Save secret
+                {editing ? 'Replace secret' : 'Save secret'}
               </Button>
+              {editing ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="ml-2"
+                  disabled={save.isPending}
+                  onClick={cancelEdit}
+                >
+                  Cancel
+                </Button>
+              ) : null}
             </div>
           </form>
         </PanelContent>
@@ -245,22 +287,33 @@ export function ManagedProjectSecrets({
                     </p>
                   )}
                 </div>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  disabled={remove.isPending}
-                  onClick={() =>
-                    remove.mutate({
-                      projectId,
-                      environment: secret.environment,
-                      ...(secret.agentId ? { agentId: secret.agentId } : {}),
-                      name: secret.name,
-                    })
-                  }
-                >
-                  <Trash2 /> Remove
-                </Button>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={save.isPending || remove.isPending}
+                    onClick={() => edit(secret)}
+                  >
+                    <Pencil /> Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={save.isPending || remove.isPending}
+                    onClick={() =>
+                      remove.mutate({
+                        projectId,
+                        environment: secret.environment,
+                        ...(secret.agentId ? { agentId: secret.agentId } : {}),
+                        name: secret.name,
+                      })
+                    }
+                  >
+                    <Trash2 /> Remove
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

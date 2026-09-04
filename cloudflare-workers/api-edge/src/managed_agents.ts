@@ -1123,6 +1123,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (method === "DELETE" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }
@@ -1472,6 +1473,21 @@ export async function proxyManagedAgents(
     return Response.json(
       { error: "managed agents are not configured" },
       { status: 503 },
+    );
+  }
+  if (
+    request.method.toUpperCase() === "DELETE" &&
+    /^\/projects\/[^/]+$/.test(suffix) &&
+    caller.role !== "admin"
+  ) {
+    return Response.json(
+      {
+        error: {
+          code: "forbidden",
+          message: "Organization admin role is required to delete a project.",
+        },
+      },
+      { status: 403 },
     );
   }
   if (
