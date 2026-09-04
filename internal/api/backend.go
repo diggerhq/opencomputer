@@ -602,8 +602,17 @@ func (s *Server) claimBackend(p placement) (Placer, bool) {
 // anything, never on a specialised one.
 func (s *Server) runtimeFor(c echo.Context) string {
 	claims, _ := c.Get(capClaimsKey).(*auth.CapabilityClaims)
-	if claims != nil && claims.Runtime != "" {
-		return claims.Runtime
+	if claims != nil {
+		// Effective first: it is the edge's answer for THIS request, which for an
+		// unpinned org depends on the calling SDK and so can differ per call.
+		// Runtime is the org's pin and is what gets persisted; reading it here
+		// when Effective is set would ignore the routing decision entirely.
+		if claims.Effective != "" {
+			return claims.Effective
+		}
+		if claims.Runtime != "" {
+			return claims.Runtime
+		}
 	}
 	// No cap-token: this is the direct-to-cell create, authenticated with an
 	// API key against this cell rather than through the edge. D1 is still

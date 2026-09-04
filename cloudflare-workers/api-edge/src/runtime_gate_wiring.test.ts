@@ -96,14 +96,26 @@ function makeEnv(extra: Partial<Env> = {}): Env {
 
 const ctx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext;
 
-/** The `runtime` claim from the Bearer token the edge sent the cell. */
-function runtimeClaim(headers: HeadersInit | undefined): string {
+/** Decoded claims from the Bearer token the edge sent the cell. */
+function claims(headers: HeadersInit | undefined): { runtime?: string; rt?: string } {
   const auth = new Headers(headers).get("authorization") ?? "";
   const payload = auth.replace(/^Bearer /, "").split(".")[1];
   if (!payload) throw new Error(`no JWT in authorization header: ${auth}`);
-  const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-  return (JSON.parse(json).runtime as string) ?? "";
+  return JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
 }
+
+/** The runtime this create was ROUTED to — `rt`, falling back to the pin. */
+function runtimeClaim(headers: HeadersInit | undefined): string {
+  const c = claims(headers);
+  return c.rt ?? c.runtime ?? "";
+}
+
+/** The org's PIN — the only value the cell is allowed to persist. */
+function pinClaim(headers: HeadersInit | undefined): string {
+  return claims(headers).runtime ?? "";
+}
+
+let lastHeaders: HeadersInit | undefined;
 
 async function createWith(
   sdkVersion: string | null,
@@ -124,7 +136,8 @@ async function createWith(
   );
   expect(resp.status, `create failed: ${await resp.clone().text()}`).toBe(201);
   expect(fetchSpy).toHaveBeenCalled();
-  return runtimeClaim(fetchSpy.mock.calls[0][1]?.headers);
+  lastHeaders = fetchSpy.mock.calls[0][1]?.headers;
+  return runtimeClaim(lastHeaders);
 }
 
 describe("create routes by SDK version", () => {
@@ -191,5 +204,35 @@ describe("snapshot builds route by SDK version", () => {
 
   it("honours the org pin", async () => {
     expect(await snapshotWith("1.0.0", "qemu")).toBe("qemu");
+  });
+});
+
+// The bug a dev run found, and the reason `rt` exists as a separate claim.
+//
+// The cell PERSISTS the token's `runtime` into its own orgs table
+// (UpsertOrgFromCapToken). When that field carried the SDK-derived answer, an
+// unpinned org's very first create from a new SDK wrote itself in as a pin —
+// and from then on the org resolved to MicroVM even for a call deliberately
+// made from an older SDK. Measured: two dev orgs pinned themselves this way,
+// and the rollback path stopped working. Routing must be reversible.
+describe("SDK routing does not pin the org", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    orgRuntime = null;
+  });
+
+  it("sends an empty pin for an unpinned org routed to microvm by its SDK", async () => {
+    expect(await createWith("1.0.0")).toBe("microvm");
+    expect(pinClaim(lastHeaders), "the cell would persist this as the org's runtime").toBe("");
+  });
+
+  it("still sends a real pin when the org actually has one", async () => {
+    expect(await createWith("0.15.7", { runtime: "microvm" })).toBe("microvm");
+    expect(pinClaim(lastHeaders)).toBe("microvm");
+  });
+
+  it("leaves the pin empty for an old SDK too", async () => {
+    expect(await createWith("0.15.7")).toBe("");
+    expect(pinClaim(lastHeaders)).toBe("");
   });
 });

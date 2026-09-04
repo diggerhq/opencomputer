@@ -200,7 +200,14 @@ export interface FinalizeMsg {
   baseURL: string;
   plan: string;
   billingProvider: string;
+  /** The runtime this create was ROUTED to (may be SDK-derived). */
   runtime: string;
+  /**
+   * The org's pin from D1 — what the cell may persist. Absent on messages
+   * enqueued before this field existed; the consumer then falls back to
+   * `runtime`, which is exactly the old behaviour.
+   */
+  runtimePin?: string;
   sandboxID: string;
   workerID: string;
   /** Voucher creates only: the box to redeem against. Absent on every other path. */
@@ -243,16 +250,20 @@ async function cachedCapToken(
   billingProvider: string,
   runtime: string,
   userID: string | null,
+  effective = runtime,
 ): Promise<string> {
-  // runtime is in the cache key deliberately. It is the org's sandbox backend
+  // Both runtimes are in the cache key deliberately. `runtime` is the org's
   // assignment, and leaving it out would mean a D1 change did not take effect
   // until the entry aged out — an org would keep landing on the old runtime for
   // up to a minute after being reassigned, with nothing to explain why.
-  const key = `${orgID}|${cellID}|${plan}|${billingProvider}|${runtime}|${userID ?? ""}`;
+  // `effective` has to be there for a sharper reason: under SDK-version routing
+  // it differs BETWEEN CALLS for the same org, so a key without it would serve
+  // one SDK's token to the other and route the create to the wrong backend.
+  const key = `${orgID}|${cellID}|${plan}|${billingProvider}|${runtime}|${effective}|${userID ?? ""}`;
   const hit = capTokenCache.get(key);
   const nowMs = Date.now();
   if (hit && nowMs - hit.mintedAtMs < 60_000) return hit.token;
-  const token = await mintCapToken(secret, orgID, cellID, plan, billingProvider, runtime, userID);
+  const token = await mintCapToken(secret, orgID, cellID, plan, billingProvider, runtime, userID, effective);
   if (capTokenCache.size >= CACHE_MAX) capTokenCache.clear();
   capTokenCache.set(key, { token, mintedAtMs: nowMs });
   return token;
@@ -266,6 +277,7 @@ async function mintCapToken(
   billingProvider: string,
   runtime: string,
   userID: string | null,
+  effective = runtime,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
@@ -286,6 +298,18 @@ async function mintCapToken(
   // no assignment, and every token minted before this field existed, resolves
   // to the backend with the full feature set rather than a specialised one.
   if (runtime) payload.runtime = runtime;
+  // `rt` is the runtime THIS REQUEST was routed to, which for an unpinned org
+  // is decided by the calling SDK's major and therefore varies per call. It is
+  // deliberately a SEPARATE claim from `runtime` above, because the cell
+  // PERSISTS `runtime` into its own orgs table: writing a per-request answer
+  // there turns the first create from a new SDK into a permanent org pin, after
+  // which deliberately calling from an older SDK cannot move the org back.
+  // Measured on dev — two unpinned orgs pinned themselves to microvm on their
+  // own first create, and the rollback path stopped working.
+  //
+  // Omitted when it matches `runtime`, so tokens for pinned orgs are unchanged
+  // and the cell's fallback (read `runtime`) is exactly the old behaviour.
+  if (effective && effective !== runtime) payload.rt = effective;
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
   const signingInput =
@@ -1923,6 +1947,10 @@ async function finalizeEdgeClaim(
   sandboxID: string,
   workerID: string,
   bodyText: string,
+  // The org's pin. Defaults to `runtime` so callers that have only one value
+  // behave as before; the create path passes both because they differ whenever
+  // SDK-version routing decided this create.
+  runtimePin = runtime,
 ): Promise<void> {
   // Index insert is DEFERRED below the finalize call + a short delay: D1 has a
   // single writer, and a create burst otherwise queues ~100 inserts exactly
@@ -1933,7 +1961,7 @@ async function finalizeEdgeClaim(
     // Minted HERE (off the response path) rather than on the create hot path —
     // only this finalize call ever consumes it on the edge-claim route, and the
     // HMAC sign was one of the larger CPU items at burst-100 concurrency.
-    const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, runtime, caller.userID);
+    const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, billingProvider, runtimePin, caller.userID, runtime);
     let body: Record<string, unknown> = {};
     try {
       body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
@@ -2259,6 +2287,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
             plan,
             billingProvider: org.billing_provider,
             runtime,
+            runtimePin: org.runtime ?? "",
             sandboxID: box.id,
             workerID: box.workerID,
             bodyText,
@@ -2267,11 +2296,11 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
             env.FINALIZE_QUEUE.send(msg).catch((e) => {
               // Enqueue failed — finalize inline so the box still binds.
               console.error(`edge-claim: finalize enqueue failed for ${box.id}, running inline:`, e);
-              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText);
+              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText, org.runtime ?? "");
             }),
           );
         } else {
-          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText));
+          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText, org.runtime ?? ""));
         }
         // Total in-handler wall time. With `pre`, the client's own measurement
         // splits three ways: pre (getting here) + hdl (this handler) + the rest
@@ -2296,7 +2325,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
 
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
-  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, runtime, caller.userID);
+  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID, runtime);
   mark("capmint");
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
@@ -3384,7 +3413,7 @@ async function proxyToCellAuthed(
     : await pickCell(env, org.home_cell, null);
   if (!cell) return json({ error: "no cell available to serve request" }, 503);
 
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", runtime, caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", org.runtime ?? "", caller.userID, runtime);
   const url = new URL(req.url);
   const target = cell.base_url.replace(/\/$/, "") + (opts.pathOverride ?? url.pathname) + url.search;
 
@@ -5736,6 +5765,7 @@ export default {
             b.sandboxID,
             b.workerID,
             b.bodyText,
+            b.runtimePin ?? b.runtime ?? "",
           );
         } catch (e) {
           console.error(`finalize-queue: ${b.sandboxID} failed:`, e);

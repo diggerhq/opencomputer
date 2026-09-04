@@ -161,6 +161,23 @@ type CapabilityClaims struct {
 	// org that predates the field, and every token minted before it existed,
 	// resolves to the runtime with the full feature set.
 	Runtime string `json:"runtime,omitempty"`
+	// Effective is the runtime THIS REQUEST was routed to, which is not always
+	// the org's pin above: an unpinned org is routed by the calling SDK's major
+	// version (cloudflare-workers/api-edge/src/runtime_gate.ts), so the answer
+	// can differ from one call to the next for the same org.
+	//
+	// Separate from Runtime because the two are consumed differently and
+	// conflating them is a one-way door. Runtime is PERSISTED into cell-PG by
+	// UpsertOrgFromCapToken; Effective must never be, or the first create from a
+	// new SDK would write itself into the org row as a pin and every later call
+	// — including one deliberately made from an older SDK — would resolve to it.
+	// That was measured on dev: two unpinned orgs were pinned to microvm by
+	// their own first create, after which downgrading the SDK could not move
+	// them back, which defeats the rollback half of SDK-version routing.
+	//
+	// Empty means "no per-request answer" and the cell falls back to Runtime,
+	// so a token minted before this field existed behaves exactly as before.
+	Effective string `json:"rt,omitempty"`
 }
 
 // CapabilityIssuer is the Issuer string on capability tokens — lets the CP
