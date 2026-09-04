@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from opencomputer.version import sdk_version_headers
+
 
 def _get_client(
     api_key: str | None = None,
@@ -18,7 +20,7 @@ def _get_client(
 
     api_base = url if url.endswith("/api") else f"{url}/api"
 
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = dict(sdk_version_headers())
     if key:
         headers["X-API-Key"] = key
 

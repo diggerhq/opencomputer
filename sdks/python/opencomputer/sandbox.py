@@ -15,6 +15,7 @@ from opencomputer.image import Image
 from opencomputer.mounts import Mounts
 from opencomputer.pty import Pty
 from opencomputer.sse import parse_sse_stream
+from opencomputer.version import sdk_version_headers
 
 
 class ScalingLockedError(Exception):
@@ -149,7 +150,10 @@ class Sandbox:
         # Control plane client always uses /api prefix
         api_base = url if url.endswith("/api") else f"{url}/api"
 
-        headers: dict[str, str] = {}
+        # Which runtime serves this create. See version.py: an org that has not
+        # been pinned is routed by the calling SDK's major version, so upgrading
+        # this package is how a customer migrates.
+        headers: dict[str, str] = dict(sdk_version_headers())
         if key:
             headers["X-API-Key"] = key
 

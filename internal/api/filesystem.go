@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,15 +36,11 @@ func (s *Server) readFile(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "readFile", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	}
 	defer reader.Close()
@@ -79,15 +76,11 @@ func (s *Server) writeFile(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "writeFile", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	}
 
@@ -116,15 +109,11 @@ func (s *Server) listDir(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "listDir", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	}
 
@@ -151,15 +140,11 @@ func (s *Server) makeDir(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "makeDir", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	}
 
@@ -186,17 +171,34 @@ func (s *Server) removeFile(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "removeFile", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+			return respondFSErr(c, err)
 		}
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// respondFSErr answers a filesystem failure with the status the runtime
+// reported, falling back to 500.
+//
+// ADDITIVE ON PURPOSE. Every one of these sites used to be an unconditional
+// 500, which made "no such file" indistinguishable from "the sandbox is
+// broken" — the SDK cannot tell which to retry, and a caller polling for a file
+// that will never exist retries forever. Only an error that actually carries a
+// status is treated differently, and today that is exactly the MicroVM guest
+// (see awsvmlite's httpError, which preserves the code the agent's gRPC status
+// was mapped to). The QEMU fleet's errors do not implement this interface, so
+// its responses are byte-for-byte what they were.
+func respondFSErr(c echo.Context, err error) error {
+	var coded interface{ StatusCode() int }
+	if errors.As(err, &coded) {
+		if code := coded.StatusCode(); code >= 400 && code < 600 {
+			return c.JSON(code, map[string]string{"error": err.Error()})
+		}
+	}
+	return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 }

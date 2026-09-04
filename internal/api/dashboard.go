@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/awsvmlite"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/pkg/types"
@@ -640,6 +641,17 @@ func (s *Server) dashboardGetSessionStats(c echo.Context) error {
 		})
 	}
 
+	// A managed backend holds this sandbox in-process and has no registered
+	// worker, so neither branch below can reach it — the gRPC path answers
+	// "worker not available" for a runtime whose manager implements Stats.
+	if mgr, ok := s.execManagerFor(sandboxID); ok {
+		stats, err := mgr.Stats(c.Request().Context(), sandboxID)
+		if err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.JSON(http.StatusOK, stats)
+	}
+
 	// Combined mode: get stats directly from manager
 	if s.manager != nil {
 		stats, err := s.manager.Stats(c.Request().Context(), sandboxID)
@@ -699,6 +711,20 @@ func (s *Server) dashboardCreatePTY(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "invalid request body",
 		})
+	}
+
+	// A managed backend serves its own terminals — see pty_managed.go. Checked
+	// first because such a sandbox has no registered worker, so the gRPC branch
+	// below can only report the worker unavailable. This is the dashboard's
+	// terminal; without it the web UI cannot open a shell on a MicroVM sandbox.
+	if b, ok := s.ptyBackendFor(c.Request().Context(), sandboxID); ok {
+		sessionID, err := b.PTYCreate(c.Request().Context(), sandboxID, awsvmlite.PTYRequest{
+			Cols: int32(req.Cols), Rows: int32(req.Rows), Shell: req.Shell,
+		})
+		if err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.JSON(http.StatusCreated, types.PTYSession{SessionID: sessionID, SandboxID: sandboxID})
 	}
 
 	// Server mode: proxy PTY creation to the worker via gRPC
@@ -775,6 +801,29 @@ func (s *Server) dashboardPTYWebSocket(c echo.Context) error {
 	sessionID := c.Param("sessionId")
 
 	// Server mode: proxy WebSocket to the worker's HTTP API
+	// Managed backend: splice the browser's socket to the box's, exactly as the
+	// API route does. Dial before upgrading, because a 101 cannot be retracted
+	// and a box that refuses has to stay reportable as an HTTP status.
+	if b, ok := s.ptyBackendFor(c.Request().Context(), sandboxID); ok {
+		box, err := b.DialPTY(context.Background(), sandboxID, sessionID)
+		if err != nil {
+			return c.JSON(http.StatusBadGateway, map[string]string{"error": "could not attach to the terminal"})
+		}
+		defer box.Close()
+		client, err := ptyUpgrader.Upgrade(c.Response(), c.Request(), nil)
+		if err != nil {
+			return nil
+		}
+		defer client.Close()
+		done := make(chan struct{}, 2)
+		go pumpWS(client, box, done)
+		go pumpWS(box, client, done)
+		<-done
+		_ = client.SetReadDeadline(time.Now())
+		_ = box.SetReadDeadline(time.Now())
+		return nil
+	}
+
 	if s.ptyManager == nil && s.workerRegistry != nil {
 		return s.dashboardPTYWebSocketRemote(c, sandboxID, sessionID, session)
 	}
@@ -985,6 +1034,14 @@ func (s *Server) dashboardResizePTY(c echo.Context) error {
 
 	// Server mode: proxy resize to the worker via HTTP
 	// The worker doesn't have a dedicated resize gRPC call, so we proxy the HTTP request.
+	// Managed backend serves its own terminals; see dashboardCreatePTY.
+	if b, ok := s.ptyBackendFor(c.Request().Context(), sandboxID); ok {
+		if err := b.PTYResize(c.Request().Context(), sandboxID, sessionID, int32(req.Cols), int32(req.Rows)); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	if s.ptyManager == nil && s.workerRegistry != nil {
 		return s.proxyWorkerHTTP(c, session, "POST",
 			fmt.Sprintf("/sandboxes/%s/pty/%s/resize", sandboxID, sessionID),
@@ -1016,6 +1073,14 @@ func (s *Server) dashboardKillPTY(c echo.Context) error {
 	sessionID := c.Param("sessionId")
 
 	// Server mode: proxy kill to the worker via HTTP
+	// Managed backend serves its own terminals; see dashboardCreatePTY.
+	if b, ok := s.ptyBackendFor(c.Request().Context(), sandboxID); ok {
+		if err := b.PTYKill(c.Request().Context(), sandboxID, sessionID); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	if s.ptyManager == nil && s.workerRegistry != nil {
 		return s.proxyWorkerHTTP(c, session, "DELETE",
 			fmt.Sprintf("/sandboxes/%s/pty/%s", sandboxID, sessionID), nil)
@@ -1056,6 +1121,14 @@ func (s *Server) dashboardRebootSession(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	// Backend first: a managed sandbox has no worker to dispatch to.
+	if mgr, ok := s.execManagerFor(sandboxID); ok {
+		if err := mgr.RebootSandbox(c.Request().Context(), sandboxID); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	if s.workerRegistry != nil {
 		client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 		if err != nil {
@@ -1085,6 +1158,14 @@ func (s *Server) dashboardPowerCycleSession(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	// Backend first: a managed sandbox has no worker to dispatch to.
+	if mgr, ok := s.execManagerFor(sandboxID); ok {
+		if _, err := mgr.PowerCycleSandbox(c.Request().Context(), sandboxID); err != nil {
+			return respondManagerErr(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+
 	if s.workerRegistry != nil {
 		client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 		if err != nil {

@@ -270,6 +270,12 @@ func (s *Server) listSecretEntries(c echo.Context) error {
 // returns within this bound regardless of how many sandboxes are affected.
 const secretRefreshTimeout = 15 * time.Second
 
+// secretRefreshBackendTimeout bounds one managed-backend refresh. Longer than
+// the 5s allowed for a gRPC hop to a worker on our own network, because this
+// call crosses a region to the box and then waits on the guest's proxy; still
+// well inside secretRefreshTimeout so the overall fanout stays bounded.
+const secretRefreshBackendTimeout = 10 * time.Second
+
 // fanoutSecretRefresh tells every worker hosting a sandbox that uses this
 // SecretStore to update its proxy session's value for `name` to `newValue`.
 // Synchronous: caller blocks until all in-flight RPCs complete or hit the
@@ -285,7 +291,12 @@ const secretRefreshTimeout = 15 * time.Second
 // — pushing to a worker that doesn't have a session for this sandbox returns
 // updated=false (transient miss, logged but not fatal).
 func (s *Server) fanoutSecretRefresh(parentCtx context.Context, storeID uuid.UUID, name, newValue string) (refreshed int, failures []string) {
-	if s.store == nil || s.workerRegistry == nil {
+	// Deliberately NOT gated on s.workerRegistry: a cell whose sandboxes all
+	// live on a managed backend has no worker registry at all, and returning
+	// early here made every rotation on such a cell a silent no-op — HTTP 200,
+	// refreshed=0, and the guest serving its old secret for the rest of its
+	// life. pushOne asks the backend seam per sandbox instead.
+	if s.store == nil {
 		return 0, nil
 	}
 
@@ -316,6 +327,22 @@ func (s *Server) fanoutSecretRefresh(parentCtx context.Context, storeID uuid.UUI
 	// (source + destination). pushOne handles a single (sandboxID, workerID)
 	// pair so we can reuse for both halves of the dual-push.
 	pushOne := func(sandboxID, workerID string) result {
+		// The backend seam first. A managed backend holds the sandbox itself
+		// and has no entry in the worker registry, so asking the registry for
+		// it yields "unreachable" at best — and on a registry-less cell the
+		// rotation never happened at all.
+		if mgr, ok := s.execManagerFor(sandboxID); ok {
+			callCtx, callCancel := context.WithTimeout(ctx, secretRefreshBackendTimeout)
+			defer callCancel()
+			updated, err := mgr.UpdateSandboxSecret(callCtx, sandboxID, name, newValue)
+			if err != nil {
+				return result{sandboxID: sandboxID, err: fmt.Errorf("backend refresh: %w", err)}
+			}
+			return result{sandboxID: sandboxID, ok: updated}
+		}
+		if s.workerRegistry == nil {
+			return result{sandboxID: sandboxID, err: fmt.Errorf("no backend and no worker registry holds sandbox %s", sandboxID)}
+		}
 		client, err := s.workerRegistry.GetWorkerClient(workerID)
 		if err != nil {
 			return result{sandboxID: sandboxID, err: fmt.Errorf("worker %s unreachable: %w", workerID, err)}

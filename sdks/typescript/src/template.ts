@@ -1,3 +1,5 @@
+import { sdkVersionHeaders } from "./version.js";
+
 export interface TemplateInfo {
   templateID: string;
   name: string;
@@ -12,7 +14,9 @@ export class Templates {
   ) {}
 
   private get headers(): Record<string, string> {
-    const h: Record<string, string> = { "Content-Type": "application/json" };
+    // Same reason as Snapshots.headers — a build is runtime-specific, so the
+    // server has to know which SDK asked for it. See version.ts.
+    const h: Record<string, string> = { "Content-Type": "application/json", ...sdkVersionHeaders() };
     if (this.apiKey) h["X-API-Key"] = this.apiKey;
     return h;
   }

@@ -28,9 +28,22 @@ binding = "OPENCOMPUTER_DB"
 database_name = "opencomputer-dev"
 database_id = "f9e534bf-a9f3-4b30-81cd-f9eb9087e96d"
 
-[[r2_buckets]]
-binding = "EVENTS_ARCHIVE"
-bucket_name = "events-archive-dev"
+# R2 raw-batch archive. COMMENTED OUT ON DEV ONLY: R2 is not enabled on this
+# Cloudflare account, so the binding fails validation and makes the worker
+# UNDEPLOYABLE — `wrangler deploy` dies with "Please enable R2 through the
+# Cloudflare Dashboard (10136)". That is why dev drifted onto an old version.
+#
+# Safe to omit: the archive is explicitly best-effort and already wrapped in a
+# try/catch whose comment says archive failure must not block the ack, because
+# D1 is the durable record. With the binding gone the put throws a TypeError
+# that the same catch swallows — identical behaviour to the "R2 archive failed
+# (continuing)" it logs today, minus the deploy blocker.
+#
+# Restore this the moment R2 is enabled on the dev account. wrangler.prod.toml
+# keeps its binding and is untouched.
+# [[r2_buckets]]
+# binding = "EVENTS_ARCHIVE"
+# bucket_name = "events-archive-dev"
 
 # CreditAccount DO is owned by api-edge; reference it here for /debit calls.
 [[durable_objects.bindings]]
