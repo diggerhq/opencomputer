@@ -62,9 +62,12 @@ from opencomputer import Sandbox
 async def main():
     sandbox = await Sandbox.create()
 
-    print("version:", "v2" if sandbox.end_at else "v1")
-    if sandbox.end_at:
-        print("endAt =", sandbox.end_at)
+    # getattr, not sandbox.end_at: the 0.x SDK has no such attribute, so a
+    # direct read raises AttributeError instead of reporting v1.
+    end_at = getattr(sandbox, "end_at", None)
+    print("version:", "v2" if end_at else "v1")
+    if end_at:
+        print("endAt =", end_at)
 
     result = await sandbox.exec.run("python3 -V")
     print("exec:", "ok" if result.exit_code == 0 else "FAILED", result.stdout.strip())
