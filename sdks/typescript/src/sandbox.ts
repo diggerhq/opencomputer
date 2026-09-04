@@ -1,4 +1,5 @@
 import { SandboxAgent } from "./agent.js";
+import { sdkVersionHeaders } from "./version.js";
 import { prewarmConnections } from "./http2.js";
 import { Filesystem } from "./filesystem.js";
 import { Exec } from "./exec.js";
@@ -373,6 +374,10 @@ export class Sandbox {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      // Which runtime serves this create. See version.ts: an org that has not
+      // been pinned is routed by the calling SDK's major version, so this
+      // header is how upgrading the dependency performs the migration.
+      ...sdkVersionHeaders(),
       ...(apiKey ? { "X-API-Key": apiKey } : {}),
     };
     if (useSSE) {

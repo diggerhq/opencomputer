@@ -583,13 +583,23 @@ func (s *Server) claimBackend(p placement) (Placer, bool) {
 	return nil, false
 }
 
-// orgRuntime reads the runtime this org is assigned to off the capability
-// token the edge minted for this request.
+// runtimeFor reads the runtime this request's create belongs on.
 //
-// Empty whenever there is no token — combined mode, and any path that did not
-// come through the edge. That resolves to the QEMU fleet, which is the only
-// safe default: a create whose runtime we cannot establish must land on the
-// backend that can serve anything, never on a specialised one.
+// Three sources, in order of authority:
+//
+//  1. The capability token, when the edge minted one. The edge has already
+//     applied both the org pin and SDK-version routing, so its answer is final
+//     — including its decision to send nothing.
+//  2. orgs.runtime, synced into this cell's Postgres. This is the PIN, and it
+//     wins over the calling SDK in both directions.
+//  3. The calling SDK's major version, for an unpinned org on the
+//     direct-to-cell path. See runtime_gate.go: this is what lets a customer
+//     migrate by upgrading @opencomputer/sdk and roll back by pinning the old
+//     major, without us touching a row.
+//
+// Empty resolves to the QEMU fleet, which is the only safe default: a create
+// whose runtime we cannot establish must land on the backend that can serve
+// anything, never on a specialised one.
 func (s *Server) runtimeFor(c echo.Context) string {
 	claims, _ := c.Get(capClaimsKey).(*auth.CapabilityClaims)
 	if claims != nil && claims.Runtime != "" {
@@ -609,16 +619,26 @@ func (s *Server) runtimeFor(c echo.Context) string {
 	if !ok || orgID == uuid.Nil || s.store == nil {
 		return ""
 	}
-	if rt, ok := s.orgRuntime.get(orgID); ok {
-		return rt
+	rt, ok := s.orgRuntime.get(orgID)
+	if !ok {
+		var err error
+		if rt, err = s.store.GetOrgRuntime(c.Request().Context(), orgID); err != nil {
+			// Unknown runtime resolves to QEMU, the backend that serves anything.
+			return ""
+		}
+		s.orgRuntime.put(orgID, rt)
 	}
-	rt, err := s.store.GetOrgRuntime(c.Request().Context(), orgID)
-	if err != nil {
-		// Unknown runtime resolves to QEMU, the backend that serves anything.
+	if rt != "" {
+		return rt // pinned, in either direction
+	}
+	// Unpinned. If a cap token got this far it carried an empty runtime, which
+	// is the EDGE's answer for this org and this SDK — including when the gate
+	// is switched off there. Re-deciding here would defeat that kill switch and
+	// route the same call two different ways depending on which door it came in.
+	if claims != nil {
 		return ""
 	}
-	s.orgRuntime.put(orgID, rt)
-	return rt
+	return runtimeForSDK(c)
 }
 
 // orgRuntimeTTL bounds how long a runtime flip in Postgres takes to reach this

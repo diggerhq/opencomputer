@@ -32,6 +32,12 @@ import { mintPoolCapToken } from "./pool_stock";
 // VM WebSockets.
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
 import {
+  RUNTIME_MICROVM,
+  SDK_VERSION_HEADER,
+  effectiveRuntime,
+  isMicrovmWorkerID,
+} from "./runtime_gate";
+import {
   ACTIVE_CELLS_SQL,
   CELL_STALE_MAX_MS,
   CELL_TTL_MS,
@@ -98,6 +104,12 @@ export interface Env extends DashboardEnv {
   // secret (whsec_…) for /webhooks/autumn. AUTUMN_SECRET_KEY / AUTUMN_BASE_URL
   // are inherited from DashboardEnv. Unset on deployments not yet on Autumn.
   AUTUMN_WEBHOOK_SECRET: string;
+  // SDK-version routing (see runtime_gate.ts). SDK_RUNTIME_GATE="0" pins every
+  // unpinned org back to QEMU — the kill switch for self-service migration,
+  // without touching any org row. SDK_RUNTIME_MIN_MAJOR overrides the major at
+  // which an SDK counts as v2 (default 2).
+  SDK_RUNTIME_GATE?: string;
+  SDK_RUNTIME_MIN_MAJOR?: string;
   // HMAC secret used by Browser API to submit runtime usage. Falls back to
   // EVENT_SECRET in the handler when unset for compatibility during rollout.
   BROWSER_USAGE_HMAC_SECRET?: string;
@@ -462,7 +474,7 @@ const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: numbe
 // dropped on DELETE and bounded by CACHE_MAX + isolate recycling. Populated at
 // create, which also closes the same-isolate race where a sub-op lands before
 // the waitUntil-deferred insertSandboxIndex write does. Never caches misses.
-const sandboxRouteCache = new Map<string, { cellID: string; orgID: string }>();
+const sandboxRouteCache = new Map<string, SandboxRoute>();
 
 // The route is immutable for a sandbox's lifetime, but a destroyed sandbox's
 // entry can linger — same semantics as the isolate Map (the cell 404s). 15 min
@@ -491,16 +503,35 @@ interface MvmReach {
 // SDK's create → exec shape: the exec routinely lands on a different isolate
 // than the create that seeded the Map, and this read is the exec path's only
 // blocking D1 dependency.
-async function resolveSandboxRoute(env: Env, id: string): Promise<{ cellID: string; orgID: string } | null> {
+// `microvm` records which RUNTIME this sandbox landed on.
+//
+// It has to be per-sandbox. Routing a live sandbox by its ORG's runtime was
+// correct only while an org was entirely on one runtime; once creates are routed
+// by SDK version (runtime_gate.ts) a mixed org is the steady state rather than a
+// migration window, and the same org has QEMU sandboxes from one service and
+// MicroVM sandboxes from another for as long as the migration takes.
+//
+// `undefined` means UNKNOWN, not "no" — a route cached by an older deployment,
+// or a row whose worker_id is not written yet. Callers must fall back to the org
+// policy there rather than reading it as QEMU, or a MicroVM box would be sent to
+// a Durable Object that can never hold a channel for it.
+type SandboxRoute = { cellID: string; orgID: string; microvm?: boolean };
+
+async function resolveSandboxRoute(env: Env, id: string): Promise<SandboxRoute | null> {
   const warm = sandboxRouteCache.get(id);
   if (warm) return warm;
-  let route = await coloGet<{ cellID: string; orgID: string }>("route", id);
+  let route = await coloGet<SandboxRoute>("route", id);
   if (!route) {
-    const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
+    const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id, worker_id FROM sandboxes_index WHERE id = ?1")
       .bind(id)
-      .first<{ cell_id: string; org_id: string }>();
+      .first<{ cell_id: string; org_id: string; worker_id: string | null }>();
     if (!row) return null;
     route = { cellID: row.cell_id, orgID: row.org_id };
+    // Only claim to know when worker_id is actually populated. A create still in
+    // flight has none, and this entry has no TTL in the isolate map — writing
+    // "not MicroVM" from a blank column would pin that wrong answer for the life
+    // of the isolate.
+    if (row.worker_id) route.microvm = isMicrovmWorkerID(row.worker_id);
     await coloPut("route", id, route, ROUTE_COLO_TTL_SEC);
   }
   if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
@@ -1231,10 +1262,6 @@ async function handlePreviewURL(
 
 // ── route handlers ───────────────────────────────────────────────────────
 
-// OrgPolicy is the subset of the D1 `orgs` row the create/fork paths gate on.
-// Mirrors runtimeMicrovm in internal/api/backend.go — the value stored in
-// orgs.runtime that routes an org's creates to the AWS MicroVM backend.
-const RUNTIME_MICROVM = "microvm";
 
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
 // when the org doesn't exist (callers 401).
@@ -2005,6 +2032,15 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   );
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
+  // Which runtime this create lands on. orgs.runtime is a PIN; when it is unset
+  // the calling SDK's major decides, so upgrading @opencomputer/sdk to 1.x IS
+  // the migration and pinning the old major is the rollback. See runtime_gate.ts.
+  //
+  // Resolved once, here, and used for every runtime decision below — the
+  // edge-claim gate, the finalize message, and the capability token the cell
+  // reads its backend off. Reading org.runtime directly at any of those points
+  // again would route the create one way and label it another.
+  const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
 
   // Read body once — used for size-gating, the hard-pin cell peek, and the
   // verbatim forward to the CP.
@@ -2106,7 +2142,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
 
   const edgeClaimOn =
     env.EDGE_CLAIM !== "0" &&
-    !(org.runtime === RUNTIME_MICROVM && env.MICROVM_EDGE_CLAIM === "0");
+    !(runtime === RUNTIME_MICROVM && env.MICROVM_EDGE_CLAIM === "0");
   if (edgeClaimOn && env.POOL_STOCK && edgeClaimEligible(bodyText, parsedBody)) {
     try {
       // Sharded stock (see pool_stock.ts): a single DO serializes burst claims
@@ -2134,7 +2170,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
         phases.push(`dotry;dur=${claimed.attempts}`);
         const token = box.token;
         if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
-        sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
+        sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID, microvm: isMicrovmWorkerID(box.workerID) });
         // Seed the colo-shared route so the first exec — which usually lands on
         // a different isolate — skips its blocking D1 route read. waitUntil is
         // race-safe here: the client can't send that exec until the 201 crosses
@@ -2152,9 +2188,16 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
         // TTL is the reach TTL (the longer of the two). resolveRoute's own put
         // writes this key without `reach`; that costs the next exec one cell
         // lookup and then self-heals via the mvmreach put on the exec path.
-        const routeEntry: { cellID: string; orgID: string; reach?: MvmReach } = {
+        const routeEntry: SandboxRoute & { reach?: MvmReach } = {
           cellID: cell.cell_id,
           orgID: caller.orgID,
+          // Recorded at birth so the first exec never has to guess. Without it
+          // the first exec on a freshly-created MicroVM box reads an unknown
+          // route, falls back to the org policy — which for an org migrating by
+          // SDK version says nothing — and pays the VmSession DO's 400ms entry
+          // grace before giving up. That is the whole latency this routing
+          // exists to avoid, on the one request most likely to be measured.
+          microvm: isMicrovmWorkerID(box.workerID),
         };
         if (box.agentEndpoint && box.agentToken && box.agentPort) {
           routeEntry.reach = { endpoint: box.agentEndpoint, token: box.agentToken, port: box.agentPort };
@@ -2215,7 +2258,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
             baseURL: cell.base_url,
             plan,
             billingProvider: org.billing_provider,
-            runtime: org.runtime ?? "",
+            runtime,
             sandboxID: box.id,
             workerID: box.workerID,
             bodyText,
@@ -2224,11 +2267,11 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
             env.FINALIZE_QUEUE.send(msg).catch((e) => {
               // Enqueue failed — finalize inline so the box still binds.
               console.error(`edge-claim: finalize enqueue failed for ${box.id}, running inline:`, e);
-              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, org.runtime ?? "", box.id, box.workerID, bodyText);
+              return finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText);
             }),
           );
         } else {
-          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, org.runtime ?? "", box.id, box.workerID, bodyText));
+          ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, plan, org.billing_provider, runtime, box.id, box.workerID, bodyText));
         }
         // Total in-handler wall time. With `pre`, the client's own measurement
         // splits three ways: pre (getting here) + hdl (this handler) + the rest
@@ -2253,7 +2296,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
 
   // CP fallback from here on — mint the cap-token the cell requires (the
   // edge-claim path above returns without ever needing it).
-  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
+  const capToken = await cachedCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, runtime, caller.userID);
   mark("capmint");
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
@@ -2313,8 +2356,12 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
     // the sandboxes_index read — and don't race the deferred insert below.
     if (parsed.sandboxID) {
       if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
-      sandboxRouteCache.set(parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
-      ctx.waitUntil(coloPut("route", parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID }, ROUTE_COLO_TTL_SEC));
+      // `runtime` is the decision THIS handler just made and the cell just
+      // acted on, so it is authoritative here — more so than worker_id, which
+      // the sandboxes_index row may not carry yet.
+      const seeded: SandboxRoute = { cellID: cell.cell_id, orgID: caller.orgID, microvm: runtime === RUNTIME_MICROVM };
+      sandboxRouteCache.set(parsed.sandboxID, seeded);
+      ctx.waitUntil(coloPut("route", parsed.sandboxID, seeded, ROUTE_COLO_TTL_SEC));
     }
     // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
     // write alive after we return; events-ingest reconciles the row anyway.
@@ -2539,10 +2586,26 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
   // backend cannot have. Measured on prod: that grace was ~437ms of every
   // MicroVM exec — 79% of benchmark TTI, against a control plane that served
   // the exec itself in 10ms. Skip straight to the tunnel.
-  const tPol = Date.now();
-  const orgPolicy = await loadOrgPolicy(env, caller.orgID, ctx);
-  const polMs = Date.now() - tPol;
-  if (orgPolicy?.runtime === RUNTIME_MICROVM) {
+  //
+  // Asked of the SANDBOX, not the org. Creates are routed by the calling SDK's
+  // version (runtime_gate.ts), so one org runs sandboxes on both runtimes for as
+  // long as its migration takes, and "this org is on MicroVM" no longer answers
+  // "is this box on MicroVM". The route carries the answer and usually already
+  // has it cached; the org policy is only consulted when the route predates this
+  // field or the row has no worker_id yet.
+  const tRt = Date.now();
+  const rt = await resolveSandboxRoute(env, id);
+  let polMs = Date.now() - tRt;
+  if (!rt) return json({ error: "sandbox not found" }, 404);
+  if (rt.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+  let microvm = rt.microvm;
+  if (microvm === undefined) {
+    const tPol = Date.now();
+    const orgPolicy = await loadOrgPolicy(env, caller.orgID, ctx);
+    polMs += Date.now() - tPol;
+    microvm = orgPolicy?.runtime === RUNTIME_MICROVM;
+  }
+  if (microvm) {
     // MICROVM_EDGE_EXEC=0 hands exec to the cell, skipping BOTH Durable
     // Objects.
     //
@@ -2561,11 +2624,9 @@ async function tryVmDoExec(req: Request, env: Env, ctx: ExecutionContext, caller
     if (env.MICROVM_EDGE_EXEC === "0") return fallback(fall, "cell-owns-exec");
     return tryMicrovmDirectExec(req, env, ctx, caller, id, authMs, polMs, fall);
   }
-  const tRoute = Date.now();
-  const route = await resolveSandboxRoute(env, id);
-  const routeMs = Date.now() - tRoute;
-  if (!route) return json({ error: "sandbox not found" }, 404);
-  if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+  // Resolved and authorized above — the runtime question needed it first.
+  const route = rt;
+  const routeMs = 0;
   try {
     // clone() so the original request body stays readable for the tunnel
     // fallback when the DO reports the channel isn't connected.
@@ -3185,7 +3246,11 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
     // gives up — bounded, but pointless work against AWS for every destroy.
     // MicroVM only: other runtimes have no MicrovmSession, and asking for one
     // by id would instantiate a Durable Object just to tear it down.
-    if (env.MICROVM_SESSIONS && orgPol?.runtime === RUNTIME_MICROVM) {
+    // Per-SANDBOX, for the same reason as tryVmDoExec: a mixed org is normal
+    // once creates are routed by SDK version. `route.microvm` is undefined only
+    // for a route cached before the field existed, where the org policy is the
+    // best remaining answer.
+    if (env.MICROVM_SESSIONS && (route.microvm ?? orgPol?.runtime === RUNTIME_MICROVM)) {
       const ns = env.MICROVM_SESSIONS;
       ctx.waitUntil(
         ns
@@ -3302,17 +3367,24 @@ async function proxyToCellAuthed(
   opts: { cellId?: string; pathOverride?: string } = {},
 ): Promise<Response> {
   const org = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT home_cell, plan FROM orgs WHERE id = ?1",
-  ).bind(caller.orgID).first<{ home_cell: string; plan: string }>();
+    "SELECT home_cell, plan, runtime FROM orgs WHERE id = ?1",
+  ).bind(caller.orgID).first<{ home_cell: string; plan: string; runtime: string | null }>();
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
+  // POST /api/snapshots comes through here, and a template is built DIFFERENTLY
+  // per runtime — a whole-disk checkpoint on QEMU, a machine image on MicroVM.
+  // Minting a blank runtime (what this did) meant a 1.x SDK's sandboxes went to
+  // MicroVM while its templates were built as checkpoints MicroVM cannot
+  // restore: a customer would migrate successfully and then find every template
+  // they built unusable. Same decision, same inputs as createSandbox.
+  const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
 
   const cell = opts.cellId
     ? await lookupCell(env, opts.cellId)
     : await pickCell(env, org.home_cell, null);
   if (!cell) return json({ error: "no cell available to serve request" }, 503);
 
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", "", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", runtime, caller.userID);
   const url = new URL(req.url);
   const target = cell.base_url.replace(/\/$/, "") + (opts.pathOverride ?? url.pathname) + url.search;
 
@@ -5406,6 +5478,11 @@ export default {
         const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
+        // org.runtime, deliberately NOT the SDK-version routing createSandbox
+        // uses. A fork restores a checkpoint, and only the QEMU fleet produces
+        // checkpoints — routing a fork by the caller's SDK version would send it
+        // to a runtime that has nothing to restore. It follows the org's pin or
+        // nothing, exactly as before.
         const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
         const fcResp = await fetch(cell.base_url.replace(/\/$/, "") + path, {
           method: "POST",

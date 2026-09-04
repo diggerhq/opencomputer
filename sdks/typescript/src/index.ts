@@ -64,6 +64,7 @@ export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./
 export { type Shell, type ShellOpts, type ShellRunOpts, ShellBusyError, ShellClosedError } from "./shell.js";
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
+export { SDK_VERSION, SDK_VERSION_HEADER } from "./version.js";
 export {
   Webhooks,
   WebhookDeliveries,
