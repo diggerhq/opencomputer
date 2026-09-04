@@ -136,6 +136,23 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// decodeIfBody unmarshals resp.Body into result unless the response carries no
+// body — a 204/205 status or Content-Length: 0. Prevents callers that pass a
+// non-nil result from surfacing `io.EOF` on endpoints that legitimately return
+// no content (e.g. POST /exec/{id}/kill returns 204 No Content).
+func decodeIfBody(resp *http.Response, result interface{}) error {
+	if result == nil {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent {
+		return nil
+	}
+	if resp.ContentLength == 0 {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(result)
+}
+
 // Get performs a GET request and decodes the JSON response.
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+path, nil)
@@ -147,10 +164,7 @@ func (c *Client) Get(ctx context.Context, path string, result interface{}) error
 		return err
 	}
 	defer resp.Body.Close()
-	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
-	}
-	return nil
+	return decodeIfBody(resp, result)
 }
 
 // Post performs a POST request with a JSON body and decodes the response.
@@ -175,10 +189,7 @@ func (c *Client) Post(ctx context.Context, path string, body, result interface{}
 		return err
 	}
 	defer resp.Body.Close()
-	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
-	}
-	return nil
+	return decodeIfBody(resp, result)
 }
 
 // Patch performs a PATCH request with a JSON body and decodes the response.
@@ -203,10 +214,7 @@ func (c *Client) Patch(ctx context.Context, path string, body, result interface{
 		return err
 	}
 	defer resp.Body.Close()
-	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
-	}
-	return nil
+	return decodeIfBody(resp, result)
 }
 
 // GetStream performs a GET request and returns the raw response so the
@@ -279,10 +287,7 @@ func (c *Client) PutJSON(ctx context.Context, path string, body, result interfac
 		return err
 	}
 	defer resp.Body.Close()
-	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
-	}
-	return nil
+	return decodeIfBody(resp, result)
 }
 
 // Delete performs a DELETE request.
