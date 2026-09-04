@@ -588,6 +588,59 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
+  it("allows organization admins to delete projects", async () => {
+    const fetchSpy = vi.fn(
+      async (_request: URL | RequestInfo, init?: RequestInit) => {
+        expect(init?.method).toBe("DELETE");
+        return new Response(null, { status: 204 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test",
+        { method: "DELETE" },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(204);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("does not allow organization members to delete projects", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test",
+        { method: "DELETE" },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test", role: "member" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "forbidden",
+        message: "Organization admin role is required to delete a project.",
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("exposes public template provenance on a project overview", async () => {
     vi.stubGlobal(
       "fetch",

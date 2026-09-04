@@ -627,6 +627,12 @@ export async function getManagedProject(projectId: string) {
   )
 }
 
+export async function deleteManagedProject(projectId: string) {
+  await apiFetch(`/managed-agents/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function getManagedModelAccessConnections() {
   return (
     await apiFetch(
