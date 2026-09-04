@@ -77,6 +77,18 @@ class Sandbox:
     #: a successful ``rotate_preview_auth_token()`` this value is replaced
     #: with the new token. Empty string when not enabled or when reconnecting.
     preview_auth_token: str = ""
+    #: RFC3339 instant at which the provider destroys this sandbox's host, or
+    #: ``None`` when the runtime imposes no lifetime.
+    #:
+    #: Two uses. It is the deadline to plan against — checkpoint and roll over
+    #: before it, because the disk goes with the host. And because only some
+    #: runtimes have one, its presence identifies which runtime served the
+    #: create, which is what the upgrade guide's smoke test checks.
+    #:
+    #: Read this rather than computing a deadline from the create time:
+    #: sandboxes are served from a warm pool, so the host is usually older
+    #: than the create.
+    end_at: str | None = None
     _api_url: str = ""
     _api_key: str = ""
     _connect_url: str = ""
@@ -219,6 +231,7 @@ class Sandbox:
             status=data.get("status", "running"),
             template=template,
             preview_auth_token=data.get("previewAuthToken", ""),
+            end_at=data.get("endAt"),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -278,6 +291,7 @@ class Sandbox:
             sandbox_id=sandbox_id,
             status=data.get("status", "running"),
             template=data.get("templateID", ""),
+            end_at=data.get("endAt"),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -748,6 +762,10 @@ class Sandbox:
         return cls(
             sandbox_id=data["sandboxID"],
             status=data.get("status", "running"),
+            # Absent on the runtime that serves this call today, but populated
+            # rather than dropped so a reader does not have to wonder why one
+            # constructor omits it.
+            end_at=data.get("endAt"),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,

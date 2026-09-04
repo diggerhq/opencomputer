@@ -1,17 +1,134 @@
 ---
 title: "Migrating from v1"
-description: "Every breaking change between v1 and v2, and how to find out whether you are affected"
+description: "Upgrade the SDK, verify it worked, and every behaviour that differs"
 ---
 
-v2 is the same API with the same SDK calls. Most code runs unchanged. What follows is the
-complete list of behaviour that differs, ordered by how likely it is to matter.
+**Upgrading the SDK is the migration.** There is no ticket to file and no setting to change:
+v1 and v2 are chosen by the major version of the SDK you have installed. Install `1.x` and your
+new sandboxes run on v2. Go back to `0.x` and they run on v1 again.
 
-Nothing changes for you until your org is moved to v2. The v1 documentation stays accurate
-until then and is archived permanently at [docs-v1.opencomputer.dev](https://docs-v1.opencomputer.dev).
+Existing sandboxes never move. The version decides where **new** sandboxes are created, so a
+rollback is a reinstall, not a recovery.
+
+## Upgrade
+
+<CodeGroup>
+```bash TypeScript
+npm install @opencomputer/sdk@^1.1.0
+```
+
+```bash Python
+pip install --upgrade "opencomputer-sdk>=1.1.0"
+```
+</CodeGroup>
+
+Your API key and your existing sandboxes are unaffected. `1.1.0` is the floor only because the
+check below reads `endAt`, which was added there; any `1.x` routes to v2.
+
+<Note>
+If you asked us to pin your org to a runtime, the pin wins and the SDK version is ignored. That
+is deliberate: it stops one stale service in your fleet from quietly creating sandboxes on the
+other version. Ask us to remove the pin if you want version-based switching.
+</Note>
+
+## Verify the upgrade
+
+A v2 sandbox carries `endAt` — the hard deadline its host will be destroyed at. A v1 sandbox has
+no such deadline and omits the field entirely. That single difference is the check.
+
+<CodeGroup>
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+
+console.log("version:", sandbox.endAt ? "v2" : "v1");
+if (sandbox.endAt) {
+  const hours = (Date.parse(sandbox.endAt) - Date.now()) / 3_600_000;
+  console.log(`endAt=${sandbox.endAt}  ends in ${hours.toFixed(1)}h`);
+}
+
+// The rest is a normal smoke test — identical on both versions.
+const result = await sandbox.exec.run("node -v");
+console.log("exec:", result.exitCode === 0 ? "ok" : "FAILED", result.stdout.trim());
+
+await sandbox.kill();
+```
+
+```python Python
+import asyncio
+from opencomputer import Sandbox
+
+async def main():
+    sandbox = await Sandbox.create()
+
+    # getattr, not sandbox.end_at: the 0.x SDK has no such attribute, so a
+    # direct read raises AttributeError instead of reporting v1.
+    end_at = getattr(sandbox, "end_at", None)
+    print("version:", "v2" if end_at else "v1")
+    if end_at:
+        print("endAt =", end_at)
+
+    result = await sandbox.exec.run("python3 -V")
+    print("exec:", "ok" if result.exit_code == 0 else "FAILED", result.stdout.strip())
+
+    await sandbox.kill()
+
+asyncio.run(main())
+```
+</CodeGroup>
+
+Expect exactly this:
+
+```
+version: v2
+endAt=2026-09-05T05:22:59Z  ends in 8.0h
+exec: ok v18.20.8
+```
+
+If you see `version: v1` after upgrading, your org is pinned — see the note above.
+
+### Then run your own test suite
+
+The genuine check is your code, unchanged, against v2. The SDK surface is identical, so your
+existing tests are the migration test. Point a non-production service at it for a day before
+moving anything that matters.
+
+The three failures worth watching for, because they are silent in a short test and obvious in a
+long one:
+
+<Steps>
+  <Step title="A sandbox disappears after 8 hours">
+    Expected. See [Sandboxes end after 8 hours](#sandboxes-end-after-8-hours).
+  </Step>
+  <Step title="A restored checkpoint has your files but not your process">
+    Expected. See [Checkpoints are filesystem-only](#checkpoints-are-filesystem-only).
+  </Step>
+  <Step title="A create fails naming a template">
+    Expected for templates built on v1. See [Templates](#templates-built-on-v1-are-refused).
+  </Step>
+</Steps>
+
+## Rolling back
+
+Reinstall the previous major. New sandboxes go back to v1 immediately; nothing needs to drain.
+
+<CodeGroup>
+```bash TypeScript
+npm install @opencomputer/sdk@0.15.7
+```
+
+```bash Python
+pip install "opencomputer-sdk==0.6.9"
+```
+</CodeGroup>
+
+Sandboxes you already created on v2 keep running on v2 until they end. Rolling back does not
+move them, and it does not shorten their 8-hour lifetime.
 
 ## Am I affected?
 
-Seven questions. If every answer is "no", your migration is a configuration change.
+Seven questions. If every answer is "no", upgrading is the whole migration.
 
 <Steps>
   <Step title="Does any sandbox need to live longer than 8 hours?">
@@ -42,15 +159,25 @@ Seven questions. If every answer is "no", your migration is a configuration chan
   </Step>
 </Steps>
 
-## Finding the calls in your code
+### Finding the calls in your code
 
-```bash
+<CodeGroup>
+```bash TypeScript
 # Hard failures in v2
 rg -n "\.scale\(|setAutoscale|\.mounts\b|createFromCheckpoint|buildImage|image:"
 
 # Behaviour changes — review these
 rg -n "createCheckpoint|restoreCheckpoint|\.hibernate\(|setTimeout|cpuCount|diskMB"
 ```
+
+```bash Python
+# Hard failures in v2
+rg -n "\.scale\(|set_autoscale|\.mounts\b|create_from_checkpoint|build_image|image="
+
+# Behaviour changes — review these
+rg -n "create_checkpoint|restore_checkpoint|\.hibernate\(|set_timeout|cpu_count|disk_mb"
+```
+</CodeGroup>
 
 ## The breaking changes
 
@@ -61,13 +188,15 @@ A v2 sandbox is destroyed 8 hours after its host started, counting running **and
 time. It cannot be extended, and the disk goes with it.
 </Warning>
 
-Read `endAt` on the sandbox rather than computing a deadline — sandboxes come from a warm pool,
-so the host often started before your create did:
+Read `endAt` rather than computing a deadline — sandboxes come from a warm pool, so the host
+often started before your create did:
 
 ```typescript
-const info = await getSandbox(sandbox.sandboxId);
-const msLeft = Date.parse(info.endAt) - Date.now();
+const sandbox = await Sandbox.create();
+const msLeft = Date.parse(sandbox.endAt!) - Date.now();
 ```
+
+`endAt` is on the sandbox from `create()` and from `connect()`. It is `undefined` on v1.
 
 Work that assumed a long-lived sandbox needs to checkpoint and roll over, or keep its state
 outside the sandbox.
@@ -144,20 +273,10 @@ that sandbox. See [Secrets](/sandboxes/secrets).
 
 Each of these is **refused** rather than silently ignored.
 
-## What improves
-
-- Creates are served from a warm pool, so they start faster and more consistently.
-- Deploys no longer disturb running sandboxes.
-- An unavailable size is refused with the sizes that exist, instead of being reported as a
-  capacity problem.
-- A sandbox that reports `running` is running — rows can no longer outlive their host.
-
-## Testing before you move
-
-Ask us to move a non-production org first. The same SDK and the same code run against both
-versions, so your existing test suite is the test.
-
 <Note>
 If something in your workload is blocked by the "in progress" items above, tell us. That list is
 prioritised work, not a fixed decision.
 </Note>
+
+The v1 documentation stays accurate for `0.x` and is archived permanently at
+[docs-v1.opencomputer.dev](https://docs-v1.opencomputer.dev).

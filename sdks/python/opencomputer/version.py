@@ -26,7 +26,7 @@ this docstring start with that name: two readers of this file are greps.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 #: Header carrying the version above. Lower-case to match the TypeScript SDK;
 #: HTTP/2 requires it there and consistency costs nothing here.

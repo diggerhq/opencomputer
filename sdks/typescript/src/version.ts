@@ -27,7 +27,7 @@ export const SDK_VERSION_HEADER = "x-oc-sdk-version";
  * only failure mode that matters — a stale constant here would silently route a
  * v2 caller to the old runtime.
  */
-export const SDK_VERSION = "1.0.0";
+export const SDK_VERSION = "1.1.0";
 
 /** The identifying header, as a spreadable object. */
 export function sdkVersionHeaders(): Record<string, string> {
