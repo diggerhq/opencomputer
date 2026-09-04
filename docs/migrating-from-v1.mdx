@@ -22,10 +22,8 @@ pip install --upgrade "opencomputer-sdk>=1.1.0"
 ```
 </CodeGroup>
 
-No code changes are required to upgrade. Your API key, your calls, and your existing sandboxes
-all keep working. (`1.1.0` is the floor because that is where `endAt` — used by the check below
-— was added; any `1.x` routes to v2.) Read [Am I affected?](#am-i-affected) before you ship it to production — a
-handful of behaviours differ, and two of them can fail a workload that never checked.
+Your API key and your existing sandboxes are unaffected. `1.1.0` is the floor only because the
+check below reads `endAt`, which was added there; any `1.x` routes to v2.
 
 <Note>
 If you asked us to pin your org to a runtime, the pin wins and the SDK version is ignored. That
@@ -271,14 +269,6 @@ that sandbox. See [Secrets](/sandboxes/secrets).
 | Live migration | not applicable |
 
 Each of these is **refused** rather than silently ignored.
-
-## What improves
-
-- Creates are served from a warm pool, so they start faster and more consistently.
-- Deploys no longer disturb running sandboxes.
-- An unavailable size is refused with the sizes that exist, instead of being reported as a
-  capacity problem.
-- A sandbox that reports `running` is running — rows can no longer outlive their host.
 
 <Note>
 If something in your workload is blocked by the "in progress" items above, tell us. That list is
