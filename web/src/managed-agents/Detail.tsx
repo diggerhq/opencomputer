@@ -69,6 +69,8 @@ type DetailTab =
   | 'schedules'
   | 'secrets'
 
+const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
+
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
 }
@@ -282,7 +284,6 @@ function PlaygroundChat({
   const [prompt, setPrompt] = useState('')
   const [liveSessionId, setLiveSessionId] = useState(session?.id)
   const timelineRef = useRef<HTMLDivElement>(null)
-  const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
   const initializedScrollRef = useRef(false)
   const initialMessages = useMemo(
@@ -337,9 +338,6 @@ function PlaygroundChat({
     followOutputRef.current = true
     setPrompt('')
     void sendMessage({ text: input })
-    requestAnimationFrame(() =>
-      composerRef.current?.querySelector('textarea')?.focus(),
-    )
   }
 
   return (
@@ -430,10 +428,7 @@ function PlaygroundChat({
           {error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
-          <div
-            ref={composerRef}
-            className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
-          >
+          <div className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors">
             <ChatTextarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -552,6 +547,7 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
+    refetchInterval: 1_000,
   })
 
   const environmentSessions = (sessions.data ?? []).filter(
@@ -836,7 +832,9 @@ export default function ManagedAgentDetail({
                 key={`${environment}:${selectedPlaygroundId ?? newSessionKey}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
-                events={selectedPlaygroundEvents.data ?? []}
+                events={
+                  selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
+                }
               />
             )}
           </div>
