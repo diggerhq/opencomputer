@@ -379,7 +379,8 @@ describe("managed agents proxy", () => {
         const headers = new Headers(init?.headers);
         expect(headers.get("authorization")).toBeNull();
         expect(headers.get("request-id")).toBe("sentry-delivery-1");
-        expect(headers.get("sentry-hook-resource")).toBeNull();
+        expect(headers.get("sentry-hook-resource")).toBe("event_alert");
+        expect(headers.get("sentry-hook-signature")).toBeNull();
         expect(await new Response(init?.body).json()).toEqual(sentryBody);
         return Response.json({
           request: {
@@ -408,6 +409,7 @@ describe("managed agents proxy", () => {
             "content-type": "application/json",
             "request-id": "sentry-delivery-1",
             "sentry-hook-resource": "event_alert",
+            "sentry-hook-signature": "abc",
           },
           body: JSON.stringify(sentryBody),
         },

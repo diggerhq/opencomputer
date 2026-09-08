@@ -1346,11 +1346,16 @@ export async function handleManagedAgentChannelConnection(
   });
 }
 
+// Headers that carry or select a delivery identity; the backend decides
+// precedence (Sentry deliveries are identified by the alerted object named
+// by `sentry-hook-resource`, not by the per-attempt `request-id`).
 const WEBHOOK_DELIVERY_ID_HEADERS = [
   "idempotency-key",
-  "request-id",
+  "sentry-hook-resource",
   "x-github-delivery",
+  "stripe-signature",
   "svix-id",
+  "request-id",
 ] as const;
 
 export async function handleAgentWebhookInvocation(
@@ -1415,8 +1420,6 @@ export async function handleAgentWebhookInvocation(
     "x-request-id": crypto.randomUUID(),
   });
   if (authorization) headers.set("authorization", authorization);
-  // Delivery identity, in the backend's order of precedence: the caller's
-  // key, else the delivery id a provider sends.
   for (const header of WEBHOOK_DELIVERY_ID_HEADERS) {
     const value = request.headers.get(header);
     if (value) headers.set(header, value);

@@ -54,8 +54,13 @@ function safeStringify(v: unknown): string {
   catch { return String(v); }
 }
 
-// Request query strings can carry browser client tokens (`?token=...`). Keep
-// the route useful for diagnostics without copying credentials into Axiom.
+// Agent webhook URLs carry their credential as the last path segment
+// (public `/api/agent-webhooks/<id>/<token>`, backend `/v1/agent-webhooks/<id>/<token>`).
+const WEBHOOK_TOKEN_PATH = /^(\/(?:api|v1)\/agent-webhooks\/[^/]+)\/[^/]+$/;
+
+// Request query strings can carry browser client tokens (`?token=...`), and
+// webhook paths carry the webhook credential. Keep the route useful for
+// diagnostics without copying credentials into Axiom.
 function requestUrlForLogs(value?: string): string | undefined {
   if (!value) return undefined;
   try {
@@ -64,6 +69,7 @@ function requestUrlForLogs(value?: string): string | undefined {
     url.password = "";
     url.search = "";
     url.hash = "";
+    url.pathname = url.pathname.replace(WEBHOOK_TOKEN_PATH, "$1/redacted");
     return url.toString();
   } catch {
     return undefined;
