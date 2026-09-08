@@ -476,9 +476,15 @@ function publicWebhook(
     agentId: webhook.agentId,
     name: webhook.name,
     enabled: webhook.enabled,
+    // The token is the credential; when this response carries it (create,
+    // rotate), the URL carries it too and is shown once. Listings never do.
     ...(publicOrigin && id
       ? {
-          invocationUrl: `${publicOrigin}/api/agent-webhooks/${encodeURIComponent(id)}`,
+          invocationUrl:
+            `${publicOrigin}/api/agent-webhooks/${encodeURIComponent(id)}` +
+            (typeof webhook.token === "string"
+              ? `/${encodeURIComponent(webhook.token)}`
+              : ""),
         }
       : {}),
     ...(typeof webhook.token === "string" ? { token: webhook.token } : {}),
@@ -1340,12 +1346,21 @@ export async function handleManagedAgentChannelConnection(
   });
 }
 
+const WEBHOOK_DELIVERY_ID_HEADERS = [
+  "idempotency-key",
+  "request-id",
+  "x-github-delivery",
+  "svix-id",
+] as const;
+
 export async function handleAgentWebhookInvocation(
   request: Request,
   env: ManagedAgentsEnv,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const match = url.pathname.match(/^\/api\/agent-webhooks\/([^/]+)$/);
+  const match = url.pathname.match(
+    /^\/api\/agent-webhooks\/([^/]+)(?:\/([^/]+))?$/,
+  );
   if (!match?.[1] || request.method !== "POST") {
     return Response.json(
       { error: { code: "not_found", message: "Webhook not found." } },
@@ -1353,14 +1368,20 @@ export async function handleAgentWebhookInvocation(
     );
   }
   const webhookId = match[1];
-  if (!/^wh_[a-f0-9]{32}$/.test(webhookId)) {
+  const pathToken = match[2];
+  if (
+    !/^wh_[a-f0-9]{32}$/.test(webhookId) ||
+    (pathToken !== undefined && !/^[A-Za-z0-9_-]{16,128}$/.test(pathToken))
+  ) {
     return Response.json(
       { error: { code: "not_found", message: "Webhook not found." } },
       { status: 404 },
     );
   }
+  // The credential is the token: in the path, or as a bearer header for
+  // senders that can set one. Providers that can do neither use the URL.
   const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Bearer ")) {
+  if (!pathToken && !authorization?.startsWith("Bearer ")) {
     return Response.json(
       {
         error: {
@@ -1375,7 +1396,8 @@ export async function handleAgentWebhookInvocation(
     env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
   ).replace(/\/+$/, "");
   const target = new URL(
-    `${base}/v1/agent-webhooks/${encodeURIComponent(webhookId)}`,
+    `${base}/v1/agent-webhooks/${encodeURIComponent(webhookId)}` +
+      (pathToken ? `/${encodeURIComponent(pathToken)}` : ""),
   );
   if (target.protocol !== "https:" && target.hostname !== "localhost") {
     return Response.json(
@@ -1389,12 +1411,16 @@ export async function handleAgentWebhookInvocation(
     );
   }
   const headers = new Headers({
-    authorization,
     "content-type": request.headers.get("content-type") ?? "application/json",
     "x-request-id": crypto.randomUUID(),
   });
-  const idempotencyKey = request.headers.get("idempotency-key");
-  if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
+  if (authorization) headers.set("authorization", authorization);
+  // Delivery identity, in the backend's order of precedence: the caller's
+  // key, else the delivery id a provider sends.
+  for (const header of WEBHOOK_DELIVERY_ID_HEADERS) {
+    const value = request.headers.get(header);
+    if (value) headers.set(header, value);
+  }
   try {
     const upstream = await fetch(target, {
       method: "POST",

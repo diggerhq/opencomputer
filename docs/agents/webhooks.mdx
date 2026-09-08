@@ -14,8 +14,9 @@ webhook URL.
 ## Create a webhook
 
 Open an agent's **Webhooks** tab, select Development or Production, and choose
-**Create webhook**. The dashboard shows the bearer token once. Store it in the
-calling service's secret store.
+**Create webhook**. The dashboard shows the webhook URL once. The URL carries
+the credential: store it in the calling service's secret store, and treat it
+as you would a token.
 
 The CLI supports the same lifecycle:
 
@@ -31,16 +32,15 @@ opencomputer webhooks rotate-token <webhook-id>
 opencomputer webhooks remove <webhook-id>
 ```
 
-Rotation invalidates the previous token immediately. List output never
-contains a token.
+`create` and `rotate-token` print the URL with its token once. Rotation
+invalidates the previous URL immediately. `list` prints URLs without tokens.
 
 ## Invoke it
 
-Send `POST` with `application/json` and the token as a bearer credential:
+Send `POST` with `application/json` to the URL:
 
 ```bash
-curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_...' \
-  -H 'Authorization: Bearer <token>' \
+curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_.../ocwh_...' \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: delivery-123' \
   -d '{
@@ -52,14 +52,29 @@ curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_...' \
   }'
 ```
 
-At least one of `text` or `payload` is required. `text` becomes the initial
-turn prompt. `payload` remains structured JSON available to the agent. The
-response is HTTP 202 with the request, session ID, and dashboard session URL;
-the agent continues asynchronously.
+`text` becomes the initial turn prompt. `payload` remains structured JSON
+available to the agent. A body with neither key is delivered whole as
+`payload`, so a provider such as Sentry, GitHub, or Stripe can point its
+webhook at the URL directly; the prompt is then `Webhook <name> invoked`.
+Bodies are limited to 256 KiB.
 
-Use a unique `Idempotency-Key` for each upstream delivery. Retrying the same
-body with the same key returns the original request and session instead of
-starting another one.
+A sender that sets headers may omit the last path segment and send the token
+as `Authorization: Bearer <token>` instead. Both forms verify the same
+credential.
+
+The response is HTTP 202 with the request, session ID, and dashboard session
+URL. It is sent as soon as the delivery is stored; the session starts
+afterwards, so the response arrives within Sentry's and GitHub's timeouts.
+The request's `outcome` is `pending` in the response and becomes `accepted`
+once the session is running, or `failed` after the platform has retried the
+start for about forty minutes. The dashboard's Webhooks tab lists requests
+with their outcomes.
+
+Each delivery needs an identity so that a retry does not start a second
+session. OpenComputer uses the first present of `Idempotency-Key`,
+`Request-ID` (Sentry), `X-GitHub-Delivery`, and `Svix-Id`. Retrying the same
+body with the same identity returns the original request and session; if
+that request had failed to start, the retry starts it again.
 
 ## Read webhook input
 
@@ -88,6 +103,22 @@ export default function Agent() {
 Use payload fields such as `mode` for business behavior. `input.source` is
 `"webhook"` and `input.webhook` contains the webhook ID, request ID, and receive
 time for provenance and correlation.
+
+## Provider deliveries
+
+A provider body arrives unchanged as `input.payload`. Narrow it to what the
+agent needs; for a Sentry issue alert that is the event under `data.event`:
+
+```tsx
+const payload = (input.payload ?? {}) as {
+  data?: { event?: { event_id?: string; release?: string } };
+};
+const event = payload.data?.event;
+```
+
+Configure the provider with the full webhook URL. Sentry's internal
+integrations and GitHub repository webhooks accept it as is; both send a
+delivery id header that OpenComputer uses as the request identity.
 
 Development and Production webhooks have separate URLs, tokens, and sessions.
 Disable or remove a webhook when its caller should no longer start sessions.

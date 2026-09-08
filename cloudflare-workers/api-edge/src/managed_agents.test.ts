@@ -365,6 +365,78 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("internal");
   });
 
+  it("forwards a URL-credential delivery with the provider's delivery id and no bearer header", async () => {
+    const sentryBody = {
+      action: "triggered",
+      data: { event: { event_id: "a".repeat(32) } },
+      installation: { uuid: "inst" },
+    };
+    const fetchSpy = vi.fn(
+      async (target: URL | RequestInfo, init?: RequestInit) => {
+        expect(String(target)).toBe(
+          "https://managedagents.test/v1/agent-webhooks/wh_0123456789abcdef0123456789abcdef/ocwh_token-segment_0123456789",
+        );
+        const headers = new Headers(init?.headers);
+        expect(headers.get("authorization")).toBeNull();
+        expect(headers.get("request-id")).toBe("sentry-delivery-1");
+        expect(headers.get("sentry-hook-resource")).toBeNull();
+        expect(await new Response(init?.body).json()).toEqual(sentryBody);
+        return Response.json({
+          request: {
+            id: "whr_request",
+            webhookId: "wh_0123456789abcdef0123456789abcdef",
+            projectId: "prj_test",
+            environment: "development",
+            agentId: "oncall",
+            sessionId: "session_pending",
+            outcome: "pending",
+            attempt: 0,
+            createdAt: "2026-09-08T00:00:00.000Z",
+            updatedAt: "2026-09-08T00:00:00.000Z",
+          },
+        }, { status: 202 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/ocwh_token-segment_0123456789",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "request-id": "sentry-delivery-1",
+            "sentry-hook-resource": "event_alert",
+          },
+          body: JSON.stringify(sentryBody),
+        },
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      request: { sessionId: "session_pending", outcome: "pending" },
+      sessionUrl:
+        "https://app.opencomputer.dev/projects/prj_test/sessions/session_pending?agent=oncall&environment=development",
+    });
+  });
+
+  it("rejects a malformed path token before reaching the backend", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await handleAgentWebhookInvocation(
+      new Request(
+        "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/bad%20token",
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      ),
+      {},
+    );
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("rejects webhook calls without bearer credentials", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);

@@ -1408,8 +1408,9 @@ export async function runCommand(
           `${existing ? "Reused" : "Created"} ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
             `URL: ${webhook.invocationUrl}\n` +
             (existing
-              ? "The existing token remains unchanged.\n"
-              : `Token: ${webhook.token ?? "unavailable"}\nSave this token now. It will not be shown again.\n`),
+              ? "The existing token remains unchanged; this URL omits it.\n"
+              : `Token: ${webhook.token ?? "unavailable"}\n` +
+                "Save this URL now. It carries the token and will not be shown again.\n"),
         );
       }
       return;
@@ -1442,8 +1443,9 @@ export async function runCommand(
       else {
         process.stdout.write(
           `Rotated the token for ${webhook.name}.\n` +
+            `URL: ${webhook.invocationUrl}\n` +
             `Token: ${webhook.token ?? "unavailable"}\n` +
-            "Save this token now. The previous token no longer works.\n",
+            "Save this URL now. The previous token and URL no longer work.\n",
         );
       }
       return;
