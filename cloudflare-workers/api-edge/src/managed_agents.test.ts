@@ -378,9 +378,17 @@ describe("managed agents proxy", () => {
         );
         const headers = new Headers(init?.headers);
         expect(headers.get("authorization")).toBeNull();
+        // The sender's own headers reach the backend, which reads whichever
+        // one the webhook is configured to use as its identity.
         expect(headers.get("request-id")).toBe("sentry-delivery-1");
         expect(headers.get("sentry-hook-resource")).toBe("event_alert");
-        expect(headers.get("sentry-hook-signature")).toBeNull();
+        expect(headers.get("sentry-hook-signature")).toBe("abc");
+        // Credentials, transport, and edge-trusted headers do not.
+        expect(headers.get("cookie")).toBeNull();
+        expect(headers.get("x-oc-managed-sig")).toBeNull();
+        expect(headers.get("x-api-key")).toBeNull();
+        expect(headers.get("x-forwarded-for")).toBeNull();
+        expect(headers.get("x-request-id")).not.toBe("spoofed");
         expect(await new Response(init?.body).json()).toEqual(sentryBody);
         return Response.json({
           request: {
@@ -410,6 +418,11 @@ describe("managed agents proxy", () => {
             "request-id": "sentry-delivery-1",
             "sentry-hook-resource": "event_alert",
             "sentry-hook-signature": "abc",
+            cookie: "session=1",
+            "x-oc-managed-sig": "forged",
+            "x-api-key": "forged",
+            "x-forwarded-for": "1.2.3.4",
+            "x-request-id": "spoofed",
           },
           body: JSON.stringify(sentryBody),
         },

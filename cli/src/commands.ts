@@ -1378,7 +1378,9 @@ export async function runCommand(
         for (const webhook of webhooks) {
           process.stdout.write(
             `${webhook.id}  ${webhook.enabled ? "enabled " : "disabled"}  ` +
-              `${webhook.name}  ${webhook.invocationUrl}\n`,
+              `${webhook.name}  ${webhook.invocationUrl}` +
+              (webhook.identity ? `  identity=${webhook.identity}` : "") +
+              "\n",
           );
         }
       }
@@ -1386,8 +1388,9 @@ export async function runCommand(
     }
     if (action === "create") {
       const name = args.shift()?.trim();
+      const identity = option(args, "--identity");
       if (!name || args.length) {
-        throw new Error("Use `opencomputer webhooks create <name>`.");
+        throw new Error("Use `opencomputer webhooks create <name> [--identity header:<name>|body:<json-pointer>]`.");
       }
       const existing = (await client.webhooks({
         projectId: project.projectId,
@@ -1401,12 +1404,14 @@ export async function runCommand(
           name,
           environment,
           agentId,
+          ...(identity ? { identity } : {}),
         }));
       if (globals.json) printJSON({ ...webhook, reused: Boolean(existing) });
       else {
         process.stdout.write(
           `${existing ? "Reused" : "Created"} ${webhook.name} (${webhook.id}) for ${agentId}@${environment}.\n` +
             `URL: ${webhook.invocationUrl}\n` +
+            (webhook.identity ? `Identity: ${webhook.identity}\n` : "") +
             (existing
               ? "The existing token remains unchanged; this URL omits it.\n"
               : `Token: ${webhook.token ?? "unavailable"}\n` +
@@ -1416,10 +1421,29 @@ export async function runCommand(
       return;
     }
     const webhookId = args.shift();
+    const identityOption = action === "update" ? option(args, "--identity") : undefined;
     if (!webhookId || args.length) {
       throw new Error(
-        "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+        "Use `opencomputer webhooks list|create|update|enable|disable|rotate-token|remove`.",
       );
+    }
+    if (action === "update") {
+      if (identityOption === undefined) {
+        throw new Error("Use `opencomputer webhooks update <id> --identity header:<name>|body:<json-pointer>|none`.");
+      }
+      const webhook = await client.updateWebhook({
+        projectId: project.projectId,
+        webhookId,
+        identity: identityOption === "none" ? null : identityOption,
+      });
+      if (globals.json) printJSON(webhook);
+      else
+        process.stdout.write(
+          webhook.identity
+            ? `${webhook.name} now takes its delivery identity from ${webhook.identity}.\n`
+            : `${webhook.name} now treats every delivery without an Idempotency-Key as new.\n`,
+        );
+      return;
     }
     if (action === "enable" || action === "disable") {
       const webhook = await client.updateWebhook({
@@ -1457,7 +1481,7 @@ export async function runCommand(
       return;
     }
     throw new Error(
-      "Use `opencomputer webhooks list|create|enable|disable|rotate-token|remove`.",
+      "Use `opencomputer webhooks list|create|update|enable|disable|rotate-token|remove`.",
     );
   }
 

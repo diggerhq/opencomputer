@@ -67,6 +67,7 @@ export function ManagedAgentWebhooks({
   const queryKey = ['managed-agent-webhooks', projectId, agentId, environment]
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [identity, setIdentity] = useState('')
   const [credentials, setCredentials] = useState<ManagedAgentWebhook>()
   const [removing, setRemoving] = useState<ManagedAgentWebhook>()
 
@@ -82,10 +83,12 @@ export function ManagedAgentWebhooks({
         agentId,
         environment,
         name: name.trim(),
+        ...(identity.trim() ? { identity: identity.trim() } : {}),
       }),
     onSuccess: async (webhook) => {
       setCreating(false)
       setName('')
+      setIdentity('')
       setCredentials(webhook)
       await queryClient.invalidateQueries({ queryKey })
     },
@@ -160,6 +163,11 @@ export function ManagedAgentWebhooks({
           <p className="text-muted-foreground mt-1 max-w-xl truncate font-mono text-xs">
             {webhook.invocationUrl}
           </p>
+          {webhook.identity ? (
+            <p className="text-muted-foreground mt-1 font-mono text-xs">
+              identity {webhook.identity}
+            </p>
+          ) : null}
         </div>
       ),
     },
@@ -264,6 +272,21 @@ export function ManagedAgentWebhooks({
               placeholder="Daily hygiene trigger"
               onChange={(event) => setName(event.target.value)}
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="webhook-identity">Delivery identity (optional)</Label>
+            <Input
+              id="webhook-identity"
+              value={identity}
+              maxLength={300}
+              placeholder="body:/data/event/event_id or header:X-GitHub-Delivery"
+              onChange={(event) => setIdentity(event.target.value)}
+            />
+            <p className="text-muted-foreground text-xs">
+              Where a delivery&apos;s identity is read when the sender sets no
+              Idempotency-Key, so a provider&apos;s retry does not start a second
+              session. A header name, or a JSON Pointer into the body.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>

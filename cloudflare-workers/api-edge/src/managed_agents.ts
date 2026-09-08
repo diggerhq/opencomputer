@@ -476,6 +476,7 @@ function publicWebhook(
     agentId: webhook.agentId,
     name: webhook.name,
     enabled: webhook.enabled,
+    ...(typeof webhook.identity === "string" ? { identity: webhook.identity } : {}),
     // The token is the credential; when this response carries it (create,
     // rotate), the URL carries it too and is shown once. Listings never do.
     ...(publicOrigin && id
@@ -1346,17 +1347,29 @@ export async function handleManagedAgentChannelConnection(
   });
 }
 
-// Headers that carry or select a delivery identity; the backend decides
-// precedence (Sentry deliveries are identified by the alerted object named
-// by `sentry-hook-resource`, not by the per-attempt `request-id`).
-const WEBHOOK_DELIVERY_ID_HEADERS = [
-  "idempotency-key",
-  "sentry-hook-resource",
-  "x-github-delivery",
-  "stripe-signature",
-  "svix-id",
-  "request-id",
-] as const;
+// A webhook may read its delivery identity from any request header the
+// sender chose at configuration time, so the sender's headers pass through
+// except credentials, transport headers, and anything the backend trusts
+// from this edge.
+const WEBHOOK_HEADERS_NOT_FORWARDED = new Set([
+  "authorization",
+  "cookie",
+  "host",
+  "content-length",
+  "connection",
+  "transfer-encoding",
+  "x-request-id",
+  "x-api-key",
+]);
+const WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED = ["x-oc-", "cf-", "x-forwarded-", "x-real-"];
+
+function forwardableWebhookHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    !WEBHOOK_HEADERS_NOT_FORWARDED.has(lower) &&
+    !WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED.some((prefix) => lower.startsWith(prefix))
+  );
+}
 
 export async function handleAgentWebhookInvocation(
   request: Request,
@@ -1420,9 +1433,8 @@ export async function handleAgentWebhookInvocation(
     "x-request-id": crypto.randomUUID(),
   });
   if (authorization) headers.set("authorization", authorization);
-  for (const header of WEBHOOK_DELIVERY_ID_HEADERS) {
-    const value = request.headers.get(header);
-    if (value) headers.set(header, value);
+  for (const [name, value] of request.headers) {
+    if (forwardableWebhookHeader(name) && !headers.has(name)) headers.set(name, value);
   }
   try {
     const upstream = await fetch(target, {
