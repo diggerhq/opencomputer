@@ -1,0 +1,55 @@
+name: Deploy log tail
+
+# The collector receives every console line and exception from the API edge
+# and events-ingest Workers and forwards them to Axiom. It redacts webhook
+# credentials on the way, so it must be live before the edge starts issuing
+# credential-bearing webhook URLs: to release in that order, run this
+# workflow by hand from the branch first, then merge.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-workers/log-tail/**'
+      - '.github/workflows/deploy-log-tail.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-log-tail
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy log tail
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: cloudflare-workers/log-tail
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare-workers/log-tail/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Deploy opencomputer-log-tail-prod
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
+            exit 1
+          fi
+          # AXIOM_TOKEN is a Worker secret set once with `wrangler secret put`;
+          # --keep-vars leaves it and any dashboard-set vars in place.
+          npm run deploy:prod
