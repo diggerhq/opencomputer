@@ -1,0 +1,16 @@
+{
+  "name": "opencomputer-log-tail",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tail consumer that forwards Worker console output and exceptions to Axiom with credentials redacted.",
+  "type": "module",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "test": "node --test --experimental-strip-types src/index.test.ts",
+    "deploy:prod": "wrangler deploy -c wrangler.prod.toml --keep-vars",
+    "deploy:dev": "wrangler deploy -c wrangler.toml --keep-vars"
+  },
+  "devDependencies": {
+    "wrangler": "^4.92.0"
+  }
+}
