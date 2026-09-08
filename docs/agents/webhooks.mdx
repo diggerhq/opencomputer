@@ -14,8 +14,9 @@ webhook URL.
 ## Create a webhook
 
 Open an agent's **Webhooks** tab, select Development or Production, and choose
-**Create webhook**. The dashboard shows the bearer token once. Store it in the
-calling service's secret store.
+**Create webhook**. The dashboard shows the webhook URL once. The URL carries
+the credential: store it in the calling service's secret store, and treat it
+as you would a token.
 
 The CLI supports the same lifecycle:
 
@@ -31,16 +32,15 @@ opencomputer webhooks rotate-token <webhook-id>
 opencomputer webhooks remove <webhook-id>
 ```
 
-Rotation invalidates the previous token immediately. List output never
-contains a token.
+`create` and `rotate-token` print the URL with its token once. Rotation
+invalidates the previous URL immediately. `list` prints URLs without tokens.
 
 ## Invoke it
 
-Send `POST` with `application/json` and the token as a bearer credential:
+Send `POST` with `application/json` to the URL:
 
 ```bash
-curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_...' \
-  -H 'Authorization: Bearer <token>' \
+curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_.../ocwh_...' \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: delivery-123' \
   -d '{
@@ -52,14 +52,66 @@ curl -X POST 'https://app.opencomputer.dev/api/agent-webhooks/wh_...' \
   }'
 ```
 
-At least one of `text` or `payload` is required. `text` becomes the initial
-turn prompt. `payload` remains structured JSON available to the agent. The
-response is HTTP 202 with the request, session ID, and dashboard session URL;
-the agent continues asynchronously.
+`text` becomes the initial turn prompt. `payload` remains structured JSON
+available to the agent. A body with neither key is delivered whole as
+`payload`, so a provider such as Sentry, GitHub, or Stripe can point its
+webhook at the URL directly; the prompt is then `Webhook <name> invoked`.
+Bodies are limited to 256 KiB.
 
-Use a unique `Idempotency-Key` for each upstream delivery. Retrying the same
-body with the same key returns the original request and session instead of
-starting another one.
+A sender that sets headers may omit the last path segment and send the token
+as `Authorization: Bearer <token>` instead. Both forms verify the same
+credential.
+
+The response is HTTP 202 with the request, session ID, and dashboard session
+URL. It is sent as soon as the delivery is stored; the session starts
+afterwards, so acknowledgement does not wait for a runtime.
+The request's `outcome` is `pending` in the response. It becomes `accepted`
+once the session holds the turn, which is the point of no return: from
+there the session runs it, even if the runtime has to be started again.
+It becomes `failed` after five start attempts over about thirteen minutes,
+or at once when the platform can tell that no retry would help; such a
+request carries `terminal: true`. Read outcomes from the request ledger
+with your API key; the session id there is authoritative, since a retried
+start can use a different session than the one first announced:
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webhooks/<webhook-id>/requests?environment=production' \
+  -H 'Authorization: Bearer <api-key>'
+```
+
+Each delivery needs an identity so that a retry does not start a second
+session. A sender that can set headers sends `Idempotency-Key`. For a
+provider that cannot, give the webhook an identity source when you create
+it: a request header, or a JSON Pointer into the body.
+
+```bash
+opencomputer webhooks create sentry-alerts --agent current --environment production \
+  --identity body:/data/event/event_id
+opencomputer webhooks update <webhook-id> --identity header:X-GitHub-Delivery
+opencomputer webhooks update <webhook-id> --identity none
+```
+
+Choose a value that stays the same when the provider retries and differs
+between deliveries you want handled separately. Sentry's per-request
+`Request-ID` changes on every retry, so for its issue alerts use the event
+id in the body. Without a source, every delivery that sets no
+`Idempotency-Key` starts a session.
+
+Retrying with the same `Idempotency-Key` and a different body is a 409. A
+retry under a configured source returns the original request even if the
+provider reserialized the body. If the original request had failed to
+start after its attempts, the retry starts it again; if it failed with
+`terminal: true`, the retry returns that failure unchanged. To recover a
+terminal failure, resend the saved payload with a fresh `Idempotency-Key`,
+which overrides the configured source and starts a new request. A body
+larger than 256 KiB once wrapped as agent input is rejected with 400
+before acknowledgement.
+
+A header source cannot name a header the platform sets or strips before
+the backend reads it: `Authorization`, `Cookie`, `Idempotency-Key`,
+`X-Request-Id`, `X-Api-Key`, transport headers, and anything starting with
+`x-oc-`, `cf-`, `x-forwarded-`, or `x-real-`. Creating a webhook with one
+of these is rejected.
 
 ## Read webhook input
 
@@ -88,6 +140,22 @@ export default function Agent() {
 Use payload fields such as `mode` for business behavior. `input.source` is
 `"webhook"` and `input.webhook` contains the webhook ID, request ID, and receive
 time for provenance and correlation.
+
+## Provider deliveries
+
+A provider body arrives unchanged as `input.payload`. Narrow it to what the
+agent needs; for a Sentry issue alert that is the event under `data.event`:
+
+```tsx
+const payload = (input.payload ?? {}) as {
+  data?: { event?: { event_id?: string; release?: string } };
+};
+const event = payload.data?.event;
+```
+
+Configure the provider with the full webhook URL and set the webhook's
+identity source to the field that names the delivery, for example
+`body:/data/event/event_id` for a Sentry issue alert.
 
 Development and Production webhooks have separate URLs, tokens, and sessions.
 Disable or remove a webhook when its caller should no longer start sessions.

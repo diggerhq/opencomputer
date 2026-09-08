@@ -378,6 +378,7 @@ const webhookSchema = z.object({
   agentId: z.string(),
   name: z.string(),
   enabled: z.boolean(),
+  identity: z.string().optional(),
   invocationUrl: z.string().url(),
   token: z.string().optional(),
   createdAt: z.string(),
@@ -917,6 +918,7 @@ export async function createManagedAgentWebhook(input: {
   agentId: string
   environment: 'development' | 'production'
   name: string
+  identity?: string
 }) {
   return (
     await apiFetch(
@@ -927,6 +929,7 @@ export async function createManagedAgentWebhook(input: {
           agentId: input.agentId,
           environment: input.environment,
           name: input.name,
+          ...(input.identity ? { identity: input.identity } : {}),
         }),
       },
       webhookResponseSchema,

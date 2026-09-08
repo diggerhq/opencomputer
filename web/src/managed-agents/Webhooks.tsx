@@ -38,10 +38,12 @@ function formatDate(value?: string) {
   return value ? new Date(value).toLocaleString() : 'Never'
 }
 
+// The URL carries the token, so a request needs no credential header. Any
+// JSON object is accepted; one without `text` or `payload` is delivered whole
+// as the agent's payload.
 function curlCommand(webhook: ManagedAgentWebhook) {
   return [
     `curl -X POST '${webhook.invocationUrl}' \\`,
-    `  -H 'Authorization: Bearer ${webhook.token ?? '<token>'}' \\`,
     "  -H 'Content-Type: application/json' \\",
     "  -H 'Idempotency-Key: <unique-request-id>' \\",
     `  -d '{"text":"Run this workflow","payload":{"mode":"default"}}'`,
@@ -65,6 +67,7 @@ export function ManagedAgentWebhooks({
   const queryKey = ['managed-agent-webhooks', projectId, agentId, environment]
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [identity, setIdentity] = useState('')
   const [credentials, setCredentials] = useState<ManagedAgentWebhook>()
   const [removing, setRemoving] = useState<ManagedAgentWebhook>()
 
@@ -80,10 +83,12 @@ export function ManagedAgentWebhooks({
         agentId,
         environment,
         name: name.trim(),
+        ...(identity.trim() ? { identity: identity.trim() } : {}),
       }),
     onSuccess: async (webhook) => {
       setCreating(false)
       setName('')
+      setIdentity('')
       setCredentials(webhook)
       await queryClient.invalidateQueries({ queryKey })
     },
@@ -158,6 +163,11 @@ export function ManagedAgentWebhooks({
           <p className="text-muted-foreground mt-1 max-w-xl truncate font-mono text-xs">
             {webhook.invocationUrl}
           </p>
+          {webhook.identity ? (
+            <p className="text-muted-foreground mt-1 font-mono text-xs">
+              identity {webhook.identity}
+            </p>
+          ) : null}
         </div>
       ),
     },
@@ -249,7 +259,8 @@ export function ManagedAgentWebhooks({
             <DialogTitle>Create webhook</DialogTitle>
             <DialogDescription>
               This webhook will trigger {agentName} in {environment}. Give the
-              ingress point a name; its bearer token is shown once.
+              ingress point a name; its URL, which carries the credential, is
+              shown once.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -261,6 +272,21 @@ export function ManagedAgentWebhooks({
               placeholder="Daily hygiene trigger"
               onChange={(event) => setName(event.target.value)}
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="webhook-identity">Delivery identity (optional)</Label>
+            <Input
+              id="webhook-identity"
+              value={identity}
+              maxLength={300}
+              placeholder="body:/data/event/event_id or header:X-GitHub-Delivery"
+              onChange={(event) => setIdentity(event.target.value)}
+            />
+            <p className="text-muted-foreground text-xs">
+              Where a delivery&apos;s identity is read when the sender sets no
+              Idempotency-Key, so a provider&apos;s retry does not start a second
+              session. A header name, or a JSON Pointer into the body.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>
@@ -283,14 +309,20 @@ export function ManagedAgentWebhooks({
       >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Save this webhook token</DialogTitle>
+            <DialogTitle>Save this webhook URL</DialogTitle>
             <DialogDescription>
-              OpenComputer stores only its hash, so this token cannot be shown
-              again. Rotating it invalidates the previous token.
+              The URL carries the credential and OpenComputer stores only its
+              hash, so it cannot be shown again. Rotating the token invalidates
+              this URL. Senders that set headers may instead call the URL
+              without its last segment with the token as a bearer credential.
             </DialogDescription>
           </DialogHeader>
           {credentials?.token ? (
             <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Webhook URL</Label>
+                <CopyRow value={credentials.invocationUrl} maskable />
+              </div>
               <div className="space-y-2">
                 <Label>Token</Label>
                 <CopyRow value={credentials.token} maskable />
