@@ -506,6 +506,8 @@ function publicWebhookRequest(value: unknown): Record<string, unknown> {
     deploymentId: request.deploymentId,
     sessionId: request.sessionId,
     outcome: request.outcome,
+    ...(typeof request.attempt === "number" ? { attempt: request.attempt } : {}),
+    ...(request.terminal === true ? { terminal: true } : {}),
     ...(request.error
       ? { error: "The webhook request could not start a session." }
       : {}),
@@ -1350,7 +1352,8 @@ export async function handleManagedAgentChannelConnection(
 // A webhook may read its delivery identity from any request header the
 // sender chose at configuration time, so the sender's headers pass through
 // except credentials, transport headers, and anything the backend trusts
-// from this edge.
+// from this edge. The backend rejects identity sources naming these headers
+// (`bluecode/src/edge/webhook-input.ts`); change both together.
 const WEBHOOK_HEADERS_NOT_FORWARDED = new Set([
   "authorization",
   "cookie",

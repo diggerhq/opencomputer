@@ -94,12 +94,31 @@ test("redacts the webhook credential segment from request URLs", async () => {
       },
       logs: [],
       exceptions: [],
+    }, {
+      scriptName: "managed-agents",
+      outcome: "ok",
+      eventTimestamp: Date.parse("2026-09-08T20:00:03Z"),
+      event: {
+        request: { method: "POST", url: "https://managedagents.example/v1/other" },
+        response: { status: 500 },
+      },
+      // A console message that quoted the path, as an unredacted emitter would.
+      logs: [{
+        level: "error",
+        timestamp: Date.parse("2026-09-08T20:00:03Z"),
+        message: [`{"event":"edge.request_failed","path":"/v1/agent-webhooks/wh_0123456789abcdef0123456789abcdef/${token}"}`],
+      }],
+      exceptions: [],
     }], env, {} as ExecutionContext);
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(records.length, 3);
+  assert.equal(records.length, 4);
+  assert.equal(
+    records[3]?.msg,
+    `{"event":"edge.request_failed","path":"/v1/agent-webhooks/wh_0123456789abcdef0123456789abcdef/redacted"}`,
+  );
   assert.equal(
     records[2]?.request_url,
     "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/redacted",

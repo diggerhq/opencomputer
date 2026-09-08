@@ -44,9 +44,11 @@ interface TraceItem {
 }
 
 function fmtMessage(parts: unknown[]): string {
-  return parts
-    .map((p) => (typeof p === "string" ? p : safeStringify(p)))
-    .join(" ");
+  return redactWebhookTokens(
+    parts
+      .map((p) => (typeof p === "string" ? p : safeStringify(p)))
+      .join(" "),
+  );
 }
 
 function safeStringify(v: unknown): string {
@@ -58,6 +60,13 @@ function safeStringify(v: unknown): string {
 // `/api/agent-webhooks/<id>/<token>`, backend `/v1/agent-webhooks/<id>/<token>`).
 // Everything after the id is redacted, whatever suffix a malformed request adds.
 const WEBHOOK_TOKEN_PATH = /^(\/(?:api|v1)\/agent-webhooks\/[^/]+)\/.*$/;
+// The same credential position anywhere in free text (a console message or
+// an exception that quoted the path). Defense in depth: emitters redact too.
+const WEBHOOK_TOKEN_IN_TEXT = /(\/(?:api|v1)\/agent-webhooks\/wh_[a-f0-9]{32})\/[^\s"'\\]+/g;
+
+function redactWebhookTokens(text: string): string {
+  return text.replace(WEBHOOK_TOKEN_IN_TEXT, "$1/redacted");
+}
 
 // Request query strings can carry browser client tokens (`?token=...`), and
 // webhook paths carry the webhook credential. Keep the route useful for
@@ -121,7 +130,7 @@ export default {
           _time: new Date(ex.timestamp).toISOString(),
           time: new Date(ex.timestamp).toISOString(),
           level: "ERROR",
-          msg: `${ex.name}: ${ex.message}`,
+          msg: redactWebhookTokens(`${ex.name}: ${ex.message}`),
           stack: ex.stack,
           ...baseEnvelope,
         });
