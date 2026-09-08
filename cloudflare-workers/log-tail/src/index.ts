@@ -54,9 +54,10 @@ function safeStringify(v: unknown): string {
   catch { return String(v); }
 }
 
-// Agent webhook URLs carry their credential as the last path segment
-// (public `/api/agent-webhooks/<id>/<token>`, backend `/v1/agent-webhooks/<id>/<token>`).
-const WEBHOOK_TOKEN_PATH = /^(\/(?:api|v1)\/agent-webhooks\/[^/]+)\/[^/]+$/;
+// Agent webhook URLs carry their credential after the webhook id (public
+// `/api/agent-webhooks/<id>/<token>`, backend `/v1/agent-webhooks/<id>/<token>`).
+// Everything after the id is redacted, whatever suffix a malformed request adds.
+const WEBHOOK_TOKEN_PATH = /^(\/(?:api|v1)\/agent-webhooks\/[^/]+)\/.*$/;
 
 // Request query strings can carry browser client tokens (`?token=...`), and
 // webhook paths carry the webhook credential. Keep the route useful for

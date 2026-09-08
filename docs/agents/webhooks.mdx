@@ -64,7 +64,7 @@ credential.
 
 The response is HTTP 202 with the request, session ID, and dashboard session
 URL. It is sent as soon as the delivery is stored; the session starts
-afterwards, so the response arrives within Sentry's and GitHub's timeouts.
+afterwards, so acknowledgement does not wait for a runtime.
 The request's `outcome` is `pending` in the response and becomes `accepted`
 once the session is running, or `failed` after five start attempts over
 about thirteen minutes. Read outcomes from the request ledger with your API
@@ -78,13 +78,16 @@ curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webh
 
 Each delivery needs an identity so that a retry does not start a second
 session. OpenComputer uses the first available of: your `Idempotency-Key`;
-for Sentry, the alerted event or issue named in the body together with the
+for Sentry event alerts and errors, the event id in the body under the
 `Sentry-Hook-Resource` header, which stays the same across Sentry's retries
 while its `Request-ID` does not; `X-GitHub-Delivery`; for Stripe, the event
-id in the body; `Svix-Id`; and finally `Request-ID`. Retrying with the same
-identity and body returns the original request and session; if that request
-had failed to start, the retry starts it again. A body larger than 256 KiB
-once wrapped as agent input is rejected with 400 before acknowledgement.
+id in the body; `Svix-Id`; and finally `Request-ID`. Other Sentry
+notifications, such as issue and comment changes, use `Request-ID`.
+Retrying with the same `Idempotency-Key` and a different body is a 409; a
+provider retry under a derived identity returns the original request even
+if the provider reserialized the body. If the original request had failed
+to start, the retry starts it again. A body larger than 256 KiB once wrapped
+as agent input is rejected with 400 before acknowledgement.
 
 ## Read webhook input
 

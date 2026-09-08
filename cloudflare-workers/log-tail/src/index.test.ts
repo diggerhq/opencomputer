@@ -81,12 +81,29 @@ test("redacts the webhook credential segment from request URLs", async () => {
       },
       logs: [],
       exceptions: [],
+    }, {
+      scriptName: "api-edge",
+      outcome: "ok",
+      eventTimestamp: Date.parse("2026-09-08T20:00:02Z"),
+      event: {
+        request: {
+          method: "POST",
+          url: `https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/${token}/extra/`,
+        },
+        response: { status: 502 },
+      },
+      logs: [],
+      exceptions: [],
     }], env, {} as ExecutionContext);
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(records.length, 2);
+  assert.equal(records.length, 3);
+  assert.equal(
+    records[2]?.request_url,
+    "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/redacted",
+  );
   assert.equal(
     records[0]?.request_url,
     "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/redacted",
