@@ -1233,7 +1233,23 @@ let managedProjects: Array<{
   agents: Array<{ id: string; name: string }>
   createdAt: string
   updatedAt: string
-}> = []
+  // Seeded so the project routes render without creating one first. Visiting
+  // /projects/prj_preview/channels used to poll a 404 forever, which reads as
+  // a broken page rather than an empty one.
+}> = [
+  {
+    id: 'prj_preview',
+    slug: 'hello-world',
+    name: 'Hello World',
+    environments: [
+      { name: 'development', updatedAt: new Date(BASE).toISOString() },
+      { name: 'production', updatedAt: new Date(BASE).toISOString() },
+    ],
+    agents: [{ id: 'research-assistant', name: 'Research Assistant' }],
+    createdAt: new Date(BASE).toISOString(),
+    updatedAt: new Date(BASE).toISOString(),
+  },
+]
 
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
@@ -1325,6 +1341,44 @@ const ROUTES: Array<[RegExp, Handler]> = [
       channels: [],
       connections: [],
       createdAt: new Date(BASE).toISOString(),
+      // Declaring one channel of each provider so the channels tab renders
+      // both connect flows in preview. They are genuinely different: Slack has
+      // an app to install, Twilio has credentials to paste and a number to
+      // point at us.
+      projectDeployment: {
+        id: 'research-assistant:preview',
+        digest: 'p'.repeat(64),
+        localAgentId: 'research-assistant',
+        agents: [
+          { localId: 'research-assistant', agentId: 'research-assistant' },
+        ],
+        resources: {
+          version: 1,
+          channels: [
+            {
+              id: 'team-slack',
+              type: 'slack',
+              displayName: 'Engineering Slack',
+              destinations: {
+                'pull-request-reviews': {
+                  type: 'conversation',
+                  visibility: 'public',
+                },
+              },
+            },
+            {
+              id: 'shop-sms',
+              type: 'twilio',
+              displayName: 'Customer texts',
+              destinations: { reply: { type: 'reply' } },
+            },
+          ],
+          channelRegistrations: [],
+          outboxes: [],
+          outboxRegistrations: [],
+          schedules: [],
+        },
+      },
     }),
   ],
   [
