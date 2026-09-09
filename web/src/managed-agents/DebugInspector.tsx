@@ -31,9 +31,23 @@ function eventSummary(event: ManagedAgentEvent) {
     return `${method} ${path}${status}`.trim()
   }
   if (event.type.startsWith('tool.')) {
-    return typeof event.data.tool === 'string'
-      ? event.data.tool
-      : 'Tool activity'
+    const tool = typeof event.data.tool === 'string' ? event.data.tool : 'Tool'
+    if (event.type === 'tool.progress') {
+      if (
+        typeof event.data.stream === 'string' &&
+        typeof event.data.chunk === 'string'
+      ) {
+        return `${tool} · ${event.data.stream}\n${event.data.chunk}`
+      }
+      const detail =
+        typeof event.data.message === 'string'
+          ? event.data.message
+          : typeof event.data.stage === 'string'
+            ? event.data.stage
+            : 'running'
+      return `${tool} · ${detail}`
+    }
+    return tool
   }
   if (event.type === 'turn.failed' || event.type === 'session.failed') {
     return typeof event.data.message === 'string'
