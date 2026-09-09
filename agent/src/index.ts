@@ -88,30 +88,95 @@ export interface McpServerDefinition extends ResourceReference {
   readonly connection?: ConnectionReference;
 }
 
-export type SlackChannelEvent = "app_mention" | "message.im";
-export type ChannelTrigger = "mention" | "direct-message";
+/**
+ * A channel is a conversation the agent takes part in, keyed by an external
+ * participant. What differs between providers is transport, addressing, and
+ * authentication; what does not differ is that an inbound message continues the
+ * conversation it belongs to. Agents see the second part and never the first.
+ */
+export type ChannelProvider = "slack" | "twilio" | "email";
 
-export interface ChannelDestinationDefinition {
+export type SlackChannelEvent = "app_mention" | "message.im";
+/** Providers without a mention/DM distinction have exactly one inbound event. */
+export type MessageChannelEvent = "message.inbound";
+export type ChannelEvent = SlackChannelEvent | MessageChannelEvent;
+
+export type ChannelTrigger = "mention" | "direct-message" | "message";
+
+export interface ConversationDestination {
   readonly type: "conversation";
   readonly visibility: "public" | "private";
 }
 
-export interface SlackChannelDefinition extends ResourceReference {
+/** Reply on the conversation the message arrived on. */
+export interface ReplyDestination {
+  readonly type: "reply";
+}
+
+export type ChannelDestinationDefinition =
+  | ConversationDestination
+  | ReplyDestination;
+
+interface ChannelDefinitionBase extends ResourceReference {
   readonly kind: "channel";
   readonly version: 1;
-  readonly type: "slack";
   readonly displayName?: string;
-  readonly scopes: {
-    readonly bot: readonly string[];
-  };
-  readonly events: readonly SlackChannelEvent[];
   readonly destinations: Readonly<
     Record<string, Readonly<ChannelDestinationDefinition>>
   >;
   readonly routing: {
     readonly whenAmbiguous: "ask";
   };
+  /**
+   * Agent runtime is billed by wall-clock time, and a conversation spends most
+   * of its life waiting for a human. Suspend the runtime this long after the
+   * last message; an inbound message resumes it. Without this a channel-backed
+   * conversation bills for the hours nobody is typing.
+   */
+  readonly idle: {
+    readonly suspendAfterSeconds: number;
+  };
 }
+
+export interface SlackChannelDefinition extends ChannelDefinitionBase {
+  readonly type: "slack";
+  readonly scopes: {
+    readonly bot: readonly string[];
+  };
+  readonly events: readonly SlackChannelEvent[];
+}
+
+/**
+ * Named for the vendor, as `slack` is, because that is what actually differs:
+ * the signature is Twilio's HMAC over the request URL and sorted parameters,
+ * and the payload is Twilio's form encoding. A different SMS vendor is a
+ * different adapter, not a variant of this one.
+ *
+ * Twilio WhatsApp rides the same API, webhook, and signature — addresses just
+ * carry a `whatsapp:` prefix — so it needs no separate provider.
+ *
+ * The number itself is not here. It is per-environment operational
+ * configuration, bound to a connection in the dashboard, exactly as Slack
+ * conversation IDs are.
+ */
+export interface TwilioChannelDefinition extends ChannelDefinitionBase {
+  readonly type: "twilio";
+  readonly events: readonly MessageChannelEvent[];
+}
+
+/**
+ * The address is likewise a per-environment binding, not source: development
+ * and production do not share an inbox.
+ */
+export interface EmailChannelDefinition extends ChannelDefinitionBase {
+  readonly type: "email";
+  readonly events: readonly MessageChannelEvent[];
+}
+
+export type ChannelDefinition =
+  | SlackChannelDefinition
+  | TwilioChannelDefinition
+  | EmailChannelDefinition;
 
 export interface ChannelRegistrationDefinition extends ResourceReference {
   readonly kind: "channel-registration";
@@ -265,6 +330,9 @@ function identifier(value: string, kind: string): string {
   return id;
 }
 
+const OPENCOMPUTER_USER_AGENT =
+  "OpenComputer-Agent/1 (+https://opencomputer.dev)";
+
 export function useSecret(name: string): SecretReference {
   const id = identifier(name, "useSecret");
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(id)) {
@@ -373,6 +441,15 @@ export function defineConnection(input: {
         throw new Error("Connection requests require an absolute path");
       }
       const headers = Object.fromEntries(new Headers(init.headers).entries());
+      // Some APIs reject a request that carries no User-Agent — GitHub answers
+      // 403 with an empty body, which is undiagnosable from the caller's side.
+      // Default one unless the connection or this request already sets it.
+      const declaresUserAgent = Object.keys(input.headers ?? {}).some(
+        (name) => name.toLowerCase() === "user-agent",
+      );
+      if (!declaresUserAgent && !("user-agent" in headers)) {
+        headers["user-agent"] = OPENCOMPUTER_USER_AGENT;
+      }
       const body =
         init.body === undefined || init.body === null
           ? undefined
@@ -433,10 +510,21 @@ const SLACK_EVENT_SCOPE: Readonly<Record<SlackChannelEvent, string>> = {
   app_mention: "app_mentions:read",
   "message.im": "im:history",
 };
-const TRIGGER_EVENT: Readonly<Record<ChannelTrigger, SlackChannelEvent>> = {
+const TRIGGER_EVENT: Readonly<Record<ChannelTrigger, ChannelEvent>> = {
   mention: "app_mention",
   "direct-message": "message.im",
+  message: "message.inbound",
 };
+const PROVIDER_TRIGGERS: Readonly<
+  Record<ChannelProvider, readonly ChannelTrigger[]>
+> = {
+  slack: ["mention", "direct-message"],
+  twilio: ["message"],
+  email: ["message"],
+};
+// Suspend quickly by default. A resume costs a moment; an idle runtime costs
+// for every second nobody is typing, and on SMS or email that is most of them.
+const DEFAULT_IDLE_SUSPEND_SECONDS = 300;
 
 function resourceIdentifier(value: string, kind: string): string {
   const id = identifier(value, kind);
@@ -527,16 +615,101 @@ export function defineSchedule(input: {
   });
 }
 
-export function defineChannel(input: {
+interface ChannelInputBase {
   id: string;
-  type: "slack";
   displayName?: string;
-  scopes: { bot: readonly string[] };
-  events?: readonly SlackChannelEvent[];
   destinations?: Readonly<Record<string, ChannelDestinationDefinition>>;
   routing?: { whenAmbiguous?: "ask" };
-}): SlackChannelDefinition {
+  idle?: { suspendAfterSeconds?: number };
+}
+
+export interface SlackChannelInput extends ChannelInputBase {
+  type: "slack";
+  scopes: { bot: readonly string[] };
+  events?: readonly SlackChannelEvent[];
+}
+
+export interface TwilioChannelInput extends ChannelInputBase {
+  type: "twilio";
+}
+
+export interface EmailChannelInput extends ChannelInputBase {
+  type: "email";
+}
+
+export type ChannelInput =
+  | SlackChannelInput
+  | TwilioChannelInput
+  | EmailChannelInput;
+
+function channelCommon(input: ChannelInputBase): {
+  id: string;
+  displayName?: string;
+  routing: { whenAmbiguous: "ask" };
+  idle: { suspendAfterSeconds: number };
+} {
   const id = resourceIdentifier(input.id, "defineChannel");
+  const seconds =
+    input.idle?.suspendAfterSeconds ?? DEFAULT_IDLE_SUSPEND_SECONDS;
+  if (!Number.isInteger(seconds) || seconds < 30 || seconds > 86_400) {
+    throw new Error(
+      "Channel idle.suspendAfterSeconds must be a whole number of seconds between 30 and 86400",
+    );
+  }
+  return {
+    id,
+    ...(input.displayName?.trim()
+      ? { displayName: input.displayName.trim() }
+      : {}),
+    routing: { whenAmbiguous: input.routing?.whenAmbiguous ?? "ask" },
+    idle: { suspendAfterSeconds: seconds },
+  };
+}
+
+/**
+ * Providers other than Slack address a single participant, so their only
+ * destination is a reply on the conversation the message arrived on.
+ */
+function replyDestinations(
+  input: ChannelInputBase,
+  provider: ChannelProvider,
+): Record<string, Readonly<ChannelDestinationDefinition>> {
+  const destinations: Record<string, Readonly<ChannelDestinationDefinition>> =
+    {};
+  for (const [name, destination] of Object.entries(input.destinations ?? {})) {
+    const destinationId = resourceIdentifier(name, "Channel destination");
+    if (destination.type !== "reply") {
+      throw new Error(
+        `${provider} destination ${destinationId} must be { type: "reply" }`,
+      );
+    }
+    destinations[destinationId] = Object.freeze({ type: "reply" as const });
+  }
+  if (!Object.keys(destinations).length) {
+    destinations.reply = Object.freeze({ type: "reply" as const });
+  }
+  return destinations;
+}
+
+export function defineChannel(input: SlackChannelInput): SlackChannelDefinition;
+export function defineChannel(input: TwilioChannelInput): TwilioChannelDefinition;
+export function defineChannel(input: EmailChannelInput): EmailChannelDefinition;
+export function defineChannel(input: ChannelInput): ChannelDefinition {
+  const common = channelCommon(input);
+
+  if (input.type === "twilio" || input.type === "email") {
+    return Object.freeze({
+      kind: "channel" as const,
+      version: 1 as const,
+      type: input.type,
+      ...common,
+      events: Object.freeze(["message.inbound" as const]),
+      destinations: Object.freeze(replyDestinations(input, input.type)),
+      routing: Object.freeze(common.routing),
+      idle: Object.freeze(common.idle),
+    }) as ChannelDefinition;
+  }
+
   const scopes = [...new Set(input.scopes.bot.map((scope) => scope.trim()))];
   if (
     !scopes.length ||
@@ -557,6 +730,11 @@ export function defineChannel(input: {
   > = {};
   for (const [name, destination] of Object.entries(input.destinations ?? {})) {
     const destinationId = resourceIdentifier(name, "Channel destination");
+    if (destination.type !== "conversation") {
+      throw new Error(
+        `Slack destination ${destinationId} must be { type: "conversation" }`,
+      );
+    }
     const required =
       destination.visibility === "private" ? "groups:read" : "channels:read";
     if (!scopes.includes(required)) {
@@ -574,31 +752,36 @@ export function defineChannel(input: {
   return Object.freeze({
     kind: "channel" as const,
     version: 1 as const,
-    id,
-    type: input.type,
-    ...(input.displayName?.trim()
-      ? { displayName: input.displayName.trim() }
-      : {}),
+    type: "slack" as const,
+    ...common,
     scopes: Object.freeze({ bot: Object.freeze(scopes) }),
     events: Object.freeze(events),
     destinations: Object.freeze(destinations),
-    routing: Object.freeze({
-      whenAmbiguous: input.routing?.whenAmbiguous ?? "ask",
-    }),
+    routing: Object.freeze(common.routing),
+    idle: Object.freeze(common.idle),
   });
 }
 
 export function registerChannel(
-  channel: SlackChannelDefinition,
+  channel: ChannelDefinition,
   input: { on: readonly ChannelTrigger[] },
 ): ChannelRegistrationDefinition {
   const triggers = [...new Set(input.on)];
   if (!triggers.length) {
     throw new Error("registerChannel requires at least one trigger");
   }
+  const supported = PROVIDER_TRIGGERS[channel.type];
+  // Each variant narrows `events` to its own literal union; widen once so the
+  // membership check reads the same for every provider.
+  const declared: readonly ChannelEvent[] = channel.events;
   for (const trigger of triggers) {
+    if (!supported.includes(trigger)) {
+      throw new Error(
+        `Channel ${channel.id} is a ${channel.type} channel, which supports ${supported.join(" and ")}, not ${trigger}`,
+      );
+    }
     const event = TRIGGER_EVENT[trigger];
-    if (!channel.events.includes(event)) {
+    if (!declared.includes(event)) {
       throw new Error(
         `Channel ${channel.id} does not declare the event required by ${trigger}`,
       );

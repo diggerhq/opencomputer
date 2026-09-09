@@ -1,13 +1,80 @@
 ---
-title: "Slack channels"
-description: "Declare Slack capabilities in code and connect them per environment"
+title: "Channels"
+description: "Declare a conversational surface in code and connect it per environment"
 ---
 
 Channels connect a project to a messaging provider. The channel definition is
-code-owned; provider credentials and Slack conversation IDs are configured in
+code-owned; provider credentials and conversation IDs are configured in
 the dashboard for each environment.
 
-The current channel provider is Slack.
+A channel is a conversation keyed by an external participant. What differs
+between providers is transport, addressing, and authentication; what does not
+differ is that an inbound message continues the conversation it belongs to.
+Agents see the second part and never the first — one `useInput().source ===
+"channel"` branch handles every provider.
+
+| Provider | `type` | Triggers |
+| --- | --- | --- |
+| Slack | `"slack"` | `mention`, `direct-message` |
+| Twilio (SMS, WhatsApp) | `"twilio"` | `message` |
+| Email | `"email"` | `message` |
+
+Providers are named for the vendor rather than the medium, because the vendor is
+what actually differs: Twilio signs the request URL and its sorted parameters,
+Slack signs a timestamp and the raw body. A different SMS vendor is a different
+adapter, not a variant of this one. Twilio WhatsApp needs no separate provider —
+same API, same webhook, same signature, with a `whatsapp:` prefix on addresses.
+
+## Define a Twilio or email channel
+
+Providers other than Slack address one participant, so they need no scopes and
+have a single inbound event:
+
+```tsx opencomputer/channels/shop-sms.ts
+import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "shop-sms",
+  type: "twilio",
+  idle: { suspendAfterSeconds: 120 },
+});
+```
+
+```tsx opencomputer/channels/support-email.ts
+import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "support-email",
+  type: "email",
+});
+```
+
+Note what is **not** in the definition: the phone number and the inbox address.
+Those are per-environment operational configuration, bound to a connection in
+the dashboard, exactly as Slack workspace and conversation IDs are. Development
+and production do not share a number.
+
+Register them the same way as Slack, with the trigger the provider supports:
+
+```tsx opencomputer/agents/receptionist/channels/shop-sms.ts
+import { registerChannel } from "@opencomputer/agent";
+import shopSms from "../../../channels/shop-sms.js";
+
+export default registerChannel(shopSms, { on: ["message"] });
+```
+
+Registering a Slack trigger on a Twilio channel is a build error, and the reverse
+is too.
+
+## Idle and cost
+
+Agent runtime is billed by wall-clock time, and a conversation spends most of
+its life waiting for a person. `idle.suspendAfterSeconds` says how long to hold
+the runtime after the last message; an inbound message resumes it. It defaults
+to 300 seconds, and the default matters most where replies are slowest — a text
+conversation that waits hours for an answer should not bill for those hours.
+
+## Slack
 
 ## Define a Slack channel
 

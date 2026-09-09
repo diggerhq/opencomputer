@@ -174,6 +174,7 @@ export default registerOutbox(reviewRequests);
             },
           },
           routing: { whenAmbiguous: "ask" },
+          idle: { suspendAfterSeconds: 300 },
         },
       ],
       channelRegistrations: [
@@ -770,6 +771,119 @@ export default function Agent() {
     await assert.rejects(
       buildAgentArtifact(initialized.agentRoot),
       /must stay inside the agent directory/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler accepts Twilio and email channels alongside Slack", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-providers-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "shop-sms",
+  type: "twilio",
+  idle: { suspendAfterSeconds: 60 },
+});
+`,
+    );
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "support-email.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "support-email",
+  type: "email",
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "channels", "shop-sms.ts"),
+      `import { registerChannel } from "@opencomputer/agent";
+import shopSms from "../../../channels/shop-sms.js";
+export default registerChannel(shopSms, { on: ["message"] });
+`,
+    );
+
+    const built = await readProjectResources(root);
+    const sms = built.manifest.channels.find((c) => c.id === "shop-sms");
+    const email = built.manifest.channels.find((c) => c.id === "support-email");
+
+    // No number in the manifest: it is per-environment operational config,
+    // bound to a connection the same way Slack conversation IDs are.
+    assert.deepEqual(sms, {
+      id: "shop-sms",
+      type: "twilio",
+      routing: { whenAmbiguous: "ask" },
+      idle: { suspendAfterSeconds: 60 },
+      events: ["message.inbound"],
+      destinations: { reply: { type: "reply" } },
+    });
+    assert.equal(email?.type, "email");
+    assert.deepEqual(email?.idle, { suspendAfterSeconds: 300 });
+    assert.deepEqual(built.manifest.channelRegistrations, [
+      { agentId: "hello-world", channelId: "shop-sms", triggers: ["message"] },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects a trigger the provider cannot deliver", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-trigger-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({ id: "shop-sms", type: "twilio" });
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "channels", "shop-sms.ts"),
+      `import { registerChannel } from "@opencomputer/agent";
+import shopSms from "../../../channels/shop-sms.js";
+export default registerChannel(shopSms, { on: ["mention"] });
+`,
+    );
+    await assert.rejects(
+      readProjectResources(root),
+      /trigger mention is not available on a twilio channel/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler names providers by vendor, not by medium", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-vendor-"));
+  const root = resolve(parent, "app");
+  try {
+    await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    // "sms" is a medium; the signature and payload this has to parse belong to
+    // one vendor. A different SMS vendor is a different adapter.
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({ id: "shop-sms", type: "sms" });
+`,
+    );
+    await assert.rejects(
+      readProjectResources(root),
+      /unsupported channel type "sms". Supported: slack, twilio, email/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });

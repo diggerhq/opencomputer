@@ -48,25 +48,29 @@ export interface McpServerManifest {
   connection?: string;
 }
 
+export type ChannelProviderManifest = "slack" | "twilio" | "email";
+
 export interface ChannelDestinationManifest {
-  type: "conversation";
-  visibility: "public" | "private";
+  type: "conversation" | "reply";
+  visibility?: "public" | "private";
 }
 
 export interface ChannelDefinitionManifest {
   id: string;
-  type: "slack";
+  type: ChannelProviderManifest;
   displayName?: string;
-  scopes: { bot: string[] };
-  events: Array<"app_mention" | "message.im">;
+  /** Slack only. */
+  scopes?: { bot: string[] };
+  events: string[];
   destinations: Record<string, ChannelDestinationManifest>;
   routing: { whenAmbiguous: "ask" };
+  idle: { suspendAfterSeconds: number };
 }
 
 export interface ChannelRegistrationManifest {
   agentId: string;
   channelId: string;
-  triggers: Array<"mention" | "direct-message">;
+  triggers: Array<"mention" | "direct-message" | "message">;
 }
 
 export interface OutboxDefinitionManifest {
@@ -928,6 +932,110 @@ function importedResourceId(
   return module;
 }
 
+/** Shared across every provider: routing, display name, idle policy. */
+function channelCommonManifest(
+  input: ts.ObjectLiteralExpression,
+  path: string,
+): {
+  displayName?: string;
+  routing: { whenAmbiguous: "ask" };
+  idle: { suspendAfterSeconds: number };
+} {
+  const routingExpression = objectProperty(input, "routing");
+  if (routingExpression && !ts.isObjectLiteralExpression(routingExpression)) {
+    throw new Error(`${path} routing must be an object literal`);
+  }
+  if (routingExpression) {
+    const ambiguity = objectProperty(routingExpression, "whenAmbiguous");
+    if (
+      ambiguity &&
+      literalStringValue(ambiguity, `${path} ambiguity policy`) !== "ask"
+    ) {
+      throw new Error(`${path} supports only routing.whenAmbiguous = "ask"`);
+    }
+  }
+  let suspendAfterSeconds = 300;
+  const idleExpression = objectProperty(input, "idle");
+  if (idleExpression) {
+    if (!ts.isObjectLiteralExpression(idleExpression)) {
+      throw new Error(`${path} idle must be an object literal`);
+    }
+    const seconds = objectProperty(idleExpression, "suspendAfterSeconds");
+    if (seconds) {
+      if (!ts.isNumericLiteral(seconds)) {
+        throw new Error(
+          `${path} idle.suspendAfterSeconds must be a literal number`,
+        );
+      }
+      suspendAfterSeconds = Number(seconds.text);
+      if (
+        !Number.isInteger(suspendAfterSeconds) ||
+        suspendAfterSeconds < 30 ||
+        suspendAfterSeconds > 86_400
+      ) {
+        throw new Error(
+          `${path} idle.suspendAfterSeconds must be between 30 and 86400`,
+        );
+      }
+    }
+  }
+  const displayNameExpression = objectProperty(input, "displayName");
+  return {
+    ...(displayNameExpression
+      ? {
+          displayName: literalStringValue(
+            displayNameExpression,
+            `${path} displayName`,
+          ),
+        }
+      : {}),
+    routing: { whenAmbiguous: "ask" as const },
+    idle: { suspendAfterSeconds },
+  };
+}
+
+/**
+ * SMS and email address one participant, so their only destination is a reply
+ * on the conversation the message arrived on. Declaring none is the common
+ * case and yields a single `reply` destination.
+ */
+function replyDestinationsManifest(
+  input: ts.ObjectLiteralExpression,
+  path: string,
+): Record<string, ChannelDestinationManifest> {
+  const destinations: Record<string, ChannelDestinationManifest> = {};
+  const expression = objectProperty(input, "destinations");
+  if (expression) {
+    if (!ts.isObjectLiteralExpression(expression)) {
+      throw new Error(`${path} destinations must be an object literal`);
+    }
+    for (const property of expression.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        throw new Error(`${path} destinations cannot use spreads`);
+      }
+      const name = staticPropertyName(property.name, `${path} destination`);
+      if (!AGENT_ID_PATTERN.test(name)) {
+        throw new Error(`${path} has invalid destination ${name}`);
+      }
+      if (!ts.isObjectLiteralExpression(property.initializer)) {
+        throw new Error(`${path} destination ${name} must be an object literal`);
+      }
+      const type = literalStringValue(
+        objectProperty(property.initializer, "type"),
+        `${path} destination ${name} type`,
+      );
+      if (type !== "reply") {
+        throw new Error(
+          `${path} destination ${name} must be { type: "reply" }`,
+        );
+      }
+      destinations[name] = { type: "reply" };
+    }
+  }
+  if (!Object.keys(destinations).length) destinations.reply = { type: "reply" };
+  return destinations;
+}
+
 function channelDefinition(
   source: string,
   path: string,
@@ -945,7 +1053,24 @@ function channelDefinition(
     objectProperty(input, "type"),
     `${path} channel type`,
   );
-  if (type !== "slack") throw new Error(`${path} supports only type "slack"`);
+  const common = channelCommonManifest(input, path);
+
+  if (type === "twilio" || type === "email") {
+    return {
+      id,
+      type,
+      ...common,
+      events: ["message.inbound"],
+      destinations: replyDestinationsManifest(input, path),
+    };
+  }
+
+  if (type !== "slack") {
+    throw new Error(
+      `${path} has unsupported channel type ${JSON.stringify(type)}. Supported: slack, twilio, email`,
+    );
+  }
+
   const scopesExpression = objectProperty(input, "scopes");
   if (!scopesExpression || !ts.isObjectLiteralExpression(scopesExpression)) {
     throw new Error(`${path} scopes must be an object literal`);
@@ -1019,27 +1144,13 @@ function channelDefinition(
       destinations[name] = { type: "conversation", visibility };
     }
   }
-  const routingExpression = objectProperty(input, "routing");
-  if (routingExpression && !ts.isObjectLiteralExpression(routingExpression)) {
-    throw new Error(`${path} routing must be an object literal`);
-  }
-  if (routingExpression) {
-    const ambiguity = objectProperty(routingExpression, "whenAmbiguous");
-    if (ambiguity && literalStringValue(ambiguity, `${path} ambiguity policy`) !== "ask") {
-      throw new Error(`${path} supports only routing.whenAmbiguous = "ask"`);
-    }
-  }
-  const displayNameExpression = objectProperty(input, "displayName");
   return {
     id,
     type: "slack",
-    ...(displayNameExpression
-      ? { displayName: literalStringValue(displayNameExpression, `${path} displayName`) }
-      : {}),
+    ...common,
     scopes: { bot: scopes },
-    events: events as ChannelDefinitionManifest["events"],
+    events,
     destinations,
-    routing: { whenAmbiguous: "ask" },
   };
 }
 
@@ -1074,10 +1185,22 @@ function channelRegistration(
   const triggerEvents: Record<string, string> = {
     mention: "app_mention",
     "direct-message": "message.im",
+    message: "message.inbound",
   };
+  const providerTriggers: Record<string, string[]> = {
+    slack: ["mention", "direct-message"],
+    twilio: ["message"],
+    email: ["message"],
+  };
+  const supported = providerTriggers[channel.type] ?? [];
   for (const trigger of triggers) {
+    if (!supported.includes(trigger)) {
+      throw new Error(
+        `${path} trigger ${trigger} is not available on a ${channel.type} channel (supported: ${supported.join(", ")})`,
+      );
+    }
     const event = triggerEvents[trigger];
-    if (!event || !channel.events.includes(event as "app_mention" | "message.im")) {
+    if (!event || !channel.events.includes(event)) {
       throw new Error(`${path} trigger ${trigger} is not declared by ${channelId}`);
     }
   }
@@ -1639,6 +1762,7 @@ function agentApiRuntimeSource(): string {
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
   return value;
 }
+const OPENCOMPUTER_USER_AGENT = "OpenComputer-Agent/1 (+https://opencomputer.dev)";
 function id(value, kind) {
   const normalized = String(value).trim();
   if (!normalized) throw new Error(kind + " requires a non-empty id");
@@ -1680,6 +1804,11 @@ export const defineConnection = (input) => {
       if (!path.startsWith("/")) throw new Error("Connection requests require an absolute path");
       const headers = {};
       new Headers(init.headers).forEach((value, name) => { headers[name] = value; });
+      // Some APIs reject a request that carries no User-Agent — GitHub answers
+      // 403 with an empty body, which is undiagnosable from the caller's side.
+      // Default one unless the connection or the request already sets it.
+      const declaresUserAgent = Object.keys(input.headers || {}).some((name) => name.toLowerCase() === "user-agent");
+      if (!declaresUserAgent && !("user-agent" in headers)) headers["user-agent"] = OPENCOMPUTER_USER_AGENT;
       if (init.body != null && typeof init.body !== "string") throw new Error("Managed connection request bodies must currently be strings");
       if (typeof init.body === "string" && init.body.length > 5 * 1024 * 1024) throw new Error("Managed connection request bodies cannot exceed 5 MiB");
       return fetch(base.replace(/\\\/$/, "") + "/" + encodeURIComponent(connectionId) + "/fetch", {
