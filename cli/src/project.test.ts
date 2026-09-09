@@ -174,6 +174,7 @@ export default registerOutbox(reviewRequests);
             },
           },
           routing: { whenAmbiguous: "ask" },
+          idle: { suspendAfterSeconds: 300 },
         },
       ],
       channelRegistrations: [
@@ -771,6 +772,126 @@ export default function Agent() {
       buildAgentArtifact(initialized.agentRoot),
       /must stay inside the agent directory/,
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler accepts SMS and email channels alongside Slack", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-providers-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "shop-sms",
+  type: "sms",
+  from: "+15125550100",
+  idle: { suspendAfterSeconds: 60 },
+});
+`,
+    );
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "support-email.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+
+export default defineChannel({
+  id: "support-email",
+  type: "email",
+  address: "Help@Example.COM",
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "channels", "shop-sms.ts"),
+      `import { registerChannel } from "@opencomputer/agent";
+import shopSms from "../../../channels/shop-sms.js";
+export default registerChannel(shopSms, { on: ["message"] });
+`,
+    );
+
+    const built = await readProjectResources(root);
+    const sms = built.manifest.channels.find((c) => c.id === "shop-sms");
+    const email = built.manifest.channels.find((c) => c.id === "support-email");
+
+    assert.deepEqual(sms, {
+      id: "shop-sms",
+      type: "sms",
+      routing: { whenAmbiguous: "ask" },
+      idle: { suspendAfterSeconds: 60 },
+      from: "+15125550100",
+      events: ["message.inbound"],
+      destinations: { reply: { type: "reply" } },
+    });
+    // Addresses normalize to lower case so a conversation key is stable.
+    assert.equal(email?.address, "help@example.com");
+    assert.deepEqual(email?.idle, { suspendAfterSeconds: 300 });
+    assert.deepEqual(built.manifest.channelRegistrations, [
+      { agentId: "hello-world", channelId: "shop-sms", triggers: ["message"] },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects a trigger the provider cannot deliver", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-trigger-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({ id: "shop-sms", type: "sms", from: "+15125550100" });
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "channels", "shop-sms.ts"),
+      `import { registerChannel } from "@opencomputer/agent";
+import shopSms from "../../../channels/shop-sms.js";
+export default registerChannel(shopSms, { on: ["mention"] });
+`,
+    );
+    await assert.rejects(
+      readProjectResources(root),
+      /trigger mention is not available on a sms channel/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects malformed provider addresses", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-addr-"));
+  const root = resolve(parent, "app");
+  try {
+    await initializeAgentProject(root);
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    const channel = resolve(root, "opencomputer", "channels", "shop-sms.ts");
+    await writeFile(
+      channel,
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({ id: "shop-sms", type: "sms", from: "512-555-0100" });
+`,
+    );
+    await assert.rejects(readProjectResources(root), /E\.164/);
+
+    await rm(channel);
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "support-email.ts"),
+      `import { defineChannel } from "@opencomputer/agent";
+export default defineChannel({ id: "support-email", type: "email", address: "not-an-address" });
+`,
+    );
+    await assert.rejects(readProjectResources(root), /deliverable email address/);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
