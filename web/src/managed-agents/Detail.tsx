@@ -72,6 +72,7 @@ import {
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedSlackWizard } from './SlackWizard'
+import { ManagedTwilioWizard } from './TwilioWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
@@ -1064,22 +1065,38 @@ export default function ManagedAgentDetail({
           </PanelHeader>
           {agent && activeDeployment.data ? (
             declaredChannels.length ? (
-              declaredChannels.map((declaredChannel) => (
-                <ManagedSlackWizard
-                  key={declaredChannel.id}
-                  agentId={agent.id}
-                  alias={activeDeployment.data.alias}
-                  agentName={displayManagedAgentName(agent)}
-                  channelName={
-                    declaredChannel.displayName ?? declaredChannel.id
-                  }
-                  connection={activeAliasChannels.find(
-                    (channel) => channel.channelId === declaredChannel.id,
-                  )}
-                  channelId={declaredChannel.id}
-                  destinations={Object.keys(declaredChannel.destinations)}
-                />
-              ))
+              // The wizard follows the channel's declared provider: Slack has
+              // an app to install, Twilio has credentials to paste and a
+              // number to point here. Nothing about connecting one resembles
+              // connecting the other.
+              declaredChannels.map((declaredChannel) =>
+                declaredChannel.type === 'twilio' ? (
+                  <ManagedTwilioWizard
+                    key={declaredChannel.id}
+                    agentId={agent.id}
+                    alias={activeDeployment.data.alias}
+                    connection={activeAliasChannels.find(
+                      (channel) => channel.channelId === declaredChannel.id,
+                    )}
+                    channelId={declaredChannel.id}
+                  />
+                ) : (
+                  <ManagedSlackWizard
+                    key={declaredChannel.id}
+                    agentId={agent.id}
+                    alias={activeDeployment.data.alias}
+                    agentName={displayManagedAgentName(agent)}
+                    channelName={
+                      declaredChannel.displayName ?? declaredChannel.id
+                    }
+                    connection={activeAliasChannels.find(
+                      (channel) => channel.channelId === declaredChannel.id,
+                    )}
+                    channelId={declaredChannel.id}
+                    destinations={Object.keys(declaredChannel.destinations)}
+                  />
+                ),
+              )
             ) : (
               <ManagedSlackWizard
                 agentId={agent.id}

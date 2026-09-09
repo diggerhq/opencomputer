@@ -27,13 +27,15 @@ const deploymentSchema = z.object({
         channels: z.array(
           z.object({
             id: z.string(),
-            type: z.literal('slack'),
+            type: z.enum(['slack', 'twilio', 'email']),
             displayName: z.string().optional(),
+            // Slack addresses a named conversation; the others reply on the
+            // one the message arrived on, so visibility does not apply.
             destinations: z.record(
               z.string(),
               z.object({
-                type: z.literal('conversation'),
-                visibility: z.enum(['public', 'private']),
+                type: z.enum(['conversation', 'reply']),
+                visibility: z.enum(['public', 'private']).optional(),
               }),
             ),
           }),
@@ -1013,6 +1015,74 @@ export async function completeManagedAgentSlack(
     `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
     { method: 'PUT', body: JSON.stringify(input) },
     channelSchema,
+  )
+}
+
+const twilioNumberSchema = z.object({
+  sid: z.string(),
+  phoneNumber: z.string(),
+  friendlyName: z.string(),
+  capabilities: z.object({ sms: z.boolean(), voice: z.boolean() }),
+})
+
+const twilioSetupSchema = z.object({
+  connection: z.object({
+    id: z.string(),
+    provider: z.string(),
+    status: z.string(),
+  }),
+  account: z.object({ sid: z.string(), friendlyName: z.string() }),
+  numbers: z.array(twilioNumberSchema),
+  // Shown once, held only in the browser between the two steps, and never
+  // stored: it is half of what authenticates the webhook.
+  webhookToken: z.string(),
+})
+
+const twilioConnectionSchema = z.object({
+  connection: z.object({
+    id: z.string(),
+    provider: z.string().optional(),
+    status: z.string(),
+    phoneNumber: z.string().optional(),
+  }),
+})
+
+export type ManagedTwilioNumber = z.infer<typeof twilioNumberSchema>
+export type ManagedTwilioSetup = z.infer<typeof twilioSetupSchema>
+
+/**
+ * Step one. The credentials are checked against Twilio before anything is
+ * stored, so a mistyped SID comes back as a message rather than a broken
+ * connection nobody can see is broken.
+ */
+export async function startManagedAgentTwilio(
+  agentId: string,
+  input: { accountSid: string; authToken: string; channelId?: string },
+) {
+  return apiFetch(
+    '/managed-agents/channels/twilio/connections',
+    { method: 'POST', body: JSON.stringify({ agentId, ...input }) },
+    twilioSetupSchema,
+  )
+}
+
+/** Step two. Points the chosen number at OpenComputer and opens the line. */
+export async function completeManagedAgentTwilio(
+  connectionId: string,
+  input: { numberSid: string; phoneNumber: string; webhookToken: string },
+) {
+  return apiFetch(
+    `/managed-agents/channels/twilio/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'PUT', body: JSON.stringify(input) },
+    twilioConnectionSchema,
+  )
+}
+
+export async function disconnectManagedAgentTwilio(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/channels/twilio/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+    twilioConnectionSchema,
   )
 }
 
