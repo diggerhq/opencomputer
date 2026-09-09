@@ -777,7 +777,7 @@ export default function Agent() {
   }
 });
 
-test("the compiler accepts SMS and email channels alongside Slack", async () => {
+test("the compiler accepts Twilio and email channels alongside Slack", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-providers-"));
   const root = resolve(parent, "app");
   try {
@@ -791,8 +791,7 @@ test("the compiler accepts SMS and email channels alongside Slack", async () => 
 
 export default defineChannel({
   id: "shop-sms",
-  type: "sms",
-  from: "+15125550100",
+  type: "twilio",
   idle: { suspendAfterSeconds: 60 },
 });
 `,
@@ -804,7 +803,6 @@ export default defineChannel({
 export default defineChannel({
   id: "support-email",
   type: "email",
-  address: "Help@Example.COM",
 });
 `,
     );
@@ -820,17 +818,17 @@ export default registerChannel(shopSms, { on: ["message"] });
     const sms = built.manifest.channels.find((c) => c.id === "shop-sms");
     const email = built.manifest.channels.find((c) => c.id === "support-email");
 
+    // No number in the manifest: it is per-environment operational config,
+    // bound to a connection the same way Slack conversation IDs are.
     assert.deepEqual(sms, {
       id: "shop-sms",
-      type: "sms",
+      type: "twilio",
       routing: { whenAmbiguous: "ask" },
       idle: { suspendAfterSeconds: 60 },
-      from: "+15125550100",
       events: ["message.inbound"],
       destinations: { reply: { type: "reply" } },
     });
-    // Addresses normalize to lower case so a conversation key is stable.
-    assert.equal(email?.address, "help@example.com");
+    assert.equal(email?.type, "email");
     assert.deepEqual(email?.idle, { suspendAfterSeconds: 300 });
     assert.deepEqual(built.manifest.channelRegistrations, [
       { agentId: "hello-world", channelId: "shop-sms", triggers: ["message"] },
@@ -850,7 +848,7 @@ test("the compiler rejects a trigger the provider cannot deliver", async () => {
     await writeFile(
       resolve(root, "opencomputer", "channels", "shop-sms.ts"),
       `import { defineChannel } from "@opencomputer/agent";
-export default defineChannel({ id: "shop-sms", type: "sms", from: "+15125550100" });
+export default defineChannel({ id: "shop-sms", type: "twilio" });
 `,
     );
     await writeFile(
@@ -862,36 +860,31 @@ export default registerChannel(shopSms, { on: ["mention"] });
     );
     await assert.rejects(
       readProjectResources(root),
-      /trigger mention is not available on a sms channel/,
+      /trigger mention is not available on a twilio channel/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
 });
 
-test("the compiler rejects malformed provider addresses", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-addr-"));
+test("the compiler names providers by vendor, not by medium", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-vendor-"));
   const root = resolve(parent, "app");
   try {
     await initializeAgentProject(root);
     await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
-    const channel = resolve(root, "opencomputer", "channels", "shop-sms.ts");
+    // "sms" is a medium; the signature and payload this has to parse belong to
+    // one vendor. A different SMS vendor is a different adapter.
     await writeFile(
-      channel,
+      resolve(root, "opencomputer", "channels", "shop-sms.ts"),
       `import { defineChannel } from "@opencomputer/agent";
-export default defineChannel({ id: "shop-sms", type: "sms", from: "512-555-0100" });
+export default defineChannel({ id: "shop-sms", type: "sms" });
 `,
     );
-    await assert.rejects(readProjectResources(root), /E\.164/);
-
-    await rm(channel);
-    await writeFile(
-      resolve(root, "opencomputer", "channels", "support-email.ts"),
-      `import { defineChannel } from "@opencomputer/agent";
-export default defineChannel({ id: "support-email", type: "email", address: "not-an-address" });
-`,
+    await assert.rejects(
+      readProjectResources(root),
+      /unsupported channel type "sms". Supported: slack, twilio, email/,
     );
-    await assert.rejects(readProjectResources(root), /deliverable email address/);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

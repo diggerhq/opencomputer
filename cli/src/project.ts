@@ -48,7 +48,7 @@ export interface McpServerManifest {
   connection?: string;
 }
 
-export type ChannelProviderManifest = "slack" | "sms" | "email";
+export type ChannelProviderManifest = "slack" | "twilio" | "email";
 
 export interface ChannelDestinationManifest {
   type: "conversation" | "reply";
@@ -61,10 +61,6 @@ export interface ChannelDefinitionManifest {
   displayName?: string;
   /** Slack only. */
   scopes?: { bot: string[] };
-  /** SMS only, E.164. */
-  from?: string;
-  /** Email only. */
-  address?: string;
   events: string[];
   destinations: Record<string, ChannelDestinationManifest>;
   routing: { whenAmbiguous: "ask" };
@@ -1059,39 +1055,11 @@ function channelDefinition(
   );
   const common = channelCommonManifest(input, path);
 
-  if (type === "sms") {
-    const from = literalStringValue(
-      objectProperty(input, "from"),
-      `${path} SMS from number`,
-    );
-    if (!/^\+[1-9]\d{7,14}$/.test(from)) {
-      throw new Error(
-        `${path} from must be an E.164 number such as +15125550100`,
-      );
-    }
+  if (type === "twilio" || type === "email") {
     return {
       id,
-      type: "sms",
+      type,
       ...common,
-      from,
-      events: ["message.inbound"],
-      destinations: replyDestinationsManifest(input, path),
-    };
-  }
-
-  if (type === "email") {
-    const address = literalStringValue(
-      objectProperty(input, "address"),
-      `${path} email address`,
-    ).toLowerCase();
-    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(address)) {
-      throw new Error(`${path} address must be a deliverable email address`);
-    }
-    return {
-      id,
-      type: "email",
-      ...common,
-      address,
       events: ["message.inbound"],
       destinations: replyDestinationsManifest(input, path),
     };
@@ -1099,7 +1067,7 @@ function channelDefinition(
 
   if (type !== "slack") {
     throw new Error(
-      `${path} has unsupported channel type ${JSON.stringify(type)}. Supported: slack, sms, email`,
+      `${path} has unsupported channel type ${JSON.stringify(type)}. Supported: slack, twilio, email`,
     );
   }
 
@@ -1221,7 +1189,7 @@ function channelRegistration(
   };
   const providerTriggers: Record<string, string[]> = {
     slack: ["mention", "direct-message"],
-    sms: ["message"],
+    twilio: ["message"],
     email: ["message"],
   };
   const supported = providerTriggers[channel.type] ?? [];

@@ -94,7 +94,7 @@ export interface McpServerDefinition extends ResourceReference {
  * authentication; what does not differ is that an inbound message continues the
  * conversation it belongs to. Agents see the second part and never the first.
  */
-export type ChannelProvider = "slack" | "sms" | "email";
+export type ChannelProvider = "slack" | "twilio" | "email";
 
 export type SlackChannelEvent = "app_mention" | "message.im";
 /** Providers without a mention/DM distinction have exactly one inbound event. */
@@ -146,22 +146,36 @@ export interface SlackChannelDefinition extends ChannelDefinitionBase {
   readonly events: readonly SlackChannelEvent[];
 }
 
-export interface SmsChannelDefinition extends ChannelDefinitionBase {
-  readonly type: "sms";
-  /** The number customers reply to, in E.164. */
-  readonly from: string;
+/**
+ * Named for the vendor, as `slack` is, because that is what actually differs:
+ * the signature is Twilio's HMAC over the request URL and sorted parameters,
+ * and the payload is Twilio's form encoding. A different SMS vendor is a
+ * different adapter, not a variant of this one.
+ *
+ * Twilio WhatsApp rides the same API, webhook, and signature — addresses just
+ * carry a `whatsapp:` prefix — so it needs no separate provider.
+ *
+ * The number itself is not here. It is per-environment operational
+ * configuration, bound to a connection in the dashboard, exactly as Slack
+ * conversation IDs are.
+ */
+export interface TwilioChannelDefinition extends ChannelDefinitionBase {
+  readonly type: "twilio";
   readonly events: readonly MessageChannelEvent[];
 }
 
+/**
+ * The address is likewise a per-environment binding, not source: development
+ * and production do not share an inbox.
+ */
 export interface EmailChannelDefinition extends ChannelDefinitionBase {
   readonly type: "email";
-  readonly address: string;
   readonly events: readonly MessageChannelEvent[];
 }
 
 export type ChannelDefinition =
   | SlackChannelDefinition
-  | SmsChannelDefinition
+  | TwilioChannelDefinition
   | EmailChannelDefinition;
 
 export interface ChannelRegistrationDefinition extends ResourceReference {
@@ -505,14 +519,12 @@ const PROVIDER_TRIGGERS: Readonly<
   Record<ChannelProvider, readonly ChannelTrigger[]>
 > = {
   slack: ["mention", "direct-message"],
-  sms: ["message"],
+  twilio: ["message"],
   email: ["message"],
 };
 // Suspend quickly by default. A resume costs a moment; an idle runtime costs
 // for every second nobody is typing, and on SMS or email that is most of them.
 const DEFAULT_IDLE_SUSPEND_SECONDS = 300;
-const E164 = /^\+[1-9]\d{7,14}$/;
-const EMAIL_ADDRESS = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
 
 function resourceIdentifier(value: string, kind: string): string {
   const id = identifier(value, kind);
@@ -617,19 +629,17 @@ export interface SlackChannelInput extends ChannelInputBase {
   events?: readonly SlackChannelEvent[];
 }
 
-export interface SmsChannelInput extends ChannelInputBase {
-  type: "sms";
-  from: string;
+export interface TwilioChannelInput extends ChannelInputBase {
+  type: "twilio";
 }
 
 export interface EmailChannelInput extends ChannelInputBase {
   type: "email";
-  address: string;
 }
 
 export type ChannelInput =
   | SlackChannelInput
-  | SmsChannelInput
+  | TwilioChannelInput
   | EmailChannelInput;
 
 function channelCommon(input: ChannelInputBase): {
@@ -682,49 +692,22 @@ function replyDestinations(
 }
 
 export function defineChannel(input: SlackChannelInput): SlackChannelDefinition;
-export function defineChannel(input: SmsChannelInput): SmsChannelDefinition;
+export function defineChannel(input: TwilioChannelInput): TwilioChannelDefinition;
 export function defineChannel(input: EmailChannelInput): EmailChannelDefinition;
 export function defineChannel(input: ChannelInput): ChannelDefinition {
   const common = channelCommon(input);
 
-  if (input.type === "sms") {
-    const from = input.from.trim();
-    if (!E164.test(from)) {
-      throw new Error(
-        `SMS channel ${common.id} needs a from number in E.164, such as +15125550100`,
-      );
-    }
+  if (input.type === "twilio" || input.type === "email") {
     return Object.freeze({
       kind: "channel" as const,
       version: 1 as const,
-      type: "sms" as const,
+      type: input.type,
       ...common,
-      from,
       events: Object.freeze(["message.inbound" as const]),
-      destinations: Object.freeze(replyDestinations(input, "sms")),
+      destinations: Object.freeze(replyDestinations(input, input.type)),
       routing: Object.freeze(common.routing),
       idle: Object.freeze(common.idle),
-    });
-  }
-
-  if (input.type === "email") {
-    const address = input.address.trim().toLowerCase();
-    if (!EMAIL_ADDRESS.test(address)) {
-      throw new Error(
-        `Email channel ${common.id} needs a deliverable address, such as help@example.com`,
-      );
-    }
-    return Object.freeze({
-      kind: "channel" as const,
-      version: 1 as const,
-      type: "email" as const,
-      ...common,
-      address,
-      events: Object.freeze(["message.inbound" as const]),
-      destinations: Object.freeze(replyDestinations(input, "email")),
-      routing: Object.freeze(common.routing),
-      idle: Object.freeze(common.idle),
-    });
+    }) as ChannelDefinition;
   }
 
   const scopes = [...new Set(input.scopes.bot.map((scope) => scope.trim()))];
