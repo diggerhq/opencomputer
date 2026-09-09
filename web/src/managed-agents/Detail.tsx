@@ -93,6 +93,8 @@ type DetailTab =
   | 'secrets'
   | 'byok'
 
+const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
+
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
 }
@@ -198,6 +200,7 @@ function MessageActivity({
 }
 
 function PlaygroundChat({
+  chatId,
   agentId,
   session,
   events,
@@ -205,6 +208,7 @@ function PlaygroundChat({
   onInitialPromptConsumed,
   onSessionFinished,
 }: {
+  chatId: string
   agentId: string
   session?: ManagedAgentSession
   events: ManagedAgentEvent[]
@@ -217,10 +221,10 @@ function PlaygroundChat({
   const [inputMode, setInputMode] = useState<ManagedAgentInputMode>('queue')
   const [admitting, setAdmitting] = useState(false)
   const [admissionNotice, setAdmissionNotice] = useState<string>()
-  const [liveSessionId, setLiveSessionId] = useState(session?.id)
-  const liveSessionIdRef = useRef(session?.id)
+  const [startingSessionId] = useState(session?.id)
+  const [liveSessionId, setLiveSessionId] = useState(startingSessionId)
+  const liveSessionIdRef = useRef(startingSessionId)
   const timelineRef = useRef<HTMLDivElement>(null)
-  const composerRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
   const initializedScrollRef = useRef(false)
   const initialPromptSentRef = useRef(false)
@@ -230,11 +234,12 @@ function PlaygroundChat({
   )
   const transport = useMemo(
     () =>
-      new ManagedAgentChatTransport(agentId, session?.id, (sessionId) => {
-        setLiveSessionId(sessionId)
-        liveSessionIdRef.current = sessionId
-      }),
-    [agentId, session?.id],
+      new ManagedAgentChatTransport(
+        agentId,
+        startingSessionId,
+        setLiveSessionId,
+      ),
+    [agentId, startingSessionId],
   )
   const debugEvents = useQuery({
     queryKey: ['managed-agent-session-events', liveSessionId],
@@ -242,8 +247,11 @@ function PlaygroundChat({
     enabled: Boolean(liveSessionId),
     refetchInterval: 1_000,
   })
+  useEffect(() => {
+    liveSessionIdRef.current = liveSessionId
+  }, [liveSessionId])
   const { messages, sendMessage, status, error } = useChat({
-    id: session?.id ?? `new-${agentId}`,
+    id: chatId,
     messages: initialMessages,
     transport,
     throttle: 30,
@@ -289,7 +297,7 @@ function PlaygroundChat({
     const input = prompt.trim()
     if (!input || admitting) return
     if (agentWorking) {
-      const sessionId = liveSessionIdRef.current
+      const sessionId = liveSessionId
       if (!sessionId) {
         notifyError(
           "Couldn't direct this run.",
@@ -326,9 +334,6 @@ function PlaygroundChat({
     setPrompt('')
     setAdmissionNotice(undefined)
     void sendMessage({ text: input })
-    requestAnimationFrame(() =>
-      composerRef.current?.querySelector('textarea')?.focus(),
-    )
   }
 
   return (
@@ -424,10 +429,7 @@ function PlaygroundChat({
               {admissionNotice}
             </p>
           ) : null}
-          <div
-            ref={composerRef}
-            className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
-          >
+          <div className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors">
             <ChatTextarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -525,6 +527,7 @@ export default function ManagedAgentDetail({
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
+  const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -588,10 +591,15 @@ export default function ManagedAgentDetail({
     (session) => session.id === requestedPlaygroundId,
   )
   const selectedPlaygroundId = selectedPlayground?.id
+  const requestedPlaygroundIdRef = useRef(requestedPlaygroundId)
+  useEffect(() => {
+    requestedPlaygroundIdRef.current = requestedPlaygroundId
+  }, [requestedPlaygroundId])
   const selectedPlaygroundEvents = useQuery({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
+    refetchInterval: 1_000,
   })
   const continuationCommand =
     project?.templateSource?.cloneReady &&
@@ -600,11 +608,16 @@ export default function ManagedAgentDetail({
     project?.templateSource && !project.templateSource.cloneReady
 
   const selectPlaygroundSession = (sessionId?: string) => {
+    setAdoptedPlaygroundId(undefined)
     void navigate({
       pathname: location.pathname,
       search: playgroundSessionSearch(location.search, sessionId),
     })
   }
+  const playgroundChatId =
+    selectedPlaygroundId && selectedPlaygroundId !== adoptedPlaygroundId
+      ? selectedPlaygroundId
+      : newSessionKey
   const activeAliasChannels = (channels.data ?? []).filter(
     (channel) =>
       channel.agentId === agentId &&
@@ -927,16 +940,21 @@ export default function ManagedAgentDetail({
                 ))}
               </div>
             </aside>
-            {selectedPlaygroundId && selectedPlaygroundEvents.isLoading ? (
+            {selectedPlaygroundId &&
+            selectedPlaygroundId !== adoptedPlaygroundId &&
+            selectedPlaygroundEvents.isLoading ? (
               <div className="text-muted-foreground flex min-h-0 items-center justify-center gap-2 text-sm">
                 <Loader2 className="size-4 animate-spin" /> Loading session…
               </div>
             ) : (
               <PlaygroundChat
-                key={`${environment}:${selectedPlaygroundId ?? newSessionKey}`}
+                key={`${environment}:${playgroundChatId}`}
+                chatId={`${environment}:${playgroundChatId}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={selectedPlayground}
-                events={selectedPlaygroundEvents.data ?? []}
+                events={
+                  selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
+                }
                 initialPrompt={firstRunPrompt}
                 onInitialPromptConsumed={() => {
                   void navigate(
@@ -944,7 +962,18 @@ export default function ManagedAgentDetail({
                     { replace: true, state: null },
                   )
                 }}
-                onSessionFinished={selectPlaygroundSession}
+                onSessionFinished={(sessionId) => {
+                  if (!requestedPlaygroundIdRef.current) {
+                    setAdoptedPlaygroundId(sessionId)
+                    void navigate({
+                      pathname: location.pathname,
+                      search: playgroundSessionSearch(
+                        location.search,
+                        sessionId,
+                      ),
+                    })
+                  }
+                }}
               />
             )}
           </div>

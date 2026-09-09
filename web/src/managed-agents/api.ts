@@ -396,7 +396,10 @@ const slackManifestResponseSchema = z.object({
 })
 
 const sessionCreateSchema = z.object({
-  session: z.object({ id: z.string() }),
+  session: z.object({
+    id: z.string(),
+    executionMode: z.enum(['microvm', 'workerd']).optional().default('microvm'),
+  }),
   deployment: deploymentSchema.optional(),
 })
 
@@ -461,6 +464,7 @@ const sessionSchema = z.object({
   id: z.string(),
   agentId: z.string(),
   deploymentId: z.string(),
+  executionMode: z.enum(['microvm', 'workerd']).optional().default('microvm'),
   status: z.string(),
   source: z
     .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
@@ -1107,7 +1111,7 @@ export async function admitManagedAgentInput(
 
 async function suspendManagedAgentIfIdle(sessionId: string) {
   const session = await getManagedAgentSession(sessionId).catch(() => undefined)
-  if (session?.status !== 'idle') return
+  if (session?.executionMode !== 'microvm' || session.status !== 'idle') return
   await apiFetch(
     `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
     { method: 'POST' },
@@ -1210,14 +1214,18 @@ export async function runManagedAgent(
   const sessionId = created.session.id
   options.onSession?.(sessionId)
   try {
-    const connected = await waitForAgentEvent(
-      sessionId,
-      0,
-      (event) => event.type === 'runtime.connected',
-      onEvent,
-      90_000,
-      options.signal,
-    )
+    let cursor = 0
+    if (created.session.executionMode === 'microvm') {
+      const connected = await waitForAgentEvent(
+        sessionId,
+        cursor,
+        (event) => event.type === 'runtime.connected',
+        onEvent,
+        90_000,
+        options.signal,
+      )
+      cursor = connected.cursor
+    }
     const turn = await admitManagedAgentInput(
       sessionId,
       input,
@@ -1226,7 +1234,7 @@ export async function runManagedAgent(
     )
     const completed = await waitForAgentEvent(
       sessionId,
-      connected.cursor,
+      cursor,
       (event) =>
         event.turnId === turn.turnId &&
         (event.type === 'turn.completed' ||
@@ -1261,7 +1269,10 @@ export async function continueManagedAgentSession(
   if (session.microvmState === 'terminated' || session.status === 'ended') {
     throw new Error('This playground session has ended. Start a new session.')
   }
-  if (session.microvmState === 'suspended') {
+  if (
+    session.executionMode === 'microvm' &&
+    session.microvmState === 'suspended'
+  ) {
     await apiFetch(
       `/managed-agents/sessions/${encodeURIComponent(sessionId)}/resume`,
       { method: 'POST', signal },
@@ -1315,19 +1326,23 @@ export async function invokeManagedAgent(agentId: string, input: string) {
   )
   const sessionId = created.session.id
   try {
-    const connected = await waitForAgentEvent(
-      sessionId,
-      0,
-      (event) => event.type === 'runtime.connected',
-      () => undefined,
-      90_000,
-    )
+    let cursor = 0
+    if (created.session.executionMode === 'microvm') {
+      const connected = await waitForAgentEvent(
+        sessionId,
+        cursor,
+        (event) => event.type === 'runtime.connected',
+        () => undefined,
+        90_000,
+      )
+      cursor = connected.cursor
+    }
     const turn = await admitManagedAgentInput(sessionId, input, 'queue')
     let streamedText = ''
     let completedText = ''
     const completed = await waitForAgentEvent(
       sessionId,
-      connected.cursor,
+      cursor,
       (event) =>
         event.turnId === turn.turnId &&
         (event.type === 'turn.completed' ||

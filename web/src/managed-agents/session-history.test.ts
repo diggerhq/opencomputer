@@ -31,6 +31,7 @@ function session(id: string, deploymentId: string): ManagedAgentSession {
     id,
     agentId: 'reviewer',
     deploymentId,
+    executionMode: 'microvm',
     status: 'idle',
     source: 'playground',
     createdAt: '2026-08-15T00:00:00.000Z',

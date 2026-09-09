@@ -1676,6 +1676,7 @@ describe("managed agents proxy", () => {
           {
             session: {
               id: "session_test",
+              executionMode: "workerd",
               status: "connecting",
               createdAt: "2026-07-30T00:00:00.000Z",
               accountId: "org_test",
@@ -1713,6 +1714,7 @@ describe("managed agents proxy", () => {
 
     expect(response.status).toBe(201);
     expect(serialized).toContain("research-assistant");
+    expect(serialized).toContain('"executionMode":"workerd"');
     expect(serialized).not.toMatch(
       /runtimeToken|microvm|artifact|bucket|imageArn|arn:aws/i,
     );

@@ -908,6 +908,7 @@ function publicSuccessBody(
     return {
       session: {
         id: session.id,
+        executionMode: session.executionMode,
         status: session.status,
         createdAt: session.createdAt,
       },
