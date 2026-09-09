@@ -135,8 +135,33 @@ type SecretsProxy struct {
 
 	// dialFunc overrides the default dialUpstream for testing.
 	// If nil, the default dialUpstream is used.
-	dialFunc          func(target, serverName string) (*tls.Conn, error)
+	dialFunc           func(target, serverName string) (*tls.Conn, error)
 	skipPrivateIPCheck bool // for testing with loopback
+
+	// endpoint overrides what CreateSealedEnvs tells the sandbox to use as its
+	// HTTP(S)_PROXY. Empty means the anycast link-local address, which is what
+	// every worker uses and what the QEMU fleet has always been given.
+	//
+	// It exists for a proxy that does NOT run on a worker: the MicroVM backend
+	// runs one inside the guest itself, where 169.254.169.253 is nobody and the
+	// sandbox has to be pointed at loopback instead. See SetEndpoint.
+	endpoint string
+}
+
+// SetEndpoint overrides the proxy URL handed to sandboxes.
+//
+// Callers that leave this unset — every worker — keep AnycastEndpoint()
+// exactly as before. Only a proxy reachable at some other address needs it, and
+// getting it wrong is not subtle: the sandbox's egress goes to an address
+// nothing answers and every outbound request times out.
+func (p *SecretsProxy) SetEndpoint(url string) { p.endpoint = url }
+
+// proxyEndpoint is the address sandboxes are told to use.
+func (p *SecretsProxy) proxyEndpoint() string {
+	if p.endpoint != "" {
+		return p.endpoint
+	}
+	return AnycastEndpoint()
 }
 
 // NewSecretsProxy creates a new secrets proxy. Call Start() to begin accepting.
@@ -357,7 +382,7 @@ func (p *SecretsProxy) CreateSealedEnvs(sandboxID, guestIP, gatewayIP string, pl
 	// VM reaches the right proxy regardless of which host it's currently on.
 	// gatewayIP is still a parameter for backwards compat / non-anycast paths.
 	_ = gatewayIP
-	proxyURL := AnycastEndpoint()
+	proxyURL := p.proxyEndpoint()
 	caCertPath := "/usr/local/share/ca-certificates/opensandbox-proxy.crt"
 
 	noProxy := "localhost,127.0.0.1,::1"

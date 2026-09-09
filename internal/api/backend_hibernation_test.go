@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/opensandbox/opensandbox/internal/awsvm"
+	"github.com/opensandbox/opensandbox/internal/awsvmlite"
 )
 
 // backend_hibernation_test.go — which backend answers a hibernate or a wake.
@@ -35,9 +35,9 @@ func TestWorkerBackendIsNotAHibernator(t *testing.T) {
 // ...and the MicroVM backend must, or the handlers fall through to the registry
 // branch and the whole tiered hibernation is unreachable over HTTP again.
 func TestMicrovmBackendIsAHibernator(t *testing.T) {
-	var b Backend = &microvmBackend{}
+	var b Backend = &liteBackend{}
 	if _, ok := b.(Hibernator); !ok {
-		t.Fatal("microvmBackend does not implement Hibernator — hibernate/wake " +
+		t.Fatal("liteBackend does not implement Hibernator — hibernate/wake " +
 			"would dispatch into an empty worker fleet")
 	}
 }
@@ -54,7 +54,7 @@ func TestMicrovmBackendIsAHibernator(t *testing.T) {
 // OwnsWorkerID reads the persisted worker_id instead, which outlives the host.
 func TestHibernatorResolvesASandboxWhoseHostIsGone(t *testing.T) {
 	// A backend tracking nothing — the state after retirement to blob-only.
-	b := &microvmBackend{manager: awsvm.NewManager(nil, "")}
+	b := &liteBackend{mgr: awsvmlite.New(nil, awsvmlite.Config{})}
 	s := &Server{backends: []Backend{b}}
 
 	workerID := microvmWorkerID("microvm-deadbeef")
@@ -72,7 +72,7 @@ func TestHibernatorResolvesASandboxWhoseHostIsGone(t *testing.T) {
 // sandbox's wake would be handed to the MicroVM manager and restored from an
 // archive it cannot read.
 func TestHibernatorDeclinesForeignWorkerIDs(t *testing.T) {
-	s := &Server{backends: []Backend{&microvmBackend{manager: awsvm.NewManager(nil, "")}}}
+	s := &Server{backends: []Backend{&liteBackend{mgr: awsvmlite.New(nil, awsvmlite.Config{})}}}
 
 	for _, workerID := range []string{
 		"worker-abc123",      // a real registered QEMU worker

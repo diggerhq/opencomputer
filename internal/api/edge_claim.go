@@ -8,23 +8,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
-
-// processEpoch identifies THIS control-plane process to the edge's PoolStock
-// DOs. Any backend whose edge reservations live in memory rather than in
-// Postgres stamps its reserve responses with it, so a DO holding stock from a
-// previous process can tell that every id it has is dead and drop them (see
-// edgeReservePool for the failure this prevents).
-//
-// Generated per process, deliberately: a value derived from anything stable —
-// hostname, cell id, config — would survive the restart it exists to detect.
-var processEpoch = uuid.New().String()
 
 // Edge claim: the api-edge Worker's PoolStock Durable Object reserves parked
 // pool boxes ahead of time (edge-reserve), answers default-shape creates
@@ -144,49 +133,6 @@ func (s *Server) edgeReservePool(c echo.Context) error {
 		region = "local"
 	}
 
-	// A cell whose backend keeps its own stock answers from that instead of the
-	// Postgres pool — its boxes have no rows to flip.
-	//
-	// That difference is why this branch carries an epoch and the Postgres one
-	// below does not. A PG reservation is a row: it survives a restart, so stock
-	// the DO is holding stays valid across one. An in-memory reservation does
-	// not. The sandbox id, the manager binding behind it, and the pool entry
-	// itself all live in this process, so a restart silently invalidates every
-	// id the DO is holding — and with no epoch the DO would keep serving up to
-	// SHARDS × TARGET_STOCK of them for the full ENTRY_TTL. Each one 201s a
-	// create for a box that no longer routes, so the customer's first exec finds
-	// no binding and 500s. Measured on dev after a restart: 46 and 47 lost
-	// finalizes in consecutive 10-minute buckets.
-	//
-	// The DO drops its whole stock when this value changes (see pool_stock.ts),
-	// which bounds the exposure to one restock cycle.
-	if ec, ok := s.edgeClaimBackend(); ok {
-		boxes := ec.EdgeReserve(req.Count)
-		out := make([]map[string]interface{}, 0, len(boxes))
-		for _, b := range boxes {
-			// From here the edge may hand this id to a customer at any moment,
-			// so anything that arrives for it before claim-finalize waits
-			// rather than 404s. See THE FINALIZE RACE above.
-			s.registerEdgePending(b.SandboxID)
-			e := map[string]interface{}{"sandboxID": b.SandboxID, "workerID": b.WorkerID}
-			// Reach-info, when the backend has it (see edgeBox). Lets the edge
-			// warm the box's agent tunnel while it is still stock, so the first
-			// exec doesn't pay for attaching to the guest.
-			if b.Endpoint != "" && b.Token != "" {
-				e["endpoint"] = b.Endpoint
-				e["token"] = b.Token
-				e["port"] = b.Port
-			}
-			out = append(out, e)
-		}
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"region":        region,
-			"sandboxDomain": s.sandboxDomain,
-			"epoch":         processEpoch,
-			"boxes":         out,
-		})
-	}
-
 	boxes, err := s.store.ReservePooledForEdge(c.Request().Context(), region, poolTemplateName(), req.Count)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -218,9 +164,6 @@ func (s *Server) edgeReleasePool(c echo.Context) error {
 	// until the reaper notices.
 	for _, id := range req.SandboxIDs {
 		s.resolveEdgePending(id, nil)
-	}
-	if ec, ok := s.edgeClaimBackend(); ok {
-		return c.JSON(http.StatusOK, map[string]int{"released": ec.EdgeRelease(req.SandboxIDs)})
 	}
 	n, err := s.store.ReleaseEdgeReservations(c.Request().Context(), req.SandboxIDs)
 	if err != nil {
@@ -279,45 +222,6 @@ func (s *Server) claimFinalize(c echo.Context) error {
 	cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
 	metadataJSON, _ := json.Marshal(cfg.Metadata)
 
-	// Backend-owned stock: redeem the reservation in memory, then write the row
-	// the QEMU path flips instead of inserts. There is no ClaimSandbox call and
-	// no worker to reach — the box was bound and its tunnel adopted back at
-	// reserve, which is the whole reason this finalize can run after the
-	// customer already holds their 201.
-	if ec, ok := s.edgeClaimBackend(); ok {
-		workerID, err := ec.EdgeFinalize(cfg.SandboxID, cfg)
-		if err != nil {
-			// The reservation is gone (reaped, or a duplicate delivery of a
-			// finalize that already ran). Nothing to bind and nothing to undo.
-			log.Printf("sandbox: EDGE CLAIM FINALIZE LOST %s (%v)", cfg.SandboxID, err)
-			finalizeErr = err
-			return c.JSON(http.StatusConflict, map[string]string{"error": "reservation lost"})
-		}
-		template := cfg.Template
-		if template == "" {
-			template = "default"
-		}
-		if s.store != nil {
-			if _, err := s.store.CreateSandboxSessionWithStatus(ctx, cfg.SandboxID, orgID, auth.GetUserID(c),
-				template, s.poolStockRegion(), workerID, cfgJSON, metadataJSON, "running", nil); err != nil {
-				// The host is live and the customer holds a token for it, so
-				// failing here does not take it back. Report it and let the
-				// orphan sweep reclaim a box with no row — the mechanism that
-				// exists for exactly this hole.
-				log.Printf("sandbox: edge claim-finalize row insert %s failed: %v", cfg.SandboxID, err)
-				finalizeErr = err
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			}
-		}
-		s.emitEvent("create", cfg.SandboxID, workerID, "claimed from warm pool (edge)")
-		log.Printf("sandbox: EDGE CLAIM FINALIZED %s (worker=%s)", cfg.SandboxID, workerID)
-		finalizeErr = nil
-		return c.JSON(http.StatusOK, map[string]string{
-			"sandboxID": cfg.SandboxID,
-			"workerID":  workerID,
-			"status":    "running",
-		})
-	}
 	box, err := s.store.ClaimReservedSession(ctx, cfg.SandboxID, orgID, auth.GetUserID(c), cfgJSON, metadataJSON, nil)
 	if err != nil {
 		// Reservation lost (reaped/drained). Nothing is bound; make sure the
@@ -389,11 +293,25 @@ func (s *Server) claimFinalize(c echo.Context) error {
 	s.emitEvent("create", box.SandboxID, box.WorkerID, "claimed from warm pool (edge)")
 	log.Printf("sandbox: EDGE CLAIM FINALIZED %s (worker=%s)", box.SandboxID, box.WorkerID)
 	finalizeErr = nil
-	return c.JSON(http.StatusOK, map[string]string{
+	out := map[string]string{
 		"sandboxID": box.SandboxID,
 		"workerID":  box.WorkerID,
 		"status":    "running",
-	})
+	}
+	// An edge-claimed box was launched before this request, so its deadline is
+	// measured from ITS launch and not from now. Asking the backend keeps that
+	// distinction; computing it here would restart the clock and hand every
+	// claimed box a deadline later than the one its provider will enforce.
+	if b, ok := s.backendForWorkerID(box.WorkerID); ok {
+		if d, ok := b.(interface {
+			DeadlineFor(string) time.Time
+		}); ok {
+			if at := d.DeadlineFor(box.SandboxID); !at.IsZero() {
+				out["endAt"] = at.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, out)
 }
 
 // reapStaleEdgeReservations destroys edge_reserved boxes older than

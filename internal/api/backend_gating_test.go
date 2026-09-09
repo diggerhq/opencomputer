@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +13,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/awsvm"
+	"github.com/opensandbox/opensandbox/internal/awsvmlite"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -17,6 +22,18 @@ import (
 func newTestEchoContext() echo.Context {
 	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes", nil)
 	return echo.New().NewContext(req, httptest.NewRecorder())
+}
+
+// newGatingLite builds the MicroVM backend in the state placement decisions are
+// made from: a client whose image config is populated (so size gating has a
+// default tier to compare against) and nothing else. Placement reads no
+// manager, no pool, and no network.
+func newGatingLite() *liteBackend {
+	return &liteBackend{
+		client: awsvm.NewClientWithAPI(nil, awsvm.Config{
+			ImageIdentifier: "arn:test:image",
+		}),
+	}
 }
 
 // backend_gating_test.go — which runtime serves a create, and the one-way street.
@@ -38,7 +55,7 @@ func newTestEchoContext() echo.Context {
 // fleet, which is the only backend that can serve anything.
 func TestUnassignedRuntimeGoesToTheFleet(t *testing.T) {
 	var fleet workerBackend
-	micro := &microvmBackend{}
+	micro := newGatingLite()
 
 	if !fleet.Accepts(placement{runtime: ""}) {
 		t.Error("fleet declined an unassigned create — orgs with no D1 runtime would 503")
@@ -51,7 +68,7 @@ func TestUnassignedRuntimeGoesToTheFleet(t *testing.T) {
 // An explicit assignment routes to exactly that runtime and no other.
 func TestRuntimeAssignmentRoutesExactly(t *testing.T) {
 	var fleet workerBackend
-	micro := &microvmBackend{}
+	micro := newGatingLite()
 
 	if !micro.Accepts(placement{runtime: runtimeMicrovm}) {
 		t.Error("MicroVM declined an org assigned to it — the assignment would do nothing")
@@ -71,7 +88,7 @@ func TestRuntimeAssignmentRoutesExactly(t *testing.T) {
 // how an unassigned org reaches the fleet on a cell running both.
 func TestUnassignedFallsThroughToTheFleet(t *testing.T) {
 	s := &Server{}
-	s.registerBackend(&microvmBackend{})
+	s.registerBackend(newGatingLite())
 	s.registerBackend(&fakePlacer{&fakeBackend{name: "fleet"}})
 
 	got, ok := s.claimBackend(placement{runtime: ""})
@@ -107,7 +124,7 @@ func TestAssignedRuntimeAbsentOnCellFailsRatherThanFallsBack(t *testing.T) {
 // org to stop new MicroVM traffic must not make the sandboxes it already has
 // unreachable — otherwise the rollback IS the incident.
 func TestReassigningRuntimeNeverStrandsRunningSandboxes(t *testing.T) {
-	b := &microvmBackend{}
+	b := newGatingLite()
 	s := &Server{backends: []Backend{b}}
 
 	// The org has been moved back to the fleet: no NEW create lands here.
@@ -126,18 +143,28 @@ func TestReassigningRuntimeNeverStrandsRunningSandboxes(t *testing.T) {
 }
 
 // A create the backend cannot honour is declined even when the org IS assigned
-// to it. A custom template is a QEMU checkpoint; there is no such artifact on
-// this runtime, so accepting one builds from the wrong image and reports
-// success.
+// to it. Size is the case that must be caught HERE: memory is a property of the
+// image, so a tier this cell has published no image for can never be corrected
+// after launch — declining turns it into a clean placement failure instead of a
+// sandbox that is quietly the wrong size and metered at the size it was asked
+// for.
+//
+// Templates are deliberately NOT in that category any more. A template is
+// served by claiming a pooled default box and unpacking the template's
+// workspace archive onto it, so it costs a tarball rather than a published
+// image; and placement is handed the template NAME, not the resolved drive
+// keys, so whether a specific template is servable simply cannot be decided at
+// this point. That refusal lives in Activate, which has the keys — see
+// TestActivateRefusesARootfsBearingTemplate.
 func TestDeclinesRequestsItCannotServe(t *testing.T) {
-	b := &microvmBackend{}
+	b := newGatingLite()
 
-	if b.Accepts(placement{runtime: runtimeMicrovm, cfg: types.SandboxConfig{Template: "customer-toolchain-v3"}}) {
-		t.Error("accepted a custom template it cannot build — the sandbox would come from the wrong image")
+	if b.Accepts(placement{runtime: runtimeMicrovm, cfg: types.SandboxConfig{MemoryMB: 65536}}) {
+		t.Error("accepted a size tier with no published image — memory cannot be adjusted after launch, so the sandbox would be silently the wrong size")
 	}
-	for _, tmpl := range []string{"", "default"} {
+	for _, tmpl := range []string{"", "default", "customer-toolchain-v3"} {
 		if !b.Accepts(placement{runtime: runtimeMicrovm, cfg: types.SandboxConfig{Template: tmpl}}) {
-			t.Errorf("declined template %q, which maps to its own image", tmpl)
+			t.Errorf("declined template %q — templates are served from a workspace archive on a pooled box", tmpl)
 		}
 	}
 }
@@ -146,7 +173,7 @@ func TestDeclinesRequestsItCannotServe(t *testing.T) {
 // decide placement — runtime does. A stray org check here would resurrect the
 // per-cell config problem this replaced.
 func TestOrgIDAloneDoesNotDecidePlacement(t *testing.T) {
-	b := &microvmBackend{}
+	b := newGatingLite()
 	org := uuid.MustParse("11111111-1111-4111-8111-111111111111")
 
 	if b.Accepts(placement{orgID: org, runtime: ""}) {
@@ -199,5 +226,85 @@ func TestOrgRuntimeCacheExpires(t *testing.T) {
 	got, ok := fresh.get(org)
 	if !ok || got != runtimeMicrovm {
 		t.Errorf("live entry not served: got %q ok=%v", got, ok)
+	}
+}
+
+// Templates are accepted at placement, so the refusal for one this runtime
+// cannot honour has to land here, where the resolved drive keys exist.
+//
+// A template carrying a ROOTFS drive was made on the QEMU fleet, where a
+// snapshot captures the whole disk. This runtime can replay only the workspace
+// half, and doing that silently is the dangerous outcome: the customer gets
+// their files back while every system change the snapshot was taken for is
+// dropped — a template that looks like it worked and didn't. The empty rootfs
+// key is a sound "made here" marker because this runtime's own CreateCheckpoint
+// returns "" for it and the store persists that as an empty string, not NULL.
+func TestActivateRefusesARootfsBearingTemplate(t *testing.T) {
+	b := newGatingLite()
+	// An empty manager: it holds no boxes, so the restore path fails cleanly
+	// instead of reaching AWS. The rootfs guard must fire before it either way.
+	b.mgr = awsvmlite.New(nil, awsvmlite.Config{})
+	_, err := b.Activate(context.Background(), activation{
+		sandboxID:            "sb-cross-runtime",
+		templateRootfsKey:    "templates/qemu-made/rootfs.qcow2",
+		templateWorkspaceKey: "templates/qemu-made/workspace.tgz",
+	})
+	if err == nil {
+		t.Fatal("accepted a QEMU-made template — the customer would get the workspace half " +
+			"and silently lose every system change the snapshot was taken for")
+	}
+
+	// ...and a template with no rootfs drive is not refused by that guard. It
+	// reaches the restore, which fails here only because there is no box.
+	_, err = b.Activate(context.Background(), activation{
+		sandboxID:            "sb-native",
+		templateWorkspaceKey: "templates/lite-made/workspace.tgz",
+	})
+	if err != nil && strings.Contains(err.Error(), "carries a rootfs image") {
+		t.Fatal("a workspace-only template was refused as cross-runtime")
+	}
+}
+
+// Resizing is refused by the runtime, not by a hardcoded rule in the handler.
+//
+// The scale handler used to fall through to the worker registry, and a managed
+// cell HAS a registry with no workers in it — so a customer asking to resize a
+// MicroVM sandbox got "no gRPC connection to worker vmhost:…", which reads as
+// an outage rather than as "this runtime has no sizing knob". Memory is a
+// property of the image here; there is nothing to turn.
+func TestResizeIsRefusedByTheRuntimeWithAReason(t *testing.T) {
+	m := awsvmlite.New(nil, awsvmlite.Config{})
+	sm := awsvmlite.NewSandboxManager(m)
+
+	err := sm.SetResourceLimits(context.Background(), "sb-1", 0, 8<<30, 400000, 100000)
+	if err == nil {
+		t.Fatal("SetResourceLimits succeeded on a runtime whose size is fixed by its image")
+	}
+	if !errors.Is(err, awsvm.ErrUnsupported) {
+		t.Fatalf("resize failed with %v, want ErrUnsupported — respondManagerErr maps only "+
+			"that to 501, so anything else surfaces as a 500 and reads as our bug", err)
+	}
+}
+
+// A runtime that cannot snapshot RAM must say so, so the checkpoint API can
+// refuse a full capture up front instead of accepting one and silently never
+// producing it.
+func TestRuntimeWithoutMemoryCaptureDeclaresItself(t *testing.T) {
+	var b Backend = &liteBackend{}
+	c, ok := b.(MemoryStateCapturer)
+	if !ok {
+		t.Fatal("liteBackend no longer declares its memory-capture capability — " +
+			"the checkpoint API would accept a full checkpoint it cannot make")
+	}
+	if c.CapturesMemoryState() {
+		t.Fatal("claimed memory capture on a runtime whose provider offers no way to read host RAM")
+	}
+
+	// The fleet says nothing, which must keep meaning "yes" — a backend that
+	// never considered the question must not start refusing full checkpoints.
+	var fleet Backend = &workerBackend{}
+	if _, declares := fleet.(MemoryStateCapturer); declares {
+		t.Fatal("workerBackend now declares memory capture; if that is deliberate it must " +
+			"return true, or every QEMU full checkpoint starts 501ing")
 	}
 }

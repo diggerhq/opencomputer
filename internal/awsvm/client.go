@@ -93,6 +93,21 @@ type Config struct {
 	// avoid.
 	SizeImages map[int]string
 
+	// TemplateBaseImageArn and TemplateBuildRoleArn are the two ARNs
+	// create-microvm-image requires when building a CUSTOM TEMPLATE image.
+	//
+	// They mirror deploy/microvm/publish.sh (MICROVM_BASE_IMAGE_ARN defaulting
+	// to the AWS-owned al2023-1 base, and the build role it passes). The base
+	// is service-owned and snapshot-compatible, which is why a customer cannot
+	// choose their own FROM: the image must derive from it.
+	//
+	// TemplateBuildRoleArn is the role AWS assumes to RUN THE CUSTOMER'S
+	// DOCKERFILE. It is the one place customer-authored commands execute with
+	// credentials of ours, so it must carry the minimum needed to pull the
+	// artifact and write logs — never the role used elsewhere in this package.
+	TemplateBaseImageArn string
+	TemplateBuildRoleArn string
+
 	// ExecutionRoleArn is assumed by the MicroVM itself, for the guest's own AWS
 	// access. It is NOT the role this worker uses to call the API.
 	ExecutionRoleArn string
@@ -122,6 +137,21 @@ type Config struct {
 	MaxIdleDurationSeconds   int32
 	SuspendedDurationSeconds int32
 }
+
+// deliveredMicrovmMemoryMB is the default image's minimumMemoryInMiB, used when
+// Config.DefaultMemoryMB is unset. MUST track the image or every box is metered
+// at the wrong size — the meter prices on what List() reports, so whatever is
+// recorded here is what the customer is billed for.
+//
+// Raised 2048 → 4096 on 2026-08-24 (image version 12.0) so the runtime actually
+// delivers the platform default: the API defaults a create to 4096 and QEMU
+// gives 4096, while this image gave 2048 — so every default create was silently
+// served half what it asked for, and metered at the half.
+//
+// Lambda gives a full vCPU from 2048 up (peak scales to 4x), so 4096 keeps the
+// 1-vCPU tier promise. Supported sizes are an ENUM, not a free integer:
+// [512, 1024, 2048, 4096, 8192] on base image al2023-1.
+const deliveredMicrovmMemoryMB = 4096
 
 func (c *Config) applyDefaults() {
 	if c.AgentPort == 0 {
@@ -184,6 +214,21 @@ func (c Config) ImageForMemory(memoryMB int) (image string, deliveredMB int, ok 
 	return "", 0, false
 }
 
+// Deadline reports when the provider will destroy a host launched at
+// launchedAt, or the zero time if that cannot be known.
+//
+// The zero-in/zero-out rule is load-bearing and deliberately not a "sensible
+// default": callers write this onto a database row that other reads treat as
+// terminal once passed. A zero launch time that silently became `0001-01-01 +
+// 8h` would be in the past for every row it touched, and would expire every
+// live sandbox at once. Unknown must stay unknown.
+func (c Config) Deadline(launchedAt time.Time) time.Time {
+	if launchedAt.IsZero() || c.MaxDurationSeconds <= 0 {
+		return time.Time{}
+	}
+	return launchedAt.Add(time.Duration(c.MaxDurationSeconds) * time.Second)
+}
+
 // IsDefaultTier reports whether a request can be served from warm stock. Only
 // the default tier is pooled, so this is what gates a pool claim.
 func (c Config) IsDefaultTier(memoryMB int) bool {
@@ -242,11 +287,27 @@ type API interface {
 	CreateMicrovmAuthToken(context.Context, *lambdamicrovms.CreateMicrovmAuthTokenInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error)
 }
 
+// ImageAPI is the image-MANAGEMENT surface, kept separate from API on purpose.
+//
+// API is the runtime surface every cell exercises on the hot path, and several
+// tests implement it in full. Image management is used only by the custom
+// template builder, so folding these in would force every existing fake to grow
+// four methods it never calls. A cell with no builder configured simply leaves
+// this nil.
+type ImageAPI interface {
+	CreateMicrovmImage(context.Context, *lambdamicrovms.CreateMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmImageOutput, error)
+	GetMicrovmImage(context.Context, *lambdamicrovms.GetMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageOutput, error)
+	GetMicrovmImageVersion(context.Context, *lambdamicrovms.GetMicrovmImageVersionInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageVersionOutput, error)
+	GetMicrovmImageBuild(context.Context, *lambdamicrovms.GetMicrovmImageBuildInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageBuildOutput, error)
+	DeleteMicrovmImage(context.Context, *lambdamicrovms.DeleteMicrovmImageInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.DeleteMicrovmImageOutput, error)
+}
+
 // Client wraps the MicroVM API with the bits every caller needs: idempotent
 // runs, a token cache, and state translation.
 type Client struct {
-	api API
-	cfg Config
+	api      API
+	imageAPI ImageAPI
+	cfg      Config
 
 	mu     sync.Mutex
 	tokens map[string]*cachedToken
@@ -261,10 +322,12 @@ type cachedToken struct {
 // NewClient builds a Client from an already-resolved AWS config.
 func NewClient(awsCfg aws.Config, cfg Config) *Client {
 	cfg.applyDefaults()
+	svc := lambdamicrovms.NewFromConfig(awsCfg)
 	return &Client{
-		api:    lambdamicrovms.NewFromConfig(awsCfg),
-		cfg:    cfg,
-		tokens: make(map[string]*cachedToken),
+		api:      svc,
+		imageAPI: svc,
+		cfg:      cfg,
+		tokens:   make(map[string]*cachedToken),
 	}
 }
 
@@ -272,6 +335,13 @@ func NewClient(awsCfg aws.Config, cfg Config) *Client {
 func NewClientWithAPI(api API, cfg Config) *Client {
 	cfg.applyDefaults()
 	return &Client{api: api, cfg: cfg, tokens: make(map[string]*cachedToken)}
+}
+
+// WithImageAPI attaches the image-management surface. Separate from
+// NewClientWithAPI so existing fakes keep working unchanged.
+func (c *Client) WithImageAPI(api ImageAPI) *Client {
+	c.imageAPI = api
+	return c
 }
 
 // Config exposes the resolved configuration (defaults applied).
@@ -343,13 +413,22 @@ func (c *Client) Get(ctx context.Context, id string) (*Box, error) {
 		MicrovmIdentifier: aws.String(id),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("awsvm: get microvm %s: %w", id, err)
+		// Classified, not just wrapped: callers have to be able to tell "this
+		// host is gone for good" from "I could not reach AWS just now", because
+		// the correct response to each is opposite. See ErrNotFound.
+		return nil, fmt.Errorf("awsvm: get microvm %s: %w", id, classifyLookupError(err))
 	}
 	return &Box{
 		ID:       aws.ToString(out.MicrovmId),
 		Endpoint: aws.ToString(out.Endpoint),
 		ImageArn: aws.ToString(out.ImageArn),
 		State:    out.State,
+		// Carried because the host's launch time is what its hard deadline is
+		// derived from (Config.MaxDurationSeconds after this). List() always
+		// populated it and Get() silently did not, so a sandbox re-adopted
+		// after a control-plane restart came back with no launch time and
+		// therefore no deadline.
+		StartedAt: aws.ToTime(out.StartedAt),
 	}, nil
 }
 

@@ -35,5 +35,5 @@ export const CURATED_TEMPLATES = [
 export function templateDeployPath(repositoryUrl: string, quickStart = false) {
   const query = new URLSearchParams({ 'repository-url': repositoryUrl })
   if (quickStart) query.set('quick-start', '1')
-  return `/new?${query.toString()}`
+  return `/template?${query.toString()}`
 }

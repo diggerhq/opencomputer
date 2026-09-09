@@ -272,6 +272,10 @@ describe("api-edge sandbox create", () => {
       0,
       2048,
       expect.any(Number),
+      // end_at: this CP response carries no deadline, and the absence must
+      // reach the column as NULL rather than as a fabricated timestamp — a
+      // wrong deadline here would make a live sandbox read as expired.
+      null,
     ]);
   });
 });

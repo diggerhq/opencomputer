@@ -240,6 +240,17 @@ func respondCreateErr(c echo.Context, err error) error {
 			"hint":  "retry once a sandbox is released, or contact support to raise your capacity",
 		})
 
+	case errors.Is(err, ErrSizeUnavailable):
+		// 400, not 503: the request names a size this region does not offer,
+		// so it is malformed rather than unlucky. The message carries the
+		// sizes that ARE offered, because "not available" without them leaves
+		// the caller guessing at a list only we can see.
+		log.Printf("create: size unavailable: %v", err)
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+			"hint":  "request one of the listed sizes, or contact support to have another published",
+		})
+
 	case errors.Is(err, awsvm.ErrThrottled):
 		// Transient by construction — say so, and give a concrete delay so
 		// clients space retries instead of hammering.

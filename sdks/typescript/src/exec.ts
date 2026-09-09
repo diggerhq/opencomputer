@@ -1,3 +1,4 @@
+import { openWebSocket } from "./websocket.js";
 import { ShellImpl, type Shell, type ShellOpts } from "./shell.js";
 
 export interface ProcessResult {
@@ -175,26 +176,11 @@ export class Exec {
         : "";
     const wsEndpoint = `${wsUrl}/sandboxes/${this.sandboxId}/exec/${sessionId}${authParam}`;
 
-    const ws = new WebSocket(wsEndpoint);
-    ws.binaryType = "arraybuffer";
+    const ws = await openWebSocket(wsEndpoint);
 
     let gotExit = false;
-    let opened = false;
     let resolveDone: (code: number) => void;
     const done = new Promise<number>((resolve) => { resolveDone = resolve; });
-
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => {
-        opened = true;
-        resolve();
-      };
-      ws.onerror = () => {
-        if (!opened) reject(new Error(`WebSocket connection failed: ${wsEndpoint}`));
-      };
-      ws.onclose = () => {
-        if (!opened) reject(new Error(`WebSocket closed before opening: ${wsEndpoint}`));
-      };
-    });
 
     ws.onmessage = (event) => {
       const buf = new Uint8Array(event.data as ArrayBuffer);

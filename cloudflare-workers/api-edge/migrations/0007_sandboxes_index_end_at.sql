@@ -1,0 +1,13 @@
+-- sandboxes_index.end_at — when the runtime's provider will destroy the host,
+-- regardless of anything we or the customer do.
+--
+-- Distinct from stopped_at, which records when a sandbox actually ended. This
+-- one is in the FUTURE for a running sandbox: the MicroVM runtime terminates a
+-- host at a hard cap measured from its launch, and until now that deadline was
+-- known only to the cell's Postgres. The customer-facing read is answered from
+-- D1, so a sandbox could be minutes from termination with nothing in any API
+-- response saying so.
+--
+-- Unix seconds, matching created_at / stopped_at. NULL means no such deadline,
+-- which is every QEMU sandbox — those end when someone ends them.
+ALTER TABLE sandboxes_index ADD COLUMN end_at INTEGER;

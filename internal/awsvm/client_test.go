@@ -283,3 +283,44 @@ func TestListGivesUpAfterListAttempts(t *testing.T) {
 		t.Fatalf("made %d attempts, want listAttempts=%d", f.calls, listAttempts)
 	}
 }
+
+// An unknown launch time must yield NO deadline, never a deadline in the past.
+//
+// This is the most dangerous arithmetic in the expiry design. Deadline() feeds a
+// database column that every other read treats as terminal once passed, so a
+// zero launch time quietly becoming `0001-01-01 + 8h` would be in the past for
+// every row it touched — expiring the entire fleet's live sandboxes at once.
+// Get() genuinely used to return boxes with no StartedAt, so this input is real
+// rather than theoretical.
+func TestDeadlineIsUnknownRatherThanPastWhenLaunchTimeIsUnknown(t *testing.T) {
+	cfg := Config{ImageIdentifier: "arn:image"}
+	cfg.applyDefaults()
+
+	if got := cfg.Deadline(time.Time{}); !got.IsZero() {
+		t.Fatalf("a zero launch time produced deadline %s — every row stamped with it "+
+			"would read as already expired, closing live sandboxes", got)
+	}
+
+	launched := time.Now().Add(-2 * time.Hour)
+	got := cfg.Deadline(launched)
+	if got.IsZero() {
+		t.Fatal("a known launch time produced no deadline")
+	}
+	if want := launched.Add(time.Duration(cfg.MaxDurationSeconds) * time.Second); !got.Equal(want) {
+		t.Fatalf("deadline = %s, want %s", got, want)
+	}
+	// A box launched two hours ago has six hours left, not eight: the deadline
+	// runs from LAUNCH, not from when a customer claimed it. Getting this wrong
+	// would let a row outlive its host by however long the box sat warm.
+	if remaining := time.Until(got); remaining > 6*time.Hour+time.Minute {
+		t.Fatalf("deadline leaves %s — measured from claim rather than launch", remaining)
+	}
+}
+
+// A host with no configured maximum has no deadline either.
+func TestDeadlineIsUnknownWithoutAConfiguredMaximum(t *testing.T) {
+	cfg := Config{ImageIdentifier: "arn:image", MaxDurationSeconds: 0}
+	if got := cfg.Deadline(time.Now()); !got.IsZero() {
+		t.Fatalf("deadline %s invented from an unset maximum", got)
+	}
+}

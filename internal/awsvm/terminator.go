@@ -170,3 +170,50 @@ func (t *terminator) close() {
 		close(t.stop)
 	}
 }
+
+// ── shared with other backends ──────────────────────────────────────────────
+
+// Terminator is the exported face of the paced destroy queue.
+//
+// It exists because the direct-exec backend (internal/awsvmlite) had exactly
+// the bug this file was written to fix, and reimplementing it there would have
+// been the second copy of a rate limiter for one shared quota. The quota is per
+// ACCOUNT and region, not per backend — two unpaced callers racing it is the
+// same failure as one.
+//
+// Deliberately a thin wrapper rather than exporting the type: the queue's
+// lifecycle (the lazy start, the dedupe set) is not something a caller should
+// be able to reach into, and Manager keeps using the unexported form unchanged.
+type Terminator struct{ t *terminator }
+
+// NewTerminator builds a paced destroy queue over a client. The worker starts
+// lazily on the first Enqueue, so an idle backend costs nothing.
+func NewTerminator(client *Client) *Terminator {
+	return &Terminator{t: newTerminator(client)}
+}
+
+// Enqueue schedules a box for termination, returning false only when the queue
+// is full — which tells the caller to terminate synchronously rather than lose
+// the box entirely.
+func (t *Terminator) Enqueue(microvmID string) bool {
+	if t == nil {
+		return false
+	}
+	return t.t.enqueue(microvmID)
+}
+
+// Depth reports the backlog, for telemetry.
+func (t *Terminator) Depth() int {
+	if t == nil {
+		return 0
+	}
+	return t.t.depth()
+}
+
+// Close stops the worker.
+func (t *Terminator) Close() {
+	if t == nil {
+		return
+	}
+	t.t.close()
+}

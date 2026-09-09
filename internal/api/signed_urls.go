@@ -147,6 +147,16 @@ func (s *Server) signedDownload(c echo.Context) error {
 	// Rewrite query params so readFile/proxy picks up the right path.
 	c.QueryParams().Set("path", path)
 
+	// A backend holding this sandbox serves the read in-process. Checked before
+	// the proxy branch because a managed sandbox has no registered worker, so
+	// the proxy can only refuse it — which meant presigned download did not
+	// work on the MicroVM runtime at all. readFile resolves the right manager
+	// through managerFor, so it already does the correct thing here; it was
+	// simply unreachable.
+	if _, ok := s.execManagerFor(sandboxID); ok {
+		return s.readFile(c)
+	}
+
 	if s.sandboxAPIProxy != nil {
 		// Server mode: proxy to worker. Rewrite the request path so the proxy
 		// strips /api and forwards to the worker's /sandboxes/:id/files endpoint.
@@ -193,6 +203,11 @@ func (s *Server) signedUpload(c echo.Context) error {
 
 	// Delegate to the existing file write logic.
 	c.QueryParams().Set("path", path)
+
+	// Backend first, for the same reason as signedDownload above.
+	if _, ok := s.execManagerFor(sandboxID); ok {
+		return s.writeFile(c)
+	}
 
 	if s.sandboxAPIProxy != nil {
 		c.Request().URL.Path = fmt.Sprintf("/api/sandboxes/%s/files", sandboxID)

@@ -314,7 +314,7 @@ func main() {
 		// registry would publish available_workers=0 on a cell that is serving
 		// creates fine, and two reporters on one stream would alternate and
 		// flap it in and out of the edge's routing set. The backend that owns
-		// the sandboxes reports instead (see microvmBackend.Capacity).
+		// the sandboxes reports instead (see liteBackend.Capacity).
 		if cfg.CellID != "" && !workersDisabled {
 			cr, err := controlplane.NewCapacityReporter(controlplane.CapacityReporterConfig{
 				Redis:    redisRegistry.RedisClient(),

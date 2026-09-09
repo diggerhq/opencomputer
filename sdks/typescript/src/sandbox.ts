@@ -1,4 +1,5 @@
 import { SandboxAgent } from "./agent.js";
+import { sdkVersionHeaders } from "./version.js";
 import { prewarmConnections } from "./http2.js";
 import { Filesystem } from "./filesystem.js";
 import { Exec } from "./exec.js";
@@ -81,6 +82,17 @@ interface SandboxData {
   connectURL?: string;
   token?: string;
   sandboxDomain?: string;
+  /**
+   * RFC3339 instant at which the provider will destroy this sandbox's host.
+   *
+   * Present only when the runtime imposes one. A sandbox on the QEMU fleet has
+   * no provider-imposed lifetime and omits the field entirely, so its presence
+   * is also how you tell which runtime served a create.
+   *
+   * Read this rather than computing a deadline from the create time: sandboxes
+   * are served from a warm pool, so the host is usually older than the create.
+   */
+  endAt?: string;
   /** Plaintext preview-URL bearer token. Returned exactly once on the create
    *  or rotate response when `previewAuth` was requested. */
   previewAuthToken?: string;
@@ -297,6 +309,24 @@ export class Sandbox {
    */
   readonly webhooks: Array<{ id: string; url: string; secret?: string }>;
 
+  /**
+   * RFC3339 instant at which the provider destroys this sandbox's host, or
+   * `undefined` when the runtime imposes no lifetime.
+   *
+   * Two uses. It is the deadline to plan against — checkpoint and roll over
+   * before it, because the disk goes with the host. And because only some
+   * runtimes have one, its presence identifies which runtime served the
+   * create, which is what the upgrade guide's smoke test checks.
+   *
+   * ```ts
+   * const sandbox = await Sandbox.create();
+   * if (sandbox.endAt) {
+   *   const msLeft = Date.parse(sandbox.endAt) - Date.now();
+   * }
+   * ```
+   */
+  readonly endAt?: string;
+
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
     this.id = this.sandboxId;
@@ -307,6 +337,7 @@ export class Sandbox {
     this.token = data.token || "";
     this.previewAuthToken = data.previewAuthToken || "";
     this.webhooks = data.webhooks ?? [];
+    this.endAt = data.endAt;
     this._sandboxDomain = data.sandboxDomain || "";
 
     // Always route through the CP — it handles readiness waiting and proxies to workers.
@@ -373,6 +404,10 @@ export class Sandbox {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      // Which runtime serves this create. See version.ts: an org that has not
+      // been pinned is routed by the calling SDK's major version, so this
+      // header is how upgrading the dependency performs the migration.
+      ...sdkVersionHeaders(),
       ...(apiKey ? { "X-API-Key": apiKey } : {}),
     };
     if (useSSE) {

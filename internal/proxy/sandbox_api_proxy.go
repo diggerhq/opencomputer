@@ -89,9 +89,13 @@ type SandboxAPIProxy struct {
 	store        *db.Store
 	registry     *controlplane.RedisWorkerRegistry
 	jwtIssuer    *auth.JWTIssuer
-	transport    *http.Transport      // shared connection pool for all proxy requests
-	routeCache   *proxyRouteCache     // sandbox→worker cache to avoid DB lookup per request
+	transport    *http.Transport                                   // shared connection pool for all proxy requests
+	routeCache   *proxyRouteCache                                  // sandbox→worker cache to avoid DB lookup per request
 	waitForReady func(ctx context.Context, sandboxID string) error // blocks until async sandbox creation completes; nil = no-op
+	// managedWorkerID reports whether a persisted worker_id belongs to a backend
+	// the control plane serves in-process rather than to a registered worker.
+	// nil on a cell with no such backend, where every worker_id is a real worker.
+	managedWorkerID func(workerID string) bool
 }
 
 // NewSandboxAPIProxy creates a new sandbox API proxy.
@@ -122,6 +126,19 @@ func NewSandboxAPIProxy(store *db.Store, registry *controlplane.RedisWorkerRegis
 // to a worker that hasn't finished booting the sandbox yet.
 func (p *SandboxAPIProxy) SetWaitForReady(fn func(ctx context.Context, sandboxID string) error) {
 	p.waitForReady = fn
+}
+
+// SetManagedWorkerID tells the proxy which worker_ids name a managed backend
+// (MicroVM, and anything else the control plane holds in-process) rather than a
+// worker in the registry.
+//
+// Without it those sandboxes are indistinguishable from a sandbox whose worker
+// died: the registry has no entry either way. tryRecoverOrFail reads that as an
+// unrecoverable loss and CLOSES THE ROW — so a single request to a route the
+// backend does not implement would mark a perfectly healthy sandbox stopped.
+// See the check in tryRecoverOrFail.
+func (p *SandboxAPIProxy) SetManagedWorkerID(fn func(workerID string) bool) {
+	p.managedWorkerID = fn
 }
 
 // ResolvedRoute is the output of ResolveWorker: the worker's HTTP base
@@ -494,7 +511,7 @@ func (p *SandboxAPIProxy) doHTTP(c echo.Context, sandboxID, workerURL, token str
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.FlushInterval = -1    // flush chunks immediately
+	proxy.FlushInterval = -1      // flush chunks immediately
 	proxy.Transport = p.transport // shared connection pool — avoids ephemeral port exhaustion
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -630,6 +647,22 @@ func (p *SandboxAPIProxy) tryRecoverOrFail(c echo.Context, ctx context.Context, 
 		log.Printf("sandbox-api-proxy: sandbox %s is migrating to %s, returning temporary unavailable", sandboxID, session.MigratingToWorker)
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": fmt.Sprintf("sandbox %s is being migrated, retry shortly", sandboxID),
+		})
+	}
+
+	// A managed backend holds this sandbox in the control plane's own process,
+	// so "not in the worker registry" is its normal state, not a lost worker.
+	// Everything below assumes the opposite and would close the row.
+	//
+	// This is the LAST line of defence rather than the only one: the routes that
+	// reach here are the ones a managed backend does not implement (PTY, agent
+	// sessions, mounts), and the router refuses those in front of the proxy. The
+	// check stays because the failure it prevents is silent and permanent — a
+	// route added later, or a request arriving before Reconcile has rebuilt the
+	// in-memory binding, would otherwise destroy a running sandbox.
+	if p.managedWorkerID != nil && p.managedWorkerID(session.WorkerID) {
+		return c.JSON(http.StatusNotImplemented, map[string]string{
+			"error": fmt.Sprintf("sandbox %s runs on a runtime that does not support this operation", sandboxID),
 		})
 	}
 

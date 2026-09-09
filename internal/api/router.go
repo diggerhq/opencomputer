@@ -82,8 +82,7 @@ type Server struct {
 	stripeClient       *billing.StripeClient             // nil if Stripe not configured
 	redisClient        *redis.Client                     // nil if Redis not configured (for health checks)
 	adminEvents        *AdminEventBus                    // real-time event bus for admin dashboard
-	microvm            *microvmBackend                   // managed-host backend; nil unless enabled (see microvm_backend.go)
-	lite               *liteBackend                      // direct-exec managed-host backend; mutually exclusive with microvm (see lite_backend.go)
+	lite               *liteBackend                      // managed-host (MicroVM) backend; nil unless enabled (see lite_backend.go)
 	materialize        *materializer                     // memoizes per-org/user row creation off the create hot path (materialize.go)
 	orgRuntime         *orgRuntimeCache                  // memoizes orgs.runtime for the direct-to-cell create path (backend.go)
 	templateCache      *templateCache                    // caches name→template so create doesn't call the edge every time (template_cache.go)
@@ -276,6 +275,16 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.redisClient = opts.RedisClient
 		s.adminEvents = NewAdminEventBus()
 
+		// Teach the proxy which worker_ids name a managed backend, so a request
+		// that reaches it for one is refused rather than mistaken for a lost
+		// worker and closed out. See SetManagedWorkerID.
+		if s.sandboxAPIProxy != nil {
+			s.sandboxAPIProxy.SetManagedWorkerID(func(workerID string) bool {
+				_, ok := s.backendForWorkerID(workerID)
+				return ok
+			})
+		}
+
 		// Wire up readiness waiting so the proxy blocks until async creates finish
 		if s.sandboxAPIProxy != nil {
 			s.sandboxAPIProxy.SetWaitForReady(func(ctx context.Context, sandboxID string) error {
@@ -342,6 +351,27 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// trust" — same as POST /internal/sandboxes/create.
 		cp := opts.ControlPlaneProxy
 		sandboxDomain := opts.SandboxDomain
+		// Preview traffic for a sandbox this process holds cannot go through
+		// the worker lookup — there is no registered worker. Hand the proxy a
+		// resolver so it can reach the guest port through the runtime's own
+		// proxy instead. Returns false for every worker-held sandbox, which
+		// leaves the fleet path exactly as it was.
+		if cp != nil {
+			cp.SetManagedPreview(func(sandboxID string) (proxy.ManagedPreview, bool) {
+				for _, b := range s.backends {
+					pv, ok := b.(interface {
+						PreviewTarget(string) (string, string, int32, bool)
+					})
+					if !ok {
+						continue
+					}
+					if host, token, hookPort, found := pv.PreviewTarget(sandboxID); found {
+						return proxy.ManagedPreview{Host: host, Token: token, HookPort: hookPort}, true
+					}
+				}
+				return proxy.ManagedPreview{}, false
+			})
+		}
 		e.Any("/internal/preview/:id/:port/*", func(c echo.Context) error {
 			id := c.Param("id")
 			portStr := c.Param("port")
@@ -408,9 +438,6 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		internal.POST("/pool/edge-reserve", s.edgeReservePool)
 		internal.POST("/pool/edge-release", s.edgeReleasePool)
 		internal.POST("/sandboxes/claim-finalize", s.claimFinalize)
-		// Direct-path seam (see microvm_direct.go): lets the edge dial a
-		// MicroVM's agent itself instead of relaying exec through this process.
-		internal.GET("/microvm/direct/:id", s.microvmDirectInfo)
 		// Cross-cell paused-cap enforcement: the edge (which has the org-global
 		// view via D1) calls this to promote a specific paused sandbox to deep
 		// hibernation, reclaiming its worker RAM.
@@ -458,9 +485,26 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// distinct middleware chain from the human-API-key /admin group above.
 	// Echo treats route registrations independently — there's no conflict.
 	//
-	// Only mounted when this CP can actually halt sandboxes (workers registry
-	// present); a server-only CP without workers has no work to do here.
-	if s.workerRegistry != nil {
+	// Mounted UNCONDITIONALLY, and that is deliberate.
+	//
+	// This was `if s.workerRegistry != nil`. That reads as "only if this cell
+	// has workers", but the registry is built for any server-mode CP with
+	// Redis (cmd/server/main.go), so a MicroVM-only cell has a NON-NIL,
+	// EMPTY one and the routes did mount. The gate was not the outage — it was
+	// a tripwire whose premise had quietly become wrong, and it would have
+	// become an outage the moment a cell ran in combined mode, where the
+	// registry IS nil and /internal/sandboxes/create disappears with it.
+	//
+	// The obvious repair — `|| len(s.backends) > 0` — is a TRAP: backends are
+	// registered ~400 lines below this point, so the slice is always empty
+	// here and the condition silently stays false. Any gate written in terms
+	// of state this function populates later has the same defect.
+	//
+	// So there is no gate. The routes are HMAC-authenticated, and a cell with
+	// nothing to halt answers `halted: 0`, which is both honest and cheap. A
+	// 404 was never the better answer: it is indistinguishable from a broken
+	// deployment.
+	{
 		if s.cfAdminSecret == "" {
 			log.Printf("api: WARNING: CF admin webhooks mounted without CF_ADMIN_SECRET — anyone can halt/resume orgs. Set OPENSANDBOX_CF_ADMIN_SECRET in production.")
 		}
@@ -604,10 +648,14 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 			method, path string
 			local        echo.HandlerFunc
 		}{
-			{http.MethodPost, "/sandboxes/:id/exec", s.createExecSession},
-			{http.MethodGet, "/sandboxes/:id/exec", s.listExecSessions},
-			{http.MethodGet, "/sandboxes/:id/exec/:sessionID/result", s.execResult},
-			{http.MethodPost, "/sandboxes/:id/exec/:sessionID/kill", s.killExecSession},
+			// Sessions are served in-process for a managed backend and by the
+			// existing handler otherwise. Wrapped rather than replaced: the
+			// local handlers below reach for s.execSessionManager, which is
+			// legitimately nil on a cell whose sandboxes all live in a backend.
+			{http.MethodPost, "/sandboxes/:id/exec", s.dispatchExecSession(s.createExecSessionManaged, s.createExecSession)},
+			{http.MethodGet, "/sandboxes/:id/exec", s.dispatchExecSession(s.listExecSessionsManaged, s.listExecSessions)},
+			{http.MethodGet, "/sandboxes/:id/exec/:sessionID/result", s.dispatchExecSession(s.execResultManaged, s.execResult)},
+			{http.MethodPost, "/sandboxes/:id/exec/:sessionID/kill", s.dispatchExecSession(s.killExecSessionManaged, s.killExecSession)},
 			{http.MethodPost, "/sandboxes/:id/exec/run", s.execRun},
 			{http.MethodPost, "/sandboxes/:id/exec/run-async", s.execRunAsyncRoute},
 
@@ -625,32 +673,51 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// in-process do not implement PTY, agent sessions, or bidi streaming, so
 		// routing them here would answer a request no manager can serve. They
 		// reach the worker path exactly as before.
-		api.GET("/sandboxes/:id/exec/:sessionID", wsHandler)
+		//
+		// refuseIfManaged wraps every one of them. Reaching the proxy with a
+		// backend-held sandbox is not a harmless miss: the proxy looks the
+		// sandbox up in the worker registry, finds nothing (a managed sandbox is
+		// never registered), concludes the worker was lost and writes the row to
+		// `stopped`. One PTY request destroyed a healthy MicroVM sandbox, and
+		// every later request to it returned 410. See refuseIfManaged.
+		mpxy := s.refuseIfManaged(pxy)
+		mws := s.refuseIfManaged(wsHandler)
+
+		// Attaching to a session's live output. Served in-process for a managed
+		// backend (see exec_session_managed.go); every worker-held sandbox
+		// still reaches the broker or the proxy exactly as before.
+		api.GET("/sandboxes/:id/exec/:sessionID", s.dispatchExecSession(s.execSessionWebSocketManaged, mws))
 
 		// Agent
-		api.POST("/sandboxes/:id/agent", pxy)
-		api.GET("/sandboxes/:id/agent", pxy)
-		api.GET("/sandboxes/:id/agent/:sid", wsHandler)
-		api.POST("/sandboxes/:id/agent/:sid/prompt", pxy)
-		api.POST("/sandboxes/:id/agent/:sid/interrupt", pxy)
-		api.POST("/sandboxes/:id/agent/:sid/kill", pxy)
+		api.POST("/sandboxes/:id/agent", mpxy)
+		api.GET("/sandboxes/:id/agent", mpxy)
+		api.GET("/sandboxes/:id/agent/:sid", mws)
+		api.POST("/sandboxes/:id/agent/:sid/prompt", mpxy)
+		api.POST("/sandboxes/:id/agent/:sid/interrupt", mpxy)
+		api.POST("/sandboxes/:id/agent/:sid/kill", mpxy)
 
 		// Mounts (FUSE)
-		api.POST("/sandboxes/:id/mounts", pxy)
-		api.GET("/sandboxes/:id/mounts", pxy)
-		api.DELETE("/sandboxes/:id/mounts", pxy)
+		api.POST("/sandboxes/:id/mounts", mpxy)
+		api.GET("/sandboxes/:id/mounts", mpxy)
+		api.DELETE("/sandboxes/:id/mounts", mpxy)
 
-		// PTY
-		api.POST("/sandboxes/:id/pty", pxy)
-		api.GET("/sandboxes/:id/pty/:sessionID", wsHandler)
-		api.POST("/sandboxes/:id/pty/:sessionID/resize", pxy)
-		api.DELETE("/sandboxes/:id/pty/:sessionID", pxy)
+		// PTY. Unlike the routes above these ARE served for a managed backend —
+		// in-process, over a WebSocket opened to the box for the life of the
+		// session and closed with it. See pty_managed.go. A worker-held sandbox
+		// still takes the proxy, unchanged.
+		api.POST("/sandboxes/:id/pty", s.dispatchPTY(s.createPTYManaged, mpxy))
+		api.GET("/sandboxes/:id/pty/:sessionID", s.dispatchPTY(s.ptyWebSocketManaged, mws))
+		api.POST("/sandboxes/:id/pty/:sessionID/resize", s.dispatchPTY(s.resizePTYManaged, mpxy))
+		api.DELETE("/sandboxes/:id/pty/:sessionID", s.dispatchPTY(s.killPTYManaged, mpxy))
 
-		// Timeout
-		api.POST("/sandboxes/:id/timeout", pxy)
+		// Timeout. Served in-process for a managed backend, which owns its own
+		// idle policy (the router below only tracks worker-held sandboxes, so a
+		// managed one set through it would silently never fire). Worker-held
+		// sandboxes still take the proxy, unchanged.
+		api.POST("/sandboxes/:id/timeout", s.dispatchIdleTimeout(s.setTimeout, mpxy))
 
 		// Token refresh
-		api.POST("/sandboxes/:id/token/refresh", pxy)
+		api.POST("/sandboxes/:id/token/refresh", mpxy)
 	} else {
 		// Combined/worker mode: handle locally
 		api.POST("/sandboxes/:id/exec", s.createExecSession)
@@ -853,14 +920,18 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Serve web dashboard SPA at root (catch-all after API/auth routes)
 	s.serveDashboardUI(e, frontendURL)
 
-	// The direct-exec MicroVM backend (OPENSANDBOX_MICROVM_LITE=1). Selected
-	// INSTEAD of the agent-tunnel one below, never alongside it: both manufacture
-	// boxes from the same image against the same regional quota, and two fillers
-	// each believing they own the fleet would overrun it and starve each other.
+	// The managed-host (MicroVM) backend — see lite_backend.go. Enabled by
+	// OPENSANDBOX_MICROVM_ENABLED=1; nil otherwise, and no AWS call is ever made,
+	// so a QEMU cell is unaffected. When it IS enabled but misconfigured, fail
+	// loudly rather than silently serving QEMU from a cell the operator believes
+	// is running MicroVMs.
 	//
-	// See lite_backend.go. The trade is total — no files, no hibernate, no
-	// streaming — so this is a measurement configuration, not a default.
-	if lite, err := newLiteBackend(context.Background()); err != nil {
+	// This was once one of two MicroVM backends, the other holding a gRPC agent
+	// tunnel per box brokered by this process. That one is deleted: reaching the
+	// guest over plain JSON through the platform's own proxy is both faster and
+	// the only thing that works across it, and running two fillers against one
+	// regional quota meant each overran and starved the other.
+	if lite, err := newLiteBackend(context.Background(), s.checkpointStore); err != nil {
 		log.Fatalf("opensandbox: vmhost-lite backend: %v", err)
 	} else if lite != nil {
 		s.lite = lite
@@ -871,54 +942,12 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		lite.StartReconciler(context.Background(), s.store)
 		lite.StartUsageTicker(context.Background(), s.sandboxDBs)
 		lite.StartEventPublisher(context.Background(), s.sandboxDBs, s.redisClient, s.cellID, s.store)
+		// Customer-set idle timeouts. Driven from here, not the manager, because
+		// parking has to move the row and record a hibernation or the sandbox is
+		// stranded asleep. See StartIdleSweeper.
+		lite.StartIdleSweeper(context.Background(), s.store, s.sandboxDBs)
 		if s.workerRegistry == nil || s.workersDisabled {
 			lite.StartCapacityReporter(context.Background(), s.redisClient, s.cellID)
-		}
-	}
-
-	// AWS Lambda MicroVM backend. Disabled by default: this returns nil and no
-	// AWS call is ever made, so the QEMU fleet is unaffected. When it IS enabled
-	// but misconfigured, fail loudly rather than silently serving QEMU from a
-	// cell the operator believes is running MicroVMs.
-	if mvm, err := newMicrovmBackend(context.Background(), s.checkpointStore); err != nil {
-		log.Fatalf("opensandbox: microvm backend: %v", err)
-	} else if mvm != nil {
-		s.microvm = mvm
-		// A reservation that dies unclaimed must wake anything parked on its
-		// finalize — see THE FINALIZE RACE in edge_claim.go.
-		mvm.onReservationLost = s.resolveEdgePending
-		// Registering it is what makes every claim/route site find it. Before
-		// this the sites each hardcoded their own check, and any new one
-		// silently defaulted to the worker path.
-		s.registerBackend(mvm)
-		// Rebuild the sandbox→MicroVM map before serving. A restart otherwise
-		// leaves live sandboxes unroutable and their boxes unreapable.
-		mvm.Restore(context.Background(), s.store)
-		// Nothing else will ever notice a MicroVM dying — no worker reports in
-		// for these — so sweep on a ticker for the lifetime of the process.
-		mvm.StartReconciler(context.Background(), s.store)
-		// Billing: no worker exists to emit usage ticks for these sandboxes, so
-		// the control plane emits them itself over the same interface.
-		mvm.StartUsageTicker(context.Background(), s.sandboxDBs)
-		// ...and drains them to the cell stream. The ticker alone writes to
-		// local SQLite; without this half nothing ever reads it, and the
-		// sandboxes run free while every log line says billing is working.
-		mvm.StartEventPublisher(context.Background(), s.sandboxDBs, s.redisClient, s.cellID, s.store)
-		// Release suspended boxes once their archive is durable. Without this a
-		// hibernation holds regional memory quota — the ceiling on warm-pool
-		// depth — for the whole life of the box rather than the 10 minutes it
-		// is actually useful as a fast-wake cache.
-		mvm.StartHibernationExpiry(context.Background(), s.store)
-		// Capacity, but only when no registry-backed reporter is publishing it
-		// already — two writers on one stream would alternate between MicroVM
-		// depth and worker counts, flapping the cell in and out of the edge's
-		// routing set. Keyed on workersDisabled rather than a nil registry: a
-		// MicroVM cell in server mode still HAS a registry (worker_id lookups,
-		// lifecycle publishing), it just never has workers in it, and gating on
-		// the registry left the worker-counting reporter running to publish
-		// available_workers=0 forever.
-		if s.workerRegistry == nil || s.workersDisabled {
-			mvm.StartCapacityReporter(context.Background(), s.redisClient, s.cellID)
 		}
 	}
 

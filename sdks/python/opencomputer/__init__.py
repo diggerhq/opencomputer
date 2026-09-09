@@ -68,4 +68,6 @@ __all__ = [
     "TagKeyInfo",
 ]
 
-__version__ = "0.6.9"
+# Single source of truth — pyproject.toml reads the same file, so the published
+# version and the version the SDK announces to the server cannot disagree.
+from opencomputer.version import __version__  # noqa: E402,F401

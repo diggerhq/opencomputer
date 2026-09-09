@@ -64,6 +64,7 @@ export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./
 export { type Shell, type ShellOpts, type ShellRunOpts, ShellBusyError, ShellClosedError } from "./shell.js";
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
+export { SDK_VERSION, SDK_VERSION_HEADER } from "./version.js";
 export {
   Webhooks,
   WebhookDeliveries,
@@ -100,5 +101,12 @@ export {
   type TagKeyInfo,
 } from "./usage.js";
 // Node.js-only modules (use crypto, fs, path) — import via "@opencomputer/sdk/node".
+// The Image builder and the Snapshots client are exported as VALUES, not only
+// as types. Both were type-only, so `import { Image } from "@opencomputer/sdk"`
+// — which the Image reference documents — failed at runtime with "does not
+// provide an export named 'Image'", and there was no supported way to define a
+// template through the SDK at all.
+export { Image } from "./image.js";
 export type { ImageManifest, ImageStep } from "./image.js";
+export { Snapshots } from "./snapshot.js";
 export type { SnapshotInfo, CreateSnapshotOpts, WaitForReadyOpts } from "./snapshot.js";

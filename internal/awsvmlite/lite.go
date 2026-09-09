@@ -16,7 +16,7 @@
 // intact (it answered 415, from inside the guest). So the tunnel is not required
 // to talk to a MicroVM; it is required only to speak gRPC to one.
 //
-// This backend therefore does the smallest possible thing:
+// This backend therefore does the smallest possible thing on the hot path:
 //
 //	create   pop a pre-launched box off a warm set, or launch one
 //	exec     one HTTPS POST to /osb/run on the hook port, connection reused
@@ -27,10 +27,19 @@
 // No WebSocket. No persistent channel. No keepalive ping. No re-dial. No
 // Durable Object. No pool sharding. Nothing to decay.
 //
-// WHAT IS GIVEN UP, deliberately and completely: streaming output, PTY
-// sessions, file transfer, and everything else osb-agent's API offers. One
-// command, buffered output, one reply. This is not a replacement for the agent
-// path — it is the floor that path should be measured against.
+// EVERYTHING ELSE — files, stats, reboot, and reaching a port the customer is
+// listening on — lives in dataplane.go and is reached the same way, one request
+// at a time, off the hot path. That was originally given up along with the
+// tunnel, on the assumption that osb-agent's API required gRPC end to end. It
+// does not: the trailer problem belongs to the PROXY HOP, and the guest can
+// speak loopback gRPC to the agent behind it. cmd/microvm-hooks translates, so
+// this backend reaches the agent's full API without carrying gRPC across the
+// proxy even once.
+//
+// What remains genuinely absent: PTY and streaming exec sessions (both want a
+// bidirectional stream, which is a WebSocket away but not built), checkpoints
+// and fork (a MicroVM image is produced by an API, not captured from a running
+// box), and per-sandbox resource limits (sizing belongs to the image).
 package awsvmlite
 
 import (
@@ -47,6 +56,8 @@ import (
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/awsvm"
+	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 )
 
 const (
@@ -71,6 +82,12 @@ const (
 // is a thing that can be set wrong, and the point of this package is that there
 // is almost nothing to get wrong.
 type Config struct {
+	// SuspendedCap bounds how many sandboxes may sit hibernated at once. 0
+	// takes the default. See hibernate.go for the quota arithmetic behind it —
+	// a parked box holds a slot the warm pool cannot have and cannot be
+	// reclaimed, so this is what stops hibernation eating the pool.
+	SuspendedCap int
+
 	// WarmTarget is how many pre-launched boxes to hold. 0 disables the warm
 	// set, and every create cold-launches (~3s, per AWS's own published
 	// benchmark) instead of ~0.
@@ -143,7 +160,19 @@ type Box struct {
 
 	launchedAt time.Time
 	boundAt    time.Time
-	lastTouch  time.Time
+	// lastTouch is when the KEEPALIVE last poked this box. It exists to stop
+	// AWS suspending idle stock and says nothing about the customer.
+	lastTouch time.Time
+	// lastUsed is when the CUSTOMER last did something. Deliberately separate
+	// from lastTouch: the keepalive touches every box on a timer, so an idle
+	// policy driven by lastTouch would find every sandbox permanently busy and
+	// never expire anything. See MarkUsed.
+	lastUsed time.Time
+	// idleTimeout is how long this sandbox may sit unused before it is parked.
+	// Zero means no timeout — the sandbox runs until killed or until the
+	// provider's own hard cap ends it. See SetIdleTimeout for why a value
+	// beyond that cap is refused rather than stored.
+	idleTimeout time.Duration
 }
 
 // Meta is the part of a sandbox's config this backend still has to remember
@@ -158,6 +187,15 @@ type Meta struct {
 	Template string
 	MemoryMB int
 	CPUCount int
+
+	// TemplateImageARN is set when the template is backed by its OWN MicroVM
+	// image rather than by a workspace tarball.
+	//
+	// Such a box can never come from the warm pool: pooled stock is manufactured
+	// from the default image, and a template's whole purpose is to differ from
+	// it. Claim therefore treats a non-empty value as a forced cold launch —
+	// the same trade already made for off-tier sizes.
+	TemplateImageARN string
 }
 
 // RunRequest mirrors cmd/microvm-hooks' runCmdRequest. Field-for-field with
@@ -188,6 +226,38 @@ type Manager struct {
 	mu    sync.Mutex
 	warm  []*Box
 	bound map[string]*Box // sandboxID → box
+	// store is where checkpoint and template archives live. Set once at
+	// construction; nil on a cell with no blob storage configured, which makes
+	// checkpoints and templates unavailable rather than crashing.
+	store *storage.CheckpointStore
+
+	// term paces destroys against the 10/s TerminateMicrovm quota. See the
+	// comment on terminate() for what calling the API directly cost.
+	term *awsvm.Terminator
+
+	// lifecycleObs receives the usage-metering boundaries — destroy, hibernate,
+	// wake. nil until the control plane wires its ticker in, and nil in tests,
+	// so every call site must guard. See SetLifecycleObserver.
+	lifecycleObs sandbox.LifecycleObserver
+
+	// lastBox remembers which host a sandbox held, for a short while after the
+	// binding is dropped. It exists for exactly one reader: the event
+	// publisher, which stamps each usage tick with a worker_id resolved from
+	// the live binding.
+	//
+	// The closing tick is emitted DURING Destroy and drained a beat later, by
+	// which time the binding is gone — so the publisher fell back to a generic
+	// id, and events-ingest dropped the tick because it disagreed with the
+	// sandbox's row. The last slice of every destroyed sandbox went unbilled
+	// for that reason alone, even once the terminal-status guard was fixed.
+	lastBox map[string]lastBoxEntry
+
+	// suspended is the set of sandboxes parked by Hibernate, and the time each
+	// was parked. Kept here rather than on the Box because two unrelated loops
+	// have to consult it and both fail silently without it: billing (a
+	// suspended box still reports Alive() to AWS) and touchIdle (a probe
+	// auto-resumes whatever it touches). See hibernate.go.
+	suspended map[string]time.Time
 	// lastStateLog rate-limits the periodic state line — see logState.
 	lastStateLog time.Time
 	// inflight counts launches in progress, so the filler targets committed
@@ -201,6 +271,7 @@ func New(client *awsvm.Client, cfg Config) *Manager {
 	return &Manager{
 		client: client,
 		cfg:    cfg,
+		term:   awsvm.NewTerminator(client),
 		bound:  map[string]*Box{},
 		http: &http.Client{
 			Timeout: cfg.ExecTimeout,
@@ -244,11 +315,11 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 	touch := time.NewTicker(touchTick)
 	defer touch.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
 		case <-launch.C:
 			m.mu.Lock()
 			committed := len(m.warm) + m.inflight
@@ -290,6 +361,25 @@ func (m *Manager) Run(ctx context.Context) {
 // the agent path made the first exec pay for the login shell too. It does not —
 // it pre-pays it at manufacture, exactly as this now does.
 func (m *Manager) launchOne(ctx context.Context) error {
+	b, err := m.launchBox(ctx, "")
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.warm = append(m.warm, b)
+	depth := len(m.warm)
+	m.mu.Unlock()
+	log.Printf("awsvmlite: warm +1 %s (depth=%d/%d)", b.MicrovmID, depth, m.cfg.WarmTarget)
+	return nil
+}
+
+// launchBox manufactures one box and returns it, warmed but unowned.
+//
+// image selects the size tier; "" is the default (pooled) image. Split out of
+// launchOne so an off-tier create can reuse every step of it — the wait for
+// RUNNING, the auth token, the warm shell — without touching the warm set,
+// which holds default-size boxes only.
+func (m *Manager) launchBox(ctx context.Context, image string) (*Box, error) {
 	m.mu.Lock()
 	m.inflight++
 	m.mu.Unlock()
@@ -302,9 +392,9 @@ func (m *Manager) launchOne(ctx context.Context) error {
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	box, err := m.client.Run(runCtx, "")
+	box, err := m.client.RunImage(runCtx, "", image)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Do not hand out a box before Lambda says RUNNING: the proxy answers 502
 	// for a VM that is still restoring, and absorbing that wait is the whole
@@ -312,12 +402,12 @@ func (m *Manager) launchOne(ctx context.Context) error {
 	ready, err := m.client.WaitRunning(runCtx, box.ID, m.cfg.ReadyTimeout)
 	if err != nil {
 		go m.terminate(box.ID)
-		return err
+		return nil, err
 	}
 	token, err := m.client.AuthToken(runCtx, ready.ID)
 	if err != nil {
 		go m.terminate(ready.ID)
-		return err
+		return nil, err
 	}
 
 	b := &Box{
@@ -344,12 +434,7 @@ func (m *Manager) launchOne(ctx context.Context) error {
 		// starts its life already touched rather than immediately due.
 		b.lastTouch = time.Now()
 	}
-	m.mu.Lock()
-	m.warm = append(m.warm, b)
-	depth := len(m.warm)
-	m.mu.Unlock()
-	log.Printf("awsvmlite: warm +1 %s (depth=%d/%d)", b.MicrovmID, depth, m.cfg.WarmTarget)
-	return nil
+	return b, nil
 }
 
 // Claim binds a warm box to a sandbox id, or launches one if the set is empty.
@@ -357,7 +442,31 @@ func (m *Manager) launchOne(ctx context.Context) error {
 // Returns the box and whether it came from the warm set — the caller wants that
 // in its timing, because the two differ by the entire cold-launch cost.
 func (m *Manager) Claim(ctx context.Context, sandboxID string, meta Meta) (*Box, bool, error) {
+	// A template with its own image is served by launching THAT image. Checked
+	// before anything reaches the warm set: a pooled box is the default image
+	// by construction, so handing one to a template request would return a box
+	// without the customer's template and look like a successful create — the
+	// silent-wrong-image failure the size path already guards against.
+	if meta.TemplateImageARN != "" {
+		b, err := m.claimTemplateImage(ctx, sandboxID, meta)
+		return b, false, err
+	}
+	// The size the customer ASKED for, before delivered() rewrites it to what
+	// the image provides. That rewrite is what makes metering truthful, and it
+	// is also what would hide an off-tier request from the check below.
+	requested := meta.MemoryMB
 	meta = m.delivered(meta)
+
+	// Only the default size is pooled. Another tier is a different IMAGE — the
+	// memory of a MicroVM is a property of the image it launched from, not a
+	// knob — so it cannot come off the warm set and has to cold-launch (~3s).
+	// That is the deliberate trade: one deep pool for the common size beats N
+	// shallow pools that all miss.
+	if m.client != nil && !m.client.Config().IsDefaultTier(requested) {
+		b, err := m.claimOffTier(ctx, sandboxID, requested, meta)
+		return b, false, err
+	}
+
 	m.mu.Lock()
 	if b := m.popLocked(sandboxID, meta); b != nil {
 		m.mu.Unlock()
@@ -378,6 +487,68 @@ func (m *Manager) Claim(ctx context.Context, sandboxID string, meta Meta) (*Box,
 	return nil, false, fmt.Errorf("awsvmlite: no box available for %s", sandboxID)
 }
 
+// claimTemplateImage cold-launches a box from a custom template's own image.
+//
+// Deliberately a sibling of claimOffTier rather than a branch inside it: both
+// cold-launch a named image, but the reasons differ (a size tier is OUR image,
+// a template is the customer's) and so does the error a caller must surface.
+// Sharing the body would make one error message wrong for one of them.
+//
+// Never falls back to the default image. A template that cannot be launched is
+// an error, not a plain box — the customer asked for their environment and a
+// box without it is indistinguishable from a working one until their code
+// fails.
+func (m *Manager) claimTemplateImage(ctx context.Context, sandboxID string, meta Meta) (*Box, error) {
+	start := time.Now()
+	b, err := m.launchBox(ctx, meta.TemplateImageARN)
+	if err != nil {
+		return nil, fmt.Errorf("awsvmlite: cold launch template image %s for %s: %w",
+			meta.TemplateImageARN, sandboxID, err)
+	}
+	// Metered at the default tier: a template image is published at the default
+	// memory floor (see the image builder), so the delivered size is the
+	// default one regardless of what the template installed.
+	if meta.MemoryMB == 0 {
+		meta.MemoryMB = m.client.Config().DefaultMemoryMB
+	}
+	b.Meta = meta
+	b.boundAt = time.Now()
+	m.mu.Lock()
+	m.bound[sandboxID] = b
+	m.mu.Unlock()
+	log.Printf("awsvmlite: TEMPLATE-IMAGE CREATE %s -> %s from %s in %s",
+		sandboxID, b.MicrovmID, meta.TemplateImageARN, time.Since(start).Round(time.Millisecond))
+	return b, nil
+}
+
+// claimOffTier cold-launches a box of a non-default size and binds it.
+//
+// Refuses rather than substituting when the tier is not offered. A silent
+// downgrade would bill a customer for the size they asked for and hand them a
+// smaller box, which is the one failure worth a hard error here.
+func (m *Manager) claimOffTier(ctx context.Context, sandboxID string, requestedMB int, meta Meta) (*Box, error) {
+	image, deliveredMB, ok := m.client.Config().ImageForMemory(requestedMB)
+	if !ok {
+		return nil, fmt.Errorf("awsvmlite: no image offers %d MB", requestedMB)
+	}
+	start := time.Now()
+	b, err := m.launchBox(ctx, image)
+	if err != nil {
+		return nil, fmt.Errorf("awsvmlite: cold launch %d MB for %s: %w", requestedMB, sandboxID, err)
+	}
+	// Metered at what the tier image actually delivers, same rule as the
+	// default path.
+	meta.MemoryMB = deliveredMB
+	b.Meta = meta
+	b.boundAt = time.Now()
+	m.mu.Lock()
+	m.bound[sandboxID] = b
+	m.mu.Unlock()
+	log.Printf("awsvmlite: OFF-TIER CREATE %s -> %s (%d MB) in %s",
+		sandboxID, b.MicrovmID, deliveredMB, time.Since(start).Round(time.Millisecond))
+	return b, nil
+}
+
 // popLocked moves one box from the warm set to a sandbox. Caller holds m.mu.
 func (m *Manager) popLocked(sandboxID string, meta Meta) *Box {
 	n := len(m.warm)
@@ -392,6 +563,12 @@ func (m *Manager) popLocked(sandboxID string, meta Meta) *Box {
 	return b
 }
 
+// deliveredCPUCount is what a box actually provides, and the only value that
+// may reach metering. CPU is not selectable on this runtime; it scales with the
+// memory tier, so there is one honest number to record rather than a per-tier
+// table we cannot verify from inside the guest.
+const deliveredCPUCount = 1
+
 // delivered resolves what the customer will actually get, which is not always
 // what they asked for: every box in the warm set is built from one image, so a
 // request for another tier is served at the image's size or not at all.
@@ -400,7 +577,7 @@ func (m *Manager) popLocked(sandboxID string, meta Meta) *Box {
 // reads. Billing a 4 GB box as the 16 GB that was asked for is a silent
 // overcharge, and billing it as 0 is a silent free ride.
 func (m *Manager) delivered(meta Meta) Meta {
-	// Nil-safe on the client, matching awsvm.Manager.config(): this is pure
+	// Nil-safe on the client: this is pure
 	// bookkeeping and is reached from tests that never talk to AWS, so a missing
 	// client should degrade to defaults rather than panic on the claim path.
 	if m != nil && m.client != nil {
@@ -411,8 +588,26 @@ func (m *Manager) delivered(meta Meta) Meta {
 			meta.MemoryMB = cfg.DefaultMemoryMB
 		}
 	}
-	if meta.CPUCount <= 0 {
-		meta.CPUCount = 1
+	// CPU gets the same treatment as memory, and for the same reason. This
+	// platform has no CPU knob at all — RunMicrovmInput carries no vCPU field,
+	// and cpu-configurations at image-publish time takes an architecture and
+	// nothing else. CPU is allocated as a function of memory.
+	//
+	// So a customer-supplied cpuCount cannot be honoured, and carrying it
+	// through would put a number the customer chose into the usage record this
+	// function exists to keep truthful — the CPU equivalent of billing a 4 GB
+	// box as the 16 GB that was asked for. It is discarded rather than
+	// recorded.
+	//
+	// Logged when a request is dropped, because "cpuCount did nothing" is
+	// otherwise invisible: the create succeeds, the sandbox is correct, and
+	// only the meter would have been wrong.
+	if meta.CPUCount != deliveredCPUCount {
+		if meta.CPUCount > 0 {
+			log.Printf("awsvmlite: cpuCount=%d requested but this runtime does not size CPU — metering as %d",
+				meta.CPUCount, deliveredCPUCount)
+		}
+		meta.CPUCount = deliveredCPUCount
 	}
 	return meta
 }
@@ -509,6 +704,21 @@ func (m *Manager) Alive(ctx context.Context, sandboxID string) (bool, error) {
 }
 
 // BoxFor returns the box bound to a sandbox.
+// DeadlineFor reports when the provider will destroy the host behind a sandbox,
+// or the zero time if this process cannot know.
+//
+// Zero is returned rather than a guess for two distinct reasons, and both end
+// up written to a database row that readers treat as terminal once passed:
+// the sandbox may not be bound here, or the host's launch time may be unknown.
+// Guessing in either case expires a live customer's sandbox.
+func (m *Manager) DeadlineFor(sandboxID string) time.Time {
+	b, ok := m.BoxFor(sandboxID)
+	if !ok || m == nil || m.client == nil {
+		return time.Time{}
+	}
+	return m.client.Config().Deadline(b.launchedAt)
+}
+
 func (m *Manager) BoxFor(sandboxID string) (*Box, bool) {
 	m.mu.Lock()
 	b, ok := m.bound[sandboxID]
@@ -528,6 +738,10 @@ func (m *Manager) BoxFor(sandboxID string) (*Box, bool) {
 // This is the whole data plane. One request, one response, over a connection the
 // transport above almost always already holds.
 func (m *Manager) Exec(ctx context.Context, sandboxID string, req RunRequest) (*RunResult, error) {
+	// Exec reaches the box directly rather than through call(), so it stamps
+	// activity itself. Missing it here would mean a sandbox doing nothing but
+	// running commands looked idle. See idle.go.
+	m.MarkUsed(sandboxID)
 	b, ok := m.BoxFor(sandboxID)
 	if !ok {
 		return nil, fmt.Errorf("awsvmlite: no box bound to %s", sandboxID)
@@ -623,31 +837,135 @@ func (m *Manager) DrainWarm(ctx context.Context) int {
 	// re-adopts them on the way back up.
 	m.mu.Unlock()
 
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 16)
+	// ENQUEUED, NOT FANNED OUT. This used to launch 16 concurrent terminates
+	// against a 10/s quota, log whatever was throttled, and then return
+	// len(warm) as though all of them had died. On a full pool that is most of
+	// a pool leaked on every restart — still billing, still holding quota,
+	// while the log line said it released them all.
+	//
+	// The queue drains at the quota and retries throttles, so a drain now
+	// records the intent for every box and the worker sees it through. It
+	// deliberately does not block on completion: AWS terminate is asynchronous
+	// anyway, and a shutdown path that waited would delay the restart it is
+	// part of.
 	for _, b := range warm {
-		wg.Add(1)
-		go func(b *Box) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := m.client.Terminate(ctx, b.MicrovmID); err != nil {
-				log.Printf("awsvmlite: drain terminate %s: %v", b.MicrovmID, err)
-			}
-		}(b)
+		m.terminate(b.MicrovmID)
 	}
-	wg.Wait()
+
+	// AND WAIT FOR THE QUEUE TO DRAIN. This is the shutdown path: enqueueing and
+	// returning would let the process exit with the backlog still in memory,
+	// which loses every box that had not yet been called — strictly worse than
+	// the unpaced version this replaced, because at least that one made the
+	// calls before dying.
+	//
+	// Bounded by the caller's context (Close gives it 30s). Whatever is still
+	// queued when that expires is left to the orphan sweep, which is the same
+	// layering the agent path uses: the queue makes leaks rare, the sweep makes
+	// them recoverable.
+	if m.term != nil {
+		for m.term.Depth() > 0 {
+			select {
+			case <-ctx.Done():
+				log.Printf("awsvmlite: drain deadline reached with %d terminate(s) still queued — "+
+					"the orphan sweep will reclaim them", m.term.Depth())
+				return len(warm)
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
 	return len(warm)
 }
 
 // Destroy terminates a sandbox's box and forgets the binding.
+// SetLifecycleObserver registers the usage-metering hooks, mirroring what the
+// QEMU manager does with its own.
+//
+// It lives HERE, on the manager, rather than at the API layer that owns the
+// ticker, because this is where a box actually dies. A sandbox is destroyed by
+// the customer's DELETE, by the idle sweep, by a drain at shutdown, and by the
+// reconciler — wiring the hook into any one caller bills some of those and
+// silently misses the rest, which is exactly the bug this closes.
+func (m *Manager) SetLifecycleObserver(obs sandbox.LifecycleObserver) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lifecycleObs = obs
+	m.mu.Unlock()
+}
+
+// lastBoxRetention bounds how long a destroyed sandbox's host id is
+// remembered. Only the closing usage tick reads it, and that is drained within
+// seconds, so this is generous — sized to survive a slow publisher rather than
+// to be a cache.
+const lastBoxRetention = 10 * time.Minute
+
+type lastBoxEntry struct {
+	microvmID string
+	at        time.Time
+}
+
+// WorkerIDFor resolves the host a sandbox is on, or was on very recently.
+//
+// The recency half is what lets the closing usage tick be attributed. Callers
+// that need to ROUTE must use BoxFor instead — a destroyed sandbox must never
+// look reachable.
+func (m *Manager) WorkerIDFor(sandboxID string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if b, ok := m.bound[sandboxID]; ok {
+		return b.MicrovmID, true
+	}
+	if e, ok := m.lastBox[sandboxID]; ok && time.Since(e.at) < lastBoxRetention {
+		return e.microvmID, true
+	}
+	return "", false
+}
+
 func (m *Manager) Destroy(ctx context.Context, sandboxID string) error {
 	m.mu.Lock()
 	b, ok := m.bound[sandboxID]
 	delete(m.bound, sandboxID)
+	if ok {
+		if m.lastBox == nil {
+			m.lastBox = map[string]lastBoxEntry{}
+		}
+		m.lastBox[sandboxID] = lastBoxEntry{microvmID: b.MicrovmID, at: time.Now()}
+		// Prune here rather than on a timer: destroys are the only thing that
+		// grows this map, so they are also the only place it can leak.
+		for id, e := range m.lastBox {
+			if time.Since(e.at) >= lastBoxRetention {
+				delete(m.lastBox, id)
+			}
+		}
+	}
+	obs := m.lifecycleObs
 	m.mu.Unlock()
 	if !ok {
+		// Not an error — a destroy for something already gone is idempotent —
+		// but it IS the shape of a silent non-billing, so say it. If a caller
+		// unbinds before calling here, every sandbox it destroys is free.
+		log.Printf("awsvmlite: destroy %s: no binding held — nothing to bill or terminate", sandboxID)
 		return nil
+	}
+	// Bill the slice since the last sample before the box goes. The usage
+	// ticker samples every 20s and prices what it sees, so a sandbox that lived
+	// and died between two samples was never seen and billed nothing at all.
+	// Short-lived sandboxes are the normal shape of traffic here.
+	//
+	// Delivered size and bind time, both read from the box while it still
+	// exists — after the Terminate there is nothing left to price the slice at.
+	if obs == nil {
+		// Loud because it is invisible otherwise: the sandbox is destroyed
+		// correctly and simply never charged for.
+		log.Printf("awsvmlite: destroy %s: NO lifecycle observer — final usage slice NOT billed", sandboxID)
+	} else {
+		obs.OnSandboxDestroy(sandboxID, b.Meta.MemoryMB, b.Meta.CPUCount, b.boundAt)
+		log.Printf("awsvmlite: destroy %s: billed final slice (%dMB/%dcpu since %s)",
+			sandboxID, b.Meta.MemoryMB, b.Meta.CPUCount, b.boundAt.Format(time.RFC3339))
 	}
 	return m.client.Terminate(ctx, b.MicrovmID)
 }
@@ -667,7 +985,7 @@ func (m *Manager) do(ctx context.Context, b *Box, method, path string, body []by
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-aws-proxy-auth", b.Token)
+	req.Header.Set("X-aws-proxy-auth", m.token(ctx, b))
 	req.Header.Set("X-aws-proxy-port", fmt.Sprintf("%d", b.Port))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -705,7 +1023,14 @@ func (m *Manager) touchIdle(ctx context.Context) {
 			due = append(due, b)
 		}
 	}
-	for _, b := range m.bound {
+	for id, b := range m.bound {
+		// NEVER touch a parked sandbox. Lambda auto-resumes a suspended box on
+		// any inbound request, so probing one would wake it within a tick of
+		// being hibernated — the customer would be billed for a sandbox they
+		// explicitly parked, and nothing in the logs would say why.
+		if _, parked := m.suspended[id]; parked {
+			continue
+		}
 		if b.lastTouch.IsZero() || now.Sub(b.lastTouch) >= m.cfg.TouchInterval {
 			due = append(due, b)
 		}
@@ -833,7 +1158,23 @@ func (m *Manager) evictDead(ctx context.Context, suspect []*Box) {
 	}
 }
 
+// terminate destroys a box, PACED.
+//
+// TerminateMicrovm is quota'd at 10/s and a throttled terminate is the worst
+// failure available: it returns an error AND leaves the box running, so it
+// bills and holds regional memory quota until the 8h cap. The agent path
+// learned this the hard way — internal/awsvm/terminator.go records a delete of
+// 112 sandboxes returning 11 × HTTP 500, each one a leaked box — and this
+// backend was calling the API directly, logging the failure, and moving on.
+//
+// The quota is per account and region, so both backends share one. Enqueueing
+// rather than calling is what keeps them from racing it.
 func (m *Manager) terminate(id string) {
+	if m.term != nil && m.term.Enqueue(id) {
+		return
+	}
+	// Queue full (or no queue, in tests): better a direct call than losing the
+	// box entirely.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := m.client.Terminate(ctx, id); err != nil {
@@ -897,4 +1238,47 @@ func (m *Manager) dropWarmLocked(dead map[string]struct{}) int {
 	}
 	m.warm = kept
 	return evicted
+}
+
+// CloseTerminator stops the paced destroy worker. Call it AFTER DrainWarm, or
+// the queue is torn down with the drain still in it.
+func (m *Manager) CloseTerminator() {
+	if m.term != nil {
+		m.term.Close()
+	}
+}
+
+// LiveMicrovmIDs returns the ids of every box AWS still considers alive.
+//
+// ONE call for the whole fleet, deliberately. The reconciler needs a liveness
+// answer for every sandbox it holds, and asking per sandbox is a GetMicrovm per
+// bound box per tick — which at a few hundred sandboxes is a rate-limit problem
+// invented to solve a bookkeeping one.
+//
+// An error is returned rather than an empty set, because the two mean opposite
+// things: "nothing is alive" would tell the caller to drop every binding it
+// has. See the caller — it skips the sweep entirely when this fails.
+func (m *Manager) LiveMicrovmIDs(ctx context.Context) (map[string]struct{}, error) {
+	if m == nil || m.client == nil {
+		// An error, not an empty set — see the note above. Reached in tests and
+		// on a cell whose client failed to build.
+		return nil, fmt.Errorf("awsvmlite: no AWS client configured")
+	}
+	boxes, err := m.client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	live := make(map[string]struct{}, len(boxes))
+	for _, b := range boxes {
+		if b.Alive() {
+			live[b.ID] = struct{}{}
+		}
+	}
+	return live, nil
+}
+
+// SetCheckpointStore attaches the blob store used by checkpoints and template
+// restores. Call before the manager serves traffic.
+func (m *Manager) SetCheckpointStore(store *storage.CheckpointStore) {
+	m.store = store
 }

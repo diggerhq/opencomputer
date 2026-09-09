@@ -9,6 +9,7 @@ import httpx
 
 from opencomputer.image import Image
 from opencomputer.sse import parse_sse_stream
+from opencomputer.version import sdk_version_headers
 
 
 class Snapshots:
@@ -41,7 +42,11 @@ class Snapshots:
 
         api_base = url if url.endswith("/api") else f"{url}/api"
 
-        self._headers: dict[str, str] = {}
+        # A template is built differently per runtime — a whole-disk checkpoint on
+        # one, a machine image on the other — so the same version header the
+        # create path sends has to ride along here, or a caller would build a
+        # template their sandboxes cannot use. See version.py.
+        self._headers: dict[str, str] = dict(sdk_version_headers())
         if key:
             self._headers["X-API-Key"] = key
 

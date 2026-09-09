@@ -226,6 +226,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{53, "migrations/053_default_org_concurrency_50.up.sql"},
 		{54, "migrations/054_sandbox_pool.up.sql"},
 		{55, "migrations/055_orgs_runtime.up.sql"},
+		{56, "migrations/056_sandbox_end_at.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -1561,9 +1562,16 @@ func (s *Store) ListSandboxSessions(ctx context.Context, orgID uuid.UUID, status
 	var rows pgx.Rows
 	var err error
 	if status != "" {
+		// A caller asking for 'running' means "alive", so a row past its
+		// deadline is excluded here rather than waiting for a sweep to relabel
+		// it — otherwise the dashboard shows sandboxes the customer no longer
+		// has. Other statuses are terminal and carry no deadline, so the
+		// predicate is a no-op for them.
 		rows, err = s.pool.Query(ctx,
 			`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version
-			 FROM sandbox_sessions WHERE org_id = $1 AND status = $2 ORDER BY started_at DESC LIMIT $3 OFFSET $4`,
+			 FROM sandbox_sessions
+			 WHERE org_id = $1 AND status = $2 AND ($2 <> 'running' OR end_at IS NULL OR end_at > now())
+			 ORDER BY started_at DESC LIMIT $3 OFFSET $4`,
 			orgID, status, limit, offset)
 	} else {
 		rows, err = s.pool.Query(ctx,
@@ -1611,6 +1619,10 @@ type MicrovmSessionRef struct {
 	// price on memory/cpu, so a restore that dropped them would silently
 	// re-meter every surviving sandbox at the backend's default.
 	Config []byte
+	// EndAt is the host's known death time, or zero if it has none. A row past
+	// it can be closed with NO provider call — which is the point: the pass
+	// that tidies up must not itself depend on the provider being reachable.
+	EndAt time.Time
 }
 
 // ListMicrovmSessions returns running MicroVM-backed sandboxes.
@@ -1630,7 +1642,10 @@ func (s *Store) ListMicrovmSessions(ctx context.Context, prefixes []string) ([]M
 		// so adding a runtime cannot leave this predicate behind — the failure
 		// that would look like sandboxes surviving a restart unroutable, with
 		// their hosts running and nothing able to reap them.
-		`SELECT sandbox_id, worker_id, config FROM sandbox_sessions
+		// Deliberately NOT deadline-filtered: this is the one query that WANTS
+		// expired rows, because closing them is its job. Every other read hides
+		// them; this one collects them.
+		`SELECT sandbox_id, worker_id, config, end_at FROM sandbox_sessions
 		 WHERE worker_id LIKE ANY($1) AND status = 'running'
 		 ORDER BY started_at DESC
 		 LIMIT 1000`, likePatterns(prefixes))
@@ -1643,10 +1658,15 @@ func (s *Store) ListMicrovmSessions(ctx context.Context, prefixes []string) ([]M
 	for rows.Next() {
 		var sandboxID, workerID string
 		var config []byte
-		if err := rows.Scan(&sandboxID, &workerID, &config); err != nil {
+		var endAt *time.Time
+		if err := rows.Scan(&sandboxID, &workerID, &config, &endAt); err != nil {
 			return nil, err
 		}
-		out = append(out, MicrovmSessionRef{SandboxID: sandboxID, WorkerID: workerID, Config: config})
+		ref := MicrovmSessionRef{SandboxID: sandboxID, WorkerID: workerID, Config: config}
+		if endAt != nil {
+			ref.EndAt = *endAt
+		}
+		out = append(out, ref)
 	}
 	return out, rows.Err()
 }
@@ -1708,10 +1728,18 @@ func (s *Store) ListSandboxIDsByWorkerStatus(ctx context.Context, workerID, stat
 	return ids, rows.Err()
 }
 
+// CountActiveSandboxes is what the org concurrency limit is enforced against,
+// which makes it the read where a leaked row hurts a customer most: a row still
+// saying `running` for a host that no longer exists consumes a slot, and the
+// customer is refused a create they are entitled to.
+//
+// The deadline check is what makes that impossible to reach rather than
+// something a sweep has to get to in time. See migration 056.
 func (s *Store) CountActiveSandboxes(ctx context.Context, orgID uuid.UUID) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM sandbox_sessions WHERE org_id = $1 AND status = 'running'`, orgID,
+		`SELECT COUNT(*) FROM sandbox_sessions
+		 WHERE org_id = $1 AND status = 'running' AND (end_at IS NULL OR end_at > now())`, orgID,
 	).Scan(&count)
 	return count, err
 }
@@ -2760,6 +2788,23 @@ func (s *Store) SetSandboxGoldenVersion(ctx context.Context, sandboxID, goldenVe
 	return err
 }
 
+// SetSandboxEndAt stamps the host's hard deadline on the row.
+//
+// Guarded on status: a sandbox that already reached a terminal state must not
+// have a future deadline written onto it, because the gated reads only consult
+// end_at for running rows and a resurrected-looking row is worse than a stale
+// one. See migration 056 for what the column buys.
+func (s *Store) SetSandboxEndAt(ctx context.Context, sandboxID string, endAt time.Time) error {
+	if endAt.IsZero() {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET end_at = $1
+		 WHERE sandbox_id = $2 AND status IN ('pending', 'running')`,
+		endAt, sandboxID)
+	return err
+}
+
 // SetSandboxCheckpointID sets the based_on_checkpoint_id for a sandbox session.
 func (s *Store) SetSandboxCheckpointID(ctx context.Context, sandboxID string, checkpointID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,
@@ -2803,7 +2848,7 @@ type DBTemplate struct {
 	ImageRef           string     `json:"-"`
 	Dockerfile         *string    `json:"dockerfile,omitempty"`
 	IsPublic           bool       `json:"isPublic"`
-	TemplateType       string     `json:"templateType"` // "dockerfile" or "sandbox"
+	TemplateType       string     `json:"templateType"` // "dockerfile", "sandbox", or TemplateTypeMicrovmImage
 	RootfsS3Key        *string    `json:"-"`
 	WorkspaceS3Key     *string    `json:"-"`
 	CreatedBySandboxID *string    `json:"createdBySandboxId,omitempty"`
@@ -2831,6 +2876,192 @@ func (s *Store) CreateSandboxTemplate(ctx context.Context, id uuid.UUID, orgID *
 		return nil, fmt.Errorf("failed to create sandbox template: %w", err)
 	}
 	return t, nil
+}
+
+// TemplateTypeMicrovmImage is a template backed by a MicroVM image resource
+// rather than by a rootfs snapshot.
+//
+// The QEMU runtime stores a template as rootfs_s3_key + workspace_s3_key,
+// because a QEMU checkpoint captures the whole disk. The MicroVM runtime
+// cannot: /oc/workspace/export archives /home/sandbox only, so anything a
+// template installs outside the home directory has to be baked into an image,
+// and what we persist is that image's ARN. Same templates table, same customer
+// -facing name/tag/status — only the artifact differs, which is why this reuses
+// image_ref rather than adding a column.
+const TemplateTypeMicrovmImage = "microvm_image"
+
+// Template status values shared by both runtimes. A MicroVM image build is
+// asynchronous and takes minutes, so unlike the sandbox-snapshot path it can
+// also terminate in 'failed'.
+const (
+	TemplateStatusProcessing = "processing"
+	TemplateStatusReady      = "ready"
+	TemplateStatusFailed     = "failed"
+)
+
+// CreateMicrovmImageTemplate inserts a MicroVM image template (status=processing).
+//
+// image_ref is EMPTY at this point and filled in by SetMicrovmTemplateImage once
+// the asynchronous build produces an ARN. The row exists first so a build that
+// dies partway is visible as a stuck 'processing' template rather than as
+// nothing at all — an invisible failed build is indistinguishable from a
+// template the customer never created.
+func (s *Store) CreateMicrovmImageTemplate(ctx context.Context, id uuid.UUID, orgID *uuid.UUID, name, tag string) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`INSERT INTO templates (id, org_id, name, tag, image_ref, is_public, template_type, status)
+		 VALUES ($1, $2, $3, $4, '', false, '`+TemplateTypeMicrovmImage+`', '`+TemplateStatusProcessing+`')
+		 RETURNING `+templateColumns,
+		id, orgID, name, tag,
+	), t)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create microvm image template: %w", err)
+	}
+	return t, nil
+}
+
+// SetMicrovmTemplateImage records the built image ARN and marks the template
+// ready, in ONE statement.
+//
+// Deliberately not two: a template that is 'ready' with an empty image_ref
+// would be resolved at create time and have nothing to launch from, and the
+// caller would have to guess whether to fall back to the base image — which is
+// exactly the silent-wrong-image failure this path exists to prevent. The
+// guard on image_ref <> ” makes "ready" and "has an ARN" the same fact.
+func (s *Store) SetMicrovmTemplateImage(ctx context.Context, id uuid.UUID, imageARN string) error {
+	if imageARN == "" {
+		return fmt.Errorf("refusing to mark template %s ready with an empty image ARN", id)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE templates SET image_ref = $2, status = '`+TemplateStatusReady+`'
+		  WHERE id = $1 AND template_type = '`+TemplateTypeMicrovmImage+`'`,
+		id, imageARN)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no microvm image template %s to mark ready", id)
+	}
+	return nil
+}
+
+// SetTemplateFailed records a terminal build failure and the reason.
+//
+// image_ref must stay an ARN or empty, so the failure reason is not stored
+// there — the caller logs it. What matters here is that the row leaves
+// 'processing', so a customer polling status gets an answer instead of waiting
+// forever on a build that is never coming back.
+func (s *Store) SetTemplateFailed(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE templates SET status = '`+TemplateStatusFailed+`' WHERE id = $1`, id)
+	return err
+}
+
+// ListMicrovmImageARNs returns every image ARN this org's ready templates
+// launch from.
+//
+// This exists for ownership tests. awsvm.Config.OwnedImages() answers the same
+// question from static configuration (the base image plus the size tiers) and
+// therefore CANNOT see custom templates. Any sweep that decides a box is
+// orphaned by looking at its image ARN must union the two, or every box running
+// on a customer template looks like it belongs to nobody.
+//
+// NOTE: as of this commit nothing calls OwnedImages — the image-ARN orphan
+// sweep was removed along with microvm_backend.go. This is here so that the
+// sweep cannot be re-armed (see the per-env image/tagging work) without a
+// registry-aware source of truth already available.
+func (s *Store) ListMicrovmImageARNs(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT image_ref FROM templates
+		  WHERE template_type = '`+TemplateTypeMicrovmImage+`' AND image_ref <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var arn string
+		if err := rows.Scan(&arn); err != nil {
+			return nil, err
+		}
+		out = append(out, arn)
+	}
+	return out, rows.Err()
+}
+
+// FindMicrovmImageTemplateByTag finds an existing image template by its
+// content tag, for DEDUPE.
+//
+// Two customers asking for the same environment should share one image, not
+// burn two slots out of an account capped at 100 MicroVM images. The tag is the
+// manifest hash (computeManifestHash, which matches the SDK's Image.cacheKey),
+// so an identical manifest resolves to an identical tag.
+//
+// Scoped to the org DESPITE the hash being global. Sharing one image across
+// orgs would be cheaper still, but it leaks one org's build cadence to another
+// (a create that is suspiciously fast reveals someone else built the same
+// image) and it entangles deletion: GC for one org would pull an image another
+// org's sandboxes are launching from. Per-org is the conservative default; a
+// global cache is a later decision, not an accident.
+func (s *Store) FindMicrovmImageTemplateByTag(ctx context.Context, orgID uuid.UUID, tag string) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`SELECT `+templateColumns+` FROM templates
+		  WHERE org_id = $1 AND tag = $2 AND template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND status = '`+TemplateStatusReady+`' AND image_ref <> ''
+		  LIMIT 1`, orgID, tag), t)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// CountMicrovmImageTemplates counts an org's image templates that hold, or are
+// about to hold, an image slot.
+//
+// Counts 'processing' as well as 'ready' deliberately: a build in flight has
+// already been handed to AWS, so excluding it lets an org start N builds
+// concurrently and blow through the cap before any of them finishes.
+func (s *Store) CountMicrovmImageTemplates(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM templates
+		  WHERE org_id = $1 AND template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND status IN ('`+TemplateStatusReady+`','`+TemplateStatusProcessing+`')`,
+		orgID).Scan(&n)
+	return n, err
+}
+
+// ListUnusedMicrovmImageTemplates returns image templates older than olderThan
+// that no live sandbox was created from — GC candidates.
+//
+// The join is what makes this safe to act on. Deleting an image a running
+// sandbox was launched from does not stop that sandbox, but it does mean the
+// template can never be launched again and any later create fails with an AWS
+// error naming a resource the customer never heard of.
+func (s *Store) ListUnusedMicrovmImageTemplates(ctx context.Context, olderThan time.Time) ([]DBTemplate, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+templateColumns+` FROM templates t
+		  WHERE t.template_type = '`+TemplateTypeMicrovmImage+`'
+		    AND t.created_at < $1
+		    AND NOT EXISTS (
+		          SELECT 1 FROM sandbox_sessions ss
+		           WHERE ss.based_on_template_id = t.id
+		             AND ss.status NOT IN ('stopped','errored','destroyed')
+		        )`, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DBTemplate
+	for rows.Next() {
+		var t DBTemplate
+		if err := scanTemplate(rows, &t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // SetTemplateReady marks a template as ready for use.

@@ -1,3 +1,4 @@
+import { openWebSocket } from "./websocket.js";
 export interface PtyOpts {
   cols?: number;
   rows?: number;
@@ -57,8 +58,7 @@ export class Pty {
         : "";
     const wsEndpoint = `${wsUrl}/sandboxes/${this.sandboxId}/pty/${sessionId}${authParam}`;
 
-    const ws = new WebSocket(wsEndpoint);
-    ws.binaryType = "arraybuffer";
+    const ws = await openWebSocket(wsEndpoint);
 
     if (opts.onOutput) {
       const onOutput = opts.onOutput;

@@ -1,7 +1,8 @@
 # log-tail Worker — PROD on Mo's CF account.
 # Tail consumer for opencomputer-edge-prod + opencomputer-events-ingest-prod.
 # Forwards console output + exceptions to Axiom dataset oc-platform-edge.
-# Deploy: `wrangler deploy -c wrangler.prod.toml`
+# Deployed by .github/workflows/deploy-log-tail.yml on push to main; manually:
+# `npm run deploy:prod` (needs CLOUDFLARE_API_TOKEN for this account).
 
 name = "opencomputer-log-tail-prod"
 main = "src/index.ts"

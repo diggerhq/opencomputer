@@ -447,17 +447,42 @@ export default {
     ];
     const owners = await resolveSandboxOwners(env, tickSandboxIds);
     const TERMINAL_STATUSES = new Set(["stopped", "terminated", "failed", "error"]);
-    let droppedZombieTicks = 0;
+    // Split by cause. These used to share one counter, which is why the bug
+    // below survived: the terminal drops fire constantly and legitimately (they
+    // are the ghost-tick defence doing its job), so a handful of wrongly-dropped
+    // closing slices hid inside a number that always looked busy. Measured on
+    // dev: 57,633 periodic drops — correct — masking 2,685 closing slices that
+    // should have billed. A dropped FINAL tick is always worth looking at; a
+    // dropped periodic one usually is not.
+    let droppedTerminalTicks = 0;
+    let droppedNonOwnerTicks = 0;
+    // isFinalTick: the slice emitted BY a destroy or hibernate, as opposed to
+    // one from the periodic sampler. The producer sets it (internal/worker/
+    // usage_ticker.go flushSlice); absent means "not final", so an older cell
+    // that does not send it behaves exactly as before.
+    const isFinalTick = (e: SandboxEventEnvelope): boolean =>
+      ((e.payload ?? {}) as { final?: boolean }).final === true;
     const tickFromCurrentWorker = (e: SandboxEventEnvelope): boolean => {
       if (!owners.ok) return true;
       const row = e.sandbox_id ? owners.byId.get(e.sandbox_id) : undefined;
       if (!row) return true; // no index row yet — don't drop a legit fresh create
-      if (TERMINAL_STATUSES.has(row.status)) {
-        droppedZombieTicks++;
+      // A terminal sandbox must not keep accruing usage — that is the ghost-tick
+      // bleed this guard exists for. But the CLOSING slice is emitted at the
+      // moment the sandbox ends, so it necessarily races the very status change
+      // that makes this test true, and dropping it means any sandbox that lived
+      // and died inside one 20s sampling window bills nothing at all.
+      //
+      // Exempting it here is not a hole: the ownership test below then applies
+      // to final ticks, which today they never reach because this branch returns
+      // first. A closing slice from a worker that no longer owns the sandbox —
+      // a migration source handing off — is still dropped, which is correct,
+      // because the destination goes on billing it.
+      if (TERMINAL_STATUSES.has(row.status) && !isFinalTick(e)) {
+        droppedTerminalTicks++;
         return false;
       }
       if (row.worker_id && e.worker_id && row.worker_id !== e.worker_id) {
-        droppedZombieTicks++;
+        droppedNonOwnerTicks++;
         return false;
       }
       return true;
@@ -496,8 +521,11 @@ export default {
         );
       });
 
-    if (droppedZombieTicks > 0) {
-      console.warn(`events-ingest: dropped ${droppedZombieTicks} usage_tick(s) from non-owner/terminal sandboxes (zombie-tick guard)`);
+    if (droppedTerminalTicks > 0 || droppedNonOwnerTicks > 0) {
+      console.warn(
+        `events-ingest: zombie-tick guard dropped ${droppedTerminalTicks} tick(s) for terminal sandboxes ` +
+          `and ${droppedNonOwnerTicks} from non-owner workers`,
+      );
     }
 
     try {

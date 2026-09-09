@@ -7,7 +7,14 @@ Fluent, immutable builder for declarative sandbox images. Each method returns a 
 
 ## `Image.base()`
 
-Start from the default OpenSandbox environment (Ubuntu 22.04, Python, Node.js, build tools).
+Start from the default OpenSandbox environment (Amazon Linux 2023, Python, Node.js, build
+tools) on ARM64.
+
+<Note>
+Images are built ahead of time and started by name — see
+[Templates](/sandboxes/templates). Passing an `Image` directly to `Sandbox.create()` is
+refused, because a build takes minutes.
+</Note>
 
 ```typescript
 import { Image } from "@opencomputer/sdk";
@@ -28,8 +35,14 @@ const image = Image.base()
 ### `image.aptInstall(packages)`
 
 <ParamField body="packages" type="string[]" required>
-  System packages to install via apt-get
+  System packages to install
 </ParamField>
+
+<Note>
+The base is Amazon Linux 2023, so these are installed with `dnf`. Common Debian names are
+translated (`build-essential` becomes `gcc gcc-c++ make`); a package that exists only on
+Debian fails the build and the error names it.
+</Note>
 
 **Returns:** `Image`
 

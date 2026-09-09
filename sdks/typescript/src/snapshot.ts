@@ -1,4 +1,5 @@
 import { Image } from "./image.js";
+import { sdkVersionHeaders } from "./version.js";
 import { parseSSEStream } from "./sse.js";
 
 function resolveApiUrl(url: string): string {
@@ -70,7 +71,11 @@ export class Snapshots {
   }
 
   private get headers(): Record<string, string> {
-    const h: Record<string, string> = { "Content-Type": "application/json" };
+    // Template builds are runtime-specific — a v1 template is a whole-disk
+    // checkpoint, a v2 template is a machine image — so the same version header
+    // the create path sends has to ride along here, or a v2 caller would build
+    // a checkpoint their sandboxes cannot use. See version.ts.
+    const h: Record<string, string> = { "Content-Type": "application/json", ...sdkVersionHeaders() };
     if (this.apiKey) h["X-API-Key"] = this.apiKey;
     return h;
   }

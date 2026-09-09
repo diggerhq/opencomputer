@@ -8,7 +8,7 @@ import {
 describe('project creation templates', () => {
   it('keeps Hello World on the ordinary main-branch template path', () => {
     expect(templateDeployPath(HELLO_WORLD_TEMPLATE_REPOSITORY, true)).toBe(
-      '/new?repository-url=https%3A%2F%2Fgithub.com%2Fdiggerhq%2Fopencomputer-example-hello-world&quick-start=1',
+      '/template?repository-url=https%3A%2F%2Fgithub.com%2Fdiggerhq%2Fopencomputer-example-hello-world&quick-start=1',
     )
   })
 

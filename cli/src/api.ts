@@ -169,6 +169,8 @@ export interface ManagedAgentWebhook {
   agentId: string;
   name: string;
   enabled: boolean;
+  /** Delivery identity source, `header:<name>` or `body:<json-pointer>`. */
+  identity?: string;
   invocationUrl: string;
   token?: string;
   createdAt: string;
@@ -630,6 +632,7 @@ export class OpenComputerClient {
     name: string;
     environment: "development" | "production";
     agentId: string;
+    identity?: string;
   }) {
     return this.request<{ webhook: ManagedAgentWebhook }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks`,
@@ -639,6 +642,7 @@ export class OpenComputerClient {
           name: input.name,
           environment: input.environment,
           agentId: input.agentId,
+          ...(input.identity !== undefined ? { identity: input.identity } : {}),
         }),
       },
     ).then((result) => result.webhook);
@@ -649,6 +653,8 @@ export class OpenComputerClient {
     webhookId: string;
     name?: string;
     enabled?: boolean;
+    /** A source sets it; null clears it. */
+    identity?: string | null;
   }) {
     return this.request<{ webhook: ManagedAgentWebhook }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
@@ -657,6 +663,7 @@ export class OpenComputerClient {
         body: JSON.stringify({
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.identity !== undefined ? { identity: input.identity } : {}),
         }),
       },
     ).then((result) => result.webhook);

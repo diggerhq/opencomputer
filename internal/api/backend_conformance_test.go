@@ -40,29 +40,10 @@ type conformanceBackend struct {
 
 var conformanceBackends = []conformanceBackend{
 	{
-		name:          "vmhost",
-		buildDisabled: func() Backend { return (*microvmBackend)(nil) },
-		ownedWorkerID: microvmWorkerID("abc123"),
-		foreignWorkerIDs: []string{
-			"w-azure-osb-worker-2512f614", // a real QEMU worker
-			"worker-eastus2-7",
-			"",
-			"vmhost:",  // prefix with no id
-			"vmhost",   // prefix without separator
-			"microvm:", // legacy prefix, no id
-			// A RAW provider host id. This is the shape the provider SDK
-			// returns, and it is deliberately NOT owned — which is why Claim
-			// must encode before returning a worker_id. Returning the raw id
-			// made every row invisible to the orphan sweep, the restore scan,
-			// and the event publisher, all of which match on the prefixes.
-			hostIDPrefix + "abc123",
-		},
-	},
-	{
-		// The direct-exec data plane over the SAME hosts. Its identity answers
-		// are deliberately identical to vmhost's — the worker_id names the box,
-		// and switching data planes must not orphan the other one's rows — so
-		// running the whole contract against it is what proves that stayed true.
+		// The MicroVM runtime. Its identity answers still cover the encoding the
+		// deleted agent-tunnel backend wrote as well as its own — the worker_id
+		// names the box, and rows written by the other data plane must not be
+		// orphaned, because a row nothing claims is a box nothing terminates.
 		name:          "vmhost-lite",
 		buildDisabled: func() Backend { return (*liteBackend)(nil) },
 		ownedWorkerID: microvmWorkerID("abc123"),
@@ -78,33 +59,35 @@ var conformanceBackends = []conformanceBackend{
 	},
 }
 
-// The two managed backends must never both be registered on a cell: they
-// manufacture from one image against one regional quota, and two fillers each
-// believing they own the fleet overrun it and starve each other. The exclusion
-// lives in newMicrovmBackend, which stands down when the lite flag is set.
-func TestManagedBackendsAreMutuallyExclusive(t *testing.T) {
+// There is one MicroVM backend now. OPENSANDBOX_MICROVM_LITE used to select
+// between two data planes on the same fleet; the agent-tunnel one is deleted,
+// so the flag must no longer be able to turn the runtime off — a cell that
+// enabled MicroVMs and got no MicroVM backend registered would serve nothing
+// and fall through to a worker fleet it does not have.
+func TestMicrovmRuntimeEnablesOnItsOwnFlag(t *testing.T) {
 	t.Setenv("OPENSANDBOX_MICROVM_ENABLED", "1")
-	t.Setenv("OPENSANDBOX_MICROVM_IMAGE_ARN", "arn:aws:test:::image/x")
-	t.Setenv("OPENSANDBOX_MICROVM_LITE", "1")
 
-	// No AWS call is reached: the stand-down is checked before the client is
-	// built, which is also what makes this test runnable without credentials.
-	b, err := newMicrovmBackend(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("newMicrovmBackend: %v", err)
-	}
-	if b != nil {
-		t.Fatal("the agent-tunnel backend built itself while the direct-exec one is enabled — both would fill from the same quota")
+	for _, lite := range []string{"1", "", "0"} {
+		t.Setenv("OPENSANDBOX_MICROVM_LITE", lite)
+		if !liteEnabled() {
+			t.Fatalf("OPENSANDBOX_MICROVM_LITE=%q disabled the MicroVM runtime — "+
+				"the backend it used to select no longer exists, so this cell "+
+				"would register no MicroVM backend at all", lite)
+		}
 	}
 }
 
-// ...and with the flag off, nothing changes for the path production runs. A
-// regression here would silently take prod's MicroVM cells off their backend.
-func TestAgentBackendStillBuildsWithoutTheLiteFlag(t *testing.T) {
-	t.Setenv("OPENSANDBOX_MICROVM_ENABLED", "1")
-	t.Setenv("OPENSANDBOX_MICROVM_LITE", "")
+// ...and it stays off for every cell that never asked for it, which is every
+// QEMU cell in production. No AWS call may be reached from a build here.
+func TestMicrovmRuntimeStaysOffWhenUnasked(t *testing.T) {
+	t.Setenv("OPENSANDBOX_MICROVM_ENABLED", "")
+	t.Setenv("OPENSANDBOX_MICROVM_LITE", "1")
 	if liteEnabled() {
-		t.Fatal("liteEnabled() is true with the flag unset")
+		t.Fatal("the MicroVM runtime enabled itself on a cell that did not ask for it")
+	}
+	b, err := newLiteBackend(context.Background(), nil)
+	if err != nil || b != nil {
+		t.Fatalf("newLiteBackend built something with the runtime disabled: %v, %v", b, err)
 	}
 }
 

@@ -93,9 +93,13 @@ const (
 // written, a box answering /healthz in 90ms with agentUp=true was simultaneously
 // logged by the control plane as tunnel-less with re-dial timing out at 30s.
 //
-// The cost is deliberate and total: no streaming, no PTY, no sessions, no file
-// transfer. One command, buffered output, one reply. Anything richer belongs on
-// the agent path.
+// One command, buffered output, one reply — and deliberately nothing more, so
+// that the path a customer's exec takes stays this short.
+//
+// The richer operations do NOT need the tunnel either, which was not obvious
+// when this was written: see oc.go, where files and stats reach the agent over
+// loopback gRPC and cross the proxy as plain JSON. What still belongs on the
+// agent path is only what needs a bidirectional stream — PTY and exec sessions.
 // The field names mirror types.ProcessConfig so the control plane forwards a
 // customer's exec request without reshaping it.
 type runCmdRequest struct {
@@ -267,6 +271,13 @@ func main() {
 	// so these are the endpoints that actually decide it.
 	mux.HandleFunc(claimPath, s.handleClaim)
 	mux.HandleFunc(claimAndRunPath, s.handleClaimAndRun)
+
+	// The /oc front door: the four paths above under their new prefix, plus
+	// files, stats, reboot and customer-port proxying. See oc.go — all of it
+	// reaches the agent over LOOPBACK gRPC, which is why it can offer the full
+	// agent API on a path that deliberately cannot carry gRPC through the
+	// proxy. Registered before the catch-all for the same longest-match reason.
+	s.registerOC(mux)
 
 	// Everything that is not a hook is forwarded to osb-agent.
 	//
@@ -462,17 +473,51 @@ func runCmd(reqCtx context.Context, req runCmdRequest) (runCmdResponse, error) {
 		name, args = req.Cmd, req.Args
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = req.Cwd
-	if len(req.Env) > 0 {
-		// Appended to the guest's environment, not substituted for it: replacing
-		// it would drop PATH and HOME, so every command that named a binary
-		// rather than a path would stop resolving.
-		env := os.Environ()
-		for k, v := range req.Env {
-			env = append(env, k+"="+v)
+
+	// RUN AS THE SANDBOX USER, NOT AS US.
+	//
+	// This process is PID 1 and therefore root. Without this the customer's
+	// commands inherited that — measured on dev before this existed:
+	//
+	//	uid=0(root) gid=0(root)   HOME=/root   pwd=/
+	//
+	// against uid=1000 in /home/sandbox on the QEMU fleet and on the agent
+	// path, which sets the same credential (internal/agent/exec.go).
+	//
+	// Three things broke because of it, and none of them announced itself:
+	//
+	//	the sandbox was root      a privilege boundary the QEMU fleet has and
+	//	                          this runtime silently did not
+	//	secrets were readable     the in-guest proxy keeps plaintext in THIS
+	//	                          process's memory, which is safe only because
+	//	                          the customer is unprivileged (oc_secrets.go)
+	//	checkpoints missed work   cwd was /, and the workspace archive covers
+	//	                          /home/sandbox — so anything written to a
+	//	                          relative path was outside every checkpoint
+	// Only root can hand a child a different uid. In the guest this process IS
+	// root (PID 1), so this always applies there; the check exists because the
+	// unit tests run it as an ordinary user, where the setuid would fail the
+	// fork outright and turn every test into "operation not permitted".
+	if os.Geteuid() == 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: sandboxUID, Gid: sandboxGID},
 		}
-		cmd.Env = env
 	}
+	cmd.Dir = req.Cwd
+	if cmd.Dir == "" {
+		// Not "" (which inherits /): a relative path from a customer has to
+		// land in the workspace, both because that is where they expect it and
+		// because that is what a checkpoint captures. Guarded on existence so
+		// the tests, which have no /home/sandbox, still run.
+		if st, err := os.Stat(sandboxHomeDir); err == nil && st.IsDir() {
+			cmd.Dir = sandboxHomeDir
+		}
+	}
+	// The guest's environment, then the sandbox's, then this request's — see
+	// buildEnv. Never nil now: the user identity below always has to be stated,
+	// because os.Environ() is ROOT's and would otherwise tell the customer's
+	// shell that HOME is /root.
+	cmd.Env = buildEnv(req.Env)
 	var stdout, stderr cappedBuffer
 	stdout.limit, stderr.limit = runCmdMaxOutput, runCmdMaxOutput
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
