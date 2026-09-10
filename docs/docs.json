@@ -40,6 +40,8 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
+              "agents/api",
+              "agents/events",
               "agents/react",
               "agents/memory",
               "agents/schedules",

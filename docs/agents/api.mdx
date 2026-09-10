@@ -1,0 +1,254 @@
+---
+title: "Management API"
+description: "Create sessions, send turns, read the event log and manage projects over HTTP"
+---
+
+The management API is the HTTP surface behind the CLI, the dashboard, the
+SDK helpers and the React hook's proxy routes. Use it from trusted server
+code to run agents from your own application.
+
+## Base URL and authentication
+
+```text
+https://app.opencomputer.dev/api/managed-agents
+```
+
+Every request carries an API key in the `x-api-key` header. A key belongs to
+an organization and reaches every project, agent and session in it. Keep it
+on the server; the [React integration](/agents/react) shows how a browser
+attaches through your own routes without seeing the key.
+
+Request and response bodies are JSON. Paths below are relative to the base
+URL; `<p>` is a project ID and `<r>` a memory resource ID.
+
+## Errors
+
+Error bodies are `{ error: { code, message } }`. The `code` is stable and is
+what to branch on; the `message` is short and safe to show.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid body, query or header |
+| `401` | Missing or invalid API key |
+| `402` | `insufficient_credits`: prepaid credits are exhausted |
+| `403` | The key may not perform this operation |
+| `404` | The route or the target does not exist |
+| `409` | The request conflicts with current state, for example a reused `Idempotency-Key` |
+| `429` | Too many requests; retry after `Retry-After` |
+| `5xx` | Temporary failure; retry with the same idempotency key |
+
+A missing key and an unknown route return `{ "error": "<text>" }` without a
+code.
+
+## Sessions
+
+A session is a durable conversation with one deployed agent. It pins the
+deployment it was created on; see [Sessions and turns](/agents/sessions).
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| Create | `POST /sessions` | `201` with the session, `200` when the key had already created it |
+| Get | `GET /sessions/<id>` | `200` with the session |
+| List | `GET /sessions` | `200` with `{ sessions }` |
+| End | `POST /sessions/<id>/end` | `200` with the ended session |
+| Interrupt | `POST /sessions/<id>/interrupt` | `200` with the session |
+
+### Create
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: topic/workshop/1' \
+  -d '{
+    "agentId": "<agent-id>@development",
+    "memory": {
+      "notes": { "scope": "document", "id": "workshop", "access": "read-write" }
+    }
+  }'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `agentId` | `<agent-id>@development` or `<agent-id>@production`. The alias selects the environment and the deployment active in it. A bare agent ID means `production`. |
+| `deploymentId` | Pin one deployment instead of resolving an alias. Send `environment` with it; it may be omitted only when the deployment is promoted to exactly one environment. |
+| `environment` | `development` or `production`. Optional with `agentId`; it must agree with the alias. |
+| `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
+| `source` | `api` (default), `playground`, `channel` or `webhook`. The dashboard groups sessions by it. |
+
+The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
+The session starts without a turn; send one with the turns route.
+
+`Idempotency-Key` (at most 256 characters) makes a retry safe. The key
+identifies the session within your organization:
+
+- The same key with the same agent, deployment, environment and memory
+  bindings returns the existing session with `200`.
+- Anything else under that key is `409 idempotency_conflict`. The deployment
+  is part of the identity, so after a redeploy the same key conflicts:
+  a session pins its deployment, and new code needs a new session under a
+  new key.
+- `503 memory_admission_unconfirmed` means the memory grants were not
+  confirmed in time. Retry with the same key; the retry resumes the wait.
+
+Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
+`404 deployment_not_found`, `409 deployment_not_promoted` (a pinned
+deployment is not active in the named environment), `402
+insufficient_credits`.
+
+### Get and list
+
+`GET /sessions/<id>` returns the session:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
+| `environment` | `development` or `production`, when the request named one |
+| `status` | `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
+| `source` | The `source` given at creation |
+| `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
+| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt` |
+| `createdAt`, `updatedAt` | Timestamps |
+
+`GET /sessions` returns `{ sessions }`: the fifty most recently updated
+sessions of the organization, newest first, in the same shape. There are no
+filters or paging parameters; keep your own index of session IDs.
+
+### End and interrupt
+
+`POST /sessions/<id>/end` ends the session. Queued and running turns are
+cancelled and memory write access is revoked; do not send further turns to
+it. `503 session_end_unconfirmed` means the session is ended but the memory
+revocation was not acknowledged; retry, or
+[freeze the document](/agents/document-memory#disable-agent-writes). Ending an
+ended session returns it unchanged.
+
+`POST /sessions/<id>/interrupt` stops the running turn without spending a
+model turn. The turn settles as `cancelled` with reason `interrupted`, the
+runtime is told to stop, and the next queued turn starts. An idle session is
+returned unchanged.
+
+## Turns
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/turns' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input": "Plan the workshop.",
+    "idempotencyKey": "message-42",
+    "mode": "queue"
+  }'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `input` | The user text for this turn. Required, not empty. |
+| `idempotencyKey` | Optional. The same key returns the existing turn; without one every request starts a turn. |
+| `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: cancel running turns and run next. |
+
+The response is `202 { turnId, status, duplicate }` for a new turn and
+`200` with `duplicate: true` when the key had already created one. `status`
+is `queued` or `running`. Follow the turn in the event log; the response
+does not wait for it.
+
+Codes: `400 invalid_turn`, `402 insufficient_credits`,
+`409 memory_admission_pending` (retry the session creation with its key
+first), `409 memory_admission_rejected` (the session is ended; create a new
+one).
+
+## Events
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/events?after=0' \
+  -H 'x-api-key: <api-key>'
+```
+
+`GET /sessions/<id>/events?after=<seq>` returns `{ events }`: up to 500
+events with `seq` greater than `after`, in ascending order. Each event is
+`{ id, seq, timestamp, sessionId, turnId, type, data }`; `turnId` is absent
+on session-level events.
+
+To read a whole log, start at `after=0` and repeat with the last `seq` you
+received until a page is empty. A full page means more may follow; read on
+without waiting. To follow a live session, keep polling from the last
+`seq`; the CLI's `sessions tail` and `useAgent` do exactly this. The log is
+durable, so a consumer that stops can resume from its cursor without gaps.
+Event types and their `data` are listed on [Session events](/agents/events).
+
+## Memory
+
+Document memory belongs to a project and an environment. Every route takes
+`?environment=development` or `?environment=production`. Bodies, conditional
+headers, the document object and the error codes are on
+[Document memory](/agents/document-memory#management-api).
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| Resource inventory | `GET /projects/<p>/memory` | `200` with `{ resources }` |
+| List documents | `GET /projects/<p>/memory/<r>/documents` | `200` with `{ documents, nextCursor }` |
+| Read | `GET /projects/<p>/memory/<r>/documents/<id>` | `200` with the document and `ETag` |
+| Create | `PUT /projects/<p>/memory/<r>/documents/<id>` with `If-None-Match: *` | `201` |
+| Replace text or summary | `PUT /projects/<p>/memory/<r>/documents/<id>` with `If-Match` | `200` |
+| Change title or policy | `PATCH /projects/<p>/memory/<r>/documents/<id>` with `If-Match` | `200` |
+| Delete | `DELETE /projects/<p>/memory/<r>/documents/<id>` with `If-Match` | `204` |
+
+```bash
+curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/memory/notes/documents/workshop?environment=development' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -H 'If-None-Match: *' \
+  -d '{ "title": "Workshop notes" }'
+```
+
+`startSessionOnDocument` in the
+[TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers) does
+this create and the session create in one call.
+
+## Webhooks
+
+Webhook configuration lives under the project; invocation uses the separate
+`/api/agent-webhooks/<id>/<token>` URL described on
+[Agent webhooks](/agents/webhooks).
+
+| Operation | Method and path | Body or query | Success |
+| --- | --- | --- | --- |
+| List | `GET /projects/<p>/webhooks` | Optional `?environment=` and `?agentId=` | `200` with `{ webhooks }`, URLs without tokens |
+| Create | `POST /projects/<p>/webhooks` | `{ name, agentId, environment, identity? }` | `201` with `{ webhook }`; `token` and the full `invocationUrl` appear once |
+| Update | `PATCH /projects/<p>/webhooks/<id>` | Any of `name`, `enabled`, `identity` (`null` removes it) | `200` with `{ webhook }` |
+| Rotate token | `POST /projects/<p>/webhooks/<id>/rotate-token` | None | `200` with `{ webhook }` carrying the new token |
+| Delete | `DELETE /projects/<p>/webhooks/<id>` | None | `204` |
+| Request ledger | `GET /projects/<p>/webhooks/<id>/requests` | None | `200` with `{ requests }` |
+
+`identity` is `header:<name>` or `body:<json-pointer>`. Creating a webhook
+for an agent that is not deployed in the environment is
+`409 webhook_target_unavailable`.
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webhooks/<webhook-id>/requests' \
+  -H 'x-api-key: <api-key>'
+```
+
+## Projects, agents and deployments
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| List projects | `GET /projects` | `200` with `{ projects }` |
+| Create project | `POST /projects` with `{ name, slug? }` | `201` with the project |
+| Get project | `GET /projects/<p>` | `200` with `{ project, deployments, sessions, connections, channels, schedules }` |
+| List agents | `GET /agents` | `200` with `{ agents }`: `id`, `name`, `activeAlias`, `activeDeploymentId`, `deploymentCount` |
+| List deployments | `GET /deployments?agentId=<agent-id>` | `200` with `{ deployments }` |
+| Get deployment | `GET /deployments/<id>` | `200` with `id`, `agentId`, `alias`, `memory` declarations, `createdAt` |
+
+A project is `{ id, slug, name, environments, agents, createdAt, updatedAt }`;
+`agents` carries each agent's `id` and `name`. See
+[Projects and agents](/agents/projects) for how projects are created and
+linked from the CLI.
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/projects' \
+  -H 'x-api-key: <api-key>'
+```
+
+Secrets, runtime variables, schedules, channels, outboxes and logs are managed
+with the CLI and the dashboard; see their pages under Concepts.
