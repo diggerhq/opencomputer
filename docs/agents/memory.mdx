@@ -26,9 +26,12 @@ before binding it to a session.
 
 `notes` is an application-defined resource name. It can contain many documents;
 this example calls one `workshop`. Neither name is built into OpenComputer.
-Declare with a direct `defineMemory({...})` on a literal object; the compiler
-rejects aliases, spreads and variables so that what it registers is exactly
-what runs.
+Declare with a direct `defineMemory({...})` on a literal object, calling the
+function imported by name from `@opencomputer/agent` (or re-exported under
+that name by one of your own modules); the compiler rejects aliases,
+namespace members such as `agent.defineMemory`, spreads and variables so
+that what it registers is exactly what runs. Anything else that merely
+spells `defineMemory`, such as a property of your own, is unrelated to it.
 
 ## Read it in the render
 

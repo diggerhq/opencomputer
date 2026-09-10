@@ -1360,6 +1360,49 @@ ${declaration("documentMemory({ maxBytes: LIMIT })")}});
       /memory\.ts Memory requirements documentMemory\(\) maxBytes must be a static JSON value/,
     );
 
+    // Review reproduction (U5): a namespace member reached through bracket
+    // access executed a definition the compiler never registered.
+    await assert.rejects(
+      build(`import * as oc from "@opencomputer/agent";
+
+export const memory = oc["defineMemory"]({ id: "notes", description: "Notes." });
+`),
+      /memory\.ts calls oc\["defineMemory"\]\(\); the compiler registers memory only from a direct defineMemory\(\) call, so import defineMemory by name from @opencomputer\/agent/,
+    );
+    await assert.rejects(
+      build(`import * as oc from "@opencomputer/agent";
+
+const name = "defineMemory";
+export const memory = oc[name]({ id: "notes", description: "Notes." });
+`),
+      /memory\.ts accesses oc\[\.\.\.\] with a computed key; the compiler cannot tell whether that names a memory authoring function, so import what you need by name from @opencomputer\/agent/,
+    );
+    await assert.rejects(
+      build(`import * as oc from "@opencomputer/agent";
+
+const agent = oc;
+export const memory = agent.defineMemory({ id: "notes", description: "Notes." });
+`),
+      /memory\.ts uses the namespace import oc other than as oc\.<name>; the compiler registers memory only from a direct defineMemory\(\) call, so import defineMemory by name from @opencomputer\/agent/,
+    );
+    await assert.rejects(
+      build(`export const memory = (await import("@opencomputer/agent")).defineMemory({ id: "notes", description: "Notes." });
+`),
+      /memory\.ts imports @opencomputer\/agent dynamically; the compiler registers memory only from a static import, so import defineMemory by name/,
+    );
+    // The same reach through a module that re-exports the package.
+    await assert.rejects(
+      build(
+        `import * as lib from "./lib";
+
+export const memory = lib.defineMemory({ id: "notes", description: "Notes." });
+`,
+        ["lib.ts", 'export * from "@opencomputer/agent";\n'],
+      ),
+      /memory\.ts calls lib\.defineMemory\(\); the compiler registers memory only from a direct defineMemory\(\) call/,
+    );
+    await rm(resolve(initialized.agentRoot, "lib.ts"));
+
     // Type-only references and unaliased re-exports do not change what runs.
     await writeFile(
       resolve(initialized.agentRoot, "lib.ts"),
@@ -1380,6 +1423,52 @@ export const declared: Declared | undefined = undefined;
         provider: { kind: "document", maxBytes: 4096 },
       },
     ]);
+
+    // A star re-export and a re-export of an imported binding are chains the
+    // compiler follows; the namespace import stays usable for other members.
+    await writeFile(
+      resolve(initialized.agentRoot, "lib.ts"),
+      'import { documentMemory } from "@opencomputer/agent";\nexport * from "@opencomputer/agent";\nexport { documentMemory };\n',
+    );
+    const chained = await build(`import * as oc from "@opencomputer/agent";
+import { defineMemory, documentMemory } from "./lib";
+
+export const memory = defineMemory({
+${declaration("documentMemory({ maxBytes: 2_048 })")}});
+export const secret = oc.useSecret;
+`);
+    assert.deepEqual(chained.memory, [
+      {
+        id: "requirements",
+        description: "Requirements.",
+        provider: { kind: "document", maxBytes: 2048 },
+      },
+    ]);
+    await rm(resolve(initialized.agentRoot, "lib.ts"));
+
+    // Review reproduction (U5): the spelling alone is not a declaration. A
+    // property, a string and a local function of that name are unrelated to
+    // the package's defineMemory; they neither register memory nor fail the
+    // build.
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useInput } from "@opencomputer/agent";
+import { labels, config } from "./memory";
+
+export default function Agent() {
+  return \`\${labels.defineMemory}: \${config.id} \${useInput().text ?? ""}\`;
+}
+`,
+    );
+    const unrelated = await build(`export const labels = { defineMemory: "Memory settings" };
+
+function defineMemory(input: { id: string }) {
+  return { ...input, defineMemory: true };
+}
+export const config = defineMemory({ id: "settings" });
+export const spelled = "defineMemory";
+`);
+    assert.deepEqual(unrelated.memory, []);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
