@@ -46,7 +46,7 @@ agent function.
 | `useMcpServer(server)` | Exposes tools from a managed HTTPS MCP server | [MCP servers](/agents/mcp) |
 | `useSubagent(agent)` | Makes another project agent available for delegation | [Subagents](/agents/subagents) |
 | `useSessionData<T>(key)` | Reads a durable value associated with the session | [Session data](/agents/session-data) |
-| `useMemory(memory)` | Reads the memory bound to the session as text to place in the instructions | [Memory](/agents/memory) |
+| `useMemory(memory)` | Reads bound memory and selects its permitted tools for this model request | [Memory](/agents/memory) |
 
 [Skills](/agents/skills) are also agent capabilities, but they are discovered
 from the agent's `skills/` directory rather than attached with a hook.
