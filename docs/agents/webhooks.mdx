@@ -75,8 +75,8 @@ with your API key; the session id there is authoritative, since a retried
 start can use a different session than the one first announced:
 
 ```bash
-curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webhooks/<webhook-id>/requests?environment=production' \
-  -H 'Authorization: Bearer <api-key>'
+curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webhooks/<webhook-id>/requests' \
+  -H 'x-api-key: <api-key>'
 ```
 
 Each delivery needs an identity so that a retry does not start a second
@@ -159,3 +159,5 @@ identity source to the field that names the delivery, for example
 
 Development and Production webhooks have separate URLs, tokens, and sessions.
 Disable or remove a webhook when its caller should no longer start sessions.
+The webhook routes are listed on the [management API](/agents/api#webhooks)
+page.

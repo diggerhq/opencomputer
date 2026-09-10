@@ -40,21 +40,23 @@ const { session } = await startSessionOnDocument({
   apiKey: process.env.OPENCOMPUTER_API_KEY!,
   projectId: process.env.OPENCOMPUTER_PROJECT_ID!,
   environment: "development",
-  agent: "topic-worker",
-  resource: "topics",
-  documentId: topicId,
-  document: { title },
-  idempotencyKey: `topic/${topicId}/${user.id}`,
+  agent: "<agent-id>",
+  resource: "notes",
+  documentId: "workshop",
+  document: { title: "Workshop notes" },
+  idempotencyKey: `workshop/${user.id}`,
 });
-// Store session.id with the topic; the browser attaches to it.
+// Store session.id with the workshop; the browser attaches to it.
 ```
 
 Without memory, `POST /api/managed-agents/sessions` with `x-api-key` and
-`{ "agentId": "<agent-id>@development" }` returns `{ session: { id } }`.
+`{ "agentId": "<agent-id>@development" }` returns `{ session: { id } }`. Both
+are [management API](/agents/api#sessions) calls.
 
 ### 2. Proxy three routes
 
-The hook needs exactly these, relative to its `basePath`:
+The hook needs exactly these [management API](/agents/api) routes, relative
+to its `basePath`:
 
 | Route | Purpose |
 | --- | --- |
@@ -101,7 +103,7 @@ envelope `{ error: { message } }`.
 ```tsx
 import { useAgent } from "@opencomputer/react";
 
-export function TopicChat({ sessionId, onNotesChanged }: { sessionId: string; onNotesChanged: () => void }) {
+export function WorkshopChat({ sessionId, onNotesChanged }: { sessionId: string; onNotesChanged: () => void }) {
   const { messages, send, stop, isReplaying, isRunning, error } = useAgent({
     sessionId,
     basePath: "/api/agent",
@@ -148,8 +150,8 @@ Every `memory.saved` event the session records
 owner route when one arrives. Saves are reported best-effort: a document
 can change without an event, so also refresh when the user opens the panel.
 
-Any other event is available through `onEvent`, for example tool activity for
-an activity view.
+Every event is available through `onEvent`, for example tool activity for an
+activity view; the types are listed on [Session events](/agents/events).
 
 ## Create a session from the browser
 

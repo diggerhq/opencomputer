@@ -85,7 +85,8 @@ Session inspection returns a `memory` array. Entries contain `resource`,
 for read-only bindings, frozen/deleted documents and ended sessions.
 
 Reusing a session-create `Idempotency-Key` requires identical agent, deployment,
-environment and bindings; incompatible inputs return `409 conflict`.
+environment and bindings; incompatible inputs return `409 idempotency_conflict`.
+The [management API](/agents/api#create) page has the full rules.
 
 ### Start a session on a new document
 
@@ -135,7 +136,9 @@ run the first turn at once, and `--json` for the ids.
 Over HTTP, send `PUT .../documents/<id>` with `If-None-Match: *`, treat `412`
 as "exists" (then `GET` it; `404` means the id was deleted), and `POST
 /api/managed-agents/sessions` with an `Idempotency-Key`; `201` created the
-session, `200` returned the one that key had already created.
+session, `200` returned the one that key had already created. The helper's
+signature and errors are in the
+[TypeScript SDK reference](/reference/typescript-sdk#serverless-agents-helpers).
 
 ## Reading
 
@@ -243,10 +246,10 @@ A committed save whose reply was lost can conflict on retry. Read current
 content before writing again. Separately, **model-generation retries can
 render again using newer memory**; they do not preserve the same projection.
 
-Observed saves produce `memory.saved` events with `resource`, `documentId`,
-`revision`, `bytes`. Delivery is best-effort: a write can commit without a
-reply or event. Refresh documents when attaching, reconnecting and completing
-work.
+Observed saves produce `memory.saved` [session events](/agents/events#memory)
+with `resource`, `documentId`, `revision`, `bytes`. Delivery is best-effort: a
+write can commit without a reply or event. Refresh documents when attaching,
+reconnecting and completing work.
 
 ## Owner access
 
@@ -339,7 +342,8 @@ and exports remain. Use a new ID for new notes.
 
 ## Management API
 
-Use `x-api-key: <api-key>` and project access. Every route requires
+Use `x-api-key: <api-key>` on `https://app.opencomputer.dev`, as for the rest
+of the [management API](/agents/api). Every route requires
 `environment=development` or `environment=production` as a query parameter.
 Below, `<p>` is the project ID and `<r>` the resource ID.
 

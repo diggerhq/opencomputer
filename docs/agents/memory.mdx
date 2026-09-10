@@ -56,7 +56,7 @@ Treat saved text as data the model reads, not as instructions it follows.
 ## Bind a document to a session
 
 Include `memory` when creating a [session](/agents/sessions) with
-`POST /api/managed-agents/sessions`:
+`POST /api/managed-agents/sessions` ([management API](/agents/api#create)):
 
 ```json
 {
@@ -82,6 +82,11 @@ credentials nor permission to select another document. A
 [collection binding](/agents/document-memory#session-bindings) instead lets it
 browse documents with `memory_list` and `memory_read`.
 
+The document must exist before the session binds it. `startSessionOnDocument`
+in the [TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers)
+creates it if needed and then the session, and the CLI's
+`session create --memory notes=workshop --create-document` does the same.
+
 ## Save and reuse notes
 
 Saving is explicit: the model calls `memory_save({ text })`. Each save replaces
@@ -90,7 +95,9 @@ Conversation history is not automatically extracted into memory.
 
 Sessions bound to the same document share its latest saved text. Each model
 step reads it again; [revision checks](/agents/document-memory#saving) prevent
-an agent from overwriting changes made since its read.
+an agent from overwriting changes made since its read. A successful save is
+reported as a `memory.saved` [session event](/agents/events#memory), delivered
+best-effort.
 
 Memory belongs to a **project and environment**. It survives session end,
 sandbox loss, conversation compaction and new deployments. Development and
