@@ -371,8 +371,7 @@ async function memoryResourcesForEnvironment(
   const resources = new Set<string>();
   for (const deploymentId of deploymentIds) {
     const deployment = await client.deployment(deploymentId);
-    for (const declaration of deployment.projectDeployment?.resources?.memory ??
-      []) {
+    for (const declaration of deployment.memory ?? []) {
       if (typeof declaration.id === "string") resources.add(declaration.id);
     }
   }

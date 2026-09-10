@@ -312,6 +312,18 @@ async function memoryResponse(
   });
 }
 
+// A memory resource the deployment declares (docs/agents/document-memory.mdx,
+// "Configuration"): what the Memory page and `memory export` enumerate.
+function publicMemoryDeclaration(value: unknown): Record<string, unknown> {
+  const declaration = record(value) ?? {};
+  const provider = record(declaration.provider) ?? {};
+  return {
+    id: declaration.id,
+    description: declaration.description,
+    provider: { kind: provider.kind, maxBytes: provider.maxBytes },
+  };
+}
+
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
   return {
@@ -321,6 +333,9 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(Array.isArray(deployment.memory)
+      ? { memory: deployment.memory.map(publicMemoryDeclaration) }
+      : {}),
     ...(deployment.projectDeployment
       ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
       : {}),

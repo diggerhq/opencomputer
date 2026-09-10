@@ -842,6 +842,19 @@ describe("managed agents proxy", () => {
           channels: ["slack"],
           connections: ["gmail"],
           createdAt: "2026-07-31T00:00:00.000Z",
+          memory: [
+            {
+              id: "requirements",
+              description: "Verified requirements.",
+              provider: {
+                kind: "http",
+                maxBytes: 8192,
+                connection: "notes-api",
+                path: "/memory",
+                tools: [{ name: "search" }],
+              },
+            },
+          ],
           artifact: { bucket: "private", key: "source.tar.gz" },
           imageArn: "arn:aws:private",
           imageVersion: "7",
@@ -868,6 +881,13 @@ describe("managed agents proxy", () => {
       channels: ["slack"],
       connections: ["gmail"],
       createdAt: "2026-07-31T00:00:00.000Z",
+      memory: [
+        {
+          id: "requirements",
+          description: "Verified requirements.",
+          provider: { kind: "http", maxBytes: 8192 },
+        },
+      ],
     });
   });
 

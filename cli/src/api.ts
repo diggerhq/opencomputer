@@ -266,13 +266,6 @@ export interface MemoryDocumentRead {
   etag: string;
 }
 
-/** A memory resource declared by a deployment (`projectDeployment.resources.memory`). */
-export interface MemoryDeclaration {
-  id: string;
-  description?: string;
-  provider?: { kind: string; maxBytes?: number };
-}
-
 interface CreateSessionResult {
   session: ManagedSessionSnapshot;
   deployment?: ManagedAgentDeployment;
@@ -745,11 +738,12 @@ export class OpenComputerClient {
   deployment(deploymentId: string) {
     return this.request<
       ManagedAgentDeployment & {
-        projectDeployment?: {
-          resources?: Partial<ProjectResourceManifest> & {
-            memory?: MemoryDeclaration[];
-          };
-        };
+        /** Memory resources the deployment declares; absent on older deployments. */
+        memory?: Array<{
+          id: string;
+          description?: string;
+          provider?: { kind?: string; maxBytes?: number };
+        }>;
       }
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
   }
