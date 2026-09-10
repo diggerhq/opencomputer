@@ -57,6 +57,7 @@ export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
 export type {
   MemoryEnvironment, MemoryAccess, MemoryAgentWrites, MemoryBinding, MemoryBindings,
   SessionMemoryBinding, MemoryWriter, MemoryDocumentMeta, MemoryDocument, MemoryDocumentPage,
+  MemoryResource, MemoryResourceInventory,
   CreateMemoryDocumentBody, ReplaceMemoryDocumentBody, PatchMemoryDocumentBody,
   MemorySavedEvent, MemoryErrorCode,
 } from "./memory.js";
