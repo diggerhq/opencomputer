@@ -173,7 +173,7 @@ To read a whole log, start at `after=0` and repeat with the last `seq` you
 received until a page is empty. A full page means more may follow; read on
 without waiting. To follow a live session, keep polling from the last
 `seq`; the CLI's `sessions tail` and `useAgent` do exactly this. The log is
-durable, so a consumer that stops can resume from its cursor without gaps.
+durable, so a consumer that stops can resume from its cursor and miss nothing.
 Event types and their `data` are listed on [Session events](/agents/events).
 
 ## Memory
