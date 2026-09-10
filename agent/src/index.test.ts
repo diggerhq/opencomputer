@@ -270,6 +270,90 @@ test("defineMemory rejects providers that are not descriptors", () => {
   );
 });
 
+test("defineMemory normalizes a hand-written descriptor like the provider functions do", () => {
+  assert.deepEqual(
+    defineMemory({
+      id: "notes",
+      description: "Notes.",
+      provider: { kind: "document", maxBytes: 4_096 },
+    }).provider,
+    documentMemory({ maxBytes: 4_096 }),
+  );
+  assert.throws(
+    () =>
+      defineMemory({
+        id: "notes",
+        description: "Notes.",
+        provider: { kind: "document", maxBytes: 16_385 },
+      }),
+    /Memory notes maxBytes must be a whole number between 1 and 16384/,
+  );
+  assert.throws(
+    () =>
+      defineMemory({
+        id: "notes",
+        description: "Notes.",
+        provider: { kind: "http", connection: "", path: "/memory", maxBytes: 1, tools: [] },
+      }),
+    /Memory notes requires a defineConnection\(\) connection/,
+  );
+  assert.throws(
+    () =>
+      defineMemory({
+        id: "notes",
+        description: "Notes.",
+        provider: {
+          kind: "http",
+          connection: "memory-service",
+          path: "/memory",
+          maxBytes: 1,
+          tools: [{ name: "x", description: "X.", access: "read", idempotent: false, input: { type: "object", required: ["memory"] } }],
+        },
+      }),
+    /Memory notes tool x input cannot declare the reserved memory argument/,
+  );
+});
+
+test("httpMemory freezes tool descriptors deeply and copies the caller's schema", () => {
+  const open = defineConnection({
+    id: "open-memory",
+    origin: "https://memory.example.com",
+  });
+  const input = {
+    type: "object",
+    properties: { fact: { type: "string", maxLength: 2_000 } },
+    required: ["fact"],
+  };
+  const provider = httpMemory({
+    connection: open,
+    tools: [{ name: "remember", description: "Save.", access: "write", input }],
+  });
+  const tool = provider.tools[0]!;
+  assert.ok(Object.isFrozen(provider));
+  assert.ok(Object.isFrozen(provider.tools));
+  assert.ok(Object.isFrozen(tool));
+  assert.ok(Object.isFrozen(tool.input));
+  assert.ok(Object.isFrozen(tool.input.properties));
+  assert.ok(Object.isFrozen(tool.input.required));
+  assert.ok(
+    Object.isFrozen((tool.input.properties as Record<string, unknown>).fact),
+  );
+  assert.notEqual(tool.input, input);
+  input.properties.fact.maxLength = 1;
+  assert.equal(
+    (tool.input.properties as Record<string, { maxLength: number }>).fact!.maxLength,
+    2_000,
+  );
+});
+
+test("a projection carries no provider read state", () => {
+  // Cursors stay with the host: the type is the promise, checked at build.
+  const keys: Array<keyof MemoryProjection> = ["text", "sources", "writable"];
+  // @ts-expect-error a cursor is not a hook value.
+  const cursor: keyof MemoryProjection = "cursor";
+  assert.deepEqual([...keys, cursor].length, 4);
+});
+
 test("useMemory reads the host projection and records the selection", () => {
   const requirements = defineMemory({
     id: "requirements",
