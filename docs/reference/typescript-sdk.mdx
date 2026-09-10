@@ -997,3 +997,19 @@ export` files. They carry no behavior.
 | `MemorySavedEvent` | The `data` of a `memory.saved` [session event](/agents/events) |
 | `MemoryErrorCode` | The codes the memory routes return in `{ error: { code, message } }` |
 | `StartSessionOnDocumentParams`, `StartSessionOnDocumentResult` | The helper's parameters and result |
+
+### Event subscription types
+
+The shapes of the [event subscription](/agents/api#event-subscriptions)
+routes and of the input they deliver, as types only.
+
+| Type | Shape |
+| --- | --- |
+| `OutcomeEventType` | `"turn.completed" \| "turn.failed" \| "turn.cancelled"` |
+| `SessionDestination` | `{ type: "session", sessionId }` |
+| `CreateEventSubscriptionBody` | Body of `POST /projects/<id>/event-subscriptions`: `agentId?`, `events`, `destination`, `environment?` |
+| `EventSubscription` | A subscription as the routes return it |
+| `OutcomeEvent` | The delivered outcome: `id`, `type`, `sessionId`, `turnId`, `agentId`, `occurredAt`, `reason?`, `error?`, `result?` |
+| `EventInput` | `{ source: "event", text?, event }`, what the receiving agent's `useInput()` returns |
+| `TurnOutcomeDelivery` | One entry of a turn's `deliveries` on `GET /sessions/<id>` |
+| `EventSubscriptionErrorCode` | The codes the subscription routes return in `{ error: { code, message } }` |

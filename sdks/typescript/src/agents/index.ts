@@ -57,6 +57,10 @@ export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
 export { startSessionOnDocument, sessionIdempotencyKey } from "./memory-sessions.js";
 export type { StartSessionOnDocumentParams, StartSessionOnDocumentResult } from "./memory-sessions.js";
 export type {
+  OutcomeEventType, SessionDestination, CreateEventSubscriptionBody, EventSubscription,
+  OutcomeEvent, EventInput, TurnOutcomeDelivery, EventSubscriptionErrorCode,
+} from "./event-subscriptions.js";
+export type {
   MemoryEnvironment, MemoryAccess, MemoryAgentWrites, MemoryBinding, MemoryBindings,
   SessionMemoryBinding, MemoryWriter, MemoryDocumentMeta, MemoryDocument, MemoryDocumentPage,
   MemoryResource, MemoryResourceInventory,
