@@ -60,6 +60,10 @@ Usage:
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
   opencomputer session create [prompt] [--agent <project-agent>] [--keep]
+      [--memory <resource>=<documentId>[:read|read-write] | --memory <resource>]... [--create-document]
+      --memory binds a document (read-write by default) or a collection; --create-document
+      creates each bound document that does not exist yet; with --idempotency-key a retry
+      returns the same session
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>

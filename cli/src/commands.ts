@@ -3,6 +3,7 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentLog,
   type ManagedSessionSnapshot,
+  type MemoryBindings,
   type MemoryDocument,
   type MemoryDocumentMeta,
 } from "./api.js";
@@ -49,8 +50,11 @@ import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
 import {
+  createSessionWithMemory,
+  ensureMemoryDocuments,
   memoryResources,
   saveMemoryEdit,
+  type EnsuredMemoryDocument,
   type MemoryEditDraft,
   type MemoryResourceSummary,
 } from "./memory-commands.js";
@@ -613,8 +617,9 @@ async function runAgent(
   json: boolean,
   verbose: boolean,
   idempotencyKey?: string,
+  memory?: MemoryBindings,
 ): Promise<unknown> {
-  const created = await client.createSession(agent);
+  const created = await createSessionWithMemory(client, agent, memory);
   process.stderr.write(`Starting ${agent}…\n`);
   const connected = await waitForEvent(
     client,
@@ -667,9 +672,29 @@ async function runAgent(
     turnId: turn.turnId,
     agentId: created.deployment?.agentId ?? agent,
     deploymentId: created.deployment?.id,
+    ...(memory ? { memory } : {}),
     status: "completed",
     output: streamedText || completedText || undefined,
   };
+}
+
+function printMemoryBindings(
+  memory: MemoryBindings | undefined,
+  documents: EnsuredMemoryDocument[],
+): string {
+  if (!memory) return "";
+  return Object.entries(memory)
+    .map(([resource, binding]) => {
+      if (binding.scope === "collection") {
+        return `Memory:     ${resource} (collection, read)\n`;
+      }
+      const ensured = documents.find(
+        (document) => document.resource === resource && document.id === binding.id,
+      );
+      const state = ensured ? (ensured.created ? ", created" : ", existing") : "";
+      return `Memory:     ${resource}/${binding.id} (${binding.access ?? "read-write"}${state})\n`;
+    })
+    .join("");
 }
 
 export async function runCommand(
@@ -1953,6 +1978,14 @@ export async function runCommand(
         session.agent,
       );
       const agent = developmentAgentReference(agentId);
+      // Sessions from the CLI run on Development, so its memory is bound.
+      const documents = session.createDocuments && session.memory
+        ? await ensureMemoryDocuments(client, {
+            projectId: project.projectId,
+            environment: "development",
+            bindings: session.memory,
+          })
+        : [];
       if (prompt) {
         const result = await runAgent(
           client,
@@ -1962,11 +1995,22 @@ export async function runCommand(
           globals.json,
           globals.verbose === true,
           globals.idempotencyKey,
+          session.memory,
         );
-        if (globals.json) printJSON(result);
+        if (globals.json) {
+          printJSON(
+            documents.length
+              ? { ...(result as Record<string, unknown>), documents }
+              : result,
+          );
+        }
         return;
       }
-      const created = await client.createSession(agent);
+      const created = await createSessionWithMemory(
+        client,
+        agent,
+        session.memory,
+      );
       const connected = await waitForEvent(
         client,
         created.session.id,
@@ -1980,17 +2024,21 @@ export async function runCommand(
       }
       const result = {
         sessionId: created.session.id,
+        created: created.created,
         agentId: created.deployment?.agentId ?? agent,
         deploymentId: created.deployment?.id,
+        ...(session.memory ? { memory: session.memory } : {}),
+        ...(documents.length ? { documents } : {}),
         status: session.keep ? "running" : "suspended",
         cursor: connected.cursor,
       };
       if (globals.json) printJSON(result);
       else {
         process.stdout.write(
-          `Session:    ${result.sessionId}\n` +
+          `Session:    ${result.sessionId}${created.created ? "" : " (existing)"}\n` +
             `Agent:      ${result.agentId}\n` +
             `Deployment: ${result.deploymentId ?? "—"}\n` +
+            printMemoryBindings(session.memory, documents) +
             `Runtime:    ${result.status}\n`,
         );
       }

@@ -280,7 +280,19 @@ export interface MemoryDocumentRead {
   etag: string;
 }
 
-interface CreateSessionResult {
+/**
+ * A session's memory binding (docs/agents/document-memory.mdx, "Session
+ * bindings"), keyed by resource id in the session create body.
+ */
+export type MemoryBinding =
+  | { scope: "document"; id: string; access?: "read" | "read-write" }
+  | { scope: "collection"; access?: "read" };
+
+export type MemoryBindings = Record<string, MemoryBinding>;
+
+export interface CreateSessionResult {
+  /** 201 created the session; 200 replayed an earlier create under the same Idempotency-Key. */
+  created: boolean;
   session: ManagedSessionSnapshot;
   deployment?: ManagedAgentDeployment;
 }
@@ -974,11 +986,21 @@ export class OpenComputerClient {
     );
   }
 
-  createSession(agentId: string) {
-    return this.request<CreateSessionResult>("/api/managed-agents/sessions", {
+  async createSession(
+    agentId: string,
+    options: { memory?: MemoryBindings } = {},
+  ): Promise<CreateSessionResult> {
+    const response = await this.response("/api/managed-agents/sessions", {
       method: "POST",
-      body: JSON.stringify({ agentId }),
+      body: JSON.stringify({
+        agentId,
+        ...(options.memory && Object.keys(options.memory).length
+          ? { memory: options.memory }
+          : {}),
+      }),
     });
+    const body = (await response.json()) as Omit<CreateSessionResult, "created">;
+    return { created: response.status === 201, ...body };
   }
 
   async sessions(): Promise<ManagedSessionSnapshot[]> {

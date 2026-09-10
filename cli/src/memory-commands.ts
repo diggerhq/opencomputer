@@ -1,5 +1,7 @@
 import {
   APIError,
+  type CreateSessionResult,
+  type MemoryBindings,
   type MemoryDocument,
   type MemoryEnvironment,
   type MemoryResource,
@@ -173,4 +175,88 @@ function writerLabel(document: MemoryDocument): string {
   return document.writer.kind === "agent"
     ? `agent ${document.writer.sessionId}`
     : "owner";
+}
+
+/** One bound document after `--create-document`: created now, or already there. */
+export interface EnsuredMemoryDocument {
+  resource: string;
+  id: string;
+  created: boolean;
+  revision: string;
+}
+
+/**
+ * Creates every document a session's bindings name that does not exist yet
+ * (title = its id, empty text), and reports each with whether it was created.
+ * A deleted id is reserved and a binding to it would fail admission, so it
+ * fails here, before any session is created.
+ */
+export async function ensureMemoryDocuments(
+  client: OpenComputerClient,
+  input: {
+    projectId: string;
+    environment: MemoryEnvironment;
+    bindings: MemoryBindings;
+  },
+): Promise<EnsuredMemoryDocument[]> {
+  const ensured: EnsuredMemoryDocument[] = [];
+  for (const [resource, binding] of Object.entries(input.bindings)) {
+    if (binding.scope !== "document") continue;
+    const target = {
+      projectId: input.projectId,
+      resource,
+      id: binding.id,
+      environment: input.environment,
+    };
+    try {
+      const { document } = await client.createMemoryDocument({
+        ...target,
+        title: binding.id,
+        text: "",
+      });
+      ensured.push({ resource, id: binding.id, created: true, revision: document.revision });
+      continue;
+    } catch (error) {
+      if (!(error instanceof APIError && error.status === 412)) throw error;
+    }
+    try {
+      const { document } = await client.memoryDocument(target);
+      ensured.push({ resource, id: binding.id, created: false, revision: document.revision });
+    } catch (error) {
+      if (error instanceof APIError && error.status === 404) {
+        throw new CLIError(
+          "memory_document_deleted",
+          `${resource}/${binding.id} was deleted and its id is reserved; a session cannot bind it.`,
+          "Bind a new document id, or create one with `opencomputer memory create`.",
+          { resource, id: binding.id },
+        );
+      }
+      throw error;
+    }
+  }
+  return ensured;
+}
+
+/**
+ * Creates a session, with bindings when given. A reused `--idempotency-key`
+ * whose earlier session had different inputs is a 409; name the cause.
+ */
+export async function createSessionWithMemory(
+  client: OpenComputerClient,
+  agent: string,
+  memory?: MemoryBindings,
+): Promise<CreateSessionResult> {
+  try {
+    return await client.createSession(agent, memory ? { memory } : {});
+  } catch (error) {
+    if (error instanceof APIError && error.status === 409) {
+      throw new CLIError(
+        "session_idempotency_conflict",
+        "This --idempotency-key already created a session with a different agent, deployment, environment or memory bindings.",
+        "Pass a new --idempotency-key to start another session, or repeat the earlier command unchanged to get the existing one.",
+        { status: 409, ...(memory ? { memory } : {}) },
+      );
+    }
+    throw error;
+  }
 }
