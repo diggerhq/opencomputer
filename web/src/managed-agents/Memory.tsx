@@ -65,6 +65,18 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString()
 }
 
+function sameTarget(
+  left: ManagedMemoryDocumentTarget,
+  right: ManagedMemoryDocumentTarget,
+) {
+  return (
+    left.projectId === right.projectId &&
+    left.environment === right.environment &&
+    left.resource === right.resource &&
+    left.id === right.id
+  )
+}
+
 const DOCUMENT_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 function WriterCell({
@@ -227,12 +239,12 @@ export function ManagedProjectMemory({
           />
         </PanelContent>
       ) : resource ? (
-        // Keyed by the selection: switching resources remounts the documents
-        // panel, so drafts, dialogs and in-flight reads belong to the resource
-        // they were started for, and a read that resolves after the switch
-        // has nowhere to land.
+        // Keyed by the whole target: switching projects, environments or
+        // resources remounts the documents panel, so drafts, dialogs and
+        // in-flight reads belong to the target they were started for, and a
+        // read that resolves after the switch has nowhere to land.
         <MemoryResourceDocuments
-          key={`${environment}:${resource}`}
+          key={`${projectId}:${environment}:${resource}`}
           projectId={projectId}
           environment={environment}
           resource={resource}
@@ -294,7 +306,12 @@ function MemoryResourceDocuments({
     agentWrites: true,
   })
   const [editor, setEditor] = useState<EditorState>()
-  const [removing, setRemoving] = useState<ManagedMemoryDocumentMeta>()
+  // Every destructive action carries the complete target it was opened on;
+  // nothing is rebuilt from the props current when it is confirmed.
+  const [removing, setRemoving] = useState<{
+    target: ManagedMemoryDocumentTarget
+    meta: ManagedMemoryDocumentMeta
+  }>()
 
   const invalidate = () =>
     Promise.all([
@@ -339,27 +356,43 @@ function MemoryResourceDocuments({
     onError: (error) => notifyError("Couldn't open that document.", error),
   })
 
+  // A save submits the draft as it was when Save was pressed. The editor
+  // stays live meanwhile; what is typed during the request belongs to the
+  // next save, on the revision this one produces (or, on a conflict, next
+  // to the current text), and is never replaced by the submitted draft.
   const save = useMutation({
-    mutationFn: async (state: EditorState) => {
+    mutationFn: async (submitted: EditorState) => {
       try {
         return await replaceManagedMemoryDocument({
-          ...state.target,
-          etag: state.base.etag,
-          text: state.text,
-          summary: state.summary,
+          ...submitted.target,
+          etag: submitted.base.etag,
+          text: submitted.text,
+          summary: submitted.summary,
         })
       } catch (error) {
         if (error instanceof ApiError && error.status === 412) {
-          const conflict = await getManagedMemoryDocument(state.target)
-          setEditor({ ...state, conflict })
+          const conflict = await getManagedMemoryDocument(submitted.target)
+          setEditor((current) =>
+            current && sameTarget(current.target, submitted.target)
+              ? { ...current, conflict }
+              : current,
+          )
           return undefined
         }
         throw error
       }
     },
-    onSuccess: async (saved) => {
+    onSuccess: async (saved, submitted) => {
       if (!saved) return
-      setEditor(undefined)
+      setEditor((current) => {
+        if (!current || !sameTarget(current.target, submitted.target)) {
+          return current
+        }
+        const unchanged =
+          current.text === submitted.text &&
+          current.summary === submitted.summary
+        return unchanged ? undefined : { ...current, base: saved }
+      })
       notifySuccess(
         `Saved ${saved.document.id}.`,
         `Revision ${saved.document.revision}.`,
@@ -373,12 +406,12 @@ function MemoryResourceDocuments({
   // the ETag verbatim rather than a revision reassembled from the list.
   const setAgentWrites = useMutation({
     mutationFn: async (input: {
-      meta: ManagedMemoryDocumentMeta
+      target: ManagedMemoryDocumentTarget
       agentWrites: 'enabled' | 'disabled'
     }) => {
-      const current = await getManagedMemoryDocument(target(input.meta.id))
+      const current = await getManagedMemoryDocument(input.target)
       return patchManagedMemoryDocument({
-        ...target(input.meta.id),
+        ...input.target,
         etag: current.etag,
         agentWrites: input.agentWrites,
       })
@@ -396,16 +429,16 @@ function MemoryResourceDocuments({
   })
 
   const remove = useMutation({
-    mutationFn: async (meta: ManagedMemoryDocumentMeta) => {
-      const current = await getManagedMemoryDocument(target(meta.id))
+    mutationFn: async (input: { target: ManagedMemoryDocumentTarget }) => {
+      const current = await getManagedMemoryDocument(input.target)
       await deleteManagedMemoryDocument({
-        ...target(meta.id),
+        ...input.target,
         etag: current.etag,
       })
     },
-    onSuccess: async (_, meta) => {
+    onSuccess: async (_, input) => {
       setRemoving(undefined)
-      notifySuccess(`Deleted ${meta.id}.`, 'Its ID stays reserved.')
+      notifySuccess(`Deleted ${input.target.id}.`, 'Its ID stays reserved.')
       await invalidate()
     },
     onError: (error) => notifyError("Couldn't delete that document.", error),
@@ -529,7 +562,7 @@ function MemoryResourceDocuments({
             disabled={setAgentWrites.isPending}
             onClick={() =>
               setAgentWrites.mutate({
-                meta: document,
+                target: target(document.id),
                 agentWrites:
                   document.agentWrites === 'enabled' ? 'disabled' : 'enabled',
               })
@@ -540,7 +573,9 @@ function MemoryResourceDocuments({
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => setRemoving(document)}
+            onClick={() =>
+              setRemoving({ target: target(document.id), meta: document })
+            }
           >
             Delete
           </Button>
@@ -867,7 +902,7 @@ function MemoryResourceDocuments({
       <ConfirmDialog
         open={Boolean(removing)}
         onOpenChange={(open) => !open && setRemoving(undefined)}
-        title={`Delete ${removing?.id}?`}
+        title={`Delete ${removing?.meta.id}?`}
         description="Removes the saved text and summary. The ID stays reserved and cannot be recreated; sessions bound to this document fail their next recall."
         confirmLabel="Delete document"
         destructive

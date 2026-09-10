@@ -1176,7 +1176,7 @@ export default function ManagedAgentDetail({
 
       {activeTab === 'memory' && project ? (
         <ManagedProjectMemory
-          key={environment}
+          key={`${project.project.id}:${environment}`}
           projectId={project.project.id}
           environment={environment}
           // One environment row per project agent: every member's active
