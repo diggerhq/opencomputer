@@ -219,13 +219,23 @@ function strings(value: unknown): string[] {
 // backend mirrors the public routes one-to-one, so the edge passes the
 // documented bodies, status codes, error envelope and the conditional
 // headers (`ETag`, `If-Match`, `If-None-Match`) through untouched.
+// The resource inventory is the durable list of an environment's resources,
+// independent of what the current deployments declare: `declared` says
+// whether an active deployment still names the resource, `documents` counts
+// its live documents.
+const MEMORY_RESOURCES_ROUTE = /^\/projects\/[^/]+\/memory$/;
 const MEMORY_DOCUMENTS_ROUTE = /^\/projects\/[^/]+\/memory\/[^/]+\/documents$/;
 const MEMORY_DOCUMENT_ROUTE =
   /^\/projects\/[^/]+\/memory\/[^/]+\/documents\/[^/]+$/;
 const MEMORY_CONDITIONAL_REQUEST_HEADERS = ["if-match", "if-none-match"];
 
 function isMemoryRoute(method: string, suffix: string): boolean {
-  if (method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)) return true;
+  if (
+    method === "GET" &&
+    (MEMORY_RESOURCES_ROUTE.test(suffix) || MEMORY_DOCUMENTS_ROUTE.test(suffix))
+  ) {
+    return true;
+  }
   return (
     (method === "GET" ||
       method === "PUT" ||
@@ -260,6 +270,17 @@ function publicMemoryDocumentMeta(value: unknown): Record<string, unknown> {
 function publicMemoryDocument(value: unknown): Record<string, unknown> {
   const document = record(value) ?? {};
   return { ...publicMemoryDocumentMeta(document), text: document.text };
+}
+
+function publicMemoryResource(value: unknown): Record<string, unknown> {
+  const resource = record(value) ?? {};
+  const provider = record(resource.provider) ?? {};
+  return {
+    id: resource.id,
+    provider: { kind: provider.kind, maxBytes: provider.maxBytes },
+    declared: resource.declared === true,
+    documents: typeof resource.documents === "number" ? resource.documents : 0,
+  };
 }
 
 // Memory errors are the documented `{ error: { code, message } }` envelope
@@ -297,15 +318,21 @@ async function memoryResponse(
   const body = record(await upstream.json().catch(() => null)) ?? {};
   headers.set("content-type", "application/json");
   const value =
-    method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+    method === "GET" && MEMORY_RESOURCES_ROUTE.test(suffix)
       ? {
-          documents: Array.isArray(body.documents)
-            ? body.documents.map(publicMemoryDocumentMeta)
+          resources: Array.isArray(body.resources)
+            ? body.resources.map(publicMemoryResource)
             : [],
-          nextCursor:
-            typeof body.nextCursor === "string" ? body.nextCursor : null,
         }
-      : publicMemoryDocument(body);
+      : method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+        ? {
+            documents: Array.isArray(body.documents)
+              ? body.documents.map(publicMemoryDocumentMeta)
+              : [],
+            nextCursor:
+              typeof body.nextCursor === "string" ? body.nextCursor : null,
+          }
+        : publicMemoryDocument(body);
   return new Response(JSON.stringify(value), {
     status: upstream.status,
     headers,
@@ -651,13 +678,59 @@ const PRIVATE_EVENT_KEYS = new Set([
   "platform_instructions",
 ]);
 
+const GENERIC_FAILURE_MESSAGE = "The agent could not complete this request.";
+const FAILURE_MESSAGE_LIMIT = 500;
+
+// A turn or session failure reason is an Error message from the runtime,
+// written for operators: it names what went wrong (a rejected model, a tool
+// that is not available, a harness that never became ready) and the user
+// needs that to act. It can also carry what the user must not see: absolute
+// paths, internal URLs, credentials, stack frames. Keep the sentence, drop
+// those.
+export function publicFailureMessage(value: unknown): string {
+  const data = record(value) ?? {};
+  const raw =
+    typeof data.message === "string"
+      ? data.message
+      : typeof data.reason === "string"
+        ? data.reason
+        : "";
+  const message = raw
+    .split(/\r?\n/)
+    // Stack frames and their "Caused by" chains.
+    .filter((line) => !/^\s+at\s|^\s*caused by:/i.test(line))
+    .join(" ")
+    // Internal topology: URLs, then absolute filesystem paths. A bare name
+    // such as a model id (`anthropic/claude-sonnet-4.6`) is not a path.
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)\]]+/gi, "<url>")
+    .replace(/(?<![\w@:.-])\/(?:[\w@.+-]+\/)+[\w@.+-]*/g, "<path>")
+    // Credentials by label, by prefix, then anything long enough to be one.
+    .replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
+    .replace(
+      /\b((?:api[_-]?key|token|secret|password|authorization))\s*[=:]\s*"?[^\s"',;]{16,}/gi,
+      "$1=<redacted>",
+    )
+    .replace(
+      /\b(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}/g,
+      "<redacted>",
+    )
+    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "<redacted>")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!message) return GENERIC_FAILURE_MESSAGE;
+  return message.length > FAILURE_MESSAGE_LIMIT
+    ? `${message.slice(0, FAILURE_MESSAGE_LIMIT - 1)}\u2026`
+    : message;
+}
+
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
-    return { message: "The agent could not complete this request." };
+    return { message: publicFailureMessage(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(

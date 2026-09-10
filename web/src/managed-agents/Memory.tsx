@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   useInfiniteQuery,
   useMutation,
-  useQueries,
+  useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
@@ -42,19 +42,23 @@ import {
   getManagedAgentDeployment,
   getManagedMemoryDocument,
   getManagedMemoryDocuments,
+  getManagedMemoryResources,
   patchManagedMemoryDocument,
   replaceManagedMemoryDocument,
   type ManagedMemoryDocument,
   type ManagedMemoryDocumentMeta,
   type ManagedMemoryDocumentRead,
+  type ManagedMemoryDocumentTarget,
   type ManagedMemoryEnvironment,
 } from './api'
 import {
-  declaredMemoryResources,
   formatMemoryBytes,
   isOverMemoryLimit,
+  listMemoryResources,
   memoryExportFile,
+  memoryResourceHint,
   memoryWriterLabel,
+  type MemoryResourceSummary,
 } from './memory-documents'
 
 function formatDate(value: string) {
@@ -83,9 +87,13 @@ function WriterCell({
   return <span className="text-xs">{memoryWriterLabel(document.writer)}</span>
 }
 
-// The editor holds the revision it read; a save that loses the race shows the
-// current document instead of overwriting it (document-memory.mdx, "Conflicts").
+// The editor carries the complete target it read (resource, document id,
+// revision) from the read through editing, saving and conflict handling; a
+// save addresses that target, never whatever the selector shows by then. A
+// save that loses the race shows the current document instead of
+// overwriting it (document-memory.mdx, "Conflicts").
 type EditorState = {
+  target: ManagedMemoryDocumentTarget
   meta: ManagedMemoryDocumentMeta
   base: ManagedMemoryDocumentRead
   text: string
@@ -100,26 +108,164 @@ export function ManagedProjectMemory({
 }: {
   projectId: string
   environment: ManagedMemoryEnvironment
-  /** Active deployments of this environment; their declarations name the resources. */
+  /** Active deployments of every project member in this environment; their declarations name the resources when the backend has no inventory. */
   deploymentIds: string[]
 }) {
-  const queryClient = useQueryClient()
-  const deployments = useQueries({
-    queries: deploymentIds.map((deploymentId) => ({
-      queryKey: ['managed-agent-deployment', deploymentId],
-      queryFn: () => getManagedAgentDeployment(deploymentId),
-    })),
+  const inventory = useQuery({
+    queryKey: [
+      'managed-memory-resources',
+      projectId,
+      environment,
+      deploymentIds,
+    ],
+    queryFn: () =>
+      listMemoryResources({
+        inventory: () => getManagedMemoryResources({ projectId, environment }),
+        declarations: () =>
+          Promise.all(deploymentIds.map(getManagedAgentDeployment)),
+      }),
   })
-  const declared = declaredMemoryResources(
-    deployments.map((deployment) => deployment.data),
-  )
+  const known = inventory.data?.resources ?? []
   const [selectedResource, setSelectedResource] = useState<string>()
   const [customResource, setCustomResource] = useState('')
-  const resource = selectedResource ?? declared[0]?.id
-  const declaration = declared.find((candidate) => candidate.id === resource)
-  const target = (id: string) => ({
+  const resource = selectedResource ?? known[0]?.id
+  const summary = known.find((candidate) => candidate.id === resource)
+
+  return (
+    <Panel>
+      <PanelHeader>
+        <div>
+          <PanelTitle>Memory</PanelTitle>
+          <PanelDescription>
+            Documents saved in {environment}, per resource. Owner edits use the
+            same revision checks as agent saves.
+          </PanelDescription>
+        </div>
+      </PanelHeader>
+      <PanelContent className="grid gap-4 md:grid-cols-[minmax(0,20rem)_1fr] md:items-end">
+        <Field
+          label="Resource"
+          htmlFor="memory-resource"
+          description={
+            summary && !summary.declared
+              ? 'No active deployment declares this resource; its documents are kept until you delete them.'
+              : inventory.data?.source === 'declarations'
+                ? 'Listed from active deployments; undeclared resources are not shown here. Open one by ID.'
+                : known.length || inventory.isLoading
+                  ? undefined
+                  : 'No memory resources here yet; open one by ID.'
+          }
+        >
+          {known.length || resource ? (
+            <Select
+              id="memory-resource"
+              value={resource ?? ''}
+              onValueChange={setSelectedResource}
+              options={[
+                ...known.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.id,
+                  ...(memoryResourceHint(candidate)
+                    ? { hint: memoryResourceHint(candidate) }
+                    : {}),
+                })),
+                // A resource opened by ID that the inventory does not list.
+                ...(resource && !summary
+                  ? [{ value: resource, label: resource, hint: 'not listed' }]
+                  : []),
+              ]}
+              placeholder="Choose a resource"
+            />
+          ) : (
+            <Input
+              id="memory-resource"
+              value=""
+              readOnly
+              placeholder={
+                inventory.isLoading
+                  ? 'Loading resources'
+                  : 'No resource selected'
+              }
+            />
+          )}
+        </Field>
+        <form
+          className="flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const next = customResource.trim()
+            if (!next) return
+            setSelectedResource(next)
+            setCustomResource('')
+          }}
+        >
+          <Input
+            aria-label="Other resource ID"
+            value={customResource}
+            placeholder="Other resource ID"
+            onChange={(event) => setCustomResource(event.target.value)}
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={!customResource.trim()}
+          >
+            Open
+          </Button>
+        </form>
+      </PanelContent>
+      {inventory.isError ? (
+        <PanelContent className="border-t">
+          <EmptyState
+            icon={BookOpen}
+            title="Couldn't list memory resources"
+            description={
+              inventory.error instanceof Error
+                ? inventory.error.message
+                : 'Try loading this page again.'
+            }
+          />
+        </PanelContent>
+      ) : resource ? (
+        // Keyed by the selection: switching resources remounts the documents
+        // panel, so drafts, dialogs and in-flight reads belong to the resource
+        // they were started for, and a read that resolves after the switch
+        // has nowhere to land.
+        <MemoryResourceDocuments
+          key={`${environment}:${resource}`}
+          projectId={projectId}
+          environment={environment}
+          resource={resource}
+          summary={summary}
+        />
+      ) : (
+        <PanelContent className="border-t">
+          <EmptyState
+            icon={BookOpen}
+            title="Choose a resource"
+            description="Resources come from the deployments that declare them and from the documents already saved here."
+          />
+        </PanelContent>
+      )}
+    </Panel>
+  )
+}
+
+function MemoryResourceDocuments({
+  projectId,
+  environment,
+  resource,
+  summary,
+}: {
+  projectId: string
+  environment: ManagedMemoryEnvironment
+  resource: string
+  summary?: MemoryResourceSummary
+}) {
+  const queryClient = useQueryClient()
+  const target = (id: string): ManagedMemoryDocumentTarget => ({
     projectId,
-    resource: resource ?? '',
+    resource,
     id,
     environment,
   })
@@ -131,12 +277,11 @@ export function ManagedProjectMemory({
     queryFn: ({ pageParam }) =>
       getManagedMemoryDocuments({
         projectId,
-        resource: resource ?? '',
+        resource,
         environment,
         ...(pageParam ? { cursor: pageParam } : {}),
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: Boolean(resource),
   })
   const rows = documents.data?.pages.flatMap((page) => page.documents) ?? []
 
@@ -151,7 +296,13 @@ export function ManagedProjectMemory({
   const [editor, setEditor] = useState<EditorState>()
   const [removing, setRemoving] = useState<ManagedMemoryDocumentMeta>()
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: listKey })
+  const invalidate = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: listKey }),
+      queryClient.invalidateQueries({
+        queryKey: ['managed-memory-resources', projectId, environment],
+      }),
+    ])
 
   const create = useMutation({
     mutationFn: () =>
@@ -171,12 +322,16 @@ export function ManagedProjectMemory({
     onError: (error) => notifyError("Couldn't create that document.", error),
   })
 
+  // The read's variables are the target; the editor opens on exactly that.
   const openEditor = useMutation({
-    mutationFn: (meta: ManagedMemoryDocumentMeta) =>
-      getManagedMemoryDocument(target(meta.id)),
-    onSuccess: (base, meta) =>
+    mutationFn: (input: {
+      target: ManagedMemoryDocumentTarget
+      meta: ManagedMemoryDocumentMeta
+    }) => getManagedMemoryDocument(input.target),
+    onSuccess: (base, input) =>
       setEditor({
-        meta,
+        target: input.target,
+        meta: input.meta,
         base,
         text: base.document.text,
         summary: base.document.summary,
@@ -188,14 +343,14 @@ export function ManagedProjectMemory({
     mutationFn: async (state: EditorState) => {
       try {
         return await replaceManagedMemoryDocument({
-          ...target(state.meta.id),
+          ...state.target,
           etag: state.base.etag,
           text: state.text,
           summary: state.summary,
         })
       } catch (error) {
         if (error instanceof ApiError && error.status === 412) {
-          const conflict = await getManagedMemoryDocument(target(state.meta.id))
+          const conflict = await getManagedMemoryDocument(state.target)
           setEditor({ ...state, conflict })
           return undefined
         }
@@ -258,7 +413,6 @@ export function ManagedProjectMemory({
 
   const exportResource = useMutation({
     mutationFn: async () => {
-      if (!resource) return undefined
       const all: ManagedMemoryDocument[] = []
       let cursor: string | undefined
       do {
@@ -289,11 +443,8 @@ export function ManagedProjectMemory({
       URL.revokeObjectURL(url)
       return all.length
     },
-    onSuccess: (count) => {
-      if (count !== undefined) {
-        notifySuccess(`Exported ${count} document${count === 1 ? '' : 's'}.`)
-      }
-    },
+    onSuccess: (count) =>
+      notifySuccess(`Exported ${count} document${count === 1 ? '' : 's'}.`),
     onError: (error) => notifyError("Couldn't export that resource.", error),
   })
 
@@ -366,7 +517,9 @@ export function ManagedProjectMemory({
             size="sm"
             variant="outline"
             disabled={openEditor.isPending}
-            onClick={() => openEditor.mutate(document)}
+            onClick={() =>
+              openEditor.mutate({ target: target(document.id), meta: document })
+            }
           >
             Edit
           </Button>
@@ -400,165 +553,92 @@ export function ManagedProjectMemory({
   const conflictWriter = editor?.conflict
     ? memoryWriterLabel(editor.conflict.document.writer)
     : undefined
+  const maxBytes = summary?.provider.maxBytes
 
   return (
     <>
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Memory</PanelTitle>
-            <PanelDescription>
-              Documents saved in {environment}, per resource. Owner edits use
-              the same revision checks as agent saves.
-            </PanelDescription>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!resource || exportResource.isPending}
-              onClick={() => exportResource.mutate()}
-            >
-              {exportResource.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Download />
-              )}
-              Export
-            </Button>
-            <Button
-              size="sm"
-              disabled={!resource}
-              onClick={() => setCreating(true)}
-            >
-              <Plus /> Create document
-            </Button>
-          </div>
-        </PanelHeader>
-        <PanelContent className="grid gap-4 md:grid-cols-[minmax(0,20rem)_1fr] md:items-end">
-          <Field
-            label="Resource"
-            htmlFor="memory-resource"
-            description={
-              declaration?.description ||
-              (declared.length
-                ? undefined
-                : 'No active deployment declares memory here; open a resource by ID.')
-            }
+      <PanelContent className="flex flex-wrap items-center justify-between gap-3 border-t">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{resource}</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            {summary
+              ? [
+                  summary.declared ? undefined : 'Not declared',
+                  maxBytes !== undefined
+                    ? `${formatMemoryBytes(maxBytes)} per document`
+                    : undefined,
+                  summary.documents !== undefined
+                    ? `${summary.documents} ${summary.documents === 1 ? 'document' : 'documents'}`
+                    : undefined,
+                ]
+                  .filter((part) => part !== undefined)
+                  .join(' · ')
+              : 'Opened by ID.'}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={exportResource.isPending}
+            onClick={() => exportResource.mutate()}
           >
-            {declared.length || resource ? (
-              <Select
-                id="memory-resource"
-                value={resource ?? ''}
-                onValueChange={setSelectedResource}
-                options={[
-                  ...declared.map((candidate) => ({
-                    value: candidate.id,
-                    label: candidate.id,
-                    ...(candidate.provider.maxBytes
-                      ? { hint: formatMemoryBytes(candidate.provider.maxBytes) }
-                      : {}),
-                  })),
-                  // A resource opened by ID that no active deployment declares.
-                  ...(resource && !declaration
-                    ? [
-                        {
-                          value: resource,
-                          label: resource,
-                          hint: 'not declared',
-                        },
-                      ]
-                    : []),
-                ]}
-                placeholder="Choose a resource"
-              />
+            {exportResource.isPending ? (
+              <Loader2 className="animate-spin" />
             ) : (
-              <Input
-                id="memory-resource"
-                value=""
-                readOnly
-                placeholder="No resource selected"
-              />
+              <Download />
             )}
-          </Field>
-          <form
-            className="flex gap-2"
-            onSubmit={(event) => {
-              event.preventDefault()
-              const next = customResource.trim()
-              if (!next) return
-              setSelectedResource(next)
-              setCustomResource('')
-            }}
-          >
-            <Input
-              aria-label="Other resource ID"
-              value={customResource}
-              placeholder="Other resource ID"
-              onChange={(event) => setCustomResource(event.target.value)}
-            />
-            <Button
-              type="submit"
-              variant="outline"
-              disabled={!customResource.trim()}
-            >
-              Open
-            </Button>
-          </form>
+            Export
+          </Button>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus /> Create document
+          </Button>
+        </div>
+      </PanelContent>
+      {documents.isError ? (
+        <PanelContent className="border-t">
+          <EmptyState
+            icon={BookOpen}
+            title={`Couldn't load ${resource}`}
+            description={
+              documents.error instanceof Error
+                ? documents.error.message
+                : 'Try loading this resource again.'
+            }
+          />
         </PanelContent>
-        {documents.isError ? (
-          <PanelContent className="border-t">
-            <EmptyState
-              icon={BookOpen}
-              title={`Couldn't load ${resource}`}
-              description={
-                documents.error instanceof Error
-                  ? documents.error.message
-                  : 'Try loading this resource again.'
-              }
-            />
-          </PanelContent>
-        ) : (
-          <PanelContent className="border-t p-0">
-            <ResourceTable
-              columns={columns}
-              rows={rows}
-              rowKey={(document) => document.id}
-              loading={Boolean(resource) && documents.isLoading}
-              empty={
-                <EmptyState
-                  icon={BookOpen}
-                  title={
-                    resource
-                      ? `No ${environment} documents in ${resource}`
-                      : 'Choose a resource'
-                  }
-                  description={
-                    resource
-                      ? 'Create one here or with `opencomputer memory create`. A session can only bind to a document that exists.'
-                      : 'Resources come from the deployment that declares them.'
-                  }
-                />
-              }
-            />
-          </PanelContent>
-        )}
-        {documents.hasNextPage ? (
-          <PanelFooter>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={documents.isFetchingNextPage}
-              onClick={() => void documents.fetchNextPage()}
-            >
-              {documents.isFetchingNextPage ? (
-                <Loader2 className="animate-spin" />
-              ) : null}
-              Load more
-            </Button>
-          </PanelFooter>
-        ) : null}
-      </Panel>
+      ) : (
+        <PanelContent className="border-t p-0">
+          <ResourceTable
+            columns={columns}
+            rows={rows}
+            rowKey={(document) => document.id}
+            loading={documents.isLoading}
+            empty={
+              <EmptyState
+                icon={BookOpen}
+                title={`No ${environment} documents in ${resource}`}
+                description="Create one here or with `opencomputer memory create`. A session can only bind to a document that exists."
+              />
+            }
+          />
+        </PanelContent>
+      )}
+      {documents.hasNextPage ? (
+        <PanelFooter>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={documents.isFetchingNextPage}
+            onClick={() => void documents.fetchNextPage()}
+          >
+            {documents.isFetchingNextPage ? (
+              <Loader2 className="animate-spin" />
+            ) : null}
+            Load more
+          </Button>
+        </PanelFooter>
+      ) : null}
 
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="max-w-2xl">
@@ -620,8 +700,8 @@ export function ManagedProjectMemory({
             label="Text"
             htmlFor="memory-create-text"
             description={
-              declaration?.provider.maxBytes
-                ? `Up to ${formatMemoryBytes(declaration.provider.maxBytes)} of UTF-8.`
+              maxBytes !== undefined
+                ? `Up to ${formatMemoryBytes(maxBytes)} of UTF-8.`
                 : undefined
             }
           >

@@ -61,10 +61,12 @@ structured payload is available to agent code as `input.payload`.
 
 Manage the documents a project's memory resources hold, per environment.
 Every command resolves the linked project; `--environment` defaults to
-development. `list` and `show` print the management API's fields with
-`--json`:
+development. `list` without a resource shows the environment's resources,
+including ones no active deployment declares any more but that still hold
+documents. `list` and `show` print the management API's fields with `--json`:
 
 ```bash
+opencomputer memory list --environment development       # resources, declared or not
 opencomputer memory create requirements workshop --title "Workshop requirements"
 opencomputer memory list requirements --environment development
 opencomputer memory show requirements workshop --json
@@ -75,9 +77,11 @@ opencomputer memory export --out ./memory               # <out>/<resource>/<id>.
 opencomputer memory remove requirements workshop
 ```
 
-`edit` replaces the text with the revision it read; if the document changed
-meanwhile the command exits non-zero with the conflict and keeps your edited
-text in a temporary file. Pass `--text-file` or `--text-stdin` to `create` and
+`edit` replaces the text with the revision it read. Any save that does not
+succeed, whether the document changed meanwhile, the text is over the limit
+or the API was unreachable, exits non-zero and keeps your edited text in a
+temporary file whose path the error prints; save it again with
+`--text-file <path>`. Pass `--text-file` or `--text-stdin` to `create` and
 `edit` to supply text without an editor.
 
 ## Secrets and managed egress

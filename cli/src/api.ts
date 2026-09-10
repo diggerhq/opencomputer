@@ -23,8 +23,10 @@ export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /** One row per project agent and environment: that member's active deployment there. */
   environments: Array<{
     name: "development" | "production";
+    agentId?: string;
     activeDeploymentId?: string;
     updatedAt: string;
   }>;
@@ -258,6 +260,18 @@ export interface MemoryDocument extends MemoryDocumentMeta {
 export interface MemoryDocumentPage {
   documents: MemoryDocumentMeta[];
   nextCursor: string | null;
+}
+
+/**
+ * One entry of the environment's resource inventory: storage outlives code,
+ * so `declared` says whether an active deployment still names the resource
+ * and `documents` counts the live documents it holds.
+ */
+export interface MemoryResource {
+  id: string;
+  provider: { kind?: string; maxBytes?: number };
+  declared: boolean;
+  documents: number;
 }
 
 /** A document together with the `ETag` the next conditional request must send back verbatim. */
@@ -775,6 +789,18 @@ export class OpenComputerClient {
     const response = await this.response(path, init);
     const document = (await response.json()) as MemoryDocument;
     return { document, etag: response.headers.get("etag") ?? "" };
+  }
+
+  async memoryResources(input: {
+    projectId: string;
+    environment: MemoryEnvironment;
+  }): Promise<MemoryResource[]> {
+    const query = new URLSearchParams({ environment: input.environment });
+    const result = await this.request<{ resources: MemoryResource[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}` +
+        `/memory?${query.toString()}`,
+    );
+    return result.resources;
   }
 
   memoryDocuments(input: {

@@ -73,6 +73,25 @@ export interface MemoryDocumentPage {
   nextCursor: string | null;
 }
 
+/**
+ * One entry of `GET .../projects/<id>/memory?environment=`: the environment's
+ * durable resource inventory. Storage outlives code, so a resource stays
+ * listed while it holds documents even after every deployment stopped
+ * declaring it (`declared: false`).
+ */
+export interface MemoryResource {
+  id: string;
+  provider: { kind: string; maxBytes?: number };
+  /** Whether an active deployment of the environment currently declares the resource. */
+  declared: boolean;
+  /** Live (non-deleted) documents in the resource. */
+  documents: number;
+}
+
+export interface MemoryResourceInventory {
+  resources: MemoryResource[];
+}
+
 /** Body of `PUT .../documents/<id>` with `If-None-Match: *`. */
 export interface CreateMemoryDocumentBody {
   title: string;
