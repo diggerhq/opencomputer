@@ -23,6 +23,7 @@ function deployment(
     channels: [],
     connections: [],
     createdAt: '2026-08-15T00:00:00.000Z',
+    memory: [],
   }
 }
 
@@ -37,6 +38,7 @@ function session(id: string, deploymentId: string): ManagedAgentSession {
     createdAt: '2026-08-15T00:00:00.000Z',
     updatedAt: '2026-08-15T00:00:00.000Z',
     turns: [],
+    memory: [],
   }
 }
 
