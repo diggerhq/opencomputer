@@ -170,6 +170,22 @@ await oc.credentials.delete(creds[0].id);
 
 Or reference one by id when creating an agent: `oc.agents.create({ …, credential: "cred_…" })`. A key isn't required — `credential: "managed"` needs none; a session fails with `422 no_credential` only when it resolves to neither Managed nor a usable key. Full guide: [Credentials](https://docs.opencomputer.dev/agent-sessions/credentials).
 
+### Serverless Agents memory
+
+Serverless Agents (`opencomputer deploy`) keep notes in [memory](https://opencomputer.dev/agents/memory). This package types its management API and ships one helper for the moment an application opens a topic: create the document if it is new, then create a session bound to it, both converging under one key on retry:
+
+```typescript
+import { startSessionOnDocument } from "@opencomputer/sdk";
+
+const { document, session } = await startSessionOnDocument({
+  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+  projectId: "prj_…", environment: "development", agent: "topic-worker",
+  resource: "topics", documentId: "workshop", document: { title: "Workshop" },
+  idempotencyKey: `topic/workshop/${deploymentId}`,
+});
+// document.created, session.created: false when they already existed.
+```
+
 ## Sandbox webhooks (Preview)
 
 Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. The same `verifyWebhook` helper verifies both session and sandbox deliveries. **Preview: newly available; the surface may change.**
