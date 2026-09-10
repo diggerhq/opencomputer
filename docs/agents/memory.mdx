@@ -98,11 +98,11 @@ not something to repeat before each session.
 
 ## 4. Bind a session to it
 
-Create a session using your project ID and API key. Keep the API key in trusted
-application code; do not give it to the agent.
+Create a session with your project's API key. The key identifies the project;
+keep it in trusted application code and never give it to the agent.
 
 ```bash
-curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/sessions' \
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
   -H 'x-api-key: <api-key>' \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: workshop-session-1' \
