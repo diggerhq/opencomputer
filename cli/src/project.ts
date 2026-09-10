@@ -463,7 +463,7 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.5.0",
+          "@opencomputer/agent": "^0.6.0",
           ...(spa
             ? {
                 "@opencomputer/react": "^0.1.0",
@@ -473,7 +473,7 @@ export default function Agent() {
             : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.6.1",
+          "@opencomputer/cli": "^0.7.0",
           ...(spa
             ? {
                 "@types/node": "^24.0.0",
