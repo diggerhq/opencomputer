@@ -25,9 +25,39 @@ export interface BuiltAgentArtifact {
   channels: string[];
   connections: string[];
   httpConnections: HttpConnectionManifest[];
+  memory: MemoryDeclaration[];
   body: Buffer;
   digest: string;
   elapsedMs: number;
+}
+
+export interface HttpToolDeclaration {
+  name: string;
+  description: string;
+  access: "read" | "write";
+  idempotent: boolean;
+  input: Record<string, unknown>;
+}
+
+export type MemoryProviderDeclaration =
+  | { kind: "document"; maxBytes: number }
+  | {
+      kind: "http";
+      connection: string;
+      path: string;
+      maxBytes: number;
+      tools: HttpToolDeclaration[];
+    };
+
+/**
+ * A memory resource as registered with the deployment. The same id in every
+ * agent of a project names the same resource, so declarations sharing an id
+ * must agree on the provider and its configuration.
+ */
+export interface MemoryDeclaration {
+  id: string;
+  description: string;
+  provider: MemoryProviderDeclaration;
 }
 
 export interface HttpConnectionManifest {
@@ -846,6 +876,305 @@ function definedMcpServers(
   };
   visit(file);
   return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+const MEMORY_DEFAULT_MAX_BYTES = 8_192;
+const MEMORY_MAX_BYTES_CEILING = 16_384;
+const MEMORY_ID_MAX_LENGTH = 128;
+const HTTP_MEMORY_DEFAULT_PATH = "/memory";
+const HTTP_MEMORY_MAX_TOOLS = 8;
+const HTTP_MEMORY_TOOL_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
+/** Injected into every memory tool's model-facing schema to select the resource. */
+const MEMORY_RESERVED_ARGUMENT = "memory";
+/** The built-in document provider's fixed tools, exposed as `memory_<name>`. */
+const DOCUMENT_MEMORY_TOOLS = ["save", "read", "list"];
+
+/** The identifier a property references, for `connection: name` and `{ connection }` alike. */
+function objectPropertyIdentifier(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): string | undefined {
+  for (const property of object.properties) {
+    if (
+      ts.isShorthandPropertyAssignment(property) &&
+      property.name.text === name
+    ) {
+      return property.name.text;
+    }
+  }
+  const expression = objectProperty(object, name);
+  return expression && ts.isIdentifier(expression) ? expression.text : undefined;
+}
+
+function memoryMaxBytesValue(
+  expression: ts.Expression | undefined,
+  label: string,
+): number {
+  if (!expression) return MEMORY_DEFAULT_MAX_BYTES;
+  const value = ts.isNumericLiteral(expression)
+    ? Number(expression.text)
+    : Number.NaN;
+  if (!Number.isInteger(value) || value < 1 || value > MEMORY_MAX_BYTES_CEILING) {
+    throw new Error(
+      `${label} maxBytes must be a whole number literal between 1 and ${MEMORY_MAX_BYTES_CEILING}`,
+    );
+  }
+  return value;
+}
+
+function containsSchemaReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsSchemaReference);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, nested]) => key === "$ref" || containsSchemaReference(nested),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function httpMemoryTools(value: unknown, label: string): HttpToolDeclaration[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} tools must be an array literal`);
+  }
+  if (value.length > HTTP_MEMORY_MAX_TOOLS) {
+    throw new Error(`${label} may declare at most ${HTTP_MEMORY_MAX_TOOLS} tools`);
+  }
+  const names = new Set<string>();
+  return value.map((entry): HttpToolDeclaration => {
+    if (!isRecord(entry)) {
+      throw new Error(`${label} tools must contain object literals`);
+    }
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!HTTP_MEMORY_TOOL_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `${label} tool names must use 1 to 32 lowercase letters, numbers, and underscores`,
+      );
+    }
+    const toolLabel = `${label} tool ${name}`;
+    if (names.has(name)) {
+      throw new Error(`${toolLabel} is declared more than once`);
+    }
+    names.add(name);
+    const description =
+      typeof entry.description === "string" ? entry.description.trim() : "";
+    if (!description) throw new Error(`${toolLabel} requires a description`);
+    if (entry.access !== "read" && entry.access !== "write") {
+      throw new Error(`${toolLabel} access must be "read" or "write"`);
+    }
+    if (entry.idempotent !== undefined && typeof entry.idempotent !== "boolean") {
+      throw new Error(`${toolLabel} idempotent must be true or false`);
+    }
+    const input = entry.input;
+    if (!isRecord(input)) {
+      throw new Error(`${toolLabel} input must be a JSON Schema object`);
+    }
+    if (input.type !== "object") {
+      throw new Error(
+        `${toolLabel} input must be a JSON Schema with type "object"`,
+      );
+    }
+    if (containsSchemaReference(input)) {
+      throw new Error(`${toolLabel} input cannot use $ref`);
+    }
+    if (input.properties !== undefined && !isRecord(input.properties)) {
+      throw new Error(`${toolLabel} input properties must be an object`);
+    }
+    if (
+      input.required !== undefined &&
+      (!Array.isArray(input.required) ||
+        input.required.some((item) => typeof item !== "string"))
+    ) {
+      throw new Error(`${toolLabel} input required must be an array of strings`);
+    }
+    if (
+      (isRecord(input.properties) &&
+        Object.prototype.hasOwnProperty.call(
+          input.properties,
+          MEMORY_RESERVED_ARGUMENT,
+        )) ||
+      (Array.isArray(input.required) &&
+        input.required.includes(MEMORY_RESERVED_ARGUMENT))
+    ) {
+      throw new Error(
+        `${toolLabel} input cannot declare the reserved ${MEMORY_RESERVED_ARGUMENT} argument; OpenComputer adds it to select the resource`,
+      );
+    }
+    return {
+      name,
+      description,
+      access: entry.access,
+      idempotent: entry.idempotent === true,
+      input,
+    };
+  });
+}
+
+function memoryProviderDeclaration(
+  expression: ts.Expression | undefined,
+  id: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): MemoryProviderDeclaration {
+  const label = `Memory ${id}`;
+  if (!expression) {
+    return { kind: "document", maxBytes: MEMORY_DEFAULT_MAX_BYTES };
+  }
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression) ||
+    (expression.expression.text !== "documentMemory" &&
+      expression.expression.text !== "httpMemory")
+  ) {
+    throw new Error(
+      `${label} provider must be an inline documentMemory() or httpMemory() call`,
+    );
+  }
+  const provider = expression.expression.text;
+  const input = expression.arguments[0];
+  if (input !== undefined && !ts.isObjectLiteralExpression(input)) {
+    throw new Error(`${label} ${provider}() requires an object literal`);
+  }
+  if (provider === "documentMemory") {
+    return {
+      kind: "document",
+      maxBytes: memoryMaxBytesValue(
+        input && objectProperty(input, "maxBytes"),
+        label,
+      ),
+    };
+  }
+  if (!input) {
+    throw new Error(`${label} httpMemory() requires a connection`);
+  }
+  const connectionName = objectPropertyIdentifier(input, "connection");
+  if (!connectionName) {
+    throw new Error(
+      `${label} connection must reference a defineConnection() binding`,
+    );
+  }
+  const connection = connectionBindings.get(connectionName);
+  if (!connection) {
+    throw new Error(
+      `${label} references unknown connection ${connectionName}`,
+    );
+  }
+  const pathExpression = objectProperty(input, "path");
+  const path = pathExpression
+    ? literalStringValue(pathExpression, `${label} path`)
+    : HTTP_MEMORY_DEFAULT_PATH;
+  if (!/^\/(?!\/)[^?#\s]*$/.test(path)) {
+    throw new Error(
+      `${label} path must begin with a single / and contain no query or fragment`,
+    );
+  }
+  if (connection.pathPrefix && !path.startsWith(connection.pathPrefix)) {
+    throw new Error(
+      `${label} path ${path} is outside connection ${connection.id} pathPrefix ${connection.pathPrefix}`,
+    );
+  }
+  if (connection.methods && !connection.methods.includes("POST")) {
+    throw new Error(
+      `${label} requires connection ${connection.id} to allow POST`,
+    );
+  }
+  const toolsExpression = objectProperty(input, "tools");
+  return {
+    kind: "http",
+    connection: connection.id,
+    path,
+    maxBytes: memoryMaxBytesValue(objectProperty(input, "maxBytes"), label),
+    tools: httpMemoryTools(
+      toolsExpression && staticJsonValue(toolsExpression, `${label} tools`),
+      label,
+    ),
+  };
+}
+
+function definedMemory(
+  source: string,
+  path: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): MemoryDeclaration[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const declarations: MemoryDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineMemory"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error(`${path} defineMemory() requires an object literal`);
+      }
+      const id = literalStringValue(objectProperty(input, "id"), "memory id");
+      if (!AGENT_ID_PATTERN.test(id) || id.length > MEMORY_ID_MAX_LENGTH) {
+        throw new Error(
+          `Memory id ${JSON.stringify(id)} must use lowercase letters, numbers, and single hyphens, at most ${MEMORY_ID_MAX_LENGTH} characters`,
+        );
+      }
+      const description = literalStringValue(
+        objectProperty(input, "description"),
+        `Memory ${id} description`,
+      ).trim();
+      if (!description) {
+        throw new Error(`Memory ${id} requires a non-empty description`);
+      }
+      declarations.push({
+        id,
+        description,
+        provider: memoryProviderDeclaration(
+          objectProperty(input, "provider"),
+          id,
+          connectionBindings,
+        ),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return declarations;
+}
+
+/** The model-facing tool names a declaration reserves. */
+export function memoryToolNames(declaration: MemoryDeclaration): string[] {
+  const names =
+    declaration.provider.kind === "document"
+      ? DOCUMENT_MEMORY_TOOLS
+      : declaration.provider.tools.map((tool) => tool.name);
+  return names.map((name) => `${MEMORY_RESERVED_ARGUMENT}_${name}`);
+}
+
+/**
+ * Deduplicates declarations by id. Declarations sharing an id name the same
+ * resource, so they must agree byte for byte; a difference is a build error
+ * naming both origins.
+ */
+export function mergeMemoryDeclarations(
+  entries: ReadonlyArray<{ origin: string; memory: readonly MemoryDeclaration[] }>,
+): MemoryDeclaration[] {
+  const merged = new Map<string, { origin: string; declaration: MemoryDeclaration }>();
+  for (const { origin, memory } of entries) {
+    for (const declaration of memory) {
+      const existing = merged.get(declaration.id);
+      if (!existing) {
+        merged.set(declaration.id, { origin, declaration });
+        continue;
+      }
+      if (
+        JSON.stringify(existing.declaration) !== JSON.stringify(declaration)
+      ) {
+        throw new Error(
+          `Memory ${JSON.stringify(declaration.id)} is declared with different configuration in ${existing.origin} and ${origin}; declarations sharing an id name the same resource and must agree on the provider and its configuration`,
+        );
+      }
+    }
+  }
+  return [...merged.values()]
+    .map(({ declaration }) => declaration)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function objectProperty(
@@ -1850,6 +2179,36 @@ export const publishOutbox = async (outbox, input) => {
   if (!response.ok) throw new Error("Outbox publish failed with status " + response.status);
   return await response.json();
 };
+// Memory declarations are validated by the compiler before this runs; the
+// runtime only normalizes defaults so a definition equals its manifest entry.
+const MEMORY_DEFAULT_MAX_BYTES = 8192;
+export const documentMemory = (input = {}) => Object.freeze({ kind: "document", maxBytes: input.maxBytes ?? MEMORY_DEFAULT_MAX_BYTES });
+export const httpMemory = (input) => Object.freeze({
+  kind: "http",
+  connection: id(input.connection && input.connection.id, "httpMemory connection"),
+  path: input.path || "/memory",
+  maxBytes: input.maxBytes ?? MEMORY_DEFAULT_MAX_BYTES,
+  tools: Object.freeze((input.tools || []).map((tool) => Object.freeze({ ...tool, idempotent: tool.idempotent === true }))),
+});
+export const defineMemory = (input) => Object.freeze({
+  kind: "memory",
+  version: 1,
+  id: id(input.id, "defineMemory"),
+  description: String(input.description).trim(),
+  provider: input.provider || documentMemory(),
+});
+// The host resolves every session binding before the render and exposes the
+// projections on its render scope as scope.memory[id]; the hook returns one
+// and the host records the id in scope.selectedMemory, returned to it as
+// selectedMemory next to enabledTools. An unbound id fails the render here.
+export const useMemory = (memory) => {
+  const memoryId = id(typeof memory === "string" ? memory : memory && memory.id, "useMemory");
+  const projection = hooks().useMemory(memoryId);
+  if (!projection || typeof projection !== "object" || typeof projection.text !== "string" || !Array.isArray(projection.sources) || typeof projection.writable !== "boolean") {
+    throw new Error("Memory " + JSON.stringify(memoryId) + " is not bound to this session; create the session with a memory binding for it");
+  }
+  return projection;
+};
 export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
@@ -2127,6 +2486,33 @@ the product or support surface presented to users.
       `MCP server id ${JSON.stringify(duplicateMcpServer.id)} is defined more than once`,
     );
   }
+  const memory = mergeMemoryDeclarations(
+    sourceModules.map((module) => ({
+      origin: module.path,
+      memory: definedMemory(module.source, module.path, connectionBindings),
+    })),
+  );
+  const declaredMemory = new Set(memory.map((declaration) => declaration.id));
+  const tools = [
+    ...new Set([...reactiveTools, ...literalHookIds(agentSource, "useTool")]),
+  ].sort();
+  for (const id of literalHookIds(agentSource, "useMemory")) {
+    if (!declaredMemory.has(id)) {
+      throw new Error(
+        `useMemory(${JSON.stringify(id)}) references a memory resource this agent does not declare; import its defineMemory() declaration`,
+      );
+    }
+  }
+  for (const declaration of memory) {
+    const collision = memoryToolNames(declaration).find((name) =>
+      tools.includes(name),
+    );
+    if (collision) {
+      throw new Error(
+        `Tool id ${JSON.stringify(collision)} collides with the fixed tool name of memory ${declaration.id}; rename the tool`,
+      );
+    }
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -2134,12 +2520,7 @@ the product or support surface presented to users.
       {
         version: 2,
         entry: "../agent.js",
-        tools: [
-          ...new Set([
-            ...reactiveTools,
-            ...literalHookIds(agentSource, "useTool"),
-          ]),
-        ].sort(),
+        tools,
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
         connections: httpConnections.map((connection) => connection.id).sort(),
@@ -2151,6 +2532,7 @@ the product or support surface presented to users.
           ]),
         ].sort(),
         mcpServerDefinitions,
+        memory,
         models: declaredModels,
       },
       null,
@@ -2189,9 +2571,14 @@ export async function buildAgentArtifact(
   const runtime = await prepareAgent(root);
   const reactive = JSON.parse(
     await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
-  ) as { connections?: string[]; httpConnections?: HttpConnectionManifest[] };
+  ) as {
+    connections?: string[];
+    httpConnections?: HttpConnectionManifest[];
+    memory?: MemoryDeclaration[];
+  };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
+  const memory = reactive.memory ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -2205,6 +2592,7 @@ export async function buildAgentArtifact(
     channels: [],
     connections,
     httpConnections,
+    memory,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
