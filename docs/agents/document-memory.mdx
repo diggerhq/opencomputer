@@ -70,6 +70,10 @@ Set `memory.<resource>` when creating a session:
 - Resources must be declared by the deployment and bound documents must exist.
   Invalid bindings fail admission.
 - Bindings stay fixed. Schedules, channels and webhooks do not configure them.
+- One store per project and environment. An application with many users
+  keeps their data apart with document bindings and application-chosen
+  document IDs; a collection binding sees every document of the resource, so
+  it suits a single owner or a coordinating agent, not one user among many.
 
 Calling `useMemory` exposes the binding's tools; omitting it exposes none.
 An unbound hook fails before inference. Tools accept a `memory` resource ID,
@@ -204,35 +208,31 @@ Install the CLI, then [log in and link your project](/agents/quickstart):
 npm install -g @opencomputer/cli
 ```
 
-Commands below use Development; change `--environment` to `production` as
-needed.
+Commands default to Development; add `--environment production` for
+production.
 
 List metadata:
 
 ```bash
-opencomputer memory list notes \
-  --environment development
+opencomputer memory list notes
 ```
 
 Read a document:
 
 ```bash
-opencomputer memory show notes workshop \
-  --environment development
+opencomputer memory show notes workshop
 ```
 
 Create empty notes:
 
 ```bash
-opencomputer memory create notes workshop \
-  --title "Workshop" --environment development
+opencomputer memory create notes workshop --title "Workshop"
 ```
 
 Open existing text in your editor:
 
 ```bash
-opencomputer memory edit notes workshop \
-  --environment development
+opencomputer memory edit notes workshop
 ```
 
 Create and edit accept `--text-file <path>`, `--text-stdin`, and
@@ -245,15 +245,13 @@ returns the [document object](#documents).
 Freeze:
 
 ```bash
-opencomputer memory freeze notes workshop \
-  --environment development
+opencomputer memory freeze notes workshop
 ```
 
 Re-enable writes:
 
 ```bash
-opencomputer memory unfreeze notes workshop \
-  --environment development
+opencomputer memory unfreeze notes workshop
 ```
 
 Freeze sets `agentWrites: "disabled"`; after success, no later agent save can
@@ -268,8 +266,7 @@ a separate completion contract.
 ### Export saved notes
 
 ```bash
-opencomputer memory export --out ./memory \
-  --environment development
+opencomputer memory export --out ./memory
 ```
 
 Export includes retired resources; repeat `--resource <id>` to restrict it.
@@ -280,8 +277,7 @@ Credentials, conversation history and sandbox files are excluded.
 ### Delete a document
 
 ```bash
-opencomputer memory remove notes workshop \
-  --environment development
+opencomputer memory remove notes workshop
 ```
 
 Deletion removes title, text and summary but reserves the ID against delayed

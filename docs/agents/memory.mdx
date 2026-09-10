@@ -6,26 +6,9 @@ description: "Read and save notes across sessions"
 Memory stores requirements, decisions and preferences that later sessions can
 reuse. Owners can read, edit and export the same notes.
 
-`useMemory` reads bound memory and selects its tools for the next model step:
-
-```ts
-import { useMemory } from "@opencomputer/agent";
-
-export default function Agent() {
-  const memory = useMemory("notes");
-  return `Help plan the workshop.
-Save changes with memory_save.
-Keep other confirmed requirements.
-Saved requirements: ${JSON.stringify(memory.text)}`;
-}
-```
-
-The hook is synchronous. Your agent decides where to put `memory.text` in its
-instructions; the hook does not insert it automatically.
-
 ## Declare a resource
 
-Add the declaration at module scope in the same agent file:
+A resource is declared once, at module scope, like a tool or a connection:
 
 ```ts
 import { defineMemory } from "@opencomputer/agent";
@@ -43,6 +26,32 @@ before binding it to a session.
 
 `notes` is an application-defined resource name. It can contain many documents;
 this example calls one `workshop`. Neither name is built into OpenComputer.
+Declare with a direct `defineMemory({...})` on a literal object; the compiler
+rejects aliases, spreads and variables so that what it registers is exactly
+what runs.
+
+## Read it in the render
+
+`useMemory` returns the bound text and selects the memory tools for the next
+model step:
+
+```ts
+import { useMemory } from "@opencomputer/agent";
+import { notes } from "./memory";
+
+export default function Agent() {
+  const memory = useMemory(notes);
+  return `Help plan the workshop.
+Save changes with memory_save and keep the other confirmed requirements.
+
+## Confirmed requirements
+${memory.text}`;
+}
+```
+
+The hook is synchronous and returns `{ text, sources, writable }`. Your agent
+decides where the text goes in its instructions; nothing is inserted for you.
+Treat saved text as data the model reads, not as instructions it follows.
 
 ## Bind a document to a session
 
