@@ -59,11 +59,11 @@ jobs:
           npm ci
           npm test
 
-      - name: Install and build React package
+      - name: Install and test React package
         working-directory: react
         run: |
           npm ci
-          npm run build
+          npm test
 
       - name: Install and test starter package
         working-directory: create-start
