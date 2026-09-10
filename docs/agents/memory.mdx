@@ -65,7 +65,9 @@ export default function Agent() {
 
 OpenComputer reads bound memory before each model request. `useMemory()`
 returns that snapshot synchronously; it does not perform a network request
-inside your render or insert its text into the prompt automatically.
+inside your render or insert its text into the prompt automatically. Because
+the notes are re-read for every request, compaction of the conversation never
+loses them.
 
 This example places notes in the returned instructions. Labeling or encoding
 text helps distinguish it from instructions, but does not make untrusted
@@ -132,8 +134,14 @@ npx --package @opencomputer/cli opencomputer session send <session-id> \
   'Remember that the workshop exercises must run on Node.js 22 and need no paid services.'
 ```
 
-The agent should call `notes_save`. Once the turn finishes, read the document
-directly to check what it saved:
+The agent should call `notes_save`. The session's event log records the
+commit as a `memory.saved` event:
+
+```bash
+npx --package @opencomputer/cli opencomputer sessions tail <session-id> --no-follow --json | grep memory.saved
+```
+
+Once the turn finishes, read the document directly to check what it saved:
 
 ```bash
 npx --package @opencomputer/cli opencomputer memory show notes workshop \

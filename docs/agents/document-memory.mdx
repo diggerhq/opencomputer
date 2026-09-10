@@ -35,14 +35,19 @@ export const notes = defineMemory({
 | `maxBytes` | Maximum UTF-8 size of each document's `text`, including owner writes. Default 8,192; maximum 16,384. |
 
 Development and Production have separate documents, even when resource and
-document IDs match. Lowering `maxBytes` fails if an existing document exceeds
-the new limit; documents are not silently truncated. Definitions sharing an
-ID within one deployment must agree on the provider and its configuration.
-The deployment selected for an environment sets its shared resource limit.
-That limit applies to subsequent writes from all sessions, including sessions
-whose agent code is pinned to an older deployment. Changing the provider kind
-under an existing resource ID is rejected; use a new resource and migrate the
-data explicitly.
+document IDs match. Definitions sharing an ID within one deployment must agree
+on the provider and its configuration. The deployment selected for an
+environment sets its shared resource limit. That limit applies to writes made
+after the deployment is selected, from all sessions, including sessions whose
+agent code is pinned to an older deployment.
+
+`maxBytes` is a rule for future writes, not a check on stored data. Lowering
+it never fails a deployment and never truncates a document. A document that
+is larger than the new limit stays readable and is projected in full; its
+next save must fit, from the agent and the owner alike. Document reads report
+`bytes` and `maxBytes`, and the Memory page marks documents over the current
+limit. Changing the provider kind under an existing resource ID is rejected;
+use a new resource and migrate the data explicitly.
 
 ## Session bindings
 
@@ -61,25 +66,56 @@ resource must be declared by the session's deployment, and a document binding
 requires an existing document. Invalid or unauthorized bindings fail session
 creation; OpenComputer does not silently fall back to broader access.
 
-Bindings remain fixed for the session and appear in session inspection.
+Bindings remain fixed for the session. Session inspection returns them as
+`memory`, one entry per resource, without any credential:
+
+```json
+{
+  "memory": [
+    { "resource": "notes", "scope": "document", "id": "workshop", "access": "read-write", "writable": true }
+  ]
+}
+```
+
+`writable` is `false` once the session has ended, or while the document's
+agent writes are disabled. Creating a session again with the same
+`Idempotency-Key` and the same bindings returns the existing session; the same
+key with different bindings is rejected with `409 conflict`.
+
 Calling `useMemory()` exposes the binding's permitted tools for that model
 request; omitting the hook exposes none of them. It cannot widen access.
-Calling it without the required binding fails
-before inference. This guide binds explicitly created sessions; it does not
-assume schedules, channels or incoming webhooks configure memory bindings.
+Calling it without the required binding fails before inference. This guide
+binds explicitly created sessions; it does not assume schedules, channels or
+incoming webhooks configure memory bindings.
 
 ## Reading
 
 OpenComputer recalls all bound resources before render. A failure blocks the
 model request, even if the render would omit that resource's hook.
-The hook returns `text` and `sources`. Each document source has `id`, `title`,
-`revision` and `updatedAt`. An empty document returns `text: ""` with its source;
+The hook returns `text`, `sources` and `writable`. Each document source has
+`id`, `title`, `revision` and `updatedAt`. `writable` is `true` when this
+binding's save tool can commit right now: the binding is read-write and the
+document accepts agent writes. Use it to tell the model when notes are
+read-only for this task. An empty document returns `text: ""` with its source;
 it is distinct from a missing or inaccessible document. Treat the result as an
 immutable snapshot of the current model request.
 
+Memory is not conversation history. Compaction summarises the conversation;
+it never summarises or drops memory, because every model request receives
+the current notes again through the render. A note saved in step three is
+visible in step four whether or not compaction ran in between.
+
 A collection overview contains up to 50 recent documents, fitting whole entries
-within 16 KiB of UTF-8 text. It does not include their full text. The model can
-open a document with `notes_read`:
+within 16 KiB of UTF-8 text, one document per line in this fixed form:
+
+```text
+workshop | Workshop notes | Node.js 22, no paid services. | 2026-09-10
+budget | Conference budget | Q4 figures in EUR, hotel refund excluded. | 2026-09-09
+```
+
+The fields are the document ID, its title, its summary (empty when none) and
+the date of its last update. The overview does not include full text. The
+model can open a document with `notes_read`:
 
 ```json
 { "id": "workshop" }
@@ -113,9 +149,24 @@ collection overviews. Omitting it preserves the existing summary; send an empty
 string to clear it. To clear both fields, send both as empty strings. The agent
 cannot change the document's ID, title or write policy.
 
-A successful tool result means the save is durable, even if the turn later
-fails. There is no automatic extraction at turn end or compaction, and no
-separate read tool for a document binding: the next render reads the document.
+The tool result is structured, so instructions can branch on it:
+
+| Result | When |
+| --- | --- |
+| `{ "status": "saved", "revision": "<opaque>", "bytes": 512 }` | The document was replaced. The save is durable even if the turn later fails. |
+| `{ "status": "conflict", "text": "<current>", "summary": "<current>" }` | The document changed since this model request read it. The result carries the current content so the model can reconcile in one step. |
+| `{ "status": "rejected", "reason": "agent_writes_disabled" }` | The owner has frozen the document. |
+| `{ "status": "rejected", "reason": "too_large", "bytes": 9000, "maxBytes": 8192 }` | The text does not fit the resource limit. |
+| `{ "status": "rejected", "reason": "not_found" }` | The document was deleted. |
+
+A conflict or rejection is a result, not a tool error: the turn continues and
+the model decides what to do. Every committed save is also recorded in the
+session's event log as `memory.saved` with `resource`, `documentId`,
+`revision` and `bytes`, so an application can refresh its view of the notes
+without polling the document or parsing tool results.
+
+There is no automatic extraction at turn end or compaction, and no separate
+read tool for a document binding: the next render reads the document.
 
 ### Conflicts and retries
 
@@ -140,7 +191,8 @@ agent saves. Owner credentials belong in trusted application code, never in
 model inputs or sandbox files.
 
 Run these commands from a [linked project directory](/agents/projects#create-or-select-the-cloud-project).
-The examples use Development explicitly.
+The examples use Development explicitly. `memory list` and `memory show`
+accept `--json` and print the same fields as the management API.
 
 ### Edit a document
 
@@ -213,8 +265,8 @@ A deleted ID stays reserved, preventing a delayed create retry from restoring
 it. Use a new ID for a new document. Deleting notes does not erase copies in
 conversation history, tool results or external sources.
 Existing document bindings do not recreate deleted content: their next recall
-fails before inference, and a pending save fails with `not_found`. Collection
-overviews and lists omit deleted documents.
+fails before inference, and a pending save returns `rejected` with reason
+`not_found`. Collection overviews and lists omit deleted documents.
 
 ## Management API
 
@@ -254,7 +306,10 @@ curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-i
 ```
 
 A document response includes `id`, `title`, `text`, `summary`, `agentWrites`,
-`revision`, `updatedAt` and `writer`. Treat the revision as opaque. Reads,
+`revision`, `bytes`, `maxBytes`, `updatedAt` and `writer`. `bytes` is the
+UTF-8 size of `text`; `maxBytes` is the resource's current limit, so
+`bytes > maxBytes` identifies a document that must shrink on its next save.
+Treat the revision as opaque. Reads,
 creates, replacements and patches return its quoted value as `ETag`; retain the header
 verbatim for the next `If-Match` request. List responses return `documents`
 with metadata and `nextCursor`, without the full text.
@@ -269,6 +324,8 @@ For example, a successful read returns `200 OK`, an `ETag` header, and:
   "summary": "Workshop runtime requirements.",
   "agentWrites": "enabled",
   "revision": "<opaque-revision>",
+  "bytes": 33,
+  "maxBytes": 8192,
   "updatedAt": "2026-09-10T12:00:00.000Z",
   "writer": { "kind": "owner" }
 }

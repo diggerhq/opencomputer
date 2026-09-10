@@ -79,8 +79,10 @@ must isolate every operation by this key. It is an identifier, not a secret.
 
 The host recalls all session-bound memory before render. Any recall failure
 blocks the request, even if the render would omit that resource. Calling
-`useMemory(knowledge)` returns its projection and selects the permitted generated
-tools for that model request. The example exposes `knowledge_remember` only
+`useMemory(knowledge)` returns its projection (`text`, `sources`, `writable`)
+and selects the permitted generated tools for that model request. For an HTTP
+provider `writable` reflects the binding's access; the provider has no
+document-level write policy. The example exposes `knowledge_remember` only
 to read-write bindings. Read-only bindings still receive recall and tools
 declared with `access: "read"`. Omitting the hook exposes none of its tools.
 
