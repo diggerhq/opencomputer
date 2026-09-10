@@ -6,9 +6,12 @@ import {
   defineMemory,
   documentMemory,
   httpMemory,
+  useInput,
   useMemory,
   useSecret,
+  type AgentInput,
   type MemoryProjection,
+  type OutcomeEvent,
 } from "./index.js";
 
 const HOOKS = Symbol.for("opencomputer.agent-hooks");
@@ -401,4 +404,50 @@ test("useMemory fails a render whose session has no binding for the resource", (
     () => useMemory("requirements"),
     /hooks can only run while rendering an agent/,
   );
+});
+
+// Public delivery slice: the input an event subscription delivers. This is
+// the authoring contract the review found missing; the narrowing below is
+// what has to type-check for an agent to read the event.
+test("useInput narrows a delivered turn outcome to its typed event", () => {
+  const event: OutcomeEvent = {
+    id: "event_9",
+    type: "turn.completed",
+    sessionId: "ses_worker",
+    turnId: "turn-1",
+    agentId: "worker",
+    occurredAt: "2026-09-10T12:00:00.000Z",
+    result: { text: "Guide reproduced; the fix is in step 3.", truncated: false },
+  };
+  const input: AgentInput = {
+    source: "event",
+    text: "Outcome event turn.completed from worker.",
+    event,
+  };
+  const globals = globalThis as Record<PropertyKey, unknown>;
+  globals[HOOKS] = { useInput: () => input };
+  try {
+    const read = useInput();
+    assert.equal(read.source, "event");
+    if (read.source === "event") {
+      assert.equal(read.event.type, "turn.completed");
+      assert.equal(read.event.sessionId, "ses_worker");
+      assert.equal(read.event.result?.text, "Guide reproduced; the fix is in step 3.");
+      assert.equal(read.event.error, undefined);
+    }
+    // A failed outcome carries the reason and the bounded message instead.
+    const failed: AgentInput = {
+      source: "event",
+      event: { ...event, type: "turn.failed", reason: "runtime_lost", error: "The agent runtime stopped reporting" },
+    };
+    if (failed.source === "event" && failed.event.type === "turn.failed") {
+      assert.equal(failed.event.reason, "runtime_lost");
+      assert.equal(failed.event.error, "The agent runtime stopped reporting");
+    }
+    // The other sources have no event.
+    const user: AgentInput = { source: "user", text: "hi" };
+    assert.equal("event" in user, false);
+  } finally {
+    delete globals[HOOKS];
+  }
 });

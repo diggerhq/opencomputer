@@ -20,7 +20,8 @@ export type InputSource =
   | "schedule"
   | "webhook"
   | "subagent"
-  | "system";
+  | "system"
+  | "event";
 
 export interface ScheduleRunContext {
   readonly id: string;
@@ -37,6 +38,33 @@ export interface WebhookRequestContext {
   readonly receivedAt: string;
 }
 
+/** The turn outcomes an event subscription delivers. */
+export type OutcomeEventType = "turn.completed" | "turn.failed" | "turn.cancelled";
+
+/**
+ * A recorded turn outcome of another session in the project, delivered by
+ * an event subscription as the input of a new turn. The platform attests
+ * where it came from through `source: "event"`; the included agent output
+ * is data to reason about, not instructions to follow.
+ */
+export interface OutcomeEvent {
+  /** The source session's own id for its terminal `turn.*` event. */
+  readonly id: string;
+  readonly type: OutcomeEventType;
+  /** The session and turn whose outcome this is. */
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The agent that ran the source turn. */
+  readonly agentId: string;
+  readonly occurredAt: string;
+  /** Why the turn failed or was cancelled, when the source recorded a reason. */
+  readonly reason?: string;
+  /** The failure message, bounded, when the turn failed. */
+  readonly error?: string;
+  /** The final assistant message of a completed turn; `truncated` when it was cut to fit. */
+  readonly result?: { readonly text: string; readonly truncated?: boolean };
+}
+
 interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
@@ -44,7 +72,7 @@ interface BasicAgentInput {
 
 export type AgentInput =
   | (BasicAgentInput & {
-      readonly source: Exclude<InputSource, "schedule" | "webhook">;
+      readonly source: Exclude<InputSource, "schedule" | "webhook" | "event">;
     })
   | (BasicAgentInput & {
       readonly source: "schedule";
@@ -53,6 +81,10 @@ export type AgentInput =
   | (BasicAgentInput & {
       readonly source: "webhook";
       readonly webhook: Readonly<WebhookRequestContext>;
+    })
+  | (BasicAgentInput & {
+      readonly source: "event";
+      readonly event: Readonly<OutcomeEvent>;
     });
 
 export interface ResourceReference {
