@@ -64,7 +64,7 @@ export interface OutcomeEvent {
 /** The input of a turn an event subscription started, as the agent's `useInput()` returns it. */
 export interface EventInput {
   source: "event";
-  /** A one-line description of the outcome, for agents that only read `text`. */
+  /** Not set on a delivered outcome; the event is the input. */
   text?: string;
   event: OutcomeEvent;
 }

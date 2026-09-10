@@ -107,7 +107,7 @@ insufficient_credits`.
 | `status` | `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
 | `source` | The `source` given at creation |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
-| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt` |
+| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `createdAt`, `updatedAt` | Timestamps |
 
 `GET /sessions` returns `{ sessions }`: the fifty most recently updated
@@ -228,6 +228,74 @@ for an agent that is not deployed in the environment is
 curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webhooks/<webhook-id>/requests' \
   -H 'x-api-key: <api-key>'
 ```
+
+## Event subscriptions
+
+An event subscription delivers the recorded outcome of turns run by agents
+in a project to a session in the same project, as a new turn of that
+session. It is how one agent learns that another finished: a coordinator
+subscribes to its workers' outcomes and reasons about them when they arrive.
+Destinations are sessions only; there is no public HTTPS destination, and
+this is not the [outbound webhooks](/agents/webhooks) feature.
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| Create | `POST /projects/<p>/event-subscriptions` | `201` with `{ subscription }` |
+| List | `GET /projects/<p>/event-subscriptions` | `200` with `{ subscriptions }` |
+| Get | `GET /projects/<p>/event-subscriptions/<id>` | `200` with `{ subscription }` |
+| Delete | `DELETE /projects/<p>/event-subscriptions/<id>` | `204`; pending deliveries stop |
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/event-subscriptions' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agentId": "worker",
+    "events": ["turn.completed", "turn.failed"],
+    "destination": { "type": "session", "sessionId": "<coordinator-session-id>" },
+    "environment": "development"
+  }'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `agentId` | Optional. Outcomes of this agent only; omitted, every agent in the project. |
+| `events` | One or more of `turn.completed`, `turn.failed`, `turn.cancelled`. Turn outcomes, not session ends. |
+| `destination` | `{ type: "session", sessionId }`: a session of an agent in this project that can still take turns. |
+| `environment` | `development` or `production`. A subscription is scoped to one environment: it selects outcomes recorded there and its destination session runs there. |
+
+A subscription is immutable; `{ subscription }` carries `id`, `projectId`,
+the fields above and `createdAt`. Codes: `400 invalid_event_subscription`,
+`403 project_scope_violation` (the agent is outside the project),
+`404 destination_session_not_found`, `409 destination_session_ended`,
+`404 event_subscription_not_found`.
+
+### Delivery and receipts
+
+When a selected turn settles, the source session records one delivery per
+matching subscription and starts a turn on the destination session with
+`source: "event"` input; the receiving agent reads it with `useInput()`
+([Event input](/agents/inputs#event-input)). The destination turn's
+idempotency key is `<subscription-id>:<event-id>`, so a retried delivery
+never starts a second turn. Deliveries are retried with backoff and stop
+when the subscription is deleted or the destination has ended.
+
+`GET /sessions/<id>` on the source session lists each turn's `deliveries`:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `<subscription-id>:<event-id>` |
+| `subscriptionId`, `eventId`, `eventType` | What was delivered, to which subscription |
+| `destination` | The subscription's destination |
+| `status` | `pending`, `delivered` or `failed` |
+| `attempt` | Delivery attempts so far |
+| `receipt` | `{ sessionId, turnId }`: the turn the destination admitted, once delivered |
+| `nextAttemptAt` | When a pending delivery is retried |
+| `error` | `subscription_unavailable`, `target_missing`, `target_ended`, or `delivery_failed` |
+
+The delivered event names identifiers and the outcome; a completed turn's
+final message is included, bounded to 16 KB. The receiving agent should
+treat that text as data about another agent's work, not as instructions.
 
 ## Projects, agents and deployments
 
