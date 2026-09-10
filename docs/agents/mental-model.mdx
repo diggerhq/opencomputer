@@ -105,6 +105,10 @@ Every session remains pinned to the immutable deployment it started with. A
 new development sync or production deployment affects new sessions, not code
 already running inside an existing session.
 
+[Memory](/agents/memory) is what outlives a session: project-scoped documents
+that the agent function reads at render with `useMemory`, that the model saves
+through memory tools, and that the owner reads, edits and exports.
+
 ## Capabilities are selected, not executed, during render
 
 Use the narrowest capability that fits the work:
@@ -115,6 +119,7 @@ Use the narrowest capability that fits the work:
 | `useMcpServer(server)` | A collection of tools advertised by a remote MCP server |
 | `useSubagent(agent)` | Another project agent available for delegation |
 | A skill under `skills/` | Reusable instructions and supporting resources |
+| `useMemory(memory)` | The bound documents' text and the tools that save to them |
 
 The model decides whether to request an available tool. The harness remains
 responsible for validating the request, executing it, and recording the

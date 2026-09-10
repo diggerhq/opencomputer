@@ -5,7 +5,15 @@ description: "Understand durable conversations and multi-turn agent work"
 
 A session is a durable conversation with a deployed agent. Each turn appends
 input and streamed runtime events to the session, allowing clients to resume a
-conversation without rebuilding its history locally.
+conversation without rebuilding its history locally. The events are listed on
+[Session events](/agents/events).
+
+A session pins the deployment it was created on. Advancing Development or
+promoting to Production changes which deployment new sessions get; turns sent
+to an existing session keep running the code it started with, including its
+declared tools and memory resources. To run new code, start a new session.
+Memory documents are not pinned: they belong to the project and environment,
+so a new session bound to the same document reads what the old one saved.
 
 ## Agent playground
 
@@ -81,6 +89,16 @@ npx --package @opencomputer/cli opencomputer session "Draft a response"
 
 Use `--keep` on supported commands when the session should remain active after
 the command exits.
+
+## From an application
+
+Applications create sessions with the [management API](/agents/api): `POST
+/api/managed-agents/sessions` with an API key, then turns and the event log
+under that session. `startSessionOnDocument` in the
+[TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers) creates
+a memory document and a session bound to it in one call. In the browser, the
+[`useAgent`](/agents/react) hook attaches to a session your server created
+and renders its messages.
 
 ## Input sources
 
