@@ -3,12 +3,16 @@ import test from "node:test";
 
 import { APIError, OpenComputerClient } from "./api.js";
 
-test("mutations derive stable, operation-specific idempotency headers", async (context) => {
+// Review reproduction (U6): the header names the operation the caller's key
+// stands for, not the request it was sent with. The body is the backend's
+// to compare; hashing it here turned a retry with different inputs into a
+// second resource instead of the conflict the key promises.
+test("mutations derive idempotency headers from the caller's key and the target only", async (context) => {
   const requests: Request[] = [];
   context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input, init);
     requests.push(request);
-    return Response.json({ id: "project", agents: [], environments: [] });
+    return Response.json({ id: "project", agents: [], environments: [], session: { id: "ses" } });
   });
   const client = new OpenComputerClient(
     { apiUrl: "https://app.opencomputer.dev", apiKey: "test" },
@@ -18,11 +22,15 @@ test("mutations derive stable, operation-specific idempotency headers", async (c
   await client.createProject("Agent", "agent");
   await client.createProject("Agent", "agent");
   await client.createProject("Different", "different");
+  await client.createSession("muse@development");
+  await client.projects();
 
   const keys = requests.map((request) => request.headers.get("idempotency-key"));
   assert.ok(keys[0]);
   assert.equal(keys[0], keys[1]);
-  assert.notEqual(keys[0], keys[2]);
+  assert.equal(keys[0], keys[2], "a different body is the same operation");
+  assert.notEqual(keys[0], keys[3], "a different target is a different operation");
+  assert.equal(keys[4], null, "reads carry no key");
   assert.equal(keys[0]?.includes("retry-42"), false);
 });
 

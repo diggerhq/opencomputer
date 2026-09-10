@@ -356,6 +356,10 @@ export class OpenComputerClient {
       headers.set("x-api-key", this.config.apiKey);
     }
     const method = (init.method ?? "GET").toUpperCase();
+    // The caller's key names an operation on a target; the body is what the
+    // backend compares under that key. Hashing the body in would make a
+    // retry with different inputs a new operation instead of the conflict
+    // the key promises.
     if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
       headers.set(
         "idempotency-key",
@@ -365,8 +369,6 @@ export class OpenComputerClient {
           .update(method)
           .update("\0")
           .update(path)
-          .update("\0")
-          .update(typeof init.body === "string" ? init.body : "")
           .digest("hex"),
       );
     }

@@ -342,6 +342,53 @@ test("--create-document creates missing bound documents, keeps existing ones, an
   );
 });
 
+// Review reproduction (U6): a backend keyed like the real one, by account
+// and Idempotency-Key header, comparing the inputs it stored under it.
+test("one caller key with different bindings is a conflict, not a second session", async (context) => {
+  const receipts = new Map<string, { body: string; id: string }>();
+  let created = 0;
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    assert.equal(route(request), "/api/managed-agents/sessions");
+    const key = request.headers.get("idempotency-key");
+    assert.ok(key, "the CLI sends the header");
+    const body = await request.text();
+    const receipt = receipts.get(key);
+    if (receipt && receipt.body !== body) {
+      return Response.json(
+        { error: { code: "idempotency_conflict", message: "Idempotency-Key was already used with different session input" } },
+        { status: 409 },
+      );
+    }
+    if (receipt) {
+      return Response.json({ session: { id: receipt.id, status: "idle" } }, { status: 200 });
+    }
+    created += 1;
+    const id = `ses-${String(created)}`;
+    receipts.set(key, { body, id });
+    return Response.json({ session: { id, status: "connecting" } }, { status: 201 });
+  });
+  const client = new OpenComputerClient(config, "topic/workshop/1");
+  const workshop = { topics: { scope: "document" as const, id: "workshop", access: "read-write" as const } };
+  const other = { topics: { scope: "document" as const, id: "other", access: "read-write" as const } };
+
+  const first = await createSessionWithMemory(client, "muse@development", workshop);
+  assert.equal(first.created, true);
+  const replayed = await createSessionWithMemory(client, "muse@development", workshop);
+  assert.equal(replayed.created, false);
+  assert.equal(replayed.session.id, first.session.id);
+  await assert.rejects(
+    createSessionWithMemory(client, "muse@development", other),
+    (error: unknown) => error instanceof CLIError && error.code === "session_idempotency_conflict",
+  );
+  await assert.rejects(
+    createSessionWithMemory(client, "muse@development"),
+    (error: unknown) => error instanceof CLIError && error.code === "session_idempotency_conflict",
+  );
+  assert.equal(created, 1);
+  assert.equal(receipts.size, 1);
+});
+
 test("session create sends bindings, reports replay, and names a reused key's conflict", async (context) => {
   const bodies: Array<Record<string, unknown>> = [];
   let status = 201;
