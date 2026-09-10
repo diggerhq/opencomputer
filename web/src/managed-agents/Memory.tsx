@@ -446,24 +446,36 @@ export function ManagedProjectMemory({
                 : 'No active deployment declares memory here; open a resource by ID.')
             }
           >
-            {declared.length ? (
+            {declared.length || resource ? (
               <Select
                 id="memory-resource"
                 value={resource ?? ''}
                 onValueChange={setSelectedResource}
-                options={declared.map((candidate) => ({
-                  value: candidate.id,
-                  label: candidate.id,
-                  ...(candidate.provider.maxBytes
-                    ? { hint: formatMemoryBytes(candidate.provider.maxBytes) }
-                    : {}),
-                }))}
+                options={[
+                  ...declared.map((candidate) => ({
+                    value: candidate.id,
+                    label: candidate.id,
+                    ...(candidate.provider.maxBytes
+                      ? { hint: formatMemoryBytes(candidate.provider.maxBytes) }
+                      : {}),
+                  })),
+                  // A resource opened by ID that no active deployment declares.
+                  ...(resource && !declaration
+                    ? [
+                        {
+                          value: resource,
+                          label: resource,
+                          hint: 'not declared',
+                        },
+                      ]
+                    : []),
+                ]}
                 placeholder="Choose a resource"
               />
             ) : (
               <Input
                 id="memory-resource"
-                value={resource ?? ''}
+                value=""
                 readOnly
                 placeholder="No resource selected"
               />
