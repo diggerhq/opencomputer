@@ -1150,7 +1150,7 @@ function publicSuccessBody(
   if (
     (method === "GET" && /^\/sessions(?:\/[^/]+)?$/.test(suffix)) ||
     (method === "POST" &&
-      /^\/sessions\/[^/]+\/(resume|end|terminate)$/.test(suffix))
+      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
   ) {
     return stripPrivateValues(body);
   }
@@ -1409,7 +1409,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   return (
     method === "POST" &&
-    /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate)$/.test(suffix)
+    /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate|interrupt)$/.test(
+      suffix,
+    )
   );
 }
 

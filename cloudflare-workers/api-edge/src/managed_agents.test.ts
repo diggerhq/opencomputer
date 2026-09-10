@@ -1790,6 +1790,42 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("interrupts a session's running turn and returns the sanitized snapshot", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        id: "session-1",
+        status: "idle",
+        executionMode: "workerd",
+        accountId: "org_test",
+        runtimeToken: "internal-runtime-token",
+        turns: [{ id: "turn-1", status: "cancelled" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/interrupt",
+        { method: "POST" },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target] = fetchSpy.mock.calls[0] as unknown as [URL];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions/session-1/interrupt",
+    );
+    const serialized = JSON.stringify(await response.json());
+    expect(serialized).toContain('"status":"cancelled"');
+    expect(serialized).not.toMatch(/runtimeToken|accountId|org_test/);
+  });
+
   it("removes backend artifact and runtime fields from successful responses", async () => {
     vi.stubGlobal(
       "fetch",
