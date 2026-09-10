@@ -61,10 +61,12 @@ structured payload is available to agent code as `input.payload`.
 
 Manage the documents a project's memory resources hold, per environment.
 Every command resolves the linked project; `--environment` defaults to
-development. `list` and `show` print the management API's fields with
-`--json`:
+development. `list` without a resource shows the environment's resources,
+including ones no active deployment declares any more but that still hold
+documents. `list` and `show` print the management API's fields with `--json`:
 
 ```bash
+opencomputer memory list --environment development       # resources, declared or not
 opencomputer memory create requirements workshop --title "Workshop requirements"
 opencomputer memory list requirements --environment development
 opencomputer memory show requirements workshop --json

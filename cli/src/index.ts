@@ -80,7 +80,7 @@ Usage:
   opencomputer webhooks disable <webhook-id> [--project <id|slug>]
   opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
   opencomputer webhooks remove <webhook-id> [--project <id|slug>]
-  opencomputer memory list <resource> [--environment development|production]
+  opencomputer memory list [<resource>] [--environment development|production]
   opencomputer memory show <resource> <id> [--environment development|production]
   opencomputer memory create <resource> <id> --title <title> [--summary <text>] [--text-file <path>|--text-stdin] [--frozen]
   opencomputer memory edit <resource> <id> [--text-file <path>|--text-stdin] [--summary <text>]

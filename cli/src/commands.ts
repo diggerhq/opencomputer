@@ -6,7 +6,6 @@ import {
   type ManagedSessionSnapshot,
   type MemoryDocument,
   type MemoryDocumentMeta,
-  type MemoryEnvironment,
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { codexLogin } from "./codex-oauth.js";
@@ -50,6 +49,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
+import { memoryResources, type MemoryResourceSummary } from "./memory.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -269,7 +269,7 @@ function printSession(session: ManagedSessionSnapshot): void {
 // Project memory (docs/agents/document-memory.mdx, "Owner access").
 
 const MEMORY_USAGE =
-  "Use `opencomputer memory list|show|create|edit|freeze|unfreeze|export|remove`.";
+  "Use `opencomputer memory list [<resource>]|show|create|edit|freeze|unfreeze|export|remove`.";
 
 function memoryWriterLabel(document: MemoryDocumentMeta): string {
   return document.writer.kind === "agent"
@@ -318,6 +318,24 @@ async function readMemoryText(args: string[]): Promise<string | undefined> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function printMemoryResources(
+  resources: MemoryResourceSummary[],
+  environment: string,
+): void {
+  if (!resources.length) {
+    process.stdout.write(`No ${environment} memory resources.\n`);
+    return;
+  }
+  for (const resource of resources) {
+    process.stdout.write(
+      `${resource.id.padEnd(24)} ${(resource.provider.kind ?? "document").padEnd(10)} ` +
+        `${(resource.provider.maxBytes !== undefined ? `${resource.provider.maxBytes} bytes` : "").padEnd(12)} ` +
+        `${(resource.declared ? "declared" : "not declared").padEnd(13)} ` +
+        `${resource.documents === undefined ? "" : `${resource.documents} document${resource.documents === 1 ? "" : "s"}`}\n`,
+    );
+  }
+}
+
 // Opens the current text in $VISUAL/$EDITOR and returns what the user saved.
 // The file stays in place on a failed save so the edit is not lost.
 async function editMemoryTextInEditor(
@@ -348,34 +366,6 @@ async function editMemoryTextInEditor(
     path,
     discard: () => rm(directory, { recursive: true, force: true }),
   };
-}
-
-async function memoryResourcesForEnvironment(
-  client: OpenComputerClient,
-  projectId: string,
-  environment: MemoryEnvironment,
-): Promise<string[]> {
-  const project = (await client.projects()).find(
-    (candidate) => candidate.id === projectId,
-  );
-  if (!project) throw new Error("The bound project is no longer available.");
-  const deploymentIds = [
-    ...new Set(
-      project.environments
-        .filter((candidate) => candidate.name === environment)
-        .flatMap((candidate) =>
-          candidate.activeDeploymentId ? [candidate.activeDeploymentId] : [],
-        ),
-    ),
-  ];
-  const resources = new Set<string>();
-  for (const deploymentId of deploymentIds) {
-    const deployment = await client.deployment(deploymentId);
-    for (const declaration of deployment.memory ?? []) {
-      if (typeof declaration.id === "string") resources.add(declaration.id);
-    }
-  }
-  return [...resources].sort();
 }
 
 function printToolProgress(event: ManagedAgentEvent): void {
@@ -1621,13 +1611,16 @@ export async function runCommand(
           "Use `opencomputer memory export --out <dir> [--resource <id>] [--environment development|production]`.",
         );
       }
-      const resources = explicitResources.length
-        ? [...new Set(explicitResources)]
-        : await memoryResourcesForEnvironment(client, projectId, environment);
+      const listing = explicitResources.length
+        ? undefined
+        : await memoryResources(client, projectId, environment);
+      const resources = listing
+        ? listing.resources.map((resource) => resource.id)
+        : [...new Set(explicitResources)];
       if (!resources.length) {
         throw new CLIError(
           "memory_resources_unknown",
-          `The active ${environment} deployment declares no memory resources.`,
+          `No ${environment} memory resources exist for this project.`,
           "Pass --resource <id> for each resource to export, or deploy an agent that declares memory.",
         );
       }
@@ -1657,18 +1650,43 @@ export async function runCommand(
           cursor = page.nextCursor ?? undefined;
         } while (cursor);
       }
-      if (globals.json) printJSON({ environment, exported });
-      else {
+      const undeclared =
+        listing?.resources
+          .filter((resource) => !resource.declared)
+          .map((resource) => resource.id) ?? [];
+      if (globals.json) {
+        printJSON({
+          environment,
+          exported,
+          ...(listing ? { resources: listing.resources } : {}),
+        });
+      } else {
         for (const entry of exported) process.stdout.write(`${entry.path}\n`);
         process.stdout.write(
           `Exported ${exported.length} document${exported.length === 1 ? "" : "s"} ` +
-            `from ${resources.length} resource${resources.length === 1 ? "" : "s"} (${environment}).\n`,
+            `from ${resources.length} resource${resources.length === 1 ? "" : "s"} (${environment}).\n` +
+            (undeclared.length
+              ? `Not declared by any active deployment: ${undeclared.join(", ")}.\n`
+              : ""),
         );
       }
       return;
     }
 
     const resource = args.shift();
+    if (action === "list" && !resource) {
+      const listing = await memoryResources(client, projectId, environment);
+      if (globals.json) printJSON(listing);
+      else {
+        printMemoryResources(listing.resources, environment);
+        if (listing.source === "declarations") {
+          process.stdout.write(
+            "Listed from active deployments' declarations; this backend has no resource inventory, so undeclared resources and document counts are not shown.\n",
+          );
+        }
+      }
+      return;
+    }
     if (!resource) throw new Error(MEMORY_USAGE);
     if (action === "list") {
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
