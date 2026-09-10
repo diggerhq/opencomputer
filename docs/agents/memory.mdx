@@ -1,0 +1,96 @@
+---
+title: "Memory"
+description: "Read and save notes across sessions"
+---
+
+Memory stores requirements, decisions and preferences that later sessions can
+reuse. Owners can read, edit and export the same notes.
+
+`useMemory` reads bound memory and selects its tools for the next model step:
+
+```ts
+import { useMemory } from "@opencomputer/agent";
+
+export default function Agent() {
+  const memory = useMemory("notes");
+  return `Help plan the workshop.
+Save changes with memory_save.
+Keep other confirmed requirements.
+Saved requirements: ${JSON.stringify(memory.text)}`;
+}
+```
+
+The hook is synchronous. Your agent decides where to put `memory.text` in its
+instructions; the hook does not insert it automatically.
+
+## Declare a resource
+
+Add the declaration at module scope in the same agent file:
+
+```ts
+import { defineMemory } from "@opencomputer/agent";
+
+export const notes = defineMemory({
+  id: "notes",
+  description: "Confirmed workshop requirements.",
+});
+```
+
+`defineMemory` uses the built-in `documentMemory` provider by default:
+OpenComputer stores editable text, without starting a sandbox. Deploying the
+resource registers it; [create a document](/agents/document-memory#owner-access)
+before binding it to a session.
+
+`notes` is an application-defined resource name. It can contain many documents;
+this example calls one `workshop`. Neither name is built into OpenComputer.
+
+## Bind a document to a session
+
+Include `memory` when creating a [session](/agents/sessions) with
+`POST /api/managed-agents/sessions`:
+
+```json
+{
+  "agentId": "<agent-id>@development",
+  "memory": {
+    "notes": {
+      "scope": "document",
+      "id": "workshop",
+      "access": "read-write"
+    }
+  }
+}
+```
+
+| Setting | Effect |
+| --- | --- |
+| `notes` | Matches the declared resource ID. |
+| `id: "workshop"` | Selects one existing document from that resource. |
+| `access: "read-write"` | Supplies its text and the `memory_save` tool. Use `read` for text only. |
+
+Bindings are fixed for the session. The model receives neither storage
+credentials nor permission to select another document. A
+[collection binding](/agents/document-memory#session-bindings) instead lets it
+browse documents with `memory_list` and `memory_read`.
+
+## Save and reuse notes
+
+Saving is explicit: the model calls `memory_save({ text })`. Each save replaces
+the document's text, so the example asks it to preserve existing requirements.
+Conversation history is not automatically extracted into memory.
+
+Sessions bound to the same document share its latest saved text. Each model
+step reads it again; [revision checks](/agents/document-memory#saving) prevent
+an agent from overwriting changes made since its read.
+
+Memory belongs to a **project and environment**. It survives session end,
+sandbox loss, conversation compaction and new deployments. Development and
+Production have separate stores.
+
+## Reference
+
+- [Document memory](/agents/document-memory): bindings, tools, conflicts,
+  owner operations and API contracts.
+- [Memory providers](/agents/memory-providers): storage responsibilities and
+  the proposed external-provider contract.
+- [Session data](/agents/session-data): application values scoped to one session.

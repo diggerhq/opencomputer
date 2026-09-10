@@ -40,6 +40,7 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
+              "agents/memory",
               "agents/schedules",
               "agents/webhooks",
               "agents/capabilities",
@@ -60,7 +61,9 @@
               "agents/mcp",
               "agents/skills",
               "agents/subagents",
-              "agents/session-data"
+              "agents/session-data",
+              "agents/document-memory",
+              "agents/memory-providers"
             ]
           },
           {

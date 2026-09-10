@@ -21,6 +21,9 @@
 - [Skills](https://docs.opencomputer.dev/agents/skills.md): Package reusable instructions and supporting resources with an agent.
 - [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
 - [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
+- [Memory](https://docs.opencomputer.dev/agents/memory.md): Read and save shared notes with useMemory, resource declarations and session bindings.
+- [Document memory](https://docs.opencomputer.dev/agents/document-memory.md): Built-in storage, hook and tool contracts, owner API, access, conflicts and limits.
+- [Memory providers](https://docs.opencomputer.dev/agents/memory-providers.md): Provider responsibilities and the proposed HTTP provider contract.
 - [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect each agent turn.
 - [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow agent and outbound-request logs.
 

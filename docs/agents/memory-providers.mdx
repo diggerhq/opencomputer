@@ -1,0 +1,264 @@
+---
+title: "Memory providers"
+description: "Provider responsibilities, document memory and the proposed HTTP contract"
+---
+
+Providers own storage, retrieval and writes. `defineMemory` declares a resource;
+`useMemory` returns its `text`, `sources` and `writable`. Your render chooses
+how to include the recalled text in the instructions.
+
+<Warning>
+HTTP memory is a contract preview: `httpMemory` declarations compile, but
+namespace bindings and HTTP execution are unavailable. Use
+[document memory](/agents/document-memory).
+</Warning>
+
+## Choosing a provider
+
+| Concern | `documentMemory` | HTTP (preview) |
+| --- | --- | --- |
+| Storage | Editable documents in OpenComputer. | Your service and index. |
+| Recall | Full document or collection overview. | Context your service selects, such as relevant facts. |
+| Tools | Writable document: `memory_save`. Collection: `memory_list`, `memory_read`. | Provider-defined, such as `memory_search` or `memory_remember`. |
+| Writes | Replace text conditionally on the originating request's revision. | Provider-defined concurrency and visibility. |
+| Owner controls | APIs for inspection, editing, export and deletion. | Your service's controls; no document API required. |
+
+Hooks stay stable; bindings, tools, prompts and editors may change. Changing
+provider kind requires a new resource and migration. A new endpoint copies no
+data: confirm it addresses the existing store or migrate, including sessions
+pinned to old deployments.
+
+## Declare an HTTP provider
+
+The deployment stores configuration; your endpoint executes provider code.
+
+```ts
+import {
+  bearer, defineConnection, defineMemory,
+  httpMemory, useSecret,
+} from "@opencomputer/agent";
+
+const connection = defineConnection({
+  id: "memory-service",
+  origin: "https://memory.example.com",
+  methods: ["POST"],
+  pathPrefix: "/oc-memory",
+  headers: {
+    Authorization: bearer(useSecret("MEMORY_TOKEN")),
+  },
+});
+
+export const knowledge = defineMemory({
+  id: "knowledge",
+  description: "Verified facts needed in later sessions.",
+  provider: httpMemory({
+    connection,
+    path: "/oc-memory",
+    maxBytes: 8_192,
+    tools: [{
+      name: "remember",
+      description: "Save a verified fact.",
+      access: "write",
+      idempotent: false,
+      input: {
+        type: "object",
+        properties: {
+          fact: { type: "string", maxLength: 2_000 },
+        },
+        required: ["fact"],
+        additionalProperties: false,
+      },
+    }],
+  }),
+});
+```
+
+| Setting | Requirement / default |
+| --- | --- |
+| `connection` | Required `defineConnection` permitting `POST`. [Managed secrets](/agents/secrets) supply credentials; the model never receives them. |
+| `path` | Default `/memory`. Single leading `/`; no whitespace, query or fragment. Must satisfy connection policy. No redirects. |
+| `maxBytes` | Recalled UTF-8 text: 1–16,384 bytes; default 8,192. |
+| `tools` | Up to eight; default none. Each needs a unique name, description, access and input schema. |
+| Tool `name` | 1–32 lowercase letters, digits or underscores. |
+| Tool `access` | `read` or `write`. |
+| Tool `idempotent` | Default `false`; see [retries](#deadlines-and-retries). |
+| Tool `input` | Object JSON Schema 2020-12, without `$ref`, as for [code tools](/agents/tools). Top-level `memory` is reserved: omit it from properties and required fields. |
+
+## Namespace and tool selection
+
+Session `memory` binding (`knowledge` and `owner` are application-defined):
+
+```json
+{
+  "knowledge": {
+    "scope": "namespace",
+    "id": "owner",
+    "access": "read-write"
+  }
+}
+```
+
+| Binding rule | Contract |
+| --- | --- |
+| Namespace | Trusted application code selects it under project authority. ID: 1–128 letters, digits, hyphens or underscores. Access defaults to `read`. |
+| Partition key | OpenComputer derives it from project, environment, resource and namespace. |
+| Key stability | Stable across sessions and deployments. Different environments or namespaces have distinct keys. |
+| Isolation | Scope every operation to the partition key. It identifies data; it is not a credential. |
+| Recall | All bound resources are read before render, including resources whose hooks are omitted. Failure blocks inference. |
+| Tools | `useMemory` selects permitted tools for that request. Read tools allow either access level; write tools require read-write. Omitting the hook hides its tools. |
+| `writable` | Reflects binding access, not guaranteed write success. |
+
+Fixed tool names use `memory_<tool>`, here `memory_remember`.
+
+- **Target:** optional `memory` selects an eligible resource from the originating
+  render; required when more than one qualifies. OpenComputer strips it, then
+  validates provider arguments, including `additionalProperties: false`.
+  The endpoint receives the partition instead.
+- **Rejection:** a wrong target returns `rejected` / `not_bound` with eligible
+  targets. Changed access rejects the call; it never redirects it.
+- **Collisions:** identical names merge only with identical schemas, retaining
+  each target's descriptions, access checks and retry policy. Incompatible
+  schemas or collisions with ordinary tool names reject session creation.
+
+## Endpoint protocol
+
+All operations use `POST`, `Content-Type: application/json`, `version: 1`.
+Authenticate the connection credential, enforce read-only access, reject
+expired deadlines and prevent arguments selecting another partition.
+
+### Recall
+
+Request:
+
+```json
+{
+  "version": 1,
+  "operation": "recall",
+  "operationId": "mrq_123:knowledge",
+  "partition": "ocmem_v1_opaque-partition",
+  "access": "read-write",
+  "deadlineAt": "2026-09-10T15:04:15.000Z",
+  "input": { "text": "What hosting did we choose?" },
+  "maxBytes": 8192
+}
+```
+
+Response, HTTP 200:
+
+```json
+{
+  "text": "No paid external services for the demo.",
+  "sources": [{
+    "id": "fact:hosting",
+    "title": "Hosting constraint"
+  }],
+  "cursor": "provider-snapshot-42"
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `input.text` | Current input text, or `null`. No conversation history, structured payloads, other resources' memory, OpenComputer grants or runtime credentials. Send only to trusted services. |
+| `text`, `sources` | Required. Empty memory: `""`, `[]`. |
+| Source | Required string `id`; optional strings `title`, `revision`, `updatedAt` (ISO 8601). IDs are provider-local references, not grants. |
+| `cursor` | Optional read state for optimistic concurrency. The host retains it for this request's tools; it is absent from the public projection and cannot be chosen by the model. |
+
+Recall has no storage side effects. OpenComputer persists the accepted
+projection before inference and reuses it on request retries. Before
+acceptance, recall retries may see newer data. New model requests recall again.
+
+No automatic turn-completion or compaction callbacks. Conversation-fed
+services need a separate ingestion path.
+
+### Tools
+
+Endpoints cannot add tools or widen access beyond deployment declarations.
+Requests contain validated arguments and the recall cursor, if supplied:
+
+```json
+{
+  "version": 1,
+  "operation": "tool",
+  "operationId": "toolcall_456:knowledge",
+  "partition": "ocmem_v1_opaque-partition",
+  "access": "read-write",
+  "deadlineAt": "2026-09-10T15:04:25.000Z",
+  "tool": "remember",
+  "arguments": {
+    "fact": "Use the free hosting tier for the demo."
+  },
+  "cursor": "provider-snapshot-42"
+}
+```
+
+Return HTTP 200; any JSON `result` reaches the model unchanged:
+
+```json
+{ "result": { "status": "stored" } }
+```
+
+| Write status | Meaning |
+| --- | --- |
+| `stored` | Available to recall. |
+| `accepted` | Queued upstream; recall may lag. |
+
+Tool descriptions must explain visibility. Providers own write semantics;
+document-memory revision checks do not apply.
+
+For conflicts, return HTTP 409 with this error envelope (`details` optional):
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "Knowledge changed; reconcile it.",
+    "details": {}
+  }
+}
+```
+
+All errors use this envelope and reach the model without advancing the
+cursor. Tools from one response share it; the next request recalls again.
+
+## Deadlines and retries
+
+| Rule | Contract |
+| --- | --- |
+| Deadline | Ten seconds across all attempts. |
+| Retryable failures | Transport failures, HTTP 408, 429 and 5xx. No other 4xx retries. |
+| Attempts | At most two retries, after 250 ms and one second. Valid `Retry-After` takes precedence if it fits the deadline. Same operation ID and body. |
+| Eligible operations | Recall and read tools (both side-effect-free); writes only with `idempotent: true`. |
+| Operation identity | Recall: model request plus resource. Tool: tool call plus resource. |
+
+`idempotent: true` requires deduplication by `(partition, operationId)`,
+rejection of changed tools/arguments/cursors, and replay of the original result
+until `deadlineAt`. An adapter cannot guarantee this over an upstream service
+that may commit a write before losing its reply.
+
+With `idempotent: false`, transport failures and timeouts return
+`{ "status": "uncertain" }` without retry. The next request recalls current
+state; timeout does not prove failure.
+
+| Limit | Value |
+| --- | --- |
+| Request or response body | 64 KiB each, including source metadata |
+| Sources per response | 100 |
+| Each source ID or cursor | 1,024 UTF-8 bytes |
+| Recalled text | The declaration's `maxBytes` |
+
+Invalid JSON, oversized output, authentication failures and exhausted retries
+produce visible errors. Failed recall blocks inference, never substituting
+empty memory. Tool errors imply no rollback. Anything placed in instructions
+consumes model context.
+
+## Lifecycle and owner controls
+
+- **Access:** OpenComputer checks bindings before each call. Session end blocks
+  new calls after revocation; earlier calls may still commit remotely.
+- **Cancellation:** aborts the request, without undoing accepted writes.
+  Stronger fencing belongs in the provider's storage protocol.
+- **Ownership:** the provider supplies retention, backups, inspection, export
+  and deletion. OpenComputer document editing/freezing applies only to
+  `documentMemory`; deleting a project does not delete remote data.
+- **Inspection:** the proposed Memory page identifies the provider. Session
+  inspection exposes namespace and partition so owners can locate remote data.
