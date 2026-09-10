@@ -1,19 +1,15 @@
 ---
 title: "Document memory"
-description: "The built-in provider: storage, access, tools and document management"
+description: "Resource configuration, session access, memory tools and document management"
 ---
 
-`documentMemory` stores text documents in OpenComputer. Each document belongs
-to a memory resource in one project and environment. Multiple agents can use
-the same resource; sessions receive access to a particular document or a
-read-only overview of the collection.
+`documentMemory` stores text documents in OpenComputer. A document belongs to
+one resource in one project and environment; agents in that project can share
+it through explicit session bindings. Development and Production are separate.
 
-Documents are independent of conversation history and sandbox files. Reading
-and saving them does not start a sandbox. Notes survive session end, history
-compaction, sandbox replacement and agent deployments. They remain until an
-owner deletes them or the project.
-
-For a complete example, start with [Memory](/agents/memory).
+Documents outlive sessions, conversation compaction, sandbox replacement and
+code deployments. Reading and saving memory does not start a sandbox. For
+setup and a complete agent, see [Memory](/agents/memory).
 
 ## Configuration
 
@@ -22,63 +18,57 @@ import { defineMemory, documentMemory } from "@opencomputer/agent";
 
 export const requirements = defineMemory({
   id: "requirements",
-  description: "Verified requirements and decisions for a workshop, kept for later work.",
+  description: "Verified workshop requirements and decisions.",
   provider: documentMemory({ maxBytes: 8_192 }),
 });
 ```
 
-| Field | Meaning |
+| Field | Contract |
 | --- | --- |
-| `id` | Application-defined resource name. The same ID in agents of one project refers to the same resource. |
-| `description` | Model-facing guidance. It appears in the `memory_save` tool's description for this resource. |
-| `provider` | Storage and recall behavior. Defaults to `documentMemory()`. |
-| `maxBytes` | Maximum UTF-8 size of each document's `text`, including owner writes. Default 8,192; maximum 16,384. |
+| `id` | Resource name shared by agents in the project. At most 128 characters: lowercase letters and digits, separated by single hyphens. |
+| `description` | Required, nonempty guidance included in tool descriptions for this resource. |
+| `provider` | Defaults to `documentMemory()`. |
+| `maxBytes` | Integer from 1 to 16,384; default 8,192. Limits each document's UTF-8 `text`, including owner writes. |
 
-Development and Production have separate documents, even when resource and
-document IDs match. Definitions sharing an ID within one deployment must agree
-on the provider and its configuration. The deployment promoted to an
-environment sets its shared resource limit. Promotion applies the memory
-configuration just before it selects the code, so the limit governs writes
-from that moment, from all sessions, including sessions whose agent code is
-pinned to an older deployment. A promotion that applies its configuration and
-then fails to select the code leaves the configuration in force; re-run the
-promotion or promote another deployment.
+`defineMemory` declares the resource at deployment; a session binding chooses
+the accessible documents; `useMemory` selects the projection and tools during
+render. Declarations of the same resource within a deployment must agree on
+provider and configuration. Promotion applies that environment's resource
+limits before activating the code. Those limits govern subsequent writes
+from every session, including sessions pinned to older deployments. If
+configuration succeeds but code activation fails, the limits remain applied;
+retry the promotion or promote another deployment.
 
-`maxBytes` is a rule for future writes, not a check on stored data. Lowering
-it never fails a deployment and never truncates a document. A document that
-is larger than the new limit stays readable and is projected in full; its
-next save must fit, from the agent and the owner alike. Document reads report
-`bytes` and `maxBytes`, and the Memory page marks documents over the current
-limit. Changing the provider kind under an existing resource ID is rejected;
-use a new resource and migrate the data explicitly.
+Lowering `maxBytes` neither rejects deployment nor truncates stored text.
+Oversized documents remain readable in full; their next text replacement must
+fit the new limit. Reads report `bytes` and the current `maxBytes`. Changing a
+resource's provider kind is rejected: use a new resource and migrate its data.
 
 ## Session bindings
 
-These are values for the `memory.requirements` field when creating a session.
-Here `requirements` is a resource name and `workshop` is a document ID, both
-chosen by the application.
+Set `memory.<resource>` in the session-create body. For the `requirements`
+resource, these bindings give access to one document or the collection:
 
-| Binding | `useMemory(requirements).text` | Model tools |
+| Binding | `useMemory(requirements).text` | Available model tools |
 | --- | --- | --- |
 | `{ "scope": "document", "id": "workshop", "access": "read" }` | Full document text. | None. |
 | `{ "scope": "document", "id": "workshop", "access": "read-write" }` | Full document text. | `memory_save`. |
-| `{ "scope": "collection", "access": "read" }` | Document IDs, titles and summaries, newest updates first. | `memory_list`, `memory_read`. |
+| `{ "scope": "collection", "access": "read" }` | IDs, titles and summaries of recent documents. | `memory_list`, `memory_read`. |
 
-The tools have fixed names. Each takes an optional `memory` argument naming
-the resource; it is required only when more than one bound resource offers
-that tool with the needed access. It resolves against the resources the
-render that produced the call selected with `useMemory()`, not against every
-binding the session holds. The tool description lists those resources with
-the descriptions from their declarations. `memory` is a reserved argument
-name; provider tool schemas may not declare it.
+Access defaults to `read`. Collection writes are unsupported. The session's
+deployment must declare the resource, and a document must exist before it can
+be bound. Invalid bindings fail admission; access is never broadened as a
+fallback. Bindings remain fixed for the session. Schedules, channels and
+incoming webhooks do not currently configure memory bindings.
 
-Access defaults to `read`. Collection-wide writes are not supported. The
-resource must be declared by the session's deployment, and a document binding
-requires an existing document. Invalid or unauthorized bindings fail session
-creation; OpenComputer does not silently fall back to broader access.
+`useMemory()` selects the binding's tools for that model request. Omitting the
+hook omits those tools; calling it without a binding fails before inference.
+Each tool accepts an optional `memory` resource ID. It is required when more
+than one resource selected by that render offers the tool. Selection is
+resolved against that render, not every resource bound to the session. Tool
+descriptions name the eligible resources and include their declared guidance.
 
-Bindings remain fixed for the session. Session inspection returns them as
-`memory`, one entry per resource, without any credential:
+Session inspection returns bindings and their current write availability:
 
 ```json
 {
@@ -88,65 +78,72 @@ Bindings remain fixed for the session. Session inspection returns them as
 }
 ```
 
-`writable` is `false` once the session has ended, or while the document's
-agent writes are disabled. Creating a session again with the same
-`Idempotency-Key` and the same bindings returns the existing session; the same
-key with different bindings is rejected with `409 conflict`.
-
-Calling `useMemory()` exposes the binding's permitted tools for that model
-request; omitting the hook exposes none of them. It cannot widen access.
-Calling it without the required binding fails before inference. This guide
-binds explicitly created sessions; it does not assume schedules, channels or
-incoming webhooks configure memory bindings.
+`writable` is false for a read-only binding, a deleted or frozen document, or
+an ended session. It reports the state at inspection; it does not reserve
+permission for a later save. Reusing a session-create `Idempotency-Key`
+requires the same agent, deployment, environment and bindings; incompatible
+inputs return `409 conflict`.
 
 ## Reading
 
-OpenComputer recalls all bound resources before render. A failure blocks the
-model request, even if the render would omit that resource's hook.
-The hook returns `text`, `sources` and `writable`. Each document source has
-`id`, `title`, `revision` and `updatedAt`. `writable` is `true` when this
-binding's save tool can commit right now: the binding is read-write and the
-document accepts agent writes. Use it to tell the model when notes are
-read-only for this task. An empty document returns `text: ""` with its source;
-it is distinct from a missing or inaccessible document. Treat the result as an
-immutable snapshot of the current model request.
+`useMemory` is synchronous. Pass the exported definition or its string ID:
 
-Memory is not conversation history. Compaction summarises the conversation;
-it never summarises or drops memory, because every model request receives
-the current notes again through the render. A note saved in step three is
-visible in step four whether or not compaction ran in between.
+```ts
+import type { MemorySource } from "@opencomputer/agent";
 
-A collection overview contains up to 50 recent documents, fitting whole entries
-within 16 KiB of UTF-8 text, one document per line in this fixed form:
+declare function useMemory(memory: string | { readonly id: string }): {
+  readonly text: string;
+  readonly sources: readonly MemorySource[];
+  readonly writable: boolean;
+};
+```
+
+OpenComputer recalls every bound resource before rendering the agent. Any
+failed recall blocks the model request, including a resource the render would
+not select. The returned projection contains:
+
+| Field | Meaning |
+| --- | --- |
+| `text` | Full document text or a collection overview. An empty document returns `""`. |
+| `sources` | Documents included in the projection, each with `id`, `title`, `revision` and `updatedAt`. An empty document still has a source. |
+| `writable` | Whether this document binding permitted agent writes when recalled. Always false for collections. |
+
+`writable: true` is a snapshot of permission, not a promise that a save will
+succeed. A concurrent edit, freeze, deletion or session end can still reject
+the write. The flag does not change the binding or remove its tools.
+
+The next render reads current notes again. Conversation compaction does not
+alter stored documents, and there is no automatic extraction from conversation
+history into memory.
+
+### Collections
+
+The overview includes up to 50 recent documents, fitting whole entries within
+16 KiB of UTF-8 text. Each line contains ID, title, summary and update date:
 
 ```text
 workshop | Workshop requirements | Node.js 22, no paid services. | 2026-09-10
-budget | Conference budget | Q4 figures in EUR, hotel refund excluded. | 2026-09-09
+budget | Conference budget | Q4 figures in EUR. | 2026-09-09
 ```
 
-The fields are the document ID, its title, its summary (empty when none) and
-the date of its last update. The overview does not include full text. The
-model can open a document with `memory_read`:
+`memory_read` opens a document; `memory_list` discovers documents beyond the
+overview:
 
-```json
-{ "memory": "requirements", "id": "workshop" }
-```
+| Call | Result |
+| --- | --- |
+| `memory_read({ "memory": "requirements", "id": "workshop" })` | `id`, `title`, `text`, `summary`, `revision`, `updatedAt`. |
+| `memory_list({ "memory": "requirements" })` | `{ "documents": [...], "nextCursor": "..." }`; each entry has `id`, `title`, `summary`, `revision`, `updatedAt`. |
+| `memory_list({ "memory": "requirements", "cursor": "..." })` | The next page; `nextCursor: null` ends pagination. |
 
-To discover older documents, it calls `memory_list` with `{ "memory":
-"requirements" }` for the first page, then passes the returned `nextCursor` as
-`cursor` for subsequent pages:
-
-```json
-{ "memory": "requirements", "cursor": "<nextCursor>" }
-```
-
-List results contain document IDs, titles, summaries and revisions. The cursor
-is opaque and scoped to the collection. `nextCursor: null` means there are no
-more results. Reads and lists can only reach documents covered by the binding.
+Treat cursors as opaque and use them only with the same resource and
+environment. Reads and lists enforce the binding. A missing document returns
+`{ "status": "rejected", "reason": "not_found" }`; an invalid list cursor
+returns `reason: "invalid_cursor"`. Neither tool is added for a document
+binding: its full text is already in the projection.
 
 ## Saving
 
-A read-write document binding lets the model call `memory_save`:
+A read-write document binding exposes `memory_save`:
 
 ```json
 {
@@ -156,181 +153,163 @@ A read-write document binding lets the model call `memory_save`:
 }
 ```
 
-`text` replaces the whole document. `summary` is optional and appears in
-collection overviews. Omitting it preserves the existing summary; send an empty
-string to clear it. To clear both fields, send both as empty strings. The agent
-cannot change the document's ID, title or write policy.
+`text` replaces the whole document. Optional `summary` supplies the collection
+overview text; omitting it preserves the current summary, and `""` clears it.
+The agent cannot change the document's ID, title or write policy.
 
-The tool result is structured, so instructions can branch on it:
-
-| Result | When |
+| Result | Meaning |
 | --- | --- |
-| `{ "status": "saved", "revision": "<opaque>", "bytes": 512 }` | The document was replaced. The save is durable even if the turn later fails. |
-| `{ "status": "conflict", "text": "<current>", "summary": "<current>" }` | The document changed since this model request read it. The result carries the current content so the model can reconcile in one step. |
-| `{ "status": "rejected", "reason": "agent_writes_disabled" }` | The owner has frozen the document. |
-| `{ "status": "rejected", "reason": "too_large", "bytes": 9000, "maxBytes": 8192 }` | The text does not fit the resource limit. |
+| `{ "status": "saved", "revision": "<opaque>", "bytes": 512 }` | The replacement committed. It remains saved if the turn later fails. |
+| `{ "status": "conflict", "text": "<current>", "summary": "<current>" }` | The document changed since the render. Reconcile against this content in the next model step. |
+| `{ "status": "rejected", "reason": "agent_writes_disabled" }` | The owner disabled agent writes. |
+| `{ "status": "rejected", "reason": "too_large", "bytes": 9000, "maxBytes": 8192 }` | Text or summary exceeds its field limit. |
 | `{ "status": "rejected", "reason": "not_found" }` | The document was deleted. |
-| `{ "status": "rejected", "reason": "not_bound", "bound": ["requirements"] }` | `memory` named a resource this session cannot write; the result lists what it can. |
+| `{ "status": "rejected", "reason": "not_bound", "bound": ["requirements"] }` | No valid target was selected, or its access ended. `bound` lists eligible resources. |
 
-A conflict or rejection is a result, not a tool error: the turn continues and
-the model decides what to do. When the session observes a successful save it
-records a `memory.saved` event with `resource`, `documentId`, `revision` and
-`bytes`, so an application can refresh its view of the notes without parsing
-tool results. The event is a notification of observed success, not a
-guaranteed change feed: a save whose reply was lost is durable without an
-event. Refresh documents from the API when attaching to a session, after a
-reconnect and when work completes.
-
-There is no automatic extraction at turn end or compaction, and no separate
-read tool for a document binding: the next render reads the document.
+Conflicts and rejections are tool results; the model can continue. Malformed
+arguments and operational failures are tool errors.
 
 ### Conflicts and retries
 
-OpenComputer associates each save with the revision read for the model request
-that produced the tool call. The model does not supply a revision. If an owner
-or another session changed the document meanwhile, the save returns a conflict
-with the current text. The next model request can reconcile the change and try
-again. Another concurrent edit can cause another conflict; there is no
-automatic merge.
+The host supplies the revision read by the render that produced the save;
+the model supplies only content. Another session's save or an owner edit
+causes a conflict. Two saves from the same model response use the same
+expected revision, so the second conflicts if the first committed. There is
+no automatic merge.
 
-Retries retain the original expected revision. Two saves from the same model
-response also share that revision, so the second can conflict with the first.
-If a save commits but its response is lost, retrying may return a conflict
-rather than the original success. Read the current document before deciding
-whether to write again.
+Retries of a save within the same model response retain its expected revision.
+A retry can therefore conflict after a successful write whose reply was lost.
+Check current content before writing again. A failed model request can render
+again using newer memory; do not assume retries of model generation retain the
+same projection.
+
+When the session observes a successful save, it records `memory.saved` with
+`resource`, `documentId`, `revision` and `bytes`. This is a refresh notification,
+not a guaranteed change feed. A save can commit without its reply or event
+arriving. Read documents from the management API when attaching, reconnecting
+and completing work.
 
 ## Owner access
 
-The project's **Memory** page shows resources and documents, including each
-last writer and update time. Owner edits use the same revision checks as
-agent saves. Owner credentials belong in trusted application code, never in
-model inputs or sandbox files.
+The project's **Memory** page lists resources and documents, their update
+times and last writers. It includes resources no longer declared by active
+code. Owner edits use revision checks; owner credentials belong in trusted
+application code, not prompts or sandbox files.
 
-Run these commands from a [linked project directory](/agents/projects#create-or-select-the-cloud-project).
-The examples use Development explicitly. `memory list` and `memory show`
-accept `--json` and print the same fields as the management API.
+Run the CLI from a [linked project directory](/agents/projects#create-or-select-the-cloud-project).
+Each command below follows `npx --package @opencomputer/cli opencomputer`;
+pass `--environment development` or `--environment production` explicitly.
 
-### Edit a document
+| Command | Action |
+| --- | --- |
+| `memory list <resource>` | List all current document metadata, following pagination. |
+| `memory show <resource> <id>` | Read one document. |
+| `memory create <resource> <id> --title <title>` | Create empty notes; add `--text-file <path>` or `--text-stdin`, `--summary <text>`, or `--frozen`. |
+| `memory edit <resource> <id>` | Edit text in your editor; alternatively use `--text-file` or `--text-stdin`. Add `--summary` to replace the summary. |
+| `memory freeze <resource> <id>` / `memory unfreeze <resource> <id>` | Disable or enable agent writes. |
+| `memory export --out <dir>` | Export current documents across resources; repeat `--resource <id>` to restrict the selection. |
+| `memory remove <resource> <id>` | Delete the document. |
 
-Open the `workshop` document in your editor and save the replacement:
-
-```bash
-npx --package @opencomputer/cli opencomputer memory edit requirements workshop \
-  --environment development
-```
-
-If someone edits it concurrently, reconcile the conflict instead of overwriting
-the newer version.
+`--json` gives structured output. `list` returns `{ "documents": [...] }`;
+`show` returns the document object described below.
 
 ### Disable agent writes
 
-Freeze the document while retaining its content and read access:
+Freezing sets `agentWrites: "disabled"`. Once it succeeds, no subsequent agent
+save can commit, including pending saves from running sessions. Earlier saves
+remain. Reads and owner edits continue. Unfreezing restores writes for active,
+otherwise valid bindings; it does not revive an ended session or cancel work.
 
-```bash
-npx --package @opencomputer/cli opencomputer memory freeze requirements workshop \
-  --environment development
-```
-
-This sets `agentWrites: "disabled"`. Once the update succeeds, subsequent agent
-saves fail, including saves from sessions already running. Owner edits and
-agent reads continue. Saves committed before the policy change remain saved.
-
-Re-enable agent writes with:
-
-```bash
-npx --package @opencomputer/cli opencomputer memory unfreeze requirements workshop \
-  --environment development
-```
-
-This enables writes for otherwise valid bindings; it does not restore access
-revoked by ending a session. A freeze is a document policy, not a request to
-cancel running work. Sessions that remain active can write again after unfreeze.
-
-A successful session-end response confirms that its document-memory write
-access has been revoked. No later save from that session can commit; earlier
-saves remain. If the end request times out or fails, its outcome is uncertain.
-Freeze the document if you need to block all agent writes while resolving that
-uncertainty. This guarantee applies to the built-in document provider; a remote
-provider has its own [write completion contract](/agents/memory-providers).
+A successful session-end response confirms that its document-memory access
+has been revoked. Later saves from that session cannot commit. If ending
+fails or times out, its outcome is uncertain; freeze the document to block
+all agent writes while resolving it. This applies to the built-in provider;
+[remote providers](/agents/memory-providers) have their own write-completion
+contract.
 
 ### Export saved notes
 
-Export current documents and their metadata as readable files:
-
-```bash
-npx --package @opencomputer/cli opencomputer memory export \
-  --environment development --out ./memory
-```
-
-Export contains no credentials, conversation history or sandbox files. It is
-an export of current notes, not a revision history or session backup.
-Each UTF-8 JSON file at `<out>/<resource>/<id>.json` contains the same fields
-as a document read. Export reads documents individually, so concurrent edits
-can appear at different points in the export; it is not a project-wide snapshot.
+Export writes one UTF-8 JSON file per document at
+`<out>/<resource>/<id>.json`, with the fields returned by a document read.
+It includes retired resources. Documents are read individually, so concurrent
+edits can appear at different points in the export. This is a copy of current
+notes, not a consistent project snapshot, revision history or session backup.
+It excludes credentials, conversation history and sandbox files.
 
 ### Delete a document
 
-Remove the saved text and summary:
-
-```bash
-npx --package @opencomputer/cli opencomputer memory remove requirements workshop \
-  --environment development
-```
-
-A deleted ID stays reserved, preventing a delayed create retry from restoring
-it. Use a new ID for a new document. Deleting notes does not erase copies in
-conversation history, tool results or external sources.
-Existing document bindings do not recreate deleted content: their next recall
-fails before inference, and a pending save returns `rejected` with reason
-`not_found`. Collection overviews and lists omit deleted documents.
+Deletion removes the stored title, text and summary. The ID remains reserved;
+a delayed create retry cannot restore it. Create a new ID for new notes.
+Collections omit deleted documents. Existing document bindings fail their next
+recall before inference; pending saves return `not_found`. Deletion does not
+erase copies already present in conversation history, tool results or exports.
 
 ## Management API
 
-Use your OpenComputer API key in `x-api-key`. Every route is project-scoped and
-requires an explicit `environment` query parameter. In the paths below,
-`<resource>` is a declared resource ID and `<id>` is a document ID.
+Use `x-api-key: <api-key>`. Every route requires an explicit
+`environment=development` or `environment=production` query parameter and
+project access. The examples use Development.
 
-Base path:
+### Resource inventory
+
+```text
+GET /api/managed-agents/projects/<project-id>/memory?environment=development
+```
+
+```json
+{
+  "resources": [
+    {
+      "id": "requirements",
+      "provider": { "kind": "document", "maxBytes": 8192 },
+      "declared": true,
+      "documents": 2
+    }
+  ]
+}
+```
+
+`provider` reports the stored kind and current limit. `declared` is true when
+any active deployment in the environment declares the resource. `documents`
+counts current, non-deleted documents. Inventory persists independently of
+code: a resource with `declared: false` remains discoverable. Owners can still
+read, edit, delete and export its documents.
+
+Removing a declaration prevents new sessions of that deployment from binding
+the resource; it does not revoke existing bindings or delete notes. Reusing
+the same resource ID refers to its stored data. A different ID, including a
+rename, requires an explicit data migration.
+
+### Documents
+
+Paths below are relative to:
 
 ```text
 /api/managed-agents/projects/<project-id>/memory/<resource>/documents
 ```
 
-| Operation | Method and path | Precondition |
-| --- | --- | --- |
-| List metadata | `GET ?environment=development` | None. Follow `nextCursor` using `cursor`. |
-| Read one | `GET /<id>?environment=development` | None. Response includes `ETag`. |
-| Create | `PUT /<id>?environment=development` | `If-None-Match: *`; ID must never have been used. |
-| Replace text/summary | `PUT /<id>?environment=development` | `If-Match: "<revision>"`. |
-| Change title/policy | `PATCH /<id>?environment=development` | `If-Match: "<revision>"`. |
-| Delete | `DELETE /<id>?environment=development` | `If-Match: "<revision>"`. |
+Append `?environment=development` to each path.
 
-Create accepts `title`, `text`, optional `summary` (default `""`) and optional
-`agentWrites` (default `"enabled"`). This is an alternative to the tutorial's
-CLI create command; running both for the same ID returns a precondition error:
+| Operation | Method and path | Condition | Response |
+| --- | --- | --- | --- |
+| List metadata | `GET` | Optional `cursor` query parameter. | `200`, `{ "documents": [...], "nextCursor": "..." }`. |
+| Read | `GET /<id>` | None. | `200`, document and `ETag`. |
+| Create | `PUT /<id>` | `If-None-Match: *`. ID must never have been used. | `201`, document and `ETag`. |
+| Replace text/summary | `PUT /<id>` | `If-Match: "<revision>"`. | `200`, document and `ETag`. |
+| Change title/policy | `PATCH /<id>` | `If-Match: "<revision>"`. | `200`, document and `ETag`. |
+| Delete | `DELETE /<id>` | `If-Match: "<revision>"`. | `204`, no body or new document ETag. |
 
-```bash
-curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/memory/requirements/documents/workshop?environment=development' \
-  -H 'x-api-key: <api-key>' \
-  -H 'Content-Type: application/json' \
-  -H 'If-None-Match: *' \
-  -d '{
-    "title": "Workshop requirements",
-    "text": "Exercises must run on Node.js 22.",
-    "summary": "Workshop runtime requirements."
-  }'
-```
+JSON request bodies:
 
-A document response includes `id`, `title`, `text`, `summary`, `agentWrites`,
-`revision`, `bytes`, `maxBytes`, `updatedAt` and `writer`. `bytes` is the
-UTF-8 size of `text`; `maxBytes` is the resource's current limit, so
-`bytes > maxBytes` identifies a document that must shrink on its next save.
-Treat the revision as opaque. Reads,
-creates, replacements and patches return its quoted value as `ETag`; retain the header
-verbatim for the next `If-Match` request. List responses return `documents`
-with metadata and `nextCursor`, without the full text.
+| Operation | Fields |
+| --- | --- |
+| Create | Required `title`. Optional `text` and `summary` default to `""`; `agentWrites` defaults to `"enabled"`. |
+| Replace | Required `text`; omitted `summary` is preserved. |
+| Patch | `title`, `agentWrites`, or both; omitted fields are unchanged. |
 
-For example, a successful read returns `200 OK`, an `ETag` header, and:
+`agentWrites` accepts `"enabled"` or `"disabled"`. Unknown fields are rejected.
+All mutations check their precondition and apply the change together. A
+successful read, create, replacement or patch returns:
 
 ```json
 {
@@ -347,54 +326,49 @@ For example, a successful read returns `200 OK`, an `ETag` header, and:
 }
 ```
 
-`writer` is either `{ "kind": "owner" }` or
-`{ "kind": "agent", "sessionId": "..." }`; it is set by OpenComputer. Create
-returns `201`, replacement and patch return `200`, and delete returns `204`
-with no body. A delete has no new document ETag.
+`bytes` counts UTF-8 text bytes; `maxBytes` is the resource's current limit.
+`writer` is set by OpenComputer: `{ "kind": "owner" }` or
+`{ "kind": "agent", "sessionId": "..." }`. Treat `revision` as opaque and
+retain the quoted `ETag` header verbatim for the next `If-Match` request.
+List entries contain every document field except `text`.
 
-Replacement takes `{ "text": "...", "summary": "..." }`; `text` is required
-and an omitted summary is preserved. Patch accepts `title`, `agentWrites`, or
-both; omitted fields stay unchanged. `agentWrites` is `"enabled"` or
-`"disabled"`. Mutation checks and the write happen together.
+Lists return up to 50 documents, ordered by descending update time, then
+ascending document ID. Pass `nextCursor` as `cursor` until it is null.
+Pagination is a live view: concurrent edits can move documents between pages.
+Re-list if a complete current inventory matters.
 
-Errors use `{ "error": { "code": "...", "message": "..." } }`:
+### Errors
+
+Document-operation errors use
+`{ "error": { "code": "...", "message": "..." } }`:
 
 | Status | Code | Meaning |
 | --- | --- | --- |
-| `400` | `invalid_request` | Missing environment, invalid fields or cursor, or conflicting condition headers. |
-| `401` | `unauthorized` | Missing or invalid API key. |
-| `403` | `forbidden` | Caller lacks permission for this operation. |
-| `404` | `not_found` | Resource or document is absent or deleted. |
-| `412` | `precondition_failed` | Stale revision, or create attempted with an existing or previously deleted ID. |
-| `413` | `memory_limit_exceeded` | Text, title or summary exceeds its byte limit. |
-| `428` | `precondition_required` | A mutation is missing its required condition header. |
+| `400` | `invalid_request` | Missing or invalid environment, fields or cursor; incompatible conditions. |
+| `404` | `not_found` / `project_not_found` | Resource, document or project is unavailable. Deleted documents return `not_found`. |
+| `412` | `precondition_failed` | Stale revision, or creation with an existing or deleted ID. |
+| `413` | `memory_limit_exceeded` | Text, title or summary violates its byte limit. |
+| `428` | `precondition_required` | A mutation lacks its required condition header. |
 
-On `412`, fetch the latest state and reconcile before retrying; do not retry
-with an unconditional overwrite. A deleted ID cannot be recreated even after
-reading a newer revision. Unknown fields are rejected rather than ignored.
+Authentication and authorization failures return `401` or `403`. On `412`,
+read the latest document and reconcile; do not blindly overwrite it. A
+network or server error may leave a mutation's outcome unknown: read current
+state before retrying. Conditional writes protect newer content but do not
+replay the original response after a committed write.
 
-## Limits and lifecycle
+## Limits
 
 | Limit | Value |
 | --- | --- |
-| Document `text` | `maxBytes`: default 8,192 UTF-8 bytes, at most 16,384. |
-| `title` | 1–240 UTF-8 bytes, separate from the text limit. |
-| `summary` | 240 UTF-8 bytes, separate from the text limit. |
-| Document ID | 1–128 characters: letters, digits, `-`, `_`. |
-| Memory bindings per session | 8. |
-| Initial collection overview | At most 50 whole entries within 16 KiB of text; use list/read tools for the rest. |
+| Document `text` | Resource `maxBytes`: default 8,192, maximum 16,384 UTF-8 bytes. |
+| `title` | 1–240 UTF-8 bytes, separate from text. |
+| `summary` | 0–240 UTF-8 bytes, separate from text. |
+| Document ID | 1–128 ASCII letters, digits, `-` or `_`. |
+| JSON request body | At most 64 KiB for document mutations. |
+| Bindings per session | 8. |
+| Collection overview | At most 50 whole entries within 16 KiB of text. |
+| List page | At most 50 documents. |
 
-List pages use the same 50-document maximum and include `nextCursor` until
-exhausted. Ordering is descending update time, with document ID as the
-tie-breaker. Pagination is a live view, not a snapshot: concurrent changes can
-move documents between pages. Re-list when a complete current inventory matters.
-
-These are storage and retrieval limits, not a model token budget. All rendered
-memory shares the selected model's context with instructions, history and
-tools. Oversized input fails rather than silently discarding document text.
-
-A deployment does not create new copies of documents or erase existing notes.
-A different resource ID names different memory; renaming a declaration is not
-a data migration. Removing a declaration prevents new sessions of that
-deployment from binding it, but does not delete stored notes. Delete documents
-explicitly when you intend to remove their data.
+These are storage and retrieval limits, not a token budget. Rendered memory
+shares the model's context with instructions, history and tools; documents
+are not silently truncated to make room.

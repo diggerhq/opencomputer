@@ -1,6 +1,6 @@
 ---
 title: "Agent capabilities"
-description: "Choose between tools, MCP servers, skills, subagents, and outbound connections"
+description: "Choose tools, MCP servers, skills, subagents, memory and outbound connections"
 ---
 
 Capabilities give an agent something beyond its instructions and model. Choose
@@ -13,7 +13,7 @@ the narrowest capability that fits the job.
 | Skill | A reusable procedure, checklist, or supporting files | The agent follows the loaded instructions | Place it under `skills/` |
 | Subagent | Delegating a focused task to another project agent | The delegated agent | `useSubagent(agentId)` |
 | HTTP connection | A constrained authenticated outbound request | OpenComputer sends the declared request | Call `defineConnection().fetch()` inside a tool |
-| Memory | Knowledge that must outlive the session | The selected provider recalls data and executes its memory tools | `useMemory(memory)` |
+| Memory | Notes shared across sessions | OpenComputer stores documents; the agent reads and saves through memory tools | `useMemory(memory)` |
 
 `useModel()` selects the model for a render, but it does not add an executable
 capability.
@@ -52,9 +52,9 @@ application rather than to the agent's continuing work.
 
 `defineConnection()` declares a secret-backed HTTP destination. It is not an
 OAuth account selector and does not itself give the model a tool. Call it from
-a code-defined tool, or attach it to an MCP definition or
-[HTTP memory provider](/agents/memory-providers) that accepts the declared
-authorization headers.
+a code-defined tool or attach it to an MCP definition that accepts the
+declared authorization headers. The proposed [HTTP memory provider
+contract](/agents/memory-providers) uses the same connection mechanism.
 
 See [Secrets and outbound requests](/agents/secrets) for the complete security
 model.
