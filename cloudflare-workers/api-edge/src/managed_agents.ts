@@ -678,13 +678,59 @@ const PRIVATE_EVENT_KEYS = new Set([
   "platform_instructions",
 ]);
 
+const GENERIC_FAILURE_MESSAGE = "The agent could not complete this request.";
+const FAILURE_MESSAGE_LIMIT = 500;
+
+// A turn or session failure reason is an Error message from the runtime,
+// written for operators: it names what went wrong (a rejected model, a tool
+// that is not available, a harness that never became ready) and the user
+// needs that to act. It can also carry what the user must not see: absolute
+// paths, internal URLs, credentials, stack frames. Keep the sentence, drop
+// those.
+export function publicFailureMessage(value: unknown): string {
+  const data = record(value) ?? {};
+  const raw =
+    typeof data.message === "string"
+      ? data.message
+      : typeof data.reason === "string"
+        ? data.reason
+        : "";
+  const message = raw
+    .split(/\r?\n/)
+    // Stack frames and their "Caused by" chains.
+    .filter((line) => !/^\s+at\s|^\s*caused by:/i.test(line))
+    .join(" ")
+    // Internal topology: URLs, then absolute filesystem paths. A bare name
+    // such as a model id (`anthropic/claude-sonnet-4.6`) is not a path.
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)\]]+/gi, "<url>")
+    .replace(/(?<![\w@:.-])\/(?:[\w@.+-]+\/)+[\w@.+-]*/g, "<path>")
+    // Credentials by label, by prefix, then anything long enough to be one.
+    .replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
+    .replace(
+      /\b((?:api[_-]?key|token|secret|password|authorization))\s*[=:]\s*"?[^\s"',;]{16,}/gi,
+      "$1=<redacted>",
+    )
+    .replace(
+      /\b(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}/g,
+      "<redacted>",
+    )
+    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "<redacted>")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!message) return GENERIC_FAILURE_MESSAGE;
+  return message.length > FAILURE_MESSAGE_LIMIT
+    ? `${message.slice(0, FAILURE_MESSAGE_LIMIT - 1)}\u2026`
+    : message;
+}
+
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
-    return { message: "The agent could not complete this request." };
+    return { message: publicFailureMessage(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(

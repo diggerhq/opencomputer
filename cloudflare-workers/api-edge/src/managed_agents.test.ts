@@ -6,6 +6,7 @@ import {
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
+  publicFailureMessage,
 } from "./managed_agents";
 
 function legacyPlanEnv(plan: string) {
@@ -2177,6 +2178,7 @@ describe("managed agents proxy", () => {
     ]);
     expect(body).not.toHaveProperty("runtimeToken");
   });
+
   // The resource inventory (C9) is the durable list of an environment's
   // resources: a resource no active deployment declares any more still
   // appears while it holds documents.
@@ -2260,4 +2262,96 @@ describe("managed agents proxy", () => {
     });
   });
 
+  // A failed turn carries its reason so the user can act on it; the reason is
+  // an operator-facing Error message, so paths, URLs and credentials go.
+  it("passes a sanitized turn failure reason through the event stream", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event_1",
+              seq: 9,
+              timestamp: "2026-09-10T00:00:00.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "turn.failed",
+              data: {
+                message:
+                  "The Workerd runtime rejects any useModel other than anthropic/claude-sonnet-4.6 (requested openai/gpt-5)",
+                runtimeToken: "never-return-this",
+              },
+            },
+            {
+              id: "event_2",
+              seq: 10,
+              timestamp: "2026-09-10T00:00:01.000Z",
+              sessionId: "session-1",
+              type: "session.failed",
+              data: {},
+            },
+          ],
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    const body = (await response.json()) as {
+      events: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+
+    expect(body.events[0].data).toEqual({
+      message:
+        "The Workerd runtime rejects any useModel other than anthropic/claude-sonnet-4.6 (requested openai/gpt-5)",
+    });
+    expect(body.events[1].data).toEqual({
+      message: "The agent could not complete this request.",
+    });
+    expect(JSON.stringify(body)).not.toContain("never-return-this");
+  });
+
+  it("strips paths, URLs, credentials and stack frames from failure reasons", () => {
+    expect(
+      publicFailureMessage({
+        message: [
+          "ENOENT: no such file or directory, open '/Users/dev/app/.opencomputer/agent.js'",
+          "    at Object.openSync (node:fs:581:3)",
+          "    at /home/runner/work/index.js:12:5",
+        ].join("\n"),
+      }),
+    ).toBe("ENOENT: no such file or directory, open '<path>'");
+    expect(
+      publicFailureMessage({
+        message:
+          "fetch to http://127.0.0.1:4096/session/ses_1/message?token=abc failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz",
+      }),
+    ).toBe("fetch to <url> failed: Authorization: Bearer <redacted>");
+    expect(
+      publicFailureMessage({
+        message:
+          "provider rejected api_key=sk-ant-api03-0123456789abcdefghijklmnop and osb_0123456789abcdef; retry",
+      }),
+    ).toBe("provider rejected api_key=<redacted> and <redacted>; retry");
+    expect(
+      publicFailureMessage({
+        reason: "Runtime harness is not ready\u0007",
+      }),
+    ).toBe("Runtime harness is not ready");
+    const long = publicFailureMessage({
+      message: "The turn exceeded its budget. ".repeat(40),
+    });
+    expect(long).toHaveLength(500);
+    expect(long.endsWith("\u2026")).toBe(true);
+    expect(publicFailureMessage(undefined)).toBe(
+      "The agent could not complete this request.",
+    );
+  });
 });
