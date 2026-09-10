@@ -143,3 +143,112 @@ test("development publish synchronizes every configured project agent", async ()
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+const WORKSHOP_MEMORY = (maxBytes: string) => `import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+export const requirements = defineMemory({
+  id: "requirements",
+  description: "Verified requirements for a workshop.",
+  provider: documentMemory({ maxBytes: ${maxBytes} }),
+});
+`;
+
+const WORKSHOP_AGENT = `import { useMemory } from "@opencomputer/agent";
+import { requirements } from "./memory";
+
+export default function Agent() {
+  return "Requirements: " + useMemory(requirements).text;
+}
+`;
+
+test("development publish registers memory declarations with the deployment", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-memory-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"), {
+      id: "prj_test",
+      name: "Test project",
+      agentId: "hello-agent",
+    });
+    await writeFile(resolve(initialized.agentRoot, "memory.ts"), WORKSHOP_MEMORY("8_192"));
+    await writeFile(resolve(initialized.agentRoot, "agent.ts"), WORKSHOP_AGENT);
+    let input:
+      | Parameters<
+          Parameters<typeof publishDevelopment>[0]["registerDeployment"]
+        >[0]
+      | undefined;
+    const client = {
+      async registerDeployment(value: NonNullable<typeof input>) {
+        input = value;
+        return {
+          id: `${value.agentId}:${value.source.digest}`,
+          agentId: value.agentId,
+          alias: value.alias,
+          createdAt: new Date(0).toISOString(),
+        };
+      },
+    };
+    await publishDevelopment(client, initialized.agentRoot, "hello-agent");
+    assert.deepEqual(input?.memory, [
+      {
+        id: "requirements",
+        description: "Verified requirements for a workshop.",
+        provider: { kind: "document", maxBytes: 8192 },
+      },
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(input)).memory, input?.memory);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("project publish requires agents to agree on a shared memory resource", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-memory-project-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(resolve(initialized.agentRoot, "memory.ts"), WORKSHOP_MEMORY("8_192"));
+    await writeFile(resolve(initialized.agentRoot, "agent.ts"), WORKSHOP_AGENT);
+    const echoRoot = resolve(initialized.root, "opencomputer", "agents", "echo");
+    await mkdir(echoRoot, { recursive: true });
+    await writeFile(resolve(echoRoot, "memory.ts"), WORKSHOP_MEMORY("8_192"));
+    await writeFile(resolve(echoRoot, "agent.ts"), WORKSHOP_AGENT);
+    await writeFile(
+      resolve(initialized.root, "opencomputer", "project.ts"),
+      'export default { name: "app", agents: ["hello-world", "echo"] };\n',
+    );
+    const published: string[][] = [];
+    const client = {
+      async registerDeployment(
+        value: Parameters<
+          Parameters<typeof publishDevelopment>[0]["registerDeployment"]
+        >[0],
+      ) {
+        published.push(value.memory.map((declaration) => declaration.id));
+        return {
+          id: `${value.agentId}:${value.source.digest}`,
+          agentId: value.agentId,
+          alias: value.alias,
+          createdAt: new Date(0).toISOString(),
+        };
+      },
+    };
+    const binding = {
+      version: 1 as const,
+      apiUrl: "https://app.opencomputer.dev",
+      projectId: "prj_test",
+      projectName: "Test",
+      agentId: "test-agent",
+    };
+    await publishProjectDevelopment(client, initialized.root, binding);
+    assert.deepEqual(published, [["requirements"], ["requirements"]]);
+
+    await writeFile(resolve(echoRoot, "memory.ts"), WORKSHOP_MEMORY("4_096"));
+    published.length = 0;
+    await assert.rejects(
+      publishProjectDevelopment(client, initialized.root, binding),
+      /Memory "requirements" is declared with different configuration in agent hello-world and agent echo/,
+    );
+    assert.deepEqual(published, []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

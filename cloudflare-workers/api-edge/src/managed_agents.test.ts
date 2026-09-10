@@ -1407,6 +1407,13 @@ describe("managed agents proxy", () => {
                 },
               },
             ],
+            memory: [
+              {
+                id: "requirements",
+                description: "Verified requirements.",
+                provider: { kind: "document", maxBytes: 8192 },
+              },
+            ],
             source: {
               digest,
               size: source.length,
@@ -1444,6 +1451,13 @@ describe("managed agents proxy", () => {
           id: "github-api",
           origin: "https://api.github.com",
         }),
+      ],
+      memory: [
+        {
+          id: "requirements",
+          description: "Verified requirements.",
+          provider: { kind: "document", maxBytes: 8192 },
+        },
       ],
     });
     expect(JSON.stringify(await response.json())).not.toMatch(

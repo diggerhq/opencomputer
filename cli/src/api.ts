@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ResolvedConfig } from "./config.js";
-import type { ProjectResourceManifest } from "./project.js";
+import type { MemoryDeclaration, ProjectResourceManifest } from "./project.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -731,6 +731,7 @@ export class OpenComputerClient {
       pathPrefix?: string;
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
+    memory: MemoryDeclaration[];
     projectDeployment?: {
       id: string;
       digest: string;
