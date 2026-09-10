@@ -236,7 +236,9 @@ test("an over-limit save keeps the edited draft and says where it is", async (co
   }
 });
 
-test("a save that never reaches the API keeps the edited draft", async (context) => {
+// Review reproduction (U8): no answer from the API is not proof that
+// nothing was written.
+test("a save whose response is lost keeps the draft and is reported as unconfirmed", async (context) => {
   context.mock.method(globalThis, "fetch", async () => {
     throw new TypeError("fetch failed");
   });
@@ -248,13 +250,51 @@ test("a save that never reaches the API keeps the edited draft", async (context)
     }).catch((error: unknown) => error);
 
     assert.ok(error instanceof CLIError);
-    assert.equal(error.code, "command_failed");
-    assert.match(error.message, /was not saved: fetch failed/);
+    assert.equal(error.code, "memory_save_unconfirmed");
+    assert.match(error.message, /may or may not have been saved: fetch failed/);
+    assert.doesNotMatch(error.message, /was not saved/);
+    assert.match(
+      error.hint,
+      /Run `opencomputer memory show requirements workshop --project prj_1 --environment development` to see whether the revision changed/,
+    );
     assert.match(error.hint, new RegExp(`kept at ${draft.path}`));
-    assert.deepEqual(error.details, { editedTextPath: draft.path });
+    assert.deepEqual(error.details, { editedTextPath: draft.path, expectedRevision: '"rev-1"' });
     await access(draft.path);
   } finally {
     await draft.cleanup();
+  }
+});
+
+// Review reproduction (U8): the recovery command targets what the edit
+// targeted, carries the summary, and quotes what the shell would split.
+test("the draft recovery command keeps project, environment, summary and shell quoting", async (context) => {
+  context.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      { error: { code: "memory_limit_exceeded", message: "Text is 9000 bytes; the limit is 8192." } },
+      { status: 413 },
+    ),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "opencomputer memory test-"));
+  const path = join(directory, "requirements--workshop.md");
+  await writeFile(path, "text", "utf8");
+  try {
+    const error = await saveMemoryEdit(new OpenComputerClient(config), {
+      ...target,
+      projectId: "prj_other",
+      environment: "production",
+      summary: "Workshop's requirements",
+      draft: { path, discard: async () => undefined },
+    }).catch((error: unknown) => error);
+
+    assert.ok(error instanceof CLIError);
+    assert.equal(error.code, "memory_too_large");
+    const command = error.hint.match(/`(opencomputer memory edit [^`]+)`/)?.[1];
+    assert.equal(
+      command,
+      `opencomputer memory edit requirements workshop --project prj_other --environment production --summary 'Workshop'\\''s requirements' --text-file '${path}'`,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

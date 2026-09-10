@@ -106,10 +106,49 @@ export interface MemoryEditDraft {
   discard: () => Promise<void>;
 }
 
+/** A word as a POSIX shell reads it back unchanged. */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * The command that retries an edit from its kept draft: the same target
+ * (project and environment included, so it never lands on the linked
+ * project's Development by default), the same summary, and a path the
+ * shell reads back whatever it contains.
+ */
+export function memoryEditResumeCommand(input: {
+  projectId: string;
+  resource: string;
+  id: string;
+  environment: MemoryEnvironment;
+  summary?: string;
+  draftPath: string;
+}): string {
+  return [
+    "opencomputer memory edit",
+    shellWord(input.resource),
+    shellWord(input.id),
+    "--project",
+    shellWord(input.projectId),
+    "--environment",
+    input.environment,
+    ...(input.summary !== undefined
+      ? ["--summary", shellWord(input.summary)]
+      : []),
+    "--text-file",
+    shellWord(input.draftPath),
+  ].join(" ");
+}
+
 /**
  * Replaces a document's text at the revision that was read. On success the
  * draft file goes; on any failure it stays and the error names it, so an
- * over-limit, unreachable or failing save costs no work.
+ * over-limit, unreachable or failing save costs no work. An answer from the
+ * API is a verdict; no answer at all (the request never arrived, or its
+ * response was lost) is not, and is reported as an unconfirmed write.
  */
 export async function saveMemoryEdit(
   client: OpenComputerClient,
@@ -135,9 +174,19 @@ export async function saveMemoryEdit(
       : {};
     const resume = draft
       ? ` Your edited text is kept at ${draft.path}; save it with ` +
-        `\`opencomputer memory edit ${input.resource} ${input.id} --text-file ${draft.path}\`.`
+        `\`${memoryEditResumeCommand({ ...input, draftPath: draft.path })}\`.`
       : "";
-    if (error instanceof APIError && error.status === 412) {
+    if (!(error instanceof APIError)) {
+      const failure = structuredError(error);
+      throw new CLIError(
+        "memory_save_unconfirmed",
+        `${input.resource}/${input.id} may or may not have been saved: ${failure.message}`,
+        `Run \`opencomputer memory show ${shellWord(input.resource)} ${shellWord(input.id)} --project ${shellWord(input.projectId)} --environment ${input.environment}\` to see whether the revision changed before saving again.` +
+          resume,
+        { ...kept, expectedRevision: input.etag },
+      );
+    }
+    if (error.status === 412) {
       const latest = await client
         .memoryDocument(input)
         .catch(() => null);
