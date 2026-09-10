@@ -36,7 +36,13 @@ export function structuredError(error: unknown): StructuredCLIError {
           ? "resource_not_found"
           : error.status === 409
             ? "conflict"
-            : "api_request_failed";
+            : error.status === 412
+              ? "precondition_failed"
+              : error.status === 413
+                ? "payload_too_large"
+                : error.status === 428
+                  ? "precondition_required"
+                  : "api_request_failed";
     const hint =
       code === "authentication_required"
         ? "Run `opencomputer login` or set OPENCOMPUTER_API_KEY."
@@ -44,8 +50,22 @@ export function structuredError(error: unknown): StructuredCLIError {
           ? "Check the bound project and resource identifier, then retry."
           : code === "conflict"
             ? "Read the existing resource and retry with the same idempotency key."
-            : "Retry the command; if it persists, inspect `opencomputer logs --json`.";
-    return { code, message, hint, details: { status: error.status } };
+            : code === "precondition_failed"
+              ? "Read the current state, reconcile your change, and retry; a deleted ID cannot be reused."
+              : code === "payload_too_large"
+                ? "Shorten the content to fit the documented byte limit and retry."
+                : code === "precondition_required"
+                  ? "Send the precondition the operation requires and retry."
+                  : "Retry the command; if it persists, inspect `opencomputer logs --json`.";
+    return {
+      code,
+      message,
+      hint,
+      details: {
+        status: error.status,
+        ...(error.code ? { apiCode: error.code } : {}),
+      },
+    };
   }
   if (/not logged in/i.test(message)) {
     return {
