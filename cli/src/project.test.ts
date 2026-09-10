@@ -272,7 +272,7 @@ test("init can explicitly include a separately-run React app", async () => {
       session: "opencomputer session",
       deploy: "opencomputer deploy",
     });
-    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.1.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.2.0");
     assert.equal(packageJSON.dependencies.react, "^19.2.0");
     assert.equal(packageJSON.devDependencies.vite, "^8.0.0");
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.7.0");

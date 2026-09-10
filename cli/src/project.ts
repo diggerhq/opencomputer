@@ -464,7 +464,7 @@ export default function Agent() {
           "@opencomputer/agent": "^0.6.0",
           ...(spa
             ? {
-                "@opencomputer/react": "^0.1.0",
+                "@opencomputer/react": "^0.2.0",
                 react: "^19.2.0",
                 "react-dom": "^19.2.0",
               }
