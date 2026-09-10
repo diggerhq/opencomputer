@@ -25,6 +25,7 @@ describe('managed agents navigation', () => {
       'Outboxes',
       'Schedules',
       'Webhooks',
+      'Memory',
       'Secrets',
       'BYOK',
       'Debug playground',

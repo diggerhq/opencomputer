@@ -154,7 +154,7 @@ export function ManagedProjectMemory({
           </PanelDescription>
         </div>
       </PanelHeader>
-      <PanelContent className="grid gap-4 md:grid-cols-[minmax(0,20rem)_1fr] md:items-end">
+      <PanelContent className="grid gap-4 md:grid-cols-[minmax(0,20rem)_1fr] md:items-start">
         <Field
           label="Resource"
           htmlFor="memory-resource"
@@ -201,30 +201,33 @@ export function ManagedProjectMemory({
             />
           )}
         </Field>
-        <form
-          className="flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            const next = customResource.trim()
-            if (!next) return
-            setSelectedResource(next)
-            setCustomResource('')
-          }}
-        >
-          <Input
-            aria-label="Other resource ID"
-            value={customResource}
-            placeholder="Other resource ID"
-            onChange={(event) => setCustomResource(event.target.value)}
-          />
-          <Button
-            type="submit"
-            variant="outline"
-            disabled={!customResource.trim()}
+        <Field label="Open by ID" htmlFor="memory-resource-other">
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const next = customResource.trim()
+              if (!next) return
+              setSelectedResource(next)
+              setCustomResource('')
+            }}
           >
-            Open
-          </Button>
-        </form>
+            <Input
+              id="memory-resource-other"
+              aria-label="Other resource ID"
+              value={customResource}
+              placeholder="Other resource ID"
+              onChange={(event) => setCustomResource(event.target.value)}
+            />
+            <Button
+              type="submit"
+              variant="outline"
+              disabled={!customResource.trim()}
+            >
+              Open
+            </Button>
+          </form>
+        </Field>
       </PanelContent>
       {inventory.isError ? (
         <PanelContent className="border-t">

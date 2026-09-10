@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  BookOpen,
   Bot,
   Boxes,
   BrainCircuit,
@@ -81,6 +82,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/webhooks`,
             label: 'Webhooks',
             icon: Webhook,
+          },
+          {
+            to: `${projectPath}/memory`,
+            label: 'Memory',
+            icon: BookOpen,
           },
           {
             to: `${projectPath}/secrets`,
