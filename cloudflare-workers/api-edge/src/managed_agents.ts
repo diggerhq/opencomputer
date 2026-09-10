@@ -655,6 +655,79 @@ function publicWebhookRequest(value: unknown): Record<string, unknown> {
   };
 }
 
+// Event subscriptions (docs/agents/api.mdx, "Event subscriptions"): the
+// backend owns the body and the object, so both pass through as written,
+// less who created it. Fields the edge does not know (the environment scope,
+// for one) are the backend's to validate and are kept.
+const EVENT_SUBSCRIPTIONS_ROUTE = /^\/projects\/[^/]+\/event-subscriptions$/;
+const EVENT_SUBSCRIPTION_ROUTE =
+  /^\/projects\/[^/]+\/event-subscriptions\/[^/]+$/;
+
+function isEventSubscriptionRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) ||
+    ((method === "GET" || method === "DELETE") &&
+      EVENT_SUBSCRIPTION_ROUTE.test(suffix))
+  );
+}
+
+function publicEventSubscription(value: unknown): unknown {
+  const subscription = record(stripPrivateValues(value));
+  if (!subscription) return value;
+  const { createdBy: _createdBy, ...rest } = subscription;
+  return rest;
+}
+
+// A delivery's `error` is the backend's terminal verdict when it is one of
+// its codes; any other text is an operator message and is not public.
+const DELIVERY_ERROR_CODES = new Set([
+  "subscription_unavailable",
+  "target_missing",
+  "target_ended",
+]);
+
+function publicDelivery(value: unknown): Record<string, unknown> {
+  const delivery = record(value) ?? {};
+  const receipt = record(delivery.receipt);
+  return {
+    id: delivery.id,
+    subscriptionId: delivery.subscriptionId,
+    eventId: delivery.eventId,
+    eventType: delivery.eventType,
+    destination: stripPrivateValues(delivery.destination),
+    status: delivery.status,
+    attempt: delivery.attempt,
+    ...(receipt
+      ? { receipt: { sessionId: receipt.sessionId, turnId: receipt.turnId } }
+      : {}),
+    ...(typeof delivery.nextAttemptAt === "string"
+      ? { nextAttemptAt: delivery.nextAttemptAt }
+      : {}),
+    ...(typeof delivery.error === "string"
+      ? {
+          error: DELIVERY_ERROR_CODES.has(delivery.error)
+            ? delivery.error
+            : "delivery_failed",
+        }
+      : {}),
+    updatedAt: delivery.updatedAt,
+  };
+}
+
+function publicSessionSnapshot(value: unknown): unknown {
+  const session = record(stripPrivateValues(value));
+  if (!session || !Array.isArray(session.turns)) return session ?? value;
+  return {
+    ...session,
+    turns: session.turns.map((entry) => {
+      const turn = record(entry);
+      if (!turn || !Array.isArray(turn.deliveries)) return entry;
+      return { ...turn, deliveries: turn.deliveries.map(publicDelivery) };
+    }),
+  };
+}
+
 const PRIVATE_EVENT_KEYS = new Set([
   "accountId",
   "account_id",
@@ -1026,6 +1099,19 @@ function publicSuccessBody(
         : [],
     };
   }
+  if (method === "GET" && EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) {
+    return {
+      subscriptions: Array.isArray(body.subscriptions)
+        ? body.subscriptions.map(publicEventSubscription)
+        : [],
+    };
+  }
+  if (
+    (method === "POST" && EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) ||
+    (method === "GET" && EVENT_SUBSCRIPTION_ROUTE.test(suffix))
+  ) {
+    return { subscription: publicEventSubscription(body.subscription) };
+  }
   if (
     (method === "GET" || method === "PUT") &&
     /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
@@ -1267,12 +1353,20 @@ function publicSuccessBody(
       updatedAt: body.updatedAt,
     };
   }
+  if (method === "GET" && suffix === "/sessions") {
+    return {
+      ...(record(stripPrivateValues(body)) ?? {}),
+      sessions: Array.isArray(body.sessions)
+        ? body.sessions.map(publicSessionSnapshot)
+        : [],
+    };
+  }
   if (
-    (method === "GET" && /^\/sessions(?:\/[^/]+)?$/.test(suffix)) ||
+    (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
     (method === "POST" &&
       /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
   ) {
-    return stripPrivateValues(body);
+    return publicSessionSnapshot(body);
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -1288,7 +1382,9 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
-  if (suffix.includes("/webhooks")) headers.set("cache-control", "no-store");
+  if (suffix.includes("/webhooks") || suffix.includes("/event-subscriptions")) {
+    headers.set("cache-control", "no-store");
+  }
   return new Response(
     JSON.stringify(
       publicSuccessBody(
@@ -1469,6 +1565,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (isMemoryRoute(method, suffix)) return true;
+  if (isEventSubscriptionRoute(method, suffix)) return true;
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)

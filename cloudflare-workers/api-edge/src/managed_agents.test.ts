@@ -1826,6 +1826,282 @@ describe("managed agents proxy", () => {
     expect(serialized).not.toMatch(/runtimeToken|accountId|org_test/);
   });
 
+  // Public delivery slice (work 025): event subscriptions are managed under
+  // the project and pass through the edge one-to-one; the backend owns the
+  // body's validation, so fields this edge does not know (the environment
+  // scope, for one) reach it and come back untouched.
+  describe("event subscriptions", () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+    const subscription = {
+      id: "evs_1",
+      projectId: "prj_1",
+      agentId: "worker",
+      environment: "development",
+      events: ["turn.completed", "turn.failed"],
+      destination: { type: "session", sessionId: "ses_coordinator" },
+      createdBy: "user_private",
+      createdAt: "2026-09-10T12:00:00.000Z",
+    };
+    const publicSubscription = {
+      id: "evs_1",
+      projectId: "prj_1",
+      agentId: "worker",
+      environment: "development",
+      events: ["turn.completed", "turn.failed"],
+      destination: { type: "session", sessionId: "ses_coordinator" },
+      createdAt: "2026-09-10T12:00:00.000Z",
+    };
+
+    it("creates a subscription, forwarding the body as sent", async () => {
+      const fetchSpy = vi.fn(async () =>
+        Response.json({ subscription }, { status: 201 }),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const body = {
+        agentId: "worker",
+        events: ["turn.completed", "turn.failed"],
+        destination: { type: "session", sessionId: "ses_coordinator" },
+        environment: "development",
+      };
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/event-subscriptions",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+        URL,
+        RequestInit,
+      ];
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/projects/prj_1/event-subscriptions",
+      );
+      expect(init.method).toBe("POST");
+      expect(await new Response(init.body).json()).toEqual(body);
+      expect(await response.json()).toEqual({ subscription: publicSubscription });
+    });
+
+    it("lists, reads and deletes subscriptions", async () => {
+      const fetchSpy = vi.fn(async (input: URL | string, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "DELETE") return new Response(null, { status: 204 });
+        if (url.endsWith("/event-subscriptions")) {
+          return Response.json({ subscriptions: [subscription] });
+        }
+        return Response.json({ subscription });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+      const call = (path: string, method = "GET") =>
+        proxyManagedAgents(
+          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
+            method,
+          }),
+          env,
+          caller,
+          "/api/managed-agents",
+        );
+
+      const listed = await call("/projects/prj_1/event-subscriptions");
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({
+        subscriptions: [publicSubscription],
+      });
+
+      const read = await call("/projects/prj_1/event-subscriptions/evs_1");
+      expect(read.status).toBe(200);
+      expect(await read.json()).toEqual({ subscription: publicSubscription });
+
+      const deleted = await call(
+        "/projects/prj_1/event-subscriptions/evs_1",
+        "DELETE",
+      );
+      expect(deleted.status).toBe(204);
+      expect(
+        fetchSpy.mock.calls.map((call) => String((call as unknown[])[0])),
+      ).toEqual([
+        "https://managedagents.test/v1/projects/prj_1/event-subscriptions",
+        "https://managedagents.test/v1/projects/prj_1/event-subscriptions/evs_1",
+        "https://managedagents.test/v1/projects/prj_1/event-subscriptions/evs_1",
+      ]);
+      expect(JSON.stringify(fetchSpy.mock.results)).not.toContain("user_test");
+    });
+
+    it("keeps the backend's error codes for a rejected subscription", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "destination_session_ended",
+                message: "Destination session has ended",
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/event-subscriptions",
+          { method: "POST", body: "{}" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+        "destination_session_ended",
+      );
+    });
+
+    it("does not admit other methods on subscription routes", async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      for (const [path, method] of [
+        ["/projects/prj_1/event-subscriptions", "DELETE"],
+        ["/projects/prj_1/event-subscriptions/evs_1", "PATCH"],
+        ["/projects/prj_1/event-subscriptions/evs_1", "POST"],
+      ] as const) {
+        const response = await proxyManagedAgents(
+          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
+            method,
+          }),
+          env,
+          caller,
+          "/api/managed-agents",
+        );
+        expect(response.status).toBe(404);
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("projects a turn's deliveries on the session snapshot with typed errors only", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            id: "ses_worker",
+            status: "idle",
+            accountId: "org_test",
+            turns: [
+              {
+                id: "turn-1",
+                input: "Reproduce the guide",
+                mode: "queue",
+                status: "completed",
+                createdAt: "2026-09-10T12:00:00.000Z",
+                updatedAt: "2026-09-10T12:01:00.000Z",
+                deliveries: [
+                  {
+                    id: "evs_1:event_9",
+                    subscriptionId: "evs_1",
+                    eventId: "event_9",
+                    eventType: "turn.completed",
+                    destination: { type: "session", sessionId: "ses_coordinator" },
+                    status: "delivered",
+                    attempt: 1,
+                    receipt: { sessionId: "ses_coordinator", turnId: "turn-7" },
+                    updatedAt: "2026-09-10T12:01:01.000Z",
+                  },
+                  {
+                    id: "evs_2:event_9",
+                    subscriptionId: "evs_2",
+                    eventId: "event_9",
+                    eventType: "turn.completed",
+                    destination: { type: "session", sessionId: "ses_gone" },
+                    status: "failed",
+                    attempt: 1,
+                    error: "target_ended",
+                    updatedAt: "2026-09-10T12:01:01.000Z",
+                  },
+                  {
+                    id: "evs_3:event_9",
+                    subscriptionId: "evs_3",
+                    eventId: "event_9",
+                    eventType: "turn.completed",
+                    destination: { type: "session", sessionId: "ses_slow" },
+                    status: "pending",
+                    attempt: 2,
+                    nextAttemptAt: "2026-09-10T12:05:00.000Z",
+                    error:
+                      "Target session returned 500 at https://internal.do/sessions/ses_slow with token osb_0123456789abcdef",
+                    updatedAt: "2026-09-10T12:01:01.000Z",
+                  },
+                ],
+              },
+            ],
+          }),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/ses_worker",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      const body = (await response.json()) as {
+        turns: Array<{ deliveries: Array<Record<string, unknown>> }>;
+      };
+      expect(body.turns[0].deliveries).toEqual([
+        {
+          id: "evs_1:event_9",
+          subscriptionId: "evs_1",
+          eventId: "event_9",
+          eventType: "turn.completed",
+          destination: { type: "session", sessionId: "ses_coordinator" },
+          status: "delivered",
+          attempt: 1,
+          receipt: { sessionId: "ses_coordinator", turnId: "turn-7" },
+          updatedAt: "2026-09-10T12:01:01.000Z",
+        },
+        {
+          id: "evs_2:event_9",
+          subscriptionId: "evs_2",
+          eventId: "event_9",
+          eventType: "turn.completed",
+          destination: { type: "session", sessionId: "ses_gone" },
+          status: "failed",
+          attempt: 1,
+          error: "target_ended",
+          updatedAt: "2026-09-10T12:01:01.000Z",
+        },
+        {
+          id: "evs_3:event_9",
+          subscriptionId: "evs_3",
+          eventId: "event_9",
+          eventType: "turn.completed",
+          destination: { type: "session", sessionId: "ses_slow" },
+          status: "pending",
+          attempt: 2,
+          nextAttemptAt: "2026-09-10T12:05:00.000Z",
+          error: "delivery_failed",
+          updatedAt: "2026-09-10T12:01:01.000Z",
+        },
+      ]);
+      expect(JSON.stringify(body)).not.toMatch(/internal\.do|osb_|accountId/);
+    });
+  });
+
   it("removes backend artifact and runtime fields from successful responses", async () => {
     vi.stubGlobal(
       "fetch",
