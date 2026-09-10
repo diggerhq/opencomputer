@@ -134,6 +134,43 @@ export default function ManagedSessionDetail() {
         </Panel>
       </div>
 
+      {session.data.memory.length ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Memory</PanelTitle>
+              <PanelDescription className="mt-1">
+                Bindings fixed when the session was created. Writable means the
+                session&apos;s save can commit right now.
+              </PanelDescription>
+            </div>
+          </PanelHeader>
+          <div className="divide-y text-sm">
+            {session.data.memory.map((binding) => (
+              <div
+                key={`${binding.resource}:${binding.scope}:${binding.id ?? ''}`}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
+              >
+                <span className="font-mono text-xs">{binding.resource}</span>
+                <span className="text-muted-foreground text-xs">
+                  {binding.scope === 'document'
+                    ? `document ${binding.id ?? ''}`
+                    : 'collection'}
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  {binding.access}
+                </span>
+                <StatusBadge
+                  className="ml-auto"
+                  status={binding.writable ? 'active' : 'paused'}
+                  label={binding.writable ? 'Writable' : 'Read-only now'}
+                />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
       <div
         role="tablist"
         aria-label="Session detail"

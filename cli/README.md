@@ -57,6 +57,29 @@ opencomputer webhooks remove <webhook-id>
 Invoke the URL with a JSON object containing `text`, `payload`, or both. The
 structured payload is available to agent code as `input.payload`.
 
+## Memory
+
+Manage the documents a project's memory resources hold, per environment.
+Every command resolves the linked project; `--environment` defaults to
+development. `list` and `show` print the management API's fields with
+`--json`:
+
+```bash
+opencomputer memory create requirements workshop --title "Workshop requirements"
+opencomputer memory list requirements --environment development
+opencomputer memory show requirements workshop --json
+opencomputer memory edit requirements workshop          # opens $EDITOR, saves conditionally
+opencomputer memory freeze requirements workshop        # agentWrites: disabled
+opencomputer memory unfreeze requirements workshop
+opencomputer memory export --out ./memory               # <out>/<resource>/<id>.json
+opencomputer memory remove requirements workshop
+```
+
+`edit` replaces the text with the revision it read; if the document changed
+meanwhile the command exits non-zero with the conflict and keeps your edited
+text in a temporary file. Pass `--text-file` or `--text-stdin` to `create` and
+`edit` to supply text without an editor.
+
 ## Secrets and managed egress
 
 Secret values are accepted only from standard input with `--value-stdin`.

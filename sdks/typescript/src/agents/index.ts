@@ -54,6 +54,12 @@ export type {
 } from "./schedules.js";
 export { verifyWebhook, WebhookVerificationError } from "./webhooks.js";
 export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
+export type {
+  MemoryEnvironment, MemoryAccess, MemoryAgentWrites, MemoryBinding, MemoryBindings,
+  SessionMemoryBinding, MemoryWriter, MemoryDocumentMeta, MemoryDocument, MemoryDocumentPage,
+  CreateMemoryDocumentBody, ReplaceMemoryDocumentBody, PatchMemoryDocumentBody,
+  MemorySavedEvent, MemoryErrorCode,
+} from "./memory.js";
 
 export * from "./types.js";
 export * from "./errors.js";

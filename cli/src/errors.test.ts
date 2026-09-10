@@ -16,3 +16,20 @@ test("structured CLI errors always include a stable code and fix hint", () => {
     details: { status: 404 },
   });
 });
+
+test("memory precondition and size failures map to their own codes", () => {
+  const stale = structuredError(
+    new APIError("Stale revision.", 412, "precondition_failed"),
+  );
+  assert.equal(stale.code, "precondition_failed");
+  assert.deepEqual(stale.details, { status: 412, apiCode: "precondition_failed" });
+  assert.match(stale.hint, /reconcile/);
+  assert.equal(
+    structuredError(new APIError("Too big.", 413, "memory_limit_exceeded")).code,
+    "payload_too_large",
+  );
+  assert.equal(
+    structuredError(new APIError("If-Match required.", 428)).code,
+    "precondition_required",
+  );
+});

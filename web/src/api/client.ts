@@ -76,7 +76,7 @@ const API_BASE = '/api/dashboard'
 // dev (catches schema/backend drift during dev + against the preview mock), but
 // in prod falls back to the raw data so a slightly-off schema can't take a
 // screen down. Tighten to always-throw once the schemas are proven in prod.
-function validate<T>(
+export function validate<T>(
   schema: z.ZodType<T> | undefined,
   data: unknown,
   path: string,
@@ -131,20 +131,13 @@ function errorDetails(body: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
-export async function apiFetch<T>(
+// The authenticated request with error normalization, returning the raw
+// Response for callers that need headers (a memory document's ETag) as well
+// as the body. `apiFetch` is the JSON-and-schema layer over it.
+export async function apiFetchResponse(
   path: string,
   options: RequestInit = {},
-  schema?: z.ZodType<T>,
-): Promise<T> {
-  // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
-  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
-  // the exact value '1' so VITE_PREVIEW=0 / false don't accidentally serve
-  // mocks; the dynamic import keeps the mock out of normal builds.
-  if (import.meta.env.VITE_PREVIEW === '1') {
-    const { mockFetch } = await import('./mock')
-    return validate(schema, await mockFetch<unknown>(path, options), path)
-  }
-
+): Promise<Response> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: 'include',
@@ -169,6 +162,24 @@ export async function apiFetch<T>(
       errorDetails(body),
     )
   }
+  return res
+}
+
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+  schema?: z.ZodType<T>,
+): Promise<T> {
+  // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
+  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
+  // the exact value '1' so VITE_PREVIEW=0 / false don't accidentally serve
+  // mocks; the dynamic import keeps the mock out of normal builds.
+  if (import.meta.env.VITE_PREVIEW === '1') {
+    const { mockFetch } = await import('./mock')
+    return validate(schema, await mockFetch<unknown>(path, options), path)
+  }
+
+  const res = await apiFetchResponse(path, options)
 
   if (res.status === 204) {
     return undefined as T

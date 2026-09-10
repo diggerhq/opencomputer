@@ -231,6 +231,41 @@ export interface ManagedSessionSnapshot {
   }>;
 }
 
+export type MemoryEnvironment = "development" | "production";
+
+export type MemoryWriter =
+  | { kind: "owner" }
+  | { kind: "agent"; sessionId: string };
+
+/** One document's metadata, as the list route returns it (no text). */
+export interface MemoryDocumentMeta {
+  id: string;
+  title: string;
+  summary: string;
+  agentWrites: "enabled" | "disabled";
+  revision: string;
+  bytes: number;
+  maxBytes: number;
+  updatedAt: string;
+  writer: MemoryWriter;
+}
+
+/** A full document, as read, create, replace and patch return it. */
+export interface MemoryDocument extends MemoryDocumentMeta {
+  text: string;
+}
+
+export interface MemoryDocumentPage {
+  documents: MemoryDocumentMeta[];
+  nextCursor: string | null;
+}
+
+/** A document together with the `ETag` the next conditional request must send back verbatim. */
+export interface MemoryDocumentRead {
+  document: MemoryDocument;
+  etag: string;
+}
+
 interface CreateSessionResult {
   session: ManagedSessionSnapshot;
   deployment?: ManagedAgentDeployment;
@@ -240,9 +275,22 @@ export class APIError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The typed reason from `{ error: { code } }` when the API sent one. */
+    readonly code?: string,
   ) {
     super(message);
   }
+}
+
+function errorCode(body: unknown): string | undefined {
+  if (body && typeof body === "object") {
+    const error = (body as Record<string, unknown>).error;
+    if (error && typeof error === "object") {
+      const code = (error as Record<string, unknown>).code;
+      if (typeof code === "string") return code;
+    }
+  }
+  return undefined;
 }
 
 function errorMessage(body: unknown, status: number): string {
@@ -304,7 +352,11 @@ export class OpenComputerClient {
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
-      throw new APIError(errorMessage(body, response.status), response.status);
+      throw new APIError(
+        errorMessage(body, response.status),
+        response.status,
+        errorCode(body),
+      );
     }
     return response;
   }
@@ -681,6 +733,146 @@ export class OpenComputerClient {
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/webhooks/${encodeURIComponent(input.webhookId)}`,
       { method: "DELETE" },
     );
+  }
+
+  deployment(deploymentId: string) {
+    return this.request<
+      ManagedAgentDeployment & {
+        /** Memory resources the deployment declares; absent on older deployments. */
+        memory?: Array<{
+          id: string;
+          description?: string;
+          provider?: { kind?: string; maxBytes?: number };
+        }>;
+      }
+    >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
+  }
+
+  // Project memory (docs/agents/document-memory.mdx, "Management API").
+  // Every mutation is conditional: the caller sends back the ETag it read.
+
+  private memoryPath(input: {
+    projectId: string;
+    resource: string;
+    id?: string;
+    environment: MemoryEnvironment;
+    cursor?: string;
+  }): string {
+    const query = new URLSearchParams({ environment: input.environment });
+    if (input.cursor) query.set("cursor", input.cursor);
+    return (
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}` +
+      `/memory/${encodeURIComponent(input.resource)}/documents` +
+      (input.id !== undefined ? `/${encodeURIComponent(input.id)}` : "") +
+      `?${query.toString()}`
+    );
+  }
+
+  private async memoryDocumentResponse(
+    path: string,
+    init: RequestInit,
+  ): Promise<MemoryDocumentRead> {
+    const response = await this.response(path, init);
+    const document = (await response.json()) as MemoryDocument;
+    return { document, etag: response.headers.get("etag") ?? "" };
+  }
+
+  memoryDocuments(input: {
+    projectId: string;
+    resource: string;
+    environment: MemoryEnvironment;
+    cursor?: string;
+  }) {
+    return this.request<MemoryDocumentPage>(
+      this.memoryPath({
+        projectId: input.projectId,
+        resource: input.resource,
+        environment: input.environment,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+      }),
+    );
+  }
+
+  memoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {});
+  }
+
+  createMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    title: string;
+    text: string;
+    summary?: string;
+    agentWrites?: "enabled" | "disabled";
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PUT",
+      headers: { "if-none-match": "*" },
+      body: JSON.stringify({
+        title: input.title,
+        text: input.text,
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+        ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+      }),
+    });
+  }
+
+  replaceMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+    text: string;
+    summary?: string;
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PUT",
+      headers: { "if-match": input.etag },
+      body: JSON.stringify({
+        text: input.text,
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      }),
+    });
+  }
+
+  patchMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+    title?: string;
+    agentWrites?: "enabled" | "disabled";
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PATCH",
+      headers: { "if-match": input.etag },
+      body: JSON.stringify({
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+      }),
+    });
+  }
+
+  deleteMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+  }) {
+    return this.request<void>(this.memoryPath(input), {
+      method: "DELETE",
+      headers: { "if-match": input.etag },
+    });
   }
 
   logs(input: {

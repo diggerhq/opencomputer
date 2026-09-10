@@ -842,6 +842,19 @@ describe("managed agents proxy", () => {
           channels: ["slack"],
           connections: ["gmail"],
           createdAt: "2026-07-31T00:00:00.000Z",
+          memory: [
+            {
+              id: "requirements",
+              description: "Verified requirements.",
+              provider: {
+                kind: "http",
+                maxBytes: 8192,
+                connection: "notes-api",
+                path: "/memory",
+                tools: [{ name: "search" }],
+              },
+            },
+          ],
           artifact: { bucket: "private", key: "source.tar.gz" },
           imageArn: "arn:aws:private",
           imageVersion: "7",
@@ -868,6 +881,13 @@ describe("managed agents proxy", () => {
       channels: ["slack"],
       connections: ["gmail"],
       createdAt: "2026-07-31T00:00:00.000Z",
+      memory: [
+        {
+          id: "requirements",
+          description: "Verified requirements.",
+          provider: { kind: "http", maxBytes: 8192 },
+        },
+      ],
     });
   });
 
@@ -1859,5 +1879,316 @@ describe("managed agents proxy", () => {
     expect(response.status).toBe(200);
     expect(serialized).toContain("research-assistant:digest");
     expect(serialized).not.toMatch(/artifact|bucket|imageArn|imageVersion/i);
+  });
+
+  // Project memory (docs/agents/document-memory.mdx). The fake backend below
+  // answers with the documented bodies and headers; the edge must hand them
+  // to the caller unchanged, including the conditional-request headers.
+  const memoryEnv = {
+    OC_MANAGED_AGENTS_SECRET: "test-secret",
+    MANAGED_AGENTS_API_URL: "https://managedagents.test",
+  };
+  const memoryCaller = { orgID: "org_test", userID: "user_test" };
+  const workshopDocument = {
+    id: "workshop",
+    title: "Workshop requirements",
+    text: "Exercises must run on Node.js 22.",
+    summary: "Workshop runtime requirements.",
+    agentWrites: "enabled",
+    revision: "rev-7",
+    bytes: 33,
+    maxBytes: 8192,
+    updatedAt: "2026-09-10T12:00:00.000Z",
+    writer: { kind: "agent", sessionId: "ses_1", accountId: "acc_private" },
+    accountId: "acc_private",
+  };
+
+  it("reads a memory document with its ETag and no backend-only fields", async () => {
+    const fetchSpy = vi.fn(async (target: RequestInfo | URL) => {
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/projects/prj_1/memory/requirements/documents/workshop?environment=development",
+      );
+      return Response.json(workshopDocument, {
+        headers: { etag: '"rev-7"', "x-upstream": "private" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents/workshop?environment=development",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBe('"rev-7"');
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-upstream")).toBeNull();
+    expect(await response.json()).toEqual({
+      id: "workshop",
+      title: "Workshop requirements",
+      text: "Exercises must run on Node.js 22.",
+      summary: "Workshop runtime requirements.",
+      agentWrites: "enabled",
+      revision: "rev-7",
+      bytes: 33,
+      maxBytes: 8192,
+      updatedAt: "2026-09-10T12:00:00.000Z",
+      writer: { kind: "agent", sessionId: "ses_1" },
+    });
+  });
+
+  it("lists memory document metadata with the next cursor and without text", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          documents: [workshopDocument],
+          nextCursor: "cursor-2",
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents?environment=development&cursor=cursor-1",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    const body = (await response.json()) as {
+      documents: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.nextCursor).toBe("cursor-2");
+    expect(body.documents).toHaveLength(1);
+    expect(body.documents[0]).toMatchObject({
+      id: "workshop",
+      revision: "rev-7",
+      writer: { kind: "agent", sessionId: "ses_1" },
+    });
+    expect(body.documents[0]).not.toHaveProperty("text");
+    expect(JSON.stringify(body)).not.toContain("acc_private");
+  });
+
+  it("forwards memory conditional headers and returns the documented status codes", async () => {
+    const fetchSpy = vi.fn(async (_target: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const headers = new Headers(init?.headers);
+      if (method === "PUT" && headers.get("if-none-match") === "*") {
+        expect(headers.get("if-match")).toBeNull();
+        expect(await new Response(init?.body).json()).toEqual({
+          title: "Workshop requirements",
+          text: "Exercises must run on Node.js 22.",
+        });
+        return Response.json(workshopDocument, {
+          status: 201,
+          headers: { etag: '"rev-7"' },
+        });
+      }
+      if (method === "PATCH") {
+        expect(headers.get("if-match")).toBe('"rev-7"');
+        return Response.json(
+          { ...workshopDocument, agentWrites: "disabled", revision: "rev-8" },
+          { headers: { etag: '"rev-8"' } },
+        );
+      }
+      if (method === "DELETE") {
+        expect(headers.get("if-match")).toBe('"rev-8"');
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const path =
+      "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents/workshop?environment=development";
+
+    const created = await proxyManagedAgents(
+      new Request(path, {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          "if-none-match": "*",
+        },
+        body: JSON.stringify({
+          title: "Workshop requirements",
+          text: "Exercises must run on Node.js 22.",
+        }),
+      }),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    expect(created.status).toBe(201);
+    expect(created.headers.get("etag")).toBe('"rev-7"');
+
+    const patched = await proxyManagedAgents(
+      new Request(path, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "if-match": '"rev-7"' },
+        body: JSON.stringify({ agentWrites: "disabled" }),
+      }),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    expect(patched.status).toBe(200);
+    expect(patched.headers.get("etag")).toBe('"rev-8"');
+    expect(await patched.json()).toMatchObject({
+      agentWrites: "disabled",
+      revision: "rev-8",
+    });
+
+    const deleted = await proxyManagedAgents(
+      new Request(path, {
+        method: "DELETE",
+        headers: { "if-match": '"rev-8"' },
+      }),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    expect(deleted.status).toBe(204);
+    expect(await deleted.text()).toBe("");
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("passes memory client errors through in the documented envelope", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "precondition_failed",
+              message: "The document changed since revision rev-6.",
+            },
+          },
+          { status: 412 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents/workshop?environment=development",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json", "if-match": '"rev-6"' },
+          body: JSON.stringify({ text: "stale" }),
+        },
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "precondition_failed",
+        message: "The document changed since revision rev-6.",
+      },
+    });
+  });
+
+  it("keeps the generic redaction for memory backend failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "memory_storage_failed",
+              message: "Durable Object MEMORY threw in SQLite",
+            },
+          },
+          { status: 503 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents?environment=development",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    const body = (await response.json()) as {
+      error: { code: string; message: string };
+    };
+
+    expect(response.status).toBe(503);
+    expect(body.error.code).toBe("memory_storage_failed");
+    expect(body.error.message).not.toMatch(/durable|sqlite/i);
+  });
+
+  it("rejects memory methods the management API does not document", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents?environment=development",
+        { method: "POST", body: "{}" },
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns session memory bindings with their writable flag", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "ses_1",
+          agentId: "hello-world",
+          status: "running",
+          memory: [
+            {
+              resource: "requirements",
+              scope: "document",
+              id: "workshop",
+              access: "read-write",
+              writable: true,
+            },
+          ],
+          runtimeToken: "private",
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/ses_1"),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.memory).toEqual([
+      {
+        resource: "requirements",
+        scope: "document",
+        id: "workshop",
+        access: "read-write",
+        writable: true,
+      },
+    ]);
+    expect(body).not.toHaveProperty("runtimeToken");
   });
 });
