@@ -77,9 +77,11 @@ opencomputer memory export --out ./memory               # <out>/<resource>/<id>.
 opencomputer memory remove requirements workshop
 ```
 
-`edit` replaces the text with the revision it read; if the document changed
-meanwhile the command exits non-zero with the conflict and keeps your edited
-text in a temporary file. Pass `--text-file` or `--text-stdin` to `create` and
+`edit` replaces the text with the revision it read. Any save that does not
+succeed, whether the document changed meanwhile, the text is over the limit
+or the API was unreachable, exits non-zero and keeps your edited text in a
+temporary file whose path the error prints; save it again with
+`--text-file <path>`. Pass `--text-file` or `--text-stdin` to `create` and
 `edit` to supply text without an editor.
 
 ## Secrets and managed egress

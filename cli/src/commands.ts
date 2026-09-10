@@ -1,5 +1,4 @@
 import {
-  APIError,
   OpenComputerClient,
   type ManagedAgentEvent,
   type ManagedAgentLog,
@@ -49,7 +48,12 @@ import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
-import { memoryResources, type MemoryResourceSummary } from "./memory.js";
+import {
+  memoryResources,
+  saveMemoryEdit,
+  type MemoryEditDraft,
+  type MemoryResourceSummary,
+} from "./memory.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -342,7 +346,7 @@ async function editMemoryTextInEditor(
   resource: string,
   id: string,
   text: string,
-): Promise<{ text: string; path: string; discard: () => Promise<void> }> {
+): Promise<MemoryEditDraft & { text: string }> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new CLIError(
       "editor_required",
@@ -1773,41 +1777,18 @@ export async function runCommand(
         else process.stdout.write(`No changes to ${resource}/${id}.\n`);
         return;
       }
-      try {
-        const { document } = await client.replaceMemoryDocument({
-          ...target,
-          etag: current.etag,
-          text,
-          ...(summary !== undefined ? { summary } : {}),
-        });
-        await edited?.discard();
-        if (globals.json) printJSON(document);
-        else {
-          process.stdout.write(
-            `Saved ${resource}/${document.id} (${memorySizeLabel(document)}, revision ${document.revision}).\n`,
-          );
-        }
-      } catch (error) {
-        if (error instanceof APIError && error.status === 412) {
-          const latest = await client.memoryDocument(target).catch(() => null);
-          throw new CLIError(
-            "memory_conflict",
-            `${resource}/${id} changed since you opened it` +
-              (latest
-                ? ` (now revision ${latest.document.revision}, updated ${latest.document.updatedAt} by ${memoryWriterLabel(latest.document)})`
-                : "") +
-              `; your edit was not saved.`,
-            (edited ? `Your edited text is kept at ${edited.path}. ` : "") +
-              "Run `opencomputer memory show` to read the current text, reconcile, and edit again.",
-            {
-              status: 412,
-              ...(latest ? { current: latest.document } : {}),
-              ...(edited ? { editedTextPath: edited.path } : {}),
-            },
-          );
-        }
-        await edited?.discard();
-        throw error;
+      const document = await saveMemoryEdit(client, {
+        ...target,
+        etag: current.etag,
+        text,
+        ...(summary !== undefined ? { summary } : {}),
+        ...(edited ? { draft: { path: edited.path, discard: edited.discard } } : {}),
+      });
+      if (globals.json) printJSON(document);
+      else {
+        process.stdout.write(
+          `Saved ${resource}/${document.id} (${memorySizeLabel(document)}, revision ${document.revision}).\n`,
+        );
       }
       return;
     }

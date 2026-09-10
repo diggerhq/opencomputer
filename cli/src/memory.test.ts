@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { OpenComputerClient } from "./api.js";
-import { memoryResources } from "./memory.js";
+import { CLIError } from "./errors.js";
+import { memoryResources, saveMemoryEdit } from "./memory.js";
 
 const config = { apiUrl: "https://app.opencomputer.dev", apiKey: "test" };
 
@@ -159,4 +163,124 @@ test("without the inventory route, memory resources merge every project member's
   ]);
   assert.ok(paths.includes("/api/managed-agents/deployments/muse--worker%3Adev"));
   assert.ok(!paths.some((path) => path.includes("muse%3Aprod")));
+});
+
+async function draftFile(): Promise<{
+  path: string;
+  discarded: () => boolean;
+  discard: () => Promise<void>;
+  cleanup: () => Promise<void>;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), "opencomputer-memory-test-"));
+  const path = join(directory, "requirements--workshop.md");
+  await writeFile(path, "Exercises must run on Node.js 22.\n", "utf8");
+  let discarded = false;
+  return {
+    path,
+    discarded: () => discarded,
+    discard: async () => {
+      discarded = true;
+      await rm(directory, { recursive: true, force: true });
+    },
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+const target = {
+  projectId: "prj_1",
+  resource: "requirements",
+  id: "workshop",
+  environment: "development" as const,
+  etag: '"rev-1"',
+  text: "Exercises must run on Node.js 22.\n",
+};
+
+test("an over-limit save keeps the edited draft and says where it is", async (context) => {
+  context.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        error: {
+          code: "memory_limit_exceeded",
+          message: "Text is 9000 bytes; the limit is 8192.",
+        },
+      },
+      { status: 413 },
+    ),
+  );
+  const draft = await draftFile();
+  try {
+    const error = await saveMemoryEdit(new OpenComputerClient(config), {
+      ...target,
+      draft,
+    }).catch((error: unknown) => error);
+
+    assert.ok(error instanceof CLIError);
+    assert.equal(error.code, "memory_too_large");
+    assert.match(error.message, /requirements\/workshop was not saved: Text is 9000 bytes/);
+    assert.match(error.hint, new RegExp(`kept at ${draft.path}`));
+    assert.match(error.hint, /--text-file/);
+    assert.deepEqual(error.details, {
+      status: 413,
+      apiCode: "memory_limit_exceeded",
+      editedTextPath: draft.path,
+    });
+    assert.equal(draft.discarded(), false);
+    await access(draft.path);
+  } finally {
+    await draft.cleanup();
+  }
+});
+
+test("a save that never reaches the API keeps the edited draft", async (context) => {
+  context.mock.method(globalThis, "fetch", async () => {
+    throw new TypeError("fetch failed");
+  });
+  const draft = await draftFile();
+  try {
+    const error = await saveMemoryEdit(new OpenComputerClient(config), {
+      ...target,
+      draft,
+    }).catch((error: unknown) => error);
+
+    assert.ok(error instanceof CLIError);
+    assert.equal(error.code, "command_failed");
+    assert.match(error.message, /was not saved: fetch failed/);
+    assert.match(error.hint, new RegExp(`kept at ${draft.path}`));
+    assert.deepEqual(error.details, { editedTextPath: draft.path });
+    await access(draft.path);
+  } finally {
+    await draft.cleanup();
+  }
+});
+
+test("a saved edit discards its draft", async (context) => {
+  context.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        id: "workshop",
+        title: "Workshop requirements",
+        text: target.text,
+        summary: "",
+        agentWrites: "enabled",
+        revision: "rev-2",
+        bytes: 34,
+        maxBytes: 8192,
+        updatedAt: "2026-09-10T12:00:00.000Z",
+        writer: { kind: "owner" },
+      },
+      { headers: { etag: '"rev-2"' } },
+    ),
+  );
+  const draft = await draftFile();
+  try {
+    const document = await saveMemoryEdit(new OpenComputerClient(config), {
+      ...target,
+      draft,
+    });
+    assert.equal(document.revision, "rev-2");
+    assert.equal(draft.discarded(), true);
+    await assert.rejects(access(draft.path));
+  } finally {
+    await draft.cleanup();
+  }
 });
