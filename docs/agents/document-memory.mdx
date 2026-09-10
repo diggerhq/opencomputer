@@ -159,25 +159,27 @@ type SaveResult =
   | { status: "conflict"; text: string; summary: string }
   | {
       status: "rejected";
-      reason: "agent_writes_disabled" | "not_found";
+      reason: "agent_writes_disabled" | "not_found" | "session_closed";
     }
   | {
       status: "rejected";
       reason: "too_large";
+      field: "text" | "summary";
       bytes: number;
       maxBytes: number;
     }
   | {
       status: "rejected";
-      reason: "not_bound";
+      reason: "not_bound" | "read_only";
       bound: string[];
     };
 ```
 
 `saved` commits independently of turn completion. `conflict` carries current
-content for reconciliation. Rejections identify frozen/deleted documents,
-text or summary above its limit, or an invalid target/access. `bound` lists
-eligible resources. These outcomes let the model continue; malformed arguments
+content for reconciliation. Rejections identify frozen or deleted documents,
+a session whose end already revoked its writes, a field above its limit, a
+resource the render did not select, or a read-only binding. `bound` lists
+the resources the save could have targeted. These outcomes let the model continue; malformed arguments
 and operational failures are tool errors.
 
 ### Conflicts and retries
