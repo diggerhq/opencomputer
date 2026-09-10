@@ -45,7 +45,7 @@ unknown type as informational and keep reading.
 | `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
 | `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
 | `session.ended` | The owner ended the session. Queued and running turns were cancelled and memory writes revoked. | none |
-| `session.failed` | The session cannot continue | `message`: a sanitized reason |
+| `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
 
 ### Turns
 
@@ -57,13 +57,29 @@ unknown type as informational and keep reading.
 | `turn.interrupted` | This turn cancelled the turns that were running | `interruptedTurnIds` |
 | `turn.started` | The runtime began the turn | none |
 | `turn.completed` | The turn finished and the session is idle again | none |
-| `turn.failed` | The turn stopped with an error | `message`: the runtime's reason, sanitized |
+| `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
 | `turn.cancelled` | The turn was stopped by an interrupt | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it |
 
-A failed turn's `message` is the runtime's own error, for example a rejected
-model or a tool that is not available. Stack frames, URLs, file paths and
-credential-shaped values are removed and the text is capped at 500
-characters; when nothing readable remains, a generic sentence is sent.
+#### Public failures
+
+A failure's `data` is a stable `code`, a fixed `message` for that code, and
+at most one parameter. The runtime's own error text is never sent; a failure
+no rule recognizes is `agent_failed`.
+
+| `code` | Meaning | Parameter |
+| --- | --- | --- |
+| `interrupted` | The turn was stopped before it finished | |
+| `session_ended` | The session ended while the turn ran | |
+| `runtime_lost` | The runtime stopped responding and the turn was abandoned | |
+| `runtime_failed` | The runtime failed before the turn finished | |
+| `deployment_invalid` | The runtime could not load the deployment | |
+| `model_unavailable` | The requested model is not available to this agent | `model`: the requested model id |
+| `model_rejected` | The model provider rejected the request: credentials, rate limit or quota | |
+| `context_too_long` | The conversation exceeds the model's context window | |
+| `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
+| `sandbox_timeout` | A sandbox command did not finish in time | |
+| `sandbox_failed` | The sandbox could not run the turn | |
+| `agent_failed` | Any other failure | |
 
 ### Messages
 

@@ -6,7 +6,7 @@ import {
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
-  publicFailureMessage,
+  publicFailure,
 } from "./managed_agents";
 
 function legacyPlanEnv(plan: string) {
@@ -2312,9 +2312,10 @@ describe("managed agents proxy", () => {
     });
   });
 
-  // A failed turn carries its reason so the user can act on it; the reason is
-  // an operator-facing Error message, so paths, URLs and credentials go.
-  it("passes a sanitized turn failure reason through the event stream", async () => {
+  // A failed turn carries a typed public failure: a stable code, a fixed
+  // sentence and validated parameters. The runtime's own error text is an
+  // operator message and never leaves the edge, whatever it contains.
+  it("projects a turn failure as a typed public failure through the event stream", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -2338,6 +2339,19 @@ describe("managed agents proxy", () => {
               seq: 10,
               timestamp: "2026-09-10T00:00:01.000Z",
               sessionId: "session-1",
+              turnId: "turn-2",
+              type: "turn.failed",
+              data: {
+                message:
+                  "The agent runtime stopped reporting on this turn and its lease expired",
+                reason: "runtime_lost",
+              },
+            },
+            {
+              id: "event_3",
+              seq: 11,
+              timestamp: "2026-09-10T00:00:02.000Z",
+              sessionId: "session-1",
               type: "session.failed",
               data: {},
             },
@@ -2359,49 +2373,158 @@ describe("managed agents proxy", () => {
     };
 
     expect(body.events[0].data).toEqual({
-      message:
-        "The Workerd runtime rejects any useModel other than anthropic/claude-sonnet-4.6 (requested openai/gpt-5)",
+      code: "model_unavailable",
+      message: "The model openai/gpt-5 is not available to this agent.",
+      model: "openai/gpt-5",
     });
     expect(body.events[1].data).toEqual({
+      code: "runtime_lost",
+      message:
+        "The agent runtime stopped responding and the turn was abandoned.",
+    });
+    expect(body.events[2].data).toEqual({
+      code: "agent_failed",
       message: "The agent could not complete this request.",
     });
     expect(JSON.stringify(body)).not.toContain("never-return-this");
+    expect(JSON.stringify(body)).not.toContain("Workerd");
   });
 
-  it("strips paths, URLs, credentials and stack frames from failure reasons", () => {
-    expect(
-      publicFailureMessage({
-        message: [
-          "ENOENT: no such file or directory, open '/Users/dev/app/.opencomputer/agent.js'",
-          "    at Object.openSync (node:fs:581:3)",
-          "    at /home/runner/work/index.js:12:5",
-        ].join("\n"),
-      }),
-    ).toBe("ENOENT: no such file or directory, open '<path>'");
-    expect(
-      publicFailureMessage({
-        message:
-          "fetch to http://127.0.0.1:4096/session/ses_1/message?token=abc failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz",
-      }),
-    ).toBe("fetch to <url> failed: Authorization: Bearer <redacted>");
-    expect(
-      publicFailureMessage({
-        message:
-          "provider rejected api_key=sk-ant-api03-0123456789abcdefghijklmnop and osb_0123456789abcdef; retry",
-      }),
-    ).toBe("provider rejected api_key=<redacted> and <redacted>; retry");
-    expect(
-      publicFailureMessage({
-        reason: "Runtime harness is not ready\u0007",
-      }),
-    ).toBe("Runtime harness is not ready");
-    const long = publicFailureMessage({
-      message: "The turn exceeded its budget. ".repeat(40),
+  it("classifies known runtime failures into typed public failures", () => {
+    expect(publicFailure({ reason: "interrupted" })).toEqual({
+      code: "interrupted",
+      message: "The turn was interrupted before it finished.",
     });
-    expect(long).toHaveLength(500);
-    expect(long.endsWith("\u2026")).toBe(true);
-    expect(publicFailureMessage(undefined)).toBe(
-      "The agent could not complete this request.",
-    );
+    expect(
+      publicFailure({
+        message: "OpenCode execution was interrupted",
+        reason: "runtime_interrupted",
+      }),
+    ).toEqual({
+      code: "interrupted",
+      message: "The turn was interrupted before it finished.",
+    });
+    expect(publicFailure({ reason: "session_ended" })).toEqual({
+      code: "session_ended",
+      message: "The session ended before the turn finished.",
+    });
+    expect(
+      publicFailure({ message: "Model unavailable: openai/gpt-5-mini" }),
+    ).toEqual({
+      code: "model_unavailable",
+      message: "The model openai/gpt-5-mini is not available to this agent.",
+      model: "openai/gpt-5-mini",
+    });
+    // A model id that is not a model id is not echoed.
+    expect(
+      publicFailure({ message: "Model unavailable: sk-ant-api03-0123456789abcdefghijklmnop/x" }),
+    ).toEqual({
+      code: "model_unavailable",
+      message: "The requested model is not available to this agent.",
+    });
+    expect(
+      publicFailure({
+        message:
+          "AI_APICallError: 401 Unauthorized: invalid x-api-key sk-ant-api03-0123456789abcdefghijklmnop",
+      }),
+    ).toEqual({
+      code: "model_rejected",
+      message: "The model provider rejected the request.",
+    });
+    expect(
+      publicFailure({ message: "Rate limit exceeded; retry after 20s" }),
+    ).toEqual({
+      code: "model_rejected",
+      message: "The model provider rejected the request.",
+    });
+    expect(
+      publicFailure({
+        message: "prompt is too long: 214000 tokens > 200000 maximum context length",
+      }),
+    ).toEqual({
+      code: "context_too_long",
+      message: "The conversation is too long for the model's context window.",
+    });
+    expect(
+      publicFailure({ message: "Tool module exported an unregistered tool: lookup_venue" }),
+    ).toEqual({
+      code: "tool_failed",
+      message: "Tool lookup_venue failed.",
+      tool: "lookup_venue",
+    });
+    expect(publicFailure({ message: "The tool has no edge implementation" })).toEqual({
+      code: "tool_failed",
+      message: "A tool failed.",
+    });
+    expect(publicFailure({ message: "Sandbox operation timed out" })).toEqual({
+      code: "sandbox_timeout",
+      message: "A sandbox command did not finish in time.",
+    });
+    expect(
+      publicFailure({
+        message: "Sandbox acquisition returned 503: {\"error\":\"no capacity in us-east\"}",
+      }),
+    ).toEqual({
+      code: "sandbox_failed",
+      message: "The sandbox could not run this turn.",
+    });
+    expect(publicFailure({ reason: "Runtime harness is not ready\u0007" })).toEqual({
+      code: "runtime_failed",
+      message: "The agent runtime failed before the turn finished.",
+    });
+    expect(publicFailure({ message: "The Workerd runtime stream ended before the turn did" })).toEqual({
+      code: "runtime_failed",
+      message: "The agent runtime failed before the turn finished.",
+    });
+    expect(
+      publicFailure({ message: "The deployment is missing tool module \"tools/x.js\"" }),
+    ).toEqual({
+      code: "deployment_invalid",
+      message: "The deployment could not be loaded by the runtime.",
+    });
+    expect(publicFailure(undefined)).toEqual({
+      code: "agent_failed",
+      message: "The agent could not complete this request.",
+    });
+  });
+
+  // Review reproductions: text the label-and-length redaction used to let
+  // through. None of it is public now, because no runtime text is.
+  it("never publishes unclassified runtime error text", () => {
+    const leaks = [
+      'provider rejected {"api_key":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"} for org 42',
+      "fetch failed: Authorization: Basic dXNlcjpwYXNz was refused",
+      "connect to db: password=hunter2 host=10.0.0.5",
+      [
+        "ENOENT: no such file or directory, open '/Users/dev/app/.opencomputer/agent.js'",
+        "    at Object.openSync (node:fs:581:3)",
+      ].join("\n"),
+      "fetch to http://127.0.0.1:4096/session/ses_1/message?token=abc failed",
+      "The turn exceeded its budget. ".repeat(40),
+    ];
+    expect(publicFailure({ message: leaks[3] })).toEqual({
+      code: "agent_failed",
+      message: "The agent could not complete this request.",
+    });
+    for (const message of leaks) {
+      const failure = publicFailure({ message });
+      // Whatever the classification, nothing but a fixed sentence goes out.
+      expect(Object.keys(failure).sort()).toEqual(["code", "message"]);
+      expect(failure.message).toMatch(/^[A-Z][a-z' ]+\.$/);
+      const serialized = JSON.stringify(failure);
+      expect(serialized).not.toContain("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6");
+      expect(serialized).not.toContain("dXNlcjpwYXNz");
+      expect(serialized).not.toContain("hunter2");
+      expect(serialized).not.toContain("/Users/dev");
+      expect(serialized).not.toContain("127.0.0.1");
+    }
+    // Parameters are the only runtime-derived text, and they are validated:
+    // a credential in a model or tool position is dropped.
+    expect(
+      publicFailure({
+        message:
+          "Tool module exported an unregistered tool: sk-ant-api03-0123456789abcdefghijklmnop",
+      }),
+    ).toEqual({ code: "tool_failed", message: "A tool failed." });
   });
 });

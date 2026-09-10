@@ -678,50 +678,170 @@ const PRIVATE_EVENT_KEYS = new Set([
   "platform_instructions",
 ]);
 
-const GENERIC_FAILURE_MESSAGE = "The agent could not complete this request.";
-const FAILURE_MESSAGE_LIMIT = 500;
+export type PublicFailureCode =
+  | "interrupted"
+  | "session_ended"
+  | "runtime_lost"
+  | "runtime_failed"
+  | "deployment_invalid"
+  | "model_unavailable"
+  | "model_rejected"
+  | "context_too_long"
+  | "tool_failed"
+  | "sandbox_timeout"
+  | "sandbox_failed"
+  | "agent_failed";
 
-// A turn or session failure reason is an Error message from the runtime,
-// written for operators: it names what went wrong (a rejected model, a tool
-// that is not available, a harness that never became ready) and the user
-// needs that to act. It can also carry what the user must not see: absolute
-// paths, internal URLs, credentials, stack frames. Keep the sentence, drop
-// those.
-export function publicFailureMessage(value: unknown): string {
+/**
+ * What a `turn.failed` or `session.failed` event says in public: a stable
+ * code, a fixed sentence, and at most one validated parameter. The runtime's
+ * own error text is written for operators and can carry anything (paths,
+ * internal URLs, credentials, stack frames), so it is classified here and
+ * never forwarded. A failure no rule recognizes is `agent_failed`.
+ */
+export interface PublicFailure {
+  code: PublicFailureCode;
+  message: string;
+  /** The model the agent asked for, when the runtime rejected it by id. */
+  model?: string;
+  /** The tool that failed, when the runtime named it. */
+  tool?: string;
+}
+
+const GENERIC_FAILURE_MESSAGE = "The agent could not complete this request.";
+
+const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
+  interrupted: "The turn was interrupted before it finished.",
+  session_ended: "The session ended before the turn finished.",
+  runtime_lost:
+    "The agent runtime stopped responding and the turn was abandoned.",
+  runtime_failed: "The agent runtime failed before the turn finished.",
+  deployment_invalid: "The deployment could not be loaded by the runtime.",
+  model_unavailable: "The requested model is not available to this agent.",
+  model_rejected: "The model provider rejected the request.",
+  context_too_long:
+    "The conversation is too long for the model's context window.",
+  tool_failed: "A tool failed.",
+  sandbox_timeout: "A sandbox command did not finish in time.",
+  sandbox_failed: "The sandbox could not run this turn.",
+  agent_failed: GENERIC_FAILURE_MESSAGE,
+};
+
+// The typed reasons the session records itself, ahead of any runtime text.
+const FAILURE_REASON_CODES: Record<string, PublicFailureCode> = {
+  interrupted: "interrupted",
+  runtime_interrupted: "interrupted",
+  session_ended: "session_ended",
+  runtime_lost: "runtime_lost",
+};
+
+// A parameter is the only runtime-derived text a public failure carries, so
+// it must look like what it claims to be; anything else is dropped.
+const MODEL_ID =
+  /^(?:[a-z][a-z0-9-]{0,31}\/)?[a-z0-9][a-z0-9._:-]{0,63}$/i;
+const TOOL_ID = /^[a-z0-9_][a-z0-9_.-]{0,63}$/i;
+const CREDENTIAL_SHAPED =
+  /^(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs]|key|token|secret)[-_]/i;
+
+function validParameter(pattern: RegExp, value: string | undefined) {
+  return value !== undefined &&
+    pattern.test(value) &&
+    !CREDENTIAL_SHAPED.test(value)
+    ? value
+    : undefined;
+}
+
+// Message rules, first match wins. Each names the runtime error family it
+// recognizes; the captured group, if any, is the parameter.
+const FAILURE_MESSAGE_RULES: ReadonlyArray<{
+  code: PublicFailureCode;
+  pattern: RegExp;
+  parameter?: "model" | "tool";
+}> = [
+  {
+    code: "model_unavailable",
+    pattern: /rejects any useModel other than \S+ \(requested (\S+)\)/,
+    parameter: "model",
+  },
+  {
+    code: "model_unavailable",
+    pattern: /^Model unavailable: (\S+?)\.?(?:\s|$)/,
+    parameter: "model",
+  },
+  {
+    code: "model_unavailable",
+    pattern: /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
+  },
+  {
+    code: "context_too_long",
+    pattern:
+      /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i,
+  },
+  {
+    code: "model_rejected",
+    pattern:
+      /\b(?:401|403|429)\b|unauthori[sz]ed|invalid (?:x-)?api[ _-]?key|authentication|rate limit|quota|overloaded|insufficient(?: |_)(?:credits|quota)|APICallError|provider (?:rejected|error)/i,
+  },
+  {
+    code: "tool_failed",
+    pattern:
+      /^Tool (?:module exported an unregistered tool|is defined more than once): (\S+)$/,
+    parameter: "tool",
+  },
+  {
+    code: "tool_failed",
+    pattern: /^(?:Unknown tool|Tool) "?([A-Za-z0-9_.-]+)"? (?:failed|is not (?:available|registered)|threw)/,
+    parameter: "tool",
+  },
+  { code: "tool_failed", pattern: /^The tool has no edge implementation/ },
+  { code: "sandbox_timeout", pattern: /^Sandbox operation timed out/ },
+  {
+    code: "sandbox_failed",
+    pattern: /^(?:Sandbox|The sandbox|Cannot terminate the sandbox)\b/,
+  },
+  {
+    code: "deployment_invalid",
+    pattern:
+      /^(?:The deployment is missing|The Workerd agent artifact|The Workerd session has no pinned deployment|This Workerd slice requires|Agent must return instructions|Invalid artifact module path|The (?:private artifact service|Dynamic Worker Loader) is not configured|Artifact service returned)/,
+  },
+  {
+    code: "runtime_failed",
+    pattern:
+      /^(?:Runtime harness|OpenCode|The (?:Workerd|reactive) (?:runtime|harness)|Prestarted OpenCode|Workerd runtime|Agent (?:render|tool metadata) returned|Render commit returned|Session state returned|Agent selected an unregistered)/,
+  },
+];
+
+export function publicFailure(value: unknown): PublicFailure {
   const data = record(value) ?? {};
-  const raw =
-    typeof data.message === "string"
-      ? data.message
-      : typeof data.reason === "string"
-        ? data.reason
-        : "";
-  const message = raw
-    .split(/\r?\n/)
-    // Stack frames and their "Caused by" chains.
-    .filter((line) => !/^\s+at\s|^\s*caused by:/i.test(line))
-    .join(" ")
-    // Internal topology: URLs, then absolute filesystem paths. A bare name
-    // such as a model id (`anthropic/claude-sonnet-4.6`) is not a path.
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)\]]+/gi, "<url>")
-    .replace(/(?<![\w@:.-])\/(?:[\w@.+-]+\/)+[\w@.+-]*/g, "<path>")
-    // Credentials by label, by prefix, then anything long enough to be one.
-    .replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
-    .replace(
-      /\b((?:api[_-]?key|token|secret|password|authorization))\s*[=:]\s*"?[^\s"',;]{16,}/gi,
-      "$1=<redacted>",
-    )
-    .replace(
-      /\b(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}/g,
-      "<redacted>",
-    )
-    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "<redacted>")
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!message) return GENERIC_FAILURE_MESSAGE;
-  return message.length > FAILURE_MESSAGE_LIMIT
-    ? `${message.slice(0, FAILURE_MESSAGE_LIMIT - 1)}\u2026`
-    : message;
+  const reason = typeof data.reason === "string" ? data.reason : "";
+  const known = FAILURE_REASON_CODES[reason];
+  if (known) return { code: known, message: PUBLIC_FAILURE_MESSAGES[known] };
+  const message = typeof data.message === "string" ? data.message : reason;
+  // Classification reads only the first line: the sentence the runtime
+  // wrote, before any stack frame or cause chain.
+  const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  for (const rule of FAILURE_MESSAGE_RULES) {
+    const match = firstLine.match(rule.pattern);
+    if (!match) continue;
+    if (rule.parameter === "model") {
+      const model = validParameter(MODEL_ID, match[1]);
+      if (model) {
+        return {
+          code: rule.code,
+          message: `The model ${model} is not available to this agent.`,
+          model,
+        };
+      }
+    }
+    if (rule.parameter === "tool") {
+      const tool = validParameter(TOOL_ID, match[1]);
+      if (tool) {
+        return { code: rule.code, message: `Tool ${tool} failed.`, tool };
+      }
+    }
+    return { code: rule.code, message: PUBLIC_FAILURE_MESSAGES[rule.code] };
+  }
+  return { code: "agent_failed", message: GENERIC_FAILURE_MESSAGE };
 }
 
 function publicEventData(
@@ -730,7 +850,7 @@ function publicEventData(
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
-    return { message: publicFailureMessage(value) };
+    return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(
