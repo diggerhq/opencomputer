@@ -287,7 +287,10 @@ export type ToolInputSchema = Readonly<Record<string, unknown>>;
 export interface ToolExecutionContext {
   readonly input: Record<string, unknown>;
   readonly sessionId: string;
+  /** The assistant message that emitted this call. */
   readonly messageId: string;
+  /** The host-assigned id of this tool call, unique within the session. */
+  readonly toolCallId: string;
   readonly agentId: string;
   readonly signal?: AbortSignal;
   reportProgress(metadata: Readonly<Record<string, DataValue>>): Promise<void>;
@@ -305,6 +308,95 @@ export interface ToolDefinition<
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
+export interface MemoryReference extends ResourceReference {
+  readonly kind: "memory";
+}
+
+/** Bounded text documents stored by OpenComputer. */
+export interface DocumentMemoryProvider {
+  readonly kind: "document";
+  /** Maximum UTF-8 size of each document's text, for every writer. */
+  readonly maxBytes: number;
+}
+
+export type MemoryToolAccess = "read" | "write";
+
+/**
+ * A tool an HTTP memory endpoint executes. The model sees it as
+ * `memory_<name>` with the reserved `memory` argument naming the resource, so
+ * `input` may not declare a `memory` property of its own.
+ */
+export interface HttpMemoryToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly access: MemoryToolAccess;
+  /**
+   * Only an idempotent write is retried after a transport failure or timeout.
+   * Declare it only when the endpoint deduplicates `(partition, operationId)`.
+   */
+  readonly idempotent: boolean;
+  readonly input: ToolInputSchema;
+}
+
+/** Recall and tools served by another service through a declared connection. */
+export interface HttpMemoryProvider {
+  readonly kind: "http";
+  readonly connection: string;
+  readonly path: string;
+  /** Maximum UTF-8 size of recalled text. */
+  readonly maxBytes: number;
+  readonly tools: readonly HttpMemoryToolDefinition[];
+}
+
+export type MemoryProvider = DocumentMemoryProvider | HttpMemoryProvider;
+
+/**
+ * A memory resource, registered by the compiler and admitted per session.
+ * The same id in every agent of a project names the same resource.
+ */
+export interface MemoryDefinition extends MemoryReference {
+  readonly version: 1;
+  /** Model-facing guidance, shown in the resource's tool descriptions. */
+  readonly description: string;
+  readonly provider: MemoryProvider;
+}
+
+export interface MemorySource {
+  readonly id: string;
+  readonly title?: string;
+  readonly revision?: string;
+  readonly updatedAt?: string;
+}
+
+/**
+ * What this model request knows from one bound memory resource. The host
+ * resolves it before the render; the shape is the same for every provider.
+ */
+export interface MemoryProjection {
+  readonly text: string;
+  readonly sources: readonly MemorySource[];
+  /** Provider read state the host retains for this request's tools; opaque. */
+  readonly cursor?: string;
+  /** Whether this binding's save tool can commit right now. */
+  readonly writable: boolean;
+}
+
+/**
+ * Implemented by the host that renders the agent. The host renders inside an
+ * isolated worker with a per-render `scope`, sets this object on
+ * `globalThis[Symbol.for("opencomputer.agent-hooks")]`, and clears the scope
+ * when the render returns. The scope fields each hook reads or writes:
+ *
+ * - `useInput()` reads `scope.input`.
+ * - `useSessionData(key)` reads `scope.state[key]`.
+ * - `useTool(id)` adds to `scope.tools`; returned as `enabledTools`.
+ * - `useMemory(id)` reads `scope.memory[id]`, the projection the host
+ *   resolved for the session binding with that resource id (absent when the
+ *   session has no binding for it), and adds the id to
+ *   `scope.selectedMemory`, returned sorted as `selectedMemory` next to
+ *   `enabledTools`. The selection is what routes memory tools and their
+ *   `memory` argument for the model request this render produced.
+ */
 interface AgentHooks {
   useInput(): Readonly<AgentInput>;
   useModel(model: ModelSelection): void;
@@ -312,6 +404,7 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
+  useMemory(memory: string): MemoryProjection | undefined;
 }
 
 function hooks(): AgentHooks {
@@ -868,6 +961,240 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
     id,
     name: id,
   });
+}
+
+const MEMORY_DEFAULT_MAX_BYTES = 8_192;
+const MEMORY_MAX_BYTES_CEILING = 16_384;
+const MEMORY_ID_MAX_LENGTH = 128;
+const HTTP_MEMORY_DEFAULT_PATH = "/memory";
+const HTTP_MEMORY_MAX_TOOLS = 8;
+const HTTP_MEMORY_TOOL_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
+/** Injected into every memory tool's model-facing schema to select the resource. */
+const MEMORY_RESERVED_ARGUMENT = "memory";
+
+function memoryMaxBytes(value: number | undefined, label: string): number {
+  if (value === undefined) return MEMORY_DEFAULT_MAX_BYTES;
+  if (
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MEMORY_MAX_BYTES_CEILING
+  ) {
+    throw new Error(
+      `${label} maxBytes must be a whole number between 1 and ${MEMORY_MAX_BYTES_CEILING}`,
+    );
+  }
+  return value;
+}
+
+function containsSchemaReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsSchemaReference);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, nested]) => key === "$ref" || containsSchemaReference(nested),
+  );
+}
+
+function httpMemoryToolInput(value: unknown, label: string): ToolInputSchema {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} input must be a JSON Schema object`);
+  }
+  const schema = value as Record<string, unknown>;
+  if (schema.type !== "object") {
+    throw new Error(`${label} input must be a JSON Schema with type "object"`);
+  }
+  if (containsSchemaReference(schema)) {
+    throw new Error(`${label} input cannot use $ref`);
+  }
+  const properties = schema.properties;
+  if (
+    properties !== undefined &&
+    (!properties || typeof properties !== "object" || Array.isArray(properties))
+  ) {
+    throw new Error(`${label} input properties must be an object`);
+  }
+  const required = schema.required;
+  if (
+    required !== undefined &&
+    (!Array.isArray(required) ||
+      required.some((name) => typeof name !== "string"))
+  ) {
+    throw new Error(`${label} input required must be an array of strings`);
+  }
+  if (
+    (properties &&
+      Object.prototype.hasOwnProperty.call(
+        properties,
+        MEMORY_RESERVED_ARGUMENT,
+      )) ||
+    (Array.isArray(required) && required.includes(MEMORY_RESERVED_ARGUMENT))
+  ) {
+    throw new Error(
+      `${label} input cannot declare the reserved ${MEMORY_RESERVED_ARGUMENT} argument; OpenComputer adds it to select the resource`,
+    );
+  }
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(schema);
+  } catch {
+    serialized = undefined;
+  }
+  if (serialized === undefined) {
+    throw new Error(`${label} input must be JSON-compatible`);
+  }
+  return Object.freeze(JSON.parse(serialized) as Record<string, unknown>);
+}
+
+export interface HttpMemoryToolInput {
+  name: string;
+  description: string;
+  access: MemoryToolAccess;
+  idempotent?: boolean;
+  input: ToolInputSchema;
+}
+
+export function documentMemory(
+  input: { maxBytes?: number } = {},
+): DocumentMemoryProvider {
+  return Object.freeze({
+    kind: "document" as const,
+    maxBytes: memoryMaxBytes(input.maxBytes, "documentMemory"),
+  });
+}
+
+export function httpMemory(input: {
+  connection: ConnectionReference;
+  path?: string;
+  maxBytes?: number;
+  tools?: readonly HttpMemoryToolInput[];
+}): HttpMemoryProvider {
+  const connection = input.connection;
+  if (!connection || typeof connection !== "object" || !connection.id) {
+    throw new Error("httpMemory requires a defineConnection() connection");
+  }
+  const path = input.path ?? HTTP_MEMORY_DEFAULT_PATH;
+  if (!/^\/(?!\/)[^?#\s]*$/.test(path)) {
+    throw new Error(
+      "httpMemory path must begin with a single / and contain no query or fragment",
+    );
+  }
+  const policy = connection as Partial<HttpConnectionDefinition>;
+  if (policy.pathPrefix && !path.startsWith(policy.pathPrefix)) {
+    throw new Error(
+      `httpMemory path ${path} is outside connection ${connection.id} pathPrefix ${policy.pathPrefix}`,
+    );
+  }
+  if (policy.methods && !policy.methods.includes("POST")) {
+    throw new Error(
+      `httpMemory requires connection ${connection.id} to allow POST`,
+    );
+  }
+  const tools = input.tools ?? [];
+  if (tools.length > HTTP_MEMORY_MAX_TOOLS) {
+    throw new Error(
+      `httpMemory may declare at most ${HTTP_MEMORY_MAX_TOOLS} tools`,
+    );
+  }
+  const names = new Set<string>();
+  const normalized = tools.map((tool) => {
+    const name = typeof tool.name === "string" ? tool.name.trim() : "";
+    if (!HTTP_MEMORY_TOOL_NAME_PATTERN.test(name)) {
+      throw new Error(
+        "httpMemory tool names must use 1 to 32 lowercase letters, numbers, and underscores",
+      );
+    }
+    const label = `httpMemory tool ${name}`;
+    if (names.has(name)) throw new Error(`${label} is declared more than once`);
+    names.add(name);
+    const description =
+      typeof tool.description === "string" ? tool.description.trim() : "";
+    if (!description) throw new Error(`${label} requires a description`);
+    if (tool.access !== "read" && tool.access !== "write") {
+      throw new Error(`${label} access must be "read" or "write"`);
+    }
+    if (tool.idempotent !== undefined && typeof tool.idempotent !== "boolean") {
+      throw new Error(`${label} idempotent must be true or false`);
+    }
+    return Object.freeze({
+      name,
+      description,
+      access: tool.access,
+      idempotent: tool.idempotent ?? false,
+      input: httpMemoryToolInput(tool.input, label),
+    });
+  });
+  return Object.freeze({
+    kind: "http" as const,
+    connection: connection.id,
+    path,
+    maxBytes: memoryMaxBytes(input.maxBytes, "httpMemory"),
+    tools: Object.freeze(normalized),
+  });
+}
+
+function memoryIdentifier(value: string, kind: string): string {
+  const id = resourceIdentifier(value, kind);
+  if (id.length > MEMORY_ID_MAX_LENGTH) {
+    throw new Error(
+      `${kind} IDs must contain at most ${MEMORY_ID_MAX_LENGTH} characters`,
+    );
+  }
+  return id;
+}
+
+export function defineMemory(input: {
+  id: string;
+  description: string;
+  provider?: MemoryProvider;
+}): MemoryDefinition {
+  const id = memoryIdentifier(input.id, "defineMemory");
+  const description =
+    typeof input.description === "string" ? input.description.trim() : "";
+  if (!description) {
+    throw new Error(`Memory ${id} requires a non-empty description`);
+  }
+  const provider = input.provider ?? documentMemory();
+  if (provider.kind !== "document" && provider.kind !== "http") {
+    throw new Error(
+      `Memory ${id} provider must be documentMemory() or httpMemory()`,
+    );
+  }
+  return Object.freeze({
+    kind: "memory" as const,
+    version: 1 as const,
+    id,
+    description,
+    provider,
+  });
+}
+
+function isMemoryProjection(value: unknown): value is MemoryProjection {
+  if (!value || typeof value !== "object") return false;
+  const projection = value as Record<string, unknown>;
+  return (
+    typeof projection.text === "string" &&
+    Array.isArray(projection.sources) &&
+    typeof projection.writable === "boolean"
+  );
+}
+
+/**
+ * The projection the host recalled for this session's binding of `memory`.
+ * It never fetches: a session without that binding fails the render here,
+ * before inference. Calling it also selects the binding's permitted tools for
+ * this model request; omitting it exposes none of them.
+ */
+export function useMemory(memory: string | ResourceReference): MemoryProjection {
+  const id = memoryIdentifier(
+    typeof memory === "string" ? memory : memory.id,
+    "useMemory",
+  );
+  const projection = hooks().useMemory(id);
+  if (!isMemoryProjection(projection)) {
+    throw new Error(
+      `Memory ${JSON.stringify(id)} is not bound to this session; create the session with a memory binding for it`,
+    );
+  }
+  return projection;
 }
 
 export const useInput = (): Readonly<AgentInput> => hooks().useInput();
