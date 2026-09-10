@@ -1,0 +1,232 @@
+---
+title: "Memory"
+description: "Keep notes that outlive sessions, read by agents and editable by the owner"
+---
+
+Memory is durable text a project keeps between sessions. An agent reads it
+during render and places it in its instructions; it saves through a tool; the
+owner can inspect, edit and export it without going through the agent. Notes
+survive the end of a session, compaction of its history, replacement of its
+sandbox, and new deployments.
+
+Memory is separate from conversation history. The session keeps everything
+that was said and done; memory keeps only what an agent or the owner decided
+is worth keeping. There is no automatic extraction: a note exists because
+something saved it.
+
+## Declare memory
+
+```tsx
+import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+export const profile = defineMemory({
+  id: "profile",
+  description: "Preferences and durable facts about the owner.",
+});
+
+export const topics = defineMemory({
+  id: "topics",
+  description: "Topic brief, decisions, sources, tested commands and unfinished work.",
+  provider: documentMemory({ maxBytes: 8_192 }),
+});
+```
+
+| Field | Purpose |
+| --- | --- |
+| `id` | The resource name. The same id in two agents of a project means the same memory. |
+| `description` | Written for the model. It becomes the description of the generated save tool. |
+| `provider` | How the memory is stored and recalled. Defaults to `documentMemory()`. |
+
+`documentMemory` keeps one bounded text document per binding. `maxBytes`
+bounds the whole UTF-8 document for every writer, the owner included. The
+default is 8,192 bytes and the ceiling 16,384; lowering the bound is rejected
+while a stored document exceeds it. Nothing is ever truncated silently.
+
+Declarations are deploy-time resources like tools and connections: the
+compiler registers them in the artifact, and a session can only be bound to
+memory its deployment declares.
+
+## Read memory in a render
+
+```tsx
+import { useMemory } from "@opencomputer/agent";
+import { profile, topics } from "./memory";
+
+export default function TopicWorker() {
+  const owner = useMemory(profile);
+  const notes = useMemory(topics);
+
+  return [
+    "Do the requested work, verify it, and save useful knowledge with topics_save.",
+    `## Owner\n${owner.text}`,
+    `## Topic notes\n${notes.text}`,
+  ].join("\n\n");
+}
+```
+
+`useMemory()` returns a projection resolved by OpenComputer before the render,
+the way session data is. It never fetches during render.
+
+| Value | Meaning |
+| --- | --- |
+| `text` | What the model should know this step. Place it where it belongs in the instructions. |
+| `sources` | Where `text` came from: `{ id, title, revision, updatedAt }` per source. |
+| `cursor` | Opaque. OpenComputer uses it to fence writes; the agent never sends it anywhere. |
+
+Nothing enters the model's context that the render did not place. An empty
+document projects `text: ""`. Calling `useMemory()` for memory the session is
+not bound to throws before inference; there is no fallback to empty or
+project-wide memory.
+
+The hook takes no access option. Access is decided once, when the session is
+bound, and a render cannot widen it.
+
+## Bind memory to a session
+
+A declaration names a resource; a session binds it to one document, or to the
+whole collection, when the session is created. The application that creates
+the session decides which document and with what access. Agent code and the
+model cannot choose another one.
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project>/sessions' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: workshop-session' \
+  -d '{
+    "agentId": "topic-worker@development",
+    "memory": {
+      "profile": { "scope": "document", "id": "owner", "access": "read" },
+      "topics": { "scope": "document", "id": "workshop", "access": "read-write" }
+    }
+  }'
+```
+
+| Binding | Render value | Tools |
+| --- | --- | --- |
+| `{ "scope": "document", "id": "workshop", "access": "read" }` | The document. | none |
+| `{ "scope": "document", "id": "workshop", "access": "read-write" }` | The document. | `topics_save` |
+| `{ "scope": "collection", "access": "read" }` | An overview of the collection: each document's title and summary, most recently updated first. | `topics_read` |
+
+A collection binding is read with the same call; only what `text` holds
+differs:
+
+```tsx
+const overview = useMemory(topics);
+return `Delegate to an existing topic when one fits.\n\n## Topics\n${overview.text}`;
+```
+
+Access defaults to `read`. The document must exist; create it through the
+management API or CLI first. A binding for memory the deployment does not
+declare, or a document the caller may not access, fails session creation.
+
+Bindings last for the session's lifetime and are visible on session
+inspection. Ending a session revokes its write access; a save that already
+committed stands.
+
+Sessions started by a schedule, channel or webhook are created by
+OpenComputer rather than by your application. Those sessions have no memory
+bindings unless the trigger's configuration supplies them; see the trigger's
+own page for what it can select.
+
+## Save from the model
+
+A read-write document binding exposes one tool, named `<id>_save`:
+
+```json
+{ "text": "...", "summary": "Workshop demo: Python 3.11, tests pass at a1b2c3." }
+```
+
+`text` replaces the whole document. `summary` is optional, at most 240 bytes,
+and is what a collection overview shows for this document. The tool result
+confirms the save.
+
+The model never handles revisions. OpenComputer compares the save against the
+revision it rendered in this step. If the owner or another session changed
+the document since, the save is rejected and the tool result carries the
+current text, so the model can reconcile and save again in one step. A save
+that succeeds is durable whether or not the turn later fails.
+
+There is no separate read tool for a document binding: the render is the
+read. To clear a document, save empty text. A collection binding's
+`<id>_read` tool opens one document of the collection in full, chosen by id
+from the documents the binding already covers.
+
+## Inspect, edit and export
+
+Memory belongs to the project and its environment, not to any session or to
+the agent that wrote it. Open a project's **Memory** page to see each
+resource's documents with their title, summary, last writer and time, edit the
+text, or freeze a document against agent writes.
+
+The CLI works on the same documents:
+
+```bash
+opencomputer memory list topics --environment production
+opencomputer memory show topics workshop --environment production
+opencomputer memory create topics workshop --title "Workshop demo" --environment production
+opencomputer memory edit topics workshop --environment production
+opencomputer memory freeze topics workshop --environment production
+opencomputer memory unfreeze topics workshop --environment production
+opencomputer memory export --environment production --out ./memory
+opencomputer memory remove topics workshop --environment production
+```
+
+`freeze` and `unfreeze` set the document's write policy described below.
+
+`export` writes every document as a readable file with its metadata. It
+contains no credentials and does not restore sessions or bindings when
+imported elsewhere.
+
+The management API uses conditional requests, with the document's revision as
+its entity tag:
+
+| Operation | Request |
+| --- | --- |
+| List | `GET /api/managed-agents/projects/<project>/memory/topics/documents?environment=production` |
+| Read | `GET .../documents/workshop`, response carries `ETag: "<revision>"` |
+| Create | `PUT .../documents/workshop` with `If-None-Match: *` |
+| Replace | `PUT .../documents/workshop` with `If-Match: "<revision>"` |
+| Change title or write policy | `PATCH .../documents/workshop` with `If-Match` |
+| Delete | `DELETE .../documents/workshop` with `If-Match` |
+
+A stale revision returns `412 Precondition Failed`. A deleted id stays
+reserved: creating it again fails, so a delayed retry can never recreate what
+the owner removed.
+
+Setting `agentWrites: "disabled"` on a document rejects every agent save,
+present or future, while owner edits and agent reads continue. Re-enabling
+allows new sessions to save; sessions bound before the freeze do not regain
+write access. Use it to archive a topic without losing its notes.
+
+Development and production memory are separate. Deleting a project removes
+its memory.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Document size | `maxBytes`, default 8,192, at most 16,384 |
+| Summary | 240 bytes |
+| Document id | 1 to 128 characters: letters, digits, `-`, `_` |
+| Bindings per session | 8 |
+| Collection overview | 50 most recently updated documents; the rest through `<id>_read` |
+
+Memory counts toward the model's context like anything else in the
+instructions. If the rendered instructions exceed what the selected model
+accepts, the turn fails with an error naming the resources involved rather
+than dropping text.
+
+## Memory versus session data
+
+[Session data](/agents/session-data) is per session and written by your
+application; it describes the session. Memory is per project and environment,
+written by agents and the owner, and outlives any session. Use session data
+to tell an agent about the current job and memory for what it should still
+know next month.
+
+## Providers
+
+`documentMemory` is the built-in provider. The declaration's `provider` field
+is where a different one goes; the hook, the projection and the bindings do
+not change with the provider. Further providers are not available yet.

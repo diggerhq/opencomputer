@@ -69,6 +69,13 @@ associated with the durable session and can be read again on later renders.
 Use input for the event that just arrived and session data for context that
 outlives that event.
 
+## Session data versus memory
+
+Session data belongs to one session and is written by your application.
+[Memory](/agents/memory) belongs to the project and environment, is written by
+agents and the owner, and outlives any session. Describe the current job with
+session data; keep what the agent should still know next month in memory.
+
 ## Current write behavior
 
 The current `@opencomputer/agent` API exposes session data as a read-only
