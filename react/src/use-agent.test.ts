@@ -217,6 +217,34 @@ test("attach resumes from its cursor after a failed poll instead of replaying", 
   await view.unmount();
 });
 
+test("attach waits between polls when a page brings nothing new", async (t) => {
+  let polls = 0;
+  const stale: AgentEvent[] = [
+    { seq: 1, turnId: "t0", type: "message.received", data: { input: "hello" } },
+    { seq: 2, turnId: "t0", type: "turn.completed", data: {} },
+  ];
+  // A relay that ignores `after` and repeats the same page.
+  const view = mount(t, {
+    sessionId: "ses-stale",
+    basePath: "/app/agent",
+    fetch: async () => {
+      polls += 1;
+      return Response.json({ events: stale });
+    },
+    pollIntervalMs: 20,
+  });
+  await view.render();
+  const replayed = await view.until((result) => result.cursor === 2, "replay");
+  assert.equal(replayed.messages.length, 1);
+  const before = polls;
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+  assert.ok(polls - before <= 8, `polled ${String(polls - before)} times in 100ms at a 20ms interval`);
+  assert.equal(view.result().messages.length, 1);
+  await view.unmount();
+});
+
 test("attach sends turns and interrupts through the app's routes without duplicating the input", async (t) => {
   const session = fakeSession("ses-3");
   const view = mount(t, { sessionId: "ses-3", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });

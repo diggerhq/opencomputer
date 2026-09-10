@@ -158,13 +158,14 @@ export function useAgent(
   );
 
   // Applies a page of events to the timeline and runs the callbacks once per
-  // event. Events the timeline already holds fire nothing.
+  // event. Events the timeline already holds fire nothing. Returns how many
+  // were new.
   const ingest = useCallback(
-    (events: AgentEvent[]) => {
+    (events: AgentEvent[]): number => {
       const fresh = events.filter(
         (event) => event.seq > timelineRef.current.cursor,
       );
-      if (!fresh.length) return;
+      if (!fresh.length) return 0;
       commit(applyEvents(timelineRef.current, fresh));
       for (const event of fresh) {
         cursorRef.current = Math.max(cursorRef.current, event.seq);
@@ -178,6 +179,7 @@ export function useAgent(
         const failure = failureMessage(event);
         if (failure) setError(failure);
       }
+      return fresh.length;
     },
     [commit],
   );
@@ -205,10 +207,8 @@ export function useAgent(
           if (signal.aborted) return;
           if (failures) setError(undefined);
           failures = 0;
-          if (page.events.length) {
-            ingest(page.events);
-            continue;
-          }
+          // A full page means more may follow: read on without waiting.
+          if (ingest(page.events) > 0) continue;
           setIsReplaying(false);
         } catch (cause) {
           if (signal.aborted) return;
