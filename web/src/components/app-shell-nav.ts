@@ -5,6 +5,7 @@ import {
   Boxes,
   BrainCircuit,
   CalendarClock,
+  FolderKanban,
   KeySquare,
   Layers,
   MessagesSquare,
@@ -107,6 +108,14 @@ export function managedAgentsNav(options: {
         ],
       },
     )
+  }
+
+  if (!options.projectId) {
+    // The project list is the home screen; it needs a place in the sidebar so
+    // it stays reachable once an advanced area is open.
+    groups.push({
+      items: [{ to: '/', label: 'Projects', icon: FolderKanban, end: true }],
+    })
   }
 
   if (options.durableSessionsEnabled) {
