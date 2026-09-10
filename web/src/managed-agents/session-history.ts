@@ -43,3 +43,15 @@ export function turnAssistantText(events: ManagedAgentEvent[], turnId: string) {
   }
   return streamedText || completedText
 }
+
+/** The reason a turn failed, as its `turn.failed` event carries it; undefined for any other outcome. */
+export function turnFailureReason(events: ManagedAgentEvent[], turnId: string) {
+  for (const event of events) {
+    if (event.turnId === turnId && event.type === 'turn.failed') {
+      return typeof event.data.message === 'string' && event.data.message
+        ? event.data.message
+        : 'The agent could not complete this request.'
+    }
+  }
+  return undefined
+}

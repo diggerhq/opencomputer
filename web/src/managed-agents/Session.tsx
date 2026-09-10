@@ -19,7 +19,7 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
-import { turnAssistantText } from './session-history'
+import { turnAssistantText, turnFailureReason } from './session-history'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -218,6 +218,10 @@ export default function ManagedSessionDetail() {
                   events.data ?? [],
                   turn.id,
                 )
+                const failureReason =
+                  turn.status === 'failed'
+                    ? turnFailureReason(events.data ?? [], turn.id)
+                    : undefined
                 const running = !['completed', 'failed'].includes(turn.status)
                 return (
                   <div key={turn.id} className="space-y-6">
@@ -253,6 +257,11 @@ export default function ManagedSessionDetail() {
                             : `Turn ${turn.status.replace(/_/g, ' ')}.`}
                         </p>
                       )}
+                      {failureReason ? (
+                        <p className="text-status-error mt-2 text-sm">
+                          {failureReason}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 )
