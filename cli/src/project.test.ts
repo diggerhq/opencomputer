@@ -1167,7 +1167,7 @@ export default function Agent() {
     );
     await assert.rejects(
       build(REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory").replace("8_192", "16_385")),
-      /maxBytes must be a whole number literal between 1 and 16384/,
+      /maxBytes must be a whole number between 1 and 16384/,
     );
     await assert.rejects(
       build(REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory").replace('"requirements"', '"Requirements"')),
@@ -1209,4 +1209,286 @@ export default function Agent() {
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
+});
+
+test("the compiler rejects memory declarations it cannot register as written", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-memory-literal-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useMemory } from "@opencomputer/agent";
+import { memory } from "./memory";
+
+export default function Agent() {
+  return useMemory(memory).text;
+}
+`,
+    );
+    const build = async (memorySource: string, extra?: [string, string]) => {
+      await writeFile(resolve(initialized.agentRoot, "memory.ts"), memorySource);
+      if (extra) await writeFile(resolve(initialized.agentRoot, extra[0]), extra[1]);
+      return buildAgentArtifact(initialized.agentRoot);
+    };
+    const declaration = (provider: string) =>
+      `  id: "requirements",\n  description: "Requirements.",\n  provider: ${provider},\n`;
+
+    // Review reproduction: an aliased callee executed a definition the
+    // compiler never registered, so the artifact declared no memory.
+    await assert.rejects(
+      build(`import { defineMemory as declareMemory, documentMemory } from "@opencomputer/agent";
+
+export const memory = declareMemory({
+${declaration("documentMemory({ maxBytes: 4_096 })")}});
+`),
+      /memory\.ts imports defineMemory as declareMemory; the compiler registers memory only from a direct defineMemory\(\) call, so keep its name/,
+    );
+    await assert.rejects(
+      build(
+        `import { declareMemory } from "./lib";
+
+export const memory = declareMemory({
+${declaration("undefined")}});
+`,
+        ["lib.ts", 'export { defineMemory as declareMemory } from "@opencomputer/agent";\n'],
+      ),
+      /lib\.ts exports defineMemory as declareMemory; the compiler registers memory only from a direct defineMemory\(\) call/,
+    );
+    await rm(resolve(initialized.agentRoot, "lib.ts"));
+    await assert.rejects(
+      build(`import * as oc from "@opencomputer/agent";
+
+export const memory = oc.defineMemory({
+${declaration("oc.documentMemory({ maxBytes: 4_096 })")}});
+`),
+      /memory\.ts calls oc\.defineMemory\(\); the compiler registers memory only from a direct defineMemory\(\) call, so import defineMemory by name from @opencomputer\/agent/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory } from "@opencomputer/agent";
+
+const declare = defineMemory;
+export const memory = declare({
+${declaration("undefined")}});
+`),
+      /memory\.ts uses defineMemory other than as a direct defineMemory\(\) call; the compiler registers memory only from that call, so do not alias, wrap, or shadow it/,
+    );
+
+    // Review reproduction: spreading options into the provider registered
+    // the default limit while the definition kept 4096.
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+const options = { maxBytes: 4_096 };
+export const memory = defineMemory({
+${declaration("documentMemory({ ...options })")}});
+`),
+      /memory\.ts Memory requirements documentMemory\(\) cannot spread options; write each option as a literal property/,
+    );
+
+    // Review reproduction: spreading the provider into the declaration
+    // registered the default provider.
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+const provider = { provider: documentMemory({ maxBytes: 4_096 }) };
+export const memory = defineMemory({
+  id: "requirements",
+  description: "Requirements.",
+  ...provider,
+});
+`),
+      /memory\.ts defineMemory\(\) cannot spread provider; write each option as a literal property/,
+    );
+
+    // The same silent default through a shorthand, an accessor, a computed
+    // name, or a non-literal argument.
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+const provider = documentMemory({ maxBytes: 4_096 });
+export const memory = defineMemory({ id: "requirements", description: "Requirements.", provider });
+`),
+      /memory\.ts defineMemory\(\) cannot use the shorthand property provider; write provider as a literal property/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+export const memory = defineMemory({
+  id: "requirements",
+  description: "Requirements.",
+  get provider() { return documentMemory({ maxBytes: 4_096 }); },
+});
+`),
+      /memory\.ts defineMemory\(\) cannot use methods or accessors/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+export const memory = defineMemory({
+  id: "requirements",
+  description: "Requirements.",
+  ["provider"]: documentMemory({ maxBytes: 4_096 }),
+});
+`),
+      /memory\.ts defineMemory\(\) must use static property names/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory } from "@opencomputer/agent";
+
+const options = { id: "requirements", description: "Requirements." };
+export const memory = defineMemory(options);
+`),
+      /memory\.ts defineMemory\(\) requires one object literal argument/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+const options = { maxBytes: 4_096 };
+export const memory = defineMemory({
+${declaration("documentMemory(options)")}});
+`),
+      /memory\.ts Memory requirements documentMemory\(\) requires one object literal argument/,
+    );
+    await assert.rejects(
+      build(`import { defineMemory, documentMemory } from "@opencomputer/agent";
+
+const LIMIT = 4_096;
+export const memory = defineMemory({
+${declaration("documentMemory({ maxBytes: LIMIT })")}});
+`),
+      /memory\.ts Memory requirements documentMemory\(\) maxBytes must be a static JSON value/,
+    );
+
+    // Type-only references and unaliased re-exports do not change what runs.
+    await writeFile(
+      resolve(initialized.agentRoot, "lib.ts"),
+      'export { defineMemory, documentMemory } from "@opencomputer/agent";\n',
+    );
+    const built = await build(`import type { MemoryDefinition } from "@opencomputer/agent";
+import { defineMemory, documentMemory } from "./lib";
+
+type Declared = typeof defineMemory;
+export const memory: MemoryDefinition = defineMemory({
+${declaration("documentMemory({ maxBytes: 4_096 })")}});
+export const declared: Declared | undefined = undefined;
+`);
+    assert.deepEqual(built.memory, [
+      {
+        id: "requirements",
+        description: "Requirements.",
+        provider: { kind: "document", maxBytes: 4096 },
+      },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("a registered memory declaration is the definition the artifact executes", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-memory-parity-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(resolve(initialized.agentRoot, "knowledge.ts"), KNOWLEDGE_MEMORY);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineMemory, documentMemory, useMemory } from "@opencomputer/agent";
+export { knowledge } from "./knowledge";
+
+export const requirements = defineMemory({
+  id: "requirements",
+  description: "  Verified requirements and decisions for a workshop, kept for later work.  ",
+  provider: documentMemory({ maxBytes: 8_192 }),
+});
+export const notes = defineMemory({ id: "notes", description: "Notes." });
+
+export default function Agent() {
+  return useMemory(requirements).text;
+}
+`,
+    );
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    const runtime = resolve(initialized.agentRoot, ".opencomputer", "runtime");
+    const module = (await import(
+      `${pathToFileURL(resolve(runtime, "agent.js")).href}?test=${crypto.randomUUID()}`
+    )) as Record<string, { kind: string; version: number; id: string; description: string; provider: unknown }>;
+    const executed = ["knowledge", "notes", "requirements"].map((name) => {
+      const definition = module[name]!;
+      assert.equal(definition.kind, "memory");
+      assert.equal(definition.version, 1);
+      assert.ok(Object.isFrozen(definition));
+      assert.ok(Object.isFrozen(definition.provider));
+      return JSON.parse(
+        JSON.stringify({
+          id: definition.id,
+          description: definition.description,
+          provider: definition.provider,
+        }),
+      ) as unknown;
+    });
+    assert.deepEqual(built.memory, executed);
+    assert.deepEqual(built.memory, [
+      KNOWLEDGE_DECLARATION,
+      { id: "notes", description: "Notes.", provider: { kind: "document", maxBytes: 8192 } },
+      REQUIREMENTS_DECLARATION,
+    ]);
+
+    // The runtime rejects what the compiler rejects: the shim is the same
+    // contract module, so a declaration that would not compile does not run.
+    const shim = (await import(
+      `${pathToFileURL(resolve(runtime, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    )) as {
+      defineMemory: (input: unknown) => { provider: { tools?: Array<{ input: Record<string, unknown> }> } };
+      documentMemory: (input?: unknown) => unknown;
+      httpMemory: (input: unknown) => unknown;
+    };
+    assert.throws(
+      () => shim.documentMemory({ maxBytes: 16_385 }),
+      /documentMemory maxBytes must be a whole number between 1 and 16384/,
+    );
+    assert.throws(
+      () => shim.defineMemory({ id: "Requirements", description: "R." }),
+      /defineMemory IDs must use lowercase letters, numbers, and single hyphens/,
+    );
+    assert.throws(
+      () =>
+        shim.httpMemory({
+          connection: { kind: "connection", id: "memory-service", methods: ["GET"] },
+        }),
+      /httpMemory requires connection memory-service to allow POST/,
+    );
+    const definition = shim.defineMemory({
+      id: "knowledge",
+      description: "Facts.",
+      provider: shim.httpMemory({
+        connection: { kind: "connection", id: "memory-service" },
+        tools: [
+          {
+            name: "remember",
+            description: "Save.",
+            access: "write",
+            input: { type: "object", properties: { fact: { type: "string" } } },
+          },
+        ],
+      }),
+    });
+    const schema = definition.provider.tools![0]!.input;
+    assert.ok(Object.isFrozen(schema));
+    assert.ok(Object.isFrozen(schema.properties));
+    assert.ok(Object.isFrozen((schema.properties as Record<string, unknown>).fact));
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the CLI's memory contract is the agent package's module", async () => {
+  const repo = resolve(import.meta.dirname, "..", "..");
+  const packageModule = resolve(repo, "agent", "src", "memory.ts");
+  const cliModule = resolve(repo, "cli", "src", "memory.ts");
+  assert.equal(
+    await readFile(cliModule, "utf8"),
+    await readFile(packageModule, "utf8"),
+    "cli/src/memory.ts must stay byte-identical to agent/src/memory.ts; the compiler, the runtime shim and @opencomputer/agent share it",
+  );
 });

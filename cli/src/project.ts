@@ -8,10 +8,25 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { build as bundle } from "esbuild";
 import ts from "typescript";
+
+import {
+  defineMemory,
+  documentMemory,
+  httpMemory,
+  memoryToolNames,
+  type DocumentMemoryInput,
+  type HttpMemoryConnection,
+  type HttpMemoryInput,
+  type MemoryDefinition,
+  type MemoryDefinitionInput,
+  type MemoryProvider,
+} from "./memory.js";
 
 export interface AgentManifest {
   schema: 1;
@@ -31,33 +46,16 @@ export interface BuiltAgentArtifact {
   elapsedMs: number;
 }
 
-export interface HttpToolDeclaration {
-  name: string;
-  description: string;
-  access: "read" | "write";
-  idempotent: boolean;
-  input: Record<string, unknown>;
-}
-
-export type MemoryProviderDeclaration =
-  | { kind: "document"; maxBytes: number }
-  | {
-      kind: "http";
-      connection: string;
-      path: string;
-      maxBytes: number;
-      tools: HttpToolDeclaration[];
-    };
-
 /**
- * A memory resource as registered with the deployment. The same id in every
- * agent of a project names the same resource, so declarations sharing an id
- * must agree on the provider and its configuration.
+ * A memory resource as registered with the deployment: the executable
+ * definition without its `kind` and `version`. The same id in every agent of
+ * a project names the same resource, so declarations sharing an id must agree
+ * on the provider and its configuration.
  */
 export interface MemoryDeclaration {
   id: string;
   description: string;
-  provider: MemoryProviderDeclaration;
+  provider: MemoryProvider;
 }
 
 export interface HttpConnectionManifest {
@@ -878,149 +876,171 @@ function definedMcpServers(
   return definitions.sort((left, right) => left.id.localeCompare(right.id));
 }
 
-const MEMORY_DEFAULT_MAX_BYTES = 8_192;
-const MEMORY_MAX_BYTES_CEILING = 16_384;
-const MEMORY_ID_MAX_LENGTH = 128;
-const HTTP_MEMORY_DEFAULT_PATH = "/memory";
-const HTTP_MEMORY_MAX_TOOLS = 8;
-const HTTP_MEMORY_TOOL_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
-/** Injected into every memory tool's model-facing schema to select the resource. */
-const MEMORY_RESERVED_ARGUMENT = "memory";
-/** The built-in document provider's fixed tools, exposed as `memory_<name>`. */
-const DOCUMENT_MEMORY_TOOLS = ["save", "read", "list"];
+/**
+ * The memory authoring functions the compiler registers from. A declaration
+ * only counts when one of them is called directly by its own name on literal
+ * arguments: that is what lets the compiler run the same `defineMemory()` the
+ * artifact runs and emit the executable definition itself. Any other use
+ * (an alias, a namespace member, a wrapper, a re-export under another name)
+ * would let the definition execute without being registered, or register
+ * something the definition does not mean, so the build rejects it.
+ */
+const MEMORY_AUTHORING_FUNCTIONS = new Set([
+  "defineMemory",
+  "documentMemory",
+  "httpMemory",
+]);
 
-/** The identifier a property references, for `connection: name` and `{ connection }` alike. */
-function objectPropertyIdentifier(
-  object: ts.ObjectLiteralExpression,
-  name: string,
-): string | undefined {
-  for (const property of object.properties) {
-    if (
-      ts.isShorthandPropertyAssignment(property) &&
-      property.name.text === name
-    ) {
-      return property.name.text;
-    }
-  }
-  const expression = objectProperty(object, name);
-  return expression && ts.isIdentifier(expression) ? expression.text : undefined;
-}
-
-function memoryMaxBytesValue(
-  expression: ts.Expression | undefined,
-  label: string,
-): number {
-  if (!expression) return MEMORY_DEFAULT_MAX_BYTES;
-  const value = ts.isNumericLiteral(expression)
-    ? Number(expression.text)
-    : Number.NaN;
-  if (!Number.isInteger(value) || value < 1 || value > MEMORY_MAX_BYTES_CEILING) {
-    throw new Error(
-      `${label} maxBytes must be a whole number literal between 1 and ${MEMORY_MAX_BYTES_CEILING}`,
-    );
-  }
-  return value;
-}
-
-function containsSchemaReference(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsSchemaReference);
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value as Record<string, unknown>).some(
-    ([key, nested]) => key === "$ref" || containsSchemaReference(nested),
+function isTypeOnlyContext(node: ts.Node): boolean {
+  return (
+    ts.isTypeNode(node) ||
+    (ts.isImportDeclaration(node) && !!node.importClause?.isTypeOnly) ||
+    (ts.isExportDeclaration(node) && node.isTypeOnly) ||
+    (ts.isImportSpecifier(node) && node.isTypeOnly) ||
+    (ts.isExportSpecifier(node) && node.isTypeOnly)
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+/**
+ * Rejects every use of a memory authoring function other than an unaliased
+ * import or export and a direct call, so a definition that executes is one
+ * the compiler registered and vice versa.
+ */
+function assertMemoryFunctionsCalledDirectly(
+  file: ts.SourceFile,
+  path: string,
+): void {
+  const visit = (node: ts.Node): void => {
+    if (isTypeOnlyContext(node)) return;
+    if (ts.isIdentifier(node) && MEMORY_AUTHORING_FUNCTIONS.has(node.text)) {
+      const name = node.text;
+      const parent = node.parent;
+      const direct =
+        (ts.isCallExpression(parent) && parent.expression === node) ||
+        ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
+          parent.name === node &&
+          parent.propertyName === undefined);
+      if (!direct) {
+        if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) {
+          const verb = ts.isImportSpecifier(parent) ? "imports" : "exports";
+          const imported = (parent.propertyName ?? parent.name).text;
+          throw new Error(
+            `${path} ${verb} ${imported} as ${parent.name.text}; the compiler registers memory only from a direct ${name}() call, so keep its name`,
+          );
+        }
+        if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+          throw new Error(
+            `${path} calls ${parent.expression.getText(file)}.${name}(); the compiler registers memory only from a direct ${name}() call, so import ${name} by name from @opencomputer/agent`,
+          );
+        }
+        throw new Error(
+          `${path} uses ${name} other than as a direct ${name}() call; the compiler registers memory only from that call, so do not alias, wrap, or shadow it`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
 }
 
-function httpMemoryTools(value: unknown, label: string): HttpToolDeclaration[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) {
-    throw new Error(`${label} tools must be an array literal`);
-  }
-  if (value.length > HTTP_MEMORY_MAX_TOOLS) {
-    throw new Error(`${label} may declare at most ${HTTP_MEMORY_MAX_TOOLS} tools`);
-  }
-  const names = new Set<string>();
-  return value.map((entry): HttpToolDeclaration => {
-    if (!isRecord(entry)) {
-      throw new Error(`${label} tools must contain object literals`);
-    }
-    const name = typeof entry.name === "string" ? entry.name.trim() : "";
-    if (!HTTP_MEMORY_TOOL_NAME_PATTERN.test(name)) {
+/**
+ * The properties of an object literal as name/value pairs, rejecting every
+ * form whose value the compiler cannot read: spreads, shorthand, methods,
+ * accessors and computed names. `identifiers` names properties whose value is
+ * an identifier reference rather than a literal, allowed in shorthand form.
+ */
+function literalObjectEntries(
+  object: ts.ObjectLiteralExpression,
+  label: string,
+  identifiers: readonly string[] = [],
+): Array<[string, ts.Expression]> {
+  return object.properties.map((property): [string, ts.Expression] => {
+    if (ts.isSpreadAssignment(property)) {
       throw new Error(
-        `${label} tool names must use 1 to 32 lowercase letters, numbers, and underscores`,
+        `${label} cannot spread ${property.expression.getText()}; write each option as a literal property`,
       );
     }
-    const toolLabel = `${label} tool ${name}`;
-    if (names.has(name)) {
-      throw new Error(`${toolLabel} is declared more than once`);
-    }
-    names.add(name);
-    const description =
-      typeof entry.description === "string" ? entry.description.trim() : "";
-    if (!description) throw new Error(`${toolLabel} requires a description`);
-    if (entry.access !== "read" && entry.access !== "write") {
-      throw new Error(`${toolLabel} access must be "read" or "write"`);
-    }
-    if (entry.idempotent !== undefined && typeof entry.idempotent !== "boolean") {
-      throw new Error(`${toolLabel} idempotent must be true or false`);
-    }
-    const input = entry.input;
-    if (!isRecord(input)) {
-      throw new Error(`${toolLabel} input must be a JSON Schema object`);
-    }
-    if (input.type !== "object") {
+    if (ts.isShorthandPropertyAssignment(property)) {
+      const name = property.name.text;
+      if (identifiers.includes(name)) return [name, property.name];
       throw new Error(
-        `${toolLabel} input must be a JSON Schema with type "object"`,
+        `${label} cannot use the shorthand property ${name}; write ${name} as a literal property`,
       );
     }
-    if (containsSchemaReference(input)) {
-      throw new Error(`${toolLabel} input cannot use $ref`);
-    }
-    if (input.properties !== undefined && !isRecord(input.properties)) {
-      throw new Error(`${toolLabel} input properties must be an object`);
-    }
-    if (
-      input.required !== undefined &&
-      (!Array.isArray(input.required) ||
-        input.required.some((item) => typeof item !== "string"))
-    ) {
-      throw new Error(`${toolLabel} input required must be an array of strings`);
-    }
-    if (
-      (isRecord(input.properties) &&
-        Object.prototype.hasOwnProperty.call(
-          input.properties,
-          MEMORY_RESERVED_ARGUMENT,
-        )) ||
-      (Array.isArray(input.required) &&
-        input.required.includes(MEMORY_RESERVED_ARGUMENT))
-    ) {
+    if (!ts.isPropertyAssignment(property)) {
       throw new Error(
-        `${toolLabel} input cannot declare the reserved ${MEMORY_RESERVED_ARGUMENT} argument; OpenComputer adds it to select the resource`,
+        `${label} cannot use methods or accessors; write each option as a literal property`,
       );
     }
-    return {
-      name,
-      description,
-      access: entry.access,
-      idempotent: entry.idempotent === true,
-      input,
-    };
+    return [
+      staticPropertyName(property.name, label),
+      property.initializer,
+    ];
   });
 }
 
-function memoryProviderDeclaration(
-  expression: ts.Expression | undefined,
-  id: string,
-  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
-): MemoryProviderDeclaration {
-  const label = `Memory ${id}`;
-  if (!expression) {
-    return { kind: "document", maxBytes: MEMORY_DEFAULT_MAX_BYTES };
+/** The single object-literal argument of an authoring call, or none. */
+function literalCallArgument(
+  call: ts.CallExpression,
+  label: string,
+): ts.ObjectLiteralExpression | undefined {
+  if (call.arguments.length === 0) return undefined;
+  const argument = call.arguments[0];
+  if (
+    call.arguments.length !== 1 ||
+    !argument ||
+    !ts.isObjectLiteralExpression(argument)
+  ) {
+    throw new Error(`${label} requires one object literal argument`);
   }
+  return argument;
+}
+
+function memoryConnectionPolicy(
+  expression: ts.Expression,
+  label: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): HttpMemoryConnection {
+  if (!ts.isIdentifier(expression)) {
+    throw new Error(
+      `${label} connection must reference a defineConnection() binding`,
+    );
+  }
+  const connection = connectionBindings.get(expression.text);
+  if (!connection) {
+    throw new Error(
+      `${label} references unknown connection ${expression.text}`,
+    );
+  }
+  return {
+    kind: "connection",
+    id: connection.id,
+    ...(connection.methods ? { methods: connection.methods } : {}),
+    ...(connection.pathPrefix ? { pathPrefix: connection.pathPrefix } : {}),
+  };
+}
+
+/** Runs a contract function on compile-time input, naming the file on error. */
+function inSourceFile<T>(path: string, evaluate: () => T): T {
+  try {
+    return evaluate();
+  } catch (error) {
+    throw new Error(
+      `${path} ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * The provider a declaration names, produced by running `documentMemory()`
+ * or `httpMemory()` on the literal options at the call site.
+ */
+function memoryProviderValue(
+  expression: ts.Expression,
+  path: string,
+  declaration: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): MemoryProvider {
   if (
     !ts.isCallExpression(expression) ||
     !ts.isIdentifier(expression.expression) ||
@@ -1028,68 +1048,43 @@ function memoryProviderDeclaration(
       expression.expression.text !== "httpMemory")
   ) {
     throw new Error(
-      `${label} provider must be an inline documentMemory() or httpMemory() call`,
+      `${path} ${declaration} provider must be an inline documentMemory() or httpMemory() call`,
     );
   }
-  const provider = expression.expression.text;
-  const input = expression.arguments[0];
-  if (input !== undefined && !ts.isObjectLiteralExpression(input)) {
-    throw new Error(`${label} ${provider}() requires an object literal`);
+  const callee = expression.expression.text;
+  const label = `${path} ${declaration} ${callee}()`;
+  const argument = literalCallArgument(expression, label);
+  if (callee === "documentMemory") {
+    const input: Record<string, unknown> = {};
+    for (const [name, value] of argument
+      ? literalObjectEntries(argument, label)
+      : []) {
+      input[name] = staticJsonValue(value, `${label} ${name}`);
+    }
+    return inSourceFile(path, () =>
+      documentMemory(input as DocumentMemoryInput),
+    );
   }
-  if (provider === "documentMemory") {
-    return {
-      kind: "document",
-      maxBytes: memoryMaxBytesValue(
-        input && objectProperty(input, "maxBytes"),
-        label,
-      ),
-    };
+  if (!argument) {
+    throw new Error(`${label} requires a connection`);
   }
-  if (!input) {
-    throw new Error(`${label} httpMemory() requires a connection`);
+  const input: Record<string, unknown> = {};
+  for (const [name, value] of literalObjectEntries(argument, label, [
+    "connection",
+  ])) {
+    input[name] =
+      name === "connection"
+        ? memoryConnectionPolicy(value, label, connectionBindings)
+        : staticJsonValue(value, `${label} ${name}`);
   }
-  const connectionName = objectPropertyIdentifier(input, "connection");
-  if (!connectionName) {
+  if (!input.connection) {
     throw new Error(
       `${label} connection must reference a defineConnection() binding`,
     );
   }
-  const connection = connectionBindings.get(connectionName);
-  if (!connection) {
-    throw new Error(
-      `${label} references unknown connection ${connectionName}`,
-    );
-  }
-  const pathExpression = objectProperty(input, "path");
-  const path = pathExpression
-    ? literalStringValue(pathExpression, `${label} path`)
-    : HTTP_MEMORY_DEFAULT_PATH;
-  if (!/^\/(?!\/)[^?#\s]*$/.test(path)) {
-    throw new Error(
-      `${label} path must begin with a single / and contain no query or fragment`,
-    );
-  }
-  if (connection.pathPrefix && !path.startsWith(connection.pathPrefix)) {
-    throw new Error(
-      `${label} path ${path} is outside connection ${connection.id} pathPrefix ${connection.pathPrefix}`,
-    );
-  }
-  if (connection.methods && !connection.methods.includes("POST")) {
-    throw new Error(
-      `${label} requires connection ${connection.id} to allow POST`,
-    );
-  }
-  const toolsExpression = objectProperty(input, "tools");
-  return {
-    kind: "http",
-    connection: connection.id,
-    path,
-    maxBytes: memoryMaxBytesValue(objectProperty(input, "maxBytes"), label),
-    tools: httpMemoryTools(
-      toolsExpression && staticJsonValue(toolsExpression, `${label} tools`),
-      label,
-    ),
-  };
+  return inSourceFile(path, () =>
+    httpMemory(input as unknown as HttpMemoryInput),
+  );
 }
 
 function definedMemory(
@@ -1098,6 +1093,7 @@ function definedMemory(
   connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
 ): MemoryDeclaration[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  assertMemoryFunctionsCalledDirectly(file, path);
   const declarations: MemoryDeclaration[] = [];
   const visit = (node: ts.Node): void => {
     if (
@@ -1105,46 +1101,38 @@ function definedMemory(
       ts.isIdentifier(node.expression) &&
       node.expression.text === "defineMemory"
     ) {
-      const input = node.arguments[0];
-      if (!input || !ts.isObjectLiteralExpression(input)) {
-        throw new Error(`${path} defineMemory() requires an object literal`);
+      const label = `${path} defineMemory()`;
+      const argument = literalCallArgument(node, label);
+      if (!argument) {
+        throw new Error(`${label} requires one object literal argument`);
       }
-      const id = literalStringValue(objectProperty(input, "id"), "memory id");
-      if (!AGENT_ID_PATTERN.test(id) || id.length > MEMORY_ID_MAX_LENGTH) {
-        throw new Error(
-          `Memory id ${JSON.stringify(id)} must use lowercase letters, numbers, and single hyphens, at most ${MEMORY_ID_MAX_LENGTH} characters`,
-        );
+      const input: Record<string, unknown> = {};
+      const entries = literalObjectEntries(argument, label);
+      const idEntry = entries.find(([name]) => name === "id");
+      const id = idEntry
+        ? staticJsonValue(idEntry[1], `${label} id`)
+        : undefined;
+      const declaration =
+        typeof id === "string" && id ? `Memory ${id}` : "defineMemory()";
+      for (const [name, value] of entries) {
+        input[name] =
+          name === "provider"
+            ? memoryProviderValue(value, path, declaration, connectionBindings)
+            : staticJsonValue(value, `${label} ${name}`);
       }
-      const description = literalStringValue(
-        objectProperty(input, "description"),
-        `Memory ${id} description`,
-      ).trim();
-      if (!description) {
-        throw new Error(`Memory ${id} requires a non-empty description`);
-      }
+      const definition: MemoryDefinition = inSourceFile(path, () =>
+        defineMemory(input as unknown as MemoryDefinitionInput),
+      );
       declarations.push({
-        id,
-        description,
-        provider: memoryProviderDeclaration(
-          objectProperty(input, "provider"),
-          id,
-          connectionBindings,
-        ),
+        id: definition.id,
+        description: definition.description,
+        provider: definition.provider,
       });
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
   return declarations;
-}
-
-/** The model-facing tool names a declaration reserves. */
-export function memoryToolNames(declaration: MemoryDeclaration): string[] {
-  const names =
-    declaration.provider.kind === "document"
-      ? DOCUMENT_MEMORY_TOOLS
-      : declaration.provider.tools.map((tool) => tool.name);
-  return names.map((name) => `${MEMORY_RESERVED_ARGUMENT}_${name}`);
 }
 
 /**
@@ -2085,8 +2073,18 @@ function staticModelSelections(
   );
 }
 
+/**
+ * The compiled memory contract, inlined into the runtime so the artifact's
+ * defineMemory() is the same code the compiler ran on the declaration.
+ */
+const MEMORY_CONTRACT_SOURCE = readFileSync(
+  fileURLToPath(new URL("./memory.js", import.meta.url)),
+  "utf8",
+).replace(/^\/\/# sourceMappingURL=.*$/m, "");
+
 function agentApiRuntimeSource(): string {
-  return `function hooks() {
+  return `${MEMORY_CONTRACT_SOURCE}
+function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
   return value;
@@ -2179,35 +2177,13 @@ export const publishOutbox = async (outbox, input) => {
   if (!response.ok) throw new Error("Outbox publish failed with status " + response.status);
   return await response.json();
 };
-// Memory declarations are validated by the compiler before this runs; the
-// runtime only normalizes defaults so a definition equals its manifest entry.
-const MEMORY_DEFAULT_MAX_BYTES = 8192;
-export const documentMemory = (input = {}) => Object.freeze({ kind: "document", maxBytes: input.maxBytes ?? MEMORY_DEFAULT_MAX_BYTES });
-export const httpMemory = (input) => Object.freeze({
-  kind: "http",
-  connection: id(input.connection && input.connection.id, "httpMemory connection"),
-  path: input.path || "/memory",
-  maxBytes: input.maxBytes ?? MEMORY_DEFAULT_MAX_BYTES,
-  tools: Object.freeze((input.tools || []).map((tool) => Object.freeze({ ...tool, idempotent: tool.idempotent === true }))),
-});
-export const defineMemory = (input) => Object.freeze({
-  kind: "memory",
-  version: 1,
-  id: id(input.id, "defineMemory"),
-  description: String(input.description).trim(),
-  provider: input.provider || documentMemory(),
-});
 // The host resolves every session binding before the render and exposes the
 // projections on its render scope as scope.memory[id]; the hook returns one
 // and the host records the id in scope.selectedMemory, returned to it as
 // selectedMemory next to enabledTools. An unbound id fails the render here.
 export const useMemory = (memory) => {
-  const memoryId = id(typeof memory === "string" ? memory : memory && memory.id, "useMemory");
-  const projection = hooks().useMemory(memoryId);
-  if (!projection || typeof projection !== "object" || typeof projection.text !== "string" || !Array.isArray(projection.sources) || typeof projection.writable !== "boolean") {
-    throw new Error("Memory " + JSON.stringify(memoryId) + " is not bound to this session; create the session with a memory binding for it");
-  }
-  return projection;
+  const resource = memoryId(typeof memory === "string" ? memory : memory && memory.id, "useMemory");
+  return memoryProjection(resource, hooks().useMemory(resource));
 };
 export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
@@ -2504,7 +2480,7 @@ the product or support surface presented to users.
     }
   }
   for (const declaration of memory) {
-    const collision = memoryToolNames(declaration).find((name) =>
+    const collision = memoryToolNames(declaration.provider).find((name) =>
       tools.includes(name),
     );
     if (collision) {
