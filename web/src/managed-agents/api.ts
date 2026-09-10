@@ -550,6 +550,26 @@ const memoryDocumentPageSchema = z.object({
   nextCursor: z.string().nullable(),
 })
 
+// The environment's durable resource inventory. Storage outlives code, so a
+// resource stays listed while it holds documents after every deployment
+// stopped declaring it (`declared: false`).
+const memoryResourceSchema = z.object({
+  id: z.string(),
+  provider: z
+    .object({
+      kind: z.string().optional().default('document'),
+      maxBytes: z.number().optional(),
+    })
+    .optional()
+    .default({ kind: 'document' }),
+  declared: z.boolean(),
+  documents: z.number(),
+})
+
+const memoryResourceInventorySchema = z.object({
+  resources: z.array(memoryResourceSchema),
+})
+
 const projectOverviewSchema = z.object({
   project: projectSchema,
   templateSource: z
@@ -581,6 +601,7 @@ export type ManagedMemoryDeclaration = z.infer<typeof memoryDeclarationSchema>
 export type ManagedMemoryDocumentMeta = z.infer<typeof memoryDocumentMetaSchema>
 export type ManagedMemoryDocument = z.infer<typeof memoryDocumentSchema>
 export type ManagedMemoryDocumentPage = z.infer<typeof memoryDocumentPageSchema>
+export type ManagedMemoryResource = z.infer<typeof memoryResourceSchema>
 /** A document with the ETag the next conditional request must send back verbatim. */
 export type ManagedMemoryDocumentRead = {
   document: ManagedMemoryDocument
@@ -1278,11 +1299,26 @@ export async function getManagedAgentSession(sessionId: string) {
 
 export type ManagedMemoryEnvironment = 'development' | 'production'
 
-type MemoryDocumentTarget = {
+/** The complete address of one document; every read and write names it in full. */
+export type ManagedMemoryDocumentTarget = {
   projectId: string
   resource: string
   id: string
   environment: ManagedMemoryEnvironment
+}
+
+type MemoryDocumentTarget = ManagedMemoryDocumentTarget
+
+export async function getManagedMemoryResources(input: {
+  projectId: string
+  environment: ManagedMemoryEnvironment
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/memory?${query.toString()}`,
+    undefined,
+    memoryResourceInventorySchema,
+  )
 }
 
 function memoryDocumentsPath(input: {

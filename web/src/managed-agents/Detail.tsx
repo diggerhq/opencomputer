@@ -1179,6 +1179,8 @@ export default function ManagedAgentDetail({
           key={environment}
           projectId={project.project.id}
           environment={environment}
+          // One environment row per project agent: every member's active
+          // deployment there, for the declarations fallback.
           deploymentIds={[
             ...new Set(
               project.project.environments

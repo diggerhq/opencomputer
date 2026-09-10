@@ -1,30 +1,94 @@
+import { ApiError } from '@/api/client'
 import type {
   ManagedMemoryDeclaration,
   ManagedMemoryDocument,
   ManagedMemoryDocumentMeta,
   ManagedMemoryEnvironment,
+  ManagedMemoryResource,
 } from './api'
 
 /**
- * The memory resources an environment's active deployments declare, merged by
- * id. Agents of one project share a resource by id, so the first declaration
- * seen describes it; a resource the documents list knows but no deployment
- * declares is still reachable by typing its id.
+ * A resource of the environment as the owner sees it: from the durable
+ * inventory when the backend has it, else from deployment declarations, in
+ * which case undeclared resources and document counts are unknown.
  */
-export function declaredMemoryResources(
+export type MemoryResourceSummary = {
+  id: string
+  provider: { kind: string; maxBytes?: number }
+  declared: boolean
+  documents?: number
+}
+
+export type MemoryResourceListing = {
+  resources: MemoryResourceSummary[]
+  source: 'inventory' | 'declarations'
+}
+
+function byId(left: { id: string }, right: { id: string }) {
+  return left.id.localeCompare(right.id)
+}
+
+/**
+ * The memory resources an environment's active deployments declare, merged by
+ * id across every project member. Agents of one project share a resource by
+ * id, so the first declaration seen describes it.
+ */
+export function memoryResourcesFromDeclarations(
   deployments: ReadonlyArray<
     { memory: ManagedMemoryDeclaration[] } | undefined
   >,
-): ManagedMemoryDeclaration[] {
-  const byId = new Map<string, ManagedMemoryDeclaration>()
+): MemoryResourceSummary[] {
+  const byResource = new Map<string, MemoryResourceSummary>()
   for (const deployment of deployments) {
     for (const declaration of deployment?.memory ?? []) {
-      if (!byId.has(declaration.id)) byId.set(declaration.id, declaration)
+      if (byResource.has(declaration.id)) continue
+      byResource.set(declaration.id, {
+        id: declaration.id,
+        provider: declaration.provider,
+        declared: true,
+      })
     }
   }
-  return [...byId.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  )
+  return [...byResource.values()].sort(byId)
+}
+
+/**
+ * The environment's resources: the inventory route first, since it is the
+ * only complete list (a resource only a worker declares, or one nothing
+ * declares any more but that still holds documents); the declarations of
+ * every active project member when an older backend answers 404.
+ */
+export async function listMemoryResources(input: {
+  inventory: () => Promise<{ resources: ManagedMemoryResource[] }>
+  declarations: () => Promise<
+    ReadonlyArray<{ memory: ManagedMemoryDeclaration[] } | undefined>
+  >
+}): Promise<MemoryResourceListing> {
+  try {
+    const { resources } = await input.inventory()
+    return { resources: [...resources].sort(byId), source: 'inventory' }
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 404)) throw error
+  }
+  return {
+    resources: memoryResourcesFromDeclarations(await input.declarations()),
+    source: 'declarations',
+  }
+}
+
+/** The selector's right-aligned note: limit, then whether the resource is still declared and what it holds. */
+export function memoryResourceHint(resource: MemoryResourceSummary) {
+  return [
+    resource.declared ? undefined : 'not declared',
+    resource.provider.maxBytes !== undefined
+      ? formatMemoryBytes(resource.provider.maxBytes)
+      : undefined,
+    resource.documents !== undefined
+      ? `${resource.documents} ${resource.documents === 1 ? 'document' : 'documents'}`
+      : undefined,
+  ]
+    .filter((part) => part !== undefined)
+    .join(' · ')
 }
 
 /** A document larger than the resource's current limit must shrink on its next save. */
