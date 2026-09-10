@@ -607,7 +607,9 @@ export default function App() {
     event.preventDefault();
     const prompt = input;
     setInput("");
-    void send(prompt);
+    // send rejects when no turn was admitted; the hook shows the error and
+    // the draft comes back.
+    send(prompt).catch(() => setInput(prompt));
   }
 
   return (
@@ -621,7 +623,7 @@ export default function App() {
       <section className="chat" aria-label="Agent conversation">
         <div className="messages">
           {messages.length === 0 ? (
-            <button className="suggestion" onClick={() => void send("Say hello and tell me what you can do.")}>
+            <button className="suggestion" onClick={() => send("Say hello and tell me what you can do.").catch(() => undefined)}>
               Say hello and tell me what you can do →
             </button>
           ) : (

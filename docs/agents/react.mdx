@@ -101,6 +101,7 @@ envelope `{ error: { message } }`.
 ### 3. Attach in the browser
 
 ```tsx
+import { useState } from "react";
 import { useAgent } from "@opencomputer/react";
 
 export function WorkshopChat({ sessionId, onNotesChanged }: { sessionId: string; onNotesChanged: () => void }) {
@@ -109,6 +110,12 @@ export function WorkshopChat({ sessionId, onNotesChanged }: { sessionId: string;
     basePath: "/api/agent",
     onMemorySaved: onNotesChanged,
   });
+  const [draft, setDraft] = useState("");
+
+  async function submit() {
+    await send(draft); // rejects when no turn was admitted
+    setDraft(""); // clear only once the platform has the input
+  }
 
   return (
     <section>
@@ -118,7 +125,8 @@ export function WorkshopChat({ sessionId, onNotesChanged }: { sessionId: string;
           <strong>{message.role}:</strong> {message.text}
         </p>
       ))}
-      <button disabled={isRunning} onClick={() => void send("Book the venue")}>Send</button>
+      <input value={draft} onChange={(event) => setDraft(event.target.value)} />
+      <button onClick={() => submit().catch(() => undefined)}>Send</button>
       <button disabled={!isRunning} onClick={() => void stop()}>Stop</button>
       {error ? <p role="alert">{error}</p> : null}
     </section>
@@ -131,12 +139,41 @@ reduces it to messages, so a reopened page shows the conversation as it
 stands, including turns that ran while the tab was closed. It then keeps
 polling from its cursor. A failed poll sets `error`, backs off, and resumes
 from the same cursor; nothing is replayed twice, and `error` clears when the
-log answers again. Changing `sessionId` replays the new session.
+log answers again. Changing `sessionId` replays the new session; a `send`
+still in flight for the previous session settles for its caller but never
+changes what the new session shows.
 
-`send` starts a turn and shows the input at once; the log's own record of it
-confirms that message rather than adding a second one. Turns sent while one
-is running are queued by the platform. `stop` interrupts the running turn
-without spending a model turn.
+`after` is a position, not a snapshot: the hook applies only events after
+it, so messages and running state from before that position are not
+reconstructed. Pass `after` to skip history you have already rendered from
+your own store, otherwise start at `0`.
+
+Turns sent while one is running are queued by the platform. `stop`
+interrupts the running turn without spending a model turn.
+
+### What `send` returns
+
+`send(text)` resolves once the platform has admitted the input as a turn,
+with a receipt `{ sessionId, turnId, status }` where `status` is `queued`
+or `running`. The input appears in `messages` at that point; the log's own
+record of it confirms that message rather than adding a second one.
+`isRunning` is true from admission until the log settles the turn, and a
+reply that arrives after the log has already shown the turn completed
+changes nothing.
+
+`send` rejects with a `SendError` when no turn was admitted, so a composer
+can keep the draft:
+
+| `code` | Cause | `status` |
+| --- | --- | --- |
+| The platform's error code, for example `session_ended`, `memory_admission_unconfirmed` or `insufficient_credits` | The request was answered with an error | The HTTP status |
+| `network_error` | The request was not answered | none |
+| `empty_input` | The text was blank; nothing was sent | none |
+| `busy` | Create mode only: a turn is already running | none |
+
+The hook's `error` is set to the same message either way. A turn that fails
+after admission is not a rejection: the receipt was returned, the failure
+arrives through the log as a `turn.failed` event and sets `error`.
 
 The hook never suspends, resumes or ends an attached session. Its lifecycle
 belongs to the server that created it.
@@ -175,7 +212,7 @@ export default function Chat() {
       ))}
       <button
         disabled={isRunning}
-        onClick={() => void send("Hello")}
+        onClick={() => send("Hello").catch(() => undefined)}
       >
         Send
       </button>
@@ -186,8 +223,9 @@ export default function Chat() {
 }
 ```
 
-Each `send` resumes the session, streams one turn and suspends it again.
-Sessions created this way have no memory bindings.
+Each `send` resumes the session, streams one turn and suspends it again; the
+promise settles when the turn ends, with the same receipt and rejections as
+in attach mode. Sessions created this way have no memory bindings.
 
 Run the watched agent deployment and the web application separately:
 
@@ -205,10 +243,10 @@ the web application. Credentials are not bundled into browser code.
 | Value | Purpose |
 | --- | --- |
 | `messages` | User and assistant messages, in log order |
-| `send(text)` | Starts a turn; in create mode the first call creates the session |
+| `send(text)` | Starts a turn; resolves with `{ sessionId, turnId, status }` or rejects with a `SendError`. In create mode the first call creates the session |
 | `stop()` | Interrupts the running turn |
 | `sessionId` | The attached session, or the created one after the first send |
-| `isRunning` | Whether a turn is active |
+| `isRunning` | A turn is admitted and not yet settled by the log |
 | `isReplaying` | Attach mode: true until the existing history has been read |
 | `error` | The most recent request or turn failure |
 | `memorySaves` | `memory.saved` events seen so far |
@@ -222,7 +260,7 @@ the web application. Credentials are not bundled into browser code.
 | `agent` | Create mode: `agent-id@alias` |
 | `basePath` | Route prefix for the three routes; default `/api/opencomputer/managed-agents` |
 | `fetch` | A fetch implementation, for example one that adds a CSRF header |
-| `after` | Attach mode: replay from this cursor instead of the start |
+| `after` | Attach mode: apply only events after this position; earlier history is not reconstructed |
 | `pollIntervalMs` | Attach mode: interval between empty polls; default 1000, 500 while a turn runs |
 | `onEvent` | Every applied event, including replayed history |
 | `onMemorySaved` | Each `memory.saved` event |

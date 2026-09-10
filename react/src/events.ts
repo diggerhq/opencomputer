@@ -35,11 +35,20 @@ export interface MemorySave {
   bytes: number;
 }
 
+export type TurnStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export interface SessionTimeline {
   messages: AgentMessage[];
   memorySaves: MemorySave[];
   /** The highest `seq` applied so far. */
   cursor: number;
+  /** Every turn the log has recorded, by id, with its status as of the cursor. */
+  turns: Record<string, TurnStatus>;
   isRunning: boolean;
   ended: boolean;
 }
@@ -49,9 +58,19 @@ export function emptyTimeline(): SessionTimeline {
     messages: [],
     memorySaves: [],
     cursor: 0,
+    turns: {},
     isRunning: false,
     ended: false,
   };
+}
+
+/** Whether the log has settled the turn: completed, failed or cancelled. */
+export function isSettledTurn(
+  timeline: SessionTimeline,
+  turnId: string,
+): boolean {
+  const status = timeline.turns[turnId];
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 /** The id of the user message that starts a turn; `send` uses the same id, so the event upserts it. */
@@ -112,10 +131,16 @@ export function applyEvent(
         text: text(data.input),
         ...(event.turnId ? { turnId: event.turnId } : {}),
       });
+      if (event.turnId && !timeline.turns[event.turnId]) {
+        next.turns = { ...timeline.turns, [event.turnId]: "queued" };
+      }
       return next;
     }
     case "turn.started":
       next.isRunning = true;
+      if (event.turnId) {
+        next.turns = { ...timeline.turns, [event.turnId]: "running" };
+      }
       return next;
     case "message.delta": {
       const id = replyMessageId(event);
@@ -143,6 +168,17 @@ export function applyEvent(
     case "turn.failed":
     case "turn.cancelled":
       next.isRunning = false;
+      if (event.turnId) {
+        next.turns = {
+          ...timeline.turns,
+          [event.turnId]:
+            event.type === "turn.completed"
+              ? "completed"
+              : event.type === "turn.failed"
+                ? "failed"
+                : "cancelled",
+        };
+      }
       next.messages = timeline.messages.map((message) =>
         message.streaming && message.turnId === event.turnId
           ? { ...message, streaming: false }

@@ -6,6 +6,7 @@ import {
   emptyTimeline,
   failureMessage,
   inputMessageId,
+  isSettledTurn,
   memorySaveFromEvent,
   type AgentEvent,
 } from "./events.js";
@@ -27,8 +28,12 @@ const turn: AgentEvent[] = [
 ];
 
 test("a turn reduces to one user and one assistant message", () => {
+  const queued = applyEvents(emptyTimeline(), turn.slice(0, 1));
+  assert.deepEqual(queued.turns, { t1: "queued" });
+  assert.equal(isSettledTurn(queued, "t1"), false);
   const partial = applyEvents(emptyTimeline(), turn.slice(0, 4));
   assert.equal(partial.isRunning, true);
+  assert.deepEqual(partial.turns, { t1: "running" });
   assert.deepEqual(partial.messages, [
     { id: inputMessageId("t1"), role: "user", text: "hi", turnId: "t1" },
     { id: "turn:t1:reply", role: "assistant", text: "hello", turnId: "t1", streaming: true },
@@ -37,6 +42,9 @@ test("a turn reduces to one user and one assistant message", () => {
   const complete = applyEvents(partial, turn.slice(4));
   assert.equal(complete.isRunning, false);
   assert.equal(complete.cursor, 7);
+  assert.deepEqual(complete.turns, { t1: "completed" });
+  assert.equal(isSettledTurn(complete, "t1"), true);
+  assert.equal(isSettledTurn(complete, "t2"), false);
   assert.deepEqual(complete.messages, [
     { id: inputMessageId("t1"), role: "user", text: "hi", turnId: "t1" },
     { id: "turn:t1:reply", role: "assistant", text: "hello", turnId: "t1", streaming: false },

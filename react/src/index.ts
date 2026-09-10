@@ -4,6 +4,7 @@ import {
   emptyTimeline,
   failureMessage,
   inputMessageId,
+  isSettledTurn,
   memorySaveFromEvent,
   type AgentEvent,
   type AgentMessage,
@@ -15,10 +16,12 @@ export {
   applyEvent,
   applyEvents,
   emptyTimeline,
+  isSettledTurn,
   type AgentEvent,
   type AgentMessage,
   type MemorySave,
   type SessionTimeline,
+  type TurnStatus,
 } from "./events.js";
 
 interface CommonOptions {
@@ -59,13 +62,46 @@ export interface AttachAgentOptions extends CommonOptions {
 
 export type UseAgentOptions = CreateAgentOptions | AttachAgentOptions;
 
+/** What `send` resolves with: the platform admitted the input as a turn. */
+export interface SendReceipt {
+  sessionId: string;
+  turnId: string;
+  /** `queued` behind earlier turns, or `running` at once. */
+  status: "queued" | "running";
+}
+
+/**
+ * What `send` rejects with. `code` is the platform's error code when the
+ * request was answered (`session_ended`, `memory_admission_unconfirmed`,
+ * `insufficient_credits`), `network_error` when it was not, `empty_input`
+ * and `busy` when nothing was sent. `status` is the HTTP status when there
+ * was one. The hook's `error` is set to the same message.
+ */
+export class SendError extends Error {
+  readonly code: string;
+  readonly status: number | undefined;
+
+  constructor(message: string, code: string, status?: number) {
+    super(message);
+    this.name = "SendError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export interface UseAgentResult {
   messages: AgentMessage[];
-  /** Starts a turn. In create mode the first call creates the session. */
-  send: (value: string) => Promise<void>;
+  /**
+   * Starts a turn. Resolves with the admission receipt; rejects with a
+   * `SendError` when no turn was admitted, so a draft can be kept. In create
+   * mode the first call creates the session and the promise settles when the
+   * turn ends.
+   */
+  send: (value: string) => Promise<SendReceipt>;
   /** Interrupts the running turn. */
   stop: () => Promise<void>;
   sessionId: string | undefined;
+  /** A turn is admitted and not yet settled by the log. */
   isRunning: boolean;
   /** Attach mode: true until the existing history has been replayed. */
   isReplaying: boolean;
@@ -105,6 +141,19 @@ function upsert(
   return next;
 }
 
+function asSendError(cause: unknown): SendError {
+  if (cause instanceof SendError) return cause;
+  return new SendError(
+    cause instanceof Error ? cause.message : String(cause),
+    "network_error",
+  );
+}
+
+interface TurnAdmission {
+  turnId: string;
+  status: "queued" | "running";
+}
+
 export function useAgent(
   agentOrOptions: string | UseAgentOptions,
 ): UseAgentResult {
@@ -124,13 +173,25 @@ export function useAgent(
     attachedSessionId,
   );
   const sessionRef = useRef<string | undefined>(attachedSessionId);
+  // Bumped by every attach, so work started against an earlier attachment
+  // of the same session id is fenced too.
+  const attachmentRef = useRef(0);
   const cursorRef = useRef(0);
   const [isReplaying, setIsReplaying] = useState(Boolean(attachedSessionId));
   const [error, setError] = useState<string>();
+  // Admission state, apart from the log: turns the platform admitted whose
+  // settlement the log has not shown yet. The log's word wins as soon as it
+  // arrives, and an admission the log already settled never counts.
+  const [admitted, setAdmitted] = useState<string[]>([]);
 
   const commit = useCallback((next: SessionTimeline) => {
     timelineRef.current = next;
     setTimeline(next);
+    setAdmitted((current) =>
+      current.some((turnId) => isSettledTurn(next, turnId))
+        ? current.filter((turnId) => !isSettledTurn(next, turnId))
+        : current,
+    );
   }, []);
 
   const request = useCallback(
@@ -143,13 +204,22 @@ export function useAgent(
       const body: unknown =
         response.status === 204 ? undefined : await response.json();
       if (!response.ok) {
-        const problem = body as { error?: { message?: string } | string };
+        const problem = body as {
+          error?: { code?: string; message?: string } | string;
+        };
         const message =
           typeof problem?.error === "string"
             ? problem.error
             : problem?.error?.message;
-        throw new Error(
+        const code =
+          typeof problem?.error === "object" &&
+          typeof problem.error?.code === "string"
+            ? problem.error.code
+            : "request_failed";
+        throw new SendError(
           message ?? `Agent request failed (${String(response.status)})`,
+          code,
+          response.status,
         );
       }
       return body as T;
@@ -190,10 +260,12 @@ export function useAgent(
     if (!attachedSessionId) return;
     const controller = new AbortController();
     const { signal } = controller;
+    attachmentRef.current += 1;
     sessionRef.current = attachedSessionId;
     setSessionId(attachedSessionId);
     setError(undefined);
     setIsReplaying(true);
+    setAdmitted([]);
     cursorRef.current = after;
     commit({ ...emptyTimeline(), cursor: after });
     void (async () => {
@@ -229,43 +301,77 @@ export function useAgent(
     };
   }, [attachedSessionId, after, basePath, commit, ingest, request]);
 
+  const admitTurn = useCallback(
+    async (activeSession: string, prompt: string): Promise<SendReceipt> => {
+      const admission = await request<TurnAdmission>(
+        `/sessions/${encodeURIComponent(activeSession)}/turns`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            input: prompt,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        },
+      );
+      return {
+        sessionId: activeSession,
+        turnId: admission.turnId,
+        status: admission.status === "running" ? "running" : "queued",
+      };
+    },
+    [request],
+  );
+
   const sendAttached = useCallback(
-    async (activeSession: string, prompt: string) => {
+    async (activeSession: string, prompt: string): Promise<SendReceipt> => {
+      // The target is fixed here. Whatever the hook is attached to when the
+      // response arrives, this response belongs to that session and that
+      // attachment only; if they have changed, the caller still gets the
+      // outcome and the hook's state stays with the current session.
+      const attachment = attachmentRef.current;
+      const current = () =>
+        sessionRef.current === activeSession &&
+        attachmentRef.current === attachment;
       setError(undefined);
       try {
-        const result = await request<{ turnId: string }>(
-          `/sessions/${encodeURIComponent(activeSession)}/turns`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              input: prompt,
-              idempotencyKey: crypto.randomUUID(),
+        const receipt = await admitTurn(activeSession, prompt);
+        if (current()) {
+          // The log's message.received for this turn carries the same id,
+          // so it confirms this message instead of duplicating it. Whether
+          // the turn is still running is the log's call, not this reply's.
+          const timeline = timelineRef.current;
+          commit({
+            ...timeline,
+            messages: upsert(timeline.messages, {
+              id: inputMessageId(receipt.turnId),
+              role: "user",
+              text: prompt,
+              turnId: receipt.turnId,
             }),
-          },
-        );
-        // The log's message.received for this turn carries the same id, so
-        // it confirms this message instead of duplicating it.
-        const current = timelineRef.current;
-        commit({
-          ...current,
-          isRunning: true,
-          messages: upsert(current.messages, {
-            id: inputMessageId(result.turnId),
-            role: "user",
-            text: prompt,
-            turnId: result.turnId,
-          }),
-        });
+          });
+          if (!isSettledTurn(timelineRef.current, receipt.turnId)) {
+            setAdmitted((pending) =>
+              pending.includes(receipt.turnId)
+                ? pending
+                : [...pending, receipt.turnId],
+            );
+          }
+        }
+        return receipt;
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const failure = asSendError(cause);
+        if (current()) setError(failure.message);
+        throw failure;
       }
     },
-    [commit, request],
+    [admitTurn, commit],
   );
 
   const sendCreated = useCallback(
-    async (prompt: string) => {
-      if (timelineRef.current.isRunning) return;
+    async (prompt: string): Promise<SendReceipt> => {
+      if (timelineRef.current.isRunning) {
+        throw new SendError("A turn is already running.", "busy");
+      }
       const userMessage: AgentMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -288,6 +394,7 @@ export function useAgent(
         { isRunning: true },
       );
       setError(undefined);
+      let receipt: SendReceipt | undefined;
       try {
         let activeSession = sessionRef.current;
         if (!activeSession) {
@@ -358,13 +465,7 @@ export function useAgent(
           }
         };
         await waitFor((event) => event.type === "runtime.connected");
-        await request(`/sessions/${encodeURIComponent(activeSession)}/turns`, {
-          method: "POST",
-          body: JSON.stringify({
-            input: prompt,
-            idempotencyKey: crypto.randomUUID(),
-          }),
-        });
+        receipt = await admitTurn(activeSession, prompt);
         const completed = await waitFor(
           (event) =>
             event.type === "turn.completed" ||
@@ -383,6 +484,18 @@ export function useAgent(
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         setError(message);
+        if (!receipt) {
+          // Nothing was admitted: the input was never sent, so it is not
+          // part of the conversation, and the caller keeps it.
+          updateMessages(
+            (current) =>
+              current.filter(
+                (item) => item.id !== userMessage.id && item.id !== assistantId,
+              ),
+            { isRunning: false },
+          );
+          throw asSendError(cause);
+        }
         updateMessages((current) =>
           current.map((item) =>
             item.id === assistantId && !item.text
@@ -397,16 +510,19 @@ export function useAgent(
           isRunning: false,
         });
       }
+      if (!receipt) throw new SendError("No turn was admitted.", "busy");
+      return receipt;
     },
-    [commit, request],
+    [admitTurn, commit, request],
   );
 
   const send = useCallback(
-    async (value: string) => {
+    async (value: string): Promise<SendReceipt> => {
       const prompt = value.trim();
-      if (!prompt) return;
-      if (attachedSessionId) await sendAttached(attachedSessionId, prompt);
-      else await sendCreated(prompt);
+      if (!prompt) throw new SendError("Nothing to send.", "empty_input");
+      return attachedSessionId
+        ? sendAttached(attachedSessionId, prompt)
+        : sendCreated(prompt);
     },
     [attachedSessionId, sendAttached, sendCreated],
   );
@@ -429,7 +545,7 @@ export function useAgent(
     send,
     stop,
     sessionId,
-    isRunning: timeline.isRunning,
+    isRunning: timeline.isRunning || admitted.length > 0,
     isReplaying,
     error,
     memorySaves: timeline.memorySaves,
