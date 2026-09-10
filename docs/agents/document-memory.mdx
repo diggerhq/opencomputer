@@ -20,9 +20,9 @@ For a complete example, start with [Memory](/agents/memory).
 ```ts
 import { defineMemory, documentMemory } from "@opencomputer/agent";
 
-export const notes = defineMemory({
-  id: "notes",
-  description: "Save verified requirements and decisions for later work.",
+export const requirements = defineMemory({
+  id: "requirements",
+  description: "Verified requirements and decisions for a workshop, kept for later work.",
   provider: documentMemory({ maxBytes: 8_192 }),
 });
 ```
@@ -30,7 +30,7 @@ export const notes = defineMemory({
 | Field | Meaning |
 | --- | --- |
 | `id` | Application-defined resource name. The same ID in agents of one project refers to the same resource. |
-| `description` | Model-facing guidance included in the generated save tool's description. |
+| `description` | Model-facing guidance. It appears in the `memory_save` tool's description for this resource. |
 | `provider` | Storage and recall behavior. Defaults to `documentMemory()`. |
 | `maxBytes` | Maximum UTF-8 size of each document's `text`, including owner writes. Default 8,192; maximum 16,384. |
 
@@ -51,15 +51,20 @@ use a new resource and migrate the data explicitly.
 
 ## Session bindings
 
-These are values for the `memory.notes` field when creating a session. Here
-`notes` is a resource name and `workshop` is a document ID, both chosen by the
-application.
+These are values for the `memory.requirements` field when creating a session.
+Here `requirements` is a resource name and `workshop` is a document ID, both
+chosen by the application.
 
-| Binding | `useMemory(notes).text` | Model tools |
+| Binding | `useMemory(requirements).text` | Model tools |
 | --- | --- | --- |
 | `{ "scope": "document", "id": "workshop", "access": "read" }` | Full document text. | None. |
-| `{ "scope": "document", "id": "workshop", "access": "read-write" }` | Full document text. | `notes_save`. |
-| `{ "scope": "collection", "access": "read" }` | Document IDs, titles and summaries, newest updates first. | `notes_list`, `notes_read`. |
+| `{ "scope": "document", "id": "workshop", "access": "read-write" }` | Full document text. | `memory_save`. |
+| `{ "scope": "collection", "access": "read" }` | Document IDs, titles and summaries, newest updates first. | `memory_list`, `memory_read`. |
+
+The tools have fixed names. Each takes an optional `memory` argument naming
+the resource; it is required only when more than one bound resource offers
+that tool with the needed access. The tool description lists the bound
+resources with the descriptions from their declarations.
 
 Access defaults to `read`. Collection-wide writes are not supported. The
 resource must be declared by the session's deployment, and a document binding
@@ -72,7 +77,7 @@ Bindings remain fixed for the session. Session inspection returns them as
 ```json
 {
   "memory": [
-    { "resource": "notes", "scope": "document", "id": "workshop", "access": "read-write", "writable": true }
+    { "resource": "requirements", "scope": "document", "id": "workshop", "access": "read-write", "writable": true }
   ]
 }
 ```
@@ -109,23 +114,24 @@ A collection overview contains up to 50 recent documents, fitting whole entries
 within 16 KiB of UTF-8 text, one document per line in this fixed form:
 
 ```text
-workshop | Workshop notes | Node.js 22, no paid services. | 2026-09-10
+workshop | Workshop requirements | Node.js 22, no paid services. | 2026-09-10
 budget | Conference budget | Q4 figures in EUR, hotel refund excluded. | 2026-09-09
 ```
 
 The fields are the document ID, its title, its summary (empty when none) and
 the date of its last update. The overview does not include full text. The
-model can open a document with `notes_read`:
+model can open a document with `memory_read`:
 
 ```json
-{ "id": "workshop" }
+{ "memory": "requirements", "id": "workshop" }
 ```
 
-To discover older documents, it calls `notes_list` with `{}` for the first page,
-then passes the returned `nextCursor` as `cursor` for subsequent pages:
+To discover older documents, it calls `memory_list` with `{ "memory":
+"requirements" }` for the first page, then passes the returned `nextCursor` as
+`cursor` for subsequent pages:
 
 ```json
-{ "cursor": "<nextCursor>" }
+{ "memory": "requirements", "cursor": "<nextCursor>" }
 ```
 
 List results contain document IDs, titles, summaries and revisions. The cursor
@@ -134,11 +140,11 @@ more results. Reads and lists can only reach documents covered by the binding.
 
 ## Saving
 
-A read-write document binding exposes `<resource>_save`. For `notes`, the model
-calls `notes_save` with:
+A read-write document binding lets the model call `memory_save`:
 
 ```json
 {
+  "memory": "requirements",
   "text": "Exercises must run on Node.js 22 and require no paid services.",
   "summary": "Workshop runtime and service requirements."
 }
@@ -158,6 +164,7 @@ The tool result is structured, so instructions can branch on it:
 | `{ "status": "rejected", "reason": "agent_writes_disabled" }` | The owner has frozen the document. |
 | `{ "status": "rejected", "reason": "too_large", "bytes": 9000, "maxBytes": 8192 }` | The text does not fit the resource limit. |
 | `{ "status": "rejected", "reason": "not_found" }` | The document was deleted. |
+| `{ "status": "rejected", "reason": "not_bound", "bound": ["requirements"] }` | `memory` named a resource this session cannot write; the result lists what it can. |
 
 A conflict or rejection is a result, not a tool error: the turn continues and
 the model decides what to do. Every committed save is also recorded in the
@@ -199,7 +206,7 @@ accept `--json` and print the same fields as the management API.
 Open the `workshop` document in your editor and save the replacement:
 
 ```bash
-npx --package @opencomputer/cli opencomputer memory edit notes workshop \
+npx --package @opencomputer/cli opencomputer memory edit requirements workshop \
   --environment development
 ```
 
@@ -211,7 +218,7 @@ the newer version.
 Freeze the document while retaining its content and read access:
 
 ```bash
-npx --package @opencomputer/cli opencomputer memory freeze notes workshop \
+npx --package @opencomputer/cli opencomputer memory freeze requirements workshop \
   --environment development
 ```
 
@@ -222,7 +229,7 @@ agent reads continue. Saves committed before the policy change remain saved.
 Re-enable agent writes with:
 
 ```bash
-npx --package @opencomputer/cli opencomputer memory unfreeze notes workshop \
+npx --package @opencomputer/cli opencomputer memory unfreeze requirements workshop \
   --environment development
 ```
 
@@ -257,7 +264,7 @@ can appear at different points in the export; it is not a project-wide snapshot.
 Remove the saved text and summary:
 
 ```bash
-npx --package @opencomputer/cli opencomputer memory remove notes workshop \
+npx --package @opencomputer/cli opencomputer memory remove requirements workshop \
   --environment development
 ```
 
@@ -294,12 +301,12 @@ Create accepts `title`, `text`, optional `summary` (default `""`) and optional
 CLI create command; running both for the same ID returns a precondition error:
 
 ```bash
-curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/memory/notes/documents/workshop?environment=development' \
+curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/memory/requirements/documents/workshop?environment=development' \
   -H 'x-api-key: <api-key>' \
   -H 'Content-Type: application/json' \
   -H 'If-None-Match: *' \
   -d '{
-    "title": "Workshop notes",
+    "title": "Workshop requirements",
     "text": "Exercises must run on Node.js 22.",
     "summary": "Workshop runtime requirements."
   }'
@@ -319,7 +326,7 @@ For example, a successful read returns `200 OK`, an `ETag` header, and:
 ```json
 {
   "id": "workshop",
-  "title": "Workshop notes",
+  "title": "Workshop requirements",
   "text": "Exercises must run on Node.js 22.",
   "summary": "Workshop runtime requirements.",
   "agentWrites": "enabled",

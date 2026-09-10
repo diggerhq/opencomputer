@@ -82,7 +82,7 @@ blocks the request, even if the render would omit that resource. Calling
 `useMemory(knowledge)` returns its projection (`text`, `sources`, `writable`)
 and selects the permitted generated tools for that model request. For an HTTP
 provider `writable` reflects the binding's access; the provider has no
-document-level write policy. The example exposes `knowledge_remember` only
+document-level write policy. The example exposes `memory_remember` only
 to read-write bindings. Read-only bindings still receive recall and tools
 declared with `access: "read"`. Omitting the hook exposes none of its tools.
 
@@ -150,8 +150,13 @@ at most eight tools are allowed per resource. Each requires a description,
 `$ref`). The `input` field follows the same convention as
 [code tools](/agents/tools). OpenComputer validates model arguments before
 calling the endpoint.
-The generated `<resource>_<tool>` name must fit in 64 characters and be unique
-among the deployment's tools; conflicting names fail deployment.
+The model sees the tool as `memory_<tool>`, here `memory_remember`, with the
+same optional `memory` argument as the built-in tools naming the resource.
+Two bound resources may declare the same tool name only with an identical
+input schema, in which case the model sees one tool and `memory` selects the
+target; a session that binds resources declaring the same name with different
+schemas is rejected at creation. `memory` is stripped before the call reaches
+the endpoint; the endpoint receives the partition instead.
 
 ```json
 {
