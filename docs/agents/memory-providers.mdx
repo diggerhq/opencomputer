@@ -35,6 +35,7 @@ export const knowledge = defineMemory({
       name: "remember",
       description: "Save a verified fact for future work.",
       access: "write",
+      idempotent: false,
       input: {
         type: "object",
         properties: { fact: { type: "string", maxLength: 2_000 } },
@@ -187,21 +188,27 @@ model response therefore receive the same cursor.
 
 ## Failures and retries
 
-Each operation has a ten-second deadline covering all attempts. OpenComputer
-retries transport failures, HTTP 408, 429 and 5xx at most twice, using the same
-operation ID and request body. Delays are 250 ms and one second; a valid
-`Retry-After` takes precedence when it fits the deadline. Other 4xx responses
-are not retried. Errors use the envelope above; `details` is optional.
+Each operation has a ten-second deadline covering all attempts. Recall and
+read tools are retried on transport failures, HTTP 408, 429 and 5xx at most
+twice, using the same operation ID and request body. Delays are 250 ms and one
+second; a valid `Retry-After` takes precedence when it fits the deadline.
+Other 4xx responses are not retried. Errors use the envelope above; `details`
+is optional.
 
-Tool operation IDs identify individual calls, not whole turns. A provider
-with write tools must deduplicate `(partition, operationId)`, reject reuse
-with a different tool, arguments or cursor, and retain the original result at
-least until `deadlineAt`. Concurrent duplicates must share the same operation.
-Commit the write and its receipt atomically, or use equivalent deduplication
-in the storage service. OpenComputer never retries after the original deadline.
-Reject new operations past that deadline even if a receipt has been removed.
-A timeout does not prove a write failed; subsequent inspection or recall may
-show its result.
+Write tools are retried only when declared `idempotent: true`. Declare that
+only if your endpoint deduplicates `(partition, operationId)`, rejects reuse
+with a different tool, arguments or cursor, and returns the original result
+for a duplicate until `deadlineAt`. Many upstream services cannot promise
+this through a thin adapter: some answer writes with a pending status and
+some create duplicates on resubmission. For a tool declared
+`idempotent: false` (the default), a transport failure or timeout is not
+retried; the model receives `{ "status": "uncertain" }` and the next request
+recalls current state. A timeout never proves a write failed.
+
+A write result reports what the provider can vouch for: `{ "status":
+"stored" }` when the data is available to recall, `{ "status": "accepted" }`
+when the endpoint has queued it upstream and recall may lag. Return the one
+that is true; OpenComputer passes it to the model unchanged.
 
 Requests and responses are limited to 64 KiB each. A response may contain up
 to 100 sources; IDs and cursors are limited to 1,024 UTF-8 bytes each. Invalid

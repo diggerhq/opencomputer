@@ -36,10 +36,13 @@ export const requirements = defineMemory({
 
 Development and Production have separate documents, even when resource and
 document IDs match. Definitions sharing an ID within one deployment must agree
-on the provider and its configuration. The deployment selected for an
-environment sets its shared resource limit. That limit applies to writes made
-after the deployment is selected, from all sessions, including sessions whose
-agent code is pinned to an older deployment.
+on the provider and its configuration. The deployment promoted to an
+environment sets its shared resource limit. Promotion applies the memory
+configuration just before it selects the code, so the limit governs writes
+from that moment, from all sessions, including sessions whose agent code is
+pinned to an older deployment. A promotion that applies its configuration and
+then fails to select the code leaves the configuration in force; re-run the
+promotion or promote another deployment.
 
 `maxBytes` is a rule for future writes, not a check on stored data. Lowering
 it never fails a deployment and never truncates a document. A document that
@@ -63,8 +66,11 @@ chosen by the application.
 
 The tools have fixed names. Each takes an optional `memory` argument naming
 the resource; it is required only when more than one bound resource offers
-that tool with the needed access. The tool description lists the bound
-resources with the descriptions from their declarations.
+that tool with the needed access. It resolves against the resources the
+render that produced the call selected with `useMemory()`, not against every
+binding the session holds. The tool description lists those resources with
+the descriptions from their declarations. `memory` is a reserved argument
+name; provider tool schemas may not declare it.
 
 Access defaults to `read`. Collection-wide writes are not supported. The
 resource must be declared by the session's deployment, and a document binding
@@ -167,10 +173,13 @@ The tool result is structured, so instructions can branch on it:
 | `{ "status": "rejected", "reason": "not_bound", "bound": ["requirements"] }` | `memory` named a resource this session cannot write; the result lists what it can. |
 
 A conflict or rejection is a result, not a tool error: the turn continues and
-the model decides what to do. Every committed save is also recorded in the
-session's event log as `memory.saved` with `resource`, `documentId`,
-`revision` and `bytes`, so an application can refresh its view of the notes
-without polling the document or parsing tool results.
+the model decides what to do. When the session observes a successful save it
+records a `memory.saved` event with `resource`, `documentId`, `revision` and
+`bytes`, so an application can refresh its view of the notes without parsing
+tool results. The event is a notification of observed success, not a
+guaranteed change feed: a save whose reply was lost is durable without an
+event. Refresh documents from the API when attaching to a session, after a
+reconnect and when work completes.
 
 There is no automatic extraction at turn end or compaction, and no separate
 read tool for a document binding: the next render reads the document.
