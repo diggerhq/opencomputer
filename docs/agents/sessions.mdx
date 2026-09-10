@@ -56,6 +56,13 @@ npm run session -- send <session-id> "Continue"
 npm run session -- end <session-id>
 ```
 
+Bind [memory](/agents/memory) documents when creating a session; add
+`--create-document` to create the ones that do not exist yet:
+
+```bash
+npm run session -- create --memory notes=workshop --create-document "Plan the workshop"
+```
+
 Follow the durable event log directly. With `--json`, each event is one NDJSON
 record suitable for a coding agent or log processor:
 

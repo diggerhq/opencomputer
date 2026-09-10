@@ -87,6 +87,56 @@ for read-only bindings, frozen/deleted documents and ended sessions.
 Reusing a session-create `Idempotency-Key` requires identical agent, deployment,
 environment and bindings; incompatible inputs return `409 conflict`.
 
+### Start a session on a new document
+
+A document and a session are separate objects: the document is owner data
+with its own lifetime, the binding is that session's admission to it, and
+neither is created as a side effect of the other. Opening a topic in an
+application still means "these notes, this session", so the SDK and the CLI
+do the two steps in order and make the pair converge on retry.
+
+```ts
+import { startSessionOnDocument } from "@opencomputer/sdk";
+
+const { document, session } = await startSessionOnDocument({
+  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+  projectId: "<project-id>",
+  environment: "development",
+  agent: "<agent-id>",
+  resource: "notes",
+  documentId: "workshop",
+  document: { title: "Workshop notes" },
+  idempotencyKey: "topic/workshop/1",
+});
+// document.created and session.created are false when they already existed.
+```
+
+- The document is created with `If-None-Match: *`. An existing document is
+  left as it is; `document` is ignored then. A deleted id is reserved and
+  fails before any session is created.
+- The session is created with an `Idempotency-Key` derived from
+  `idempotencyKey`. The same key with the same agent, deployment, environment
+  and bindings returns the existing session; anything else under that key is
+  a conflict error naming the cause. `access` (default `read-write`),
+  `memory` for further bindings and `source` are passed through.
+
+The CLI does the same for a Development session:
+
+```bash
+opencomputer session create --memory notes=workshop --create-document --idempotency-key topic/workshop/1
+```
+
+`--memory <resource>=<documentId>[:read|read-write]` binds a document
+(read-write by default); `--memory <resource>` binds a collection.
+`--create-document` creates each bound document that does not exist yet,
+titled after its id, and reports it as created or existing. Add a prompt to
+run the first turn at once, and `--json` for the ids.
+
+Over HTTP, send `PUT .../documents/<id>` with `If-None-Match: *`, treat `412`
+as "exists" (then `GET` it; `404` means the id was deleted), and `POST
+/api/managed-agents/sessions` with an `Idempotency-Key`; `201` created the
+session, `200` returned the one that key had already created.
+
 ## Reading
 
 The hook is synchronous; pass the definition or its ID:

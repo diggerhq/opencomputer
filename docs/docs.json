@@ -40,6 +40,7 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
+              "agents/react",
               "agents/memory",
               "agents/schedules",
               "agents/webhooks",
