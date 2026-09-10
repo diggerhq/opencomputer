@@ -215,6 +215,103 @@ function strings(value: unknown): string[] {
     : [];
 }
 
+// Project memory (docs/agents/document-memory.mdx, "Management API"). The
+// backend mirrors the public routes one-to-one, so the edge passes the
+// documented bodies, status codes, error envelope and the conditional
+// headers (`ETag`, `If-Match`, `If-None-Match`) through untouched.
+const MEMORY_DOCUMENTS_ROUTE = /^\/projects\/[^/]+\/memory\/[^/]+\/documents$/;
+const MEMORY_DOCUMENT_ROUTE =
+  /^\/projects\/[^/]+\/memory\/[^/]+\/documents\/[^/]+$/;
+const MEMORY_CONDITIONAL_REQUEST_HEADERS = ["if-match", "if-none-match"];
+
+function isMemoryRoute(method: string, suffix: string): boolean {
+  if (method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)) return true;
+  return (
+    (method === "GET" ||
+      method === "PUT" ||
+      method === "PATCH" ||
+      method === "DELETE") &&
+    MEMORY_DOCUMENT_ROUTE.test(suffix)
+  );
+}
+
+function publicMemoryWriter(value: unknown): Record<string, unknown> {
+  const writer = record(value) ?? {};
+  return writer.kind === "agent"
+    ? { kind: "agent", sessionId: writer.sessionId }
+    : { kind: "owner" };
+}
+
+function publicMemoryDocumentMeta(value: unknown): Record<string, unknown> {
+  const document = record(value) ?? {};
+  return {
+    id: document.id,
+    title: document.title,
+    summary: document.summary,
+    agentWrites: document.agentWrites,
+    revision: document.revision,
+    bytes: document.bytes,
+    maxBytes: document.maxBytes,
+    updatedAt: document.updatedAt,
+    writer: publicMemoryWriter(document.writer),
+  };
+}
+
+function publicMemoryDocument(value: unknown): Record<string, unknown> {
+  const document = record(value) ?? {};
+  return { ...publicMemoryDocumentMeta(document), text: document.text };
+}
+
+// Memory errors are the documented `{ error: { code, message } }` envelope
+// with user-facing messages (stale revision, oversized text, missing
+// condition header), so client errors pass through as the backend wrote them.
+// Server errors keep the generic redaction every other route gets.
+async function memoryResponse(
+  upstream: Response,
+  method: string,
+  suffix: string,
+): Promise<Response> {
+  const headers = new Headers({ "cache-control": "no-store" });
+  const etag = upstream.headers.get("etag");
+  if (etag) headers.set("etag", etag);
+  if (upstream.status === 204 || upstream.status === 304) {
+    return new Response(null, { status: upstream.status, headers });
+  }
+  if (!upstream.ok) {
+    if (upstream.status >= 500) return publicErrorResponse(upstream);
+    const body = record(await upstream.clone().json().catch(() => null));
+    const error = record(body?.error);
+    const code =
+      typeof error?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+        ? error.code
+        : null;
+    const message =
+      typeof error?.message === "string" ? error.message.slice(0, 1_000) : null;
+    if (!code || message === null) return publicErrorResponse(upstream);
+    headers.set("content-type", "application/json");
+    return new Response(JSON.stringify({ error: { code, message } }), {
+      status: upstream.status,
+      headers,
+    });
+  }
+  const body = record(await upstream.json().catch(() => null)) ?? {};
+  headers.set("content-type", "application/json");
+  const value =
+    method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+      ? {
+          documents: Array.isArray(body.documents)
+            ? body.documents.map(publicMemoryDocumentMeta)
+            : [],
+          nextCursor:
+            typeof body.nextCursor === "string" ? body.nextCursor : null,
+        }
+      : publicMemoryDocument(body);
+  return new Response(JSON.stringify(value), {
+    status: upstream.status,
+    headers,
+  });
+}
+
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
   return {
@@ -1162,6 +1259,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   ) {
     return true;
   }
+  if (isMemoryRoute(method, suffix)) return true;
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
@@ -1609,6 +1707,13 @@ export async function proxyManagedAgents(
     );
   }
   const headers = copyRequestHeaders(request);
+  const memoryRoute = isMemoryRoute(method, suffix);
+  if (memoryRoute) {
+    for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+  }
   headers.set(
     "x-opencomputer-agent-token",
     await mintManagedAgentsAssertion(env.OC_MANAGED_AGENTS_SECRET, caller),
@@ -1640,6 +1745,7 @@ export async function proxyManagedAgents(
   }
   try {
     const upstream = await fetch(target, init);
+    if (memoryRoute) return memoryResponse(upstream, method, suffix);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
