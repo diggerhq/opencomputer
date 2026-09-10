@@ -2177,4 +2177,87 @@ describe("managed agents proxy", () => {
     ]);
     expect(body).not.toHaveProperty("runtimeToken");
   });
+  // The resource inventory (C9) is the durable list of an environment's
+  // resources: a resource no active deployment declares any more still
+  // appears while it holds documents.
+  it("lists the memory resource inventory with declared flags and document counts", async () => {
+    const fetchSpy = vi.fn(async (target: RequestInfo | URL) => {
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/projects/prj_1/memory?environment=production",
+      );
+      return Response.json({
+        resources: [
+          {
+            id: "requirements",
+            provider: { kind: "document", maxBytes: 8192, bucket: "private" },
+            declared: true,
+            documents: 3,
+            accountId: "acc_private",
+          },
+          {
+            id: "scratch",
+            provider: { kind: "document", maxBytes: 4096 },
+            declared: false,
+            documents: 2,
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory?environment=production",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      resources: [
+        {
+          id: "requirements",
+          provider: { kind: "document", maxBytes: 8192 },
+          declared: true,
+          documents: 3,
+        },
+        {
+          id: "scratch",
+          provider: { kind: "document", maxBytes: 4096 },
+          declared: false,
+          documents: 2,
+        },
+      ],
+    });
+  });
+
+  it("keeps a backend without the inventory route answering 404 so clients can fall back", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: { code: "not_found", message: "Route not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory?environment=development",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: { code: "not_found", message: "Route not found" },
+    });
+  });
+
 });

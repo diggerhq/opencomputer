@@ -219,13 +219,23 @@ function strings(value: unknown): string[] {
 // backend mirrors the public routes one-to-one, so the edge passes the
 // documented bodies, status codes, error envelope and the conditional
 // headers (`ETag`, `If-Match`, `If-None-Match`) through untouched.
+// The resource inventory is the durable list of an environment's resources,
+// independent of what the current deployments declare: `declared` says
+// whether an active deployment still names the resource, `documents` counts
+// its live documents.
+const MEMORY_RESOURCES_ROUTE = /^\/projects\/[^/]+\/memory$/;
 const MEMORY_DOCUMENTS_ROUTE = /^\/projects\/[^/]+\/memory\/[^/]+\/documents$/;
 const MEMORY_DOCUMENT_ROUTE =
   /^\/projects\/[^/]+\/memory\/[^/]+\/documents\/[^/]+$/;
 const MEMORY_CONDITIONAL_REQUEST_HEADERS = ["if-match", "if-none-match"];
 
 function isMemoryRoute(method: string, suffix: string): boolean {
-  if (method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)) return true;
+  if (
+    method === "GET" &&
+    (MEMORY_RESOURCES_ROUTE.test(suffix) || MEMORY_DOCUMENTS_ROUTE.test(suffix))
+  ) {
+    return true;
+  }
   return (
     (method === "GET" ||
       method === "PUT" ||
@@ -260,6 +270,17 @@ function publicMemoryDocumentMeta(value: unknown): Record<string, unknown> {
 function publicMemoryDocument(value: unknown): Record<string, unknown> {
   const document = record(value) ?? {};
   return { ...publicMemoryDocumentMeta(document), text: document.text };
+}
+
+function publicMemoryResource(value: unknown): Record<string, unknown> {
+  const resource = record(value) ?? {};
+  const provider = record(resource.provider) ?? {};
+  return {
+    id: resource.id,
+    provider: { kind: provider.kind, maxBytes: provider.maxBytes },
+    declared: resource.declared === true,
+    documents: typeof resource.documents === "number" ? resource.documents : 0,
+  };
 }
 
 // Memory errors are the documented `{ error: { code, message } }` envelope
@@ -297,15 +318,21 @@ async function memoryResponse(
   const body = record(await upstream.json().catch(() => null)) ?? {};
   headers.set("content-type", "application/json");
   const value =
-    method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+    method === "GET" && MEMORY_RESOURCES_ROUTE.test(suffix)
       ? {
-          documents: Array.isArray(body.documents)
-            ? body.documents.map(publicMemoryDocumentMeta)
+          resources: Array.isArray(body.resources)
+            ? body.resources.map(publicMemoryResource)
             : [],
-          nextCursor:
-            typeof body.nextCursor === "string" ? body.nextCursor : null,
         }
-      : publicMemoryDocument(body);
+      : method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+        ? {
+            documents: Array.isArray(body.documents)
+              ? body.documents.map(publicMemoryDocumentMeta)
+              : [],
+            nextCursor:
+              typeof body.nextCursor === "string" ? body.nextCursor : null,
+          }
+        : publicMemoryDocument(body);
   return new Response(JSON.stringify(value), {
     status: upstream.status,
     headers,
