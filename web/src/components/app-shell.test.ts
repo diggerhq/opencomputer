@@ -33,6 +33,7 @@ describe('managed agents navigation', () => {
       'Memory',
       'Secrets',
       'BYOK',
+      'Settings',
       'Debug playground',
     ])
     expect(nav[1]?.items[nav[1].items.length - 1]?.to).toBe(

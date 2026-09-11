@@ -1197,6 +1197,7 @@ export default function ManagedAgentDetail({
 
       {activeTab === 'secrets' && project ? (
         <ManagedProjectSecrets
+          key={`${project.project.id}:${environment}`}
           projectId={project.project.id}
           agents={project.project.agents}
           environment={environment}
