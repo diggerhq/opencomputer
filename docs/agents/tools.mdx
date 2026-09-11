@@ -125,8 +125,88 @@ Declare an HTTP connection, store the value as an OpenComputer secret, and
 call the connection's `fetch()` method. See
 [Secrets and outbound requests](/agents/secrets) for a complete example.
 
+## Wait for a person before writing
+
+Some writes should not happen because a model decided they should. A gated tool
+proposes instead: the model calls it, nothing is written, and the person the
+agent is talking to sees a card with the exact change and decides.
+
+```tsx
+import { defineGatedTool } from "@opencomputer/agent";
+import { billing } from "./connections/billing";
+
+export const attach = defineGatedTool({
+  name: "attach",
+  description: "Move a customer onto a plan",
+  input: {
+    type: "object",
+    required: ["customerId", "planId"],
+    properties: {
+      customerId: { type: "string" },
+      planId: { type: "string" },
+    },
+  },
+  // What the person sees. It may read; it must not write.
+  async preview({ input, signal }) {
+    const customer = await billing
+      .fetch(`/customers/${String(input.customerId)}`, { signal })
+      .then((response) => response.json());
+    return {
+      title: `Move ${customer.name} to ${String(input.planId)}`,
+      facts: [
+        { label: "Today", value: customer.plan },
+        { label: "After", value: String(input.planId) },
+        { label: "Charged now", value: customer.nextCharge },
+      ],
+    };
+  },
+  // Runs only once somebody approves, from the arguments on the card.
+  async apply({ input, decision, signal }) {
+    return billing.fetch("/subscriptions", {
+      method: "POST",
+      headers: { "Idempotency-Key": decision.id },
+      body: JSON.stringify({
+        customer: input.customerId,
+        plan: input.planId,
+      }),
+      signal,
+    });
+  },
+});
+```
+
+The model calls `attach` like any other tool and is told the change was
+recorded for approval, so it stops rather than reporting the work as done.
+
+`apply` runs later, with the arguments that were on the card — no second pass
+through the model, so what happens is what was agreed to. The proposing session
+is usually gone by then, and that is fine: `apply` needs its arguments, not the
+conversation.
+
+### Always pass `decision.id`
+
+`decision.id` identifies this approval, and it is the same value on every
+attempt to carry it out. Give it to whatever you call as an idempotency key.
+
+If a write never reports back — the runtime died mid-flight, the answer was
+lost — it is recorded as unconfirmed rather than failed, because it may well
+have happened. That is only recoverable if running it again is safe, and this
+is what makes it safe.
+
+### What this does and does not guarantee
+
+A gated tool is a convention your code cooperates with. Nothing stops a tool
+from writing inside `preview`. What the platform guarantees is narrower and
+still worth having: an approved write runs **once**, from the arguments the
+person agreed to, whether or not the session that proposed it still exists.
+
+Gated tools need a conversation to ask in. Called from the playground, a
+schedule or a webhook, there is nobody to ask, and the call fails saying so.
+
 ## Tools versus skills and MCP
 
 - A tool executes TypeScript you own.
+- A [gated tool](#wait-for-a-person-before-writing) does the same, once a
+  person approves it.
 - A [skill](/agents/skills) teaches the agent a reusable procedure.
 - An [MCP server](/agents/mcp) supplies a remote collection of tools.

@@ -56,6 +56,54 @@ export default function Agent() {
 }
 ```
 
+## Know who is speaking
+
+A `channel` input carries the sender's identity in the provider's own terms.
+
+```ts
+interface ChannelMessageContext {
+  readonly provider: string;
+  readonly connectionId: string;
+  readonly workspaceId?: string;
+  readonly conversationId?: string;
+  readonly userId?: string;
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | `slack`, `twilio`, … |
+| `connectionId` | The connection the message arrived on |
+| `workspaceId` | The provider's tenant: a Slack team, a Twilio account |
+| `conversationId` | Where it was said, when the provider names conversations |
+| `userId` | The provider's id for the person who said it |
+
+An agent serving one workspace can ignore all of this. An agent serving many —
+one deployment behind a distributed Slack app — needs it to decide whose
+records to read and which credential to use:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+
+  if (input.source === "channel" && input.channel.workspaceId) {
+    return `You are answering for workspace ${input.channel.workspaceId}. ` +
+      `Look up that customer before answering.`;
+  }
+
+  return "Help with the current request.";
+}
+```
+
+These are the provider's public identifiers, not OpenComputer's. They are
+stable, which is what makes them usable as a key into your own records.
+
+Session ownership is keyed separately, by a one-way hash you never see. That
+keeps two people's sessions apart; this tells your agent who it is talking to.
+The two are deliberately different values.
+
 ## Read structured payloads
 
 Narrow or validate a payload before reading application-specific fields:

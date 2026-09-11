@@ -31,6 +31,36 @@ export interface WebhookRequestContext {
   readonly receivedAt: string;
 }
 
+/**
+ * Who sent this message, in the provider's own terms.
+ *
+ * An agent serving one Slack workspace never needs this. An agent serving
+ * many — one deployment behind a distributed app — needs it for everything:
+ * which customer's records to read, which credential to use, whether this
+ * person may act at all. Without it the agent is blind to the tenant, and no
+ * amount of prompting recovers what was never sent.
+ *
+ * These are the provider's public identifiers, not ours. `workspaceId` is a
+ * Slack team id or a Twilio account SID; `userId` is a Slack member id or an
+ * E.164 number. They are stable, and they are what an agent can join against
+ * its own customer records.
+ *
+ * Session ownership is keyed separately, by a one-way hash that is deliberately
+ * not derivable from these (see the platform's channel principal). This bag
+ * exists to be used by the agent; that key exists to keep sessions apart.
+ */
+export interface ChannelMessageContext {
+  readonly provider: string;
+  /** The connection this arrived on. Distinct installations, distinct ids. */
+  readonly connectionId: string;
+  /** The provider's tenant: a Slack team, a Twilio account. */
+  readonly workspaceId?: string;
+  /** Where it was said, when the provider names conversations. */
+  readonly conversationId?: string;
+  /** The provider's id for the person who said it. */
+  readonly userId?: string;
+}
+
 interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
@@ -38,7 +68,14 @@ interface BasicAgentInput {
 
 export type AgentInput =
   | (BasicAgentInput & {
-      readonly source: Exclude<InputSource, "schedule" | "webhook">;
+      readonly source: Exclude<
+        InputSource,
+        "channel" | "schedule" | "webhook"
+      >;
+    })
+  | (BasicAgentInput & {
+      readonly source: "channel";
+      readonly channel: Readonly<ChannelMessageContext>;
     })
   | (BasicAgentInput & {
       readonly source: "schedule";
@@ -303,6 +340,181 @@ export interface ToolDefinition<
   readonly input?: ToolInputSchema;
   readonly output?: ToolInputSchema;
   run(context: ToolExecutionContext): Output | Promise<Output>;
+}
+
+/** One line on an approval card: what changes, from what, to what. */
+export interface ApprovalFact {
+  readonly label: string;
+  readonly value: string;
+}
+
+/**
+ * What a person is shown before they decide. Built by `preview`, stored
+ * verbatim, and kept after the decision as the record of what was agreed to.
+ */
+export interface ApprovalPreview {
+  readonly title: string;
+  readonly summary?: string;
+  readonly facts?: readonly ApprovalFact[];
+}
+
+export interface ApprovalDecision {
+  /**
+   * This approval, once. Stable, unique, and the same on every attempt to
+   * carry out this one decision.
+   *
+   * Pass it to whatever you call as an idempotency key. Then a write that
+   * cannot be confirmed — the runtime died mid-flight, the answer never came
+   * back — can simply be run again, because the second attempt returns the
+   * first one's result instead of charging anyone twice:
+   *
+   * ```ts
+   * async apply({ input, decision, signal }) {
+   *   return billing.fetch("/charges", {
+   *     method: "POST",
+   *     headers: { "Idempotency-Key": decision.id },
+   *     body: JSON.stringify({ customer: input.customerId }),
+   *     signal,
+   *   });
+   * }
+   * ```
+   *
+   * Without it an unconfirmed write is a dead end: nobody can retry it,
+   * because nobody can tell whether the first attempt landed.
+   */
+  readonly id: string;
+  readonly decidedAt: string;
+  /** Who clicked, in the provider's terms. Absent if the platform decided. */
+  readonly decidedBy?: string;
+}
+
+export interface GatedToolApplyContext extends ToolExecutionContext {
+  readonly decision: Readonly<ApprovalDecision>;
+}
+
+export interface ApprovalPublishResult {
+  readonly id: string;
+  readonly status: "pending" | "approved" | "denied" | "applied";
+  readonly duplicate: boolean;
+  /** What to tell the model. Supplied by the platform so every agent agrees. */
+  readonly message: string;
+}
+
+export interface GatedToolDefinition<
+  Output extends DataValue = DataValue,
+> extends ResourceReference {
+  readonly kind: "gated-tool";
+  readonly version: 1;
+  readonly name: string;
+  readonly description: string;
+  readonly input?: ToolInputSchema;
+  readonly output?: ToolInputSchema;
+  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  apply(context: GatedToolApplyContext): Output | Promise<Output>;
+  /**
+   * What the model calls. It does not write: it builds the preview, records
+   * the proposal, and returns a sentence telling the model to stop. The write
+   * happens later, in `apply`, from the arguments stored here.
+   */
+  run(context: ToolExecutionContext): Promise<string>;
+}
+
+function approvalPreview(value: unknown, toolId: string): ApprovalPreview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Tool ${toolId} preview must return an object`);
+  }
+  const preview = value as ApprovalPreview;
+  if (typeof preview.title !== "string" || !preview.title.trim()) {
+    throw new Error(`Tool ${toolId} preview requires a non-empty title`);
+  }
+  if (preview.summary !== undefined && typeof preview.summary !== "string") {
+    throw new Error(`Tool ${toolId} preview summary must be a string`);
+  }
+  if (preview.facts !== undefined) {
+    if (!Array.isArray(preview.facts)) {
+      throw new Error(`Tool ${toolId} preview facts must be an array`);
+    }
+    if (preview.facts.length > 20) {
+      throw new Error(`Tool ${toolId} preview may carry at most 20 facts`);
+    }
+    for (const fact of preview.facts) {
+      if (
+        !fact ||
+        typeof fact.label !== "string" ||
+        typeof fact.value !== "string"
+      ) {
+        throw new Error(
+          `Tool ${toolId} preview facts must each have a label and a value`,
+        );
+      }
+    }
+  }
+  return preview;
+}
+
+/**
+ * Record a proposal for a human to decide on.
+ *
+ * Reaches the platform the way an outbox item does: over the session's own
+ * runtime token, which is the only credential the agent holds that the
+ * platform trusts.
+ */
+export async function publishApproval(
+  tool: string | ResourceReference,
+  input: {
+    readonly input: DataValue;
+    readonly preview: ApprovalPreview;
+    readonly idempotencyKey: string;
+  },
+): Promise<ApprovalPublishResult> {
+  const id = resourceIdentifier(
+    typeof tool === "string" ? tool : tool.id,
+    "publishApproval",
+  );
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) {
+    throw new Error("Approval idempotency keys must contain 1 to 256 characters");
+  }
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const base = runtime.process?.env?.OPENCOMPUTER_APPROVAL_URL;
+  const token = runtime.process?.env?.OPENCOMPUTER_APPROVAL_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer approvals are unavailable");
+  }
+  const response = await fetch(`${base.replace(/\/$/, "")}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      toolId: id,
+      input: input.input,
+      preview: input.preview,
+      idempotencyKey,
+    }),
+  });
+  if (!response.ok) {
+    // Whatever the model is told here, it repeats to a person — and a bare
+    // status code invites it to invent a reason. The platform writes these
+    // sentences so the explanation is true.
+    const detail = await response.text().catch(() => "");
+    let message = "";
+    try {
+      const problem = JSON.parse(detail) as { error?: { message?: unknown } };
+      if (typeof problem.error?.message === "string") {
+        message = problem.error.message;
+      }
+    } catch {
+      /* not a problem document; fall through to the status */
+    }
+    throw new Error(
+      message || `Recording the approval failed with status ${response.status}`,
+    );
+  }
+  return (await response.json()) as ApprovalPublishResult;
 }
 
 interface AgentHooks {
@@ -867,6 +1079,73 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
     ...input,
     id,
     name: id,
+  });
+}
+
+/**
+ * A tool whose write waits for a person.
+ *
+ * The model calls it and nothing is written. `preview` builds what the human
+ * sees, the proposal is recorded against the conversation it came from, and
+ * the model is told to stop. When somebody approves, `apply` runs with the
+ * arguments that were on the card — not with whatever a second pass through
+ * the model would produce.
+ *
+ * This is cooperative. A tool that wants to write in `preview` can; what the
+ * platform guarantees is that `apply` runs once, from the stored arguments,
+ * whether or not this session still exists by then.
+ *
+ * Give `apply` an idempotency key from `decision.id` if whatever you call
+ * accepts one. A write that never reports back is recorded as unconfirmed
+ * rather than failed, and that is only recoverable if running it again is
+ * safe.
+ */
+export function defineGatedTool<Output extends DataValue = DataValue>(input: {
+  name: string;
+  description: string;
+  input?: ToolInputSchema;
+  output?: ToolInputSchema;
+  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  apply(context: GatedToolApplyContext): Output | Promise<Output>;
+}): GatedToolDefinition<Output> {
+  const id = identifier(input.name, "defineGatedTool");
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(
+      "Tool IDs may contain only letters, numbers, underscores, and hyphens",
+    );
+  }
+  if (!input.description.trim()) {
+    throw new Error("defineGatedTool requires a non-empty description");
+  }
+  if (input.input && typeof input.input !== "object") {
+    throw new Error("defineGatedTool input must be a JSON Schema object");
+  }
+  if (input.output && typeof input.output !== "object") {
+    throw new Error("defineGatedTool output must be a JSON Schema object");
+  }
+  if (typeof input.preview !== "function") {
+    throw new Error("defineGatedTool requires a preview function");
+  }
+  if (typeof input.apply !== "function") {
+    throw new Error("defineGatedTool requires an apply function");
+  }
+  return Object.freeze({
+    kind: "gated-tool" as const,
+    version: 1 as const,
+    ...input,
+    id,
+    name: id,
+    async run(context: ToolExecutionContext): Promise<string> {
+      const preview = approvalPreview(await input.preview(context), id);
+      // The tool call is the proposal's identity, so the same call recorded
+      // twice — a retry, a resumed turn — is one approval, not two.
+      const result = await publishApproval(id, {
+        input: context.input as DataValue,
+        preview,
+        idempotencyKey: context.messageId,
+      });
+      return result.message;
+    },
   });
 }
 

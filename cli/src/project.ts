@@ -97,6 +97,11 @@ export interface ScheduleDefinitionManifest {
   };
 }
 
+export interface GatedToolManifest {
+  agentId: string;
+  toolId: string;
+}
+
 export interface ProjectResourceManifest {
   version: 1;
   channels: ChannelDefinitionManifest[];
@@ -104,6 +109,12 @@ export interface ProjectResourceManifest {
   outboxes: OutboxDefinitionManifest[];
   outboxRegistrations: OutboxRegistrationManifest[];
   schedules: ScheduleDefinitionManifest[];
+  /**
+   * Which tools wait for a human. Declared here as well as in the agent's own
+   * manifest because the platform authorizes a proposal before any agent code
+   * is involved.
+   */
+  gatedTools: GatedToolManifest[];
 }
 
 export interface BuiltProjectResources {
@@ -1430,7 +1441,13 @@ export async function readProjectResources(
   const channelRegistrations: ChannelRegistrationManifest[] = [];
   const outboxRegistrations: OutboxRegistrationManifest[] = [];
   const schedules: ScheduleDefinitionManifest[] = [];
+  const gatedTools: GatedToolManifest[] = [];
   for (const agent of agents) {
+    for (const path of await typescriptFiles(resolve(agent.root, "tools"))) {
+      for (const toolId of definedGatedToolIds(await readFile(path, "utf8"))) {
+        gatedTools.push({ agentId: agent.localId, toolId });
+      }
+    }
     for (const path of await typescriptFiles(resolve(agent.root, "channels"))) {
       channelRegistrations.push(
         channelRegistration(
@@ -1473,6 +1490,11 @@ export async function readProjectResources(
     ),
     schedules: schedules.sort((left, right) =>
       `${left.agentId}:${left.id}`.localeCompare(`${right.agentId}:${right.id}`),
+    ),
+    gatedTools: gatedTools.sort((left, right) =>
+      `${left.agentId}:${left.toolId}`.localeCompare(
+        `${right.agentId}:${right.toolId}`,
+      ),
     ),
   };
   const serialized = JSON.stringify(manifest);
@@ -1706,6 +1728,21 @@ function definedToolIds(source: string): string[] {
     .sort();
 }
 
+/**
+ * Gated tools are tools: the model sees them and calls them like any other.
+ * They are listed separately as well so the platform knows a call to one is a
+ * proposal, and that the tool has an `apply` to dispatch after a decision.
+ */
+function definedGatedToolIds(source: string): string[] {
+  return [
+    ...source.matchAll(
+      /\bdefineGatedTool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bname\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
+    ),
+  ]
+    .map((match) => match[1]!)
+    .sort();
+}
+
 function staticModelSelections(
   source: string,
 ): Array<{ provider: string; model: string }> {
@@ -1832,6 +1869,60 @@ export const defineTool = (input) => {
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
   return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+};
+export const defineGatedTool = (input) => {
+  const toolId = id(input.name, "defineGatedTool");
+  if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
+  if (!String(input.description).trim()) throw new Error("defineGatedTool requires a non-empty description");
+  if (input.input && typeof input.input !== "object") throw new Error("defineGatedTool input must be a JSON Schema object");
+  if (input.output && typeof input.output !== "object") throw new Error("defineGatedTool output must be a JSON Schema object");
+  if (typeof input.preview !== "function") throw new Error("defineGatedTool requires a preview function");
+  if (typeof input.apply !== "function") throw new Error("defineGatedTool requires an apply function");
+  return Object.freeze({
+    kind: "gated-tool", version: 1, ...input, id: toolId, name: toolId,
+    async run(context) {
+      const preview = approvalPreview(await input.preview(context), toolId);
+      const result = await publishApproval(toolId, {
+        input: context.input,
+        preview,
+        idempotencyKey: context.messageId,
+      });
+      return result.message;
+    },
+  });
+};
+const approvalPreview = (value, toolId) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Tool " + toolId + " preview must return an object");
+  if (typeof value.title !== "string" || !value.title.trim()) throw new Error("Tool " + toolId + " preview requires a non-empty title");
+  if (value.summary !== undefined && typeof value.summary !== "string") throw new Error("Tool " + toolId + " preview summary must be a string");
+  if (value.facts !== undefined) {
+    if (!Array.isArray(value.facts)) throw new Error("Tool " + toolId + " preview facts must be an array");
+    if (value.facts.length > 20) throw new Error("Tool " + toolId + " preview may carry at most 20 facts");
+    for (const fact of value.facts) {
+      if (!fact || typeof fact.label !== "string" || typeof fact.value !== "string") throw new Error("Tool " + toolId + " preview facts must each have a label and a value");
+    }
+  }
+  return value;
+};
+export const publishApproval = async (tool, input) => {
+  const toolId = id(typeof tool === "string" ? tool : tool.id, "publishApproval");
+  const idempotencyKey = String(input.idempotencyKey).trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) throw new Error("Approval idempotency keys must contain 1 to 256 characters");
+  const base = globalThis.process?.env?.OPENCOMPUTER_APPROVAL_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_APPROVAL_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer approvals are unavailable");
+  const response = await fetch(base.replace(/\\/$/, ""), {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ toolId, input: input.input, preview: input.preview, idempotencyKey }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    let message = "";
+    try { message = JSON.parse(detail)?.error?.message ?? ""; } catch {}
+    throw new Error(message || ("Recording the approval failed with status " + response.status));
+  }
+  return await response.json();
 };
 export const publishOutbox = async (outbox, input) => {
   const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
@@ -2010,7 +2101,15 @@ the product or support surface presented to users.
           ...(config.model === undefined && inferredModel
             ? { model: inferredModel }
             : {}),
-          tools: { ...configuredTools, question: !questionDenied },
+          // The skill tool is what loads a packaged skill's body. OpenCode
+          // injects skill names and descriptions either way, so without this
+          // an agent knows its skills exist and can never read one — which is
+          // exactly how nine skills shipped in an artifact and none was used.
+          tools: {
+            use_skill: true,
+            ...configuredTools,
+            question: !questionDenied,
+          },
           permission: {
             ...configuredPermission,
             ...(configuredPermission.calendar_create_time_off === "ask"
@@ -2060,6 +2159,7 @@ the product or support surface presented to users.
       candidate.path.startsWith("tools/"),
   );
   const reactiveTools: string[] = [];
+  const gatedTools: string[] = [];
   const toolModules: string[] = [];
   for (const candidate of toolSources) {
     const ids = definedToolIds(candidate.source);
@@ -2071,8 +2171,18 @@ the product or support surface presented to users.
         `${candidate.path} must give every defineTool() a literal string name`,
       );
     }
-    if (ids.length > 0) {
-      reactiveTools.push(...ids);
+    const gatedIds = definedGatedToolIds(candidate.source);
+    const gatedCalls = [
+      ...candidate.source.matchAll(/\bdefineGatedTool(?:<[^>]+>)?\s*\(/g),
+    ].length;
+    if (gatedIds.length !== gatedCalls) {
+      throw new Error(
+        `${candidate.path} must give every defineGatedTool() a literal string name`,
+      );
+    }
+    if (ids.length > 0 || gatedIds.length > 0) {
+      reactiveTools.push(...ids, ...gatedIds);
+      gatedTools.push(...gatedIds);
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
     }
   }
@@ -2140,6 +2250,7 @@ the product or support surface presented to users.
             ...literalHookIds(agentSource, "useTool"),
           ]),
         ].sort(),
+        gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
         connections: httpConnections.map((connection) => connection.id).sort(),
