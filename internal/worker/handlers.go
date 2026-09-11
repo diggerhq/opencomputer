@@ -386,40 +386,58 @@ func execHoldMs(env string, def time.Duration) time.Duration {
 	return def
 }
 
-// awaitExecDone blocks until the exec session's command has exited (its result
-// reports !Running) or the deadline/ctx elapses, returning the final result on
-// completion or nil on timeout. It polls the local handle on a short ticker in
-// ADDITION to selecting on Done — a claimed hot-pool box whose Done close lags
-// (or never fires, the silent-attach-stream failure mode) still returns the
-// instant the captured ExitCode becomes visible, instead of riding out the full
-// hold. GetResult is a cheap in-map read for a live session (no agent rebind),
-// so the ~10ms poll is negligible. Returns (result, true) when done, (nil,
-// false) on timeout/cancel.
+// awaitExecDone blocks until the exec session's command has exited or the
+// deadline/ctx elapses, returning the final result on completion or nil on
+// timeout. It selects on Done AND polls on a 2ms ticker — a claimed hot-pool
+// box whose Done close lags (or never fires, the silent-attach-stream failure
+// mode) still returns the instant the captured ExitCode becomes visible. The
+// per-tick check is deliberately CHEAP: it reads the handle's ExitCode pointer
+// (a map read, no scrollback copy) via done(); the full result (which snapshots
+// the scrollback ring) is assembled by GetResult only ONCE, on completion. That
+// decouples poll frequency from result-assembly cost, so 2ms polling is
+// effectively free even under a burst. consumeExecOutput writes all output to
+// scrollback before it sets ExitCode, so a GetResult after done() is complete.
 func (s *HTTPServer) awaitExecDone(ctx context.Context, id, sessionID string, hold time.Duration) (*types.ExecSessionResult, bool) {
-	// Already done? (command finished before we started waiting — the common
-	// fast case for pooled boxes).
-	if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
-		return res, true
+	sess, serr := s.execSessionManager.GetSession(sessionID)
+	if serr != nil {
+		sess = nil // rare rebind case — done() falls back to GetResult below
+	}
+	done := func() bool {
+		if sess != nil {
+			return sess.ExitCode != nil // cheap: pointer read, no scrollback copy
+		}
+		r, e := s.execSessionManager.GetResult(id, sessionID)
+		return e == nil && !r.Running
+	}
+	finalize := func() (*types.ExecSessionResult, bool) {
+		if r, e := s.execSessionManager.GetResult(id, sessionID); e == nil && !r.Running {
+			return r, true
+		}
+		return nil, false
+	}
+	if done() {
+		return finalize()
 	}
 	var doneCh <-chan struct{}
-	if sess, err := s.execSessionManager.GetSession(sessionID); err == nil {
+	if sess != nil {
 		doneCh = sess.Done // may be nil; a nil channel blocks forever, the ticker covers it
 	}
 	deadline := time.NewTimer(hold)
 	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
+	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case <-doneCh:
-			res, err := s.execSessionManager.GetResult(id, sessionID)
-			if err == nil && !res.Running {
-				return res, true
+			if r, ok := finalize(); ok {
+				return r, ok
 			}
 			doneCh = nil // consumed/spurious — fall back to the ticker
 		case <-tick.C:
-			if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
-				return res, true
+			if done() {
+				if r, ok := finalize(); ok {
+					return r, ok
+				}
 			}
 		case <-deadline.C:
 			return nil, false
@@ -556,8 +574,11 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 					// Poll for completion (not just <-Done) so a laggy/absent
 					// Done close doesn't burn the whole hold — see awaitExecDone.
 					remaining := hold - time.Since(held)
-					if res, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, remaining); ok && res.ExitCode != nil && !res.Truncated {
-						slog.Debug("exec_inline_hit", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds())
+					pollStart := time.Now()
+					res, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, remaining)
+					pollMs := time.Since(pollStart).Milliseconds() // time in the wait itself (excludes dispatch/create)
+					if ok && res.ExitCode != nil && !res.Truncated {
+						slog.Debug("exec_inline_hit", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds(), "poll_ms", pollMs)
 						return c.JSON(http.StatusOK, types.ProcessResult{
 							ExitCode: *res.ExitCode,
 							Stdout:   string(res.Stdout),
@@ -566,7 +587,7 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 					}
 					// Miss = command didn't finish inside the hold (genuinely slow,
 					// or the box couldn't complete it) — the anomaly worth seeing.
-					slog.Warn("exec_inline_miss", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds())
+					slog.Warn("exec_inline_miss", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds(), "poll_ms", pollMs)
 				}
 			case <-deadline.C:
 			case <-c.Request().Context().Done():
