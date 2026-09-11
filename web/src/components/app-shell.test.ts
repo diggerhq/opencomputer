@@ -8,8 +8,13 @@ describe('managed agents navigation', () => {
     infrastructureEnabled: false,
   }
 
-  it('leaves the homepage sidebar empty when advanced areas are disabled', () => {
-    expect(managedAgentsNav(defaults)).toEqual([])
+  it('lists the project list on the homepage even without advanced areas', () => {
+    expect(
+      managedAgentsNav(defaults).map((group) =>
+        group.items.map((item) => item.label),
+      ),
+    ).toEqual([['Projects']])
+    expect(managedAgentsNav(defaults)[0]?.items[0]?.end).toBe(true)
   })
 
   it('shows project navigation only after a project is selected', () => {
@@ -25,6 +30,7 @@ describe('managed agents navigation', () => {
       'Outboxes',
       'Schedules',
       'Webhooks',
+      'Memory',
       'Secrets',
       'BYOK',
       'Debug playground',
@@ -46,14 +52,14 @@ describe('managed agents navigation', () => {
         ...defaults,
         durableSessionsEnabled: true,
       }).map((group) => group.label),
-    ).toEqual(['Durable sessions'])
+    ).toEqual([undefined, 'Durable sessions'])
 
     expect(
       managedAgentsNav({
         ...defaults,
         infrastructureEnabled: true,
       }).map((group) => group.label),
-    ).toEqual(['Infrastructure'])
+    ).toEqual([undefined, 'Infrastructure'])
   })
 
   it('keeps enabled advanced areas below project navigation', () => {

@@ -11,6 +11,9 @@
 - [Deployments and environments](https://docs.opencomputer.dev/agents/deployments.md): Understand development, production, immutable deployments, and aliases.
 - [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, and MCP servers from code.
 - [Sessions and turns](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
+- [Management API](https://docs.opencomputer.dev/agents/api.md): Create sessions, send turns, read the event log and manage memory, webhooks and projects over HTTP with an API key.
+- [Session events](https://docs.opencomputer.dev/agents/events.md): Every event type in the durable session log, its data fields, and the seq cursor rules.
+- [React integration](https://docs.opencomputer.dev/agents/react.md): Attach a React application to server-created sessions with useAgent, proxying three routes under your own authentication.
 - [Agent capabilities](https://docs.opencomputer.dev/agents/capabilities.md): Choose between tools, MCP servers, skills, subagents, and outbound connections.
 - [Secrets and outbound requests](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
 - [Agent hooks](https://docs.opencomputer.dev/agents/hooks.md): Compose agent capabilities with reactive hooks.
@@ -21,6 +24,9 @@
 - [Skills](https://docs.opencomputer.dev/agents/skills.md): Package reusable instructions and supporting resources with an agent.
 - [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
 - [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
+- [Memory](https://docs.opencomputer.dev/agents/memory.md): Read and save shared notes with useMemory, resource declarations and session bindings.
+- [Document memory](https://docs.opencomputer.dev/agents/document-memory.md): Built-in storage, hook and tool contracts, owner API, access, conflicts and limits.
+- [Memory providers](https://docs.opencomputer.dev/agents/memory-providers.md): Provider responsibilities and the proposed HTTP provider contract.
 - [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect each agent turn.
 - [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow agent and outbound-request logs.
 

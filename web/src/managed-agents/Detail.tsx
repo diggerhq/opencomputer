@@ -76,6 +76,7 @@ import { ManagedTwilioWizard } from './TwilioWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
+import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectBYOK } from './BYOK'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
@@ -91,6 +92,7 @@ type DetailTab =
   | 'outboxes'
   | 'schedules'
   | 'webhooks'
+  | 'memory'
   | 'secrets'
   | 'byok'
 
@@ -513,6 +515,7 @@ export default function ManagedAgentDetail({
     'outboxes',
     'schedules',
     'webhooks',
+    'memory',
     'secrets',
     'byok',
   ])
@@ -700,6 +703,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
+    ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
   ]
@@ -1167,6 +1171,27 @@ export default function ManagedAgentDetail({
           agentName={displayManagedAgentName(agent)}
           environment={environment}
           deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
+      {activeTab === 'memory' && project ? (
+        <ManagedProjectMemory
+          key={`${project.project.id}:${environment}`}
+          projectId={project.project.id}
+          environment={environment}
+          // One environment row per project agent: every member's active
+          // deployment there, for the declarations fallback.
+          deploymentIds={[
+            ...new Set(
+              project.project.environments
+                .filter((candidate) => candidate.name === environment)
+                .flatMap((candidate) =>
+                  candidate.activeDeploymentId
+                    ? [candidate.activeDeploymentId]
+                    : [],
+                ),
+            ),
+          ]}
         />
       ) : null}
 

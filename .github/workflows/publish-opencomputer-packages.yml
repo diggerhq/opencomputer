@@ -47,11 +47,11 @@ jobs:
       - name: Verify package version contract
         run: node scripts/check-opencomputer-package-contract.mjs
 
-      - name: Install and build agent package
+      - name: Install and test agent package
         working-directory: agent
         run: |
           npm ci
-          npm run build
+          npm test
 
       - name: Install and test CLI package
         working-directory: cli
@@ -59,11 +59,11 @@ jobs:
           npm ci
           npm test
 
-      - name: Install and build React package
+      - name: Install and test React package
         working-directory: react
         run: |
           npm ci
-          npm run build
+          npm test
 
       - name: Install and test starter package
         working-directory: create-start

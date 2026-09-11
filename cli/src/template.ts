@@ -2,9 +2,11 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   buildAgentArtifact,
+  mergeMemoryDeclarations,
   readProjectAgents,
   readProjectResources,
   type HttpConnectionManifest,
+  type MemoryDeclaration,
   type ProjectResourceManifest,
 } from "./project.js";
 
@@ -47,6 +49,7 @@ export interface TemplateBuildArtifact {
   body: string;
   connections: string[];
   httpConnections: HttpConnectionManifest[];
+  memory: MemoryDeclaration[];
 }
 
 export interface TemplateBuildBundle {
@@ -323,6 +326,7 @@ export async function buildTemplateProject(
       body: built.body.toString("utf8"),
       connections: built.connections,
       httpConnections: built.httpConnections,
+      memory: built.memory,
     });
     for (const connection of built.connections)
       compiledConnections.add(connection);
@@ -366,6 +370,12 @@ export async function buildTemplateProject(
       );
     }
   }
+  mergeMemoryDeclarations(
+    artifacts.map((artifact) => ({
+      origin: `agent ${artifact.localAgentId}`,
+      memory: artifact.memory,
+    })),
+  );
   if (
     template.template.firstRun &&
     !sources.some(

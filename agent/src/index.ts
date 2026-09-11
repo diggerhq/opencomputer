@@ -1,5 +1,11 @@
 import { Cron } from "croner";
 
+import {
+  memoryId,
+  memoryProjection,
+  type MemoryProjection,
+} from "./memory.js";
+
 export type DataValue =
   | null
   | boolean
@@ -14,7 +20,8 @@ export type InputSource =
   | "schedule"
   | "webhook"
   | "subagent"
-  | "system";
+  | "system"
+  | "event";
 
 export interface ScheduleRunContext {
   readonly id: string;
@@ -31,6 +38,33 @@ export interface WebhookRequestContext {
   readonly receivedAt: string;
 }
 
+/** The turn outcomes an event subscription delivers. */
+export type OutcomeEventType = "turn.completed" | "turn.failed" | "turn.cancelled";
+
+/**
+ * A recorded turn outcome of another session in the project, delivered by
+ * an event subscription as the input of a new turn. The platform attests
+ * where it came from through `source: "event"`; the included agent output
+ * is data to reason about, not instructions to follow.
+ */
+export interface OutcomeEvent {
+  /** The source session's own id for its terminal `turn.*` event. */
+  readonly id: string;
+  readonly type: OutcomeEventType;
+  /** The session and turn whose outcome this is. */
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The agent that ran the source turn. */
+  readonly agentId: string;
+  readonly occurredAt: string;
+  /** Why the turn failed or was cancelled, when the source recorded a reason. */
+  readonly reason?: string;
+  /** The failure message, bounded, when the turn failed. */
+  readonly error?: string;
+  /** The final assistant message of a completed turn; `truncated` when it was cut to fit. */
+  readonly result?: { readonly text: string; readonly truncated?: boolean };
+}
+
 interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
@@ -38,7 +72,7 @@ interface BasicAgentInput {
 
 export type AgentInput =
   | (BasicAgentInput & {
-      readonly source: Exclude<InputSource, "schedule" | "webhook">;
+      readonly source: Exclude<InputSource, "schedule" | "webhook" | "event">;
     })
   | (BasicAgentInput & {
       readonly source: "schedule";
@@ -47,6 +81,10 @@ export type AgentInput =
   | (BasicAgentInput & {
       readonly source: "webhook";
       readonly webhook: Readonly<WebhookRequestContext>;
+    })
+  | (BasicAgentInput & {
+      readonly source: "event";
+      readonly event: Readonly<OutcomeEvent>;
     });
 
 export interface ResourceReference {
@@ -287,7 +325,10 @@ export type ToolInputSchema = Readonly<Record<string, unknown>>;
 export interface ToolExecutionContext {
   readonly input: Record<string, unknown>;
   readonly sessionId: string;
+  /** The assistant message that emitted this call. */
   readonly messageId: string;
+  /** The host-assigned id of this tool call, unique within the session. */
+  readonly toolCallId: string;
   readonly agentId: string;
   readonly signal?: AbortSignal;
   reportProgress(metadata: Readonly<Record<string, DataValue>>): Promise<void>;
@@ -305,6 +346,40 @@ export interface ToolDefinition<
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
+export type {
+  DocumentMemoryInput,
+  DocumentMemoryProvider,
+  HttpMemoryConnection,
+  HttpMemoryInput,
+  HttpMemoryProvider,
+  HttpMemoryToolDefinition,
+  HttpMemoryToolInput,
+  MemoryDefinition,
+  MemoryDefinitionInput,
+  MemoryProjection,
+  MemoryProvider,
+  MemoryReference,
+  MemorySource,
+  MemoryToolAccess,
+} from "./memory.js";
+export { defineMemory, documentMemory, httpMemory } from "./memory.js";
+
+/**
+ * Implemented by the host that renders the agent. The host renders inside an
+ * isolated worker with a per-render `scope`, sets this object on
+ * `globalThis[Symbol.for("opencomputer.agent-hooks")]`, and clears the scope
+ * when the render returns. The scope fields each hook reads or writes:
+ *
+ * - `useInput()` reads `scope.input`.
+ * - `useSessionData(key)` reads `scope.state[key]`.
+ * - `useTool(id)` adds to `scope.tools`; returned as `enabledTools`.
+ * - `useMemory(id)` reads `scope.memory[id]`, the projection the host
+ *   resolved for the session binding with that resource id (absent when the
+ *   session has no binding for it), and adds the id to
+ *   `scope.selectedMemory`, returned sorted as `selectedMemory` next to
+ *   `enabledTools`. The selection is what routes memory tools and their
+ *   `memory` argument for the model request this render produced.
+ */
 interface AgentHooks {
   useInput(): Readonly<AgentInput>;
   useModel(model: ModelSelection): void;
@@ -312,6 +387,7 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
+  useMemory(memory: string): MemoryProjection | undefined;
 }
 
 function hooks(): AgentHooks {
@@ -868,6 +944,20 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
     id,
     name: id,
   });
+}
+
+/**
+ * The projection the host recalled for this session's binding of `memory`.
+ * It never fetches: a session without that binding fails the render here,
+ * before inference. Calling it also selects the binding's permitted tools for
+ * this model request; omitting it exposes none of them.
+ */
+export function useMemory(memory: string | ResourceReference): MemoryProjection {
+  const id = memoryId(
+    typeof memory === "string" ? memory : memory.id,
+    "useMemory",
+  );
+  return memoryProjection(id, hooks().useMemory(id));
 }
 
 export const useInput = (): Readonly<AgentInput> => hooks().useInput();

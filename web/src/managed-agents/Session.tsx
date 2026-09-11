@@ -19,7 +19,7 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
-import { turnAssistantText } from './session-history'
+import { turnAssistantText, turnFailureReason } from './session-history'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -134,6 +134,43 @@ export default function ManagedSessionDetail() {
         </Panel>
       </div>
 
+      {session.data.memory.length ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Memory</PanelTitle>
+              <PanelDescription className="mt-1">
+                Bindings fixed when the session was created. Writable means the
+                session&apos;s save can commit right now.
+              </PanelDescription>
+            </div>
+          </PanelHeader>
+          <div className="divide-y text-sm">
+            {session.data.memory.map((binding) => (
+              <div
+                key={`${binding.resource}:${binding.scope}:${binding.id ?? ''}`}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
+              >
+                <span className="font-mono text-xs">{binding.resource}</span>
+                <span className="text-muted-foreground text-xs">
+                  {binding.scope === 'document'
+                    ? `document ${binding.id ?? ''}`
+                    : 'collection'}
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  {binding.access}
+                </span>
+                <StatusBadge
+                  className="ml-auto"
+                  status={binding.writable ? 'active' : 'paused'}
+                  label={binding.writable ? 'Writable' : 'Read-only now'}
+                />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
       <div
         role="tablist"
         aria-label="Session detail"
@@ -181,6 +218,10 @@ export default function ManagedSessionDetail() {
                   events.data ?? [],
                   turn.id,
                 )
+                const failureReason =
+                  turn.status === 'failed'
+                    ? turnFailureReason(events.data ?? [], turn.id)
+                    : undefined
                 const running = !['completed', 'failed'].includes(turn.status)
                 return (
                   <div key={turn.id} className="space-y-6">
@@ -216,6 +257,11 @@ export default function ManagedSessionDetail() {
                             : `Turn ${turn.status.replace(/_/g, ' ')}.`}
                         </p>
                       )}
+                      {failureReason ? (
+                        <p className="text-status-error mt-2 text-sm">
+                          {failureReason}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 )

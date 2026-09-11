@@ -26,6 +26,10 @@ describe that call; they do not perform I/O or run the durable agent loop.
 - `useTool()` and `useSubagent()` select declared capabilities.
 - `useSessionData()` reads the current durable session-data snapshot.
 - `useMcpServer()` conditionally selects a declared MCP server.
+- `useMemory()` reads the projection of a memory resource bound to the
+  session (`text`, `sources`, `writable`) and selects its tools. Declare the
+  resource with `defineMemory()`; `documentMemory()` is the default provider
+  and `httpMemory()` delegates recall and tools to a declared connection.
 
 Use `defineMcpServer()` for stable MCP declarations. Never put credentials
 directly in these declarations: OpenComputer resolves referenced secrets

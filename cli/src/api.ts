@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ResolvedConfig } from "./config.js";
-import type { ProjectResourceManifest } from "./project.js";
+import type { MemoryDeclaration, ProjectResourceManifest } from "./project.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -23,8 +23,10 @@ export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /** One row per project agent and environment: that member's active deployment there. */
   environments: Array<{
     name: "development" | "production";
+    agentId?: string;
     activeDeploymentId?: string;
     updatedAt: string;
   }>;
@@ -231,7 +233,66 @@ export interface ManagedSessionSnapshot {
   }>;
 }
 
-interface CreateSessionResult {
+export type MemoryEnvironment = "development" | "production";
+
+export type MemoryWriter =
+  | { kind: "owner" }
+  | { kind: "agent"; sessionId: string };
+
+/** One document's metadata, as the list route returns it (no text). */
+export interface MemoryDocumentMeta {
+  id: string;
+  title: string;
+  summary: string;
+  agentWrites: "enabled" | "disabled";
+  revision: string;
+  bytes: number;
+  maxBytes: number;
+  updatedAt: string;
+  writer: MemoryWriter;
+}
+
+/** A full document, as read, create, replace and patch return it. */
+export interface MemoryDocument extends MemoryDocumentMeta {
+  text: string;
+}
+
+export interface MemoryDocumentPage {
+  documents: MemoryDocumentMeta[];
+  nextCursor: string | null;
+}
+
+/**
+ * One entry of the environment's resource inventory: storage outlives code,
+ * so `declared` says whether an active deployment still names the resource
+ * and `documents` counts the live documents it holds.
+ */
+export interface MemoryResource {
+  id: string;
+  provider: { kind?: string; maxBytes?: number };
+  declared: boolean;
+  documents: number;
+}
+
+/** A document together with the `ETag` the next conditional request must send back verbatim. */
+export interface MemoryDocumentRead {
+  document: MemoryDocument;
+  etag: string;
+}
+
+/**
+ * A session's memory binding (docs/agents/document-memory.mdx, "Session
+ * bindings"), keyed by resource id in the session create body.
+ */
+export type MemoryBinding =
+  | { scope: "document"; id: string; access?: "read" | "read-write" }
+  | { scope: "collection"; access?: "read" };
+
+export type MemoryBindings = Record<string, MemoryBinding>;
+
+export interface CreateSessionResult {
+  /** 201 created the session; 200 replayed an earlier create under the same Idempotency-Key. */
+  created: boolean;
   session: ManagedSessionSnapshot;
   deployment?: ManagedAgentDeployment;
 }
@@ -240,9 +301,22 @@ export class APIError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The typed reason from `{ error: { code } }` when the API sent one. */
+    readonly code?: string,
   ) {
     super(message);
   }
+}
+
+function errorCode(body: unknown): string | undefined {
+  if (body && typeof body === "object") {
+    const error = (body as Record<string, unknown>).error;
+    if (error && typeof error === "object") {
+      const code = (error as Record<string, unknown>).code;
+      if (typeof code === "string") return code;
+    }
+  }
+  return undefined;
 }
 
 function errorMessage(body: unknown, status: number): string {
@@ -282,6 +356,10 @@ export class OpenComputerClient {
       headers.set("x-api-key", this.config.apiKey);
     }
     const method = (init.method ?? "GET").toUpperCase();
+    // The caller's key names an operation on a target; the body is what the
+    // backend compares under that key. Hashing the body in would make a
+    // retry with different inputs a new operation instead of the conflict
+    // the key promises.
     if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
       headers.set(
         "idempotency-key",
@@ -291,8 +369,6 @@ export class OpenComputerClient {
           .update(method)
           .update("\0")
           .update(path)
-          .update("\0")
-          .update(typeof init.body === "string" ? init.body : "")
           .digest("hex"),
       );
     }
@@ -304,7 +380,11 @@ export class OpenComputerClient {
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
-      throw new APIError(errorMessage(body, response.status), response.status);
+      throw new APIError(
+        errorMessage(body, response.status),
+        response.status,
+        errorCode(body),
+      );
     }
     return response;
   }
@@ -683,6 +763,158 @@ export class OpenComputerClient {
     );
   }
 
+  deployment(deploymentId: string) {
+    return this.request<
+      ManagedAgentDeployment & {
+        /** Memory resources the deployment declares; absent on older deployments. */
+        memory?: Array<{
+          id: string;
+          description?: string;
+          provider?: { kind?: string; maxBytes?: number };
+        }>;
+      }
+    >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
+  }
+
+  // Project memory (docs/agents/document-memory.mdx, "Management API").
+  // Every mutation is conditional: the caller sends back the ETag it read.
+
+  private memoryPath(input: {
+    projectId: string;
+    resource: string;
+    id?: string;
+    environment: MemoryEnvironment;
+    cursor?: string;
+  }): string {
+    const query = new URLSearchParams({ environment: input.environment });
+    if (input.cursor) query.set("cursor", input.cursor);
+    return (
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}` +
+      `/memory/${encodeURIComponent(input.resource)}/documents` +
+      (input.id !== undefined ? `/${encodeURIComponent(input.id)}` : "") +
+      `?${query.toString()}`
+    );
+  }
+
+  private async memoryDocumentResponse(
+    path: string,
+    init: RequestInit,
+  ): Promise<MemoryDocumentRead> {
+    const response = await this.response(path, init);
+    const document = (await response.json()) as MemoryDocument;
+    return { document, etag: response.headers.get("etag") ?? "" };
+  }
+
+  async memoryResources(input: {
+    projectId: string;
+    environment: MemoryEnvironment;
+  }): Promise<MemoryResource[]> {
+    const query = new URLSearchParams({ environment: input.environment });
+    const result = await this.request<{ resources: MemoryResource[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}` +
+        `/memory?${query.toString()}`,
+    );
+    return result.resources;
+  }
+
+  memoryDocuments(input: {
+    projectId: string;
+    resource: string;
+    environment: MemoryEnvironment;
+    cursor?: string;
+  }) {
+    return this.request<MemoryDocumentPage>(
+      this.memoryPath({
+        projectId: input.projectId,
+        resource: input.resource,
+        environment: input.environment,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+      }),
+    );
+  }
+
+  memoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {});
+  }
+
+  createMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    title: string;
+    text: string;
+    summary?: string;
+    agentWrites?: "enabled" | "disabled";
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PUT",
+      headers: { "if-none-match": "*" },
+      body: JSON.stringify({
+        title: input.title,
+        text: input.text,
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+        ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+      }),
+    });
+  }
+
+  replaceMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+    text: string;
+    summary?: string;
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PUT",
+      headers: { "if-match": input.etag },
+      body: JSON.stringify({
+        text: input.text,
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      }),
+    });
+  }
+
+  patchMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+    title?: string;
+    agentWrites?: "enabled" | "disabled";
+  }) {
+    return this.memoryDocumentResponse(this.memoryPath(input), {
+      method: "PATCH",
+      headers: { "if-match": input.etag },
+      body: JSON.stringify({
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+      }),
+    });
+  }
+
+  deleteMemoryDocument(input: {
+    projectId: string;
+    resource: string;
+    id: string;
+    environment: MemoryEnvironment;
+    etag: string;
+  }) {
+    return this.request<void>(this.memoryPath(input), {
+      method: "DELETE",
+      headers: { "if-match": input.etag },
+    });
+  }
+
   logs(input: {
     agentId?: string;
     sessionId?: string;
@@ -731,6 +963,7 @@ export class OpenComputerClient {
       pathPrefix?: string;
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
+    memory: MemoryDeclaration[];
     projectDeployment?: {
       id: string;
       digest: string;
@@ -755,11 +988,21 @@ export class OpenComputerClient {
     );
   }
 
-  createSession(agentId: string) {
-    return this.request<CreateSessionResult>("/api/managed-agents/sessions", {
+  async createSession(
+    agentId: string,
+    options: { memory?: MemoryBindings } = {},
+  ): Promise<CreateSessionResult> {
+    const response = await this.response("/api/managed-agents/sessions", {
       method: "POST",
-      body: JSON.stringify({ agentId }),
+      body: JSON.stringify({
+        agentId,
+        ...(options.memory && Object.keys(options.memory).length
+          ? { memory: options.memory }
+          : {}),
+      }),
     });
+    const body = (await response.json()) as Omit<CreateSessionResult, "created">;
+    return { created: response.status === 201, ...body };
   }
 
   async sessions(): Promise<ManagedSessionSnapshot[]> {

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   developmentAgentReference,
+  parseMemoryBinding,
   parseSessionCommand,
   resolveProjectAgent,
 } from "./session-command.js";
@@ -78,4 +79,45 @@ test("session rejects equals-form deprecated routing options", () => {
     () => parseSessionCommand(["Hello", "--alias=production"]),
     /--alias is no longer supported/,
   );
+});
+
+test("session create binds memory documents and collections", () => {
+  assert.deepEqual(
+    parseSessionCommand([
+      "create",
+      "--memory",
+      "topics=workshop",
+      "--memory=profile=owner:read",
+      "--memory",
+      "archive",
+      "--create-document",
+      "Plan the workshop",
+    ]),
+    {
+      action: "create",
+      args: ["Plan the workshop"],
+      keep: false,
+      memory: {
+        topics: { scope: "document", id: "workshop", access: "read-write" },
+        profile: { scope: "document", id: "owner", access: "read" },
+        archive: { scope: "collection" },
+      },
+      createDocuments: true,
+    },
+  );
+  assert.deepEqual(parseMemoryBinding("notes=work_shop-1:read-write"), {
+    resource: "notes",
+    binding: { scope: "document", id: "work_shop-1", access: "read-write" },
+  });
+});
+
+test("session create rejects malformed memory bindings", () => {
+  assert.throws(() => parseSessionCommand(["--memory"]), /--memory requires a value/);
+  assert.throws(() => parseSessionCommand(["--memory", "Notes=workshop"]), /is not a resource id/);
+  assert.throws(() => parseSessionCommand(["--memory", "notes=work shop"]), /is not a document id/);
+  assert.throws(() => parseSessionCommand(["--memory", "notes=workshop:write"]), /access must be read or read-write/);
+  assert.throws(() => parseSessionCommand(["--memory", "notes=a", "--memory", "notes=b"]), /names resource notes twice/);
+  assert.throws(() => parseSessionCommand(["send", "ses-1", "hi", "--memory", "notes=a"]), /only supported when creating/);
+  assert.throws(() => parseSessionCommand(["--create-document"]), /needs at least one --memory/);
+  assert.throws(() => parseSessionCommand(["--memory", "notes", "--create-document"]), /applies to document bindings/);
 });

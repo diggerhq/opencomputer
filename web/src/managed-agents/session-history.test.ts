@@ -9,6 +9,7 @@ import {
   playgroundSessionSearch,
   sessionsForEnvironment,
   turnAssistantText,
+  turnFailureReason,
 } from './session-history'
 
 function deployment(
@@ -23,6 +24,7 @@ function deployment(
     channels: [],
     connections: [],
     createdAt: '2026-08-15T00:00:00.000Z',
+    memory: [],
   }
 }
 
@@ -37,6 +39,7 @@ function session(id: string, deploymentId: string): ManagedAgentSession {
     createdAt: '2026-08-15T00:00:00.000Z',
     updatedAt: '2026-08-15T00:00:00.000Z',
     turns: [],
+    memory: [],
   }
 }
 
@@ -127,5 +130,31 @@ describe('turnAssistantText', () => {
         'turn-1',
       ),
     ).toBe('Finished response')
+  })
+})
+
+describe('turnFailureReason', () => {
+  it("returns the failed turn's own reason and nothing for other turns", () => {
+    const events: ManagedAgentEvent[] = [
+      { seq: 1, turnId: 'turn-1', type: 'message.delta', data: { text: 'x' } },
+      {
+        seq: 2,
+        turnId: 'turn-1',
+        type: 'turn.failed',
+        data: {
+          message:
+            'The Workerd runtime rejects any useModel other than anthropic/claude-sonnet-4.6',
+        },
+      },
+      { seq: 3, turnId: 'turn-2', type: 'turn.failed', data: {} },
+      { seq: 4, turnId: 'turn-3', type: 'turn.completed', data: {} },
+    ]
+    expect(turnFailureReason(events, 'turn-1')).toBe(
+      'The Workerd runtime rejects any useModel other than anthropic/claude-sonnet-4.6',
+    )
+    expect(turnFailureReason(events, 'turn-2')).toBe(
+      'The agent could not complete this request.',
+    )
+    expect(turnFailureReason(events, 'turn-3')).toBeUndefined()
   })
 })

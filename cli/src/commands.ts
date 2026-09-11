@@ -3,6 +3,9 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentLog,
   type ManagedSessionSnapshot,
+  type MemoryBindings,
+  type MemoryDocument,
+  type MemoryDocumentMeta,
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { codexLogin } from "./codex-oauth.js";
@@ -39,9 +42,22 @@ import {
   materializeTemplateCheckout,
 } from "./template-local.js";
 import { materializeProjectArchive } from "./project-local.js";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
+import {
+  createSessionWithMemory,
+  ensureMemoryDocuments,
+  memoryResources,
+  saveMemoryEdit,
+  type EnsuredMemoryDocument,
+  type MemoryEditDraft,
+  type MemoryResourceSummary,
+} from "./memory-commands.js";
 
 export interface GlobalOptions {
   apiUrl?: string;
@@ -256,6 +272,108 @@ function printSession(session: ManagedSessionSnapshot): void {
     `${session.id}  ${session.status.padEnd(15)}  ` +
       `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}\n`,
   );
+}
+
+// Project memory (docs/agents/document-memory.mdx, "Owner access").
+
+const MEMORY_USAGE =
+  "Use `opencomputer memory list [<resource>]|show|create|edit|freeze|unfreeze|export|remove`.";
+
+function memoryWriterLabel(document: MemoryDocumentMeta): string {
+  return document.writer.kind === "agent"
+    ? `agent ${document.writer.sessionId}`
+    : "owner";
+}
+
+function memorySizeLabel(document: MemoryDocumentMeta): string {
+  return (
+    `${document.bytes}/${document.maxBytes} bytes` +
+    (document.bytes > document.maxBytes ? " (over limit)" : "")
+  );
+}
+
+function printMemoryDocument(document: MemoryDocument): void {
+  process.stdout.write(
+    `${document.id}  ${document.title}\n` +
+      `summary:      ${document.summary || "—"}\n` +
+      `agent writes: ${document.agentWrites}\n` +
+      `size:         ${memorySizeLabel(document)}\n` +
+      `updated:      ${document.updatedAt} by ${memoryWriterLabel(document)}\n` +
+      `revision:     ${document.revision}\n\n` +
+      `${document.text}${document.text.endsWith("\n") || !document.text ? "" : "\n"}`,
+  );
+}
+
+async function readMemoryText(args: string[]): Promise<string | undefined> {
+  const textFile = option(args, "--text-file");
+  const textStdin = flag(args, "--text-stdin");
+  if (textFile && textStdin) {
+    throw new Error("Choose either --text-file or --text-stdin.");
+  }
+  if (textFile) return readFile(resolvePath(textFile), "utf8");
+  if (!textStdin) return undefined;
+  if (process.stdin.isTTY) {
+    throw new CLIError(
+      "value_stdin_required",
+      "--text-stdin requires piped standard input.",
+      "Use `cat notes.md | opencomputer memory ... --text-stdin`.",
+    );
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function printMemoryResources(
+  resources: MemoryResourceSummary[],
+  environment: string,
+): void {
+  if (!resources.length) {
+    process.stdout.write(`No ${environment} memory resources.\n`);
+    return;
+  }
+  for (const resource of resources) {
+    process.stdout.write(
+      `${resource.id.padEnd(24)} ${(resource.provider.kind ?? "document").padEnd(10)} ` +
+        `${(resource.provider.maxBytes !== undefined ? `${resource.provider.maxBytes} bytes` : "").padEnd(12)} ` +
+        `${(resource.declared ? "declared" : "not declared").padEnd(13)} ` +
+        `${resource.documents === undefined ? "" : `${resource.documents} document${resource.documents === 1 ? "" : "s"}`}\n`,
+    );
+  }
+}
+
+// Opens the current text in $VISUAL/$EDITOR and returns what the user saved.
+// The file stays in place on a failed save so the edit is not lost.
+async function editMemoryTextInEditor(
+  resource: string,
+  id: string,
+  text: string,
+): Promise<MemoryEditDraft & { text: string }> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new CLIError(
+      "editor_required",
+      "memory edit opens an editor and needs an interactive terminal.",
+      "Pass --text-file <path> or pipe the new text with --text-stdin.",
+    );
+  }
+  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+  const directory = await mkdtemp(join(tmpdir(), "opencomputer-memory-"));
+  const path = join(directory, `${resource}--${id}.md`);
+  await writeFile(path, text, "utf8");
+  const result = spawnSync("/bin/sh", ["-c", `${editor} "$1"`, "sh", path], {
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    await rm(directory, { recursive: true, force: true });
+    throw new Error(`Editor exited with status ${result.status ?? "unknown"}.`);
+  }
+  return {
+    text: await readFile(path, "utf8"),
+    path,
+    discard: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 function printToolProgress(event: ManagedAgentEvent): void {
@@ -499,8 +617,9 @@ async function runAgent(
   json: boolean,
   verbose: boolean,
   idempotencyKey?: string,
+  memory?: MemoryBindings,
 ): Promise<unknown> {
-  const created = await client.createSession(agent);
+  const created = await createSessionWithMemory(client, agent, memory);
   process.stderr.write(`Starting ${agent}…\n`);
   const connected = await waitForEvent(
     client,
@@ -553,9 +672,29 @@ async function runAgent(
     turnId: turn.turnId,
     agentId: created.deployment?.agentId ?? agent,
     deploymentId: created.deployment?.id,
+    ...(memory ? { memory } : {}),
     status: "completed",
     output: streamedText || completedText || undefined,
   };
+}
+
+function printMemoryBindings(
+  memory: MemoryBindings | undefined,
+  documents: EnsuredMemoryDocument[],
+): string {
+  if (!memory) return "";
+  return Object.entries(memory)
+    .map(([resource, binding]) => {
+      if (binding.scope === "collection") {
+        return `Memory:     ${resource} (collection, read)\n`;
+      }
+      const ensured = documents.find(
+        (document) => document.resource === resource && document.id === binding.id,
+      );
+      const state = ensured ? (ensured.created ? ", created" : ", existing") : "";
+      return `Memory:     ${resource}/${binding.id} (${binding.access ?? "read-write"}${state})\n`;
+    })
+    .join("");
 }
 
 export async function runCommand(
@@ -1485,6 +1624,230 @@ export async function runCommand(
     );
   }
 
+  if (command === "memory") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const environment = environmentOption(option(args, "--environment"));
+    if (!action) throw new Error(MEMORY_USAGE);
+    const project = await selectedProject(client, config, projectReference);
+    const projectId = project.projectId;
+
+    if (action === "export") {
+      const out = option(args, "--out");
+      const explicitResources = options(args, "--resource");
+      if (!out || args.length) {
+        throw new Error(
+          "Use `opencomputer memory export --out <dir> [--resource <id>] [--environment development|production]`.",
+        );
+      }
+      const listing = explicitResources.length
+        ? undefined
+        : await memoryResources(client, projectId, environment);
+      const resources = listing
+        ? listing.resources.map((resource) => resource.id)
+        : [...new Set(explicitResources)];
+      if (!resources.length) {
+        throw new CLIError(
+          "memory_resources_unknown",
+          `No ${environment} memory resources exist for this project.`,
+          "Pass --resource <id> for each resource to export, or deploy an agent that declares memory.",
+        );
+      }
+      const exported: Array<{ resource: string; id: string; path: string }> = [];
+      for (const resource of resources) {
+        const directory = resolvePath(out, resource);
+        await mkdir(directory, { recursive: true });
+        let cursor: string | undefined;
+        do {
+          const page = await client.memoryDocuments({
+            projectId,
+            resource,
+            environment,
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const meta of page.documents) {
+            const { document } = await client.memoryDocument({
+              projectId,
+              resource,
+              id: meta.id,
+              environment,
+            });
+            const path = join(directory, `${document.id}.json`);
+            await writeFile(path, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+            exported.push({ resource, id: document.id, path });
+          }
+          cursor = page.nextCursor ?? undefined;
+        } while (cursor);
+      }
+      const undeclared =
+        listing?.resources
+          .filter((resource) => !resource.declared)
+          .map((resource) => resource.id) ?? [];
+      if (globals.json) {
+        printJSON({
+          environment,
+          exported,
+          ...(listing ? { resources: listing.resources } : {}),
+        });
+      } else {
+        for (const entry of exported) process.stdout.write(`${entry.path}\n`);
+        process.stdout.write(
+          `Exported ${exported.length} document${exported.length === 1 ? "" : "s"} ` +
+            `from ${resources.length} resource${resources.length === 1 ? "" : "s"} (${environment}).\n` +
+            (undeclared.length
+              ? `Not declared by any active deployment: ${undeclared.join(", ")}.\n`
+              : ""),
+        );
+      }
+      return;
+    }
+
+    const resource = args.shift();
+    if (action === "list" && !resource) {
+      const listing = await memoryResources(client, projectId, environment);
+      if (globals.json) printJSON(listing);
+      else {
+        printMemoryResources(listing.resources, environment);
+        if (listing.source === "declarations") {
+          process.stdout.write(
+            "Listed from active deployments' declarations; this backend has no resource inventory, so undeclared resources and document counts are not shown.\n",
+          );
+        }
+      }
+      return;
+    }
+    if (!resource) throw new Error(MEMORY_USAGE);
+    if (action === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const documents: MemoryDocumentMeta[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await client.memoryDocuments({
+          projectId,
+          resource,
+          environment,
+          ...(cursor ? { cursor } : {}),
+        });
+        documents.push(...page.documents);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      if (globals.json) printJSON({ documents });
+      else if (!documents.length) {
+        process.stdout.write(`No ${environment} documents in ${resource}.\n`);
+      } else {
+        for (const document of documents) {
+          process.stdout.write(
+            `${document.id.padEnd(24)} ${document.title.padEnd(32)} ` +
+              `${memorySizeLabel(document).padEnd(24)} ` +
+              `${document.agentWrites.padEnd(9)} ${document.updatedAt} ` +
+              `${memoryWriterLabel(document)}\n`,
+          );
+        }
+      }
+      return;
+    }
+
+    const id = args.shift();
+    if (!id) throw new Error(MEMORY_USAGE);
+    const target = { projectId, resource, id, environment };
+
+    if (action === "show") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const { document } = await client.memoryDocument(target);
+      if (globals.json) printJSON(document);
+      else printMemoryDocument(document);
+      return;
+    }
+    if (action === "create") {
+      const title = option(args, "--title");
+      const summary = option(args, "--summary");
+      const frozen = flag(args, "--frozen");
+      const text = await readMemoryText(args);
+      if (!title || args.length) {
+        throw new Error(
+          "Use `opencomputer memory create <resource> <id> --title <title> [--summary <text>] [--text-file <path>|--text-stdin] [--frozen]`.",
+        );
+      }
+      const { document } = await client.createMemoryDocument({
+        ...target,
+        title,
+        text: text ?? "",
+        ...(summary !== undefined ? { summary } : {}),
+        ...(frozen ? { agentWrites: "disabled" as const } : {}),
+      });
+      if (globals.json) printJSON(document);
+      else {
+        process.stdout.write(
+          `Created ${resource}/${document.id} (${memorySizeLabel(document)}, ${environment}).\n`,
+        );
+      }
+      return;
+    }
+    if (action === "edit") {
+      const summary = option(args, "--summary");
+      const supplied = await readMemoryText(args);
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const current = await client.memoryDocument(target);
+      let edited: Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
+      const text =
+        supplied ??
+        (edited = await editMemoryTextInEditor(
+          resource,
+          id,
+          current.document.text,
+        )).text;
+      if (text === current.document.text && summary === undefined) {
+        await edited?.discard();
+        if (globals.json) printJSON(current.document);
+        else process.stdout.write(`No changes to ${resource}/${id}.\n`);
+        return;
+      }
+      const document = await saveMemoryEdit(client, {
+        ...target,
+        etag: current.etag,
+        text,
+        ...(summary !== undefined ? { summary } : {}),
+        ...(edited ? { draft: { path: edited.path, discard: edited.discard } } : {}),
+      });
+      if (globals.json) printJSON(document);
+      else {
+        process.stdout.write(
+          `Saved ${resource}/${document.id} (${memorySizeLabel(document)}, revision ${document.revision}).\n`,
+        );
+      }
+      return;
+    }
+    if (action === "freeze" || action === "unfreeze") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const current = await client.memoryDocument(target);
+      const agentWrites = action === "freeze" ? "disabled" : "enabled";
+      const { document } =
+        current.document.agentWrites === agentWrites
+          ? current
+          : await client.patchMemoryDocument({
+              ...target,
+              etag: current.etag,
+              agentWrites,
+            });
+      if (globals.json) printJSON(document);
+      else {
+        process.stdout.write(
+          `Agent writes ${document.agentWrites} for ${resource}/${document.id} (${environment}).\n`,
+        );
+      }
+      return;
+    }
+    if (action === "remove" || action === "delete") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const current = await client.memoryDocument(target);
+      await client.deleteMemoryDocument({ ...target, etag: current.etag });
+      if (globals.json) printJSON({ deleted: true, resource, id, environment });
+      else process.stdout.write(`Removed ${resource}/${id} (${environment}).\n`);
+      return;
+    }
+    throw new Error(MEMORY_USAGE);
+  }
+
   if (command === "logs") {
     const follow = flag(args, "--follow");
     let agentId = option(args, "--agent");
@@ -1615,6 +1978,14 @@ export async function runCommand(
         session.agent,
       );
       const agent = developmentAgentReference(agentId);
+      // Sessions from the CLI run on Development, so its memory is bound.
+      const documents = session.createDocuments && session.memory
+        ? await ensureMemoryDocuments(client, {
+            projectId: project.projectId,
+            environment: "development",
+            bindings: session.memory,
+          })
+        : [];
       if (prompt) {
         const result = await runAgent(
           client,
@@ -1624,11 +1995,22 @@ export async function runCommand(
           globals.json,
           globals.verbose === true,
           globals.idempotencyKey,
+          session.memory,
         );
-        if (globals.json) printJSON(result);
+        if (globals.json) {
+          printJSON(
+            documents.length
+              ? { ...(result as Record<string, unknown>), documents }
+              : result,
+          );
+        }
         return;
       }
-      const created = await client.createSession(agent);
+      const created = await createSessionWithMemory(
+        client,
+        agent,
+        session.memory,
+      );
       const connected = await waitForEvent(
         client,
         created.session.id,
@@ -1642,17 +2024,21 @@ export async function runCommand(
       }
       const result = {
         sessionId: created.session.id,
+        created: created.created,
         agentId: created.deployment?.agentId ?? agent,
         deploymentId: created.deployment?.id,
+        ...(session.memory ? { memory: session.memory } : {}),
+        ...(documents.length ? { documents } : {}),
         status: session.keep ? "running" : "suspended",
         cursor: connected.cursor,
       };
       if (globals.json) printJSON(result);
       else {
         process.stdout.write(
-          `Session:    ${result.sessionId}\n` +
+          `Session:    ${result.sessionId}${created.created ? "" : " (existing)"}\n` +
             `Agent:      ${result.agentId}\n` +
             `Deployment: ${result.deploymentId ?? "—"}\n` +
+            printMemoryBindings(session.memory, documents) +
             `Runtime:    ${result.status}\n`,
         );
       }

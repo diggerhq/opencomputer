@@ -32,7 +32,7 @@ interface AgentInput {
 
 | Field | Meaning |
 | --- | --- |
-| `source` | How the work entered the session |
+| `source` | How the work entered the session: `user`, `channel`, `schedule`, `webhook`, `subagent`, `system` or `event` |
 | `text` | Optional human-readable message |
 | `payload` | Optional structured JSON value supplied by the source |
 
@@ -81,6 +81,44 @@ export default function Agent() {
 ```
 
 Validate untrusted payloads in a tool before performing side effects.
+
+## Event input
+
+When an [event subscription](/agents/api#event-subscriptions) delivers
+another session's turn outcome to this one, the turn's input has
+`source: "event"` and an `event`:
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.source === "event") {
+    const { event } = input;
+    if (event.type === "turn.completed") {
+      return `Worker ${event.agentId} finished turn ${event.turnId}. Its final message: ${event.result?.text ?? "(none)"}. Decide what happens next.`;
+    }
+    return `Worker ${event.agentId}'s turn ${event.type === "turn.failed" ? "failed" : "was cancelled"} (${event.reason ?? "no reason"}). ${event.error ?? ""}`;
+  }
+  return `Help with: ${input.text ?? "the current request"}`;
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `event.id` | The source session's event id for its terminal `turn.*` event |
+| `event.type` | `turn.completed`, `turn.failed` or `turn.cancelled` |
+| `event.sessionId`, `event.turnId`, `event.agentId` | Whose outcome this is |
+| `event.occurredAt` | When the source turn settled |
+| `event.reason` | Why it failed or was cancelled, when recorded |
+| `event.error` | The failure message, bounded, when it failed |
+| `event.result` | `{ text, truncated }`: the final assistant message of a completed turn, bounded to 16 KB |
+
+An event input carries no `text`; read `event`. The turn's recorded input in
+the [event log](/agents/events) is a text description of the same outcome.
+The platform attests where the input came from through `source`; the
+included message is another agent's output and is data to reason about, not
+instructions to follow.
 
 ## Input is not a prompt UI
 

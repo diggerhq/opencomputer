@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { apiFetch } from '@/api/client'
+import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 
 const agentSchema = z.object({
   id: z.string(),
@@ -11,6 +11,19 @@ const agentSchema = z.object({
   updatedAt: z.string(),
 })
 
+// A memory resource the deployment declares (docs/agents/document-memory.mdx).
+const memoryDeclarationSchema = z.object({
+  id: z.string(),
+  description: z.string().optional().default(''),
+  provider: z
+    .object({
+      kind: z.string().optional().default('document'),
+      maxBytes: z.number().optional(),
+    })
+    .optional()
+    .default({ kind: 'document' }),
+})
+
 const deploymentSchema = z.object({
   id: z.string(),
   agentId: z.string(),
@@ -18,6 +31,7 @@ const deploymentSchema = z.object({
   channels: z.array(z.string()),
   connections: z.array(z.string()),
   createdAt: z.string(),
+  memory: z.array(memoryDeclarationSchema).optional().default([]),
   projectDeployment: z
     .object({
       id: z.string(),
@@ -491,9 +505,70 @@ const sessionSchema = z.object({
       }),
     )
     .default([]),
+  // Memory bindings fixed at session creation; `writable` is false once the
+  // session ended or while the document's agent writes are disabled.
+  memory: z
+    .array(
+      z.object({
+        resource: z.string(),
+        scope: z.enum(['document', 'collection']),
+        id: z.string().optional(),
+        access: z.enum(['read', 'read-write']),
+        writable: z.boolean(),
+      }),
+    )
+    .optional()
+    .default([]),
 })
 
 const sessionsResponseSchema = z.object({ sessions: z.array(sessionSchema) })
+
+// Project memory documents (docs/agents/document-memory.mdx, "Management API").
+const memoryWriterSchema = z.union([
+  z.object({ kind: z.literal('owner') }),
+  z.object({ kind: z.literal('agent'), sessionId: z.string() }),
+])
+
+const memoryDocumentMetaSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  agentWrites: z.enum(['enabled', 'disabled']),
+  revision: z.string(),
+  bytes: z.number(),
+  maxBytes: z.number(),
+  updatedAt: z.string(),
+  writer: memoryWriterSchema,
+})
+
+const memoryDocumentSchema = memoryDocumentMetaSchema.extend({
+  text: z.string(),
+})
+
+const memoryDocumentPageSchema = z.object({
+  documents: z.array(memoryDocumentMetaSchema),
+  nextCursor: z.string().nullable(),
+})
+
+// The environment's durable resource inventory. Storage outlives code, so a
+// resource stays listed while it holds documents after every deployment
+// stopped declaring it (`declared: false`).
+const memoryResourceSchema = z.object({
+  id: z.string(),
+  provider: z
+    .object({
+      kind: z.string().optional().default('document'),
+      maxBytes: z.number().optional(),
+    })
+    .optional()
+    .default({ kind: 'document' }),
+  declared: z.boolean(),
+  documents: z.number(),
+})
+
+const memoryResourceInventorySchema = z.object({
+  resources: z.array(memoryResourceSchema),
+})
 
 const projectOverviewSchema = z.object({
   project: projectSchema,
@@ -521,6 +596,17 @@ export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
+export type ManagedSessionMemoryBinding = ManagedAgentSession['memory'][number]
+export type ManagedMemoryDeclaration = z.infer<typeof memoryDeclarationSchema>
+export type ManagedMemoryDocumentMeta = z.infer<typeof memoryDocumentMetaSchema>
+export type ManagedMemoryDocument = z.infer<typeof memoryDocumentSchema>
+export type ManagedMemoryDocumentPage = z.infer<typeof memoryDocumentPageSchema>
+export type ManagedMemoryResource = z.infer<typeof memoryResourceSchema>
+/** A document with the ETag the next conditional request must send back verbatim. */
+export type ManagedMemoryDocumentRead = {
+  document: ManagedMemoryDocument
+  etag: string
+}
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
 export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
@@ -1209,6 +1295,138 @@ export async function getManagedAgentSession(sessionId: string) {
     undefined,
     sessionSchema,
   )
+}
+
+export type ManagedMemoryEnvironment = 'development' | 'production'
+
+/** The complete address of one document; every read and write names it in full. */
+export type ManagedMemoryDocumentTarget = {
+  projectId: string
+  resource: string
+  id: string
+  environment: ManagedMemoryEnvironment
+}
+
+type MemoryDocumentTarget = ManagedMemoryDocumentTarget
+
+export async function getManagedMemoryResources(input: {
+  projectId: string
+  environment: ManagedMemoryEnvironment
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/memory?${query.toString()}`,
+    undefined,
+    memoryResourceInventorySchema,
+  )
+}
+
+function memoryDocumentsPath(input: {
+  projectId: string
+  resource: string
+  environment: ManagedMemoryEnvironment
+  id?: string
+  cursor?: string
+}) {
+  const query = new URLSearchParams({ environment: input.environment })
+  if (input.cursor) query.set('cursor', input.cursor)
+  return (
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}` +
+    `/memory/${encodeURIComponent(input.resource)}/documents` +
+    (input.id !== undefined ? `/${encodeURIComponent(input.id)}` : '') +
+    `?${query.toString()}`
+  )
+}
+
+// Reads and writes return the document with its ETag, which the next
+// conditional request (If-Match) sends back verbatim.
+async function memoryDocumentRequest(
+  path: string,
+  options: RequestInit,
+): Promise<ManagedMemoryDocumentRead> {
+  const response = await apiFetchResponse(path, options)
+  const document = validate(memoryDocumentSchema, await response.json(), path)
+  return { document, etag: response.headers.get('etag') ?? '' }
+}
+
+export async function getManagedMemoryDocuments(input: {
+  projectId: string
+  resource: string
+  environment: ManagedMemoryEnvironment
+  cursor?: string
+}) {
+  return apiFetch(
+    memoryDocumentsPath(input),
+    undefined,
+    memoryDocumentPageSchema,
+  )
+}
+
+export async function getManagedMemoryDocument(input: MemoryDocumentTarget) {
+  return memoryDocumentRequest(memoryDocumentsPath(input), {})
+}
+
+export async function createManagedMemoryDocument(
+  input: MemoryDocumentTarget & {
+    title: string
+    text: string
+    summary?: string
+    agentWrites?: 'enabled' | 'disabled'
+  },
+) {
+  return memoryDocumentRequest(memoryDocumentsPath(input), {
+    method: 'PUT',
+    headers: { 'If-None-Match': '*' },
+    body: JSON.stringify({
+      title: input.title,
+      text: input.text,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+    }),
+  })
+}
+
+export async function replaceManagedMemoryDocument(
+  input: MemoryDocumentTarget & {
+    etag: string
+    text: string
+    summary?: string
+  },
+) {
+  return memoryDocumentRequest(memoryDocumentsPath(input), {
+    method: 'PUT',
+    headers: { 'If-Match': input.etag },
+    body: JSON.stringify({
+      text: input.text,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+    }),
+  })
+}
+
+export async function patchManagedMemoryDocument(
+  input: MemoryDocumentTarget & {
+    etag: string
+    title?: string
+    agentWrites?: 'enabled' | 'disabled'
+  },
+) {
+  return memoryDocumentRequest(memoryDocumentsPath(input), {
+    method: 'PATCH',
+    headers: { 'If-Match': input.etag },
+    body: JSON.stringify({
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.agentWrites ? { agentWrites: input.agentWrites } : {}),
+    }),
+  })
+}
+
+export async function deleteManagedMemoryDocument(
+  input: MemoryDocumentTarget & { etag: string },
+) {
+  return apiFetch<void>(memoryDocumentsPath(input), {
+    method: 'DELETE',
+    headers: { 'If-Match': input.etag },
+  })
 }
 
 async function sleep(milliseconds: number) {
