@@ -13,8 +13,8 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Template name
 </ParamField>
 
-<ParamField body="timeout" type="int" default="300">
-  Idle timeout in seconds
+<ParamField body="timeout" type="int" default="0">
+  Idle timeout in seconds. `0` (the default) means persistent — the sandbox never auto-hibernates.
 </ParamField>
 
 <ParamField body="api_key" type="str">
@@ -96,7 +96,7 @@ Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoint
   Checkpoint ID
 </ParamField>
 
-<ParamField body="timeout" type="int" default="300">
+<ParamField body="timeout" type="int" default="0">
   Idle timeout
 </ParamField>
 
