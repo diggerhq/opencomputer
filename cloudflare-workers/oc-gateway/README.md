@@ -2,7 +2,7 @@
 
 The framework-neutral model gateway for hosted OpenComputer agent Workers. Flue is the first
 adapter, but the permanent Worker and operator configuration are not framework-named. Contract and
-rationale live in `oc-bg-agents` design 013 §4 and work item 022 W7-P.
+rationale live in the `serverless-agents-ws` knowledge base, archive `.agents/archive-durable-agent-sessions/`: design 013 §4 and work item 022 W7-P.
 
 It **extends** the shipped managed-model path (does not replace it): org-level spend keeps flowing through the org's single OpenRouter inference key → the existing `model_meter` cron → Autumn (`opencomputer/cloudflare-workers/api-edge/src/{model_billing,model_meter,openrouter}.ts`, `token-billing.md`). The gateway only adds the injection point a CF Worker needs (it can't use the box secrets-proxy) plus **org+agt budget enforcement + best-effort per-session sub-metering**. It pushes **nothing** to Autumn.
 
