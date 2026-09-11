@@ -104,13 +104,17 @@ jobs:
             local package_name="$2"
             local version
             version="$(node -p "require('./${directory}/package.json').version")"
-            for attempt in $(seq 1 30); do
+            # npm answers the publish with "being processed and may take a few
+            # minutes"; a version has taken eight minutes to appear. Poll for up
+            # to fifteen minutes so a dependent package is never built against
+            # a version the registry cannot serve yet.
+            for attempt in $(seq 1 90); do
               if [[ "$(npm view "${package_name}@${version}" version 2>/dev/null || true)" == "${version}" ]]; then
                 echo "${package_name}@${version} is visible on npm."
                 return 0
               fi
-              echo "Waiting for ${package_name}@${version} to propagate (${attempt}/30)…"
-              sleep 2
+              echo "Waiting for ${package_name}@${version} to propagate (${attempt}/90)…"
+              sleep 10
             done
             echo "${package_name}@${version} did not become visible on npm." >&2
             return 1
