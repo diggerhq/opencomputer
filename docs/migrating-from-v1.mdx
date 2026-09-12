@@ -3,12 +3,18 @@ title: "Migrating from v1"
 description: "Upgrade the SDK, verify it worked, and every behaviour that differs"
 ---
 
-**Upgrading the SDK is the migration.** There is no ticket to file and no setting to change:
-v1 and v2 are chosen by the major version of the SDK you have installed. Install `1.x` and your
-new sandboxes run on v2. Go back to `0.x` and they run on v1 again.
+<Warning>
+**v1 has been retired.** The workers that served it have been shut down. A `0.x` SDK now gets
+`410 Gone` with `code: "v1_retired"` on create, and existing v1 sandboxes are no longer
+reachable. Upgrading is the only path forward.
+</Warning>
 
-Existing sandboxes never move. The version decides where **new** sandboxes are created, so a
-rollback is a reinstall, not a recovery.
+**Upgrading the SDK is the migration.** There is no ticket to file and no setting to change:
+which platform you are on is decided by the major version of the SDK you have installed, and
+`1.x` is the only major that still has a fleet behind it.
+
+Rolling back is no longer possible. Until v1 was retired, reinstalling `0.x` put you back on it;
+that is no longer true, and pinning an old major now fails every create rather than serving one.
 
 ## Upgrade
 

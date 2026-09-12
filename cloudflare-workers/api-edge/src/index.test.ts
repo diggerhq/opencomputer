@@ -252,6 +252,9 @@ describe("api-edge sandbox create", () => {
           "X-API-Key": "osb_test",
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          // This case is about SSE indexing, not routing — but a create with no
+          // SDK version is now refused as v1, so it has to announce itself.
+          "x-oc-sdk-version": "1.0.0",
         },
         body: JSON.stringify({ snapshot: "snapshot-1", memoryMB: 1024 }),
       }),
