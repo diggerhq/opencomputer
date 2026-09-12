@@ -98,6 +98,20 @@ type DetailTab =
   | 'github'
   | 'byok'
 
+export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
+  'playground',
+  'deployments',
+  'sessions',
+  'channels',
+  'outboxes',
+  'schedules',
+  'webhooks',
+  'memory',
+  'secrets',
+  'github',
+  'byok',
+])
+
 const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
 
 function formatDate(value: string) {
@@ -509,20 +523,8 @@ export default function ManagedAgentDetail({
   const [starterCopied, setStarterCopied] = useState(false)
   const [continuationCopied, setContinuationCopied] = useState(false)
   const routeTab = params.tab as DetailTab | undefined
-  const projectTabs = new Set<DetailTab>([
-    'playground',
-    'deployments',
-    'sessions',
-    'channels',
-    'outboxes',
-    'schedules',
-    'webhooks',
-    'memory',
-    'secrets',
-    'byok',
-  ])
   const activeTab = project
-    ? routeTab && projectTabs.has(routeTab)
+    ? routeTab && PROJECT_DETAIL_TABS.has(routeTab)
       ? routeTab
       : 'playground'
     : standaloneTab
