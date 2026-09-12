@@ -342,6 +342,7 @@ export default function Agent() {
       subagents: string[];
       connections: string[];
       httpConnections: unknown[];
+      githubConnections: unknown[];
       mcpServers: string[];
       mcpServerDefinitions: Array<{
         id: string;
@@ -359,6 +360,7 @@ export default function Agent() {
       subagents: ["researcher"],
       connections: [],
       httpConnections: [],
+      githubConnections: [],
       mcpServers: ["docs"],
       mcpServerDefinitions: [
         { id: "docs", url: "https://mcp.example.com/" },
@@ -460,10 +462,11 @@ export const repository = defineTool({
     );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
-      `import { useTool } from "@opencomputer/agent";
+      `import { useConnection, useTool } from "@opencomputer/agent";
 import { repository } from "./tools/github.js";
 
 export default function Agent() {
+  useConnection({ id: "github-api" });
   useTool(repository);
   return "Use GitHub when needed.";
 }
@@ -499,6 +502,122 @@ export default function Agent() {
     ]);
     assert.ok(built.connections.includes("github-api"));
     assert.doesNotMatch(built.body.toString("utf8"), /actual-secret-value/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler records managed GitHub permissions as a provider connection", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-app-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "connections"), {
+      recursive: true,
+    });
+    await writeFile(
+      resolve(initialized.agentRoot, "connections", "github.ts"),
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+
+export const github = defineConnection({
+  id: "github",
+  provider: githubApp({
+    permissions: {
+      pull_requests: "write",
+      contents: "write",
+      metadata: "read",
+    },
+  }),
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useConnection } from "@opencomputer/agent";
+import { github } from "./connections/github.js";
+
+export default function Agent() {
+  useConnection(github);
+  return "Work with GitHub directly.";
+}
+`,
+    );
+
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    assert.deepEqual(built.connections, ["github"]);
+    assert.deepEqual(built.httpConnections, []);
+    assert.deepEqual(built.githubConnections, [
+      {
+        id: "github",
+        provider: {
+          kind: "github-app",
+          permissions: {
+            contents: "write",
+            metadata: "read",
+            pull_requests: "write",
+          },
+        },
+      },
+    ]);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(initialized.agentRoot, ".opencomputer", "runtime", ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { githubConnections: unknown[] };
+    assert.deepEqual(manifest.githubConnections, built.githubConnections);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects dynamic or unsupported GitHub permissions", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-invalid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "connections"), {
+      recursive: true,
+    });
+    const connection = resolve(
+      initialized.agentRoot,
+      "connections",
+      "github.ts",
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import "./connections/github.js";
+export default function Agent() { return "Use GitHub."; }
+`,
+    );
+    await writeFile(
+      connection,
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+const permissions = { contents: "write" } as const;
+export default defineConnection({
+  id: "github",
+  provider: githubApp({ permissions }),
+});
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /githubApp\(\) options must be static/,
+    );
+
+    await writeFile(
+      connection,
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+export default defineConnection({
+  id: "github",
+  provider: githubApp({ permissions: { administration: "write" } }),
+});
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /does not support the administration permission/,
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

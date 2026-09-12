@@ -78,6 +78,7 @@ import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectBYOK } from './BYOK'
+import { ManagedProjectGitHub } from './GitHub'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
   projectCloneCommand,
@@ -94,6 +95,7 @@ type DetailTab =
   | 'webhooks'
   | 'memory'
   | 'secrets'
+  | 'github'
   | 'byok'
 
 const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
@@ -705,6 +707,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
+    ...(project ? ([{ id: 'github', label: 'GitHub' }] as const) : []),
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
   ]
 
@@ -1207,6 +1210,13 @@ export default function ManagedAgentDetail({
         <ManagedProjectBYOK
           projectId={project.project.id}
           projectSlug={project.project.slug}
+        />
+      ) : null}
+
+      {activeTab === 'github' && project ? (
+        <ManagedProjectGitHub
+          projectId={project.project.id}
+          environment={environment}
         />
       ) : null}
     </div>

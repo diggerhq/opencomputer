@@ -65,6 +65,7 @@ async function registerBuiltDeployment(
     channels: built.channels,
     connections: built.connections,
     httpConnections: built.httpConnections,
+    githubConnections: built.githubConnections,
     memory: built.memory,
     ...(projectDeployment ? { projectDeployment } : {}),
     source: {

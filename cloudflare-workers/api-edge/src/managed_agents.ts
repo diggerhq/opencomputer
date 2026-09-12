@@ -1070,6 +1070,9 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
   }
+  if (/^\/projects\/[^/]+\/github(?:\/connect)?$/.test(suffix)) {
+    return stripPrivateValues(body);
+  }
   if (
     (method === "GET" || method === "PUT") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
@@ -1503,6 +1506,9 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      githubConnections: Array.isArray(body.githubConnections)
+        ? body.githubConnections
+        : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
@@ -1536,6 +1542,18 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/github$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/github\/connect$/.test(suffix)
+  ) {
     return true;
   }
   if (
@@ -1630,6 +1648,49 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
       suffix,
     )
   );
+}
+
+export async function handleManagedGitHubCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const requestURL = new URL(request.url);
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/github/callback${requestURL.search}`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return new Response("GitHub connection is unavailable", { status: 503 });
+  }
+  try {
+    const upstream = await fetch(target, { redirect: "manual" });
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "cache-control",
+      "content-security-policy",
+      "referrer-policy",
+      "x-content-type-options",
+      "x-frame-options",
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("cache-control", "no-store");
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
+    });
+  } catch {
+    return new Response("GitHub connection is temporarily unavailable", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
 }
 
 function channelConnectionPage(

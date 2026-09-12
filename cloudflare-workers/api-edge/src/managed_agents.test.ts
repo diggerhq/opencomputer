@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
+  handleManagedGitHubCallback,
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
@@ -50,6 +51,63 @@ describe("managed agents proxy", () => {
       role: "admin",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("forwards managed GitHub project connection requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        installUrl:
+          "https://github.com/apps/opencomputer/installations/new?state=opaque",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/connect",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ environments: ["development"] }),
+        },
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      installUrl:
+        "https://github.com/apps/opencomputer/installations/new?state=opaque",
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/projects/prj_test/github/connect",
+    );
+  });
+
+  it("forwards the unauthenticated GitHub setup callback as HTML", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("<html>connected</html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await handleManagedGitHubCallback(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/github/callback?code=oauth-code&installation_id=123&state=opaque",
+      ),
+      { MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.text()).resolves.toContain("connected");
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/github/callback?code=oauth-code&installation_id=123&state=opaque",
+    );
   });
 
   it("allows BYOK for Pro and Max but not the base plan", async () => {
@@ -1428,6 +1486,18 @@ describe("managed agents proxy", () => {
                 },
               },
             ],
+            githubConnections: [
+              {
+                id: "github",
+                provider: {
+                  kind: "github-app",
+                  permissions: {
+                    contents: "write",
+                    pull_requests: "write",
+                  },
+                },
+              },
+            ],
             memory: [
               {
                 id: "requirements",
@@ -1472,6 +1542,18 @@ describe("managed agents proxy", () => {
           id: "github-api",
           origin: "https://api.github.com",
         }),
+      ],
+      githubConnections: [
+        {
+          id: "github",
+          provider: {
+            kind: "github-app",
+            permissions: {
+              contents: "write",
+              pull_requests: "write",
+            },
+          },
+        },
       ],
       memory: [
         {

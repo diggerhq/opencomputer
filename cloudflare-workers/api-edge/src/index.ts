@@ -81,6 +81,7 @@ import * as webhooks from "./webhooks";
 import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
   handleAgentWebhookInvocation,
+  handleManagedGitHubCallback,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -5408,6 +5409,12 @@ export default {
     // assertion before calling the private deployment backend.
     if (path.startsWith("/api/managed-agents/channel-connections/")) {
       return handleManagedAgentChannelConnection(req, env);
+    }
+    if (
+      path === "/api/managed-agents/github/callback" &&
+      req.method === "GET"
+    ) {
+      return handleManagedGitHubCallback(req, env);
     }
     if (path.startsWith("/api/agent-webhooks/")) {
       return handleAgentWebhookInvocation(req, env);

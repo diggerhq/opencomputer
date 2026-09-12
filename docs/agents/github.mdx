@@ -1,0 +1,84 @@
+---
+title: "GitHub App connections"
+description: "Give an agent direct Git and GitHub API access with the managed OpenComputer App"
+---
+
+A managed GitHub connection lets an agent clone repositories, push branches,
+use the `gh` CLI, and call GitHub's REST or GraphQL APIs as a GitHub App
+installation.
+
+## Declare access
+
+Declare the maximum permissions this agent needs, then select the connection
+with `useConnection()`:
+
+```tsx
+import {
+  defineConnection,
+  githubApp,
+  useConnection,
+} from "@opencomputer/agent";
+
+const github = defineConnection({
+  id: "github",
+  provider: githubApp({
+    permissions: {
+      contents: "write",
+      pull_requests: "write",
+    },
+  }),
+});
+
+export default function Agent() {
+  useConnection(github);
+  return "Work on the requested repository, push a branch, and open a PR.";
+}
+```
+
+The supported permissions are `actions`, `checks`, `contents`, `issues`,
+`metadata`, and `pull_requests`. `metadata` is read-only. Request only what the
+agent needs.
+
+## Install the App
+
+Deploy the agent, open its project in the OpenComputer dashboard, and choose
+**GitHub**. Install the managed OpenComputer GitHub App into a user or
+organization account. GitHub lets the installer select all repositories or a
+specific set of repositories.
+
+That GitHub installation selection is the complete repository boundary. There
+is no second OpenComputer repository allowlist. If the installer selects all
+repositories, the agent can access every repository available to that
+installation; if specific repositories are selected, it can access only those
+repositories. Change the selection in GitHub's installation settings.
+
+Connections are attached independently to the project's development and
+production environments.
+
+## Use Git and the API
+
+Inside the agent sandbox, ordinary GitHub tooling works directly:
+
+```bash
+git clone https://github.com/acme/service.git
+git -C service switch -c agent/update
+git -C service push -u origin agent/update
+gh pr create --repo acme/service --fill
+gh api repos/acme/service/pulls
+```
+
+OpenComputer mints a GitHub installation token whose permissions are limited
+to those declared by the deployed agent. GitHub installation tokens expire
+after about one hour.
+
+<Warning>
+  The short-lived token is available inside the eligible agent's sandbox as
+  `GH_TOKEN` and `GITHUB_TOKEN` for the operation. Code running in that sandbox
+  can read it. Do not print it, write it into source, add it to a Git remote,
+  include it in a checkpoint, or send it to logs. Install the App only on
+  repositories you are comfortable granting to the agent.
+</Warning>
+
+Other `defineConnection()` providers continue to use OpenComputer's managed
+egress and secret proxy. This direct-token behavior is specific to managed
+GitHub App connections.

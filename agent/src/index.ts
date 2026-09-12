@@ -120,6 +120,26 @@ export interface HttpConnectionRedirectOrigin {
   readonly pathPrefix?: string;
 }
 
+export type GitHubAppPermission = "read" | "write";
+
+export interface GitHubAppPermissions {
+  readonly contents?: GitHubAppPermission;
+  readonly pull_requests?: GitHubAppPermission;
+  readonly issues?: GitHubAppPermission;
+  readonly checks?: GitHubAppPermission;
+  readonly actions?: GitHubAppPermission;
+  readonly metadata?: "read";
+}
+
+export interface GitHubAppProvider {
+  readonly kind: "github-app";
+  readonly permissions: Readonly<GitHubAppPermissions>;
+}
+
+export interface GitHubConnectionDefinition extends ConnectionReference {
+  readonly provider: GitHubAppProvider;
+}
+
 export interface McpServerDefinition extends ResourceReference {
   readonly kind: "mcp";
   readonly url: string;
@@ -373,6 +393,9 @@ export { defineMemory, documentMemory, httpMemory } from "./memory.js";
  * - `useInput()` reads `scope.input`.
  * - `useSessionData(key)` reads `scope.state[key]`.
  * - `useTool(id)` adds to `scope.tools`; returned as `enabledTools`.
+ * - `useConnection(id)` adds to `scope.connections`; returned as
+ *   `requiredConnections` so the host can make the declared connection
+ *   available to this render.
  * - `useMemory(id)` reads `scope.memory[id]`, the projection the host
  *   resolved for the session binding with that resource id (absent when the
  *   session has no binding for it), and adds the id to
@@ -384,6 +407,7 @@ interface AgentHooks {
   useInput(): Readonly<AgentInput>;
   useModel(model: ModelSelection): void;
   useTool(tool: string | ResourceReference): void;
+  useConnection(connection: string | ResourceReference): void;
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
@@ -430,15 +454,75 @@ export function bearer(secret: SecretReference): SecretHeaderReference {
   return secretHeader(secret, { prefix: "Bearer " });
 }
 
-export function defineConnection(input: {
+const GITHUB_APP_PERMISSION_KEYS = [
+  "actions",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+] as const;
+
+export function githubApp(options: {
+  permissions: GitHubAppPermissions;
+}): GitHubAppProvider {
+  const entries = Object.entries(options?.permissions ?? {});
+  if (entries.length === 0) {
+    throw new Error("githubApp() requires at least one permission");
+  }
+  const permissions: Record<string, GitHubAppPermission> = {};
+  for (const [name, level] of entries) {
+    if (!(GITHUB_APP_PERMISSION_KEYS as readonly string[]).includes(name)) {
+      throw new Error(
+        `githubApp() does not support the ${name} permission; supported permissions are ${GITHUB_APP_PERMISSION_KEYS.join(", ")}`,
+      );
+    }
+    if (level !== "read" && level !== "write") {
+      throw new Error(
+        `githubApp() permission ${name} must be "read" or "write"`,
+      );
+    }
+    if (name === "metadata" && level !== "read") {
+      throw new Error('githubApp() permission metadata must be "read"');
+    }
+    permissions[name] = level;
+  }
+  return Object.freeze({
+    kind: "github-app",
+    permissions: Object.freeze(permissions),
+  });
+}
+
+interface HttpConnectionInput {
   id: string;
   origin: string;
   headers?: Readonly<Record<string, string | SecretHeaderReference>>;
   methods?: readonly string[];
   pathPrefix?: string;
   redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
-}): HttpConnectionDefinition {
+}
+
+interface GitHubConnectionInput {
+  id: string;
+  provider: GitHubAppProvider;
+}
+
+export function defineConnection(
+  input: HttpConnectionInput,
+): HttpConnectionDefinition;
+export function defineConnection(
+  input: GitHubConnectionInput,
+): GitHubConnectionDefinition;
+export function defineConnection(
+  input: HttpConnectionInput | GitHubConnectionInput,
+): HttpConnectionDefinition | GitHubConnectionDefinition {
   const id = identifier(input.id, "defineConnection");
+  if ("provider" in input) {
+    if (input.provider?.kind !== "github-app") {
+      throw new Error("defineConnection() received an unsupported provider");
+    }
+    return Object.freeze({ kind: "connection", id, provider: input.provider });
+  }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") {
     throw new Error("Connection origins must be HTTPS origins without a path");
@@ -966,6 +1050,9 @@ export const useModel = (model: ModelSelection): void =>
   hooks().useModel(model);
 export const useTool = (tool: string | ResourceReference): void =>
   hooks().useTool(tool);
+export const useConnection = (
+  connection: string | ResourceReference,
+): void => hooks().useConnection(connection);
 export const useSubagent = (agent: string | ResourceReference): void =>
   hooks().useSubagent(agent);
 export const useMcpServer = (server: string | ResourceReference): void =>

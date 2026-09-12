@@ -5,7 +5,9 @@ import {
   defineConnection,
   defineMemory,
   documentMemory,
+  githubApp,
   httpMemory,
+  useConnection,
   useInput,
   useMemory,
   useSecret,
@@ -15,6 +17,78 @@ import {
 } from "./index.js";
 
 const HOOKS = Symbol.for("opencomputer.agent-hooks");
+
+test("githubApp defines a frozen managed connection permission subset", () => {
+  const provider = githubApp({
+    permissions: {
+      contents: "write",
+      pull_requests: "write",
+      actions: "read",
+      metadata: "read",
+    },
+  });
+  const connection = defineConnection({ id: "github", provider });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(connection)), {
+    kind: "connection",
+    id: "github",
+    provider: {
+      kind: "github-app",
+      permissions: {
+        contents: "write",
+        pull_requests: "write",
+        actions: "read",
+        metadata: "read",
+      },
+    },
+  });
+  assert.ok(Object.isFrozen(provider));
+  assert.ok(Object.isFrozen(provider.permissions));
+  assert.ok(Object.isFrozen(connection));
+});
+
+test("githubApp rejects empty, unsupported, and invalid permissions", () => {
+  assert.throws(
+    () => githubApp({ permissions: {} }),
+    /requires at least one permission/,
+  );
+  assert.throws(
+    () => githubApp({ permissions: { administration: "read" } as never }),
+    /does not support the administration permission/,
+  );
+  assert.throws(
+    () => githubApp({ permissions: { contents: "admin" } as never }),
+    /permission contents must be "read" or "write"/,
+  );
+  assert.throws(
+    () => githubApp({ permissions: { metadata: "write" } as never }),
+    /permission metadata must be "read"/,
+  );
+});
+
+test("useConnection selects a declared connection through the render host", () => {
+  const github = defineConnection({
+    id: "github",
+    origin: "https://api.github.com",
+  });
+  const selected: string[] = [];
+  const globals = globalThis as Record<PropertyKey, unknown>;
+  globals[HOOKS] = {
+    useConnection(connection: { id: string }) {
+      selected.push(connection.id);
+    },
+  };
+  try {
+    useConnection(github);
+    assert.deepEqual(selected, ["github"]);
+  } finally {
+    delete globals[HOOKS];
+  }
+  assert.throws(
+    () => useConnection(github),
+    /hooks can only run while rendering an agent/,
+  );
+});
 
 /**
  * Mirrors the host's render worker: a per-render scope with the projections

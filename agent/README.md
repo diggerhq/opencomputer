@@ -90,6 +90,33 @@ the original request headers or managed secrets to the redirect destination.
 
 Hooks may only be called while the managed runtime is rendering an agent.
 
+## Managed GitHub App connection
+
+For direct Git, `gh`, REST, and GraphQL access, declare a managed GitHub App
+provider and select it from the agent:
+
+```ts
+import { defineConnection, githubApp, useConnection } from "@opencomputer/agent";
+
+const github = defineConnection({
+  id: "github",
+  provider: githubApp({
+    permissions: { contents: "write", pull_requests: "write" },
+  }),
+});
+
+export default function Agent() {
+  useConnection(github);
+  return "Push a branch and create a pull request.";
+}
+```
+
+The installer chooses all or selected repositories in GitHub; omitting an
+additional repository list means the entire GitHub installation grant. Unlike
+HTTP connections, a short-lived installation token is placed in the eligible
+sandbox as `GH_TOKEN` and `GITHUB_TOKEN`, where sandbox code can read it. It
+expires after about one hour and must never be printed, committed, or logged.
+
 ## Code-defined tools
 
 Define executable capabilities with OpenComputer's harness-neutral `tool()`

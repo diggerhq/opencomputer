@@ -40,6 +40,7 @@ export interface BuiltAgentArtifact {
   channels: string[];
   connections: string[];
   httpConnections: HttpConnectionManifest[];
+  githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   body: Buffer;
   digest: string;
@@ -68,6 +69,16 @@ export interface HttpConnectionManifest {
   methods?: string[];
   pathPrefix?: string;
   redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
+}
+
+export type GitHubAppPermission = "read" | "write";
+
+export interface GitHubConnectionManifest {
+  id: string;
+  provider: {
+    kind: "github-app";
+    permissions: Record<string, GitHubAppPermission>;
+  };
 }
 
 export interface McpServerManifest {
@@ -2137,6 +2148,10 @@ function definedHttpConnections(
       if (!input || !ts.isObjectLiteralExpression(input)) {
         throw new Error("defineConnection() requires an object literal");
       }
+      if (objectProperty(input, "provider")) {
+        ts.forEachChild(node, visit);
+        return;
+      }
       const id = literalStringValue(
         objectProperty(input, "id"),
         "connection id",
@@ -2276,6 +2291,144 @@ function definedHttpConnections(
   return definitions;
 }
 
+const GITHUB_APP_PERMISSION_KEYS = new Set([
+  "actions",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+]);
+
+function definedGitHubConnections(
+  source: string,
+  path: string,
+): GitHubConnectionManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const definitions: GitHubConnectionManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineConnection"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error("defineConnection() requires an object literal");
+      }
+      const providerExpression = objectProperty(input, "provider");
+      if (!providerExpression) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        "connection id",
+      );
+      for (const property of input.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(`Connection ${id} cannot use spreads or shorthand properties`);
+        }
+        const name = staticPropertyName(property.name, `Connection ${id}`);
+        if (name !== "id" && name !== "provider") {
+          throw new Error(
+            `GitHub connection ${id} does not support the ${name} option`,
+          );
+        }
+      }
+      if (
+        !ts.isCallExpression(providerExpression) ||
+        !ts.isIdentifier(providerExpression.expression) ||
+        providerExpression.expression.text !== "githubApp"
+      ) {
+        throw new Error(
+          `Connection ${id} provider must be an inline githubApp() call`,
+        );
+      }
+      const options = literalCallArgument(
+        providerExpression,
+        `Connection ${id} githubApp()`,
+      );
+      if (!options) {
+        throw new Error(`Connection ${id} githubApp() requires permissions`);
+      }
+      for (const property of options.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(`Connection ${id} githubApp() options must be static`);
+        }
+        if (
+          staticPropertyName(property.name, `Connection ${id} githubApp()`) !==
+          "permissions"
+        ) {
+          throw new Error(
+            `Connection ${id} githubApp() only supports permissions`,
+          );
+        }
+      }
+      const permissionsExpression = objectProperty(options, "permissions");
+      if (
+        !permissionsExpression ||
+        !ts.isObjectLiteralExpression(permissionsExpression)
+      ) {
+        throw new Error(
+          `Connection ${id} githubApp() permissions must be an inline object literal`,
+        );
+      }
+      const permissions: Record<string, GitHubAppPermission> = {};
+      for (const property of permissionsExpression.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(
+            `Connection ${id} githubApp() permissions must use literal properties`,
+          );
+        }
+        const name = staticPropertyName(
+          property.name,
+          `Connection ${id} githubApp() permissions`,
+        );
+        if (!GITHUB_APP_PERMISSION_KEYS.has(name)) {
+          throw new Error(
+            `Connection ${id} githubApp() does not support the ${name} permission`,
+          );
+        }
+        const level = literalStringValue(
+          property.initializer,
+          `Connection ${id} githubApp() permission ${name}`,
+        );
+        if (level !== "read" && level !== "write") {
+          throw new Error(
+            `Connection ${id} githubApp() permission ${name} must be "read" or "write"`,
+          );
+        }
+        if (name === "metadata" && level !== "read") {
+          throw new Error(
+            `Connection ${id} githubApp() permission metadata must be "read"`,
+          );
+        }
+        permissions[name] = level;
+      }
+      if (Object.keys(permissions).length === 0) {
+        throw new Error(
+          `Connection ${id} githubApp() requires at least one permission`,
+        );
+      }
+      definitions.push({
+        id,
+        provider: {
+          kind: "github-app",
+          permissions: Object.fromEntries(
+            Object.entries(permissions).sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+        },
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return definitions;
+}
+
 function definedToolIds(source: string): string[] {
   return [
     ...source.matchAll(
@@ -2365,8 +2518,24 @@ export const useSecret = (value) => {
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
+export const githubApp = (options) => {
+  const entries = Object.entries(options?.permissions || {});
+  if (!entries.length) throw new Error("githubApp() requires at least one permission");
+  const permissions = {};
+  for (const [name, level] of entries) {
+    if (!["actions", "checks", "contents", "issues", "metadata", "pull_requests"].includes(name)) throw new Error("githubApp() does not support the " + name + " permission");
+    if (level !== "read" && level !== "write") throw new Error("githubApp() permission " + name + " must be read or write");
+    if (name === "metadata" && level !== "read") throw new Error("githubApp() permission metadata must be read");
+    permissions[name] = level;
+  }
+  return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
+};
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
+  if (input.provider) {
+    if (input.provider.kind !== "github-app") throw new Error("defineConnection() received an unsupported provider");
+    return Object.freeze({ kind: "connection", id: connectionId, provider: input.provider });
+  }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") throw new Error("Connection origins must be HTTPS origins without a path");
   for (const [name, value] of Object.entries(input.headers || {})) {
@@ -2452,6 +2621,7 @@ export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
+export const useConnection = (connection) => hooks().useConnection(connection);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
@@ -2685,9 +2855,13 @@ the product or support surface presented to users.
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
-  const duplicateConnection = httpConnections.find(
+  const githubConnections = sourceModules.flatMap((module) =>
+    definedGitHubConnections(module.source, module.path),
+  );
+  const allConnections = [...httpConnections, ...githubConnections];
+  const duplicateConnection = allConnections.find(
     (connection, index) =>
-      httpConnections.findIndex(
+      allConnections.findIndex(
         (candidate) => candidate.id === connection.id,
       ) !== index,
   );
@@ -2763,8 +2937,9 @@ the product or support surface presented to users.
         tools,
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
-        connections: httpConnections.map((connection) => connection.id).sort(),
+        connections: allConnections.map((connection) => connection.id).sort(),
         httpConnections,
+        githubConnections,
         mcpServers: [
           ...new Set([
             ...mcpServerDefinitions.map((server) => server.id),
@@ -2814,10 +2989,12 @@ export async function buildAgentArtifact(
   ) as {
     connections?: string[];
     httpConnections?: HttpConnectionManifest[];
+    githubConnections?: GitHubConnectionManifest[];
     memory?: MemoryDeclaration[];
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
+  const githubConnections = reactive.githubConnections ?? [];
   const memory = reactive.memory ?? [];
   const body = Buffer.from(
     JSON.stringify({
@@ -2832,6 +3009,7 @@ export async function buildAgentArtifact(
     channels: [],
     connections,
     httpConnections,
+    githubConnections,
     memory,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
