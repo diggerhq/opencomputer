@@ -58,6 +58,8 @@ describe("managed agents proxy", () => {
       Response.json({
         installUrl:
           "https://github.com/apps/opencomputer/installations/new?state=opaque",
+        authorizeUrl:
+          "https://github.com/login/oauth/authorize?client_id=test&state=opaque",
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -82,6 +84,8 @@ describe("managed agents proxy", () => {
     await expect(response.json()).resolves.toEqual({
       installUrl:
         "https://github.com/apps/opencomputer/installations/new?state=opaque",
+      authorizeUrl:
+        "https://github.com/login/oauth/authorize?client_id=test&state=opaque",
     });
     expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
       "https://manage-agents.mo-oc-dev.com/v1/projects/prj_test/github/connect",

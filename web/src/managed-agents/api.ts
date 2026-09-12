@@ -270,7 +270,10 @@ const githubStatusSchema = z.object({
   app: z.object({ slug: z.string() }).nullable(),
 })
 
-const githubConnectSchema = z.object({ installUrl: z.string().url() })
+const githubConnectSchema = z.object({
+  installUrl: z.string().url(),
+  authorizeUrl: z.string().url(),
+})
 
 const connectionSchema = z.object({
   id: z.string(),

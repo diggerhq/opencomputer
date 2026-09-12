@@ -35,10 +35,14 @@ export function ManagedProjectGitHub({
     (candidate) => candidate.environment === environment,
   )
   const connect = useMutation({
-    mutationFn: () =>
+    mutationFn: (_mode: 'install' | 'existing') =>
       connectManagedGitHub({ projectId, environments: [environment] }),
-    onSuccess: ({ installUrl }) => {
-      window.open(installUrl, '_blank', 'noopener,noreferrer')
+    onSuccess: ({ installUrl, authorizeUrl }, mode) => {
+      window.open(
+        mode === 'existing' ? authorizeUrl : installUrl,
+        '_blank',
+        'noopener,noreferrer',
+      )
     },
     onError: (error) =>
       notifyError("Couldn't start the GitHub installation.", error),
@@ -128,17 +132,26 @@ export function ManagedProjectGitHub({
               <p className="text-muted-foreground max-w-2xl text-sm">
                 No GitHub installation is connected to {environment}.
               </p>
-              <Button
-                disabled={!status.data?.app || connect.isPending}
-                onClick={() => connect.mutate()}
-              >
-                {connect.isPending ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <GithubMark className="size-4" />
-                )}
-                Install GitHub App
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={!status.data?.app || connect.isPending}
+                  onClick={() => connect.mutate('existing')}
+                >
+                  Connect existing installation
+                </Button>
+                <Button
+                  disabled={!status.data?.app || connect.isPending}
+                  onClick={() => connect.mutate('install')}
+                >
+                  {connect.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <GithubMark className="size-4" />
+                  )}
+                  Install GitHub App
+                </Button>
+              </div>
             </div>
           )}
           {!status.data?.app ? (

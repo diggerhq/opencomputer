@@ -497,7 +497,7 @@ export class OpenComputerClient {
     projectId: string;
     environments?: Array<"development" | "production">;
   }) {
-    return this.request<{ installUrl: string }>(
+    return this.request<{ installUrl: string; authorizeUrl: string }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
       {
         method: "POST",
