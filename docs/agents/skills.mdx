@@ -72,7 +72,11 @@ campaign-brief/
 
 Reference those files from `SKILL.md` so the agent knows when to read them.
 Supporting files are deployed with the skill and need no imports from
-`agent.ts`.
+`agent.ts`. Loading a skill lists them, and the agent reads one on request —
+so a long checklist or a set of examples costs nothing until it is needed.
+
+An agent can only read files packaged with the skill it loaded. There is no
+path out of that directory, and no way to reach anything else on the machine.
 
 ## Scope skills to an agent
 
