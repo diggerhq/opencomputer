@@ -68,6 +68,14 @@ func (s *Server) createSandbox(c echo.Context) error {
 	defer tr.emit()
 	c.SetRequest(c.Request().WithContext(withCreateTrace(c.Request().Context(), tr)))
 
+	// The v1 fleet this would route to has been shut down. Answered before the
+	// body is even read: there is nothing to validate a request against when
+	// the backend that would serve it is gone, and the caller needs the upgrade
+	// instruction rather than a failure further in.
+	if err := s.refuseIfRetired(c); err != nil {
+		return err
+	}
+
 	var cfg types.SandboxConfig
 	if err := c.Bind(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{

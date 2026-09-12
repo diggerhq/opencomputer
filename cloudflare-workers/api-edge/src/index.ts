@@ -35,6 +35,9 @@ import {
   RUNTIME_MICROVM,
   SDK_VERSION_HEADER,
   effectiveRuntime,
+  isRetiredRuntime,
+  v1RetiredError,
+  V1_RETIRED_STATUS,
   isMicrovmWorkerID,
 } from "./runtime_gate";
 import {
@@ -2069,6 +2072,10 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // reads its backend off. Reading org.runtime directly at any of those points
   // again would route the create one way and label it another.
   const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
+  // The v1 fleet it would route to no longer exists. Refused here rather than
+  // forwarded, so the caller gets the upgrade instruction instead of whatever
+  // a create against a shut-down fleet happens to look like.
+  if (isRetiredRuntime(runtime)) return json(v1RetiredError(), V1_RETIRED_STATUS);
 
   // Read body once — used for size-gating, the hard-pin cell peek, and the
   // verbatim forward to the CP.
@@ -3407,6 +3414,9 @@ async function proxyToCellAuthed(
   // restore: a customer would migrate successfully and then find every template
   // they built unusable. Same decision, same inputs as createSandbox.
   const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
+  // A template built for v1 is a whole-disk checkpoint, which nothing left can
+  // restore. Same refusal as a create.
+  if (isRetiredRuntime(runtime)) return json(v1RetiredError(), V1_RETIRED_STATUS);
 
   const cell = opts.cellId
     ? await lookupCell(env, opts.cellId)
