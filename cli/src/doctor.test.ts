@@ -59,6 +59,31 @@ test("doctor accepts the initialized project without contacting the API", async 
   }
 });
 
+test("doctor accepts a managed GitHub provider without an HTTP origin", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-github-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineConnection, githubApp, useConnection } from "@opencomputer/agent";
+const github = defineConnection({
+  id: "github",
+  provider: githubApp({ permissions: { contents: "write" } }),
+});
+export default function Agent() {
+  useConnection(github);
+  return "Use GitHub.";
+}
+`,
+    );
+    const result = await doctorProject(root);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.diagnostics, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("doctor parses single-line declarations and ignores comments", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
   try {

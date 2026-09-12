@@ -105,6 +105,10 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
         }
         if (name === "defineConnection") {
           const definition = node.arguments[0];
+          const provider =
+            definition && ts.isObjectLiteralExpression(definition)
+              ? property(definition, "provider")
+              : undefined;
           const origin =
             definition && ts.isObjectLiteralExpression(definition)
               ? property(definition, "origin")
@@ -125,9 +129,10 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
                 );
               }));
           if (
-            !origin ||
-            !isLiteralHttpsOrigin(origin.initializer) ||
-            !redirectsValid
+            !provider &&
+            (!origin ||
+              !isLiteralHttpsOrigin(origin.initializer) ||
+              !redirectsValid)
           ) {
             const line =
               syntax.getLineAndCharacterOfPosition(node.getStart(syntax)).line +
