@@ -1,0 +1,115 @@
+---
+title: "Memory"
+description: "Read and save notes across sessions"
+---
+
+Memory stores requirements, decisions and preferences that later sessions can
+reuse. Owners can read, edit and export the same notes.
+
+## Declare a resource
+
+A resource is declared once, at module scope, like a tool or a connection:
+
+```ts
+import { defineMemory } from "@opencomputer/agent";
+
+export const notes = defineMemory({
+  id: "notes",
+  description: "Confirmed workshop requirements.",
+});
+```
+
+`defineMemory` uses the built-in `documentMemory` provider by default:
+OpenComputer stores editable text, without starting a sandbox. Deploying the
+resource registers it; [create a document](/agents/document-memory#owner-access)
+before binding it to a session.
+
+`notes` is an application-defined resource name. It can contain many documents;
+this example calls one `workshop`. Neither name is built into OpenComputer.
+Declare with a direct `defineMemory({...})` on a literal object, calling the
+function imported by name from `@opencomputer/agent` (or re-exported under
+that name by one of your own modules); the compiler rejects aliases,
+namespace members such as `agent.defineMemory`, spreads and variables so
+that what it registers is exactly what runs. Anything else that merely
+spells `defineMemory`, such as a property of your own, is unrelated to it.
+
+## Read it in the render
+
+`useMemory` returns the bound text and selects the memory tools for the next
+model step:
+
+```ts
+import { useMemory } from "@opencomputer/agent";
+import { notes } from "./memory";
+
+export default function Agent() {
+  const memory = useMemory(notes);
+  return `Help plan the workshop.
+Save changes with memory_save and keep the other confirmed requirements.
+
+## Confirmed requirements
+${memory.text}`;
+}
+```
+
+The hook is synchronous and returns `{ text, sources, writable }`. Your agent
+decides where the text goes in its instructions; nothing is inserted for you.
+Treat saved text as data the model reads, not as instructions it follows.
+
+## Bind a document to a session
+
+Include `memory` when creating a [session](/agents/sessions) with
+`POST /api/managed-agents/sessions` ([management API](/agents/api#create)):
+
+```json
+{
+  "agentId": "<agent-id>@development",
+  "memory": {
+    "notes": {
+      "scope": "document",
+      "id": "workshop",
+      "access": "read-write"
+    }
+  }
+}
+```
+
+| Setting | Effect |
+| --- | --- |
+| `notes` | Matches the declared resource ID. |
+| `id: "workshop"` | Selects one existing document from that resource. |
+| `access: "read-write"` | Supplies its text and the `memory_save` tool. Use `read` for text only. |
+
+Bindings are fixed for the session. The model receives neither storage
+credentials nor permission to select another document. A
+[collection binding](/agents/document-memory#session-bindings) instead lets it
+browse documents with `memory_list` and `memory_read`.
+
+The document must exist before the session binds it. `startSessionOnDocument`
+in the [TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers)
+creates it if needed and then the session, and the CLI's
+`session create --memory notes=workshop --create-document` does the same.
+
+## Save and reuse notes
+
+Saving is explicit: the model calls `memory_save({ text })`. Each save replaces
+the document's text, so the example asks it to preserve existing requirements.
+Conversation history is not automatically extracted into memory.
+
+Sessions bound to the same document share its latest saved text. Each model
+step reads it again; [revision checks](/agents/document-memory#saving) prevent
+an agent from overwriting changes made since its read. A successful save is
+reported as a `memory.saved` [session event](/agents/events#memory), delivered
+best-effort.
+
+Memory belongs to a **project and environment**. It survives session end,
+sandbox loss, conversation compaction and new deployments. Development and
+Production have separate stores.
+
+## Reference
+
+- [Document memory](/agents/document-memory): bindings, tools, conflicts,
+  owner operations and API contracts.
+- [Memory providers](/agents/memory-providers): storage responsibilities and
+  the proposed external-provider contract.
+- [Session data](/agents/session-data): application values scoped to one session.

@@ -215,6 +215,142 @@ function strings(value: unknown): string[] {
     : [];
 }
 
+// Project memory (docs/agents/document-memory.mdx, "Management API"). The
+// backend mirrors the public routes one-to-one, so the edge passes the
+// documented bodies, status codes, error envelope and the conditional
+// headers (`ETag`, `If-Match`, `If-None-Match`) through untouched.
+// The resource inventory is the durable list of an environment's resources,
+// independent of what the current deployments declare: `declared` says
+// whether an active deployment still names the resource, `documents` counts
+// its live documents.
+const MEMORY_RESOURCES_ROUTE = /^\/projects\/[^/]+\/memory$/;
+const MEMORY_DOCUMENTS_ROUTE = /^\/projects\/[^/]+\/memory\/[^/]+\/documents$/;
+const MEMORY_DOCUMENT_ROUTE =
+  /^\/projects\/[^/]+\/memory\/[^/]+\/documents\/[^/]+$/;
+const MEMORY_CONDITIONAL_REQUEST_HEADERS = ["if-match", "if-none-match"];
+
+function isMemoryRoute(method: string, suffix: string): boolean {
+  if (
+    method === "GET" &&
+    (MEMORY_RESOURCES_ROUTE.test(suffix) || MEMORY_DOCUMENTS_ROUTE.test(suffix))
+  ) {
+    return true;
+  }
+  return (
+    (method === "GET" ||
+      method === "PUT" ||
+      method === "PATCH" ||
+      method === "DELETE") &&
+    MEMORY_DOCUMENT_ROUTE.test(suffix)
+  );
+}
+
+function publicMemoryWriter(value: unknown): Record<string, unknown> {
+  const writer = record(value) ?? {};
+  return writer.kind === "agent"
+    ? { kind: "agent", sessionId: writer.sessionId }
+    : { kind: "owner" };
+}
+
+function publicMemoryDocumentMeta(value: unknown): Record<string, unknown> {
+  const document = record(value) ?? {};
+  return {
+    id: document.id,
+    title: document.title,
+    summary: document.summary,
+    agentWrites: document.agentWrites,
+    revision: document.revision,
+    bytes: document.bytes,
+    maxBytes: document.maxBytes,
+    updatedAt: document.updatedAt,
+    writer: publicMemoryWriter(document.writer),
+  };
+}
+
+function publicMemoryDocument(value: unknown): Record<string, unknown> {
+  const document = record(value) ?? {};
+  return { ...publicMemoryDocumentMeta(document), text: document.text };
+}
+
+function publicMemoryResource(value: unknown): Record<string, unknown> {
+  const resource = record(value) ?? {};
+  const provider = record(resource.provider) ?? {};
+  return {
+    id: resource.id,
+    provider: { kind: provider.kind, maxBytes: provider.maxBytes },
+    declared: resource.declared === true,
+    documents: typeof resource.documents === "number" ? resource.documents : 0,
+  };
+}
+
+// Memory errors are the documented `{ error: { code, message } }` envelope
+// with user-facing messages (stale revision, oversized text, missing
+// condition header), so client errors pass through as the backend wrote them.
+// Server errors keep the generic redaction every other route gets.
+async function memoryResponse(
+  upstream: Response,
+  method: string,
+  suffix: string,
+): Promise<Response> {
+  const headers = new Headers({ "cache-control": "no-store" });
+  const etag = upstream.headers.get("etag");
+  if (etag) headers.set("etag", etag);
+  if (upstream.status === 204 || upstream.status === 304) {
+    return new Response(null, { status: upstream.status, headers });
+  }
+  if (!upstream.ok) {
+    if (upstream.status >= 500) return publicErrorResponse(upstream);
+    const body = record(await upstream.clone().json().catch(() => null));
+    const error = record(body?.error);
+    const code =
+      typeof error?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+        ? error.code
+        : null;
+    const message =
+      typeof error?.message === "string" ? error.message.slice(0, 1_000) : null;
+    if (!code || message === null) return publicErrorResponse(upstream);
+    headers.set("content-type", "application/json");
+    return new Response(JSON.stringify({ error: { code, message } }), {
+      status: upstream.status,
+      headers,
+    });
+  }
+  const body = record(await upstream.json().catch(() => null)) ?? {};
+  headers.set("content-type", "application/json");
+  const value =
+    method === "GET" && MEMORY_RESOURCES_ROUTE.test(suffix)
+      ? {
+          resources: Array.isArray(body.resources)
+            ? body.resources.map(publicMemoryResource)
+            : [],
+        }
+      : method === "GET" && MEMORY_DOCUMENTS_ROUTE.test(suffix)
+        ? {
+            documents: Array.isArray(body.documents)
+              ? body.documents.map(publicMemoryDocumentMeta)
+              : [],
+            nextCursor:
+              typeof body.nextCursor === "string" ? body.nextCursor : null,
+          }
+        : publicMemoryDocument(body);
+  return new Response(JSON.stringify(value), {
+    status: upstream.status,
+    headers,
+  });
+}
+
+// A memory resource the deployment declares (docs/agents/document-memory.mdx,
+// "Configuration"): what the Memory page and `memory export` enumerate.
+function publicMemoryDeclaration(value: unknown): Record<string, unknown> {
+  const declaration = record(value) ?? {};
+  const provider = record(declaration.provider) ?? {};
+  return {
+    id: declaration.id,
+    description: declaration.description,
+    provider: { kind: provider.kind, maxBytes: provider.maxBytes },
+  };
+}
+
 function publicDeployment(value: unknown): Record<string, unknown> {
   const deployment = record(value) ?? {};
   return {
@@ -224,6 +360,9 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(Array.isArray(deployment.memory)
+      ? { memory: deployment.memory.map(publicMemoryDeclaration) }
+      : {}),
     ...(deployment.projectDeployment
       ? { projectDeployment: stripPrivateValues(deployment.projectDeployment) }
       : {}),
@@ -516,6 +655,79 @@ function publicWebhookRequest(value: unknown): Record<string, unknown> {
   };
 }
 
+// Event subscriptions (docs/agents/api.mdx, "Event subscriptions"): the
+// backend owns the body and the object, so both pass through as written,
+// less who created it. Fields the edge does not know (the environment scope,
+// for one) are the backend's to validate and are kept.
+const EVENT_SUBSCRIPTIONS_ROUTE = /^\/projects\/[^/]+\/event-subscriptions$/;
+const EVENT_SUBSCRIPTION_ROUTE =
+  /^\/projects\/[^/]+\/event-subscriptions\/[^/]+$/;
+
+function isEventSubscriptionRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) ||
+    ((method === "GET" || method === "DELETE") &&
+      EVENT_SUBSCRIPTION_ROUTE.test(suffix))
+  );
+}
+
+function publicEventSubscription(value: unknown): unknown {
+  const subscription = record(stripPrivateValues(value));
+  if (!subscription) return value;
+  const { createdBy: _createdBy, ...rest } = subscription;
+  return rest;
+}
+
+// A delivery's `error` is the backend's terminal verdict when it is one of
+// its codes; any other text is an operator message and is not public.
+const DELIVERY_ERROR_CODES = new Set([
+  "subscription_unavailable",
+  "target_missing",
+  "target_ended",
+]);
+
+function publicDelivery(value: unknown): Record<string, unknown> {
+  const delivery = record(value) ?? {};
+  const receipt = record(delivery.receipt);
+  return {
+    id: delivery.id,
+    subscriptionId: delivery.subscriptionId,
+    eventId: delivery.eventId,
+    eventType: delivery.eventType,
+    destination: stripPrivateValues(delivery.destination),
+    status: delivery.status,
+    attempt: delivery.attempt,
+    ...(receipt
+      ? { receipt: { sessionId: receipt.sessionId, turnId: receipt.turnId } }
+      : {}),
+    ...(typeof delivery.nextAttemptAt === "string"
+      ? { nextAttemptAt: delivery.nextAttemptAt }
+      : {}),
+    ...(typeof delivery.error === "string"
+      ? {
+          error: DELIVERY_ERROR_CODES.has(delivery.error)
+            ? delivery.error
+            : "delivery_failed",
+        }
+      : {}),
+    updatedAt: delivery.updatedAt,
+  };
+}
+
+function publicSessionSnapshot(value: unknown): unknown {
+  const session = record(stripPrivateValues(value));
+  if (!session || !Array.isArray(session.turns)) return session ?? value;
+  return {
+    ...session,
+    turns: session.turns.map((entry) => {
+      const turn = record(entry);
+      if (!turn || !Array.isArray(turn.deliveries)) return entry;
+      return { ...turn, deliveries: turn.deliveries.map(publicDelivery) };
+    }),
+  };
+}
+
 const PRIVATE_EVENT_KEYS = new Set([
   "accountId",
   "account_id",
@@ -539,13 +751,179 @@ const PRIVATE_EVENT_KEYS = new Set([
   "platform_instructions",
 ]);
 
+export type PublicFailureCode =
+  | "interrupted"
+  | "session_ended"
+  | "runtime_lost"
+  | "runtime_failed"
+  | "deployment_invalid"
+  | "model_unavailable"
+  | "model_rejected"
+  | "context_too_long"
+  | "tool_failed"
+  | "sandbox_timeout"
+  | "sandbox_failed"
+  | "agent_failed";
+
+/**
+ * What a `turn.failed` or `session.failed` event says in public: a stable
+ * code, a fixed sentence, and at most one validated parameter. The runtime's
+ * own error text is written for operators and can carry anything (paths,
+ * internal URLs, credentials, stack frames), so it is classified here and
+ * never forwarded. A failure no rule recognizes is `agent_failed`.
+ */
+export interface PublicFailure {
+  code: PublicFailureCode;
+  message: string;
+  /** The model the agent asked for, when the runtime rejected it by id. */
+  model?: string;
+  /** The tool that failed, when the runtime named it. */
+  tool?: string;
+}
+
+const GENERIC_FAILURE_MESSAGE = "The agent could not complete this request.";
+
+const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
+  interrupted: "The turn was interrupted before it finished.",
+  session_ended: "The session ended before the turn finished.",
+  runtime_lost:
+    "The agent runtime stopped responding and the turn was abandoned.",
+  runtime_failed: "The agent runtime failed before the turn finished.",
+  deployment_invalid: "The deployment could not be loaded by the runtime.",
+  model_unavailable: "The requested model is not available to this agent.",
+  model_rejected: "The model provider rejected the request.",
+  context_too_long:
+    "The conversation is too long for the model's context window.",
+  tool_failed: "A tool failed.",
+  sandbox_timeout: "A sandbox command did not finish in time.",
+  sandbox_failed: "The sandbox could not run this turn.",
+  agent_failed: GENERIC_FAILURE_MESSAGE,
+};
+
+// The typed reasons the session records itself, ahead of any runtime text.
+const FAILURE_REASON_CODES: Record<string, PublicFailureCode> = {
+  interrupted: "interrupted",
+  runtime_interrupted: "interrupted",
+  session_ended: "session_ended",
+  runtime_lost: "runtime_lost",
+};
+
+// A parameter is the only runtime-derived text a public failure carries, so
+// it must look like what it claims to be; anything else is dropped.
+const MODEL_ID =
+  /^(?:[a-z][a-z0-9-]{0,31}\/)?[a-z0-9][a-z0-9._:-]{0,63}$/i;
+const TOOL_ID = /^[a-z0-9_][a-z0-9_.-]{0,63}$/i;
+const CREDENTIAL_SHAPED =
+  /^(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs]|key|token|secret)[-_]/i;
+
+function validParameter(pattern: RegExp, value: string | undefined) {
+  return value !== undefined &&
+    pattern.test(value) &&
+    !CREDENTIAL_SHAPED.test(value)
+    ? value
+    : undefined;
+}
+
+// Message rules, first match wins. Each names the runtime error family it
+// recognizes; the captured group, if any, is the parameter.
+const FAILURE_MESSAGE_RULES: ReadonlyArray<{
+  code: PublicFailureCode;
+  pattern: RegExp;
+  parameter?: "model" | "tool";
+}> = [
+  {
+    code: "model_unavailable",
+    pattern: /rejects any useModel other than \S+ \(requested (\S+)\)/,
+    parameter: "model",
+  },
+  {
+    code: "model_unavailable",
+    pattern: /^Model unavailable: (\S+?)\.?(?:\s|$)/,
+    parameter: "model",
+  },
+  {
+    code: "model_unavailable",
+    pattern: /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
+  },
+  {
+    code: "context_too_long",
+    pattern:
+      /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i,
+  },
+  {
+    code: "model_rejected",
+    pattern:
+      /\b(?:401|403|429)\b|unauthori[sz]ed|invalid (?:x-)?api[ _-]?key|authentication|rate limit|quota|overloaded|insufficient(?: |_)(?:credits|quota)|APICallError|provider (?:rejected|error)/i,
+  },
+  {
+    code: "tool_failed",
+    pattern:
+      /^Tool (?:module exported an unregistered tool|is defined more than once): (\S+)$/,
+    parameter: "tool",
+  },
+  {
+    code: "tool_failed",
+    pattern: /^(?:Unknown tool|Tool) "?([A-Za-z0-9_.-]+)"? (?:failed|is not (?:available|registered)|threw)/,
+    parameter: "tool",
+  },
+  { code: "tool_failed", pattern: /^The tool has no edge implementation/ },
+  { code: "sandbox_timeout", pattern: /^Sandbox operation timed out/ },
+  {
+    code: "sandbox_failed",
+    pattern: /^(?:Sandbox|The sandbox|Cannot terminate the sandbox)\b/,
+  },
+  {
+    code: "deployment_invalid",
+    pattern:
+      /^(?:The deployment is missing|The Workerd agent artifact|The Workerd session has no pinned deployment|This Workerd slice requires|Agent must return instructions|Invalid artifact module path|The (?:private artifact service|Dynamic Worker Loader) is not configured|Artifact service returned)/,
+  },
+  {
+    code: "runtime_failed",
+    pattern:
+      /^(?:Runtime harness|OpenCode|The (?:Workerd|reactive) (?:runtime|harness)|Prestarted OpenCode|Workerd runtime|Agent (?:render|tool metadata) returned|Render commit returned|Session state returned|Agent selected an unregistered)/,
+  },
+];
+
+export function publicFailure(value: unknown): PublicFailure {
+  const data = record(value) ?? {};
+  const reason = typeof data.reason === "string" ? data.reason : "";
+  const known = FAILURE_REASON_CODES[reason];
+  if (known) return { code: known, message: PUBLIC_FAILURE_MESSAGES[known] };
+  const message = typeof data.message === "string" ? data.message : reason;
+  // Classification reads only the first line: the sentence the runtime
+  // wrote, before any stack frame or cause chain.
+  const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  for (const rule of FAILURE_MESSAGE_RULES) {
+    const match = firstLine.match(rule.pattern);
+    if (!match) continue;
+    if (rule.parameter === "model") {
+      const model = validParameter(MODEL_ID, match[1]);
+      if (model) {
+        return {
+          code: rule.code,
+          message: `The model ${model} is not available to this agent.`,
+          model,
+        };
+      }
+    }
+    if (rule.parameter === "tool") {
+      const tool = validParameter(TOOL_ID, match[1]);
+      if (tool) {
+        return { code: rule.code, message: `Tool ${tool} failed.`, tool };
+      }
+    }
+    return { code: rule.code, message: PUBLIC_FAILURE_MESSAGES[rule.code] };
+  }
+  return { code: "agent_failed", message: GENERIC_FAILURE_MESSAGE };
+}
+
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
-    return { message: "The agent could not complete this request." };
+    return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(
@@ -720,6 +1098,19 @@ function publicSuccessBody(
         ? body.requests.map(publicWebhookRequest)
         : [],
     };
+  }
+  if (method === "GET" && EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) {
+    return {
+      subscriptions: Array.isArray(body.subscriptions)
+        ? body.subscriptions.map(publicEventSubscription)
+        : [],
+    };
+  }
+  if (
+    (method === "POST" && EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) ||
+    (method === "GET" && EVENT_SUBSCRIPTION_ROUTE.test(suffix))
+  ) {
+    return { subscription: publicEventSubscription(body.subscription) };
   }
   if (
     (method === "GET" || method === "PUT") &&
@@ -962,12 +1353,20 @@ function publicSuccessBody(
       updatedAt: body.updatedAt,
     };
   }
+  if (method === "GET" && suffix === "/sessions") {
+    return {
+      ...(record(stripPrivateValues(body)) ?? {}),
+      sessions: Array.isArray(body.sessions)
+        ? body.sessions.map(publicSessionSnapshot)
+        : [],
+    };
+  }
   if (
-    (method === "GET" && /^\/sessions(?:\/[^/]+)?$/.test(suffix)) ||
+    (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
     (method === "POST" &&
-      /^\/sessions\/[^/]+\/(resume|end|terminate)$/.test(suffix))
+      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
   ) {
-    return stripPrivateValues(body);
+    return publicSessionSnapshot(body);
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -983,7 +1382,9 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
-  if (suffix.includes("/webhooks")) headers.set("cache-control", "no-store");
+  if (suffix.includes("/webhooks") || suffix.includes("/event-subscriptions")) {
+    headers.set("cache-control", "no-store");
+  }
   return new Response(
     JSON.stringify(
       publicSuccessBody(
@@ -1102,6 +1503,7 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      memory: Array.isArray(body.memory) ? body.memory : [],
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
         : {}),
@@ -1162,6 +1564,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   ) {
     return true;
   }
+  if (isMemoryRoute(method, suffix)) return true;
+  if (isEventSubscriptionRoute(method, suffix)) return true;
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
@@ -1222,7 +1626,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   return (
     method === "POST" &&
-    /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate)$/.test(suffix)
+    /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate|interrupt)$/.test(
+      suffix,
+    )
   );
 }
 
@@ -1609,6 +2015,13 @@ export async function proxyManagedAgents(
     );
   }
   const headers = copyRequestHeaders(request);
+  const memoryRoute = isMemoryRoute(method, suffix);
+  if (memoryRoute) {
+    for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+  }
   headers.set(
     "x-opencomputer-agent-token",
     await mintManagedAgentsAssertion(env.OC_MANAGED_AGENTS_SECRET, caller),
@@ -1640,6 +2053,7 @@ export async function proxyManagedAgents(
   }
   try {
     const upstream = await fetch(target, init);
+    if (memoryRoute) return memoryResponse(upstream, method, suffix);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {

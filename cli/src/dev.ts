@@ -15,6 +15,7 @@ import {
 import { startGateway } from "./local.js";
 import {
   buildAgentArtifact,
+  mergeMemoryDeclarations,
   readProjectAgents,
   readProjectResources,
   type BuiltAgentArtifact,
@@ -64,6 +65,7 @@ async function registerBuiltDeployment(
     channels: built.channels,
     connections: built.connections,
     httpConnections: built.httpConnections,
+    memory: built.memory,
     ...(projectDeployment ? { projectDeployment } : {}),
     source: {
       digest: built.digest,
@@ -114,6 +116,14 @@ export async function publishProjectDeployment(
       ),
     });
   }
+  // Agents of one project share memory resources by id, so their
+  // declarations must agree before any of them registers.
+  mergeMemoryDeclarations(
+    builtAgents.map(({ source, built }) => ({
+      origin: `agent ${source.localId}`,
+      memory: built.memory,
+    })),
+  );
   const digest = createHash("sha256")
     .update(
       JSON.stringify({

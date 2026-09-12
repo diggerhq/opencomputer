@@ -60,6 +60,10 @@ Usage:
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
   opencomputer session create [prompt] [--agent <project-agent>] [--keep]
+      [--memory <resource>=<documentId>[:read|read-write] | --memory <resource>]... [--create-document]
+      --memory binds a document (read-write by default) or a collection; --create-document
+      creates each bound document that does not exist yet; with --idempotency-key a retry
+      returns the same session
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
@@ -80,6 +84,14 @@ Usage:
   opencomputer webhooks disable <webhook-id> [--project <id|slug>]
   opencomputer webhooks rotate-token <webhook-id> [--project <id|slug>]
   opencomputer webhooks remove <webhook-id> [--project <id|slug>]
+  opencomputer memory list [<resource>] [--environment development|production]
+  opencomputer memory show <resource> <id> [--environment development|production]
+  opencomputer memory create <resource> <id> --title <title> [--summary <text>] [--text-file <path>|--text-stdin] [--frozen]
+  opencomputer memory edit <resource> <id> [--text-file <path>|--text-stdin] [--summary <text>]
+  opencomputer memory freeze <resource> <id> [--environment development|production]
+  opencomputer memory unfreeze <resource> <id> [--environment development|production]
+  opencomputer memory export --out <dir> [--resource <id>] [--environment development|production]
+  opencomputer memory remove <resource> <id> [--environment development|production]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]

@@ -1,0 +1,167 @@
+---
+title: "Session events"
+description: "The durable event log every session keeps and every consumer reads"
+---
+
+Every session appends what happens to one durable log: the turns it
+accepted, the text the model produced, the tools it called, the memory it
+saved and the runtime that ran it. The log is what `opencomputer sessions
+tail --json` prints, what [`useAgent`](/agents/react) reduces to messages,
+what the dashboard's session view shows, and what
+[`GET /sessions/<id>/events`](/agents/api#events) returns.
+
+## Shape and ordering
+
+Each event is one JSON object:
+
+| Field | Meaning |
+| --- | --- |
+| `seq` | Position in the log, starting at 1 and increasing with every event |
+| `id` | A unique event ID |
+| `timestamp` | When the event was recorded |
+| `sessionId` | The session |
+| `turnId` | The turn the event belongs to; absent on session-level events |
+| `type` | One of the types below |
+| `data` | Fields specific to the type |
+
+`seq` is the cursor. A read with `after=<seq>` returns events with a greater
+`seq`, in ascending order, up to 500 at a time; repeat from the last `seq`
+you received until a page is empty, and keep polling from there to follow a
+live session. Because the log is durable and `seq` only grows, a consumer
+that stops can resume from its cursor without missing anything, and a page
+that overlaps one already read is harmless: apply events whose `seq` is
+greater than what you have applied. The React hook and the CLI work this
+way.
+
+Events at or below the cursor never change. New types can appear; treat an
+unknown type as informational and keep reading.
+
+## Event types
+
+### Session lifecycle
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
+| `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
+| `session.ended` | The owner ended the session. Queued and running turns were cancelled and memory writes revoked. | none |
+| `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
+
+### Turns
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt` |
+| `turn.queued` | The turn waits for earlier turns | `mode` |
+| `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
+| `turn.interrupted` | This turn cancelled the turns that were running | `interruptedTurnIds` |
+| `turn.started` | The runtime began the turn | none |
+| `turn.completed` | The turn finished and the session is idle again | none |
+| `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
+| `turn.cancelled` | The turn was stopped by an interrupt | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it |
+
+#### Public failures
+
+A failure's `data` is a stable `code`, a fixed `message` for that code, and
+at most one parameter. The runtime's own error text is never sent; a failure
+no rule recognizes is `agent_failed`.
+
+| `code` | Meaning | Parameter |
+| --- | --- | --- |
+| `interrupted` | The turn was stopped before it finished | |
+| `session_ended` | The session ended while the turn ran | |
+| `runtime_lost` | The runtime stopped responding and the turn was abandoned | |
+| `runtime_failed` | The runtime failed before the turn finished | |
+| `deployment_invalid` | The runtime could not load the deployment | |
+| `model_unavailable` | The requested model is not available to this agent | `model`: the requested model id |
+| `model_rejected` | The model provider rejected the request: credentials, rate limit or quota | |
+| `context_too_long` | The conversation exceeds the model's context window | |
+| `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
+| `sandbox_timeout` | A sandbox command did not finish in time | |
+| `sandbox_failed` | The sandbox could not run the turn | |
+| `agent_failed` | Any other failure | |
+
+### Messages
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `message.delta` | The model produced a fragment of its reply | `text`: the fragment; concatenate deltas of one turn |
+| `message.completed` | The reply is complete | `text`: the whole reply |
+| `reasoning.delta` | The model produced a fragment of reasoning, when the model exposes it | `text` |
+| `reasoning.completed` | The reasoning is complete | `text` |
+
+### Tools
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input` |
+| `tool.progress` | The tool reported progress | runtime-defined |
+| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output` |
+| `tool.failed` | The tool raised an error | `tool`, `callId`, `message` |
+
+The exact fields come from the runtime's tool record; read them as optional
+and key a tool call on `callId` when it is present. The memory tools
+(`memory_save`, `memory_read`, `memory_list`) appear here like any other
+tool; the save itself is reported separately.
+
+### Memory
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `memory.saved` | A `memory_save` the session observed succeeding | `resource`, `documentId`, `revision`, `bytes` |
+
+Delivery is best-effort. A save commits independently of the event: a
+runtime that loses its connection can commit without ever reporting it, and
+the same event can be reported once or twice after a reconnect. Treat the
+event as a hint to re-read the document, and also re-read when attaching,
+reconnecting and completing work. See
+[Document memory](/agents/document-memory#saving).
+
+### Model and usage
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `model.route_resolved` | A model call is about to be sent | `providerCallId`; `requested` and `effective` as `{ provider, model }`; `runtime`; `access` |
+| `model.access_fallback` | A call planned on a connected model account fell back to managed access | `providerCallId`, `requested`, `from`, `reason` |
+| `usage.recorded` | A model call finished | `provider`, `model`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedTokens`, `cacheWriteTokens`, `costUsd`, `payer` |
+
+### Outbound requests
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `egress.request` | A [declared connection](/agents/secrets) sent a request | `connectionId`, `method`, `path` |
+| `egress.response` | The destination answered | `connectionId`, `method`, `path`, `status`, `durationMs` |
+| `egress.failed` | The request did not complete | `connectionId`, `method`, `path`, `message` |
+
+### Runtime
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `runtime.connected` | An agent runtime attached to the session | none |
+| `runtime.disconnected` | The runtime went away; a running turn is queued again and resumes on the next runtime | none |
+| `runtime.suspended` | The runtime was suspended between turns | none |
+| `runtime.resumed` | The runtime was resumed | none |
+| `runtime.log` | A line of runtime output or a platform milestone | `level`, `stream`, `message` for output; `phase` and `message` for milestones such as the runtime starting |
+
+### Agent renders
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `agent.rendered` | Your agent function was rendered for a model step | `renderId`, `instructions`, `model`, `enabledTools`, `enabledSubagents`, `enabledMcpServers`, `requiredConnections`, `input`, `tools`, `renderedAt` |
+
+One turn can carry several renders, one per model step. The debug inspector
+in the [playground](/agents/playground) shows the same data.
+
+## Reading the log
+
+From the CLI, with one NDJSON record per event:
+
+```bash
+opencomputer sessions tail <session-id> --after 0 --json
+```
+
+From an application, poll the [events route](/agents/api#events) or attach
+[`useAgent`](/agents/react), which turns `message.received`,
+`message.delta` and `message.completed` into messages, `turn.*` and
+`session.*` into `isRunning` and `ended`, and `memory.saved` into
+`memorySaves`; every event, these included, also reaches `onEvent`.

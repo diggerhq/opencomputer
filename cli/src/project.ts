@@ -8,10 +8,25 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { build as bundle } from "esbuild";
 import ts from "typescript";
+
+import {
+  defineMemory,
+  documentMemory,
+  httpMemory,
+  memoryToolNames,
+  type DocumentMemoryInput,
+  type HttpMemoryConnection,
+  type HttpMemoryInput,
+  type MemoryDefinition,
+  type MemoryDefinitionInput,
+  type MemoryProvider,
+} from "./memory.js";
 
 export interface AgentManifest {
   schema: 1;
@@ -25,9 +40,22 @@ export interface BuiltAgentArtifact {
   channels: string[];
   connections: string[];
   httpConnections: HttpConnectionManifest[];
+  memory: MemoryDeclaration[];
   body: Buffer;
   digest: string;
   elapsedMs: number;
+}
+
+/**
+ * A memory resource as registered with the deployment: the executable
+ * definition without its `kind` and `version`. The same id in every agent of
+ * a project names the same resource, so declarations sharing an id must agree
+ * on the provider and its configuration.
+ */
+export interface MemoryDeclaration {
+  id: string;
+  description: string;
+  provider: MemoryProvider;
 }
 
 export interface HttpConnectionManifest {
@@ -455,17 +483,17 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.5.0",
+          "@opencomputer/agent": "^0.6.0",
           ...(spa
             ? {
-                "@opencomputer/react": "^0.1.0",
+                "@opencomputer/react": "^0.2.0",
                 react: "^19.2.0",
                 "react-dom": "^19.2.0",
               }
             : {}),
         },
         devDependencies: {
-          "@opencomputer/cli": "^0.6.1",
+          "@opencomputer/cli": "^0.7.0",
           ...(spa
             ? {
                 "@types/node": "^24.0.0",
@@ -601,7 +629,9 @@ export default function App() {
     event.preventDefault();
     const prompt = input;
     setInput("");
-    void send(prompt);
+    // send rejects when no turn was admitted; the hook shows the error and
+    // the draft comes back.
+    send(prompt).catch(() => setInput(prompt));
   }
 
   return (
@@ -615,7 +645,7 @@ export default function App() {
       <section className="chat" aria-label="Agent conversation">
         <div className="messages">
           {messages.length === 0 ? (
-            <button className="suggestion" onClick={() => void send("Say hello and tell me what you can do.")}>
+            <button className="suggestion" onClick={() => send("Say hello and tell me what you can do.").catch(() => undefined)}>
               Say hello and tell me what you can do →
             </button>
           ) : (
@@ -868,6 +898,556 @@ function definedMcpServers(
   };
   visit(file);
   return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/**
+ * The memory authoring functions the compiler registers from. A declaration
+ * only counts when one of them is called directly, through a binding that
+ * the compiler can trace to `@opencomputer/agent` (a named import, or a
+ * re-export chain through the project's own modules), on literal arguments:
+ * that is what lets the compiler run the same `defineMemory()` the artifact
+ * runs and emit the executable definition itself. Any other reach (an alias,
+ * a namespace member, a wrapper, a dynamic import) would let the definition
+ * execute without being registered, or register something the definition
+ * does not mean, so the build rejects it. A property, string or local
+ * function that merely spells one of these names is unrelated to them.
+ */
+type MemoryAuthoringFunction = "defineMemory" | "documentMemory" | "httpMemory";
+
+const MEMORY_AUTHORING_FUNCTIONS: ReadonlySet<string> = new Set<MemoryAuthoringFunction>([
+  "defineMemory",
+  "documentMemory",
+  "httpMemory",
+]);
+
+const AGENT_PACKAGE = "@opencomputer/agent";
+
+/** What a module makes available to importers, as far as memory authoring goes. */
+interface MemoryModuleExports {
+  /** Exported name -> the authoring function it is. */
+  functions: Map<string, MemoryAuthoringFunction>;
+  /** Exported names that are a namespace exposing the authoring functions. */
+  namespaces: Set<string>;
+}
+
+/** The local identifiers of one module that reach the authoring functions. */
+interface MemoryModuleBindings {
+  functions: Map<string, MemoryAuthoringFunction>;
+  namespaces: Set<string>;
+}
+
+const AGENT_PACKAGE_EXPORTS: MemoryModuleExports = {
+  functions: new Map(
+    [...MEMORY_AUTHORING_FUNCTIONS].map((name) => [
+      name,
+      name as MemoryAuthoringFunction,
+    ]),
+  ),
+  namespaces: new Set(),
+};
+
+const EMPTY_MEMORY_EXPORTS: MemoryModuleExports = {
+  functions: new Map(),
+  namespaces: new Set(),
+};
+
+/**
+ * Resolves, across the agent's own source modules, which identifiers are
+ * bound to the memory authoring functions of `@opencomputer/agent`. Third
+ * party packages are opaque: an import from one binds nothing here.
+ */
+class MemorySourceResolver {
+  private readonly files = new Map<string, ts.SourceFile>();
+  private readonly exports = new Map<string, MemoryModuleExports>();
+  private readonly resolving = new Set<string>();
+
+  constructor(private readonly modules: readonly AgentSourceModule[]) {}
+
+  file(path: string): ts.SourceFile {
+    let file = this.files.get(path);
+    if (!file) {
+      const module = this.modules.find((candidate) => candidate.path === path);
+      if (!module) throw new Error(`Agent source module ${path} is not in the build`);
+      file = ts.createSourceFile(path, module.source, ts.ScriptTarget.Latest, true);
+      this.files.set(path, file);
+    }
+    return file;
+  }
+
+  /** The module a specifier names from `from`: the agent package, one of ours, or neither. */
+  target(from: string, specifier: string): string | "package" | undefined {
+    if (specifier === AGENT_PACKAGE) return "package";
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+      return undefined;
+    }
+    const base = join(dirname(from), specifier).split("\\").join("/");
+    const stem = base.replace(/\.[cm]?jsx?$/, "");
+    const candidates = [
+      base,
+      ...["ts", "tsx", "mts", "cts"].map((extension) => `${stem}.${extension}`),
+      ...["ts", "tsx", "js", "jsx", "mts", "mjs", "cts", "cjs"].map(
+        (extension) => `${base}.${extension}`,
+      ),
+      ...["ts", "tsx", "js", "jsx"].map((extension) => `${base}/index.${extension}`),
+    ];
+    return candidates.find((candidate) =>
+      this.modules.some((module) => module.path === candidate),
+    );
+  }
+
+  exportsOf(target: string | "package" | undefined): MemoryModuleExports {
+    if (target === "package") return AGENT_PACKAGE_EXPORTS;
+    if (target === undefined) return EMPTY_MEMORY_EXPORTS;
+    const cached = this.exports.get(target);
+    if (cached) return cached;
+    // A cycle contributes nothing on the way round; the first pass wins.
+    if (this.resolving.has(target)) return EMPTY_MEMORY_EXPORTS;
+    this.resolving.add(target);
+    const result: MemoryModuleExports = {
+      functions: new Map(),
+      namespaces: new Set(),
+    };
+    const bindings = this.bindingsOf(target);
+    for (const statement of this.file(target).statements) {
+      if (!ts.isExportDeclaration(statement) || statement.isTypeOnly) continue;
+      const source = statement.moduleSpecifier;
+      const from =
+        source && ts.isStringLiteral(source)
+          ? this.exportsOf(this.target(target, source.text))
+          : undefined;
+      if (!statement.exportClause) {
+        // export * from "..."
+        for (const [name, fn] of from?.functions ?? []) result.functions.set(name, fn);
+        for (const name of from?.namespaces ?? []) result.namespaces.add(name);
+        continue;
+      }
+      if (ts.isNamespaceExport(statement.exportClause)) {
+        // export * as ns from "..."
+        if (from && (from.functions.size || from.namespaces.size)) {
+          result.namespaces.add(statement.exportClause.name.text);
+        }
+        continue;
+      }
+      for (const specifier of statement.exportClause.elements) {
+        if (specifier.isTypeOnly) continue;
+        const local = (specifier.propertyName ?? specifier.name).text;
+        const exported = specifier.name.text;
+        if (from) {
+          const fn = from.functions.get(local);
+          if (fn) result.functions.set(exported, fn);
+          if (from.namespaces.has(local)) result.namespaces.add(exported);
+        } else {
+          const fn = bindings.functions.get(local);
+          if (fn) result.functions.set(exported, fn);
+          if (bindings.namespaces.has(local)) result.namespaces.add(exported);
+        }
+      }
+    }
+    this.resolving.delete(target);
+    this.exports.set(target, result);
+    return result;
+  }
+
+  bindingsOf(path: string): MemoryModuleBindings {
+    const bindings: MemoryModuleBindings = {
+      functions: new Map(),
+      namespaces: new Set(),
+    };
+    for (const statement of this.file(path).statements) {
+      if (!ts.isImportDeclaration(statement)) continue;
+      const clause = statement.importClause;
+      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(statement.moduleSpecifier)) {
+        continue;
+      }
+      const from = this.exportsOf(this.target(path, statement.moduleSpecifier.text));
+      if (!from.functions.size && !from.namespaces.size) continue;
+      const named = clause.namedBindings;
+      if (named && ts.isNamespaceImport(named)) {
+        bindings.namespaces.add(named.name.text);
+      } else if (named) {
+        for (const specifier of named.elements) {
+          if (specifier.isTypeOnly) continue;
+          const imported = (specifier.propertyName ?? specifier.name).text;
+          const fn = from.functions.get(imported);
+          if (fn) bindings.functions.set(specifier.name.text, fn);
+          if (from.namespaces.has(imported)) bindings.namespaces.add(specifier.name.text);
+        }
+      }
+    }
+    return bindings;
+  }
+}
+
+function isTypeOnlyContext(node: ts.Node): boolean {
+  return (
+    ts.isTypeNode(node) ||
+    (ts.isImportDeclaration(node) && !!node.importClause?.isTypeOnly) ||
+    (ts.isExportDeclaration(node) && node.isTypeOnly) ||
+    (ts.isImportSpecifier(node) && node.isTypeOnly) ||
+    (ts.isExportSpecifier(node) && node.isTypeOnly)
+  );
+}
+
+/** An identifier that names a property, not a binding: `a.name`, `{ name: 1 }`, `{ name() {} }`. */
+function isPropertyNamePosition(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+    (ts.isPropertyAssignment(parent) && parent.name === node) ||
+    (ts.isPropertySignature(parent) && parent.name === node) ||
+    (ts.isPropertyDeclaration(parent) && parent.name === node) ||
+    (ts.isMethodDeclaration(parent) && parent.name === node) ||
+    (ts.isMethodSignature(parent) && parent.name === node) ||
+    (ts.isGetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isSetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isEnumMember(parent) && parent.name === node) ||
+    (ts.isBindingElement(parent) && parent.propertyName === node) ||
+    (ts.isQualifiedName(parent) && parent.right === node)
+  );
+}
+
+const DIRECT_CALL_HINT = (name: string) =>
+  `the compiler registers memory only from a direct ${name}() call, so import ${name} by name from ${AGENT_PACKAGE}`;
+
+/**
+ * Rejects every reach to a memory authoring function other than an unaliased
+ * import or export and a direct call, so a definition that executes is one
+ * the compiler registered and vice versa.
+ */
+function assertMemoryFunctionsCalledDirectly(
+  resolver: MemorySourceResolver,
+  path: string,
+): MemoryModuleBindings {
+  const file = resolver.file(path);
+  const bindings = resolver.bindingsOf(path);
+  const visit = (node: ts.Node): void => {
+    if (isTypeOnlyContext(node)) return;
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && node.exportClause &&
+        ts.isNamedExports(node.exportClause) && ts.isStringLiteral(node.moduleSpecifier)) {
+      // export { a as b } from "...": an aliased re-export of an authoring
+      // function would let importers call it under a name the compiler does
+      // not register from.
+      const from = resolver.exportsOf(resolver.target(path, node.moduleSpecifier.text));
+      for (const specifier of node.exportClause.elements) {
+        if (specifier.isTypeOnly || !specifier.propertyName) continue;
+        const imported = specifier.propertyName.text;
+        const fn = from.functions.get(imported);
+        if (fn && specifier.name.text !== imported) {
+          throw new Error(
+            `${path} exports ${imported} as ${specifier.name.text}; the compiler registers memory only from a direct ${fn}() call, so keep its name`,
+          );
+        }
+      }
+      return;
+    }
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      const argument = node.arguments[0];
+      if (argument && ts.isStringLiteralLike(argument)) {
+        const from = resolver.exportsOf(resolver.target(path, argument.text));
+        if (from.functions.size || from.namespaces.size) {
+          throw new Error(
+            `${path} imports ${argument.text} dynamically; the compiler registers memory only from a static import, so import defineMemory by name`,
+          );
+        }
+      }
+    }
+    if (ts.isIdentifier(node) && !isPropertyNamePosition(node)) {
+      const parent = node.parent;
+      const fn = bindings.functions.get(node.text);
+      if (fn) {
+        const direct =
+          (ts.isCallExpression(parent) && parent.expression === node) ||
+          ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
+            parent.name === node &&
+            parent.propertyName === undefined);
+        if (!direct) {
+          if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) {
+            const verb = ts.isImportSpecifier(parent) ? "imports" : "exports";
+            const imported = (parent.propertyName ?? parent.name).text;
+            throw new Error(
+              `${path} ${verb} ${imported} as ${parent.name.text}; the compiler registers memory only from a direct ${fn}() call, so keep its name`,
+            );
+          }
+          throw new Error(
+            `${path} uses ${node.text} other than as a direct ${node.text}() call; the compiler registers memory only from that call, so do not alias, wrap, or shadow it`,
+          );
+        }
+      }
+      if (bindings.namespaces.has(node.text) && !ts.isNamespaceImport(parent) &&
+          !(ts.isImportSpecifier(parent) && parent.name === node)) {
+        const namespace = node.text;
+        if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+          const member = parent.name.text;
+          if (MEMORY_AUTHORING_FUNCTIONS.has(member)) {
+            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            throw new Error(
+              called
+                ? `${path} calls ${namespace}.${member}(); ${DIRECT_CALL_HINT(member)}`
+                : `${path} uses ${namespace}.${member} other than as a direct ${member}() call; ${DIRECT_CALL_HINT(member)}`,
+            );
+          }
+          return;
+        }
+        if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+          const key = parent.argumentExpression;
+          if (!ts.isStringLiteralLike(key)) {
+            throw new Error(
+              `${path} accesses ${namespace}[...] with a computed key; the compiler cannot tell whether that names a memory authoring function, so import what you need by name from ${AGENT_PACKAGE}`,
+            );
+          }
+          if (MEMORY_AUTHORING_FUNCTIONS.has(key.text)) {
+            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            throw new Error(
+              called
+                ? `${path} calls ${namespace}[${JSON.stringify(key.text)}](); ${DIRECT_CALL_HINT(key.text)}`
+                : `${path} uses ${namespace}[${JSON.stringify(key.text)}] other than as a direct ${key.text}() call; ${DIRECT_CALL_HINT(key.text)}`,
+            );
+          }
+          return;
+        }
+        throw new Error(
+          `${path} uses the namespace import ${namespace} other than as ${namespace}.<name>; the compiler registers memory only from a direct defineMemory() call, so import defineMemory by name from ${AGENT_PACKAGE}`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return bindings;
+}
+
+/**
+ * The properties of an object literal as name/value pairs, rejecting every
+ * form whose value the compiler cannot read: spreads, shorthand, methods,
+ * accessors and computed names. `identifiers` names properties whose value is
+ * an identifier reference rather than a literal, allowed in shorthand form.
+ */
+function literalObjectEntries(
+  object: ts.ObjectLiteralExpression,
+  label: string,
+  identifiers: readonly string[] = [],
+): Array<[string, ts.Expression]> {
+  return object.properties.map((property): [string, ts.Expression] => {
+    if (ts.isSpreadAssignment(property)) {
+      throw new Error(
+        `${label} cannot spread ${property.expression.getText()}; write each option as a literal property`,
+      );
+    }
+    if (ts.isShorthandPropertyAssignment(property)) {
+      const name = property.name.text;
+      if (identifiers.includes(name)) return [name, property.name];
+      throw new Error(
+        `${label} cannot use the shorthand property ${name}; write ${name} as a literal property`,
+      );
+    }
+    if (!ts.isPropertyAssignment(property)) {
+      throw new Error(
+        `${label} cannot use methods or accessors; write each option as a literal property`,
+      );
+    }
+    return [
+      staticPropertyName(property.name, label),
+      property.initializer,
+    ];
+  });
+}
+
+/** The single object-literal argument of an authoring call, or none. */
+function literalCallArgument(
+  call: ts.CallExpression,
+  label: string,
+): ts.ObjectLiteralExpression | undefined {
+  if (call.arguments.length === 0) return undefined;
+  const argument = call.arguments[0];
+  if (
+    call.arguments.length !== 1 ||
+    !argument ||
+    !ts.isObjectLiteralExpression(argument)
+  ) {
+    throw new Error(`${label} requires one object literal argument`);
+  }
+  return argument;
+}
+
+function memoryConnectionPolicy(
+  expression: ts.Expression,
+  label: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): HttpMemoryConnection {
+  if (!ts.isIdentifier(expression)) {
+    throw new Error(
+      `${label} connection must reference a defineConnection() binding`,
+    );
+  }
+  const connection = connectionBindings.get(expression.text);
+  if (!connection) {
+    throw new Error(
+      `${label} references unknown connection ${expression.text}`,
+    );
+  }
+  return {
+    kind: "connection",
+    id: connection.id,
+    ...(connection.methods ? { methods: connection.methods } : {}),
+    ...(connection.pathPrefix ? { pathPrefix: connection.pathPrefix } : {}),
+  };
+}
+
+/** Runs a contract function on compile-time input, naming the file on error. */
+function inSourceFile<T>(path: string, evaluate: () => T): T {
+  try {
+    return evaluate();
+  } catch (error) {
+    throw new Error(
+      `${path} ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * The provider a declaration names, produced by running `documentMemory()`
+ * or `httpMemory()` on the literal options at the call site.
+ */
+function memoryProviderValue(
+  expression: ts.Expression,
+  path: string,
+  declaration: string,
+  bindings: MemoryModuleBindings,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): MemoryProvider {
+  const callee =
+    ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)
+      ? bindings.functions.get(expression.expression.text)
+      : undefined;
+  if (
+    !ts.isCallExpression(expression) ||
+    (callee !== "documentMemory" && callee !== "httpMemory")
+  ) {
+    throw new Error(
+      `${path} ${declaration} provider must be an inline documentMemory() or httpMemory() call`,
+    );
+  }
+  const label = `${path} ${declaration} ${callee}()`;
+  const argument = literalCallArgument(expression, label);
+  if (callee === "documentMemory") {
+    const input: Record<string, unknown> = {};
+    for (const [name, value] of argument
+      ? literalObjectEntries(argument, label)
+      : []) {
+      input[name] = staticJsonValue(value, `${label} ${name}`);
+    }
+    return inSourceFile(path, () =>
+      documentMemory(input as DocumentMemoryInput),
+    );
+  }
+  if (!argument) {
+    throw new Error(`${label} requires a connection`);
+  }
+  const input: Record<string, unknown> = {};
+  for (const [name, value] of literalObjectEntries(argument, label, [
+    "connection",
+  ])) {
+    input[name] =
+      name === "connection"
+        ? memoryConnectionPolicy(value, label, connectionBindings)
+        : staticJsonValue(value, `${label} ${name}`);
+  }
+  if (!input.connection) {
+    throw new Error(
+      `${label} connection must reference a defineConnection() binding`,
+    );
+  }
+  return inSourceFile(path, () =>
+    httpMemory(input as unknown as HttpMemoryInput),
+  );
+}
+
+function definedMemory(
+  resolver: MemorySourceResolver,
+  path: string,
+  connectionBindings: ReadonlyMap<string, HttpConnectionManifest>,
+): MemoryDeclaration[] {
+  const file = resolver.file(path);
+  const bindings = assertMemoryFunctionsCalledDirectly(resolver, path);
+  const declarations: MemoryDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      bindings.functions.get(node.expression.text) === "defineMemory"
+    ) {
+      const label = `${path} defineMemory()`;
+      const argument = literalCallArgument(node, label);
+      if (!argument) {
+        throw new Error(`${label} requires one object literal argument`);
+      }
+      const input: Record<string, unknown> = {};
+      const entries = literalObjectEntries(argument, label);
+      const idEntry = entries.find(([name]) => name === "id");
+      const id = idEntry
+        ? staticJsonValue(idEntry[1], `${label} id`)
+        : undefined;
+      const declaration =
+        typeof id === "string" && id ? `Memory ${id}` : "defineMemory()";
+      for (const [name, value] of entries) {
+        input[name] =
+          name === "provider"
+            ? memoryProviderValue(
+                value,
+                path,
+                declaration,
+                bindings,
+                connectionBindings,
+              )
+            : staticJsonValue(value, `${label} ${name}`);
+      }
+      const definition: MemoryDefinition = inSourceFile(path, () =>
+        defineMemory(input as unknown as MemoryDefinitionInput),
+      );
+      declarations.push({
+        id: definition.id,
+        description: definition.description,
+        provider: definition.provider,
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return declarations;
+}
+
+/**
+ * Deduplicates declarations by id. Declarations sharing an id name the same
+ * resource, so they must agree byte for byte; a difference is a build error
+ * naming both origins.
+ */
+export function mergeMemoryDeclarations(
+  entries: ReadonlyArray<{ origin: string; memory: readonly MemoryDeclaration[] }>,
+): MemoryDeclaration[] {
+  const merged = new Map<string, { origin: string; declaration: MemoryDeclaration }>();
+  for (const { origin, memory } of entries) {
+    for (const declaration of memory) {
+      const existing = merged.get(declaration.id);
+      if (!existing) {
+        merged.set(declaration.id, { origin, declaration });
+        continue;
+      }
+      if (
+        JSON.stringify(existing.declaration) !== JSON.stringify(declaration)
+      ) {
+        throw new Error(
+          `Memory ${JSON.stringify(declaration.id)} is declared with different configuration in ${existing.origin} and ${origin}; declarations sharing an id name the same resource and must agree on the provider and its configuration`,
+        );
+      }
+    }
+  }
+  return [...merged.values()]
+    .map(({ declaration }) => declaration)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function objectProperty(
@@ -1827,8 +2407,18 @@ function staticModelSelections(
   );
 }
 
+/**
+ * The compiled memory contract, inlined into the runtime so the artifact's
+ * defineMemory() is the same code the compiler ran on the declaration.
+ */
+const MEMORY_CONTRACT_SOURCE = readFileSync(
+  fileURLToPath(new URL("./memory.js", import.meta.url)),
+  "utf8",
+).replace(/^\/\/# sourceMappingURL=.*$/m, "");
+
 function agentApiRuntimeSource(): string {
-  return `function hooks() {
+  return `${MEMORY_CONTRACT_SOURCE}
+function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
   return value;
@@ -1976,6 +2566,14 @@ export const publishOutbox = async (outbox, input) => {
   });
   if (!response.ok) throw new Error("Outbox publish failed with status " + response.status);
   return await response.json();
+};
+// The host resolves every session binding before the render and exposes the
+// projections on its render scope as scope.memory[id]; the hook returns one
+// and the host records the id in scope.selectedMemory, returned to it as
+// selectedMemory next to enabledTools. An unbound id fails the render here.
+export const useMemory = (memory) => {
+  const resource = memoryId(typeof memory === "string" ? memory : memory && memory.id, "useMemory");
+  return memoryProjection(resource, hooks().useMemory(resource));
 };
 export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
@@ -2273,6 +2871,34 @@ the product or support surface presented to users.
       `MCP server id ${JSON.stringify(duplicateMcpServer.id)} is defined more than once`,
     );
   }
+  const memoryResolver = new MemorySourceResolver(sourceModules);
+  const memory = mergeMemoryDeclarations(
+    sourceModules.map((module) => ({
+      origin: module.path,
+      memory: definedMemory(memoryResolver, module.path, connectionBindings),
+    })),
+  );
+  const declaredMemory = new Set(memory.map((declaration) => declaration.id));
+  const tools = [
+    ...new Set([...reactiveTools, ...literalHookIds(agentSource, "useTool")]),
+  ].sort();
+  for (const id of literalHookIds(agentSource, "useMemory")) {
+    if (!declaredMemory.has(id)) {
+      throw new Error(
+        `useMemory(${JSON.stringify(id)}) references a memory resource this agent does not declare; import its defineMemory() declaration`,
+      );
+    }
+  }
+  for (const declaration of memory) {
+    const collision = memoryToolNames(declaration.provider).find((name) =>
+      tools.includes(name),
+    );
+    if (collision) {
+      throw new Error(
+        `Tool id ${JSON.stringify(collision)} collides with the fixed tool name of memory ${declaration.id}; rename the tool`,
+      );
+    }
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -2280,12 +2906,7 @@ the product or support surface presented to users.
       {
         version: 2,
         entry: "../agent.js",
-        tools: [
-          ...new Set([
-            ...reactiveTools,
-            ...literalHookIds(agentSource, "useTool"),
-          ]),
-        ].sort(),
+        tools,
         gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
@@ -2298,6 +2919,7 @@ the product or support surface presented to users.
           ]),
         ].sort(),
         mcpServerDefinitions,
+        memory,
         models: declaredModels,
       },
       null,
@@ -2336,9 +2958,14 @@ export async function buildAgentArtifact(
   const runtime = await prepareAgent(root);
   const reactive = JSON.parse(
     await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
-  ) as { connections?: string[]; httpConnections?: HttpConnectionManifest[] };
+  ) as {
+    connections?: string[];
+    httpConnections?: HttpConnectionManifest[];
+    memory?: MemoryDeclaration[];
+  };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
+  const memory = reactive.memory ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -2352,6 +2979,7 @@ export async function buildAgentArtifact(
     channels: [],
     connections,
     httpConnections,
+    memory,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),

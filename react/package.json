@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/react",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "React hooks for OpenComputer agents.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test": "npm run build && node --test dist/*.test.js"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -26,8 +27,13 @@
     "react": ">=19.0.0"
   },
   "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.13.4",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.0",
+    "jsdom": "^26.1.0",
     "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^5.9.0"
   },
   "publishConfig": {

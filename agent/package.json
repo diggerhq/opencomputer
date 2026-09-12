@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/agent",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Reactive agent authoring API for OpenComputer.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test": "npm run build && node --test dist/*.test.js"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -31,7 +32,8 @@
     "directory": "agent"
   },
   "devDependencies": {
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
   },
   "dependencies": {
     "croner": "^9.1.0"

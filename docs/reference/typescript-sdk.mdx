@@ -875,3 +875,141 @@ const apiResult = await sandbox.commands.run(
 | `allowedHosts` | `string[]` | Host restrictions for this secret |
 | `createdAt` | `string` | ISO 8601 timestamp |
 | `updatedAt` | `string` | ISO 8601 timestamp |
+
+---
+
+## Serverless Agents helpers
+
+`Sandbox` and the `OpenComputer` client wrap the sandbox API and the `/v3`
+Durable Agent Sessions API. The helpers in this section are different: they
+call the Serverless Agents [management API](/agents/api) under
+`/api/managed-agents` with an OpenComputer API key. Use them from trusted
+server code only; the key must not reach a browser.
+
+```typescript
+import { startSessionOnDocument, sessionIdempotencyKey } from "@opencomputer/sdk";
+```
+
+### `startSessionOnDocument(params): Promise<StartSessionOnDocumentResult>`
+
+Creates a [memory document](/agents/document-memory) if it does not exist,
+then a session bound to it, and reports both IDs and whether each already
+existed. The two objects stay separate on the API; this helper does the two
+calls in order and makes the pair converge on retry.
+
+```typescript
+const { document, session } = await startSessionOnDocument({
+  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+  projectId: "<project-id>",
+  environment: "development",
+  agent: "<agent-id>",
+  resource: "notes",
+  documentId: "workshop",
+  document: { title: "Workshop notes" },
+  idempotencyKey: "topic/workshop/1",
+});
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `apiKey` | string | required | API key with access to the project |
+| `projectId` | string | required | Project whose memory holds the document |
+| `environment` | `"development"` \| `"production"` | required | Memory store and session environment |
+| `agent` | string | required | Agent ID; the environment supplies the alias |
+| `resource` | string | required | Declared memory resource ID |
+| `documentId` | string | required | Document to bind |
+| `document` | `{ title, text?, summary?, agentWrites? }` | required | What to create when the document does not exist; ignored when it does |
+| `access` | `"read"` \| `"read-write"` | `"read-write"` | The binding's access |
+| `memory` | `MemoryBindings` | none | Further bindings keyed by resource ID |
+| `idempotencyKey` | string | required | One key for the whole operation |
+| `source` | string | `"api"` | The session's `source` |
+| `baseUrl` | string | `https://app.opencomputer.dev` | The management API origin |
+| `fetch` | typeof fetch | global | Override for runtimes without a global `fetch`, or tests |
+| `signal` | AbortSignal | none | Aborts both requests |
+
+The steps, in order:
+
+1. `PUT /projects/<projectId>/memory/<resource>/documents/<documentId>` with
+   `If-None-Match: *` and the `document` body. `201` means the document was
+   created. `412` means it exists; the helper reads it with `GET` and leaves
+   its content as it is. A `404` on that read means the ID was deleted and is
+   reserved, which is an error, since a binding to it would fail admission.
+2. `POST /sessions` with `agentId: "<agent>@<environment>"`, `source`, and
+   `memory` set to your further bindings plus
+   `{ [resource]: { scope: "document", id: documentId, access } }`. The
+   `Idempotency-Key` header is `sessionIdempotencyKey(idempotencyKey)`.
+   `201` created the session; `200` means the key had already created it.
+
+The result:
+
+| Field | Description |
+| --- | --- |
+| `document.id` | The document |
+| `document.created` | `false` when it already existed |
+| `document.revision` | Current revision, for a later conditional owner write |
+| `document.title` | Its title |
+| `session.id` | The session |
+| `session.created` | `false` when the key had already created this session |
+| `session.status`, `session.executionMode` | As the create response reported them |
+
+Errors:
+
+| Error | When |
+| --- | --- |
+| `NotFoundError` with code `memory_document_deleted` | The document ID was deleted and is reserved; use a new ID |
+| `ConflictError` with code `idempotency_key_reused` | The key already created a session with a different agent, deployment, environment or bindings; the document was left as it is. Use a new key |
+| `AuthError` | `401` or `403` from the API |
+| `RateLimitError` | `429`; `retryAfter` carries the wait in seconds |
+| `OpenComputerError` | Any other failure; `status` and `code` carry the API's error envelope |
+| `Error` | No global `fetch` and none passed |
+
+A retry with the same `idempotencyKey` after a redeploy is a
+`ConflictError`: the deployment is part of the session's identity. Start
+the new session under a new key.
+
+### `sessionIdempotencyKey(idempotencyKey): Promise<string>`
+
+The `Idempotency-Key` the helper sends when creating the session: the
+SHA-256 hex digest of `opencomputer.memory.session`, a NUL byte and your
+key. Stable for a retry and distinct from any other use of the same caller
+key. Use it to recognize the session-create key in your own requests or logs.
+
+### Memory types
+
+The package exports the shapes of the memory management routes as types, for
+typing your own requests, the CLI's `--json` output and `opencomputer memory
+export` files. They carry no behavior.
+
+| Type | Shape |
+| --- | --- |
+| `MemoryEnvironment` | `"development" \| "production"` |
+| `MemoryAccess` | `"read" \| "read-write"` |
+| `MemoryAgentWrites` | `"enabled" \| "disabled"` |
+| `MemoryBinding` | One session binding: `{ scope: "document", id, access? }` or `{ scope: "collection", access?: "read" }` |
+| `MemoryBindings` | `Record<string, MemoryBinding>`, keyed by resource ID, at most eight |
+| `SessionMemoryBinding` | One entry of a session's `memory` array, with `resource` and `writable` |
+| `MemoryWriter` | `{ kind: "owner" }` or `{ kind: "agent", sessionId }` |
+| `MemoryDocumentMeta` | A document without `text`, as the list route returns it |
+| `MemoryDocument` | A full document, as read, create, replace and patch return it |
+| `MemoryDocumentPage` | `{ documents, nextCursor }` |
+| `MemoryResource`, `MemoryResourceInventory` | One entry, and the whole, of `GET /projects/<id>/memory` |
+| `CreateMemoryDocumentBody`, `ReplaceMemoryDocumentBody`, `PatchMemoryDocumentBody` | Bodies of `PUT` with `If-None-Match`, `PUT` with `If-Match`, and `PATCH` |
+| `MemorySavedEvent` | The `data` of a `memory.saved` [session event](/agents/events) |
+| `MemoryErrorCode` | The codes the memory routes return in `{ error: { code, message } }` |
+| `StartSessionOnDocumentParams`, `StartSessionOnDocumentResult` | The helper's parameters and result |
+
+### Event subscription types
+
+The shapes of the [event subscription](/agents/api#event-subscriptions)
+routes and of the input they deliver, as types only.
+
+| Type | Shape |
+| --- | --- |
+| `OutcomeEventType` | `"turn.completed" \| "turn.failed" \| "turn.cancelled"` |
+| `SessionDestination` | `{ type: "session", sessionId }` |
+| `CreateEventSubscriptionBody` | Body of `POST /projects/<id>/event-subscriptions`: `agentId?`, `events`, `destination`, `environment?` |
+| `EventSubscription` | A subscription as the routes return it |
+| `OutcomeEvent` | The delivered outcome: `id`, `type`, `sessionId`, `turnId`, `agentId`, `occurredAt`, `reason?`, `error?`, `result?` |
+| `EventInput` | `{ source: "event", text?, event }`, what the receiving agent's `useInput()` returns |
+| `TurnOutcomeDelivery` | One entry of a turn's `deliveries` on `GET /sessions/<id>` |
+| `EventSubscriptionErrorCode` | The codes the subscription routes return in `{ error: { code, message } }` |

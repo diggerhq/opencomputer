@@ -30,14 +30,22 @@ The production API at `https://app.opencomputer.dev` is used by default.
 
 ## 3. Watch development deployments
 
+Link the directory to a new cloud project:
+
+```bash
+npx --package @opencomputer/cli opencomputer link --create-project "my-agent"
+```
+
+To use an existing project, [link by its ID or slug](/agents/projects#create-or-select-the-cloud-project)
+instead. Start the deployment watcher:
+
 ```bash
 npm run deploy -- --watch
 ```
 
-On the first run, choose an existing cloud project or create a new one. The
-process prints the project dashboard URL, watches `opencomputer/`, and deploys
-changes to `development`. Open the dashboard playground or use the CLI to send
-a message.
+The process prints the project dashboard URL, watches `opencomputer/`, and
+deploys changes to `development`. Open the dashboard playground or use the CLI
+to send a message.
 
 The watcher stays open like a live-reload development process:
 
