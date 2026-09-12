@@ -94,8 +94,27 @@ export interface ConnectionReference extends ResourceReference {
   readonly kind: "connection";
 }
 
+/**
+ * Which store a secret is read from.
+ *
+ * `project` is one value for the whole deployment. `tenant` is one value per
+ * channel installation: an agent answering many workspaces resolves the
+ * credential belonging to whichever installation the message arrived through,
+ * so one customer's agent cannot reach another customer's account. `user` is
+ * narrower still — the credential of the particular person being acted for,
+ * so the upstream applies its own permissions to them rather than to the
+ * installation as a whole.
+ *
+ * Nothing falls back. A `tenant` secret never reaches for the project's, and a
+ * `user` secret never reaches for the installation's, because a credential
+ * substituted when the right one is missing is exactly how one customer ends
+ * up acting with another's authority.
+ */
+export type SecretScope = "project" | "tenant" | "user";
+
 export interface SecretReference extends ResourceReference {
   readonly kind: "secret";
+  readonly scope: SecretScope;
 }
 
 export interface SecretHeaderReference {
@@ -545,14 +564,21 @@ function identifier(value: string, kind: string): string {
 const OPENCOMPUTER_USER_AGENT =
   "OpenComputer-Agent/1 (+https://opencomputer.dev)";
 
-export function useSecret(name: string): SecretReference {
+export function useSecret(
+  name: string,
+  options: { scope?: SecretScope } = {},
+): SecretReference {
   const id = identifier(name, "useSecret");
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(id)) {
     throw new Error(
       "Secret names must use uppercase letters, numbers, and underscores",
     );
   }
-  return Object.freeze({ kind: "secret", id });
+  const scope = options.scope ?? "project";
+  if (scope !== "project" && scope !== "tenant" && scope !== "user") {
+    throw new Error('A secret scope must be "project", "tenant" or "user"');
+  }
+  return Object.freeze({ kind: "secret", id, scope });
 }
 
 export function secretHeader(

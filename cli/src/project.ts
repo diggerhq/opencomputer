@@ -35,7 +35,18 @@ export interface HttpConnectionManifest {
   origin: string;
   headers: Record<
     string,
-    string | { kind: "secret"; name: string; prefix?: string; suffix?: string }
+    | string
+    | {
+        kind: "secret";
+        name: string;
+        /**
+         * Omitted means project-wide; "tenant" resolves per installation and
+         * "user" per person acted for.
+         */
+        scope?: "tenant" | "user";
+        prefix?: string;
+        suffix?: string;
+      }
   >;
   methods?: string[];
   pathPrefix?: string;
@@ -1504,7 +1515,17 @@ export async function readProjectResources(
   };
 }
 
-function secretNameFromExpression(expression: ts.Expression): string {
+/**
+ * A secret reference, as written in source.
+ *
+ * The scope is read here rather than resolved later because the manifest is
+ * the record of what an agent can reach: a reviewer should be able to see that
+ * a credential is per-installation without running anything.
+ */
+function secretFromExpression(expression: ts.Expression): {
+  name: string;
+  scope?: "tenant" | "user";
+} {
   if (
     !ts.isCallExpression(expression) ||
     !ts.isIdentifier(expression.expression) ||
@@ -1512,7 +1533,19 @@ function secretNameFromExpression(expression: ts.Expression): string {
   ) {
     throw new Error("Connection secret headers must reference useSecret()");
   }
-  return literalStringValue(expression.arguments[0], "useSecret name");
+  const name = literalStringValue(expression.arguments[0], "useSecret name");
+  const options = expression.arguments[1];
+  if (!options) return { name };
+  if (!ts.isObjectLiteralExpression(options)) {
+    throw new Error("useSecret options must be an object literal");
+  }
+  const scope = objectProperty(options, "scope");
+  if (!scope) return { name };
+  const value = literalStringValue(scope, "useSecret scope");
+  if (value !== "project" && value !== "tenant" && value !== "user") {
+    throw new Error(`useSecret scope must be "project", "tenant" or "user"`);
+  }
+  return value === "project" ? { name } : { name, scope: value };
 }
 
 function connectionHeaderValue(
@@ -1533,7 +1566,7 @@ function connectionHeaderValue(
     if (!secret) throw new Error("bearer() requires useSecret()");
     return {
       kind: "secret",
-      name: secretNameFromExpression(secret),
+      ...secretFromExpression(secret),
       prefix: "Bearer ",
     };
   }
@@ -1543,9 +1576,10 @@ function connectionHeaderValue(
     const result: {
       kind: "secret";
       name: string;
+      scope?: "tenant" | "user";
       prefix?: string;
       suffix?: string;
-    } = { kind: "secret", name: secretNameFromExpression(secret) };
+    } = { kind: "secret", ...secretFromExpression(secret) };
     const options = expression.arguments[1];
     if (options) {
       if (!ts.isObjectLiteralExpression(options)) {
@@ -1805,10 +1839,12 @@ function id(value, kind) {
   if (!normalized) throw new Error(kind + " requires a non-empty id");
   return normalized;
 }
-export const useSecret = (value) => {
+export const useSecret = (value, options = {}) => {
   const name = id(value, "useSecret");
+  const scope = options.scope ?? "project";
+  if (scope !== "project" && scope !== "tenant" && scope !== "user") throw new Error('A secret scope must be "project", "tenant" or "user"');
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
-  return Object.freeze({ kind: "secret", id: name });
+  return Object.freeze({ kind: "secret", id: name, scope });
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
