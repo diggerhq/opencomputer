@@ -14,6 +14,10 @@ import {
 } from "./binding.js";
 import { startGateway } from "./local.js";
 import {
+  deploymentAliasForProject,
+  projectEnvironmentMode,
+} from "./project-mode.js";
+import {
   buildAgentArtifact,
   mergeMemoryDeclarations,
   readProjectAgents,
@@ -198,9 +202,10 @@ export function developmentWatchReadyMessage(input: {
   deployments: string[];
   watchedDirectory: string;
   startWebApp?: boolean;
+  singleMode?: boolean;
 }): string {
   return (
-    `\nOpenComputer Development\n\n` +
+    `\nOpenComputer${input.singleMode ? "" : " Development"}\n\n` +
     `✓ Deployment ready\n` +
     `  Project      ${input.projectName} (${input.projectId})\n` +
     `  Agents       ${input.agents.join(", ")}\n` +
@@ -244,7 +249,7 @@ export async function runDeploymentWatch(
   config: ResolvedConfig,
   root: string,
   options: ProjectBindingOptions = {},
-  behavior: { startWebApp?: boolean } = {},
+  behavior: { startWebApp?: boolean; alias?: string } = {},
 ): Promise<void> {
   const projectRoot = await findOpenComputerProjectRoot(root);
   const binding = await ensureProjectBinding(
@@ -253,6 +258,18 @@ export async function runDeploymentWatch(
     projectRoot,
     options,
   );
+  const project = (await client.projects()).find(
+    (candidate) => candidate.id === binding.projectId,
+  );
+  if (!project) throw new Error("The selected project is no longer available.");
+  const alias = deploymentAliasForProject(project, behavior.alias);
+  if (
+    projectEnvironmentMode(project) === "legacy" &&
+    alias !== "development"
+  ) {
+    throw new Error("--watch deploys only to development for legacy projects");
+  }
+  const singleMode = projectEnvironmentMode(project) === "single";
   const gateway = await startGateway(config);
   const stateDirectory = resolve(projectRoot, ".opencomputer");
   const stateFile = resolve(stateDirectory, "dev.json");
@@ -264,7 +281,7 @@ export async function runDeploymentWatch(
       url: gateway.url,
       token: gateway.token,
       projectId: binding.projectId,
-      agent: `${binding.agentId}@development`,
+      agent: `${binding.agentId}@${alias}`,
     })}\n`,
     { mode: 0o600 },
   );
@@ -286,11 +303,16 @@ export async function runDeploymentWatch(
       do {
         pending = false;
         try {
-          process.stdout.write("\nChange detected. Deploying to Development...\n");
-          const results = await publishProjectDevelopment(
+          process.stdout.write(
+            singleMode
+              ? "\nChange detected. Deploying the current version...\n"
+              : "\nChange detected. Deploying to Development...\n",
+          );
+          const results = await publishProjectDeployment(
             client,
             projectRoot,
             binding,
+            alias,
           );
           let changed = false;
           for (const result of results) {
@@ -300,13 +322,17 @@ export async function runDeploymentWatch(
               changed = true;
               lastDigests.set(result.deployment.agentId, result.built.digest);
               process.stdout.write(
-                `✓ Deployed ${result.deployment.agentId}@development\n` +
+                `✓ Deployed ${result.deployment.agentId}${singleMode ? "" : `@${alias}`}\n` +
                   `  Deployment  ${result.deployment.id}\n`,
               );
             }
           }
           if (!changed) {
-            process.stdout.write("✓ Development is already up to date.\n");
+            process.stdout.write(
+              singleMode
+                ? "✓ Current deployment is already up to date.\n"
+                : "✓ Development is already up to date.\n",
+            );
           }
         } catch (error) {
           process.stderr.write(
@@ -321,10 +347,11 @@ export async function runDeploymentWatch(
   };
 
   try {
-    const initial = await publishProjectDevelopment(
+    const initial = await publishProjectDeployment(
       client,
       projectRoot,
       binding,
+      alias,
     );
     for (const result of initial) {
       lastDigests.set(result.deployment.agentId, result.built.digest);
@@ -337,11 +364,13 @@ export async function runDeploymentWatch(
         projectId: binding.projectId,
         dashboardUrl: projectDashboardURL(config.apiUrl, binding.projectId),
         agents: initial.map(
-          (result) => `${result.deployment.agentId}@development`,
+          (result) =>
+            `${result.deployment.agentId}${singleMode ? "" : `@${alias}`}`,
         ),
         deployments: initial.map((result) => result.deployment.id),
         watchedDirectory: resolve(projectRoot, "opencomputer"),
         startWebApp,
+        singleMode,
       }),
     );
     if (startWebApp) web = await startReactDevServer(projectRoot);

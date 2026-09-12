@@ -148,7 +148,7 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   if (deprecated) {
     throw new Error(
       `${deprecated.split("=")[0]} is no longer supported; ` +
-        "sessions use the current project's Development deployment.",
+        "sessions use the project's current deployment.",
     );
   }
 

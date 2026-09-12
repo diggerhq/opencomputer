@@ -525,9 +525,11 @@ export default function ManagedAgentDetail({
       : 'playground'
     : standaloneTab
   const environment =
-    searchParams.get('environment') === 'production'
-      ? 'production'
-      : 'development'
+    project?.project.environmentMode === 'single'
+      ? 'default'
+      : searchParams.get('environment') === 'production'
+        ? 'production'
+        : 'development'
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
@@ -599,6 +601,20 @@ export default function ManagedAgentDetail({
   useEffect(() => {
     requestedPlaygroundIdRef.current = requestedPlaygroundId
   }, [requestedPlaygroundId])
+  useEffect(() => {
+    if (
+      project?.project.environmentMode !== 'single' ||
+      searchParams.get('environment') !== 'development'
+    ) {
+      return
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('environment')
+    void navigate(
+      { pathname: location.pathname, search: next.toString() },
+      { replace: true },
+    )
+  }, [location.pathname, navigate, project, searchParams])
   const selectedPlaygroundEvents = useQuery({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
@@ -678,6 +694,21 @@ export default function ManagedAgentDetail({
     },
   ]
 
+  if (
+    project?.project.environmentMode === 'single' &&
+    searchParams.get('environment') === 'production'
+  ) {
+    return (
+      <Panel>
+        <EmptyState
+          icon={Bot}
+          title="This project has one current deployment"
+          description="Production is not a separate environment for this project. Remove the environment parameter or select a separate production project."
+        />
+      </Panel>
+    )
+  }
+
   if (!agents.isLoading && !agent) {
     return (
       <Panel>
@@ -723,7 +754,7 @@ export default function ManagedAgentDetail({
         }
         description={
           project
-            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'} · development and production environments`
+            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'}${project.project.environmentMode === 'single' ? ' · one current deployment' : ' · development and production environments'}`
             : activeDeployment.data
               ? `Active deployment · ${activeDeployment.data.alias}`
               : 'Loading active deployment…'
@@ -859,7 +890,11 @@ export default function ManagedAgentDetail({
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Debug playground"
-            description={`Create the starter locally, then sync it directly to ${environment}.`}
+            description={
+              project.project.environmentMode === 'single'
+                ? 'Create the starter locally, then deploy its current version.'
+                : `Create the starter locally, then sync it directly to ${environment}.`
+            }
             action={
               <div className="flex max-w-xl flex-col items-center gap-3">
                 <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">

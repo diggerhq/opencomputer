@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import type { ResolvedConfig } from "./config.js";
 import type { MemoryDeclaration, ProjectResourceManifest } from "./project.js";
 
+export type ManagedEnvironmentName = "default" | "development" | "production";
+
 export interface OpenComputerIdentity {
   user_id: string | null;
   email: string | null;
@@ -23,9 +25,11 @@ export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /** Missing only while talking to a backend from before project modes shipped. */
+  environmentMode?: "single" | "legacy";
   /** One row per project agent and environment: that member's active deployment there. */
   environments: Array<{
-    name: "development" | "production";
+    name: ManagedEnvironmentName;
     agentId?: string;
     activeDeploymentId?: string;
     updatedAt: string;
@@ -54,7 +58,7 @@ export interface ManagedAgentEvent {
 export interface ManagedSecretMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ManagedEnvironmentName;
   agentId?: string;
   allowedOrigins: string[];
   createdAt: string;
@@ -80,7 +84,7 @@ export interface ModelAccessConnection {
 export interface ModelAccessBinding {
   organizationId: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ManagedEnvironmentName;
   provider: "anthropic" | "openai";
   connectionId: string;
   enabled: boolean;
@@ -92,7 +96,7 @@ export interface ModelAccessBinding {
 export interface AgentRuntimeVariableMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ManagedEnvironmentName;
   agentId?: string;
   createdAt: string;
   updatedAt: string;
@@ -167,7 +171,7 @@ export interface TemplateInstallation {
 export interface ManagedAgentWebhook {
   id: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ManagedEnvironmentName;
   agentId: string;
   name: string;
   enabled: boolean;
@@ -186,7 +190,7 @@ export interface ManagedAgentLog {
   timestamp: string;
   level: "info" | "warn" | "error";
   event: string;
-  environment: "development" | "production";
+  environment: ManagedEnvironmentName;
   agentId: string;
   deploymentId: string;
   sessionId: string;
@@ -233,7 +237,7 @@ export interface ManagedSessionSnapshot {
   }>;
 }
 
-export type MemoryEnvironment = "development" | "production";
+export type MemoryEnvironment = ManagedEnvironmentName;
 
 export type MemoryWriter =
   | { kind: "owner" }
@@ -519,7 +523,7 @@ export class OpenComputerClient {
 
   async secrets(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ManagedEnvironmentName;
     agentId?: string;
   }): Promise<ManagedSecretMetadata[]> {
     const query = new URLSearchParams();
@@ -536,7 +540,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     agentId?: string;
     allowedOrigins: string[];
   }) {
@@ -557,7 +561,7 @@ export class OpenComputerClient {
   deleteSecret(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -632,7 +636,7 @@ export class OpenComputerClient {
   putModelAccessBinding(input: {
     projectId: string;
     provider: "anthropic" | "openai";
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     enabled: boolean;
   }) {
     return this.request<ModelAccessBinding>(
@@ -643,7 +647,7 @@ export class OpenComputerClient {
 
   async runtimeVariables(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ManagedEnvironmentName;
     agentId?: string;
   }): Promise<AgentRuntimeVariableMetadata[]> {
     const query = new URLSearchParams();
@@ -662,7 +666,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     agentId?: string;
   }) {
     return this.request<AgentRuntimeVariableMetadata>(
@@ -681,7 +685,7 @@ export class OpenComputerClient {
   deleteRuntimeVariable(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -694,7 +698,7 @@ export class OpenComputerClient {
 
   async webhooks(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ManagedEnvironmentName;
     agentId?: string;
   }): Promise<ManagedAgentWebhook[]> {
     const query = new URLSearchParams();
@@ -710,7 +714,7 @@ export class OpenComputerClient {
   createWebhook(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ManagedEnvironmentName;
     agentId: string;
     identity?: string;
   }) {
@@ -918,7 +922,7 @@ export class OpenComputerClient {
   logs(input: {
     agentId?: string;
     sessionId?: string;
-    environment?: "development" | "production";
+    environment?: ManagedEnvironmentName;
     after?: string;
     limit?: number;
   }) {

@@ -400,6 +400,8 @@ function publicProject(value: unknown): Record<string, unknown> {
     id: project.id,
     slug: project.slug,
     name: project.name,
+    environmentMode:
+      project.environmentMode === "single" ? "single" : "legacy",
     environments: Array.isArray(project.environments)
       ? stripPrivateValues(project.environments)
       : [],

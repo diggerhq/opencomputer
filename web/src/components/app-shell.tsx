@@ -147,10 +147,12 @@ function projectIdFromPath(pathname: string): string | undefined {
 
 function ManagedProjectContext({
   projectName,
+  environmentMode,
   environment,
   onChange,
 }: {
   projectName?: string
+  environmentMode?: 'single' | 'legacy'
   environment: ProjectEnvironment
   onChange: (environment: ProjectEnvironment) => void
 }) {
@@ -159,6 +161,14 @@ function ManagedProjectContext({
       <div className="text-muted-foreground flex min-w-0 items-center gap-2 font-mono text-sm">
         <span className="text-muted-foreground/50">/</span>
         <span>Loading project…</span>
+      </div>
+    )
+  }
+  if (environmentMode === 'single') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
+        <span className="text-muted-foreground/50">/</span>
+        <span className="truncate font-medium">{projectName}</span>
       </div>
     )
   }
@@ -479,9 +489,11 @@ export default function AppShell() {
     enabled: Boolean(projectId),
   })
   const environment: ProjectEnvironment =
-    new URLSearchParams(location.search).get('environment') === 'production'
-      ? 'production'
-      : 'development'
+    project.data?.project.environmentMode === 'single'
+      ? 'default'
+      : new URLSearchParams(location.search).get('environment') === 'production'
+        ? 'production'
+        : 'development'
   function changeProjectEnvironment(nextEnvironment: ProjectEnvironment) {
     void navigate(
       {
@@ -504,6 +516,7 @@ export default function AppShell() {
           <div className="flex min-w-0 items-center px-6">
             <ManagedProjectContext
               projectName={project.data?.project.name}
+              environmentMode={project.data?.project.environmentMode}
               environment={environment}
               onChange={changeProjectEnvironment}
             />
@@ -539,6 +552,7 @@ export default function AppShell() {
         {projectId ? (
           <ManagedProjectContext
             projectName={project.data?.project.name}
+            environmentMode={project.data?.project.environmentMode}
             environment={environment}
             onChange={changeProjectEnvironment}
           />

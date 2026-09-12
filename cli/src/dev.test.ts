@@ -28,6 +28,20 @@ test("development watch explains the live deployment loop", () => {
   assert.doesNotMatch(output, /web app|Vite/i);
 });
 
+test("single-mode watch describes one current deployment", () => {
+  const output = developmentWatchReadyMessage({
+    projectName: "Support agents",
+    projectId: "prj_support",
+    dashboardUrl: "https://mo-oc-dev.com/projects/prj_support",
+    agents: ["support"],
+    deployments: ["support:abc123"],
+    watchedDirectory: "/workspace/opencomputer",
+    singleMode: true,
+  });
+  assert.match(output, /OpenComputer\n/);
+  assert.doesNotMatch(output, /Development|@default/);
+});
+
 test("development derives the cloud dashboard project URL", () => {
   assert.equal(
     projectDashboardURL("https://mo-oc-dev.com/", "prj_hello/world"),

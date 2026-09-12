@@ -617,7 +617,7 @@ export default function App() {
       <section className="hero">
         <span className="eyebrow">OpenComputer</span>
         <h1>Hello, world.</h1>
-        <p>Your first agent is live. The React app stays local while agent code syncs to Development (Cloud).</p>
+        <p>Your first agent is live. The React app stays local while agent code syncs to its current cloud deployment.</p>
       </section>
 
       <section className="chat" aria-label="Agent conversation">
@@ -707,7 +707,7 @@ form button:disabled { cursor: default; opacity: .45; }
 This project keeps agent definitions in \`opencomputer/\` and the React app in
 \`src/\`.
 
-Deploy agent changes to Development (Cloud):
+Deploy agent changes to the current cloud deployment:
 
 \`\`\`bash
 npm run deploy -- --watch
@@ -730,7 +730,7 @@ from \`defineConnection()\` declarations.
 
 This project keeps agent definitions in \`opencomputer/\`.
 
-Deploy agent changes to Development (Cloud):
+Deploy agent changes to the current cloud deployment:
 
 \`\`\`bash
 npm run deploy -- --watch

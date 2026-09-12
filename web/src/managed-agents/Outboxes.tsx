@@ -84,7 +84,7 @@ export function ManagedAgentOutboxes({
 }: {
   projectId: string
   agentId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   deployed: boolean
 }) {
   const [selectedItemId, setSelectedItemId] = useState<string>()
@@ -100,7 +100,11 @@ export function ManagedAgentOutboxes({
       <Panel>
         <EmptyState
           icon={Send}
-          title={`No active ${environment} deployment`}
+          title={
+            environment === 'default'
+              ? 'No active deployment'
+              : `No active ${environment} deployment`
+          }
           description="Deploy this project to the environment before publishing outbox items."
         />
       </Panel>
@@ -134,7 +138,11 @@ export function ManagedAgentOutboxes({
       <Panel>
         <EmptyState
           icon={Send}
-          title={`No ${environment} outboxes`}
+          title={
+            environment === 'default'
+              ? 'No outboxes'
+              : `No ${environment} outboxes`
+          }
           description="Register an outbox for this agent and deploy it to this environment."
         />
       </Panel>
@@ -263,7 +271,11 @@ export function ManagedAgentOutboxes({
           <div>
             <PanelTitle>Configured routes</PanelTitle>
             <PanelDescription className="mt-1">
-              Delivery readiness for this {environment} environment.
+              Delivery readiness for{' '}
+              {environment === 'default'
+                ? 'the current deployment'
+                : `the ${environment} environment`}
+              .
             </PanelDescription>
           </div>
         </PanelHeader>

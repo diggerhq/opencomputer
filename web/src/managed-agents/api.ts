@@ -1,4 +1,6 @@
 import { z } from 'zod'
+
+export type ManagedProjectEnvironment = 'default' | 'development' | 'production'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 
 const agentSchema = z.object({
@@ -88,9 +90,10 @@ const projectSchema = z.object({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
+  environmentMode: z.enum(['single', 'legacy']).optional().default('legacy'),
   environments: z.array(
     z.object({
-      name: z.enum(['development', 'production']),
+      name: z.enum(['default', 'development', 'production']),
       agentId: z.string().optional(),
       activeDeploymentId: z.string().optional(),
       updatedAt: z.string(),
@@ -779,7 +782,7 @@ export async function getManagedModelAccessBindings(projectId: string) {
 export async function putManagedModelAccessBinding(input: {
   projectId: string
   provider: 'anthropic' | 'openai'
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   enabled: boolean
 }) {
   return apiFetch(
@@ -791,7 +794,7 @@ export async function putManagedModelAccessBinding(input: {
 
 export async function getManagedProjectSecrets(
   projectId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   return (
     await apiFetch(
@@ -804,7 +807,7 @@ export async function getManagedProjectSecrets(
 
 export async function putManagedProjectSecret(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   agentId?: string
   name: string
   value: string
@@ -827,7 +830,7 @@ export async function putManagedProjectSecret(input: {
 
 export async function deleteManagedProjectSecret(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   agentId?: string
   name: string
 }) {
@@ -841,7 +844,7 @@ export async function deleteManagedProjectSecret(input: {
 
 export async function getAgentRuntimeVariables(
   projectId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   return (
     await apiFetch(
@@ -854,7 +857,7 @@ export async function getAgentRuntimeVariables(
 
 export async function putAgentRuntimeVariable(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   agentId?: string
   name: string
   value: string
@@ -875,7 +878,7 @@ export async function putAgentRuntimeVariable(input: {
 
 export async function deleteAgentRuntimeVariable(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   agentId?: string
   name: string
 }) {
@@ -934,7 +937,7 @@ export async function getManagedAgentChannels() {
 
 export async function getManagedAgentOutboxes(
   agentId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   const query = new URLSearchParams({ agentId, environment })
   return apiFetch(
@@ -947,7 +950,7 @@ export async function getManagedAgentOutboxes(
 export async function getManagedAgentSchedules(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
   return (
@@ -962,7 +965,7 @@ export async function getManagedAgentSchedules(
 export async function getManagedAgentScheduleRuns(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
   return (
@@ -977,7 +980,7 @@ export async function getManagedAgentScheduleRuns(
 export async function runManagedAgentSchedule(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
   scheduleId: string,
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
@@ -993,7 +996,7 @@ export async function runManagedAgentSchedule(
 export async function getManagedAgentWebhooks(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: ManagedProjectEnvironment,
 ) {
   const query = new URLSearchParams({ agentId, environment })
   return (
@@ -1008,7 +1011,7 @@ export async function getManagedAgentWebhooks(
 export async function createManagedAgentWebhook(input: {
   projectId: string
   agentId: string
-  environment: 'development' | 'production'
+  environment: ManagedProjectEnvironment
   name: string
   identity?: string
 }) {
@@ -1297,7 +1300,7 @@ export async function getManagedAgentSession(sessionId: string) {
   )
 }
 
-export type ManagedMemoryEnvironment = 'development' | 'production'
+export type ManagedMemoryEnvironment = ManagedProjectEnvironment
 
 /** The complete address of one document; every read and write names it in full. */
 export type ManagedMemoryDocumentTarget = {

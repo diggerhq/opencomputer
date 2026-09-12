@@ -21,7 +21,7 @@ import {
   putManagedProjectSecret,
 } from './api'
 
-type Environment = 'development' | 'production'
+type Environment = 'default' | 'development' | 'production'
 
 function parseOrigins(value: string) {
   return [...new Set(value.split(/[\s,]+/).map((part) => part.trim()))].filter(
@@ -105,7 +105,7 @@ export function ManagedProjectSecrets({
             </PanelDescription>
           </div>
           <span className="bg-muted rounded-md px-2 py-1 text-xs capitalize">
-            {environment}
+            {environment === 'default' ? 'Current' : environment}
           </span>
         </PanelHeader>
         <PanelContent>
@@ -266,7 +266,9 @@ export function ManagedProjectSecrets({
           </div>
         ) : (
           <PanelContent className="text-muted-foreground text-sm">
-            No secrets configured for {environment}.
+            No secrets configured for{' '}
+            {environment === 'default' ? 'the current deployment' : environment}
+            .
           </PanelContent>
         )}
       </Panel>
@@ -353,7 +355,7 @@ function AgentRuntimeVariables({
             </PanelDescription>
           </div>
           <span className="bg-muted rounded-md px-2 py-1 text-xs capitalize">
-            {environment}
+            {environment === 'default' ? 'Current' : environment}
           </span>
         </PanelHeader>
         <PanelContent>
@@ -483,7 +485,9 @@ function AgentRuntimeVariables({
           </div>
         ) : (
           <PanelContent className="text-muted-foreground text-sm">
-            No runtime variables configured for {environment}.
+            No runtime variables configured for{' '}
+            {environment === 'default' ? 'the current deployment' : environment}
+            .
           </PanelContent>
         )}
       </Panel>

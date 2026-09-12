@@ -6,6 +6,29 @@ import {
   nextAgentEventDeadline,
   shouldBindModelAccessProject,
 } from "./commands.js";
+import { deploymentAliasForProject } from "./project-mode.js";
+import type { ManagedProject } from "./api.js";
+
+function managedProject(
+  environmentMode?: "single" | "legacy",
+): ManagedProject {
+  return {
+    id: "prj_test",
+    slug: "test-project",
+    name: "Test project",
+    ...(environmentMode ? { environmentMode } : {}),
+    agents: [{ id: "test-agent", name: "Test agent" }],
+    environments:
+      environmentMode === "single"
+        ? [{ name: "default", updatedAt: "2026-01-01T00:00:00.000Z" }]
+        : [
+            { name: "development", updatedAt: "2026-01-01T00:00:00.000Z" },
+            { name: "production", updatedAt: "2026-01-01T00:00:00.000Z" },
+          ],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
 
 test("agent event progress refreshes the inactivity deadline", () => {
   assert.equal(nextAgentEventDeadline(10_000, 3_000, 0, 9_000), 10_000);
@@ -16,6 +39,22 @@ test("one-shot deploy defaults to development and production stays explicit", ()
   assert.equal(deploymentAlias(), "development");
   assert.equal(deploymentAlias("development"), "development");
   assert.equal(deploymentAlias("production"), "production");
+});
+
+test("single-mode deploys target the canonical current deployment", () => {
+  assert.equal(deploymentAliasForProject(managedProject("single")), "default");
+  assert.throws(
+    () => deploymentAliasForProject(managedProject("single"), "development"),
+    /omit --alias/,
+  );
+});
+
+test("a project response without a mode retains legacy CLI behavior", () => {
+  assert.equal(deploymentAliasForProject(managedProject()), "development");
+  assert.equal(
+    deploymentAliasForProject(managedProject(), "production"),
+    "production",
+  );
 });
 
 test("model access binds the explicit or current linked project", () => {

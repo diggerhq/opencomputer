@@ -149,8 +149,10 @@ export function ManagedProjectMemory({
         <div>
           <PanelTitle>Memory</PanelTitle>
           <PanelDescription>
-            Documents saved in {environment}, per resource. Owner edits use the
-            same revision checks as agent saves.
+            Documents saved in{' '}
+            {environment === 'default' ? 'the current deployment' : environment}
+            , per resource. Owner edits use the same revision checks as agent
+            saves.
           </PanelDescription>
         </div>
       </PanelHeader>
@@ -655,7 +657,11 @@ function MemoryResourceDocuments({
             empty={
               <EmptyState
                 icon={BookOpen}
-                title={`No ${environment} documents in ${resource}`}
+                title={
+                  environment === 'default'
+                    ? `No documents in ${resource}`
+                    : `No ${environment} documents in ${resource}`
+                }
                 description="Create one here or with `opencomputer memory create`. A session can only bind to a document that exists."
               />
             }
@@ -683,8 +689,9 @@ function MemoryResourceDocuments({
           <DialogHeader>
             <DialogTitle>Create document</DialogTitle>
             <DialogDescription>
-              A new document in {resource} ({environment}). A deleted ID cannot
-              be reused, so choose IDs deliberately.
+              A new document in {resource}
+              {environment === 'default' ? '' : ` (${environment})`}. A deleted
+              ID cannot be reused, so choose IDs deliberately.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">

@@ -96,6 +96,45 @@ test("non-interactive commands direct an unlinked app to link", async () => {
   }
 });
 
+test("an explicit command target does not replace the linked project", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const linked = project();
+    const override: ManagedProject = {
+      ...project(),
+      id: "prj_production",
+      slug: "production-project",
+      name: "Production project",
+      agents: [{ id: "production-agent", name: "Production agent" }],
+    };
+    const client = {
+      async projects() {
+        return [linked, override];
+      },
+      async createProject() {
+        throw new Error("not expected");
+      },
+    };
+    const config = { apiUrl: "https://app.opencomputer.dev", apiKey: "test" };
+    const saved = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      project: linked.id,
+      persist: true,
+    });
+    const selected = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      project: override.id,
+      persist: false,
+    });
+    assert.equal(selected.projectId, override.id);
+    assert.deepEqual(
+      JSON.parse(await readFile(resolve(root, ".opencomputer", "project.json"), "utf8")),
+      saved,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("explicit project creation reuses the existing slug on retry", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
   try {

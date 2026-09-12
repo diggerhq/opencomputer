@@ -60,7 +60,7 @@ export function ManagedAgentWebhooks({
   projectId: string
   agentId: string
   agentName: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   deployed: boolean
 }) {
   const queryClient = useQueryClient()
@@ -135,7 +135,11 @@ export function ManagedAgentWebhooks({
       <Panel>
         <EmptyState
           icon={Webhook}
-          title={`No active ${environment} deployment`}
+          title={
+            environment === 'default'
+              ? 'No active deployment'
+              : `No active ${environment} deployment`
+          }
           description="Deploy this agent before creating an ingress webhook for it."
         />
       </Panel>
@@ -228,8 +232,10 @@ export function ManagedAgentWebhooks({
           <div>
             <PanelTitle>Webhooks</PanelTitle>
             <PanelDescription>
-              Start a fresh {environment} session from an external system. Each
-              webhook is fixed to this agent and environment.
+              {environment === 'default'
+                ? 'Start a fresh session on the current deployment from an external system.'
+                : `Start a fresh ${environment} session from an external system.`}{' '}
+              Each webhook is fixed to this agent and project scope.
             </PanelDescription>
           </div>
           <Button size="sm" onClick={() => setCreating(true)}>
@@ -245,7 +251,11 @@ export function ManagedAgentWebhooks({
             empty={
               <EmptyState
                 icon={Webhook}
-                title={`No ${environment} webhooks`}
+                title={
+                  environment === 'default'
+                    ? 'No webhooks'
+                    : `No ${environment} webhooks`
+                }
                 description="Create one to trigger this agent from another service."
               />
             }
@@ -258,9 +268,12 @@ export function ManagedAgentWebhooks({
           <DialogHeader>
             <DialogTitle>Create webhook</DialogTitle>
             <DialogDescription>
-              This webhook will trigger {agentName} in {environment}. Give the
-              ingress point a name; its URL, which carries the credential, is
-              shown once.
+              This webhook will trigger {agentName}{' '}
+              {environment === 'default'
+                ? 'on the current deployment'
+                : `in ${environment}`}
+              . Give the ingress point a name; its URL, which carries the
+              credential, is shown once.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -274,7 +287,9 @@ export function ManagedAgentWebhooks({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="webhook-identity">Delivery identity (optional)</Label>
+            <Label htmlFor="webhook-identity">
+              Delivery identity (optional)
+            </Label>
             <Input
               id="webhook-identity"
               value={identity}
@@ -284,8 +299,8 @@ export function ManagedAgentWebhooks({
             />
             <p className="text-muted-foreground text-xs">
               Where a delivery&apos;s identity is read when the sender sets no
-              Idempotency-Key, so a provider&apos;s retry does not start a second
-              session. A header name, or a JSON Pointer into the body.
+              Idempotency-Key, so a provider&apos;s retry does not start a
+              second session. A header name, or a JSON Pointer into the body.
             </p>
           </div>
           <DialogFooter>

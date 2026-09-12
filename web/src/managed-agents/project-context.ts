@@ -1,4 +1,4 @@
-export type ProjectEnvironment = 'development' | 'production'
+export type ProjectEnvironment = 'default' | 'development' | 'production'
 
 export function projectAgentIdFromPath(pathname: string) {
   const match = pathname.match(

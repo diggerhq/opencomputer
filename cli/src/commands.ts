@@ -2,6 +2,7 @@ import {
   OpenComputerClient,
   type ManagedAgentEvent,
   type ManagedAgentLog,
+  type ManagedEnvironmentName,
   type ManagedSessionSnapshot,
   type MemoryBindings,
   type MemoryDocument,
@@ -26,7 +27,6 @@ import {
   initializeAgentProject,
 } from "./project.js";
 import {
-  developmentAgentReference,
   parseSessionCommand,
   resolveProjectAgent,
 } from "./session-command.js";
@@ -49,6 +49,10 @@ import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
+import {
+  deploymentAliasForProject,
+  projectEnvironmentMode,
+} from "./project-mode.js";
 import {
   createSessionWithMemory,
   ensureMemoryDocuments,
@@ -115,7 +119,16 @@ function options(args: string[], name: string): string[] {
 
 function environmentOption(
   value: string | undefined,
-): "development" | "production" {
+  project?: { environmentMode: "single" | "legacy" },
+): "default" | "development" | "production" {
+  if (project?.environmentMode === "single") {
+    if (value !== undefined) {
+      throw new Error(
+        "This project has one environment; omit --environment for this command.",
+      );
+    }
+    return "default";
+  }
   if (!value || value === "development") return "development";
   if (value === "production") return "production";
   throw new Error("--environment must be development or production");
@@ -206,7 +219,11 @@ async function selectedProject(
   client: OpenComputerClient,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   reference?: string,
-): Promise<{ projectId: string; agentId: string }> {
+): Promise<{
+  projectId: string;
+  agentId: string;
+  environmentMode: "single" | "legacy";
+}> {
   if (reference) {
     const project = (await client.projects()).find(
       (candidate) => candidate.id === reference || candidate.slug === reference,
@@ -214,11 +231,23 @@ async function selectedProject(
     if (!project) throw new Error(`Project ${reference} was not found.`);
     const agent = project.agents[0];
     if (!agent) throw new Error(`Project ${project.name} has no agents.`);
-    return { projectId: project.id, agentId: agent.id };
+    return {
+      projectId: project.id,
+      agentId: agent.id,
+      environmentMode: projectEnvironmentMode(project),
+    };
   }
   const root = await findOpenComputerProjectRoot(process.cwd());
   const binding = await ensureProjectBinding(client, config, root);
-  return { projectId: binding.projectId, agentId: binding.agentId };
+  const project = (await client.projects()).find(
+    (candidate) => candidate.id === binding.projectId,
+  );
+  if (!project) throw new Error("The bound project is no longer available.");
+  return {
+    projectId: binding.projectId,
+    agentId: binding.agentId,
+    environmentMode: projectEnvironmentMode(project),
+  };
 }
 
 async function selectedSessionAgent(
@@ -1038,7 +1067,7 @@ export async function runCommand(
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  npm run deploy -- --watch  # deploy changes to Development\n` +
+          `  npm run deploy -- --watch  # deploy changes to the current cloud deployment\n` +
           (spa
             ? `  npm run dev:web             # optional local web app\n`
             : ""),
@@ -1093,6 +1122,7 @@ export async function runCommand(
     const binding = await ensureProjectBinding(client, config, root, {
       project,
       createProjectName,
+      persist: true,
     });
     if (globals.json) printJSON(binding);
     else {
@@ -1125,22 +1155,25 @@ export async function runCommand(
       );
     }
     if (watch) {
-      if (requestedAlias && requestedAlias !== "development") {
-        throw new Error(
-          "--watch deploys only to development; omit --alias or use --alias development",
-        );
-      }
       await runDeploymentWatch(client, config, root, {
         project,
         createProjectName,
-      });
+        persist: project ? false : true,
+      }, { alias: requestedAlias });
       return;
     }
-    if (project || createProjectName) {
-      throw new Error("--project and --create-project require --watch");
+    if (createProjectName) {
+      throw new Error("--create-project requires --watch or opencomputer link");
     }
-    const alias = deploymentAlias(requestedAlias);
-    const binding = await ensureProjectBinding(client, config, root);
+    const binding = await ensureProjectBinding(client, config, root, {
+      project,
+      persist: false,
+    });
+    const targetProject = (await client.projects()).find(
+      (candidate) => candidate.id === binding.projectId,
+    );
+    if (!targetProject) throw new Error("The selected project is no longer available.");
+    const alias = deploymentAliasForProject(targetProject, requestedAlias);
     const results = await publishProjectDeployment(
       client,
       root,
@@ -1156,9 +1189,13 @@ export async function runCommand(
     else {
       for (const { deployment } of results) {
         process.stdout.write(
-          `Deployed ${deployment.agentId}@${deployment.alias}\n` +
-            `Deployment: ${deployment.id}\n` +
-            `Source ID:  opencomputer.toml\n`,
+          targetProject.environmentMode === "single"
+            ? `Deployed ${deployment.agentId}\n` +
+                `Current deployment: ${deployment.id}\n` +
+                `Source ID:          opencomputer.toml\n`
+            : `Deployed ${deployment.agentId}@${deployment.alias}\n` +
+                `Deployment: ${deployment.id}\n` +
+                `Source ID:  opencomputer.toml\n`,
         );
       }
     }
@@ -1209,6 +1246,7 @@ export async function runCommand(
       {
         project,
         createProjectName,
+        persist: project ? false : true,
       },
     );
     return;
@@ -1218,12 +1256,13 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(
       client,
       config,
       projectReference,
     );
+    const environment = environmentOption(environmentValue, project);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -1341,8 +1380,17 @@ export async function runCommand(
         shouldBindModelAccessProject(projectReference, currentAgentRoot)
           ? await selectedProject(client, config, projectReference)
           : undefined;
-      const environments = project
-        ? (["development", "production"] as const)
+      if (project?.environmentMode === "single" && legacyEnvironment) {
+        throw new Error(
+          "This project has one environment; omit --environment when connecting model access.",
+        );
+      }
+      const environments: readonly ManagedEnvironmentName[] = project
+        ? project.environmentMode === "single"
+          ? (["default"] as const)
+          : legacyEnvironment && legacyEnvironment !== "both"
+            ? ([legacyEnvironment as "development" | "production"] as const)
+            : (["development", "production"] as const)
         : [];
       const receipt = await client.connectModelAccess({ provider: "openai" });
       process.stdout.write(
@@ -1379,7 +1427,9 @@ export async function runCommand(
         );
         if (project) {
           process.stdout.write(
-            `Enabled Codex for ${project.projectId} (development and production).\n`,
+            project.environmentMode === "single"
+              ? `Enabled Codex for ${project.projectId}.\n`
+              : `Enabled Codex for ${project.projectId} (${environments.join(" and ")}).\n`,
           );
         }
       }
@@ -1419,12 +1469,13 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(
       client,
       config,
       projectReference,
     );
+    const environment = environmentOption(environmentValue, project);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -1493,12 +1544,13 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(
       client,
       config,
       projectReference,
     );
+    const environment = environmentOption(environmentValue, project);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -1627,9 +1679,10 @@ export async function runCommand(
   if (command === "memory") {
     const action = args.shift();
     const projectReference = option(args, "--project");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     if (!action) throw new Error(MEMORY_USAGE);
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project);
     const projectId = project.projectId;
 
     if (action === "export") {
@@ -1853,16 +1906,14 @@ export async function runCommand(
     let agentId = option(args, "--agent");
     const sessionId = option(args, "--session");
     const environmentValue = option(args, "--environment");
-    const environment = environmentValue
-      ? environmentOption(environmentValue)
-      : undefined;
     const limitValue = option(args, "--limit");
     const limit = limitValue ? Number.parseInt(limitValue, 10) : 200;
     if (!Number.isFinite(limit) || limit < 1 || limit > 1_000) {
       throw new Error("--limit must be between 1 and 1000");
     }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    if (!agentId && !sessionId) {
+    let selected: Awaited<ReturnType<typeof selectedProject>> | undefined;
+    if (!sessionId) {
       let insideProject = true;
       try {
         await findOpenComputerProjectRoot(process.cwd());
@@ -1870,11 +1921,17 @@ export async function runCommand(
         insideProject = false;
       }
       if (insideProject) {
-        agentId = (
-          await selectedProject(client, config)
-        ).agentId;
+        selected = await selectedProject(client, config);
+        agentId ??= selected.agentId;
       }
     }
+    const environment = selected
+      ? selected.environmentMode === "single" || environmentValue
+        ? environmentOption(environmentValue, selected)
+        : undefined
+      : environmentValue
+        ? environmentOption(environmentValue)
+        : undefined;
     let cursor = "";
     let stopped = false;
     const stop = (): void => {
@@ -1909,13 +1966,14 @@ export async function runCommand(
     }
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const project = await selectedProject(
       client,
       config,
       projectReference,
     );
+    const environment = environmentOption(environmentValue, project);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -1977,12 +2035,12 @@ export async function runCommand(
         project,
         session.agent,
       );
-      const agent = developmentAgentReference(agentId);
-      // Sessions from the CLI run on Development, so its memory is bound.
+      const environment = environmentOption(undefined, project);
+      const agent = `${agentId}@${environment}`;
       const documents = session.createDocuments && session.memory
         ? await ensureMemoryDocuments(client, {
             projectId: project.projectId,
-            environment: "development",
+            environment,
             bindings: session.memory,
           })
         : [];

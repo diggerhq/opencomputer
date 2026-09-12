@@ -68,7 +68,7 @@ for (const option of ["--local", "--remote", "--alias"]) {
     assert.throws(
       () => parseSessionCommand(["Hello", option, "value"]),
       new RegExp(
-        `${option} is no longer supported; sessions use the current project's Development deployment`,
+        `${option} is no longer supported; sessions use the project's current deployment`,
       ),
     );
   });

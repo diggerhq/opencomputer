@@ -18,6 +18,8 @@ export interface ProjectBinding {
 export interface ProjectBindingOptions {
   project?: string;
   createProjectName?: string;
+  /** Only explicit linking flows may change the repository's saved default. */
+  persist?: boolean;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -75,6 +77,21 @@ async function persistBinding(
   config: ResolvedConfig,
   project: ManagedProject,
 ): Promise<ProjectBinding> {
+  const binding = bindingForProject(config, project);
+  const directory = dirname(bindingPath(projectRoot));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(
+    bindingPath(projectRoot),
+    `${JSON.stringify(binding, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  return binding;
+}
+
+function bindingForProject(
+  config: ResolvedConfig,
+  project: ManagedProject,
+): ProjectBinding {
   const agent = project.agents[0];
   if (!agent) throw new Error(`Project ${project.name} has no agent to bind.`);
   const binding: ProjectBinding = {
@@ -84,13 +101,6 @@ async function persistBinding(
     projectName: project.name,
     agentId: agent.id,
   };
-  const directory = dirname(bindingPath(projectRoot));
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFile(
-    bindingPath(projectRoot),
-    `${JSON.stringify(binding, null, 2)}\n`,
-    { mode: 0o600 },
-  );
   return binding;
 }
 
@@ -142,5 +152,7 @@ export async function ensureProjectBinding(
     createName!,
     agentIdFromName(createName!),
   );
-  return persistBinding(projectRoot, config, project);
+  return options.persist === false
+    ? bindingForProject(config, project)
+    : persistBinding(projectRoot, config, project);
 }

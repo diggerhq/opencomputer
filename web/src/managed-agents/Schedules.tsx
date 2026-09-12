@@ -41,7 +41,7 @@ export function ManagedAgentSchedules({
 }: {
   projectId: string
   agentId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   deployed: boolean
 }) {
   const queryClient = useQueryClient()
@@ -95,8 +95,12 @@ export function ManagedAgentSchedules({
       <Panel>
         <EmptyState
           icon={CalendarClock}
-          title={`No active ${environment} deployment`}
-          description="Deploy this project to activate its schedules in this environment."
+          title={
+            environment === 'default'
+              ? 'No active deployment'
+              : `No active ${environment} deployment`
+          }
+          description="Deploy this project to activate its schedules."
         />
       </Panel>
     )
@@ -184,9 +188,11 @@ export function ManagedAgentSchedules({
           <div>
             <PanelTitle>Schedules</PanelTitle>
             <PanelDescription>
-              {environment === 'development'
-                ? 'Development schedules run only when you choose Run now.'
-                : 'Production schedules run automatically. Each run starts a fresh session.'}
+              {environment === 'default'
+                ? 'Schedules enabled for automatic runs start fresh sessions on the current deployment.'
+                : environment === 'development'
+                  ? 'Development schedules run only when you choose Run now.'
+                  : 'Production schedules run automatically. Each run starts a fresh session.'}
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -200,7 +206,11 @@ export function ManagedAgentSchedules({
             empty={
               <EmptyState
                 icon={CalendarClock}
-                title={`No ${environment} schedules`}
+                title={
+                  environment === 'default'
+                    ? 'No schedules'
+                    : `No ${environment} schedules`
+                }
                 description="Add a schedule under this agent's schedules folder and deploy it."
               />
             }
