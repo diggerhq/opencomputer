@@ -11,6 +11,7 @@ import {
   MessagesSquare,
   Monitor,
   Package,
+  Plug,
   Radio,
   Rocket,
   Send,
@@ -93,6 +94,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/secrets`,
             label: 'Secrets',
             icon: KeySquare,
+          },
+          {
+            to: `${projectPath}/connections`,
+            label: 'Connections',
+            icon: Plug,
           },
           {
             to: `${projectPath}/byok`,

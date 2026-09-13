@@ -32,6 +32,7 @@ describe('managed agents navigation', () => {
       'Webhooks',
       'Memory',
       'Secrets',
+      'Connections',
       'BYOK',
       'Debug playground',
     ])
@@ -40,6 +41,9 @@ describe('managed agents navigation', () => {
     )
     expect(nav[1]?.items.find((item) => item.label === 'Secrets')?.icon).toBe(
       KeySquare,
+    )
+    expect(nav[1]?.items.find((item) => item.label === 'Connections')?.to).toBe(
+      '/projects/project%20one/connections',
     )
     expect(nav[1]?.items.find((item) => item.label === 'BYOK')?.icon).toBe(
       BrainCircuit,
