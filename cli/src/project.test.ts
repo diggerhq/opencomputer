@@ -424,6 +424,59 @@ export default function Agent() {
   }
 });
 
+test("the compiler enumerates literal model selections in a conditional", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-conditional-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useInput, useModel } from "@opencomputer/agent";
+export default function Agent() {
+  const input = useInput();
+  useModel(input.text?.includes("hard")
+    ? "anthropic/claude-sonnet-5"
+    : "anthropic/claude-haiku-4.5");
+  return "Help with the request.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { models: Array<{ provider: string; model: string }> };
+    assert.deepEqual(manifest.models, [
+      { provider: "openrouter", model: "anthropic/claude-haiku-4.5" },
+      { provider: "openrouter", model: "anthropic/claude-sonnet-5" },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects a model selection it cannot register", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-dynamic-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useModel } from "@opencomputer/agent";
+const model = "anthropic/claude-sonnet-5";
+export default function Agent() {
+  useModel(model);
+  return "Help with the request.";
+}
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /useModel\(\) must use a literal model selection/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler records secret-backed HTTP connections without secret values", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-"));
   const root = resolve(parent, "app");

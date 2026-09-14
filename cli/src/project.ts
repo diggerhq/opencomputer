@@ -41,6 +41,7 @@ export interface BuiltAgentArtifact {
   connections: string[];
   httpConnections: HttpConnectionManifest[];
   memory: MemoryDeclaration[];
+  models: Array<{ provider: string; model: string }>;
   body: Buffer;
   digest: string;
   elapsedMs: number;
@@ -2297,6 +2298,44 @@ function staticModelSelections(
     ts.ScriptKind.TS,
   );
   const selections: Array<{ provider: string; model: string }> = [];
+  const selectionValues = (
+    value: ts.Expression,
+  ): Array<{ provider: string; model: string }> | undefined => {
+    if (ts.isStringLiteralLike(value)) {
+      return [{ provider: "openrouter", model: value.text }];
+    }
+    if (ts.isObjectLiteralExpression(value)) {
+      let provider: string | undefined;
+      let model: string | undefined;
+      for (const property of value.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = ts.isIdentifier(property.name)
+          ? property.name.text
+          : ts.isStringLiteralLike(property.name)
+            ? property.name.text
+            : undefined;
+        if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
+        if (name === "provider") provider = property.initializer.text;
+        if (name === "model") model = property.initializer.text;
+      }
+      return provider && model ? [{ provider, model }] : undefined;
+    }
+    if (ts.isConditionalExpression(value)) {
+      const whenTrue = selectionValues(value.whenTrue);
+      const whenFalse = selectionValues(value.whenFalse);
+      return whenTrue && whenFalse ? [...whenTrue, ...whenFalse] : undefined;
+    }
+    if (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertionExpression(value) ||
+      ts.isSatisfiesExpression(value) ||
+      ts.isNonNullExpression(value)
+    ) {
+      return selectionValues(value.expression);
+    }
+    return undefined;
+  };
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -2304,23 +2343,14 @@ function staticModelSelections(
       node.expression.text === "useModel"
     ) {
       const value = node.arguments[0];
-      if (value && ts.isStringLiteralLike(value)) {
-        selections.push({ provider: "openrouter", model: value.text });
-      } else if (value && ts.isObjectLiteralExpression(value)) {
-        let provider: string | undefined;
-        let model: string | undefined;
-        for (const property of value.properties) {
-          if (!ts.isPropertyAssignment(property)) continue;
-          const name = ts.isIdentifier(property.name)
-            ? property.name.text
-            : ts.isStringLiteralLike(property.name)
-              ? property.name.text
-              : undefined;
-          if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
-          if (name === "provider") provider = property.initializer.text;
-          if (name === "model") model = property.initializer.text;
+      if (value) {
+        const values = selectionValues(value);
+        if (!values) {
+          throw new Error(
+            "useModel() must use a literal model selection or a conditional whose branches are literal selections",
+          );
         }
-        if (provider && model) selections.push({ provider, model });
+        selections.push(...values);
       }
     }
     ts.forEachChild(node, visit);
@@ -2333,6 +2363,10 @@ function staticModelSelections(
           candidate.provider === selection.provider &&
           candidate.model === selection.model,
       ) === index,
+  ).sort((left, right) =>
+    `${left.provider}/${left.model}`.localeCompare(
+      `${right.provider}/${right.model}`,
+    ),
   );
 }
 
@@ -2815,10 +2849,12 @@ export async function buildAgentArtifact(
     connections?: string[];
     httpConnections?: HttpConnectionManifest[];
     memory?: MemoryDeclaration[];
+    models?: Array<{ provider: string; model: string }>;
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const memory = reactive.memory ?? [];
+  const models = reactive.models ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -2833,6 +2869,7 @@ export async function buildAgentArtifact(
     connections,
     httpConnections,
     memory,
+    models,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
