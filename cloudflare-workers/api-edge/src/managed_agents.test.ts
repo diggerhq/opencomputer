@@ -92,6 +92,107 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("forwards the GitHub repository listing with its query and the page it returns", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        repositories: [
+          {
+            id: 1,
+            fullName: "octo-org/service",
+            private: true,
+            defaultBranch: "main",
+            archived: false,
+          },
+        ],
+        nextCursor: "2",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=development&limit=100&cursor=2",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      repositories: [
+        {
+          id: 1,
+          fullName: "octo-org/service",
+          private: true,
+          defaultBranch: "main",
+          archived: false,
+        },
+      ],
+      nextCursor: "2",
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/projects/prj_test/github/repositories?environment=development&limit=100&cursor=2",
+    );
+  });
+
+  it("passes the repository listing's failure codes through", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: "github_connection_not_found",
+              message: "GitHub is not connected to the production environment",
+            },
+          },
+          { status: 404 },
+        ),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=production",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(404);
+    // The code is what a client branches on; the message is the edge's public copy.
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "github_connection_not_found",
+        message: "The requested agent resource was not found.",
+      },
+    });
+  });
+
+  it("only reads the repository listing", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=development",
+        { method: "POST", body: "{}" },
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("forwards the unauthenticated GitHub setup callback as HTML", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("<html>connected</html>", {

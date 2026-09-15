@@ -1106,7 +1106,7 @@ function publicSuccessBody(
   }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
-    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach))?$/.test(suffix)
+    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(suffix)
   ) {
     return stripPrivateValues(body);
   }
@@ -1648,6 +1648,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     (method === "GET" || method === "DELETE") &&
     /^\/projects\/[^/]+\/github$/.test(suffix)
   ) {
+    return true;
+  }
+  if (method === "GET" && /^\/projects\/[^/]+\/github\/repositories$/.test(suffix)) {
     return true;
   }
   if (

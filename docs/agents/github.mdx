@@ -64,7 +64,52 @@ installation; if specific repositories are selected, it can access only those
 repositories. Change the selection in GitHub's installation settings.
 
 Connections are attached independently to the project's development and
-production environments.
+production environments. A session uses the installation attached to the
+environment it was created in: a session started as `worker@production` gets
+the production installation's credentials even when the same deployment is
+also the development alias. Promote one artifact to both environments with
+different installations and each environment's sessions reach only their own
+installation's repositories.
+
+## List the repositories an environment can reach
+
+An application that lets a person pick a repository reads the installation's
+current selection from the connection rather than holding a GitHub credential
+of its own:
+
+```text
+GET /projects/<p>/github/repositories?environment=<env>&cursor=&limit=
+```
+
+`environment` is `development` or `production` and is required. `limit` is at
+most 100, the default; `cursor` is the `nextCursor` of the previous page.
+
+```json
+{
+  "repositories": [
+    {
+      "id": 1296269,
+      "fullName": "acme/service",
+      "private": true,
+      "defaultBranch": "main",
+      "archived": false
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+The list is read live from GitHub each time, with a token minted for that read
+that can see repository metadata and nothing else. OpenComputer keeps no copy:
+change the selection in GitHub's installation settings and the next read shows
+it. It is available to the organization's API key, not to project tokens.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `400` | `invalid_environment`, `invalid_limit`, `invalid_cursor` | The query is malformed |
+| `404` | `github_connection_not_found` | The environment has no GitHub installation attached |
+| `409` | `installation_suspended` | GitHub reports the installation suspended |
+| `502` | `github_unavailable` | GitHub could not be read; retry |
 
 ## Use Git and the API
 
@@ -81,7 +126,14 @@ gh api repos/acme/service/pulls
 
 OpenComputer mints a GitHub installation token whose permissions are limited
 to those declared by the deployed agent. GitHub installation tokens expire
-after about one hour.
+after about one hour; the agent does not manage that. Before a command is
+dispatched, the token is renewed if it would expire before the command's
+allowed duration is up, so a `git push` or `gh pr create` late in a long
+session, or on a computer that has been running for most of an hour, uses a
+token that outlives the command. Git and `gh` both pick up the renewed token
+without any change to how the agent calls them. Renewal never widens what the
+token can do: it carries the same declared permissions against the
+installation's current repository selection.
 
 ### Understand GitHub permission responses
 
