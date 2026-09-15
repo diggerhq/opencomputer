@@ -28,6 +28,15 @@ inspected.
 See [Playground and debugging](/agents/playground) for target selection and the
 debug inspector.
 
+## Finding sessions
+
+Give a session labels when you create it, such as the ticket, repository or
+user it works for, and list sessions by project, environment, agent, status
+and label instead of keeping your own index of session ids. The list returns
+rows with the session's status, its current turn activity and its latest
+result; open a session for its turns and events. The query, the row shape and
+the label bounds are on the [API reference](/agents/api#get-and-list).
+
 ## CLI
 
 Start a session against the development agent:

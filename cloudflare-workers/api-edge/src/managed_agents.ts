@@ -748,16 +748,55 @@ function publicDelivery(value: unknown): Record<string, unknown> {
   };
 }
 
+/**
+ * Session labels are the owner's own strings under the owner's own keys.
+ * They are reattached after the private-key strip, which would otherwise
+ * drop a label the owner happened to call `user_id` or `runtime_id`.
+ */
+function ownerLabels(source: Record<string, unknown>): Record<string, string> {
+  const labels = record(source.labels) ?? {};
+  return Object.fromEntries(
+    Object.entries(labels).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
 function publicSessionSnapshot(value: unknown): unknown {
+  const source = record(value);
   const session = record(stripPrivateValues(value));
-  if (!session || !Array.isArray(session.turns)) return session ?? value;
+  if (!session || !source) return session ?? value;
+  const labelled = "labels" in source ? { ...session, labels: ownerLabels(source) } : session;
+  if (!Array.isArray(labelled.turns)) return labelled;
   return {
-    ...session,
-    turns: session.turns.map((entry) => {
+    ...labelled,
+    turns: labelled.turns.map((entry) => {
       const turn = record(entry);
       if (!turn || !Array.isArray(turn.deliveries)) return entry;
       return { ...turn, deliveries: turn.deliveries.map(publicDelivery) };
     }),
+  };
+}
+
+/** One list row as documented: nothing private is in it, and the labels are the owner's. */
+function publicSessionSummary(value: unknown): unknown {
+  const source = record(value);
+  const row = record(stripPrivateValues(value));
+  if (!row || !source) return row ?? value;
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    agentId: row.agentId,
+    deploymentId: row.deploymentId,
+    environment: row.environment ?? null,
+    source: row.source,
+    status: row.status,
+    labels: ownerLabels(source),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    revision: row.revision,
+    activity: row.activity,
+    result: source.result ?? null,
   };
 }
 
@@ -1395,14 +1434,15 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/sessions") {
     return {
-      ...(record(stripPrivateValues(body)) ?? {}),
       sessions: Array.isArray(body.sessions)
-        ? body.sessions.map(publicSessionSnapshot)
+        ? body.sessions.map(publicSessionSummary)
         : [],
+      nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
     };
   }
   if (
     (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
+    (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) ||
     (method === "POST" &&
       /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
   ) {
@@ -1739,6 +1779,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/sessions") return true;
   if (method === "GET" && suffix === "/billing/sessions") return true;
   if (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) return true;
+  if (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) {
+    return true;
+  }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
   }

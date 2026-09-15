@@ -49,7 +49,8 @@ deployment it was created on; see [Sessions and turns](/agents/sessions).
 | --- | --- | --- |
 | Create | `POST /sessions` | `201` with the session, `200` when the key had already created it |
 | Get | `GET /sessions/<id>` | `200` with the session |
-| List | `GET /sessions` | `200` with `{ sessions }` |
+| List | `GET /sessions` | `200` with `{ sessions, nextCursor }`: one page of rows |
+| Labels | `PATCH /sessions/<id>/labels` | `200` with the session |
 | End | `POST /sessions/<id>/end` | `200` with the ended session |
 | Interrupt | `POST /sessions/<id>/interrupt` | `200` with the session |
 
@@ -62,6 +63,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
   -H 'Idempotency-Key: topic/workshop/1' \
   -d '{
     "agentId": "<agent-id>@development",
+    "labels": { "topic": "workshop", "requested_by": "u-42" },
     "memory": {
       "notes": { "scope": "document", "id": "workshop", "access": "read-write" }
     }
@@ -75,6 +77,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `environment` | `development` or `production`. Optional with `agentId`; it must agree with the alias. |
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground`, `channel` or `webhook`. The dashboard groups sessions by it. |
+| `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
 
 The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
 The session starts without a turn; send one with the turns route.
@@ -92,8 +95,8 @@ identifies the session within your organization:
   confirmed in time. Retry with the same key; the retry resumes the wait.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
-`404 deployment_not_found`, `409 deployment_not_promoted` (a pinned
-deployment is not active in the named environment), `402
+`400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
+(a pinned deployment is not active in the named environment), `402
 insufficient_credits`.
 
 ### Get and list
@@ -103,16 +106,75 @@ insufficient_credits`.
 | Field | Meaning |
 | --- | --- |
 | `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
+| `projectId` | The project the agent belongs to |
 | `environment` | `development` or `production`, when the request named one |
 | `status` | `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
 | `source` | The `source` given at creation |
+| `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
+| `result` | The latest committed output of the agent's result tool, `{ turnId, callId, reportedAt, data }`, or `null` when no turn has reported one |
+| `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 
-`GET /sessions` returns `{ sessions }`: the fifty most recently updated
-sessions of the organization, newest first, in the same shape. There are no
-filters or paging parameters; keep your own index of session IDs.
+`GET /sessions` returns one page of rows, `{ sessions, nextCursor }`, filtered
+by the query:
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/sessions?project=<project-id>&environment=development&label.topic=workshop&limit=50' \
+  -H 'x-api-key: <api-key>'
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `project` | A project id or slug |
+| `environment` | `development` or `production` |
+| `agent` | An agent id |
+| `status` | One session status |
+| `label.<key>=<value>` | Sessions whose label `<key>` equals `<value>` exactly; at most three |
+| `limit` | Rows per page, 1 to 100; default 50 |
+| `cursor` | The `nextCursor` of the previous page |
+
+Any other parameter is `400 invalid_query`, as is a malformed value. A
+project-scoped key lists its own project; naming another is
+`403 project_scope_violation`.
+
+A row is `id`, `projectId`, `agentId`, `deploymentId`, `environment` (`null`
+when the session has none), `source`, `status`, `labels`, `createdAt`,
+`updatedAt`, `revision`, `activity` and `result`. `activity` is
+`{ activeTurnId, queued, lastSettledTurn }`: the running turn's id or `null`,
+how many turns wait behind it, and the most recently finished turn as
+`{ id, status, at }` or `null`. Rows carry no `turns` and no `memory`; read
+`GET /sessions/<id>` for those.
+
+Rows are ordered by `createdAt`, newest first, then by `id`, and the order
+never changes: a session that is updated does not move, so a traversal with
+`cursor` sees every row exactly once even while sessions are running. To show
+recent activity first, sort the page you hold by `updatedAt`. `nextCursor` is
+`null` on the last page. A session appears in the list as soon as its create
+call has returned.
+
+### Labels
+
+Labels are your own metadata on a session: at most 16 keys, each matching
+`^[a-z][a-z0-9_.-]{0,63}$`, each value at most 256 characters, 4 KB in all.
+They filter the list and appear on the session and its row. They are not
+permissions, are not searched beyond equality, and are never shown to the
+agent; give the agent its context in the turn input.
+
+`PATCH /sessions/<id>/labels` changes them and returns the session:
+
+```bash
+curl -X PATCH 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/labels' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{ "set": { "outcome": "merged" }, "unset": ["requested_by"] }'
+```
+
+`unset` removes keys, then `set` writes keys; each key takes the last write.
+The session's `labelsUpdatedAt` records the change. A patch that would exceed
+the bounds, or a key or value that does not fit them, is `400 invalid_labels`
+and changes nothing. Labels can be changed on an ended session.
 
 ### End and interrupt
 

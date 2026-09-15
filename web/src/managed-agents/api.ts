@@ -568,7 +568,49 @@ const sessionSchema = z.object({
     .default([]),
 })
 
-const sessionsResponseSchema = z.object({ sessions: z.array(sessionSchema) })
+// One list row (docs/agents/api.mdx, "Get and list"): no turns and no memory;
+// the session route keeps those. `activity` summarizes the turn work and
+// `result` is the agent's latest committed result tool output, when any.
+const sessionSummarySchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  agentId: z.string(),
+  deploymentId: z.string(),
+  environment: z.enum(['development', 'production']).nullable().default(null),
+  source: z
+    .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
+    .optional()
+    .default('api'),
+  status: z.string(),
+  labels: z.record(z.string(), z.string()).default({}),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  revision: z.number(),
+  activity: z
+    .object({
+      activeTurnId: z.string().nullable().default(null),
+      queued: z.number().default(0),
+      lastSettledTurn: z
+        .object({ id: z.string(), status: z.string(), at: z.string() })
+        .nullable()
+        .default(null),
+    })
+    .default({ activeTurnId: null, queued: 0, lastSettledTurn: null }),
+  result: z
+    .object({
+      turnId: z.string(),
+      callId: z.string(),
+      reportedAt: z.string(),
+      data: z.unknown(),
+    })
+    .nullable()
+    .default(null),
+})
+
+const sessionsResponseSchema = z.object({
+  sessions: z.array(sessionSummarySchema),
+  nextCursor: z.string().nullable().default(null),
+})
 
 // Project memory documents (docs/agents/document-memory.mdx, "Management API").
 const memoryWriterSchema = z.union([
@@ -626,12 +668,11 @@ const projectOverviewSchema = z.object({
       cloneReady: z.boolean().optional().default(false),
     })
     .optional(),
-  sessions: z.array(sessionSchema),
+  sessions: z.array(sessionSummarySchema),
   deployments: z.array(deploymentSchema),
   connections: z.array(connectionSchema),
   channels: z.array(channelSchema),
   schedules: z.array(z.record(z.string(), z.unknown())),
-  files: z.array(z.record(z.string(), z.unknown())),
   schema: z.record(z.string(), z.unknown()),
 })
 
@@ -643,6 +684,7 @@ export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
+export type ManagedAgentSessionSummary = z.infer<typeof sessionSummarySchema>
 export type ManagedSessionMemoryBinding = ManagedAgentSession['memory'][number]
 export type ManagedMemoryDeclaration = z.infer<typeof memoryDeclarationSchema>
 export type ManagedMemoryDocumentMeta = z.infer<typeof memoryDocumentMetaSchema>
@@ -1341,15 +1383,20 @@ export async function getManagedAgentDeployments(agentId: string) {
   ).deployments
 }
 
+/**
+ * The newest page of session rows, filtered by the API rather than here.
+ * Rows are ordered by creation time; one page of a hundred is what the
+ * agent view shows.
+ */
 export async function getManagedAgentSessions(agentId?: string) {
+  const query = new URLSearchParams({ limit: '100' })
+  if (agentId) query.set('agent', agentId)
   const { sessions } = await apiFetch(
-    '/managed-agents/sessions',
+    `/managed-agents/sessions?${query.toString()}`,
     undefined,
     sessionsResponseSchema,
   )
-  return agentId
-    ? sessions.filter((session) => session.agentId === agentId)
-    : sessions
+  return sessions
 }
 
 export async function collectManagedAgentEventPages(

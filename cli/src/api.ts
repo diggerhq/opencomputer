@@ -253,6 +253,32 @@ export interface ManagedSessionSnapshot {
   }>;
 }
 
+/** One row of `GET /sessions` (docs/agents/api.mdx, "Get and list"): no turns. */
+export interface ManagedSessionSummary {
+  id: string;
+  projectId: string;
+  agentId: string;
+  deploymentId: string;
+  environment: "development" | "production" | null;
+  source: string;
+  status: string;
+  labels: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+  activity: {
+    activeTurnId: string | null;
+    queued: number;
+    lastSettledTurn: { id: string; status: string; at: string } | null;
+  };
+  result: { turnId: string; callId: string; reportedAt: string; data: unknown } | null;
+}
+
+export interface ManagedSessionPage {
+  sessions: ManagedSessionSummary[];
+  nextCursor: string | null;
+}
+
 export type MemoryEnvironment = "development" | "production";
 
 export type MemoryWriter =
@@ -1064,11 +1090,13 @@ export class OpenComputerClient {
     return { created: response.status === 201, ...body };
   }
 
-  async sessions(): Promise<ManagedSessionSnapshot[]> {
-    const result = await this.request<{
-      sessions: ManagedSessionSnapshot[];
-    }>("/api/managed-agents/sessions");
-    return result.sessions;
+  /** One page of session rows, newest created first; pass `cursor` for the next page. */
+  async sessions(options: { cursor?: string; limit?: number } = {}): Promise<ManagedSessionPage> {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return this.request<ManagedSessionPage>(`/api/managed-agents/sessions${suffix}`);
   }
 
   session(sessionId: string) {

@@ -5,12 +5,12 @@ import type {
 } from './api'
 import type { ProjectEnvironment } from './project-context'
 
-export function sessionsForEnvironment(
-  sessions: ManagedAgentSession[],
+export function sessionsForEnvironment<T extends Pick<ManagedAgentSession, 'deploymentId'>>(
+  sessions: T[],
   deployments: ManagedAgentDeployment[],
   agentId: string,
   environment: ProjectEnvironment,
-) {
+): T[] {
   const deploymentIds = new Set(
     deployments
       .filter(

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   ManagedAgentDeployment,
   ManagedAgentEvent,
-  ManagedAgentSession,
+  ManagedAgentSessionSummary,
 } from './api'
 import {
   playgroundSessionIdFromSearch,
@@ -28,18 +28,21 @@ function deployment(
   }
 }
 
-function session(id: string, deploymentId: string): ManagedAgentSession {
+function session(id: string, deploymentId: string): ManagedAgentSessionSummary {
   return {
     id,
+    projectId: 'prj_test',
     agentId: 'reviewer',
     deploymentId,
-    executionMode: 'microvm',
+    environment: 'development',
     status: 'idle',
     source: 'playground',
+    labels: {},
     createdAt: '2026-08-15T00:00:00.000Z',
     updatedAt: '2026-08-15T00:00:00.000Z',
-    turns: [],
-    memory: [],
+    revision: 1,
+    activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+    result: null,
   }
 }
 

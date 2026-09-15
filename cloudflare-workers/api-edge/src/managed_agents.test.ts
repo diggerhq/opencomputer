@@ -1944,6 +1944,171 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("lists session rows with the query and cursor passed through and the owner's labels intact", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        sessions: [
+          {
+            id: "session-1",
+            projectId: "prj_test",
+            agentId: "reviewer",
+            deploymentId: "reviewer:digest",
+            environment: "development",
+            source: "api",
+            status: "idle",
+            labels: { repo: "acme/api", user_id: "u-42", task: "t-1" },
+            createdAt: "2026-09-15T00:00:00.000Z",
+            updatedAt: "2026-09-15T00:01:00.000Z",
+            revision: 7,
+            activity: {
+              activeTurnId: null,
+              queued: 0,
+              lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+            },
+            result: null,
+            accountId: "org_test",
+            runtimeId: "internal-runtime",
+          },
+        ],
+        nextCursor: "eyJjIjoxfQ",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions?project=prj_test&label.repo=acme%2Fapi&limit=25&cursor=abc",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target] = fetchSpy.mock.calls[0] as unknown as [URL];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions?project=prj_test&label.repo=acme%2Fapi&limit=25&cursor=abc",
+    );
+    const body = (await response.json()) as {
+      sessions: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+    expect(body.nextCursor).toBe("eyJjIjoxfQ");
+    expect(body.sessions).toEqual([
+      {
+        id: "session-1",
+        projectId: "prj_test",
+        agentId: "reviewer",
+        deploymentId: "reviewer:digest",
+        environment: "development",
+        source: "api",
+        status: "idle",
+        labels: { repo: "acme/api", user_id: "u-42", task: "t-1" },
+        createdAt: "2026-09-15T00:00:00.000Z",
+        updatedAt: "2026-09-15T00:01:00.000Z",
+        revision: 7,
+        activity: {
+          activeTurnId: null,
+          queued: 0,
+          lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+        },
+        result: null,
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/accountId|runtimeId|org_test|internal-runtime/);
+  });
+
+  it("patches session labels and returns the sanitized session with its labels", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        id: "session-1",
+        status: "idle",
+        executionMode: "workerd",
+        accountId: "org_test",
+        runtimeToken: "internal-runtime-token",
+        labels: { runtime_id: "kept", repo: "acme/api" },
+        labelsUpdatedAt: "2026-09-15T00:02:00.000Z",
+        revision: 8,
+        result: null,
+        turns: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/labels",
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ set: { repo: "acme/api" }, unset: ["task"] }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions/session-1/labels",
+    );
+    expect(init.method).toBe("PATCH");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.labels).toEqual({ runtime_id: "kept", repo: "acme/api" });
+    expect(body.labelsUpdatedAt).toBe("2026-09-15T00:02:00.000Z");
+    expect(body.revision).toBe(8);
+    expect(body.result).toBeNull();
+    expect(JSON.stringify(body)).not.toMatch(/runtimeToken|accountId|org_test/);
+
+    const refused = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/labels",
+        { method: "PUT", body: "{}" },
+      ),
+      { OC_MANAGED_AGENTS_SECRET: "test-secret" },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(refused.status).toBe(404);
+  });
+
+  it("passes invalid_labels and invalid_query through as typed client errors", async () => {
+    for (const [code, path, init] of [
+      ["invalid_query", "/sessions?unknown=1", undefined],
+      [
+        "invalid_labels",
+        "/sessions/session-1/labels",
+        { method: "PATCH", body: JSON.stringify({ set: { Bad: "x" } }) },
+      ],
+    ] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { error: { code, message: "Label key \"Bad\" must match /internal-pattern/" } },
+            { status: 400 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, init),
+        { OC_MANAGED_AGENTS_SECRET: "test-secret" },
+        { orgID: "org_test", userID: "user_test" },
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code } });
+    }
+  });
+
   it("interrupts a session's running turn and returns the sanitized snapshot", async () => {
     const fetchSpy = vi.fn(async () =>
       Response.json({
