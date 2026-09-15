@@ -3,8 +3,15 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, Plug, Plus, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { GithubMark } from '@/components/github-mark'
 import { PageHeader } from '@/components/page-header'
-import { Panel, PanelContent } from '@/components/panel'
+import {
+  Panel,
+  PanelContent,
+  PanelDescription,
+  PanelHeader,
+  PanelTitle,
+} from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -110,6 +117,8 @@ export default function ManagedAgentConnections() {
   const [newAlias, setNewAlias] = useState('gmail')
   const [addConnectionOpen, setAddConnectionOpen] = useState(false)
   const [addConnectionError, setAddConnectionError] = useState<string>()
+  const [addingGitHubConnection, setAddingGitHubConnection] = useState(false)
+  const [githubConnectionError, setGithubConnectionError] = useState<string>()
   const [removeConnectionError, setRemoveConnectionError] = useState<string>()
   const [connectionToRemove, setConnectionToRemove] =
     useState<ManagedAgentConnection>()
@@ -189,7 +198,7 @@ export default function ManagedAgentConnections() {
     <div>
       <PageHeader
         title="Connections"
-        description="Connect accounts and choose the aliases your agents use."
+        description="Manage services and GitHub organizations available to your agents."
         actions={
           <Button
             onClick={() => {
@@ -236,35 +245,108 @@ export default function ManagedAgentConnections() {
         </Panel>
       )}
 
-      {githubConnections.data?.connections.length ? (
-        <div className="mb-3 grid gap-3 md:grid-cols-2">
-          {githubConnections.data.connections.map((connection) => (
-            <Panel key={connection.id}>
-              <PanelContent className="flex items-center gap-3">
-                <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
-                  <Plug className="size-4" aria-hidden />
+      <Panel className="mb-4">
+        <PanelHeader className="items-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
+              <GithubMark className="size-4" />
+            </div>
+            <div>
+              <PanelTitle>Managed GitHub</PanelTitle>
+              <PanelDescription className="mt-1">
+                Install OpenComputer for the GitHub organizations your agents
+                can work in.
+              </PanelDescription>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={addingGitHubConnection}
+            onClick={() => {
+              setGithubConnectionError(undefined)
+              setAddingGitHubConnection(true)
+              void addManagedGitHubConnection('install')
+                .then((authorizationUrl) =>
+                  window.location.assign(authorizationUrl),
+                )
+                .catch((error: unknown) => {
+                  setGithubConnectionError(
+                    error instanceof Error
+                      ? error.message
+                      : 'GitHub setup could not be started.',
+                  )
+                })
+                .finally(() => setAddingGitHubConnection(false))
+            }}
+          >
+            {addingGitHubConnection ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <Plus className="size-4" aria-hidden />
+            )}
+            Add organization
+          </Button>
+        </PanelHeader>
+        <PanelContent>
+          {githubConnections.isLoading ? (
+            <div className="flex min-h-20 items-center justify-center">
+              <Loader2 className="text-muted-foreground size-5 animate-spin" />
+            </div>
+          ) : githubConnections.isError ? (
+            <div className="flex min-h-20 items-center justify-between gap-4">
+              <p className="text-muted-foreground text-sm">
+                GitHub installations are temporarily unavailable.
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => void githubConnections.refetch()}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : githubConnections.data?.connections.length ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {githubConnections.data.connections.map((connection) => (
+                <div
+                  key={connection.id}
+                  className="flex items-center gap-3 rounded-md border px-4 py-3"
+                >
+                  <GithubMark className="text-muted-foreground size-4 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {connection.accountLogin}
+                    </p>
+                    <p className="text-muted-foreground truncate text-xs">
+                      {connection.repositorySelection === 'all'
+                        ? 'All repositories'
+                        : 'Selected repositories'}
+                    </p>
+                  </div>
+                  <StatusBadge
+                    status={
+                      connection.state === 'active' ? 'connected' : 'stopped'
+                    }
+                  />
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {connection.accountLogin}
-                  </p>
-                  <p className="text-muted-foreground truncate text-xs">
-                    GitHub ·{' '}
-                    {connection.repositorySelection === 'all'
-                      ? 'All repositories'
-                      : 'Selected repositories'}
-                  </p>
-                </div>
-                <StatusBadge
-                  status={
-                    connection.state === 'active' ? 'connected' : 'stopped'
-                  }
-                />
-              </PanelContent>
-            </Panel>
-          ))}
-        </div>
-      ) : null}
+              ))}
+            </div>
+          ) : (
+            <div className="py-4 text-center">
+              <p className="text-sm font-medium">No organizations added</p>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Add a GitHub user or organization account, then choose which
+                repositories OpenComputer can access.
+              </p>
+            </div>
+          )}
+          {githubConnectionError ? (
+            <p className="text-destructive mt-3 text-sm">
+              {githubConnectionError}
+            </p>
+          ) : null}
+        </PanelContent>
+      </Panel>
 
       {connections.isLoading ? (
         <div className="flex min-h-48 items-center justify-center">
@@ -338,8 +420,7 @@ export default function ManagedAgentConnections() {
             </div>
             <p className="text-sm font-medium">No connections yet</p>
             <p className="text-muted-foreground mt-1 max-w-sm text-sm">
-              Add Gmail, Google Calendar, or GitHub to make it available to your
-              agents.
+              Add Gmail or Google Calendar to make it available to your agents.
             </p>
             <Button
               className="mt-4"
@@ -376,13 +457,7 @@ export default function ManagedAgentConnections() {
               if (!alias || connectionRequestState === 'connecting') return
               setAddConnectionError(undefined)
               setConnectionRequestState('connecting')
-              void (
-                newService === 'github'
-                  ? addManagedGitHubConnection('install').then(
-                      (authorizationUrl) => ({ authorizationUrl }),
-                    )
-                  : linkManagedAgentConnection(newService, alias)
-              )
+              void linkManagedAgentConnection(newService, alias)
                 .then((result) => {
                   if (result.authorizationUrl) {
                     window.location.assign(result.authorizationUrl)
@@ -416,30 +491,22 @@ export default function ManagedAgentConnections() {
               >
                 <option value="gmail">Gmail</option>
                 <option value="calendar">Google Calendar</option>
-                <option value="github">GitHub</option>
               </select>
             </div>
-            {newService === 'github' ? (
-              <p className="text-muted-foreground text-sm">
-                Install the managed OpenComputer GitHub App and choose its
-                repository access in GitHub.
+            <div className="grid gap-2">
+              <Label htmlFor="connection-alias">Account alias</Label>
+              <Input
+                id="connection-alias"
+                value={newAlias}
+                onChange={(event) => setNewAlias(event.target.value)}
+                pattern="[A-Za-z0-9._-]+"
+                placeholder="work-gmail"
+                required
+              />
+              <p className="text-muted-foreground text-xs">
+                Agents use this alias to select the account in callService().
               </p>
-            ) : (
-              <div className="grid gap-2">
-                <Label htmlFor="connection-alias">Account alias</Label>
-                <Input
-                  id="connection-alias"
-                  value={newAlias}
-                  onChange={(event) => setNewAlias(event.target.value)}
-                  pattern="[A-Za-z0-9._-]+"
-                  placeholder="work-gmail"
-                  required
-                />
-                <p className="text-muted-foreground text-xs">
-                  Agents use this alias to select the account in callService().
-                </p>
-              </div>
-            )}
+            </div>
             {addConnectionError ? (
               <p className="text-destructive text-sm">{addConnectionError}</p>
             ) : null}
@@ -455,8 +522,7 @@ export default function ManagedAgentConnections() {
               <Button
                 type="submit"
                 disabled={
-                  (newService !== 'github' && !newAlias.trim()) ||
-                  connectionRequestState === 'connecting'
+                  !newAlias.trim() || connectionRequestState === 'connecting'
                 }
               >
                 {connectionRequestState === 'connecting' ? (
