@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 import { openWebSocket } from "./websocket.js";
 export interface PtyOpts {
   cols?: number;
@@ -31,7 +32,7 @@ export class Pty {
 
   async create(opts: PtyOpts = {}): Promise<PtySession> {
     // Create session via REST
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/pty`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/pty`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({

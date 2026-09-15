@@ -1,116 +1,148 @@
-import { errorFromResponse } from "./errors.js";
-import { normalize, serialize } from "./normalize.js";
+// The HTTP layer of the management client: the API key header, JSON both
+// ways, the error envelope, `Idempotency-Key`, and nothing else. Web
+// standards only (fetch, URL, Headers), so the same code runs on Node,
+// Workers, Deno and browsers-with-a-proxy. No retries: the API's idempotency
+// keys make a caller's retry safe, and the caller knows which calls to
+// repeat; a client that retried on its own would hide that decision.
+//
+// No redirects either. The key is sent to the configured origin and nowhere
+// else: fetch runs with `redirect: "manual"`, and a 3xx answer is an error
+// with code `redirected`, because following it would carry the key to
+// whatever origin the response names.
+//
+// Every success is checked against the documented shape of its route
+// (shapes.ts) before it is returned: a body that is not JSON, or does not
+// have the fields the docs promise, is an error with code `invalid_response`
+// rather than a value typed by assumption.
 
-/** Either an org API key (server) or a session-scoped client token (browser/edge). */
-export type Auth = { apiKey: string } | { token: string };
+import { errorFromResponse, OpenComputerError } from "./errors.js";
+import { ShapeError, type Shape } from "./shapes.js";
+
+export const DEFAULT_BASE_URL = "https://app.opencomputer.dev/api/managed-agents";
 
 export interface HttpOptions {
-  /** Defaults to https://api.opencomputer.dev/v3 */
+  /** Base URL of the management API. Default `https://app.opencomputer.dev/api/managed-agents`. */
   baseUrl?: string;
-  /** Override fetch (for runtimes without a global, or for testing). */
+  /** The fetch to use. Default: the global. */
   fetch?: typeof fetch;
-  /** Retries on 429 / 5xx / network error. Default 2. */
-  maxRetries?: number;
 }
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
-interface RequestOptions { query?: Query; body?: unknown; idempotencyKey?: string; signal?: AbortSignal; idempotent?: boolean; }
 
-const DEFAULT_BASE = "https://api.opencomputer.dev/v3";
+export interface RequestOptions {
+  query?: Query;
+  body?: unknown;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
 
-/** Tiny fetch wrapper: auth, JSON, normalization, typed errors, retry. The whole HTTP layer. */
+/** A response with its status kept, for callers that branch on 200 versus 201. */
+export interface Answer<T> {
+  status: number;
+  body: T;
+  headers: Headers;
+}
+
 export class Http {
-  readonly base: string;
+  readonly baseUrl: string;
+  private readonly apiKey: string;
   private readonly doFetch: typeof fetch;
-  private readonly maxRetries: number;
-  private readonly bearer: string;
 
-  constructor(auth: Auth, opts: HttpOptions = {}) {
-    this.bearer = "token" in auth ? auth.token : auth.apiKey;
-    this.base = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
-    const f = opts.fetch ?? (typeof fetch !== "undefined" ? fetch : undefined);
-    if (!f) throw new Error("global fetch is unavailable — pass { fetch } in the client options.");
-    this.doFetch = f.bind(globalThis) as typeof fetch;
-    this.maxRetries = opts.maxRetries ?? 2;
-  }
-
-  private headers(extra?: Record<string, string>): Record<string, string> {
-    return { Authorization: `Bearer ${this.bearer}`, ...extra };
+  constructor(apiKey: string, options: HttpOptions = {}) {
+    if (!apiKey) throw new Error("An OpenComputer API key is required.");
+    this.apiKey = apiKey;
+    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const f = options.fetch ?? (typeof fetch === "function" ? fetch : undefined);
+    if (!f) throw new Error("No global fetch is available; pass { fetch } to the client.");
+    this.doFetch = f;
   }
 
   url(path: string, query?: Query): string {
-    const u = new URL(this.base + path);
-    if (query) for (const [k, v] of Object.entries(query)) {
-      if (v !== undefined && v !== null) u.searchParams.set(k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase()), String(v));
-    }
-    return u.toString();
-  }
-
-  async request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
-    const headers = this.headers(opts.body !== undefined ? { "Content-Type": "application/json" } : undefined);
-    if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
-    const init: RequestInit = { method, headers, signal: opts.signal };
-    // The SDK owns serialization both ways: camelCase → snake_case on the way out
-    // (the API reads turn_seconds, include_raw, idempotency_key, …), camelCase back in.
-    if (opts.body !== undefined) init.body = JSON.stringify(serialize(opts.body));
-    const url = this.url(path, opts.query);
-    // Only retry when the call is safe to repeat: reads, or writes that carry an
-    // idempotency key. Otherwise a retried POST could duplicate work or messages.
-    const canRetry = method === "GET" || method === "HEAD" || opts.idempotent === true;
-
-    for (let attempt = 0; ; attempt++) {
-      let res: Response;
-      try {
-        res = await this.doFetch(url, init);
-      } catch (e) {
-        if (canRetry && attempt < this.maxRetries && !opts.signal?.aborted) { await sleep(backoff(attempt)); continue; }
-        throw e;
+    const url = new URL(this.baseUrl + path);
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
       }
-      if (res.ok) return res.status === 204 ? (undefined as T) : normalize<T>(await res.json());
-      if (canRetry && (res.status === 429 || res.status >= 500) && attempt < this.maxRetries) {
-        await sleep(retryAfterMs(res) ?? backoff(attempt));
-        continue;
+    }
+    return url.toString();
+  }
+
+  /**
+   * Sends a request and returns the body, checked against `shape`, with the
+   * status. Throws `OpenComputerError` on a failed status, on a redirect, and
+   * on a success whose body is not JSON or not the documented shape.
+   */
+  async send<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<Answer<T>> {
+    const headers: Record<string, string> = {
+      "x-api-key": this.apiKey,
+      accept: "application/json",
+      ...options.headers,
+    };
+    const init: RequestInit = { method, headers, signal: options.signal, redirect: "manual" };
+    if (options.body !== undefined) {
+      headers["content-type"] = "application/json";
+      init.body = JSON.stringify(options.body);
+    }
+    const response = await this.doFetch(this.url(path, options.query), init);
+    if (isRedirect(response)) {
+      throw new OpenComputerError(
+        response.status,
+        "redirected",
+        `${method} ${path} was answered with a redirect (${String(response.status)}); ` +
+          "the client does not follow redirects with the API key. Check baseUrl.",
+      );
+    }
+    const text = response.status === 204 ? "" : await response.text();
+    if (!response.ok) {
+      throw errorFromResponse(response.status, parseJson(text) ?? (text ? { error: text } : undefined), response.headers);
+    }
+    let body: unknown;
+    if (text) {
+      body = parseJson(text);
+      if (body === undefined) {
+        throw new OpenComputerError(
+          response.status,
+          "invalid_response",
+          `${method} ${path} returned a body that is not JSON`,
+        );
       }
-      throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
+    }
+    try {
+      return { status: response.status, body: shape(body, "body"), headers: response.headers };
+    } catch (cause) {
+      if (!(cause instanceof ShapeError)) throw cause;
+      throw new OpenComputerError(
+        response.status,
+        "invalid_response",
+        `${method} ${path} returned a body that is not the documented shape: ${cause.message}`,
+      );
     }
   }
 
-  /** Open an SSE stream (caller reads the body). Auth via the Authorization header. */
-  async stream(path: string, query?: Query, signal?: AbortSignal): Promise<Response> {
-    const res = await this.doFetch(this.url(path, query), {
-      method: "GET",
-      headers: this.headers({ Accept: "text/event-stream" }),
-      signal,
-    });
-    if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
-    return res;
-  }
-
-  /** Raw GET (no JSON parse) — e.g. blob-backed event content. Returns the checked Response. */
-  async raw(method: string, path: string, opts: { query?: Query; signal?: AbortSignal } = {}): Promise<Response> {
-    const res = await this.doFetch(this.url(path, opts.query), { method, headers: this.headers(), signal: opts.signal });
-    if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
-    return res;
-  }
-
-  /** Upload a raw (non-JSON) body — e.g. a skill `.zip`. Normalizes the JSON response. */
-  async upload<T>(method: string, path: string, body: BodyInit, contentType: string, signal?: AbortSignal): Promise<T> {
-    const res = await this.doFetch(this.url(path), { method, headers: this.headers({ "Content-Type": contentType }), body, signal });
-    if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
-    return res.status === 204 ? (undefined as T) : normalize<T>(await res.json());
+  /** `send` for callers that need only the body. */
+  async request<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<T> {
+    return (await this.send(method, path, shape, options)).body;
   }
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const backoff = (attempt: number) => Math.min(500 * 2 ** attempt, 8000);
-const retryAfterSec = (res: Response): number | undefined => {
-  const v = Number(res.headers.get("retry-after"));
-  return Number.isFinite(v) && v > 0 ? v : undefined;
-};
-const retryAfterMs = (res: Response): number | undefined => {
-  const s = retryAfterSec(res);
-  return s ? s * 1000 : undefined;
-};
-async function safeJson(res: Response): Promise<any> {
-  try { return await res.json(); } catch { return undefined; }
+/**
+ * A redirect as fetch reports it under `redirect: "manual"`: the 3xx answer
+ * itself, or on browsers an opaque response of type `opaqueredirect` whose
+ * status reads 0.
+ */
+function isRedirect(response: Response): boolean {
+  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
 }
+
+/** The parsed JSON of a body, or undefined when the text is not JSON. */
+function parseJson(text: string): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** URL-encodes one path segment. */
+export const segment = (value: string): string => encodeURIComponent(value);

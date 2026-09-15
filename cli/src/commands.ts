@@ -3,6 +3,7 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentLog,
   type ManagedSessionSnapshot,
+  type ManagedSessionSummary,
   type MemoryBindings,
   type MemoryDocument,
   type MemoryDocumentMeta,
@@ -264,13 +265,20 @@ async function requireAgentRoot(): Promise<string> {
   return root;
 }
 
-function printSession(session: ManagedSessionSnapshot): void {
+function printSession(session: ManagedSessionSnapshot | ManagedSessionSummary): void {
   const deployment = session.deploymentId
     ? session.deploymentId.slice(session.deploymentId.lastIndexOf(":") + 1)
     : "—";
+  const labels =
+    "labels" in session && Object.keys(session.labels).length
+      ? "  " +
+        Object.entries(session.labels)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(",")
+      : "";
   process.stdout.write(
     `${session.id}  ${session.status.padEnd(15)}  ` +
-      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}\n`,
+      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}\n`,
   );
 }
 
@@ -1957,12 +1965,20 @@ export async function runCommand(
     const session = parseSessionCommand(args);
     const sessionArgs = session.args;
     if (session.action === "list") {
+      const cursor = option(sessionArgs, "--cursor");
       if (sessionArgs.length)
         throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
-      const sessions = await client.sessions();
-      if (globals.json) printJSON(sessions);
-      else if (!sessions.length) process.stdout.write("No sessions.\n");
-      else sessions.forEach(printSession);
+      // One page of rows, newest created first. The page carries the
+      // cursor of the next one; `--cursor` continues from it.
+      const page = await client.sessions(cursor ? { cursor } : {});
+      if (globals.json) printJSON(page);
+      else if (!page.sessions.length) process.stdout.write("No sessions.\n");
+      else {
+        page.sessions.forEach(printSession);
+        if (page.nextCursor) {
+          process.stdout.write(`More: --cursor ${page.nextCursor}\n`);
+        }
+      }
       return;
     }
     if (session.action === "create") {

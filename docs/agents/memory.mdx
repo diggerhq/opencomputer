@@ -85,8 +85,8 @@ credentials nor permission to select another document. A
 [collection binding](/agents/document-memory#session-bindings) instead lets it
 browse documents with `memory_list` and `memory_read`.
 
-The document must exist before the session binds it. `startSessionOnDocument`
-in the [TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers)
+The document must exist before the session binds it. `sessions.startOnDocument`
+on the [TypeScript client](/reference/typescript-sdk/agents)
 creates it if needed and then the session, and the CLI's
 `session create --memory notes=workshop --create-document` does the same.
 

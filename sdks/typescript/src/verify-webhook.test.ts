@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { verifyWebhook, WebhookVerificationError } from "./webhooks.js";
+import { verifyWebhook, WebhookVerificationError } from "./verify-webhook.js";
 
 const SECRET = "whsec_" + btoa("super-secret-key-bytes-123456");
 

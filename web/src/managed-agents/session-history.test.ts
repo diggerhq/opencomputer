@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   ManagedAgentDeployment,
   ManagedAgentEvent,
-  ManagedAgentSession,
+  ManagedAgentSessionSummary,
 } from './api'
 import {
   playgroundSessionIdFromSearch,
@@ -10,6 +10,7 @@ import {
   sessionsForEnvironment,
   turnAssistantText,
   turnFailureReason,
+  turnPayload,
 } from './session-history'
 
 function deployment(
@@ -28,18 +29,21 @@ function deployment(
   }
 }
 
-function session(id: string, deploymentId: string): ManagedAgentSession {
+function session(id: string, deploymentId: string): ManagedAgentSessionSummary {
   return {
     id,
+    projectId: 'prj_test',
     agentId: 'reviewer',
     deploymentId,
-    executionMode: 'microvm',
+    environment: 'development',
     status: 'idle',
     source: 'playground',
+    labels: {},
     createdAt: '2026-08-15T00:00:00.000Z',
     updatedAt: '2026-08-15T00:00:00.000Z',
-    turns: [],
-    memory: [],
+    revision: 1,
+    activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+    result: null,
   }
 }
 
@@ -156,5 +160,37 @@ describe('turnFailureReason', () => {
       'The agent could not complete this request.',
     )
     expect(turnFailureReason(events, 'turn-3')).toBeUndefined()
+  })
+})
+
+describe('turnPayload', () => {
+  it('reads the payload the turn was admitted with and nothing for a text-only turn', () => {
+    const payload = { repo: 'acme/widgets', ref: 'main', actor: { id: 583231 } }
+    const events: ManagedAgentEvent[] = [
+      {
+        id: 'e1',
+        seq: 1,
+        turnId: 'turn-1',
+        type: 'message.received',
+        data: { input: 'Fix the flaky test.', mode: 'queue', payload },
+      },
+      {
+        id: 'e2',
+        seq: 2,
+        turnId: 'turn-2',
+        type: 'message.received',
+        data: { input: 'Follow up', mode: 'queue' },
+      },
+      {
+        id: 'e3',
+        seq: 3,
+        turnId: 'turn-1',
+        type: 'message.completed',
+        data: { text: 'Done', payload: 'not an admission' },
+      },
+    ]
+    expect(turnPayload(events, 'turn-1')).toEqual(payload)
+    expect(turnPayload(events, 'turn-2')).toBeUndefined()
+    expect(turnPayload(events, 'turn-3')).toBeUndefined()
   })
 })

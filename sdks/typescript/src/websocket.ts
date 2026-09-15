@@ -1,21 +1,21 @@
 // websocket.ts — opening a WebSocket without tripping over our own HTTP/2 agent.
 //
-// configureHttp2 installs a GLOBAL undici dispatcher with `allowH2: true`,
-// which is right for the REST surface: h2 multiplexes a burst of creates down
-// one connection. But Node's built-in WebSocket is undici's, and it uses that
-// same global dispatcher — so it negotiates h2 via ALPN and then tries to
-// upgrade. A WebSocket over h2 needs RFC 8441 extended CONNECT, which the
-// server's WebSocket library does not implement (nor do most), so the upgrade
-// simply fails.
+// The REST surface runs on an undici Agent with `allowH2: true` (http2.ts):
+// h2 multiplexes a burst of creates down one connection. A WebSocket must not
+// use that agent: it would negotiate h2 via ALPN and then try to upgrade, and
+// a WebSocket over h2 needs RFC 8441 extended CONNECT, which the server's
+// WebSocket library does not implement (nor do most), so the upgrade simply
+// fails.
 //
 // Measured against dev, same URL, back to back:
 //
 //   default dispatcher (no allowH2): OPEN
 //   allowH2:true dispatcher        : ERROR
 //
-// So WebSockets get their own dispatcher with h2 off. The REST path keeps h2
-// and its prewarmed pool; only the upgrade is forced down HTTP/1.1, which is
-// what an upgrade requires anyway.
+// So WebSockets get their own dispatcher with h2 off, passed per connection.
+// The REST path keeps h2 and its prewarmed pool; only the upgrade is forced
+// down HTTP/1.1, which is what an upgrade requires anyway. Neither agent is
+// ever installed as the process's global dispatcher.
 
 let wsDispatcher: unknown | null = null;
 let wsCtor: typeof WebSocket | null = null;

@@ -5,12 +5,12 @@ import type {
 } from './api'
 import type { ProjectEnvironment } from './project-context'
 
-export function sessionsForEnvironment(
-  sessions: ManagedAgentSession[],
+export function sessionsForEnvironment<T extends Pick<ManagedAgentSession, 'deploymentId'>>(
+  sessions: T[],
   deployments: ManagedAgentDeployment[],
   agentId: string,
   environment: ProjectEnvironment,
-) {
+): T[] {
   const deploymentIds = new Set(
     deployments
       .filter(
@@ -51,6 +51,19 @@ export function turnFailureReason(events: ManagedAgentEvent[], turnId: string) {
       return typeof event.data.message === 'string' && event.data.message
         ? event.data.message
         : 'The agent could not complete this request.'
+    }
+  }
+  return undefined
+}
+
+/**
+ * The structured value a turn was sent with, as its `message.received` event
+ * recorded it at admission; undefined when the turn carried only text.
+ */
+export function turnPayload(events: ManagedAgentEvent[], turnId: string) {
+  for (const event of events) {
+    if (event.turnId === turnId && event.type === 'message.received') {
+      return event.data.payload
     }
   }
   return undefined

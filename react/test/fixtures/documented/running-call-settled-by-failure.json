@@ -1,0 +1,22 @@
+{
+  "events": [
+    { "id": "evt_1", "seq": 1, "timestamp": "2026-09-15T12:00:00.000Z", "sessionId": "ses_3", "turnId": "t1", "type": "message.received", "data": { "input": "Deploy the preview", "mode": "queue" } },
+    { "id": "evt_2", "seq": 2, "timestamp": "2026-09-15T12:00:00.100Z", "sessionId": "ses_3", "turnId": "t1", "type": "turn.started", "data": {} },
+    { "id": "evt_3", "seq": 3, "timestamp": "2026-09-15T12:00:01.000Z", "sessionId": "ses_3", "turnId": "t1", "type": "tool.started", "data": { "tool": "shell", "callId": "c1", "title": "npm run deploy", "input": { "command": "npm run deploy" } } },
+    { "id": "evt_4", "seq": 4, "timestamp": "2026-09-15T12:05:00.000Z", "sessionId": "ses_3", "turnId": "t1", "type": "turn.failed", "data": { "code": "runtime_lost", "message": "The runtime was lost" } }
+  ],
+  "turns": [
+    {
+      "id": "t1",
+      "status": "failed",
+      "input": "Deploy the preview",
+      "toolCalls": [
+        { "callId": "c1", "tool": "shell", "title": "npm run deploy", "input": { "command": "npm run deploy" }, "status": "failed" }
+      ],
+      "failure": { "code": "runtime_lost", "message": "The runtime was lost" },
+      "messages": [
+        { "id": "turn:t1:input", "role": "user", "text": "Deploy the preview", "turnId": "t1" }
+      ]
+    }
+  ]
+}

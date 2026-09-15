@@ -19,7 +19,9 @@ on the server; the [React integration](/agents/react) shows how a browser
 attaches through your own routes without seeing the key.
 
 Request and response bodies are JSON. Paths below are relative to the base
-URL; `<p>` is a project ID and `<r>` a memory resource ID.
+URL; `<p>` is a project ID and `<r>` a memory resource ID. The
+[TypeScript client](/reference/typescript-sdk/agents) on
+`@opencomputer/sdk/agents` mirrors these routes one to one.
 
 ## Errors
 
@@ -49,7 +51,8 @@ deployment it was created on; see [Sessions and turns](/agents/sessions).
 | --- | --- | --- |
 | Create | `POST /sessions` | `201` with the session, `200` when the key had already created it |
 | Get | `GET /sessions/<id>` | `200` with the session |
-| List | `GET /sessions` | `200` with `{ sessions }` |
+| List | `GET /sessions` | `200` with `{ sessions, nextCursor }`: one page of rows |
+| Labels | `PATCH /sessions/<id>/labels` | `200` with the session |
 | End | `POST /sessions/<id>/end` | `200` with the ended session |
 | Interrupt | `POST /sessions/<id>/interrupt` | `200` with the session |
 
@@ -62,6 +65,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
   -H 'Idempotency-Key: topic/workshop/1' \
   -d '{
     "agentId": "<agent-id>@development",
+    "labels": { "topic": "workshop", "requested_by": "u-42" },
     "memory": {
       "notes": { "scope": "document", "id": "workshop", "access": "read-write" }
     }
@@ -75,6 +79,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `environment` | `development` or `production`. Optional with `agentId`; it must agree with the alias. |
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground`, `channel` or `webhook`. The dashboard groups sessions by it. |
+| `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
 
 The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
 The session starts without a turn; send one with the turns route.
@@ -90,10 +95,16 @@ identifies the session within your organization:
   new key.
 - `503 memory_admission_unconfirmed` means the memory grants were not
   confirmed in time. Retry with the same key; the retry resumes the wait.
+- `503 session_publication_unconfirmed` means the session exists but its
+  row in the list was not confirmed in time; `error.sessionId` names it.
+  Retry with the same key and the same body until the answer is `201` or
+  `200`. A success means [`GET /sessions`](#get-and-list) reflects the
+  session; the platform keeps publishing the row in the background either
+  way.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
-`404 deployment_not_found`, `409 deployment_not_promoted` (a pinned
-deployment is not active in the named environment), `402
+`400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
+(a pinned deployment is not active in the named environment), `402
 insufficient_credits`.
 
 ### Get and list
@@ -103,16 +114,82 @@ insufficient_credits`.
 | Field | Meaning |
 | --- | --- |
 | `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
+| `projectId` | The project the agent belongs to |
 | `environment` | `development` or `production`, when the request named one |
-| `status` | `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
+| `status` | `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
 | `source` | The `source` given at creation |
+| `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
+| `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
+| `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 
-`GET /sessions` returns `{ sessions }`: the fifty most recently updated
-sessions of the organization, newest first, in the same shape. There are no
-filters or paging parameters; keep your own index of session IDs.
+`GET /sessions` returns one page of rows, `{ sessions, nextCursor }`, filtered
+by the query:
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/sessions?project=<project-id>&environment=development&label.topic=workshop&limit=50' \
+  -H 'x-api-key: <api-key>'
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `project` | A project id or slug |
+| `environment` | `development` or `production` |
+| `agent` | An agent id |
+| `status` | One session status |
+| `label.<key>=<value>` | Sessions whose label `<key>` equals `<value>` exactly; at most three |
+| `limit` | Rows per page, 1 to 100; default 50 |
+| `cursor` | The `nextCursor` of the previous page |
+
+Any other parameter is `400 invalid_query`, as is a malformed value. A
+project-scoped key lists its own project; naming another is
+`403 project_scope_violation`.
+
+A row is `id`, `projectId`, `agentId`, `deploymentId`, `environment` (`null`
+when the session has none), `source`, `status`, `labels`, `createdAt`,
+`updatedAt`, `revision`, `activity` and `result`. `activity` is
+`{ activeTurnId, queued, lastSettledTurn }`: the running turn's id or `null`,
+how many turns wait behind it, and the most recently finished turn as
+`{ id, status, at }` or `null`. Rows carry no `turns` and no `memory`; read
+`GET /sessions/<id>` for those.
+
+Rows are ordered by `createdAt`, newest first, then by `id`, and the order
+never changes: a session that is updated does not move, so a traversal with
+`cursor` sees every row exactly once even while sessions are running. To show
+recent activity first, sort the page you hold by `updatedAt`. `nextCursor` is
+`null` on the last page. A session appears in the list as soon as its create
+call has returned.
+
+### Labels
+
+Labels are your own metadata on a session: at most 16 keys, each matching
+`^[a-z][a-z0-9_.-]{0,63}$`, each value at most 256 characters, 4 KB in all.
+They filter the list and appear on the session and its row. They are not
+permissions, are not searched beyond equality, and are never shown to the
+agent; give the agent its context in the turn input.
+
+`PATCH /sessions/<id>/labels` changes them and returns the session:
+
+```bash
+curl -X PATCH 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/labels' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{ "set": { "outcome": "merged" }, "unset": ["requested_by"] }'
+```
+
+`unset` removes keys, then `set` writes keys; each key takes the last write.
+The session's `labelsUpdatedAt` records the change. A patch that would exceed
+the bounds, or a key or value that does not fit them, is `400 invalid_labels`
+and changes nothing. Labels can be changed on an ended session.
+
+A `200` means the list reflects the change: the session's row carries the
+new labels and the filters see them. `503 session_publication_unconfirmed`
+(with `error.sessionId`) means the labels are recorded on the session but
+the row was not confirmed in time; retry the same patch until it answers
+`200`. The platform keeps publishing the row in the background either way,
+and repeating the patch is safe because each key takes the last write.
 
 ### End and interrupt
 
@@ -124,8 +201,14 @@ revocation was not acknowledged; retry, or
 ended session returns it unchanged.
 
 `POST /sessions/<id>/interrupt` stops the running turn without spending a
-model turn. The turn settles as `cancelled` with reason `interrupted`, the
-runtime is told to stop, and the next queued turn starts. An idle session is
+model turn. The response shows the session as `stopping` with the turn still
+`running`: the model loop is stopped, and every command the turn had started
+on its computer is stopped before the turn settles. The turn then settles as
+`cancelled` with reason `interrupted`, the session returns to `idle` and the
+next queued turn starts. A command that cannot be confirmed stopped is
+resolved by replacing the computer, and the turn settles once the
+replacement is confirmed; the turn's `turn.cancelled` event records how the
+stop settled ([Session events](/agents/events#turns)). An idle session is
 returned unchanged.
 
 ## Turns
@@ -134,28 +217,72 @@ returned unchanged.
 curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/turns' \
   -H 'x-api-key: <api-key>' \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: message-42' \
   -d '{
     "input": "Plan the workshop.",
-    "idempotencyKey": "message-42",
-    "mode": "queue"
+    "mode": "queue",
+    "payload": { "workshopId": "ws_812", "audience": "backend" }
   }'
 ```
+
+`Idempotency-Key` is the one rule on both routes: it identifies this request,
+a repeat returns the existing turn, and a different request under the same
+key is refused (below). Without one every request starts a turn. The body
+field `idempotencyKey` carries the same key for a send that a browser makes
+through your own server, where the header is the server's to set; when both
+are present they must be equal, else `400 invalid_turn`.
 
 | Field | Meaning |
 | --- | --- |
 | `input` | The user text for this turn. Required, not empty. |
-| `idempotencyKey` | Optional. The same key returns the existing turn; without one every request starts a turn. |
+| `idempotencyKey` | Optional. The key in body form, for a proxied browser send; equal to the header when both are present. |
 | `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: cancel running turns and run next. |
+| `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
 
 The response is `202 { turnId, status, duplicate }` for a new turn and
 `200` with `duplicate: true` when the key had already created one. `status`
-is `queued` or `running`. Follow the turn in the event log; the response
-does not wait for it.
+is the turn's status: `queued` or `running` for a new turn, and for a
+repeated key whatever the existing turn has reached, `completed`, `failed`
+or `cancelled` once it has settled. Follow the turn in the event log; the
+response does not wait for it.
 
-Codes: `400 invalid_turn`, `402 insufficient_credits`,
+The key identifies the request, not only the call. A repeat with the same
+`input`, `payload` and `mode` is the existing turn: key order inside the
+payload does not matter, an omitted `mode` means `queue`, and whitespace in
+the text counts. The same key with anything else is `409
+idempotency_conflict` and admits nothing. A retry after a lost reply is
+therefore safe with the same body, and a different request never lands on
+another request's key.
+
+Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KB),
+`402 insufficient_credits`, `409 idempotency_conflict`,
 `409 memory_admission_pending` (retry the session creation with its key
 first), `409 memory_admission_rejected` (the session is ended; create a new
 one).
+
+### Start work from an application
+
+An application that turns a form submission into agent work makes two calls,
+each with its own key, and keeps what it sent until the second one is
+acknowledged:
+
+1. Resolve the deployment once, where the submission is composed (for
+   example when the form opens), and pin it: `POST /sessions` with
+   `Idempotency-Key: <submission-id>`, the `deploymentId` and `environment`.
+   A retry then carries the deployment the submission was composed against,
+   even if the alias has moved since.
+2. `POST /sessions/<id>/turns` with `Idempotency-Key: <submission-id>/start`,
+   the text and the `payload`.
+
+Keep the submission (its id, the pinned deployment, the text and the
+payload) until the turns call answers, with `duplicate: false` or `true`.
+A lost reply at either step is retried with the same body and the same key:
+the first step returns the same session, the second the same turn. A
+session that exists without a turn is work that was never admitted; only the
+holder of the submission can retry it. A `409 idempotency_conflict` from
+either call means a different request already used that id; show it, keep
+the draft, and do not append the submission to a session it did not create.
+Each later message is its own submission with its own key.
 
 ## Events
 
@@ -201,9 +328,9 @@ curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-i
   -d '{ "title": "Workshop notes" }'
 ```
 
-`startSessionOnDocument` in the
-[TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers) does
-this create and the session create in one call.
+`oc.sessions.startOnDocument` on the
+[TypeScript client](/reference/typescript-sdk/agents) does this
+create and the session create in one call.
 
 ## Webhooks
 
@@ -307,6 +434,7 @@ treat that text as data about another agent's work, not as instructions.
 | List agents | `GET /agents` | `200` with `{ agents }`: `id`, `name`, `activeAlias`, `activeDeploymentId`, `deploymentCount` |
 | List deployments | `GET /deployments?agentId=<agent-id>` | `200` with `{ deployments }` |
 | Get deployment | `GET /deployments/<id>` | `200` with `id`, `agentId`, `alias`, `memory` declarations, `createdAt` |
+| List GitHub repositories | `GET /projects/<p>/github/repositories?environment=<env>` | `200` with `{ repositories, nextCursor }`; see [GitHub App connections](/agents/github#list-the-repositories-an-environment-can-reach) |
 
 A project is `{ id, slug, name, environments, agents, createdAt, updatedAt }`;
 `agents` carries each agent's `id` and `name`. See

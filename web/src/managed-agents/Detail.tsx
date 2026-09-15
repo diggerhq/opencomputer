@@ -51,12 +51,14 @@ import {
   getManagedAgentDeployment,
   getManagedAgentDeployments,
   getManagedAgentChannels,
+  getManagedAgentSession,
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
+  type ManagedAgentSessionSummary,
   type ManagedAgentSummary,
   type ManagedProjectOverview,
 } from './api'
@@ -122,6 +124,22 @@ function formatDate(value: string) {
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
+}
+
+/** What a list row says about its turns: running, waiting, or how the last one ended. */
+function sessionActivityLabel(session: ManagedAgentSessionSummary) {
+  const { activity } = session
+  const parts: string[] = []
+  if (activity.activeTurnId) parts.push('running')
+  if (activity.queued) parts.push(`${activity.queued} queued`)
+  if (!parts.length) {
+    parts.push(
+      activity.lastSettledTurn
+        ? `last ${activity.lastSettledTurn.status}`
+        : 'no turns yet',
+    )
+  }
+  return parts.join(' · ')
 }
 
 function historicalMessages(
@@ -613,6 +631,13 @@ export default function ManagedAgentDetail({
     enabled: Boolean(selectedPlaygroundId),
     refetchInterval: 1_000,
   })
+  // The list carries rows; the open session's turns come from its own route.
+  const selectedPlaygroundSession = useQuery({
+    queryKey: ['managed-agent-session', selectedPlaygroundId],
+    queryFn: () => getManagedAgentSession(selectedPlaygroundId!),
+    enabled: Boolean(selectedPlaygroundId),
+    refetchInterval: 5_000,
+  })
   const continuationCommand =
     project?.templateSource?.cloneReady &&
     projectCloneCommand(project.project.id)
@@ -640,7 +665,7 @@ export default function ManagedAgentDetail({
   const declaredChannels =
     activeDeployment.data?.projectDeployment?.resources.channels ?? []
 
-  const sessionColumns: Column<ManagedAgentSession>[] = [
+  const sessionColumns: Column<ManagedAgentSessionSummary>[] = [
     {
       key: 'session',
       header: 'Session',
@@ -663,11 +688,22 @@ export default function ManagedAgentDetail({
       cell: (session) => <StatusBadge status={session.status} />,
     },
     {
-      key: 'turns',
-      header: 'Turns',
+      key: 'activity',
+      header: 'Activity',
       cell: (session) => (
         <span className="text-muted-foreground text-xs">
-          {session.turns.length}
+          {sessionActivityLabel(session)}
+        </span>
+      ),
+    },
+    {
+      key: 'labels',
+      header: 'Labels',
+      cell: (session) => (
+        <span className="text-muted-foreground truncate font-mono text-[10px]">
+          {Object.entries(session.labels)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(' ')}
         </span>
       ),
     },
@@ -942,11 +978,10 @@ export default function ManagedAgentDetail({
                     )}
                   >
                     <span className="block truncate text-xs font-medium">
-                      {session.turns[0]?.input || 'Playground session'}
+                      Playground session
                     </span>
                     <span className="text-muted-foreground mt-0.5 block text-[10px]">
-                      {session.turns.length}{' '}
-                      {session.turns.length === 1 ? 'turn' : 'turns'} ·{' '}
+                      {sessionActivityLabel(session)} ·{' '}
                       {formatDate(session.updatedAt)}
                     </span>
                     <span className="text-muted-foreground mt-0.5 block truncate font-mono text-[10px]">
@@ -958,7 +993,8 @@ export default function ManagedAgentDetail({
             </aside>
             {selectedPlaygroundId &&
             selectedPlaygroundId !== adoptedPlaygroundId &&
-            selectedPlaygroundEvents.isLoading ? (
+            (selectedPlaygroundEvents.isLoading ||
+              selectedPlaygroundSession.isLoading) ? (
               <div className="text-muted-foreground flex min-h-0 items-center justify-center gap-2 text-sm">
                 <Loader2 className="size-4 animate-spin" /> Loading session…
               </div>
@@ -967,7 +1003,9 @@ export default function ManagedAgentDetail({
                 key={`${environment}:${playgroundChatId}`}
                 chatId={`${environment}:${playgroundChatId}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
-                session={selectedPlayground}
+                session={
+                  selectedPlaygroundId ? selectedPlaygroundSession.data : undefined
+                }
                 events={
                   selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
                 }

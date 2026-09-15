@@ -23,6 +23,17 @@ interrupt routes, which your server proxies under its own authentication; the
 API key never reaches the browser. See the
 [React integration guide](https://opencomputer.dev/agents/react).
 
+`send(text, { idempotencyKey, payload })` takes a key the caller keeps for
+that submission's retries and a structured payload the agent reads beside
+the text. `turns` lists the session's turns with their status, messages,
+tool calls, result and failure, reduced from the same log as `messages`:
+
+```tsx
+const { turns, send } = useAgent({ sessionId, basePath: "/api/agent" });
+await send("Fix the login page", { idempotencyKey: submissionId, payload: { repo: "acme/web" } });
+turns.at(-1)?.toolCalls.map((call) => `${call.title}: ${call.status}`);
+```
+
 Run `npm run deploy -- --watch` for the agent project to configure the local
 authenticated bridge, then start the React application separately with its own
 development command, such as `npm run dev:web`.

@@ -92,6 +92,107 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("forwards the GitHub repository listing with its query and the page it returns", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        repositories: [
+          {
+            id: 1,
+            fullName: "octo-org/service",
+            private: true,
+            defaultBranch: "main",
+            archived: false,
+          },
+        ],
+        nextCursor: "2",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=development&limit=100&cursor=2",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      repositories: [
+        {
+          id: 1,
+          fullName: "octo-org/service",
+          private: true,
+          defaultBranch: "main",
+          archived: false,
+        },
+      ],
+      nextCursor: "2",
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/projects/prj_test/github/repositories?environment=development&limit=100&cursor=2",
+    );
+  });
+
+  it("passes the repository listing's failure codes through", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: "github_connection_not_found",
+              message: "GitHub is not connected to the production environment",
+            },
+          },
+          { status: 404 },
+        ),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=production",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(404);
+    // The code is what a client branches on; the message is the edge's public copy.
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "github_connection_not_found",
+        message: "The requested agent resource was not found.",
+      },
+    });
+  });
+
+  it("only reads the repository listing", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/github/repositories?environment=development",
+        { method: "POST", body: "{}" },
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("forwards the unauthenticated GitHub setup callback as HTML", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("<html>connected</html>", {
@@ -1941,6 +2042,508 @@ describe("managed agents proxy", () => {
       turnId: "turn-2",
       status: "running",
       duplicate: false,
+    });
+  });
+
+  it("lists session rows with the query and cursor passed through and the owner's labels intact", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        sessions: [
+          {
+            id: "session-1",
+            projectId: "prj_test",
+            agentId: "reviewer",
+            deploymentId: "reviewer:digest",
+            environment: "development",
+            source: "api",
+            status: "idle",
+            labels: { repo: "acme/api", user_id: "u-42", task: "t-1" },
+            createdAt: "2026-09-15T00:00:00.000Z",
+            updatedAt: "2026-09-15T00:01:00.000Z",
+            revision: 7,
+            activity: {
+              activeTurnId: null,
+              queued: 0,
+              lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+            },
+            result: null,
+            accountId: "org_test",
+            runtimeId: "internal-runtime",
+          },
+        ],
+        nextCursor: "eyJjIjoxfQ",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions?project=prj_test&label.repo=acme%2Fapi&limit=25&cursor=abc",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target] = fetchSpy.mock.calls[0] as unknown as [URL];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions?project=prj_test&label.repo=acme%2Fapi&limit=25&cursor=abc",
+    );
+    const body = (await response.json()) as {
+      sessions: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+    expect(body.nextCursor).toBe("eyJjIjoxfQ");
+    expect(body.sessions).toEqual([
+      {
+        id: "session-1",
+        projectId: "prj_test",
+        agentId: "reviewer",
+        deploymentId: "reviewer:digest",
+        environment: "development",
+        source: "api",
+        status: "idle",
+        labels: { repo: "acme/api", user_id: "u-42", task: "t-1" },
+        createdAt: "2026-09-15T00:00:00.000Z",
+        updatedAt: "2026-09-15T00:01:00.000Z",
+        revision: 7,
+        activity: {
+          activeTurnId: null,
+          queued: 0,
+          lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+        },
+        result: null,
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/accountId|runtimeId|org_test|internal-runtime/);
+  });
+
+  it("patches session labels and returns the sanitized session with its labels", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        id: "session-1",
+        status: "idle",
+        executionMode: "workerd",
+        accountId: "org_test",
+        runtimeToken: "internal-runtime-token",
+        labels: { runtime_id: "kept", repo: "acme/api" },
+        labelsUpdatedAt: "2026-09-15T00:02:00.000Z",
+        revision: 8,
+        result: null,
+        turns: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/labels",
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ set: { repo: "acme/api" }, unset: ["task"] }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions/session-1/labels",
+    );
+    expect(init.method).toBe("PATCH");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.labels).toEqual({ runtime_id: "kept", repo: "acme/api" });
+    expect(body.labelsUpdatedAt).toBe("2026-09-15T00:02:00.000Z");
+    expect(body.revision).toBe(8);
+    expect(body.result).toBeNull();
+    expect(JSON.stringify(body)).not.toMatch(/runtimeToken|accountId|org_test/);
+
+    const refused = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/labels",
+        { method: "PUT", body: "{}" },
+      ),
+      { OC_MANAGED_AGENTS_SECRET: "test-secret" },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(refused.status).toBe(404);
+  });
+
+  it("passes invalid_labels and invalid_query through as typed client errors", async () => {
+    for (const [code, path, init] of [
+      ["invalid_query", "/sessions?unknown=1", undefined],
+      [
+        "invalid_labels",
+        "/sessions/session-1/labels",
+        { method: "PATCH", body: JSON.stringify({ set: { Bad: "x" } }) },
+      ],
+    ] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { error: { code, message: "Label key \"Bad\" must match /internal-pattern/" } },
+            { status: 400 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, init),
+        { OC_MANAGED_AGENTS_SECRET: "test-secret" },
+        { orgID: "org_test", userID: "user_test" },
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code } });
+    }
+  });
+
+  it("forwards a turn payload unchanged and passes admission conflicts through", async () => {
+    const payload = {
+      taskId: "01J9Z6QX4M5N7P8R9S0T1V2W3X",
+      repo: "acme/widgets",
+      ref: "main",
+      actor: { login: "octocat", id: 583231 },
+      note: "  keep  this  spacing  ",
+      empty: null,
+    };
+    const body = {
+      input: "Fix the flaky test.",
+      idempotencyKey: "01J9Z6QX4M5N7P8R9S0T1V2W3X/start",
+      payload,
+    };
+    const fetchSpy = vi.fn(async () =>
+      Response.json(
+        { turnId: "turn-3", status: "queued", duplicate: false },
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(202);
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    // Byte for byte: the backend fingerprints this body, so the proxy must
+    // neither drop fields nor reserialize them.
+    expect(await new Response(init.body).text()).toBe(JSON.stringify(body));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "idempotency_conflict",
+              message: "idempotencyKey was already used with different input, payload, or mode",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const conflict = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, input: "Something else" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      error: { code: "idempotency_conflict" },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: { code: "invalid_payload", message: "payload cannot exceed 32 KB of JSON" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    const oversize = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, payload: "x".repeat(40_000) }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(oversize.status).toBe(400);
+    expect(await oversize.json()).toMatchObject({
+      error: { code: "invalid_payload" },
+    });
+  });
+
+  it("keeps the payload on public message.received events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event-1",
+              seq: 1,
+              timestamp: "2026-09-15T00:00:00.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "message.received",
+              data: {
+                input: "Fix the flaky test.",
+                mode: "queue",
+                payload: { repo: "acme/widgets", ref: "main" },
+                accountId: "acct_private",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      events: [
+        expect.objectContaining({
+          type: "message.received",
+          data: {
+            input: "Fix the flaky test.",
+            mode: "queue",
+            payload: { repo: "acme/widgets", ref: "main" },
+          },
+        }),
+      ],
+    });
+  });
+
+  // Review finding 8 (2026-09-15): the detail route used to strip
+  // reserved-looking keys from every nested object, so an application result
+  // that happened to contain userId, a nested runtimeId or artifact came back
+  // intact from the list row and corrupted from the same session's detail.
+  it("returns the application result identical from the list row and the detail, with the platform envelope stripped", async () => {
+    const result = {
+      turnId: "turn-1",
+      callId: "call-1",
+      reportedAt: "2026-09-15T00:01:00.000Z",
+      data: {
+        userId: "u-42",
+        pr: { url: "https://github.com/acme/web/pull/12", runtimeId: "r-9" },
+        artifact: "build-12",
+        checks: [{ name: "lint", userId: "x" }],
+      },
+    };
+    const row = {
+      id: "session-1",
+      projectId: "prj_test",
+      agentId: "worker",
+      deploymentId: "worker:digest",
+      environment: "development",
+      source: "api",
+      status: "idle",
+      labels: { user_id: "u-42", topic: "t" },
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:01:00.000Z",
+      revision: 3,
+      activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+      result,
+      accountId: "org_test",
+      userId: "user_private",
+      runtimeId: "internal-runtime",
+    };
+    const snapshot = {
+      id: "session-1",
+      accountId: "org_test",
+      userId: "user_private",
+      agentId: "worker",
+      deploymentId: "worker:digest",
+      projectId: "prj_test",
+      executionMode: "workerd",
+      source: "api",
+      status: "idle",
+      labels: { user_id: "u-42", topic: "t" },
+      revision: 3,
+      result,
+      runtimeId: "internal-runtime",
+      runtimeEpoch: 4,
+      runtimeToken: "internal-runtime-token",
+      microvmId: "internal-vm",
+      microvmState: "suspended",
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:01:00.000Z",
+      environment: "development",
+      turns: [
+        {
+          id: "turn-1",
+          input: "Fix the login page",
+          mode: "queue",
+          status: "completed",
+          payload: { userId: "u-42", repo: "acme/web" },
+          createdAt: "2026-09-15T00:00:00.000Z",
+          updatedAt: "2026-09-15T00:01:00.000Z",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | string) =>
+        String(input).endsWith("/v1/sessions")
+          ? Response.json({ sessions: [row], nextCursor: null })
+          : Response.json(snapshot),
+      ),
+    );
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const list = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    const detail = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/session-1"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(list.status).toBe(200);
+    expect(detail.status).toBe(200);
+    const listBody = (await list.json()) as { sessions: Array<Record<string, unknown>> };
+    const detailBody = (await detail.json()) as Record<string, unknown>;
+
+    // Application data is opaque: the same value from both routes.
+    expect(listBody.sessions[0].result).toEqual(result);
+    expect(detailBody.result).toEqual(result);
+    expect(detailBody.result).toEqual(listBody.sessions[0].result);
+    expect(detailBody.labels).toEqual({ user_id: "u-42", topic: "t" });
+    expect((detailBody.turns as Array<Record<string, unknown>>)[0].payload).toEqual({
+      userId: "u-42",
+      repo: "acme/web",
+    });
+    // The platform envelope is gone from the top level, and the fields the
+    // dashboard and CLI read are still there.
+    expect(detailBody).not.toHaveProperty("accountId");
+    expect(detailBody).not.toHaveProperty("userId");
+    expect(detailBody).not.toHaveProperty("runtimeId");
+    expect(detailBody).not.toHaveProperty("runtimeEpoch");
+    expect(detailBody).not.toHaveProperty("runtimeToken");
+    expect(detailBody).not.toHaveProperty("microvmId");
+    expect(detailBody.executionMode).toBe("workerd");
+    expect(detailBody.microvmState).toBe("suspended");
+    expect(JSON.stringify(detailBody)).not.toMatch(
+      /org_test|user_private|internal-runtime|internal-vm|runtimeEpoch/,
+    );
+  });
+
+  it("keeps application JSON inside tool outputs on public events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event-2",
+              seq: 2,
+              timestamp: "2026-09-15T00:00:01.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "tool.completed",
+              data: {
+                tool: "report",
+                callId: "call-1",
+                title: "report",
+                output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+                result: true,
+                runtimeId: "internal-runtime",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      events: [
+        expect.objectContaining({
+          type: "tool.completed",
+          data: {
+            tool: "report",
+            callId: "call-1",
+            title: "report",
+            output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+            result: true,
+          },
+        }),
+      ],
     });
   });
 

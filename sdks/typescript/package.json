@@ -1,7 +1,7 @@
 {
   "name": "@opencomputer/sdk",
-  "version": "1.1.1",
-  "description": "TypeScript SDK for OpenComputer - cloud sandbox platform",
+  "version": "2.0.0",
+  "description": "TypeScript SDK for OpenComputer - cloud sandboxes and the Serverless Agents management API",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agents": {
+      "types": "./dist/agents/index.d.ts",
+      "import": "./dist/agents/index.js"
     },
     "./node": {
       "types": "./dist/node.d.ts",

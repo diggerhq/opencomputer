@@ -1,8 +1,8 @@
 # @opencomputer/sdk
 
-The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): **cloud sandboxes** and **Durable Agent Sessions** (managed background agents).
+The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): the **cloud sandbox** client at the package root, and the **Serverless Agents** management client on the portable `@opencomputer/sdk/agents` subpath.
 
-> This one package covers both surfaces — install **`@opencomputer/sdk`**. (The older `@opencomputer/agents-sdk` is superseded; use this instead.)
+> Versions before 2.0.0 also carried a client for the retired Durable Agent Sessions API; see [CHANGELOG](./CHANGELOG.md).
 
 ## Install
 
@@ -29,156 +29,46 @@ const content = await sandbox.files.read("/tmp/test.txt");
 await sandbox.kill();
 ```
 
-## Durable Agent Sessions
+## Serverless Agents management client
 
-Run a managed background agent: define an agent once, then create sessions that stream durable events and call back on completion.
+Serverless Agents (`opencomputer deploy`) are managed over the [management API](https://opencomputer.dev/agents/api). The client for it is a separate subpath export whose module graph has no Node dependency and runs nothing at import, so the same code serves a Cloudflare Worker without Node compatibility, Vercel, Deno and Node. Use it from trusted server code; the API key must not reach a browser.
 
 ```typescript
-import { OpenComputer, verifyWebhook } from "@opencomputer/sdk";
+import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 
-// Bootstrap once — idempotent by name (safe on every deploy):
-const agent = await oc.agents.create({
-  name: "reviewer",
-  runtime: "claude",                       // or "codex"
-  model: "anthropic/claude-opus-4-8",
-  prompt: "Review the diff. Run tests. Explain risks.",
-  credential: "managed",                   // run via OpenComputer, billed to credits — no key
-  // …or bring your own: key: process.env.ANTHROPIC_API_KEY!  (sealed; never enters the sandbox)
-});
-
-// Per request — hand off durable work, route the callback via metadata:
-const session = await oc.sessions.create({
-  agent: agent.id,
-  input: "Review PR #42",
-  metadata: { pullNumber: 42 },            // echoed back verbatim in the webhook
-  idempotencyKey: deliveryId,              // retry-safe
-});
-// Register a SIGNED callback (inline create-time destinations can't carry a secret):
-await session.destinations.create({ url: "https://app.example.com/oc-callback", secret: process.env.OC_WEBHOOK_SECRET! });
-
-// In your webhook handler — verify the signature, then fetch the result:
-const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
-if (delivery.type === "turn.completed") {
-  const session = await oc.sessions.get(delivery.sessionId!);
-  const { result } = await session.result();
-}
-```
-
-### Invoke through an Agent URL
-
-Every agent has a permanent HTTP address. Use it from a trusted backend with
-your org API key; the accepted response includes a session-scoped token for
-streaming or steering that session.
-
-```typescript
-const agent = await oc.agents.get("agt_...");
-const response = await fetch(`${agent.invokeUrl}/`, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${process.env.OPENCOMPUTER_API_KEY}`,
-    "Content-Type": "application/json",
-    "Idempotency-Key": "incoming-event-id",
-  },
-  body: JSON.stringify({ task: "Review PR #42" }),
-});
-const receipt = await response.json();
-console.log(receipt.session.id);
-```
-
-For an external system that cannot hold an org key, create an independently
-revocable Hook URL. The complete URL is returned only once.
-
-```typescript
-const created = await oc.agents.hooks.create(agent.id, {
-  name: "grafana-prod",
-});
-console.log(created.hookUrl);
-```
-
-[Agent URL guide](https://docs.opencomputer.dev/agent-sessions/agent-urls) ·
-[Hook URL guide](https://docs.opencomputer.dev/agent-sessions/hooks)
-
-### Create an agent from a repository
-
-Repository creation is a two-phase review/import so a moving branch cannot change underneath the
-confirmation. Only an exact review is importable; invalid or unrecognized source should be fixed or
-reviewed at another root.
-
-```typescript
-const review = await oc.agents.repository.review({
-  repo: "repo_...",
-  path: "agents/support",
-  productionRef: "main",
-});
-
-if (review.interpretation.disposition !== "exact") {
-  throw new Error(review.interpretation.summary);
-}
-
-const { agent, deployment } = await oc.agents.repository.import({
-  name: "Support triage",
-  credential: "managed",
-  idempotencyKey: crypto.randomUUID(),
-  source: {
-    type: "github",
-    repo: review.repository.id,
-    path: review.root,
-    productionRef: review.productionRef,
-  },
-  review: {
-    sha: review.sha,
-    sourceProfile: review.interpretation.sourceProfile,
-    fingerprint: review.reviewFingerprint,
-  },
-});
-```
-
-### Configure repository access
-
-Flue agents can use repositories granted to your OpenComputer GitHub App as working sources. Read
-the current grant and policy, or narrow the agent to explicit repository ids from that view:
-
-```typescript
-const access = await oc.agents.getRepositoryAccess(agent.id);
-const target = access.effectiveRepositories?.find(
-  (repo) => repo.fullName === "your-org/your-repo",
+// Create a session, then admit its first turn; one key per call makes a retry safe.
+const { session } = await oc.sessions.create(
+  { agentId: "worker@development", labels: { request: taskId } },
+  { idempotencyKey: taskId },
 );
-if (!target) throw new Error("Repository is not currently available to this agent");
-
-await oc.agents.updateRepositoryAccess(agent.id, {
-  mode: "selected",
-  repositoryIds: [target.id],
+const receipt = await oc.sessions.turns.send(session.id, {
+  input: "Review the pull request.",
+  idempotencyKey: `${taskId}/start`,
 });
+
+// Follow the durable event log from a cursor.
+const events = await oc.sessions.events.list(session.id, { after: 0 });
+
+// List rows, filtered and paged.
+const page = await oc.sessions.list({ environment: "development", limit: 20 });
+
+try {
+  await oc.sessions.get("missing");
+} catch (error) {
+  if (error instanceof OpenComputerError) console.log(error.code, error.status, error.message);
+}
 ```
 
-Use `{ mode: "all" }` for every currently and subsequently granted repository, or
-`{ mode: "selected", repositoryIds: [] }` to disable repository work. An `unavailable` grant has
-`effectiveRepositories: null`; an empty array is a successfully read, known-empty view.
+The method tree mirrors the API one to one: `sessions.create|get|list|end|interrupt|setLabels|startOnDocument`, `sessions.turns.send`, `sessions.events.list`, `projects.list|get|create`, `projects.memory`, `projects.webhooks`, `projects.eventSubscriptions`, `projects.github.repositories`, `agents.list`, `deployments.get|list`. Every failed call throws `OpenComputerError` with `{ code, status, message }`.
 
-### Credentials
+### Start a session on a memory document
 
-Sessions run **Managed** (via OpenComputer, billed to your credits — `credential: "managed"`, no key, the default for new orgs) or on **your own** model-provider key (Anthropic for `claude`, OpenAI for `codex`). An inline `key` stores one and attaches it to the agent; manage keys directly to reuse one across agents, set an org default, or rotate/remove:
+Applications that keep notes in [memory](https://opencomputer.dev/agents/memory) open a topic as "these notes, this session". `oc.sessions.startOnDocument` creates the document if it is new, then a session bound to it, both converging under one key on retry:
 
 ```typescript
-await oc.credentials.create({ provider: "anthropic", key: process.env.ANTHROPIC_API_KEY!, name: "prod", isDefault: true });
-const creds = await oc.credentials.list();           // metadata only — keys are write-only
-await oc.credentials.setDefault({ credential: creds[0].id });
-await oc.credentials.delete(creds[0].id);
-```
-
-Or reference one by id when creating an agent: `oc.agents.create({ …, credential: "cred_…" })`. A key isn't required — `credential: "managed"` needs none; a session fails with `422 no_credential` only when it resolves to neither Managed nor a usable key. Full guide: [Credentials](https://docs.opencomputer.dev/agent-sessions/credentials).
-
-### Serverless Agents memory
-
-Serverless Agents (`opencomputer deploy`) keep notes in [memory](https://opencomputer.dev/agents/memory). This package types its management API and ships one helper for the moment an application opens a topic: create the document if it is new, then create a session bound to it, both converging under one key on retry:
-
-```typescript
-import { startSessionOnDocument } from "@opencomputer/sdk";
-
-const { document, session } = await startSessionOnDocument({
-  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+const { document, session } = await oc.sessions.startOnDocument({
   projectId: "prj_…", environment: "development", agent: "topic-worker",
   resource: "topics", documentId: "workshop", document: { title: "Workshop" },
   idempotencyKey: `topic/workshop/${deploymentId}`,
@@ -186,9 +76,11 @@ const { document, session } = await startSessionOnDocument({
 // document.created, session.created: false when they already existed.
 ```
 
+`startSessionOnDocument({ apiKey, ...params })` from the same subpath is the standalone form of the call.
+
 ## Sandbox webhooks (Preview)
 
-Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. The same `verifyWebhook` helper verifies both session and sandbox deliveries. **Preview: newly available; the surface may change.**
+Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. `verifyWebhook` checks a delivery's signature and returns its envelope. **Preview: newly available; the surface may change.**
 
 ```typescript
 import { Webhooks, verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
@@ -217,12 +109,15 @@ if (delivery.type === "sandbox.stopped") {
 | `apiUrl` | `OPENCOMPUTER_API_URL` | `https://app.opencomputer.dev`   |
 | `apiKey` | `OPENCOMPUTER_API_KEY` | (none)                           |
 
-**Durable Agent Sessions** (`OpenComputer`):
+**Serverless Agents** (`OpenComputer` from `@opencomputer/sdk/agents`):
 
-| Option    | Env Variable           | Default                            |
-|-----------|------------------------|------------------------------------|
-| `baseUrl` | —                      | `https://api.opencomputer.dev/v3`  |
-| `apiKey`  | `OPENCOMPUTER_API_KEY` | (none)                             |
+| Option    | Default                                            |
+|-----------|----------------------------------------------------|
+| `baseUrl` | `https://app.opencomputer.dev/api/managed-agents`  |
+| `apiKey`  | required                                           |
+| `fetch`   | the global `fetch`                                 |
+
+Importing the package root installs nothing globally and opens no connection. The sandbox client keeps its own HTTP/2 pool, created on the first request and warmed on the first `Sandbox.create`; call `prewarmConnections()` earlier to pay that cost before a timing loop.
 
 ## Releasing
 

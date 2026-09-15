@@ -58,7 +58,8 @@ the result to the model.
 | `name` | yes | ID the model calls; letters, numbers, underscores, and hyphens only |
 | `description` | yes | Explains what the tool does and when to use it |
 | `input` | no | JSON Schema for tool arguments |
-| `output` | no | JSON Schema describing the result |
+| `output` | no | JSON Schema describing the result; required on the result tool |
+| `result` | no | `true` marks this tool as the agent's [result tool](#the-session-result); one per agent, and it must have `run` |
 | `run` | yes* | Synchronous or asynchronous implementation |
 | `preview` / `apply` | no | Supply these *instead of* `run` to [wait for a person](#wait-for-a-person-before-writing) |
 
@@ -98,6 +99,112 @@ export const importCatalog = defineTool({
 ```
 
 Tool results and progress metadata must be JSON-compatible values.
+
+## The session result
+
+An agent may mark one tool as its result tool. Its latest committed output
+is the session's `result`: the structured outcome an application reads
+instead of parsing the final message.
+
+```tsx
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch and pull request as soon as each is known",
+  input: {
+    type: "object",
+    properties: {
+      branch: { type: "string" },
+      pr: { type: "object", properties: { number: { type: "integer" }, url: { type: "string" } } },
+    },
+    required: ["branch"],
+    additionalProperties: false,
+  },
+  output: {
+    type: "object",
+    properties: {
+      branch: { type: "string" },
+      pr: {
+        type: "object",
+        properties: { number: { type: "integer" }, url: { type: "string" } },
+        required: ["number", "url"],
+        additionalProperties: false,
+      },
+    },
+    required: ["branch"],
+    additionalProperties: false,
+  },
+  result: true,
+  async run({ input }) {
+    // Verify what the model claims before it becomes the result.
+    return { branch: String(input.branch), ...(input.pr ? { pr: input.pr } : {}) };
+  },
+});
+```
+
+The build enforces three rules: an agent declares at most one result tool,
+a result tool declares `output`, and it runs with `run()` rather than
+[waiting for a person](#wait-for-a-person-before-writing). The schema is
+recorded with the deployment, and every value the tool returns is validated
+against it.
+
+`output` can be written three ways, and `input` accepts the same forms: an
+object literal in the call; a `const` object literal in the same module,
+where `as const` keeps its literal types so one schema serves the tool, your
+own validation and the inferred type; or a named import of such a `const`
+from a module inside the agent directory. The build copies the schema as
+written into the deployment without running your code, so a value produced
+by a function, a `let`, a namespace member such as `schemas.report`, a
+package import or a re-export from another module is refused with a message
+that names it.
+
+```tsx
+// tools/report.ts
+import { defineTool } from "@opencomputer/agent";
+import { reportSchema } from "../schemas.js";
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch and pull request",
+  input: reportSchema,
+  output: reportSchema,
+  result: true,
+  async run({ input }) {
+    return input;
+  },
+});
+```
+
+The build reads `name`, `result` and `output` from the `defineTool()` call
+itself, without running your code. A form it cannot read fails the build and
+the message names it: a spread (`...options`), a computed property name
+(`["result"]: true`), or a `result` that is not the literal `true` or `false`
+(a variable, a shorthand `result`). The rule exists because a `result: true`
+hidden behind a spread would deploy as an ordinary tool and its output would
+never become the session's result. When a deployment loads, the platform
+also checks each tool module's declared `result` against what the build
+recorded; a module that disagrees fails to load rather than run.
+
+A call to the result tool succeeds only once its output is committed to
+the session:
+
+- The value `run()` returns is validated against `output` and committed
+  before the model is told the call succeeded. The session's `result`
+  becomes `{ turnId, callId, reportedAt, data }`, and the call's
+  `tool.completed` event carries `result: true`
+  ([Session events](/agents/events#tools)).
+- A value that does not match `output`, or exceeds 8 KB of JSON, fails the
+  call; the model sees the reason and can call again. The previous result
+  stands.
+- A call from a turn that was interrupted or has ended, or from a runtime
+  the session no longer runs on, is refused the same way.
+- A later call replaces the result. A turn that fails or is cancelled never
+  clears it, and the event log keeps every call.
+
+The result says what the agent reported, not that the work succeeded.
+Verify claims inside `run()`, where a tool can check that a branch exists
+or a pull request is open, and throw to reject them; let the application
+check what the result references. Read it from
+[`GET /sessions/<id>`](/agents/api#get-and-list).
 
 ## Conditional tools
 
@@ -212,6 +319,33 @@ person agreed to, whether or not the session that proposed it still exists.
 
 A tool that waits needs a conversation to ask in. Called from the playground,
 a schedule or a webhook, there is nobody to ask, and the call fails saying so.
+
+## Computer commands
+
+Every session runs on its own computer, and the model runs commands on it
+through the built-in `shell` tool. A command runs in the session's workspace
+and takes `command` and an optional `timeoutSeconds`: 120 by default, at
+most 1800, and never more than the computer's remaining lifetime allows; a
+value out of range fails the call before anything runs. A command is not
+started on a computer that cannot host it for its full timeout; a fresh
+computer is used instead.
+
+When the timeout passes, the command and every process it started are
+stopped, and the call fails as a tool error the model sees: it names the
+command and the timeout and carries the output so far. The turn continues,
+and files the command wrote before it was stopped remain.
+
+A command counts as stopped only once that is confirmed: every process it
+started, detached ones included, is gone, or the computer itself was
+replaced. When the computer stops answering while a command runs, its
+outcome is unknown, and the call fails with that as the reason; the model
+is never told a command was stopped when that was not confirmed. That
+computer runs no further command until the unknown one is confirmed
+stopped or the computer is replaced by a fresh one with the session's
+workspace, which the next command does on its own. The same rule settles
+an [interrupt](/agents/api#end-and-interrupt): the turn is cancelled only
+after its commands are confirmed stopped, and a stop that cannot be
+confirmed replaces the computer.
 
 ## Tools versus skills and MCP
 

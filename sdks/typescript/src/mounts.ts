@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 /**
  * Backends supported by the typed `creds` shape. For any backend not in this
  * list (or for advanced rclone tuning), pass `rcloneConfig` instead — the raw
@@ -140,7 +141,7 @@ export class Mounts {
    * ```
    */
   async add(opts: AddMountOpts): Promise<MountInfo> {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/mounts`,
       {
         method: "POST",
@@ -160,7 +161,7 @@ export class Mounts {
    * after hibernate/wake — re-issue `add()` for any mounts you need back.
    */
   async list(): Promise<MountInfo[]> {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/mounts`,
       { headers: this.headers },
     );
@@ -173,7 +174,7 @@ export class Mounts {
 
   /** Unmount a path previously passed to `add()`. No-op if not mounted. */
   async remove(path: string): Promise<void> {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/mounts?path=${encodeURIComponent(path)}`,
       { method: "DELETE", headers: this.headers },
     );

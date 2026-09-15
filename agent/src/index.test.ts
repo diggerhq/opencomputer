@@ -4,6 +4,7 @@ import {
   bearer,
   defineConnection,
   defineMemory,
+  defineTool,
   documentMemory,
   githubApp,
   httpMemory,
@@ -524,4 +525,77 @@ test("useInput narrows a delivered turn outcome to its typed event", () => {
   } finally {
     delete globals[HOOKS];
   }
+});
+
+test("defineTool marks a result tool and pins its output schema", () => {
+  const output = {
+    type: "object",
+    properties: { branch: { type: "string" } },
+    required: ["branch"],
+    additionalProperties: false,
+  };
+  const report = defineTool({
+    name: "report",
+    description: "Report the branch",
+    output,
+    result: true,
+    run: () => ({ branch: "task/1" }),
+  });
+  assert.equal(report.result, true);
+  assert.deepEqual(report.output, output);
+  assert.equal(Object.isFrozen(report), true);
+  // An ordinary tool carries no result marker at all, so hosts and the
+  // compiler test for `result === true` and nothing else.
+  const plain = defineTool({
+    name: "plain",
+    description: "Plain",
+    run: () => "ok",
+  });
+  assert.equal("result" in plain, false);
+  const opted = defineTool({
+    name: "opted",
+    description: "Opted out",
+    result: false,
+    run: () => "ok",
+  });
+  assert.equal("result" in opted, false);
+});
+
+test("defineTool refuses a result tool without an output schema", () => {
+  assert.throws(
+    () =>
+      defineTool({
+        name: "report",
+        description: "Report",
+        result: true,
+        run: () => "ok",
+      } as unknown as Parameters<typeof defineTool>[0]),
+    /result tools require an output schema/,
+  );
+  assert.throws(
+    () =>
+      defineTool({
+        name: "report",
+        description: "Report",
+        output: { type: "object" },
+        result: "yes",
+        run: () => "ok",
+      } as unknown as Parameters<typeof defineTool>[0]),
+    /result must be true or false/,
+  );
+});
+
+test("defineTool refuses a result tool that waits for approval", () => {
+  assert.throws(
+    () =>
+      defineTool({
+        name: "report",
+        description: "Report",
+        output: { type: "object" },
+        result: true,
+        preview: () => ({ title: "Report" }),
+        apply: () => ({}),
+      } as unknown as Parameters<typeof defineTool>[0]),
+    /waits for approval cannot be the result tool/,
+  );
 });

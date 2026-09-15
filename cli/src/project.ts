@@ -1105,6 +1105,113 @@ class MemorySourceResolver {
     return result;
   }
 
+  /**
+   * The object literal an identifier names in `path`, read without
+   * evaluating anything: a `const` declared in the module, or a named import
+   * of such a `const` from a module inside the agent directory (one hop; a
+   * re-export is refused with the module to import from). Every other form
+   * fails with the form named, so the fix is one edit.
+   */
+  staticObjectBinding(path: string, name: string, label: string): ts.Expression {
+    const file = this.file(path);
+    const local = localVariable(file, name);
+    if (local) {
+      return staticObjectInitializer(
+        local,
+        `${label} references ${name}, which is`,
+        `${label} references ${name}, whose`,
+      );
+    }
+    for (const statement of file.statements) {
+      if (!ts.isImportDeclaration(statement)) continue;
+      const clause = statement.importClause;
+      const specifier = statement.moduleSpecifier;
+      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(specifier)) continue;
+      if (clause.name?.text === name) {
+        throw new Error(
+          `${label} references ${name}, the default import of ${specifier.text}; import a named const from a module inside the agent directory`,
+        );
+      }
+      const named = clause.namedBindings;
+      if (!named || !ts.isNamedImports(named)) continue;
+      const element = named.elements.find(
+        (candidate) => !candidate.isTypeOnly && candidate.name.text === name,
+      );
+      if (!element) continue;
+      const imported = (element.propertyName ?? element.name).text;
+      const target = this.target(path, specifier.text);
+      if (target === "package") {
+        throw new Error(
+          `${label} references ${name}, imported from ${AGENT_PACKAGE}; a schema must be a const declared in a module inside the agent directory`,
+        );
+      }
+      if (target === undefined) {
+        throw new Error(
+          `${label} references ${name}, imported from ${specifier.text}, which is not a module inside the agent directory; a schema must be a const declared in one`,
+        );
+      }
+      return this.exportedObject(target, imported, name, label);
+    }
+    throw new Error(
+      `${label} references ${name}, which is neither a const declared in this module nor a named import from a module inside the agent directory`,
+    );
+  }
+
+  private exportedObject(
+    target: string,
+    exported: string,
+    name: string,
+    label: string,
+  ): ts.Expression {
+    const file = this.file(target);
+    for (const statement of file.statements) {
+      if (
+        ts.isVariableStatement(statement) &&
+        statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+      ) {
+        const declaration = statement.declarationList.declarations.find(
+          (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === exported,
+        );
+        if (declaration) {
+          return staticObjectInitializer(
+            { statement, declaration },
+            `${label} references ${name}, exported by ${target}, which is`,
+            `${label} references ${name}, exported by ${target}, whose`,
+          );
+        }
+      }
+      if (!ts.isExportDeclaration(statement) || statement.isTypeOnly) continue;
+      const clause = statement.exportClause;
+      if (!clause || !ts.isNamedExports(clause)) continue;
+      const element = clause.elements.find(
+        (candidate) => !candidate.isTypeOnly && candidate.name.text === exported,
+      );
+      if (!element) continue;
+      if (statement.moduleSpecifier) {
+        throw new Error(
+          `${label} references ${name}, which ${target} re-exports from another module; import it from the module that declares it`,
+        );
+      }
+      const localName = (element.propertyName ?? element.name).text;
+      const local = localVariable(file, localName);
+      if (!local) {
+        throw new Error(
+          `${label} references ${name}, which ${target} exports as ${exported} without declaring it as a const`,
+        );
+      }
+      const where =
+        localName === exported ? `exported by ${target}` : `exported by ${target} (declared there as ${localName})`;
+      return staticObjectInitializer(
+        local,
+        `${label} references ${name}, ${where}, which is`,
+        `${label} references ${name}, ${where}, whose`,
+      );
+    }
+    throw new Error(
+      `${label} references ${name}, but ${target} does not export a const named ${exported}`,
+    );
+  }
+
   bindingsOf(path: string): MemoryModuleBindings {
     const bindings: MemoryModuleBindings = {
       functions: new Map(),
@@ -1976,6 +2083,7 @@ function outboxRegistration(
 }
 
 function staticJsonValue(expression: ts.Expression, label: string): unknown {
+  expression = unwrapStatic(expression);
   if (ts.isStringLiteralLike(expression)) return expression.text;
   if (ts.isNumericLiteral(expression)) return Number(expression.text);
   if (
@@ -2611,6 +2719,16 @@ interface DefinedTool {
   readonly id: string;
   /** Has preview() and apply(), so the model's call is a proposal. */
   readonly gated: boolean;
+  /** Declares `result: true`: its latest committed output is the session's result. */
+  readonly result: boolean;
+  /** The result tool's output schema as declared, pinned in the deployment for the host to validate against. */
+  readonly output?: Record<string, unknown>;
+}
+
+interface ResultToolManifest {
+  id: string;
+  /** The output schema as written, pinned in the deployment for the host to validate against. */
+  output: Record<string, unknown>;
 }
 
 /** Matches `preview: fn`, `preview(ctx) {}` and `async preview(ctx) {}` alike. */
@@ -2631,18 +2749,150 @@ function hasMember(object: ts.ObjectLiteralExpression, name: string): boolean {
   });
 }
 
+/** The member of an object literal named `name`, whatever its form. */
+function objectMember(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): ts.ObjectLiteralElementLike | undefined {
+  return object.properties.find((property) => {
+    const key = property.name;
+    return (
+      !!key &&
+      ((ts.isIdentifier(key) && key.text === name) ||
+        (ts.isStringLiteralLike(key) && key.text === name))
+    );
+  });
+}
+
 /**
- * Every tool a module defines, and whether it waits for approval.
+ * The expression behind the syntax that only names a type: parentheses,
+ * `as const`, `as T`, `satisfies T`, `<T>x` and `x!`. None of them changes
+ * the value, and `as const` is how a schema literal keeps its literal types.
+ */
+function unwrapStatic(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) current = current.expression;
+    else if (ts.isAsExpression(current)) current = current.expression;
+    else if (ts.isSatisfiesExpression(current)) current = current.expression;
+    else if (ts.isTypeAssertionExpression(current)) current = current.expression;
+    else if (ts.isNonNullExpression(current)) current = current.expression;
+    else return current;
+  }
+}
+
+interface LocalVariable {
+  statement: ts.VariableStatement;
+  declaration: ts.VariableDeclaration;
+}
+
+/** The top-level variable statement that declares `name` in `file`, if any. */
+function localVariable(file: ts.SourceFile, name: string): LocalVariable | undefined {
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations.find(
+      (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === name,
+    );
+    if (declaration) return { statement, declaration };
+  }
+  return undefined;
+}
+
+/**
+ * The object literal a `const` is initialized with. `let` and `var` are
+ * refused because their value can change before the module is loaded, and
+ * so is any initializer that is not a literal: the compiler does not run
+ * code to learn a schema.
+ */
+function staticObjectInitializer(
+  variable: LocalVariable,
+  declaredPrefix: string,
+  valuePrefix: string,
+): ts.Expression {
+  if (!(variable.statement.declarationList.flags & ts.NodeFlags.Const)) {
+    throw new Error(`${declaredPrefix} declared with let or var; declare it as a const object literal`);
+  }
+  const initializer = variable.declaration.initializer;
+  if (!initializer) {
+    throw new Error(`${declaredPrefix} declared without a value; declare it as a const object literal`);
+  }
+  const value = unwrapStatic(initializer);
+  if (!ts.isObjectLiteralExpression(value)) {
+    throw new Error(`${valuePrefix} value is not a static object literal: ${initializer.getText()}`);
+  }
+  return value;
+}
+
+const SCHEMA_FORMS =
+  "an inline object literal, a const object literal declared in the same module, or a named import of such a const from a module inside the agent directory";
+
+/**
+ * The result tool's output schema as static JSON, from the forms the build
+ * can read without evaluation. `resolver` is what reaches a const in this or
+ * another module of the agent; without one, a referenced schema is left to
+ * the build that has the whole module set.
+ */
+function declaredSchema(
+  member: ts.ObjectLiteralElementLike | undefined,
+  path: string,
+  label: string,
+  resolver: MemorySourceResolver | undefined,
+): Record<string, unknown> | undefined {
+  if (!member) {
+    throw new Error(`${label.replace(/ output$/, "")} is the result tool and must declare output as ${SCHEMA_FORMS}`);
+  }
+  const expression = ts.isShorthandPropertyAssignment(member)
+    ? member.name
+    : ts.isPropertyAssignment(member)
+      ? unwrapStatic(member.initializer)
+      : undefined;
+  if (!expression) {
+    throw new Error(`${label} must be ${SCHEMA_FORMS}, not a method or accessor`);
+  }
+  if (ts.isObjectLiteralExpression(expression)) {
+    return staticJsonValue(expression, label) as Record<string, unknown>;
+  }
+  if (ts.isIdentifier(expression)) {
+    if (!resolver) return undefined;
+    return staticJsonValue(resolver.staticObjectBinding(path, expression.text, label), label) as Record<string, unknown>;
+  }
+  throw new Error(`${label} must be ${SCHEMA_FORMS}, not ${expression.getText()}`);
+}
+
+const DEFINE_TOOL_FORM_HINT =
+  "the compiler reads name, result and output from the declaration itself and cannot see through anything else; write each option as a literal property";
+
+/**
+ * Every tool a module defines: its id, whether it waits for approval, and
+ * whether it is the result tool with the output schema the host validates
+ * against. One reading of each `defineTool()` call, from the syntax tree.
  *
  * Read from the syntax tree rather than by regex, because gated-ness is no
- * longer visible in the function's name — it is the presence of `preview` and
+ * longer visible in the function's name; it is the presence of `preview` and
  * `apply` on the object literal. A textual match would see those words inside
  * a nested JSON Schema (a tool whose input has a property called `preview` is
  * perfectly legal) and declare an ordinary tool gated, which the runtime then
  * refuses to render at all.
+ *
+ * The result tool's output is read from the forms `declaredSchema` accepts;
+ * `resolver` reaches a const declared in this or another module of the
+ * agent, and the project-resource reading passes none because it needs only
+ * gated-ness.
+ *
+ * A form the reading cannot see through fails the build. A spread, a computed
+ * name or a `result` that is not the literal keyword could carry `result:
+ * true` into the evaluated module while the manifest records an ordinary
+ * tool, and the host would then never commit that tool's output as the
+ * session's result; the diagnostic names the form so the fix is one edit.
  */
-function definedTools(source: string, path: string): DefinedTool[] {
-  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+function definedTools(
+  source: string,
+  path: string,
+  resolver?: MemorySourceResolver,
+): DefinedTool[] {
+  const file = resolver
+    ? resolver.file(path)
+    : ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   const tools: DefinedTool[] = [];
   const visit = (node: ts.Node): void => {
     if (
@@ -2654,17 +2904,51 @@ function definedTools(source: string, path: string): DefinedTool[] {
       if (!argument || !ts.isObjectLiteralExpression(argument)) {
         throw new Error(`${path} defineTool() requires an object literal`);
       }
-      const id = literalStringValue(
-        objectProperty(argument, "name"),
-        `${path} tool name`,
-      );
+      const name = objectProperty(argument, "name");
+      const label = `${path} defineTool(${name && ts.isStringLiteralLike(name) ? JSON.stringify(name.text) : ""})`;
+      for (const property of argument.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          throw new Error(
+            `${label} cannot spread ...${property.expression.getText()}: ${DEFINE_TOOL_FORM_HINT}`,
+          );
+        }
+        if (property.name && ts.isComputedPropertyName(property.name)) {
+          throw new Error(
+            `${label} cannot use the computed property name ${property.name.getText()}: ${DEFINE_TOOL_FORM_HINT}`,
+          );
+        }
+      }
+      const id = literalStringValue(name, `${path} tool name`);
+      const resultMember = objectMember(argument, "result");
+      let result = false;
+      if (resultMember) {
+        const reason = ts.isShorthandPropertyAssignment(resultMember)
+          ? "the shorthand property result"
+          : ts.isPropertyAssignment(resultMember)
+            ? unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.TrueKeyword
+              ? undefined
+              : unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.FalseKeyword
+                ? undefined
+                : resultMember.initializer.getText()
+            : "a method or accessor";
+        if (reason !== undefined) {
+          throw new Error(`${label} result must be the literal true or false, not ${reason}`);
+        }
+        result =
+          unwrapStatic((resultMember as ts.PropertyAssignment).initializer).kind ===
+          ts.SyntaxKind.TrueKeyword;
+      }
+      const output = result
+        ? declaredSchema(objectMember(argument, "output"), path, `${label} output`, resolver)
+        : undefined;
       tools.push({
         id,
         // Either half marks it gated; defineTool() rejects a lone one at run
         // time. Treating a half-gate as ordinary here would let a tool that
         // means to wait be registered as one that does not.
-        gated:
-          hasMember(argument, "preview") || hasMember(argument, "apply"),
+        gated: hasMember(argument, "preview") || hasMember(argument, "apply"),
+        result,
+        ...(output ? { output } : {}),
       });
     }
     ts.forEachChild(node, visit);
@@ -2767,8 +3051,19 @@ const MEMORY_CONTRACT_SOURCE = readFileSync(
   "utf8",
 ).replace(/^\/\/# sourceMappingURL=.*$/m, "");
 
-function agentApiRuntimeSource(): string {
+/**
+ * The `@opencomputer/agent` module the runtime evaluates, bundled into every
+ * agent source module. `manifest.resultTool` is what the build recorded; the
+ * shim's defineTool() checks the evaluated declaration against it, so a
+ * module and its manifest can never disagree about which tool's output is
+ * the session's result. Without a manifest (`null`) the check only refuses a
+ * `result: true` the build did not record.
+ */
+export function agentApiRuntimeSource(
+  manifest: { resultTool: string | null } = { resultTool: null },
+): string {
   return `${MEMORY_CONTRACT_SOURCE}
+const MANIFEST_RESULT_TOOL = ${JSON.stringify(manifest.resultTool)};
 function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
@@ -2917,8 +3212,18 @@ export const defineTool = (input) => {
   const gated = typeof input.preview === "function" || typeof input.apply === "function";
   if (!gated) {
     if (typeof input.run !== "function") throw new Error("defineTool requires run(), or preview() and apply() for a tool that waits for approval");
-    return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+    if (input.result !== undefined && typeof input.result !== "boolean") throw new Error("defineTool result must be true or false");
+    if (input.result === true && !input.output) throw new Error("defineTool result tools require an output schema; the host validates every result against it before committing");
+    // The build recorded the result tool from the declaration it could read;
+    // what the module evaluates to must agree, or the host would commit the
+    // wrong tool's output, or none. Refusing at load fails the deployment
+    // instead of running the tool as an ordinary one.
+    if (input.result === true && toolId !== MANIFEST_RESULT_TOOL) throw new Error("Tool " + toolId + " declares result: true, but the deployment records " + (MANIFEST_RESULT_TOOL ? MANIFEST_RESULT_TOOL + " as its result tool" : "no result tool") + "; the declaration was not readable at build time. Write result: true as a literal property of defineTool() and rebuild");
+    if (toolId === MANIFEST_RESULT_TOOL && input.result !== true) throw new Error("Tool " + toolId + " is the deployment's result tool, but the module does not declare result: true; the build and the module disagree, rebuild the deployment");
+    const { result, ...definition } = input;
+    return Object.freeze({ kind: "tool", version: 1, ...definition, ...(result === true ? { result: true } : {}), id: toolId, name: toolId });
   }
+  if ("result" in input) throw new Error("A tool that waits for approval cannot be the result tool");
   if (typeof input.preview !== "function") throw new Error("A tool with apply() also requires preview()");
   if (typeof input.apply !== "function") throw new Error("A tool with preview() also requires apply()");
   if (typeof input.run === "function") throw new Error("A tool has either run(), or preview() and apply() - not both; run() is written for you when the tool waits for approval");
@@ -3016,6 +3321,7 @@ async function bundleAgentSourceModules(
   root: string,
   runtime: string,
   entries: string[],
+  options: { shim: string; write: boolean },
 ): Promise<{ modules: AgentSourceModule[]; entryPaths: Set<string> }> {
   const entryPoints: Record<string, string> = {};
   const entryPaths = new Set<string>();
@@ -3050,7 +3356,7 @@ async function bundleAgentSourceModules(
           }));
           build.onLoad(
             { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
-            () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
+            () => ({ contents: options.shim, loader: "js" }),
           );
         },
       },
@@ -3076,6 +3382,7 @@ async function bundleAgentSourceModules(
     if (!path || path === ".." || path.startsWith("../")) {
       throw new Error("Agent compiler emitted a file outside the runtime");
     }
+    if (!options.write) continue;
     await mkdir(dirname(output.path), { recursive: true });
     await writeFile(output.path, output.contents);
   }
@@ -3192,10 +3499,6 @@ the product or support surface presented to users.
     resolve(runtime, "package.json"),
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
   );
-  await writeFile(
-    resolve(runtime, "opencomputer-agent.js"),
-    agentApiRuntimeSource(),
-  );
   const sourceEntries = [resolve(root, "agent.ts")];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
@@ -3205,26 +3508,41 @@ the product or support surface presented to users.
       sourceEntries.push(resolve(sourceTools, entry.name));
     }
   }
-  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries);
+  // Two passes. The first discovers the module set and writes nothing; the
+  // declarations are read from it. The second emits the modules with the
+  // shim that carries what the manifest recorded, so a tool module whose
+  // evaluated metadata disagrees with the build fails at load instead of
+  // running as an ordinary tool.
+  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries, {
+    shim: agentApiRuntimeSource(),
+    write: false,
+  });
   const sourceModules = bundled.modules;
   const toolSources = sourceModules.filter(
     (candidate) =>
       bundled.entryPaths.has(candidate.path) &&
       candidate.path.startsWith("tools/"),
   );
+  const sourceResolver = new MemorySourceResolver(sourceModules);
   const reactiveTools: string[] = [];
   const gatedTools: string[] = [];
   const toolModules: string[] = [];
+  const resultTools: Array<ResultToolManifest & { path: string }> = [];
   for (const candidate of toolSources) {
     // literalStringValue throws on a computed name, which is what used to be
     // caught by counting calls against extracted ids.
-    const defined = definedTools(candidate.source, candidate.path);
+    const defined = definedTools(candidate.source, candidate.path, sourceResolver);
     if (defined.length > 0) {
       reactiveTools.push(...defined.map((tool) => tool.id));
       gatedTools.push(
         ...defined.filter((tool) => tool.gated).map((tool) => tool.id),
       );
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
+      resultTools.push(
+        ...defined
+          .filter((tool) => tool.result)
+          .map((tool) => ({ id: tool.id, output: tool.output!, path: candidate.path })),
+      );
     }
   }
   const duplicateTool = reactiveTools.find(
@@ -3235,6 +3553,33 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
+  // One result per session, so one result tool per agent: a second one
+  // would leave the host with two schemas and no rule for which output
+  // becomes the session's result.
+  if (resultTools.length > 1) {
+    throw new Error(
+      `An agent may declare one result tool; found ${resultTools
+        .map((tool) => `${JSON.stringify(tool.id)} in ${tool.path}`)
+        .join(" and ")}`,
+    );
+  }
+  // A gated tool's run() is written by the platform and returns its sentence;
+  // there is no output of its own to commit as the session's result.
+  const gatedResultTool = resultTools.find((tool) => gatedTools.includes(tool.id));
+  if (gatedResultTool) {
+    throw new Error(
+      `${gatedResultTool.path} defineTool(${JSON.stringify(gatedResultTool.id)}) waits for approval and cannot be the result tool`,
+    );
+  }
+  const resultTool: ResultToolManifest | undefined = resultTools[0]
+    ? { id: resultTools[0].id, output: resultTools[0].output }
+    : undefined;
+  const shim = agentApiRuntimeSource({ resultTool: resultTool?.id ?? null });
+  await writeFile(resolve(runtime, "opencomputer-agent.js"), shim);
+  await bundleAgentSourceModules(root, runtime, sourceEntries, {
+    shim,
+    write: true,
+  });
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
@@ -3282,11 +3627,10 @@ the product or support surface presented to users.
       `MCP server id ${JSON.stringify(duplicateMcpServer.id)} is defined more than once`,
     );
   }
-  const memoryResolver = new MemorySourceResolver(sourceModules);
   const memory = mergeMemoryDeclarations(
     sourceModules.map((module) => ({
       origin: module.path,
-      memory: definedMemory(memoryResolver, module.path, connectionBindings),
+      memory: definedMemory(sourceResolver, module.path, connectionBindings),
     })),
   );
   const declaredMemory = new Set(memory.map((declaration) => declaration.id));
@@ -3320,6 +3664,9 @@ the product or support surface presented to users.
         tools,
         gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
+        // The result tool and the schema the host validates its output
+        // against before committing it as the session's result.
+        ...(resultTool ? { resultTool } : {}),
         subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
         // reads one list, and a provider grant absent from it makes every

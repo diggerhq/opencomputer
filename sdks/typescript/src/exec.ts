@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 import { openWebSocket } from "./websocket.js";
 import { ShellImpl, type Shell, type ShellOpts } from "./shell.js";
 
@@ -141,7 +142,7 @@ export class Exec {
     if (opts.timeout != null) body.timeout = opts.timeout;
     if (opts.maxRunAfterDisconnect != null) body.maxRunAfterDisconnect = opts.maxRunAfterDisconnect;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
@@ -250,7 +251,7 @@ export class Exec {
   }
 
   async list(): Promise<ExecSessionInfo[]> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec`, {
       headers: this.headers,
     });
 
@@ -265,7 +266,7 @@ export class Exec {
     const body: Record<string, unknown> = {};
     if (signal != null) body.signal = signal;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/${sessionId}/kill`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/${sessionId}/kill`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
@@ -353,7 +354,7 @@ export class Exec {
     if (opts.cwd) body.cwd = opts.cwd;
     body.timeout = opts.timeout != null ? opts.timeout : 60;
 
-    let resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run-async`, {
+    let resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run-async`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
@@ -365,7 +366,7 @@ export class Exec {
     // "sandbox not found" 404s here too and re-404s below, surfacing the same
     // error.)
     if (resp.status === 404) {
-      resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
+      resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
         method: "POST",
         headers: this.headers,
         body: JSON.stringify(body),
@@ -427,7 +428,7 @@ export class Exec {
 
   /** Fetch the current result of an exec session (poll target for run()). */
   private async result(execId: string): Promise<ExecRunResult> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/${execId}/result`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/${execId}/result`, {
       headers: this.headers,
     });
 

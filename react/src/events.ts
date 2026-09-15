@@ -1,7 +1,10 @@
 // The durable session event log as the hook reads it, and the pure reduction
-// of that log into what a chat renders. No React and no network here: the
-// same function replays history and applies live events, so a reconnect that
-// resumes from a cursor produces the same messages as an uninterrupted stream.
+// of that log into what a chat renders: messages, and turns with their tool
+// activity and result. No React and no network here: the same function
+// replays history and applies live events, so a reconnect that resumes from
+// a cursor produces the same messages and turns as an uninterrupted stream.
+// Every id is derived from the log (turn ids, tool call ids), never minted,
+// which is what makes replay and live agree.
 
 /** One entry of `GET /sessions/<id>/events`. */
 export interface AgentEvent {
@@ -13,6 +16,9 @@ export interface AgentEvent {
   type: string;
   data: Record<string, unknown>;
 }
+
+/** A JSON value: what a turn payload, a tool input or output, and a result carry. */
+export type DataValue = string | number | boolean | null | DataValue[] | { [key: string]: DataValue };
 
 export interface AgentMessage {
   id: string;
@@ -42,13 +48,72 @@ export type TurnStatus =
   | "failed"
   | "cancelled";
 
+/**
+ * `running` until the call's own `tool.completed` or `tool.failed`, or until
+ * its turn ends: a terminal turn event settles every call still running with
+ * the turn's outcome, so a settled turn never shows a running call.
+ */
+export type ToolCallStatus = "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * One tool call of a turn, keyed on `callId`, reduced from the documented
+ * `tool.*` event fields: `tool`, `callId`, `title`, `input` and `output` as
+ * JSON values.
+ */
+export interface ToolCall {
+  callId: string;
+  tool: string;
+  title: string;
+  input?: DataValue;
+  /** The tool's output as the log carries it: a JSON value, never JSON text. */
+  output?: DataValue;
+  status: ToolCallStatus;
+}
+
+/** The public failure a `turn.failed` event carries. */
+export interface TurnFailure {
+  code: string;
+  message: string;
+}
+
+/** A turn as the log has recorded it so far. */
+export interface Turn {
+  id: string;
+  status: TurnStatus;
+  /** The user text the turn was admitted with; `""` until `message.received` is seen. */
+  input: string;
+  /** The turn's messages, in log order. */
+  messages: AgentMessage[];
+  /** Tool calls in the order they started. */
+  toolCalls: ToolCall[];
+  /**
+   * The decoded output of the result tool's latest committed call, from
+   * `tool.completed` with `data.result: true`; the same value the session's
+   * `result.data` holds. An ordinary tool's output never lands here.
+   */
+  result?: DataValue;
+  failure?: TurnFailure;
+}
+
+/** What the timeline keeps per turn; `Turn` adds the messages. */
+export interface TurnRecord {
+  id: string;
+  status: TurnStatus;
+  input: string;
+  toolCalls: ToolCall[];
+  result?: DataValue;
+  failure?: TurnFailure;
+  /** The `seq` of the first event that named the turn; orders the turns. */
+  seq: number;
+}
+
 export interface SessionTimeline {
   messages: AgentMessage[];
   memorySaves: MemorySave[];
   /** The highest `seq` applied so far. */
   cursor: number;
-  /** Every turn the log has recorded, by id, with its status as of the cursor. */
-  turns: Record<string, TurnStatus>;
+  /** Every turn the log has recorded, by id, as of the cursor. */
+  turns: Record<string, TurnRecord>;
   isRunning: boolean;
   ended: boolean;
 }
@@ -64,13 +129,27 @@ export function emptyTimeline(): SessionTimeline {
   };
 }
 
+/** Whether a turn status is terminal: completed, failed or cancelled. */
+export function isSettledStatus(status: string | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
 /** Whether the log has settled the turn: completed, failed or cancelled. */
 export function isSettledTurn(
   timeline: SessionTimeline,
   turnId: string,
 ): boolean {
-  const status = timeline.turns[turnId];
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return isSettledStatus(timeline.turns[turnId]?.status);
+}
+
+/** The turns of a timeline in log order, each with its messages. */
+export function turnsOf(timeline: SessionTimeline): Turn[] {
+  return Object.values(timeline.turns)
+    .sort((a, b) => a.seq - b.seq)
+    .map(({ seq: _seq, ...record }) => ({
+      ...record,
+      messages: timeline.messages.filter((message) => message.turnId === record.id),
+    }));
 }
 
 /** The id of the user message that starts a turn; `send` uses the same id, so the event upserts it. */
@@ -86,18 +165,22 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function data(value: unknown): DataValue | undefined {
+  return value === undefined ? undefined : (value as DataValue);
+}
+
 /** The save a `memory.saved` event reports; undefined for any other event. */
 export function memorySaveFromEvent(event: AgentEvent): MemorySave | undefined {
   if (event.type !== "memory.saved") return undefined;
-  const data = event.data ?? {};
+  const fields = event.data ?? {};
   return {
     seq: event.seq,
     ...(event.turnId ? { turnId: event.turnId } : {}),
     ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-    resource: text(data.resource),
-    documentId: text(data.documentId),
-    revision: text(data.revision),
-    bytes: typeof data.bytes === "number" ? data.bytes : 0,
+    resource: text(fields.resource),
+    documentId: text(fields.documentId),
+    revision: text(fields.revision),
+    bytes: typeof fields.bytes === "number" ? fields.bytes : 0,
   };
 }
 
@@ -112,6 +195,128 @@ function upsert(
   return next;
 }
 
+function upsertToolCall(calls: ToolCall[], call: ToolCall): ToolCall[] {
+  const index = calls.findIndex((candidate) => candidate.callId === call.callId);
+  if (index < 0) return [...calls, call];
+  const next = [...calls];
+  next[index] = { ...next[index], ...call };
+  return next;
+}
+
+function toolCallId(event: AgentEvent): string {
+  const callId = event.data?.callId;
+  return typeof callId === "string" && callId ? callId : `event:${String(event.seq)}`;
+}
+
+/**
+ * Settles every call still running when its turn ends. The log records a
+ * completion per call while the runtime is connected; a call that never got
+ * one ended with the turn, and the turn's outcome is the only honest word on
+ * it: completed with the turn, failed with it, or stopped by the interrupt.
+ */
+function settleToolCalls(calls: ToolCall[], status: Exclude<ToolCallStatus, "running">): ToolCall[] {
+  return calls.some((call) => call.status === "running")
+    ? calls.map((call) => (call.status === "running" ? { ...call, status } : call))
+    : calls;
+}
+
+/**
+ * Applies one event to the turn records: the turn it names is created on
+ * first sight and moved along its lifecycle; tool events attach to it. Pure,
+ * and shared by attach mode (through `applyEvent`) and create mode.
+ */
+export function applyTurnEvent(
+  turns: Record<string, TurnRecord>,
+  event: AgentEvent,
+): Record<string, TurnRecord> {
+  const turnId = event.turnId;
+  if (!turnId) return turns;
+  const fields = event.data ?? {};
+  const current: TurnRecord = turns[turnId] ?? {
+    id: turnId,
+    status: "queued",
+    input: "",
+    toolCalls: [],
+    seq: event.seq,
+  };
+  let next: TurnRecord;
+  switch (event.type) {
+    case "message.received":
+      next = { ...current, input: text(fields.input) };
+      break;
+    case "turn.queued":
+      next = { ...current, status: "queued" };
+      break;
+    case "turn.started":
+      next = { ...current, status: "running" };
+      break;
+    case "turn.completed":
+      next = { ...current, status: "completed", toolCalls: settleToolCalls(current.toolCalls, "completed") };
+      break;
+    case "turn.failed":
+      next = {
+        ...current,
+        status: "failed",
+        toolCalls: settleToolCalls(current.toolCalls, "failed"),
+        failure: { code: text(fields.code) || "agent_failed", message: text(fields.message) },
+      };
+      break;
+    case "turn.cancelled":
+      next = { ...current, status: "cancelled", toolCalls: settleToolCalls(current.toolCalls, "cancelled") };
+      break;
+    case "tool.started": {
+      const tool = text(fields.tool);
+      next = {
+        ...current,
+        toolCalls: upsertToolCall(current.toolCalls, {
+          callId: toolCallId(event),
+          tool,
+          title: text(fields.title) || tool,
+          ...(fields.input !== undefined ? { input: data(fields.input) } : {}),
+          status: "running",
+        }),
+      };
+      break;
+    }
+    case "tool.completed": {
+      const tool = text(fields.tool);
+      const callId = toolCallId(event);
+      const started = current.toolCalls.find((call) => call.callId === callId);
+      next = {
+        ...current,
+        toolCalls: upsertToolCall(current.toolCalls, {
+          callId,
+          tool: tool || started?.tool || "",
+          title: text(fields.title) || started?.title || tool,
+          ...(fields.output !== undefined ? { output: data(fields.output) } : {}),
+          status: "completed",
+        }),
+        ...(fields.result === true ? { result: data(fields.output) ?? null } : {}),
+      };
+      break;
+    }
+    case "tool.failed": {
+      const tool = text(fields.tool);
+      const callId = toolCallId(event);
+      const started = current.toolCalls.find((call) => call.callId === callId);
+      next = {
+        ...current,
+        toolCalls: upsertToolCall(current.toolCalls, {
+          callId,
+          tool: tool || started?.tool || "",
+          title: text(fields.title) || started?.title || tool,
+          status: "failed",
+        }),
+      };
+      break;
+    }
+    default:
+      if (turns[turnId]) return turns;
+      next = current;
+  }
+  return { ...turns, [turnId]: next };
+}
+
 /**
  * Applies one event. Events at or below the cursor are ignored, so a page
  * that overlaps an earlier one is harmless.
@@ -121,26 +326,24 @@ export function applyEvent(
   event: AgentEvent,
 ): SessionTimeline {
   if (event.seq <= timeline.cursor) return timeline;
-  const next: SessionTimeline = { ...timeline, cursor: event.seq };
-  const data = event.data ?? {};
+  const next: SessionTimeline = {
+    ...timeline,
+    cursor: event.seq,
+    turns: applyTurnEvent(timeline.turns, event),
+  };
+  const fields = event.data ?? {};
   switch (event.type) {
     case "message.received": {
       next.messages = upsert(timeline.messages, {
         id: event.turnId ? inputMessageId(event.turnId) : `event:${String(event.seq)}`,
         role: "user",
-        text: text(data.input),
+        text: text(fields.input),
         ...(event.turnId ? { turnId: event.turnId } : {}),
       });
-      if (event.turnId && !timeline.turns[event.turnId]) {
-        next.turns = { ...timeline.turns, [event.turnId]: "queued" };
-      }
       return next;
     }
     case "turn.started":
       next.isRunning = true;
-      if (event.turnId) {
-        next.turns = { ...timeline.turns, [event.turnId]: "running" };
-      }
       return next;
     case "message.delta": {
       const id = replyMessageId(event);
@@ -148,7 +351,7 @@ export function applyEvent(
       next.messages = upsert(timeline.messages, {
         id,
         role: "assistant",
-        text: (existing?.text ?? "") + text(data.text),
+        text: (existing?.text ?? "") + text(fields.text),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         streaming: true,
       });
@@ -158,7 +361,7 @@ export function applyEvent(
       next.messages = upsert(timeline.messages, {
         id: replyMessageId(event),
         role: "assistant",
-        text: text(data.text),
+        text: text(fields.text),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         streaming: false,
       });
@@ -168,17 +371,6 @@ export function applyEvent(
     case "turn.failed":
     case "turn.cancelled":
       next.isRunning = false;
-      if (event.turnId) {
-        next.turns = {
-          ...timeline.turns,
-          [event.turnId]:
-            event.type === "turn.completed"
-              ? "completed"
-              : event.type === "turn.failed"
-                ? "failed"
-                : "cancelled",
-        };
-      }
       next.messages = timeline.messages.map((message) =>
         message.streaming && message.turnId === event.turnId
           ? { ...message, streaming: false }
@@ -219,7 +411,7 @@ export function failureMessage(event: AgentEvent): string | undefined {
   ) {
     return undefined;
   }
-  const data = event.data ?? {};
-  const message = text(data.message) || text(data.reason);
+  const fields = event.data ?? {};
+  const message = text(fields.message) || text(fields.reason);
   return message || `${event.type.replace(".", " ")}`;
 }

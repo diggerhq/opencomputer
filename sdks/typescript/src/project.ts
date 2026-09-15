@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 function resolveApiUrl(url: string): string {
   const base = url.replace(/\/+$/, "");
   return base.endsWith("/api") ? base : `${base}/api`;
@@ -53,7 +54,7 @@ export class SecretStore {
     const body: Record<string, unknown> = { name: opts.name };
     if (opts.egressAllowlist) body.egressAllowlist = opts.egressAllowlist;
 
-    const resp = await fetch(`${apiUrl}/secret-stores`, {
+    const resp = await apiFetch(`${apiUrl}/secret-stores`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -70,7 +71,7 @@ export class SecretStore {
   static async list(opts: SecretStoreOpts = {}): Promise<SecretStoreInfo[]> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/secret-stores`, { headers });
+    const resp = await apiFetch(`${apiUrl}/secret-stores`, { headers });
 
     if (!resp.ok) {
       throw new Error(`Failed to list secret stores: ${resp.status}`);
@@ -82,7 +83,7 @@ export class SecretStore {
   static async get(storeId: string, opts: SecretStoreOpts = {}): Promise<SecretStoreInfo> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, { headers });
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}`, { headers });
 
     if (!resp.ok) {
       throw new Error(`Failed to get secret store: ${resp.status}`);
@@ -98,7 +99,7 @@ export class SecretStore {
     if (opts.name) body.name = opts.name;
     if (opts.egressAllowlist) body.egressAllowlist = opts.egressAllowlist;
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, {
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body),
@@ -115,7 +116,7 @@ export class SecretStore {
   static async delete(storeId: string, opts: SecretStoreOpts = {}): Promise<void> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, {
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}`, {
       method: "DELETE",
       headers,
     });
@@ -133,7 +134,7 @@ export class SecretStore {
     const body: Record<string, unknown> = { value };
     if (opts.allowedHosts) body.allowedHosts = opts.allowedHosts;
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body),
@@ -148,7 +149,7 @@ export class SecretStore {
   static async deleteSecret(storeId: string, name: string, opts: SecretStoreOpts = {}): Promise<void> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
       method: "DELETE",
       headers,
     });
@@ -161,7 +162,7 @@ export class SecretStore {
   static async listSecrets(storeId: string, opts: SecretStoreOpts = {}): Promise<SecretEntryInfo[]> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets`, { headers });
+    const resp = await apiFetch(`${apiUrl}/secret-stores/${storeId}/secrets`, { headers });
 
     if (!resp.ok) {
       throw new Error(`Failed to list secrets: ${resp.status}`);
