@@ -39,6 +39,17 @@ The supported permissions are `actions`, `checks`, `contents`, `issues`,
 `metadata`, and `pull_requests`. `metadata` is read-only. Request only what the
 agent needs.
 
+`useConnection(github)` activates the declared connection for the agent. At
+session startup, OpenComputer sends the declaration's exact `permissions`
+object when it asks GitHub to mint the installation token. GitHub does not let
+that token exceed the permissions granted to the App installation.
+
+Effective authority is therefore the intersection of:
+
+- the managed OpenComputer GitHub App's permission ceiling;
+- the permissions declared in `githubApp({ permissions })`; and
+- the repositories selected in the attached GitHub installation.
+
 ## Install the App
 
 Deploy the agent, open its project in the OpenComputer dashboard, and choose
@@ -57,7 +68,8 @@ production environments.
 
 ## Use Git and the API
 
-Inside the agent sandbox, ordinary GitHub tooling works directly:
+Inside the agent sandbox, ordinary GitHub tooling works directly. `gh` reads
+the injected `GH_TOKEN` automatically:
 
 ```bash
 git clone https://github.com/acme/service.git
@@ -70,6 +82,32 @@ gh api repos/acme/service/pulls
 OpenComputer mints a GitHub installation token whose permissions are limited
 to those declared by the deployed agent. GitHub installation tokens expire
 after about one hour.
+
+### Understand GitHub permission responses
+
+Installation tokens do not have OAuth scopes. That does not mean they are
+unscoped. Their authority comes from the permissions included when the token is
+minted and the repositories granted to the installation.
+
+`X-Accepted-GitHub-Permissions` describes the permissions an API **endpoint
+accepts or requires**. It does not describe the permissions granted to the
+token. In particular, `allows_permissionless_access=true` means that endpoint
+does not require a specific GitHub App permission; it does not mean the token
+has unrestricted or “permissionless” repository access. Likewise, a
+`permissions` object in an ordinary repository response is not an installation
+token introspection result.
+
+Use installation endpoints with an installation token. For example,
+`GET /installation/repositories` lists the repositories available to the
+installation. User endpoints such as `GET /user/repos` require a user token, so
+a `403` from those endpoints is expected and says nothing about whether the
+declared installation permissions were applied.
+
+See GitHub's documentation for
+[generating an installation access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation#generating-an-installation-access-token),
+[troubleshooting required permissions](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#resource-not-accessible),
+and
+[listing repositories accessible to an installation](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation).
 
 <Warning>
   The short-lived token is available inside the eligible agent's sandbox as
