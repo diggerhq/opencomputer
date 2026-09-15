@@ -36,6 +36,10 @@ import {
   refreshManagedAgentConnection,
   type ManagedAgentConnection,
 } from './api'
+import {
+  navigateAuthorizationWindow,
+  openAuthorizationWindow,
+} from './authorization-window'
 
 function displayResourceName(value: string) {
   return value
@@ -118,6 +122,8 @@ export default function ManagedAgentConnections() {
   const [addConnectionOpen, setAddConnectionOpen] = useState(false)
   const [addConnectionError, setAddConnectionError] = useState<string>()
   const [addingGitHubConnection, setAddingGitHubConnection] = useState(false)
+  const [syncingGitHubConnections, setSyncingGitHubConnections] =
+    useState(false)
   const [githubConnectionError, setGithubConnectionError] = useState<string>()
   const [removeConnectionError, setRemoveConnectionError] = useState<string>()
   const [connectionToRemove, setConnectionToRemove] =
@@ -259,34 +265,92 @@ export default function ManagedAgentConnections() {
               </PanelDescription>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={addingGitHubConnection}
-            onClick={() => {
-              setGithubConnectionError(undefined)
-              setAddingGitHubConnection(true)
-              void addManagedGitHubConnection('install')
-                .then((authorizationUrl) =>
-                  window.location.assign(authorizationUrl),
-                )
-                .catch((error: unknown) => {
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={addingGitHubConnection || syncingGitHubConnections}
+              onClick={() => {
+                setGithubConnectionError(undefined)
+                let authorizationWindow: Window
+                try {
+                  authorizationWindow = openAuthorizationWindow()
+                } catch (error) {
+                  setGithubConnectionError(
+                    error instanceof Error
+                      ? error.message
+                      : 'GitHub sync could not be started.',
+                  )
+                  return
+                }
+                setSyncingGitHubConnections(true)
+                void addManagedGitHubConnection('existing')
+                  .then((authorizationUrl) =>
+                    navigateAuthorizationWindow(
+                      authorizationWindow,
+                      authorizationUrl,
+                    ),
+                  )
+                  .catch((error: unknown) => {
+                    authorizationWindow.close()
+                    setGithubConnectionError(
+                      error instanceof Error
+                        ? error.message
+                        : 'GitHub sync could not be started.',
+                    )
+                  })
+                  .finally(() => setSyncingGitHubConnections(false))
+              }}
+            >
+              {syncingGitHubConnections ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : null}
+              Sync installations
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={addingGitHubConnection || syncingGitHubConnections}
+              onClick={() => {
+                setGithubConnectionError(undefined)
+                let authorizationWindow: Window
+                try {
+                  authorizationWindow = openAuthorizationWindow()
+                } catch (error) {
                   setGithubConnectionError(
                     error instanceof Error
                       ? error.message
                       : 'GitHub setup could not be started.',
                   )
-                })
-                .finally(() => setAddingGitHubConnection(false))
-            }}
-          >
-            {addingGitHubConnection ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-            ) : (
-              <Plus className="size-4" aria-hidden />
-            )}
-            Add organization
-          </Button>
+                  return
+                }
+                setAddingGitHubConnection(true)
+                void addManagedGitHubConnection('install')
+                  .then((authorizationUrl) =>
+                    navigateAuthorizationWindow(
+                      authorizationWindow,
+                      authorizationUrl,
+                    ),
+                  )
+                  .catch((error: unknown) => {
+                    authorizationWindow.close()
+                    setGithubConnectionError(
+                      error instanceof Error
+                        ? error.message
+                        : 'GitHub setup could not be started.',
+                    )
+                  })
+                  .finally(() => setAddingGitHubConnection(false))
+              }}
+            >
+              {addingGitHubConnection ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Plus className="size-4" aria-hidden />
+              )}
+              Add organization
+            </Button>
+          </div>
         </PanelHeader>
         <PanelContent>
           {githubConnections.isLoading ? (
@@ -457,17 +521,34 @@ export default function ManagedAgentConnections() {
               if (!alias || connectionRequestState === 'connecting') return
               setAddConnectionError(undefined)
               setConnectionRequestState('connecting')
+              let authorizationWindow: Window
+              try {
+                authorizationWindow = openAuthorizationWindow()
+              } catch (error) {
+                setConnectionRequestState('failed')
+                setAddConnectionError(
+                  error instanceof Error
+                    ? error.message
+                    : 'The connection could not be started.',
+                )
+                return
+              }
               void linkManagedAgentConnection(newService, alias)
                 .then((result) => {
                   if (result.authorizationUrl) {
-                    window.location.assign(result.authorizationUrl)
+                    navigateAuthorizationWindow(
+                      authorizationWindow,
+                      result.authorizationUrl,
+                    )
                     return
                   }
+                  authorizationWindow.close()
                   setConnectionRequestState('connected')
                   setAddConnectionOpen(false)
                   void connections.refetch()
                 })
                 .catch((error: unknown) => {
+                  authorizationWindow.close()
                   setConnectionRequestState('failed')
                   setAddConnectionError(
                     error instanceof Error

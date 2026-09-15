@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, Loader2, Unplug } from 'lucide-react'
-import { Link } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { GithubMark } from '@/components/github-mark'
 import {
@@ -15,10 +14,12 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  addManagedGitHubConnection,
   attachManagedGitHub,
   disconnectManagedGitHub,
   getManagedGitHubStatus,
 } from './api'
+import { launchAuthorizationWindow } from './authorization-window'
 
 export function ManagedProjectGitHub({
   projectId,
@@ -29,6 +30,7 @@ export function ManagedProjectGitHub({
 }) {
   const queryClient = useQueryClient()
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
+  const [addingConnection, setAddingConnection] = useState(false)
   const queryKey = ['managed-github', projectId]
   const status = useQuery({
     queryKey,
@@ -166,11 +168,28 @@ export function ManagedProjectGitHub({
                   </Button>
                 </div>
               ) : (
-                <Button asChild>
-                  <Link to="/managed-agents/connections?service=github">
+                <Button
+                  disabled={addingConnection}
+                  onClick={() => {
+                    setAddingConnection(true)
+                    void launchAuthorizationWindow(() =>
+                      addManagedGitHubConnection('install'),
+                    )
+                      .catch((error: unknown) =>
+                        notifyError(
+                          "Couldn't start the GitHub installation.",
+                          error,
+                        ),
+                      )
+                      .finally(() => setAddingConnection(false))
+                  }}
+                >
+                  {addingConnection ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
                     <GithubMark className="size-4" />
-                    Add GitHub connection
-                  </Link>
+                  )}
+                  Add GitHub connection
                 </Button>
               )}
             </div>
