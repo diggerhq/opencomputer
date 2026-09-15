@@ -1944,6 +1944,167 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("forwards a turn payload unchanged and passes admission conflicts through", async () => {
+    const payload = {
+      taskId: "01J9Z6QX4M5N7P8R9S0T1V2W3X",
+      repo: "acme/widgets",
+      ref: "main",
+      actor: { login: "octocat", id: 583231 },
+      note: "  keep  this  spacing  ",
+      empty: null,
+    };
+    const body = {
+      input: "Fix the flaky test.",
+      idempotencyKey: "01J9Z6QX4M5N7P8R9S0T1V2W3X/start",
+      payload,
+    };
+    const fetchSpy = vi.fn(async () =>
+      Response.json(
+        { turnId: "turn-3", status: "queued", duplicate: false },
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(202);
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    // Byte for byte: the backend fingerprints this body, so the proxy must
+    // neither drop fields nor reserialize them.
+    expect(await new Response(init.body).text()).toBe(JSON.stringify(body));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "idempotency_conflict",
+              message: "idempotencyKey was already used with different input, payload, or mode",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const conflict = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, input: "Something else" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      error: { code: "idempotency_conflict" },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: { code: "invalid_payload", message: "payload cannot exceed 32 KB of JSON" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    const oversize = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, payload: "x".repeat(40_000) }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(oversize.status).toBe(400);
+    expect(await oversize.json()).toMatchObject({
+      error: { code: "invalid_payload" },
+    });
+  });
+
+  it("keeps the payload on public message.received events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event-1",
+              seq: 1,
+              timestamp: "2026-09-15T00:00:00.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "message.received",
+              data: {
+                input: "Fix the flaky test.",
+                mode: "queue",
+                payload: { repo: "acme/widgets", ref: "main" },
+                accountId: "acct_private",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      events: [
+        expect.objectContaining({
+          type: "message.received",
+          data: {
+            input: "Fix the flaky test.",
+            mode: "queue",
+            payload: { repo: "acme/widgets", ref: "main" },
+          },
+        }),
+      ],
+    });
+  });
+
   it("interrupts a session's running turn and returns the sanitized snapshot", async () => {
     const fetchSpy = vi.fn(async () =>
       Response.json({

@@ -137,25 +137,60 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-
   -d '{
     "input": "Plan the workshop.",
     "idempotencyKey": "message-42",
-    "mode": "queue"
+    "mode": "queue",
+    "payload": { "workshopId": "ws_812", "audience": "backend" }
   }'
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `input` | The user text for this turn. Required, not empty. |
-| `idempotencyKey` | Optional. The same key returns the existing turn; without one every request starts a turn. |
+| `idempotencyKey` | Optional. Identifies this request: a repeat returns the existing turn, a different request under the same key is refused (below). Without one every request starts a turn. |
 | `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: cancel running turns and run next. |
+| `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
 
 The response is `202 { turnId, status, duplicate }` for a new turn and
 `200` with `duplicate: true` when the key had already created one. `status`
 is `queued` or `running`. Follow the turn in the event log; the response
 does not wait for it.
 
-Codes: `400 invalid_turn`, `402 insufficient_credits`,
+The key identifies the request, not only the call. A repeat with the same
+`input`, `payload` and `mode` is the existing turn: key order inside the
+payload does not matter, an omitted `mode` means `queue`, and whitespace in
+the text counts. The same key with anything else is `409
+idempotency_conflict` and admits nothing. A retry after a lost reply is
+therefore safe with the same body, and a different request never lands on
+another request's key.
+
+Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KB),
+`402 insufficient_credits`, `409 idempotency_conflict`,
 `409 memory_admission_pending` (retry the session creation with its key
 first), `409 memory_admission_rejected` (the session is ended; create a new
 one).
+
+### Start work from an application
+
+An application that turns a form submission into agent work makes two calls,
+each with its own key, and keeps what it sent until the second one is
+acknowledged:
+
+1. Resolve the deployment once, where the submission is composed (for
+   example when the form opens), and pin it: `POST /sessions` with
+   `Idempotency-Key: <submission-id>`, the `deploymentId` and `environment`.
+   A retry then carries the deployment the submission was composed against,
+   even if the alias has moved since.
+2. `POST /sessions/<id>/turns` with `idempotencyKey: <submission-id>/start`,
+   the text and the `payload`.
+
+Keep the submission (its id, the pinned deployment, the text and the
+payload) until the turns call answers, with `duplicate: false` or `true`.
+A lost reply at either step is retried with the same body and the same key:
+the first step returns the same session, the second the same turn. A
+session that exists without a turn is work that was never admitted; only the
+holder of the submission can retry it. A `409 idempotency_conflict` from
+either call means a different request already used that id; show it, keep
+the draft, and do not append the submission to a session it did not create.
+Each later message is its own submission with its own key.
 
 ## Events
 

@@ -51,7 +51,7 @@ unknown type as informational and keep reading.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt` |
+| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt`; `payload`: the structured value the turn was sent with, when there was one |
 | `turn.queued` | The turn waits for earlier turns | `mode` |
 | `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
 | `turn.interrupted` | This turn cancelled the turns that were running | `interruptedTurnIds` |

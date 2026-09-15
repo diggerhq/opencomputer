@@ -19,7 +19,11 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
-import { turnAssistantText, turnFailureReason } from './session-history'
+import {
+  turnAssistantText,
+  turnFailureReason,
+  turnPayload,
+} from './session-history'
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
@@ -222,6 +226,7 @@ export default function ManagedSessionDetail() {
                   turn.status === 'failed'
                     ? turnFailureReason(events.data ?? [], turn.id)
                     : undefined
+                const payload = turnPayload(events.data ?? [], turn.id)
                 const running = !['completed', 'failed'].includes(turn.status)
                 return (
                   <div key={turn.id} className="space-y-6">
@@ -232,6 +237,16 @@ export default function ManagedSessionDetail() {
                       <p className="bg-muted ml-auto max-w-2xl rounded-xl rounded-br-sm px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap">
                         {turn.input}
                       </p>
+                      {payload !== undefined ? (
+                        <details className="ml-auto mt-2 max-w-2xl">
+                          <summary className="text-muted-foreground cursor-pointer text-xs">
+                            Payload
+                          </summary>
+                          <pre className="bg-muted mt-1.5 overflow-x-auto rounded-xl px-3.5 py-2.5 font-mono text-xs leading-5">
+                            {JSON.stringify(payload, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
                     </div>
                     <div className="max-w-3xl">
                       <p className="text-muted-foreground mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold tracking-wider uppercase">

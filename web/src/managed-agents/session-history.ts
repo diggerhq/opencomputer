@@ -55,3 +55,16 @@ export function turnFailureReason(events: ManagedAgentEvent[], turnId: string) {
   }
   return undefined
 }
+
+/**
+ * The structured value a turn was sent with, as its `message.received` event
+ * recorded it at admission; undefined when the turn carried only text.
+ */
+export function turnPayload(events: ManagedAgentEvent[], turnId: string) {
+  for (const event of events) {
+    if (event.turnId === turnId && event.type === 'message.received') {
+      return event.data.payload
+    }
+  }
+  return undefined
+}

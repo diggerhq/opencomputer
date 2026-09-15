@@ -10,6 +10,7 @@ import {
   sessionsForEnvironment,
   turnAssistantText,
   turnFailureReason,
+  turnPayload,
 } from './session-history'
 
 function deployment(
@@ -156,5 +157,37 @@ describe('turnFailureReason', () => {
       'The agent could not complete this request.',
     )
     expect(turnFailureReason(events, 'turn-3')).toBeUndefined()
+  })
+})
+
+describe('turnPayload', () => {
+  it('reads the payload the turn was admitted with and nothing for a text-only turn', () => {
+    const payload = { repo: 'acme/widgets', ref: 'main', actor: { id: 583231 } }
+    const events: ManagedAgentEvent[] = [
+      {
+        id: 'e1',
+        seq: 1,
+        turnId: 'turn-1',
+        type: 'message.received',
+        data: { input: 'Fix the flaky test.', mode: 'queue', payload },
+      },
+      {
+        id: 'e2',
+        seq: 2,
+        turnId: 'turn-2',
+        type: 'message.received',
+        data: { input: 'Follow up', mode: 'queue' },
+      },
+      {
+        id: 'e3',
+        seq: 3,
+        turnId: 'turn-1',
+        type: 'message.completed',
+        data: { text: 'Done', payload: 'not an admission' },
+      },
+    ]
+    expect(turnPayload(events, 'turn-1')).toEqual(payload)
+    expect(turnPayload(events, 'turn-2')).toBeUndefined()
+    expect(turnPayload(events, 'turn-3')).toBeUndefined()
   })
 })
