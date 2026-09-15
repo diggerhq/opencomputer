@@ -1,26 +1,38 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyEvents,
+  applyTurnEvent,
   emptyTimeline,
   failureMessage,
   inputMessageId,
   isSettledTurn,
   memorySaveFromEvent,
+  turnsOf,
   type AgentEvent,
   type AgentMessage,
+  type DataValue,
   type MemorySave,
   type SessionTimeline,
+  type Turn,
 } from "./events.js";
 
 export {
   applyEvent,
   applyEvents,
+  applyTurnEvent,
   emptyTimeline,
   isSettledTurn,
+  turnsOf,
   type AgentEvent,
   type AgentMessage,
+  type DataValue,
   type MemorySave,
   type SessionTimeline,
+  type ToolCall,
+  type ToolCallStatus,
+  type Turn,
+  type TurnFailure,
+  type TurnRecord,
   type TurnStatus,
 } from "./events.js";
 
@@ -70,6 +82,19 @@ export interface SendReceipt {
   status: "queued" | "running";
 }
 
+/** The options of one `send`. */
+export interface SendOptions {
+  /**
+   * The turn's idempotency key. Generate one per submission and keep it for
+   * that submission's retries: the same key returns the same turn, so a
+   * retried send after a lost reply admits nothing twice. Without one the
+   * hook generates a key for the request, and a retry is a new turn.
+   */
+  idempotencyKey?: string;
+  /** Structured input the agent reads as `useInput().payload`, beside the text. */
+  payload?: DataValue;
+}
+
 /**
  * What `send` rejects with. `code` is the platform's error code when the
  * request was answered (`session_ended`, `memory_admission_unconfirmed`,
@@ -92,12 +117,17 @@ export class SendError extends Error {
 export interface UseAgentResult {
   messages: AgentMessage[];
   /**
+   * The session's turns in log order, each with its status, input, messages,
+   * tool calls, result and failure, reduced from the same log as `messages`.
+   */
+  turns: Turn[];
+  /**
    * Starts a turn. Resolves with the admission receipt; rejects with a
    * `SendError` when no turn was admitted, so a draft can be kept. In create
    * mode the first call creates the session and the promise settles when the
    * turn ends.
    */
-  send: (value: string) => Promise<SendReceipt>;
+  send: (value: string, options?: SendOptions) => Promise<SendReceipt>;
   /** Interrupts the running turn. */
   stop: () => Promise<void>;
   sessionId: string | undefined;
@@ -302,14 +332,21 @@ export function useAgent(
   }, [attachedSessionId, after, basePath, commit, ingest, request]);
 
   const admitTurn = useCallback(
-    async (activeSession: string, prompt: string): Promise<SendReceipt> => {
+    async (
+      activeSession: string,
+      prompt: string,
+      sendOptions: SendOptions,
+    ): Promise<SendReceipt> => {
       const admission = await request<TurnAdmission>(
         `/sessions/${encodeURIComponent(activeSession)}/turns`,
         {
           method: "POST",
           body: JSON.stringify({
             input: prompt,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: sendOptions.idempotencyKey ?? crypto.randomUUID(),
+            ...(sendOptions.payload !== undefined
+              ? { payload: sendOptions.payload }
+              : {}),
           }),
         },
       );
@@ -323,7 +360,11 @@ export function useAgent(
   );
 
   const sendAttached = useCallback(
-    async (activeSession: string, prompt: string): Promise<SendReceipt> => {
+    async (
+      activeSession: string,
+      prompt: string,
+      sendOptions: SendOptions,
+    ): Promise<SendReceipt> => {
       // The target is fixed here. Whatever the hook is attached to when the
       // response arrives, this response belongs to that session and that
       // attachment only; if they have changed, the caller still gets the
@@ -334,7 +375,7 @@ export function useAgent(
         attachmentRef.current === attachment;
       setError(undefined);
       try {
-        const receipt = await admitTurn(activeSession, prompt);
+        const receipt = await admitTurn(activeSession, prompt, sendOptions);
         if (current()) {
           // The log's message.received for this turn carries the same id,
           // so it confirms this message instead of duplicating it. Whether
@@ -368,7 +409,7 @@ export function useAgent(
   );
 
   const sendCreated = useCallback(
-    async (prompt: string): Promise<SendReceipt> => {
+    async (prompt: string, sendOptions: SendOptions): Promise<SendReceipt> => {
       if (timelineRef.current.isRunning) {
         throw new SendError("A turn is already running.", "busy");
       }
@@ -429,10 +470,14 @@ export function useAgent(
             for (const event of result.events) {
               cursorRef.current = Math.max(cursorRef.current, event.seq);
               optionsRef.current.onEvent?.(event);
+              // Turn activity is reduced from the log here as in attach mode;
+              // the messages are streamed into the two local placeholders.
+              const current = timelineRef.current;
+              commit({ ...current, turns: applyTurnEvent(current.turns, event) });
               if (event.type === "message.delta") {
                 streamed += String(event.data.text ?? "");
-                updateMessages((current) =>
-                  current.map((message) =>
+                updateMessages((messages) =>
+                  messages.map((message) =>
                     message.id === assistantId
                       ? { ...message, text: streamed }
                       : message,
@@ -440,18 +485,18 @@ export function useAgent(
                 );
               } else if (event.type === "message.completed" && !streamed) {
                 const text = String(event.data.text ?? "");
-                updateMessages((current) =>
-                  current.map((message) =>
+                updateMessages((messages) =>
+                  messages.map((message) =>
                     message.id === assistantId ? { ...message, text } : message,
                   ),
                 );
               } else {
                 const save = memorySaveFromEvent(event);
                 if (save) {
-                  const current = timelineRef.current;
+                  const latest = timelineRef.current;
                   commit({
-                    ...current,
-                    memorySaves: [...current.memorySaves, save],
+                    ...latest,
+                    memorySaves: [...latest.memorySaves, save],
                   });
                   optionsRef.current.onMemorySaved?.(save);
                 }
@@ -465,7 +510,17 @@ export function useAgent(
           }
         };
         await waitFor((event) => event.type === "runtime.connected");
-        receipt = await admitTurn(activeSession, prompt);
+        receipt = await admitTurn(activeSession, prompt, sendOptions);
+        // The placeholders belong to the admitted turn from here on, so the
+        // turn's messages are its own.
+        const { turnId } = receipt;
+        updateMessages((messages) =>
+          messages.map((message) =>
+            message.id === userMessage.id || message.id === assistantId
+              ? { ...message, turnId }
+              : message,
+          ),
+        );
         const completed = await waitFor(
           (event) =>
             event.type === "turn.completed" ||
@@ -517,12 +572,12 @@ export function useAgent(
   );
 
   const send = useCallback(
-    async (value: string): Promise<SendReceipt> => {
+    async (value: string, sendOptions: SendOptions = {}): Promise<SendReceipt> => {
       const prompt = value.trim();
       if (!prompt) throw new SendError("Nothing to send.", "empty_input");
       return attachedSessionId
-        ? sendAttached(attachedSessionId, prompt)
-        : sendCreated(prompt);
+        ? sendAttached(attachedSessionId, prompt, sendOptions)
+        : sendCreated(prompt, sendOptions);
     },
     [attachedSessionId, sendAttached, sendCreated],
   );
@@ -540,8 +595,11 @@ export function useAgent(
     }
   }, [request]);
 
+  const turns = useMemo(() => turnsOf(timeline), [timeline]);
+
   return {
     messages: timeline.messages,
+    turns,
     send,
     stop,
     sessionId,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ConflictError, NotFoundError } from "./errors.js";
-import { sessionIdempotencyKey, startSessionOnDocument } from "./memory-sessions.js";
+import { OpenComputer, startSessionOnDocument } from "./client.js";
+import { OpenComputerError } from "./errors.js";
+import { sessionIdempotencyKey } from "./start-on-document.js";
 
 interface Call { method: string; url: string; headers: Record<string, string>; body?: Record<string, unknown> }
 
@@ -46,14 +47,16 @@ function fakeApi(state: { document: "absent" | "present" | "deleted"; sessions?:
 }
 
 const params = {
-  apiKey: "osb_test", projectId: "prj_1", environment: "development" as const, agent: "openmuse-dev--topic-worker",
+  projectId: "prj_1", environment: "development" as const, agent: "openmuse-dev--topic-worker",
   resource: "topics", documentId: "workshop", document: { title: "Workshop" }, idempotencyKey: "topic/workshop/1",
 };
 
-describe("startSessionOnDocument", () => {
+const client = (fetch: typeof globalThis.fetch) => new OpenComputer({ apiKey: "osb_test", fetch });
+
+describe("sessions.startOnDocument", () => {
   it("creates the document, then the session bound to it, under derived keys", async () => {
     const api = fakeApi({ document: "absent" });
-    const result = await startSessionOnDocument({ ...params, fetch: api.fetch });
+    const result = await client(api.fetch).sessions.startOnDocument(params);
 
     expect(result).toEqual({
       document: { id: "workshop", created: true, revision: "r1", title: "Workshop" },
@@ -77,8 +80,9 @@ describe("startSessionOnDocument", () => {
 
   it("converges on a retry: the document and the session both already exist", async () => {
     const api = fakeApi({ document: "absent" });
-    await startSessionOnDocument({ ...params, fetch: api.fetch });
-    const retry = await startSessionOnDocument({ ...params, fetch: api.fetch });
+    const oc = client(api.fetch);
+    await oc.sessions.startOnDocument(params);
+    const retry = await oc.sessions.startOnDocument(params);
 
     expect(retry.document).toEqual({ id: "workshop", created: false, revision: "r7", title: "Workshop" });
     expect(retry.session).toMatchObject({ id: "ses-1", created: false });
@@ -92,9 +96,10 @@ describe("startSessionOnDocument", () => {
 
   it("keeps different keys apart and carries extra bindings, access and source", async () => {
     const api = fakeApi({ document: "present" });
-    const first = await startSessionOnDocument({ ...params, fetch: api.fetch, idempotencyKey: "a" });
-    const second = await startSessionOnDocument({
-      ...params, fetch: api.fetch, idempotencyKey: "b", access: "read", source: "openmuse",
+    const oc = client(api.fetch);
+    const first = await oc.sessions.startOnDocument({ ...params, idempotencyKey: "a" });
+    const second = await oc.sessions.startOnDocument({
+      ...params, idempotencyKey: "b", access: "read", source: "openmuse",
       memory: { profile: { scope: "document", id: "owner", access: "read" } },
     });
     expect(first.session.id).not.toBe(second.session.id);
@@ -113,13 +118,23 @@ describe("startSessionOnDocument", () => {
   it("reports a reused key with different bindings as a conflict", async () => {
     const sessions = new Map([[await sessionIdempotencyKey("topic/workshop/1"), "other-bindings"]]);
     const api = fakeApi({ document: "present", sessions });
-    await expect(startSessionOnDocument({ ...params, fetch: api.fetch })).rejects.toThrow(ConflictError);
-    await expect(startSessionOnDocument({ ...params, fetch: api.fetch })).rejects.toThrow(/different agent, deployment, environment or memory bindings/);
+    const failure = await client(api.fetch).sessions.startOnDocument(params).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(OpenComputerError);
+    expect(failure).toMatchObject({ status: 409, code: "idempotency_key_reused" });
+    expect((failure as Error).message).toMatch(/different agent, deployment, environment or memory bindings/);
   });
 
   it("refuses a deleted document id instead of creating a session that cannot bind it", async () => {
     const api = fakeApi({ document: "deleted" });
-    await expect(startSessionOnDocument({ ...params, fetch: api.fetch })).rejects.toThrow(NotFoundError);
+    const failure = await client(api.fetch).sessions.startOnDocument(params).catch((cause: unknown) => cause);
+    expect(failure).toMatchObject({ status: 404, code: "memory_document_deleted" });
     expect(api.calls.some((call) => call.url === "/api/managed-agents/sessions")).toBe(false);
+  });
+
+  it("is the same call as the standalone startSessionOnDocument", async () => {
+    const api = fakeApi({ document: "absent" });
+    const result = await startSessionOnDocument({ ...params, apiKey: "osb_test", fetch: api.fetch });
+    expect(result.session).toMatchObject({ id: "ses-1", created: true });
+    expect(api.calls[0].headers["x-api-key"]).toBe("osb_test");
   });
 });

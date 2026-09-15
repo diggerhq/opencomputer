@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 import { sdkVersionHeaders } from "./version.js";
 
 export interface TemplateInfo {
@@ -22,7 +23,7 @@ export class Templates {
   }
 
   async build(name: string, dockerfile: string): Promise<TemplateInfo> {
-    const resp = await fetch(`${this.apiUrl}/templates`, {
+    const resp = await apiFetch(`${this.apiUrl}/templates`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({ name, dockerfile }),
@@ -36,7 +37,7 @@ export class Templates {
   }
 
   async list(): Promise<TemplateInfo[]> {
-    const resp = await fetch(`${this.apiUrl}/templates`, {
+    const resp = await apiFetch(`${this.apiUrl}/templates`, {
       headers: this.headers,
     });
 
@@ -48,7 +49,7 @@ export class Templates {
   }
 
   async get(name: string): Promise<TemplateInfo> {
-    const resp = await fetch(`${this.apiUrl}/templates/${name}`, {
+    const resp = await apiFetch(`${this.apiUrl}/templates/${name}`, {
       headers: this.headers,
     });
 
@@ -60,7 +61,7 @@ export class Templates {
   }
 
   async delete(name: string): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/templates/${name}`, {
+    const resp = await apiFetch(`${this.apiUrl}/templates/${name}`, {
       method: "DELETE",
       headers: this.headers,
     });

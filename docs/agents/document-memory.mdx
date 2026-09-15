@@ -97,10 +97,10 @@ application still means "these notes, this session", so the SDK and the CLI
 do the two steps in order and make the pair converge on retry.
 
 ```ts
-import { startSessionOnDocument } from "@opencomputer/sdk";
+import { OpenComputer } from "@opencomputer/sdk/managed-agents";
 
-const { document, session } = await startSessionOnDocument({
-  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const { document, session } = await oc.sessions.startOnDocument({
   projectId: "<project-id>",
   environment: "development",
   agent: "<agent-id>",
@@ -117,8 +117,8 @@ const { document, session } = await startSessionOnDocument({
   fails before any session is created.
 - The session is created with an `Idempotency-Key` derived from
   `idempotencyKey`. The same key with the same agent, deployment, environment
-  and bindings returns the existing session; anything else under that key is
-  a conflict error naming the cause. `access` (default `read-write`),
+  and bindings returns the existing session; anything else under that key
+  fails with code `idempotency_key_reused`. `access` (default `read-write`),
   `memory` for further bindings and `source` are passed through.
 
 The CLI does the same for a Development session:
@@ -136,9 +136,9 @@ run the first turn at once, and `--json` for the ids.
 Over HTTP, send `PUT .../documents/<id>` with `If-None-Match: *`, treat `412`
 as "exists" (then `GET` it; `404` means the id was deleted), and `POST
 /api/managed-agents/sessions` with an `Idempotency-Key`; `201` created the
-session, `200` returned the one that key had already created. The helper's
-signature and errors are in the
-[TypeScript SDK reference](/reference/typescript-sdk#serverless-agents-helpers).
+session, `200` returned the one that key had already created. The call's
+parameters and errors are in the
+[Serverless Agents client reference](/reference/typescript-sdk/managed-agents#start-a-session-on-a-memory-document).
 
 ## Reading
 

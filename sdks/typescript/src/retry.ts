@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 // Transient-failure retry for SDK HTTP calls.
 //
 // One retry, short fixed delay, and a deliberately narrow predicate: network
@@ -17,17 +18,17 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * fetch() with a single retry on transient transport failures.
+ * apiFetch() with a single retry on transient transport failures.
  * Non-retryable responses (including 4xx) are returned as-is for the caller's
  * normal error handling.
  */
 export async function transientFetch(url: string, init?: RequestInit): Promise<Response> {
   try {
-    const resp = await fetch(url, init);
+    const resp = await apiFetch(url, init);
     if (!RETRY_STATUSES.has(resp.status)) return resp;
   } catch {
     // network-level failure — retry below
   }
   await sleep(RETRY_DELAY_MS);
-  return fetch(url, init);
+  return apiFetch(url, init);
 }

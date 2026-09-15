@@ -19,7 +19,9 @@ on the server; the [React integration](/agents/react) shows how a browser
 attaches through your own routes without seeing the key.
 
 Request and response bodies are JSON. Paths below are relative to the base
-URL; `<p>` is a project ID and `<r>` a memory resource ID.
+URL; `<p>` is a project ID and `<r>` a memory resource ID. The
+[TypeScript client](/reference/typescript-sdk/managed-agents) on
+`@opencomputer/sdk/managed-agents` mirrors these routes one to one.
 
 ## Errors
 
@@ -201,9 +203,9 @@ curl -X PUT 'https://app.opencomputer.dev/api/managed-agents/projects/<project-i
   -d '{ "title": "Workshop notes" }'
 ```
 
-`startSessionOnDocument` in the
-[TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers) does
-this create and the session create in one call.
+`oc.sessions.startOnDocument` on the
+[TypeScript client](/reference/typescript-sdk/managed-agents) does this
+create and the session create in one call.
 
 ## Webhooks
 

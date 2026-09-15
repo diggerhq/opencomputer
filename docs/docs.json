@@ -189,7 +189,8 @@
               "reference/typescript-sdk/pty",
               "reference/typescript-sdk/image",
               "reference/typescript-sdk/snapshots",
-              "reference/typescript-sdk/secrets"
+              "reference/typescript-sdk/secrets",
+              "reference/typescript-sdk/managed-agents"
             ]
           },
           {

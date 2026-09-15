@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 import { openWebSocket } from "./websocket.js";
 export interface SandboxAgentEvent {
   type:
@@ -83,7 +84,7 @@ export class SandboxAgent {
     if (opts.mcpServers) body.mcpServers = opts.mcpServers;
     if (opts.resume) body.resume = opts.resume;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/agent`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/agent`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
@@ -224,7 +225,7 @@ export class SandboxAgent {
         const body: Record<string, unknown> = {};
         if (signal != null) body.signal = signal;
 
-        const resp = await fetch(`${agent.apiUrl}/sandboxes/${agent.sandboxId}/agent/${sessionId}/kill`, {
+        const resp = await apiFetch(`${agent.apiUrl}/sandboxes/${agent.sandboxId}/agent/${sessionId}/kill`, {
           method: "POST",
           headers: agent.headers,
           body: JSON.stringify(body),
@@ -242,7 +243,7 @@ export class SandboxAgent {
   }
 
   async list(): Promise<Array<{ sessionID: string; sandboxID: string; running: boolean; startedAt: string }>> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/agent`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/agent`, {
       headers: this.headers,
     });
 

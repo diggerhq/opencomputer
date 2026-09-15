@@ -28,16 +28,17 @@ session id.
 
 Create the session where the API key lives. With memory, that is also where
 the bindings are chosen; the browser can neither see the key nor change what
-the session may read or write. `startSessionOnDocument` from
-`@opencomputer/sdk` creates the document if it does not exist yet, then the
-session bound to it, both converging under one idempotency key
+the session may read or write. `oc.sessions.startOnDocument` on the
+[management client](/reference/typescript-sdk/managed-agents) creates the
+document if it does not exist yet, then the session bound to it, both
+converging under one idempotency key
 ([details](/agents/document-memory#start-a-session-on-a-new-document)):
 
 ```ts
-import { startSessionOnDocument } from "@opencomputer/sdk";
+import { OpenComputer } from "@opencomputer/sdk/managed-agents";
 
-const { session } = await startSessionOnDocument({
-  apiKey: process.env.OPENCOMPUTER_API_KEY!,
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const { session } = await oc.sessions.startOnDocument({
   projectId: process.env.OPENCOMPUTER_PROJECT_ID!,
   environment: "development",
   agent: "<agent-id>",
@@ -49,9 +50,9 @@ const { session } = await startSessionOnDocument({
 // Store session.id with the workshop; the browser attaches to it.
 ```
 
-Without memory, `POST /api/managed-agents/sessions` with `x-api-key` and
-`{ "agentId": "<agent-id>@development" }` returns `{ session: { id } }`. Both
-are [management API](/agents/api#sessions) calls.
+Without memory, `oc.sessions.create({ agentId: "<agent-id>@development" })`
+returns `{ session: { id } }`. Both are [management API](/agents/api#sessions)
+calls.
 
 ### 2. Proxy three routes
 
@@ -61,7 +62,7 @@ to its `basePath`:
 | Route | Purpose |
 | --- | --- |
 | `GET /sessions/<id>/events?after=<seq>` | The durable event log from a cursor; history and live turns |
-| `POST /sessions/<id>/turns` | A new turn: `{ input, idempotencyKey }` |
+| `POST /sessions/<id>/turns` | A new turn: `{ input, idempotencyKey, payload? }` |
 | `POST /sessions/<id>/interrupt` | Stop the running turn |
 
 Expose them under your own authentication, check that the signed-in user may
@@ -93,10 +94,11 @@ export const GET = proxy;
 export const POST = proxy;
 ```
 
-The turn body carries an `idempotencyKey` the hook generates per send, so a
-retried request does not start a second turn. Forward request bodies and
-responses unchanged; the hook reads `{ events }`, `{ turnId }` and the error
-envelope `{ error: { message } }`.
+The turn body carries an `idempotencyKey`, the caller's when `send` was
+given one and otherwise one the hook generates for the request, so a retried
+request does not start a second turn. Forward request bodies and responses
+unchanged; the hook reads `{ events }`, `{ turnId }` and the error envelope
+`{ error: { message } }`.
 
 ### 3. Attach in the browser
 
@@ -151,9 +153,19 @@ your own store, otherwise start at `0`.
 Turns sent while one is running are queued by the platform. `stop`
 interrupts the running turn without spending a model turn.
 
-### What `send` returns
+### What `send` takes and returns
 
-`send(text)` resolves once the platform has admitted the input as a turn,
+`send(text, options?)` starts a turn with the text. The options:
+
+| Option | Purpose |
+| --- | --- |
+| `idempotencyKey` | The turn's idempotency key. Generate one per submission and keep it for that submission's retries: a retried `send` with the same key returns the same turn instead of admitting a second one. Without a key the hook generates one for the request, and a retry is a new turn. |
+| `payload` | Structured JSON the agent reads as `useInput().payload` beside the text, for example the repository and ref a task is about. |
+
+Two composers that each generate their own keys produce two turns; one
+composer retrying with the key it kept produces one.
+
+`send` resolves once the platform has admitted the input as a turn,
 with a receipt `{ sessionId, turnId, status }` where `status` is `queued`
 or `running`. The input appears in `messages` at that point; the log's own
 record of it confirms that message rather than adding a second one.
@@ -187,8 +199,41 @@ Every `memory.saved` event the session records
 owner route when one arrives. Saves are reported best-effort: a document
 can change without an event, so also refresh when the user opens the panel.
 
-Every event is available through `onEvent`, for example tool activity for an
-activity view; the types are listed on [Session events](/agents/events).
+### Activity
+
+`turns` is the session's turns in log order, reduced from the same event log
+as `messages`, so a reopened page shows the same activity a live one did.
+Each turn is:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The turn id |
+| `status` | `queued`, `running`, `completed`, `failed` or `cancelled` |
+| `input` | The text the turn was admitted with |
+| `messages` | The turn's messages, the same objects as in `messages` |
+| `toolCalls` | `{ callId, tool, title, input?, output?, status }` in the order the calls started; `status` is `running`, `completed` or `failed` |
+| `result` | The output of the agent's result tool, when it reported one; a later call replaces it |
+| `failure` | `{ code, message }` from `turn.failed` |
+
+Tool calls are keyed on the runtime's `callId`, so a `tool.completed` updates
+the entry its `tool.started` created rather than adding one. An activity
+timeline renders `turns` directly:
+
+```tsx
+{turns.map((turn) => (
+  <section key={turn.id}>
+    <h3>{turn.input}</h3>
+    {turn.toolCalls.map((call) => (
+      <p key={call.callId}>{call.title}: {call.status}</p>
+    ))}
+    {turn.result ? <pre>{JSON.stringify(turn.result, null, 2)}</pre> : null}
+    {turn.failure ? <p role="alert">{turn.failure.message}</p> : null}
+  </section>
+))}
+```
+
+Every event is also available through `onEvent`; the types and their data
+are listed on [Session events](/agents/events).
 
 ## Create a session from the browser
 
@@ -243,7 +288,8 @@ the web application. Credentials are not bundled into browser code.
 | Value | Purpose |
 | --- | --- |
 | `messages` | User and assistant messages, in log order |
-| `send(text)` | Starts a turn; resolves with `{ sessionId, turnId, status }` or rejects with a `SendError`. In create mode the first call creates the session |
+| `turns` | The session's turns with status, input, messages, tool calls, result and failure, in log order |
+| `send(text, options?)` | Starts a turn; resolves with `{ sessionId, turnId, status }` or rejects with a `SendError`. `options` carries `idempotencyKey` and `payload`. In create mode the first call creates the session |
 | `stop()` | Interrupts the running turn |
 | `sessionId` | The attached session, or the created one after the first send |
 | `isRunning` | A turn is admitted and not yet settled by the log |

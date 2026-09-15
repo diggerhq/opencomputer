@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 export interface EntryInfo {
   name: string;
   isDir: boolean;
@@ -33,7 +34,7 @@ export class Filesystem {
     const deadline = Date.now() + 120_000;
     let delay = 500;
     for (;;) {
-      const resp = await fetch(url, init);
+      const resp = await apiFetch(url, init);
       if (resp.status !== 503) return resp;
       let waking = false;
       try { waking = (await resp.clone().json())?.waking === true; } catch { /* not JSON */ }
@@ -83,7 +84,7 @@ export class Filesystem {
     }
     const url = `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`;
     // A stream body can't be replayed across a wake retry; string/bytes can.
-    const resp = isStream ? await fetch(url, opts) : await this.wfetch(url, opts);
+    const resp = isStream ? await apiFetch(url, opts) : await this.wfetch(url, opts);
     if (!resp.ok) throw new Error(`Failed to write ${path}: ${resp.status}`);
   }
 

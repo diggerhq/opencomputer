@@ -1,6 +1,6 @@
 import { SandboxAgent } from "./agent.js";
 import { sdkVersionHeaders } from "./version.js";
-import { prewarmConnections } from "./http2.js";
+import { apiFetch, prewarmConnections } from "./http2.js";
 import { Filesystem } from "./filesystem.js";
 import { Exec } from "./exec.js";
 import { Mounts } from "./mounts.js";
@@ -414,7 +414,7 @@ export class Sandbox {
       headers["Accept"] = "text/event-stream";
     }
 
-    const resp = await fetch(`${apiUrl}/sandboxes`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -439,7 +439,7 @@ export class Sandbox {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
 
-    const resp = await fetch(`${apiUrl}/sandboxes/${sandboxId}`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/${sandboxId}`, {
       headers: apiKey ? { "X-API-Key": apiKey } : {},
     });
 
@@ -478,7 +478,7 @@ export class Sandbox {
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
     const query = opts.deleteSecretStore ? "?deleteSecretStore=true" : "";
 
-    const resp = await fetch(`${apiUrl}/sandboxes/${sandboxId}${query}`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/${sandboxId}${query}`, {
       method: "DELETE",
       headers: apiKey ? { "X-API-Key": apiKey } : {},
     });
@@ -500,7 +500,7 @@ export class Sandbox {
    * auth gate from that point on.
    */
   async rotatePreviewAuthToken(): Promise<string> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview/rotate`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview/rotate`, {
       method: "POST",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
@@ -515,7 +515,7 @@ export class Sandbox {
 
   async kill(opts: SandboxKillOptions = {}): Promise<void> {
     const query = opts.deleteSecretStore ? "?deleteSecretStore=true" : "";
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}${query}`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}${query}`, {
       method: "DELETE",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
@@ -528,7 +528,7 @@ export class Sandbox {
 
   async isRunning(): Promise<boolean> {
     try {
-      const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}`, {
+      const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}`, {
         headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
       });
       if (!resp.ok) return false;
@@ -541,7 +541,7 @@ export class Sandbox {
   }
 
   async hibernate(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/hibernate`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/hibernate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -557,7 +557,7 @@ export class Sandbox {
   }
 
   async wake(opts: { timeout?: number } = {}): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/wake`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/wake`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -598,7 +598,7 @@ export class Sandbox {
    * unresponsive), use `powerCycle()` instead.
    */
   async reboot(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/reboot`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/reboot`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -620,7 +620,7 @@ export class Sandbox {
    * `reboot()` doesn't recover.
    */
   async powerCycle(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/power-cycle`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/power-cycle`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -649,7 +649,7 @@ export class Sandbox {
    * [HTTP API →](/api-reference/sandboxes/scale)
    */
   async scale(opts: { memoryMB: number }): Promise<ScaleResult> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scale`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scale`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -683,7 +683,7 @@ export class Sandbox {
     if (opts.minMemoryMB != null) body.minMemoryMB = opts.minMemoryMB;
     if (opts.maxMemoryMB != null) body.maxMemoryMB = opts.maxMemoryMB;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/autoscale`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/autoscale`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
@@ -703,7 +703,7 @@ export class Sandbox {
    * Get the current autoscale configuration for the sandbox.
    */
   async getAutoscale(): Promise<AutoscaleStatus> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/autoscale`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/autoscale`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
     if (!resp.ok) {
@@ -726,7 +726,7 @@ export class Sandbox {
    * explicitly if you want it back.
    */
   async setScalingLock(locked: boolean): Promise<ScalingLockStatus> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scaling-lock`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scaling-lock`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
@@ -745,7 +745,7 @@ export class Sandbox {
    * Get the current scaling-lock state for the sandbox.
    */
   async getScalingLock(): Promise<ScalingLockStatus> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scaling-lock`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/scaling-lock`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
     if (!resp.ok) {
@@ -766,7 +766,7 @@ export class Sandbox {
    * per-store egress restriction.
    */
   async getAllowedHosts(): Promise<AllowedHostsInfo> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/allowed-hosts`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/allowed-hosts`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
     if (!resp.ok) {
@@ -782,7 +782,7 @@ export class Sandbox {
       headers["X-API-Key"] = this.apiKey;
     }
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/timeout`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/timeout`, {
       method: "POST",
       headers,
       body: JSON.stringify({ timeout }),
@@ -805,7 +805,7 @@ export class Sandbox {
       body.retentionPolicy = opts.retentionPolicy;
     }
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -823,7 +823,7 @@ export class Sandbox {
   }
 
   async listCheckpoints(): Promise<CheckpointInfo[]> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
 
@@ -835,7 +835,7 @@ export class Sandbox {
   }
 
   async restoreCheckpoint(checkpointId: string): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints/${checkpointId}/restore`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints/${checkpointId}/restore`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -849,7 +849,7 @@ export class Sandbox {
     }
 
     // After restore, rebuild ops clients since the VM was rebooted
-    const data: SandboxData = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}`, {
+    const data: SandboxData = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     }).then((r) => r.json());
 
@@ -873,7 +873,7 @@ export class Sandbox {
     if (opts.envs) body.envs = opts.envs;
     if (opts.secretStore) body.secretStore = opts.secretStore;
 
-    const resp = await fetch(`${apiUrl}/sandboxes/from-checkpoint/${checkpointId}`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/from-checkpoint/${checkpointId}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -892,7 +892,7 @@ export class Sandbox {
   }
 
   async deleteCheckpoint(checkpointId: string): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints/${checkpointId}`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints/${checkpointId}`, {
       method: "DELETE",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
@@ -909,7 +909,7 @@ export class Sandbox {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
 
-    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -936,7 +936,7 @@ export class Sandbox {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
 
-    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
       headers: apiKey ? { "X-API-Key": apiKey } : {},
     });
 
@@ -955,7 +955,7 @@ export class Sandbox {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
 
-    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches/${patchId}`, {
+    const resp = await apiFetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches/${patchId}`, {
       method: "DELETE",
       headers: apiKey ? { "X-API-Key": apiKey } : {},
     });
@@ -972,7 +972,7 @@ export class Sandbox {
    * @param opts.expiresIn - URL validity in seconds (default: 3600, max: 86400)
    */
   async downloadUrl(path: string, opts?: { expiresIn?: number }): Promise<string> {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files/download-url`,
       {
         method: "POST",
@@ -1000,7 +1000,7 @@ export class Sandbox {
    * @param opts.expiresIn - URL validity in seconds (default: 3600, max: 86400)
    */
   async uploadUrl(path: string, opts?: { expiresIn?: number }): Promise<string> {
-    const resp = await fetch(
+    const resp = await apiFetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files/upload-url`,
       {
         method: "POST",
@@ -1022,7 +1022,7 @@ export class Sandbox {
   }
 
   async createPreviewURL(opts: { port: number; domain?: string; authConfig?: Record<string, unknown> }): Promise<PreviewURLResult> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1040,7 +1040,7 @@ export class Sandbox {
   }
 
   async listPreviewURLs(): Promise<PreviewURLResult[]> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
 
@@ -1052,7 +1052,7 @@ export class Sandbox {
   }
 
   async deletePreviewURL(port: number): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview/${port}`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview/${port}`, {
       method: "DELETE",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });

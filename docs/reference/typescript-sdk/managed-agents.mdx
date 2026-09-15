@@ -1,0 +1,270 @@
+---
+title: "Serverless Agents client"
+description: "The management API client on the portable @opencomputer/sdk/managed-agents subpath"
+---
+
+`@opencomputer/sdk/managed-agents` is the TypeScript client for the
+[management API](/agents/api): create sessions, send turns, read the event
+log, list and label sessions, and manage a project's memory, webhooks, event
+subscriptions and GitHub repositories. It is the server-side leg of an
+application; the browser leg is [`@opencomputer/react`](/agents/react) and
+the authoring leg is `@opencomputer/agent`.
+
+The subpath is portable. Its module graph uses `fetch`, `URL`, `Headers` and
+Web Crypto and nothing else: no Node built-ins, nothing run at import. The
+same import serves a Cloudflare Worker without Node compatibility, a Vercel
+function, Deno and Node. The package root, `@opencomputer/sdk`, is the Node
+sandbox client and is separate on purpose.
+
+```bash
+npm install @opencomputer/sdk
+```
+
+```typescript
+import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/managed-agents";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+```
+
+Use it from trusted server code. The key belongs to an organization and
+reaches every project, agent and session in it; it must not reach a browser.
+
+## `new OpenComputer(options)`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `apiKey` | required | An OpenComputer API key |
+| `baseUrl` | `https://app.opencomputer.dev/api/managed-agents` | The management API |
+| `fetch` | the global `fetch` | A fetch implementation, for runtimes without a global or for tests |
+
+Every method takes its parameters first and an options object last with
+`signal` (an `AbortSignal`); `sessions.create` also takes `idempotencyKey`
+there. Methods return the object the route returns, unwrapped: a list route's
+array, a paged route's `{ rows, nextCursor }`, a session, a document. The
+field names are the API's own.
+
+## Errors
+
+Every failed call throws `OpenComputerError` with `code`, `status` and
+`message`. `code` is the API's stable code when the body carried one
+(`idempotency_conflict`, `session_ended`, `insufficient_credits`); when the
+body had only text, it is derived from the status: `unauthorized`,
+`forbidden`, `not_found`, `conflict`, `rate_limited`, `unavailable` for `5xx`,
+`request_failed` otherwise. A `429` also carries `retryAfter` in seconds.
+
+```typescript
+try {
+  await oc.sessions.create({ agentId: "worker@development" }, { idempotencyKey: taskId });
+} catch (error) {
+  if (error instanceof OpenComputerError && error.code === "idempotency_conflict") {
+    // this key already created a session with different inputs
+  }
+}
+```
+
+The client does not retry. The API's idempotency keys make a retry safe, and
+the caller decides which calls to repeat and with which key.
+
+## Sessions
+
+| Method | Route | Returns |
+| --- | --- | --- |
+| `sessions.create(params, { idempotencyKey? })` | `POST /sessions` | `{ session, deployment, created }`; `created` is `false` when the key had already created the session |
+| `sessions.get(id)` | `GET /sessions/<id>` | The session with its `turns` and `memory` |
+| `sessions.list(query?)` | `GET /sessions` | `{ sessions, nextCursor }` |
+| `sessions.end(id)` | `POST /sessions/<id>/end` | The ended session |
+| `sessions.interrupt(id)` | `POST /sessions/<id>/interrupt` | The session |
+| `sessions.setLabels(id, { set?, unset? })` | `PATCH /sessions/<id>/labels` | The session |
+| `sessions.turns.send(id, params)` | `POST /sessions/<id>/turns` | `{ turnId, status, duplicate }` |
+| `sessions.events.list(id, { after? })` | `GET /sessions/<id>/events` | The events with `seq` greater than `after`, up to 500 |
+| `sessions.startOnDocument(params)` | `PUT` the document, then `POST /sessions` | `{ document, session }` with `created` on each |
+
+`create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`
+and `labels` as [documented](/agents/api#create). `turns.send` takes `input`,
+`idempotencyKey`, `mode` and `payload`. `list` takes `project`,
+`environment`, `agent`, `status`, `labels` (up to three, sent as
+`label.<key>=<value>`), `cursor` and `limit`.
+
+The way an application starts work is two calls under two keys: resolve the
+deployment once where the submission is composed, pin it, then create and
+admit with one key each. A lost reply at either step is retried with the same
+envelope; the first step returns the same session, the second the same turn.
+
+```typescript
+const { session } = await oc.sessions.create(
+  { deploymentId, environment: "development", labels: { request: taskId } },
+  { idempotencyKey: taskId },
+);
+const receipt = await oc.sessions.turns.send(session.id, {
+  input: text,
+  idempotencyKey: `${taskId}/start`,
+  payload: { repo, ref },
+});
+```
+
+Reading a log, from the start and then live:
+
+```typescript
+let after = 0;
+for (;;) {
+  const events = await oc.sessions.events.list(session.id, { after });
+  for (const event of events) {
+    after = event.seq;
+    if (event.type === "tool.completed" && event.data.result) console.log(event.data.output);
+  }
+  if (events.length === 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+```
+
+`SessionEvent` is a union discriminated on `type` with the `data` of each
+[event type](/agents/events); an unknown type keeps `data` as a record.
+
+### Start a session on a memory document
+
+`sessions.startOnDocument` creates a [memory document](/agents/document-memory)
+if it does not exist, then a session bound to it, and reports both ids and
+whether each already existed. The two objects stay separate on the API; the
+call does the two steps in order and makes the pair converge on retry.
+
+```typescript
+const { document, session } = await oc.sessions.startOnDocument({
+  projectId: "<project-id>",
+  environment: "development",
+  agent: "<agent-id>",
+  resource: "notes",
+  documentId: "workshop",
+  document: { title: "Workshop notes" },
+  idempotencyKey: "topic/workshop/1",
+});
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | required | Project whose memory holds the document |
+| `environment` | `"development"` \| `"production"` | required | Memory store and session environment |
+| `agent` | string | required | Agent ID; the environment supplies the alias |
+| `resource` | string | required | Declared memory resource ID |
+| `documentId` | string | required | Document to bind |
+| `document` | `{ title, text?, summary?, agentWrites? }` | required | What to create when the document does not exist; ignored when it does |
+| `access` | `"read"` \| `"read-write"` | `"read-write"` | The binding's access |
+| `memory` | `MemoryBindings` | none | Further bindings keyed by resource ID |
+| `idempotencyKey` | string | required | One key for the whole operation |
+| `source` | string | `"api"` | The session's `source` |
+| `signal` | AbortSignal | none | Aborts both requests |
+
+The steps, in order:
+
+1. `PUT /projects/<projectId>/memory/<resource>/documents/<documentId>` with
+   `If-None-Match: *` and the `document` body. `201` means the document was
+   created. `412` means it exists; the call reads it with `GET` and leaves
+   its content as it is. A `404` on that read means the ID was deleted and is
+   reserved, which fails with code `memory_document_deleted`, since a binding
+   to it would fail admission.
+2. `POST /sessions` with `agentId: "<agent>@<environment>"`, `source`, and
+   `memory` set to your further bindings plus
+   `{ [resource]: { scope: "document", id: documentId, access } }`. The
+   `Idempotency-Key` header is `sessionIdempotencyKey(idempotencyKey)`, the
+   SHA-256 hex digest of `opencomputer.memory.session`, a NUL byte and your
+   key. `201` created the session; `200` means the key had already created it.
+   Anything else under that key fails with code `idempotency_key_reused`; the
+   document was left as it is.
+
+The result:
+
+| Field | Description |
+| --- | --- |
+| `document.id`, `document.title` | The document |
+| `document.created` | `false` when it already existed |
+| `document.revision` | Current revision, for a later conditional owner write |
+| `session.id` | The session |
+| `session.created` | `false` when the key had already created this session |
+| `session.status`, `session.executionMode` | As the create response reported them |
+
+A retry with the same `idempotencyKey` after a redeploy fails with
+`idempotency_key_reused`: the deployment is part of the session's identity.
+Start the new session under a new key.
+
+`startSessionOnDocument({ apiKey, baseUrl?, fetch?, ...params })`, exported
+from the same subpath, is the standalone form of the call for code that
+holds a key and no client, and `sessionIdempotencyKey(key)` derives the
+session-create key.
+
+## Projects
+
+| Method | Route | Returns |
+| --- | --- | --- |
+| `projects.list()` | `GET /projects` | The projects |
+| `projects.get(id)` | `GET /projects/<p>` | `{ project, deployments, sessions, connections, channels, schedules }` |
+| `projects.create({ name, slug? })` | `POST /projects` | The project |
+
+### Memory
+
+Every call takes `{ environment }` last; conditional writes also take the
+`revision` the write is conditional on, sent as `If-Match`.
+
+| Method | Route |
+| --- | --- |
+| `projects.memory.resources(p, { environment })` | `GET /projects/<p>/memory` |
+| `projects.memory.documents.list(p, r, { environment, cursor? })` | `GET /projects/<p>/memory/<r>/documents` |
+| `projects.memory.documents.get(p, r, id, { environment })` | `GET /projects/<p>/memory/<r>/documents/<id>` |
+| `projects.memory.documents.create(p, r, id, body, { environment })` | `PUT` with `If-None-Match: *` |
+| `projects.memory.documents.replace(p, r, id, body, { environment, revision })` | `PUT` with `If-Match` |
+| `projects.memory.documents.patch(p, r, id, body, { environment, revision })` | `PATCH` with `If-Match` |
+| `projects.memory.documents.delete(p, r, id, { environment, revision })` | `DELETE` with `If-Match` |
+
+Bodies, the document object and the error codes are on
+[Document memory](/agents/document-memory#management-api).
+
+### Webhooks
+
+| Method | Route |
+| --- | --- |
+| `projects.webhooks.list(p, { environment?, agentId? })` | `GET /projects/<p>/webhooks` |
+| `projects.webhooks.create(p, { name, agentId, environment, identity? })` | `POST /projects/<p>/webhooks` |
+| `projects.webhooks.update(p, id, { name?, enabled?, identity? })` | `PATCH /projects/<p>/webhooks/<id>` |
+| `projects.webhooks.rotateToken(p, id)` | `POST /projects/<p>/webhooks/<id>/rotate-token` |
+| `projects.webhooks.delete(p, id)` | `DELETE /projects/<p>/webhooks/<id>` |
+| `projects.webhooks.requests(p, id)` | `GET /projects/<p>/webhooks/<id>/requests` |
+
+`create` and `rotateToken` return the webhook with its `token` and full
+`invocationUrl` once; see [Agent webhooks](/agents/webhooks).
+
+### Event subscriptions
+
+| Method | Route |
+| --- | --- |
+| `projects.eventSubscriptions.create(p, { agentId?, events, destination, environment? })` | `POST /projects/<p>/event-subscriptions` |
+| `projects.eventSubscriptions.list(p)` | `GET /projects/<p>/event-subscriptions` |
+| `projects.eventSubscriptions.get(p, id)` | `GET /projects/<p>/event-subscriptions/<id>` |
+| `projects.eventSubscriptions.delete(p, id)` | `DELETE /projects/<p>/event-subscriptions/<id>` |
+
+The shapes are on [Event subscriptions](/agents/api#event-subscriptions).
+
+### GitHub repositories
+
+`projects.github.repositories(p, { environment, cursor?, limit? })` calls
+`GET /projects/<p>/github/repositories` and returns
+`{ repositories, nextCursor }`, each repository `{ id, fullName, private,
+defaultBranch, archived }` as the environment's GitHub installation covers
+them.
+
+## Agents and deployments
+
+| Method | Route | Returns |
+| --- | --- | --- |
+| `agents.list()` | `GET /agents` | `id`, `name`, `activeAlias`, `activeDeploymentId`, `deploymentCount` per agent |
+| `deployments.list({ agentId })` | `GET /deployments?agentId=` | The agent's deployments |
+| `deployments.get(id)` | `GET /deployments/<id>` | `id`, `agentId`, `alias`, `memory` declarations, `createdAt` |
+
+## Types
+
+The subpath exports the types of every object above: `Session`,
+`SessionSummary`, `SessionCreated`, `Turn`, `TurnReceipt`, `SessionEvent`,
+`Project`, `AgentSummary`, `Deployment`, `Webhook`, `Repository`, the
+`Create…Params` and `List…Query` shapes, and `DataValue` for JSON payloads
+and results. The memory types (`MemoryDocument`, `MemoryBindings`,
+`SessionMemoryBinding`, `MemoryResourceInventory`, the document bodies,
+`MemorySavedEvent`, `MemoryErrorCode`) and the event subscription types
+(`EventSubscription`, `CreateEventSubscriptionBody`, `OutcomeEvent`,
+`EventInput`, `TurnOutcomeDelivery`, `EventSubscriptionErrorCode`) are
+exported from the same place.

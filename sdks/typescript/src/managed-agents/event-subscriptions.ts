@@ -1,11 +1,7 @@
 // Event subscription types — the shapes of the management API documented at
 // docs/agents/api.mdx ("Event subscriptions") and the input an agent reads
 // through `useInput()` when a subscribed outcome is delivered to it.
-//
-// These are types only. The subscription routes live on the project-scoped
-// Serverless Agents surface (`/api/managed-agents/projects/<id>/event-subscriptions`),
-// which this package does not call. Use them to type the bodies you send
-// with your own HTTP client and the objects it returns.
+// `oc.projects.eventSubscriptions` sends and returns them.
 
 import type { MemoryEnvironment } from "./memory.js";
 

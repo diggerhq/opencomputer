@@ -1,5 +1,5 @@
-// Webhook verification for OpenComputer destinations — shared across **session** webhooks
-// (Durable Agent Sessions) and **sandbox lifecycle** webhooks. One verifier, one envelope.
+// Webhook verification for OpenComputer destinations: **sandbox lifecycle** webhooks, and
+// **session** webhooks delivered under the `webhook-` header dialect. One verifier, one envelope.
 //
 // Deliveries are signed with the Standard Webhooks scheme (https://www.standardwebhooks.com).
 // Sandbox webhooks are delivered by Svix, which uses the same scheme under `svix-`-prefixed
@@ -13,15 +13,17 @@
 // browsers, Deno, and Node 16+ — the same places the SDK runs. Verify against the RAW
 // request body, BEFORE JSON-parsing it.
 
-import type { Event } from "./types.js";
 import { normalize } from "./normalize.js";
+
+/** The nested event when the caller names no type: whatever the delivery carried, keyed by `type`. */
+export type WebhookEvent = { type: string; [key: string]: unknown };
 
 /**
  * The envelope OpenComputer POSTs to a destination (camelCase). One shape for both products;
  * the product-specific id is set accordingly. `E` is the nested event type — pass
- * `SandboxLifecycleEvent` for sandbox webhooks, leave it as the session `Event` otherwise.
+ * `SandboxLifecycleEvent` for sandbox webhooks.
  */
-export interface WebhookDelivery<E = Event> {
+export interface WebhookDelivery<E = WebhookEvent> {
   /** The event type — route on this (e.g. `turn.completed`, `sandbox.stopped`). */
   type: string;
   /** Set on **session** webhooks. */
@@ -126,7 +128,7 @@ function timingSafeEqual(a: string, b: string): boolean {
  * if (delivery.type === "turn.completed") { /* route via delivery.metadata *\/ }
  * ```
  */
-export async function verifyWebhook<E = Event>(
+export async function verifyWebhook<E = WebhookEvent>(
   rawBody: string,
   headers: HeaderBag | Headers,
   secret: string,

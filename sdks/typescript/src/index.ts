@@ -1,29 +1,12 @@
-import { configureHttp2, prewarmConnections } from "./http2.js";
-
-// Switch the Node global fetch dispatcher to HTTP/2 on import (browser-safe
-// no-op). Multiplexes concurrent requests over one connection — a large burst
-// win for create(). Top-level await so the dispatcher is installed BEFORE the
-// importer can issue any request (a dynamic `import("@opencomputer/sdk")` — how
-// the leaderboard adapter loads us — fully settles this first); otherwise the
-// first burst races the async undici import and leaks onto HTTP/1.1. The SDK is
-// ESM-only, so top-level await breaks no existing (already-ESM) consumer, and
-// configureHttp2 never rejects. See http2.ts.
-await configureHttp2();
-
-// Open the connection pool at IMPORT, not at the first create.
+// @opencomputer/sdk: the sandbox client. Node-only: the image builder reads
+// the filesystem and the transport pools HTTP/2 connections through undici.
+// Nothing runs at import; the connection pool is created on the first
+// request and warmed on the first `Sandbox.create`.
 //
-// prewarmConnections used to fire from Sandbox.create(), which put the pool's
-// own setup INSIDE the window a burst measures — 48 connections cost ~153ms to
-// establish, and the first creates race them. Starting here means an importer
-// that loads the SDK before its timing loop (the leaderboard adapter does) has
-// the pool ready by the time it matters. Same connection count, just earlier.
-//
-// Deliberately NOT awaited: import must not block on the network. It is
-// memoized (warmPromise), so Sandbox.create()'s own call remains as the path
-// that covers a programmatically-supplied apiUrl, and becomes a no-op here.
-void prewarmConnections(
-  (process.env?.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev").replace(/\/api\/?$/, ""),
-);
+// The management API client for Serverless Agents lives on its own portable
+// subpath, `@opencomputer/sdk/managed-agents`, whose module graph has no Node
+// dependency. It is not re-exported here so that importing it never drags
+// this graph along.
 
 export {
   Sandbox,
@@ -56,8 +39,6 @@ export {
   type BrowserProfileData
 } from "./browser.js";
 export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type SandboxAgentStartOpts, type SandboxAgentSession, type McpServerConfig } from "./agent.js";
-// Managed Durable Agent Sessions (the OpenComputer client + Session handle).
-export * from "./agents/index.js";
 export { Filesystem, type EntryInfo } from "./filesystem.js";
 export { Exec, ExecTimeoutError, type ProcessResult, type RunOpts, type ExecSession, type ExecSessionInfo, type ExecStartOpts, type ExecAttachOpts } from "./exec.js";
 export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./mounts.js";
@@ -65,6 +46,9 @@ export { type Shell, type ShellOpts, type ShellRunOpts, ShellBusyError, ShellClo
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
 export { SDK_VERSION, SDK_VERSION_HEADER } from "./version.js";
+// Warm the sandbox client's connection pool ahead of a burst. `Sandbox.create`
+// does this on first use; a program that measures creates calls it earlier.
+export { prewarmConnections } from "./http2.js";
 export {
   Webhooks,
   WebhookDeliveries,
@@ -83,6 +67,13 @@ export {
   type SandboxStopReason,
   type SandboxWebhookEventType,
 } from "./webhooks.js";
+export {
+  verifyWebhook,
+  WebhookVerificationError,
+  type WebhookDelivery,
+  type WebhookEvent,
+  type VerifyWebhookOptions,
+} from "./verify-webhook.js";
 export { SecretStore, type SecretStoreInfo, type SecretEntryInfo, type SecretStoreOpts, type CreateSecretStoreOpts, type UpdateSecretStoreOpts } from "./project.js";
 export {
   Usage,
@@ -100,7 +91,7 @@ export {
   type SandboxUsageTotals,
   type TagKeyInfo,
 } from "./usage.js";
-// Node.js-only modules (use crypto, fs, path) — import via "@opencomputer/sdk/node".
+// Node.js-only modules (use crypto, fs, path) — also exported via "@opencomputer/sdk/node".
 // The Image builder and the Snapshots client are exported as VALUES, not only
 // as types. Both were type-only, so `import { Image } from "@opencomputer/sdk"`
 // — which the Image reference documents — failed at runtime with "does not

@@ -593,3 +593,78 @@ test("create mode still creates the session on the first send and streams the re
   assert.deepEqual(calls[0].body, { agentId: "hello-world@development", source: "local-react" });
   await view.unmount();
 });
+
+test("send carries a caller-retained key and a payload, and generates a key when given none", async (t) => {
+  const session = fakeSession("ses-keys");
+  const view = mount(t, { sessionId: "ses-keys", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying, "empty history");
+
+  await act(async () => {
+    await view.result().send("Fix the login page", {
+      idempotencyKey: "task_1/1",
+      payload: { repo: "acme/web", ref: "main" },
+    });
+  });
+  await act(async () => {
+    await view.result().send("Also fix signup");
+  });
+  const turns = session.calls.filter((call) => call.method === "POST" && call.path.endsWith("/turns"));
+  assert.equal(turns.length, 2);
+  assert.deepEqual(turns[0]?.body, {
+    input: "Fix the login page",
+    idempotencyKey: "task_1/1",
+    payload: { repo: "acme/web", ref: "main" },
+  });
+  assert.equal(turns[1]?.body?.input, "Also fix signup");
+  assert.equal(typeof turns[1]?.body?.idempotencyKey, "string");
+  assert.notEqual(turns[1]?.body?.idempotencyKey, "task_1/1");
+  assert.equal("payload" in (turns[1]?.body ?? {}), false);
+  await view.unmount();
+});
+
+test("attach exposes turns with their tool activity and result, the same after a replay", async (t) => {
+  const session = fakeSession("ses-turns");
+  session.append({ turnId: "t0", type: "message.received", data: { input: "Clone and report" } });
+  session.append({ turnId: "t0", type: "turn.started", data: {} });
+  session.append({ turnId: "t0", type: "tool.started", data: { tool: "shell", callId: "c1", title: "git clone" } });
+  session.append({ turnId: "t0", type: "tool.completed", data: { tool: "shell", callId: "c1", title: "git clone", output: { exitCode: 0 } } });
+  session.append({ turnId: "t0", type: "tool.started", data: { tool: "report", callId: "c2", title: "report" } });
+  session.append({ turnId: "t0", type: "tool.completed", data: { tool: "report", callId: "c2", title: "report", output: { baseSha: "abc" }, result: true } });
+  session.append({ turnId: "t0", type: "message.completed", data: { text: "Done." } });
+  session.append({ turnId: "t0", type: "turn.completed", data: {} });
+
+  const view = mount(t, { sessionId: "ses-turns", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  const replayed = await view.until((result) => !result.isReplaying, "history replay");
+  assert.equal(replayed.turns.length, 1);
+  const [turn] = replayed.turns;
+  assert.equal(turn?.id, "t0");
+  assert.equal(turn?.status, "completed");
+  assert.equal(turn?.input, "Clone and report");
+  assert.deepEqual(turn?.toolCalls.map((call) => [call.callId, call.title, call.status]), [
+    ["c1", "git clone", "completed"],
+    ["c2", "report", "completed"],
+  ]);
+  assert.deepEqual(turn?.result, { baseSha: "abc" });
+  assert.deepEqual(turn?.messages.map((message) => message.text), ["Clone and report", "Done."]);
+
+  // A live turn appears with its activity as the log grows.
+  await act(async () => {
+    await view.result().send("Run the checks");
+  });
+  session.append({ turnId: "turn-1", type: "tool.started", data: { tool: "shell", callId: "c3", title: "npm test" } });
+  const live = await view.until((result) => result.turns[1]?.toolCalls.length === 1, "live tool call");
+  assert.equal(live.turns[1]?.id, "turn-1");
+  assert.equal(live.turns[1]?.status, "running");
+  assert.equal(live.turns[1]?.input, "Run the checks");
+  assert.deepEqual(live.turns[1]?.toolCalls, [{ callId: "c3", tool: "shell", title: "npm test", status: "running" }]);
+
+  // A second hook reading the same log from the start agrees with what the first saw live.
+  const again = mount(t, { sessionId: "ses-turns", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await again.render();
+  const fresh = await again.until((result) => !result.isReplaying && result.turns.length === 2, "second replay");
+  assert.deepEqual(fresh.turns, live.turns);
+  await again.unmount();
+  await view.unmount();
+});

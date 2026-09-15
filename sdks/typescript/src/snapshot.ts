@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 import { Image } from "./image.js";
 import { sdkVersionHeaders } from "./version.js";
 import { parseSSEStream } from "./sse.js";
@@ -90,7 +91,7 @@ export class Snapshots {
       Accept: "text/event-stream",
     };
 
-    const resp = await fetch(`${this.apiUrl}/snapshots`, {
+    const resp = await apiFetch(`${this.apiUrl}/snapshots`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -116,7 +117,7 @@ export class Snapshots {
    * List all named snapshots for the current org.
    */
   async list(): Promise<SnapshotInfo[]> {
-    const resp = await fetch(`${this.apiUrl}/snapshots`, {
+    const resp = await apiFetch(`${this.apiUrl}/snapshots`, {
       headers: this.headers,
     });
 
@@ -131,7 +132,7 @@ export class Snapshots {
    * Get a snapshot by name.
    */
   async get(name: string): Promise<SnapshotInfo> {
-    const resp = await fetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
+    const resp = await apiFetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
       headers: this.headers,
     });
 
@@ -168,7 +169,7 @@ export class Snapshots {
         throw new Error(`Snapshot ${name} not ready after ${opts.timeoutMs}ms`);
       }
 
-      const resp = await fetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
+      const resp = await apiFetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
         headers: this.headers,
       });
       if (resp.ok) {
@@ -190,7 +191,7 @@ export class Snapshots {
    * Delete a named snapshot.
    */
   async delete(name: string): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
+    const resp = await apiFetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
       method: "DELETE",
       headers: this.headers,
     });
