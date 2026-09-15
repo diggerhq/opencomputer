@@ -124,6 +124,17 @@ export function managedAgentsNav(options: {
     })
   }
 
+  groups.push({
+    label: 'Account',
+    items: [
+      {
+        to: '/managed-agents/connections',
+        label: 'Connections',
+        icon: Plug,
+      },
+    ],
+  })
+
   if (options.durableSessionsEnabled) {
     groups.push({
       label: 'Durable sessions',

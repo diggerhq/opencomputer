@@ -1,0 +1,95 @@
+name: MicroVM images
+
+# Republish the guest images when merged code changes them, and let prod follow
+# dev only once dev has proved the image actually works.
+#
+# They drifted once for three weeks: the guest gained /oc/secrets, /oc/envs and
+# /oc/stats on 2026-09-01, nothing rebuilt the images, and the control plane
+# called routes its own guests did not serve. That surfaces as 415 with an empty
+# body — invisible until the first customer whose create carried a secret.
+#
+# Two decisions this encodes:
+#
+# 1. "Affects the images" is decided by asking the compiler, not by a paths:
+#    filter. manifest.py hashes the `go list -deps` closure of cmd/agent and
+#    cmd/microvm-hooks plus the Dockerfile and build.sh. A filter would have
+#    missed the original bug — the guest imports ten packages under internal/.
+#
+# 2. prod publishes on merge like dev. Manual prod publishing is what let the
+#    drift last three weeks — "someone will remember" is the failure, not the
+#    safeguard. Three things stand in for a human here, and none needs a
+#    credential: this drift check, AWS's own /ready and /validate image build
+#    hooks (an image that cannot boot or exec never goes active, and publish.sh
+#    exits non-zero), and TestOCRoutesBeatTheAgentCatchAll, which fails if the
+#    guest stops serving a route the control plane calls.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      allow_resize:
+        description: 'Permit a memory-tier change (normally refused)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: microvm-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # opencomputer-gha: already trusts repo:diggerhq/opencomputer:* and can
+      # create/update microvm images, pass the build role, and write the
+      # artifact bucket.
+      - uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - id: dev_drift
+        run: |
+          if ./deploy/microvm/manifest.py check-drift dev; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish every dev tier from one artifact
+        if: steps.dev_drift.outputs.stale == 'true'
+        run: ./deploy/microvm/release.sh dev
+        env:
+          MICROVM_ALLOW_RESIZE: ${{ github.event.inputs.allow_resize && '1' || '0' }}
+
+      - id: prod_drift
+        run: |
+          if ./deploy/microvm/manifest.py check-drift prod; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "prod already matches this commit." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish every prod tier from one artifact
+        if: steps.prod_drift.outputs.stale == 'true'
+        run: ./deploy/microvm/release.sh prod
+        env:
+          MICROVM_ALLOW_RESIZE: ${{ github.event.inputs.allow_resize && '1' || '0' }}
+
+      - name: Confirm nothing is behind
+        run: |
+          ./deploy/microvm/manifest.py check-drift dev
+          ./deploy/microvm/manifest.py check-drift prod
+          echo "dev and prod images match this commit." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "The MicroVM guest images this repo owns, and the memory tier each carries.",
+    "",
+    "SCOPE. This AWS account is shared. It also holds managed-agents-runtime-*",
+    "and managed-agents-production-runtime (the serverless-agent runtime, built",
+    "from the blue repo), blue-* experiments, nslabs-benchmark-runtime, and",
+    "osb-tpl-* images built per customer template at run time by",
+    "internal/api/template_microvm_build.go. None of those are ours. Every name",
+    "here must start with ownedPrefix and release.sh refuses otherwise, so a",
+    "typo cannot reach another product's runtime.",
+    "",
+    "TIERS. Memory is a property of the IMAGE, not of a launch: RunMicrovmInput",
+    "carries no memory field. A size tier IS an image, so N sizes means N images",
+    "built from ONE artifact. A tier built but not configured is refused at",
+    "create; a tier configured but not built fails at launch \u2014 so release.sh",
+    "prints the control-plane configuration that matches what it just published.",
+    "",
+    "FRESHNESS. The published image drifted three weeks behind the guest code",
+    "once: /oc/secrets, /oc/envs and /oc/stats landed 2026-09-01 and nothing",
+    "rebuilt prod, so the control plane called routes its own guests did not",
+    "serve. An unregistered path falls through to the agent's gRPC listener,",
+    "which answers 415 with an empty body \u2014 invisible until the first customer",
+    "whose create carried a secret. One artifact, every tier, on every change.",
+    "DEFAULT TIER. The default image's memoryMB must equal awsvm's deliveredMicrovmMemoryMB (currently 4096). That constant is what metering prices on, so an image below it bills every default create for memory it did not get \u2014 which is exactly what happened: the lite images were published at 2048 while the constant was raised to 4096 on 2026-08-24, so prod metered 4096 on a 2048 box. manifest.py asserts the two agree on every run."
+  ],
+  "region": "us-east-1",
+  "artifactBucket": "opensandbox-microvm-artifacts-739940681129",
+  "ownedPrefix": "opensandbox-agent-lite-",
+  "environments": {
+    "prod": {
+      "artifactKey": "microvm/agent-image-lite-prod.zip",
+      "images": [
+        {
+          "name": "opensandbox-agent-lite-prod",
+          "memoryMB": 4096,
+          "default": true
+        },
+        {
+          "name": "opensandbox-agent-lite-prod-1024",
+          "memoryMB": 1024
+        },
+        {
+          "name": "opensandbox-agent-lite-prod-2048",
+          "memoryMB": 2048
+        },
+        {
+          "name": "opensandbox-agent-lite-prod-8192",
+          "memoryMB": 8192
+        }
+      ]
+    },
+    "dev": {
+      "artifactKey": "microvm/agent-image-lite.zip",
+      "images": [
+        {
+          "name": "opensandbox-agent-lite-dev",
+          "memoryMB": 4096,
+          "default": true
+        },
+        {
+          "name": "opensandbox-agent-lite-dev-1024",
+          "memoryMB": 1024
+        },
+        {
+          "name": "opensandbox-agent-lite-dev-2048",
+          "memoryMB": 2048
+        },
+        {
+          "name": "opensandbox-agent-lite-dev-8192",
+          "memoryMB": 8192
+        }
+      ]
+    }
+  }
+}

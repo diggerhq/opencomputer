@@ -87,6 +87,11 @@ func (s *Server) createSnapshot(c echo.Context) error {
 	// 501 only when the cell has no artifact location configured — the feature
 	// is off, rather than broken. Anything else here would silently build a
 	// QEMU checkpoint this runtime can never restore.
+	// A v1 template is a whole-disk checkpoint and nothing left can restore
+	// one, so building it is refused with the same message as a create.
+	if err := s.refuseIfRetired(c); err != nil {
+		return err
+	}
 	if s.runtimeFor(c) == runtimeMicrovm {
 		builder, objects, prefix, ok := s.lite.templateBuilder()
 		if !ok {
@@ -343,6 +348,11 @@ func (s *Server) getSnapshot(c echo.Context) error {
 	// waitUntilReady treats 404 as "still building", so a customer waiting on a
 	// perfectly healthy template would poll until their timeout, or forever if
 	// they passed none.
+	// A v1 template is a whole-disk checkpoint and nothing left can restore
+	// one, so building it is refused with the same message as a create.
+	if err := s.refuseIfRetired(c); err != nil {
+		return err
+	}
 	if s.runtimeFor(c) == runtimeMicrovm {
 		tmpl, err := s.store.GetTemplateByName(c.Request().Context(), orgID, name)
 		if err != nil || tmpl == nil || tmpl.TemplateType != db.TemplateTypeMicrovmImage {

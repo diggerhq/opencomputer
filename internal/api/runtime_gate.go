@@ -90,3 +90,43 @@ func runtimeForSDK(c echo.Context) string {
 	}
 	return ""
 }
+
+// ── v1 retirement ────────────────────────────────────────────────────────────
+
+// v1MigrationGuideURL is where a caller is sent to fix it. Kept in sync with
+// the edge's copy (cloudflare-workers/api-edge/src/runtime_gate.ts) by hand:
+// there is no shared artifact between a Go binary and a Worker, and both halves
+// have to say the same thing or the same customer gets two different answers
+// depending on which door they came in.
+const v1MigrationGuideURL = "https://docs.opencomputer.dev/migrating-from-v1"
+
+// v1RetiredStatus is the status a retired-runtime request is refused with.
+// Gone rather than Bad Request: the fleet existed, was served, and has been
+// withdrawn — which is exactly what 410 means and what a client should not
+// retry.
+const v1RetiredStatus = 410
+
+// v1RetiredBody is what a retired-runtime caller is told. Cause, fix, and where
+// the fix is written down; `code` so a caller can branch without matching prose.
+func v1RetiredBody() map[string]string {
+	return map[string]string{
+		"error": "OpenComputer v1 sandboxes have been retired. Upgrade to the v2 SDK — " +
+			"`npm install @opencomputer/sdk@^1` (or `pip install -U opencomputer`) — " +
+			"and see " + v1MigrationGuideURL + ". Existing v1 sandboxes are no longer reachable.",
+		"code":            "v1_retired",
+		"migration_guide": v1MigrationGuideURL,
+	}
+}
+
+// refuseIfRetired answers a request that would route to the v1 fleet.
+//
+// Returns nil when the request belongs on a runtime that still exists, so
+// callers read as `if err := s.refuseIfRetired(c); err != nil { return err }`.
+// The decision is runtimeFor's, unchanged — this only turns "QEMU" into a
+// refusal, because the QEMU workers are gone.
+func (s *Server) refuseIfRetired(c echo.Context) error {
+	if s.runtimeFor(c) == runtimeMicrovm {
+		return nil
+	}
+	return c.JSON(v1RetiredStatus, v1RetiredBody())
+}

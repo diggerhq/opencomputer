@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -182,4 +183,60 @@ func TestHeaderNameMatchesTheSDK(t *testing.T) {
 	if sdkVersionHeader != "X-OC-SDK-Version" {
 		t.Errorf("header renamed to %q — sdks/typescript/src/version.ts sends x-oc-sdk-version", sdkVersionHeader)
 	}
+}
+
+// The v1 fleet is gone, so the direct-to-cell path has to refuse what it used
+// to route there — and say the same thing the edge says, since the same
+// customer can arrive through either door.
+func TestRefuseIfRetired(t *testing.T) {
+	org := uuid.New()
+
+	t.Run("refuses an old SDK", func(t *testing.T) {
+		c := ctxWithSDK(sdkOld)
+		auth.SetOrgID(c, org)
+		rec := c.Response().Writer.(*httptest.ResponseRecorder)
+		if err := serverForOrg(t, org, "").refuseIfRetired(c); err != nil {
+			t.Fatalf("refuseIfRetired returned an error: %v", err)
+		}
+		if rec.Code != v1RetiredStatus {
+			t.Fatalf("status = %d, want %d", rec.Code, v1RetiredStatus)
+		}
+		for _, want := range []string{"v1_retired", v1MigrationGuideURL, "@opencomputer/sdk@^1"} {
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Fatalf("body %q does not mention %q", rec.Body.String(), want)
+			}
+		}
+	})
+
+	t.Run("refuses a client that announces nothing", func(t *testing.T) {
+		c := ctxWithSDK("")
+		auth.SetOrgID(c, org)
+		rec := c.Response().Writer.(*httptest.ResponseRecorder)
+		_ = serverForOrg(t, org, "").refuseIfRetired(c)
+		if rec.Code != v1RetiredStatus {
+			t.Fatalf("status = %d, want %d", rec.Code, v1RetiredStatus)
+		}
+	})
+
+	t.Run("refuses an org pinned to qemu even on a new SDK", func(t *testing.T) {
+		c := ctxWithSDK(sdkNew)
+		auth.SetOrgID(c, org)
+		rec := c.Response().Writer.(*httptest.ResponseRecorder)
+		_ = serverForOrg(t, org, "qemu").refuseIfRetired(c)
+		if rec.Code != v1RetiredStatus {
+			t.Fatalf("status = %d, want %d", rec.Code, v1RetiredStatus)
+		}
+	})
+
+	t.Run("lets a microvm caller through untouched", func(t *testing.T) {
+		c := ctxWithSDK(sdkNew)
+		auth.SetOrgID(c, org)
+		rec := c.Response().Writer.(*httptest.ResponseRecorder)
+		if err := serverForOrg(t, org, "").refuseIfRetired(c); err != nil {
+			t.Fatalf("refuseIfRetired refused a microvm caller: %v", err)
+		}
+		if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+			t.Fatalf("refuseIfRetired wrote a response for a microvm caller: %d %q", rec.Code, rec.Body.String())
+		}
+	})
 }

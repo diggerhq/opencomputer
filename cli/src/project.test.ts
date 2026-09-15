@@ -426,6 +426,208 @@ export default function Agent() {
   }
 });
 
+test("the compiler enumerates literal model selections in a conditional", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-conditional-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useInput, useModel } from "@opencomputer/agent";
+export default function Agent() {
+  const input = useInput();
+  useModel(input.text?.includes("hard")
+    ? "anthropic/claude-sonnet-5"
+    : "anthropic/claude-haiku-4.5");
+  return "Help with the request.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { models: Array<{ provider: string; model: string }> };
+    assert.deepEqual(manifest.models, [
+      { provider: "openrouter", model: "anthropic/claude-haiku-4.5" },
+      { provider: "openrouter", model: "anthropic/claude-sonnet-5" },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects a model selection it cannot register", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-dynamic-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useModel } from "@opencomputer/agent";
+const model = "anthropic/claude-sonnet-5";
+export default function Agent() {
+  useModel(model);
+  return "Help with the request.";
+}
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /useModel\(\) must use a literal model selection/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the managed-connection clients survive the generated runtime", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-service-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "mail.ts"),
+      `import { callService, defineTool } from "@opencomputer/agent";
+
+export const unread = defineTool({
+  name: "unread",
+  description: "Count unread mail",
+  async run() {
+    const response = await callService({
+      service: "gmail",
+      label: "work",
+      path: "/gmail/v1/users/me/messages",
+    });
+    return { status: response.status };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { unread } from "./tools/mail.js";
+
+export default function Agent() {
+  useTool(unread);
+  return "Read mail when asked.";
+}
+`,
+    );
+
+    await buildAgentArtifact(initialized.agentRoot);
+
+    // Importing the EMITTED shim is the point. The shim is produced by
+    // interpolating a template literal, where a regex like /\/$/ collapses into
+    // a line comment and silently swallows the rest of the call — which is
+    // exactly how this shipped broken the first time. A syntax error here is
+    // invisible to tsc and only shows up at build or import.
+    const runtime = await import(
+      `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    );
+    assert.equal(typeof runtime.callService, "function");
+
+    // Without the platform's env there is no connection to call, and the
+    // failure must say so rather than fetching something arbitrary.
+    await assert.rejects(
+      runtime.callService({ service: "gmail", path: "/gmail/v1/users/me/profile" }),
+      /managed connections are unavailable/,
+    );
+
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL = "https://edge.test/conn/";
+    globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN = "rt-token";
+    // What a managed connection actually answers: the service's status and
+    // body inside an envelope, wrapped in a 200. A caller reading `ok` off the
+    // outer response sees success on a request that failed, and a caller
+    // reading .json() gets the envelope instead of the payload.
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(
+        JSON.stringify({
+          status: 403,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: { message: "Insufficient Permission" } }),
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    let unwrapped: Response | undefined;
+    try {
+      unwrapped = await runtime.callService({
+        service: "google",
+        label: "work",
+        method: "post",
+        path: "/gmail/v1/users/me/messages/send",
+        body: "{}",
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+    }
+
+    assert.equal(calls.length, 1);
+    // A trailing slash on the base must not produce a doubled one — the fix for
+    // the comment bug replaced a regex trim, so the behaviour needs pinning.
+    assert.equal(calls[0]!.url, "https://edge.test/conn/google/fetch");
+    const sent = JSON.parse(String(calls[0]!.init.body)) as Record<string, unknown>;
+    // `google` is an alias the platform resolves to gmail; the SDK passes the
+    // caller's word through and only decides the PROVIDER segment itself.
+    assert.equal(sent.service, "google");
+    assert.equal(sent.label, "work");
+    assert.equal(sent.method, "POST");
+    assert.equal(sent.path, "/gmail/v1/users/me/messages/send");
+
+    // The envelope must be opened: the service said 403, so the caller must.
+    assert.equal(unwrapped!.status, 403);
+    assert.equal(unwrapped!.ok, false);
+    assert.deepEqual(await unwrapped!.json(), {
+      error: { message: "Insufficient Permission" },
+    });
+
+    // listServices routes to the reserved `opencomputer` provider segment and
+    // must send NO method and NO path — that body shape is the only thing
+    // distinguishing a platform action from managed egress on the same route.
+    assert.equal(typeof runtime.listServices, "function");
+    calls.length = 0;
+    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL = "https://edge.test/conn";
+    globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN = "rt-token";
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(
+        JSON.stringify({
+          connections: [
+            { id: "1", provider: "google", label: "alice", displayName: "a@x.com", status: "connected" },
+            { id: "2", provider: "google", label: "bob", status: "pending" },
+            { id: "3", provider: "github", label: "default", status: "connected" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    let listed;
+    try {
+      listed = await runtime.listServices({ provider: "google" });
+    } finally {
+      globalThis.fetch = realFetch;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+    }
+    assert.equal(calls[0]!.url, "https://edge.test/conn/opencomputer/fetch");
+    assert.deepEqual(JSON.parse(String(calls[0]!.init.body)), { action: "list" });
+    // Pending accounts are unusable and the github row is a different grant;
+    // a sweep that tried either would fail on a mailbox that does not exist.
+    assert.deepEqual(
+      listed.map((connection: { label: string }) => connection.label),
+      ["alice"],
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler records secret-backed HTTP connections without secret values", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-"));
   const root = resolve(parent, "app");

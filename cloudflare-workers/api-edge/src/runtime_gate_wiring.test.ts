@@ -117,10 +117,10 @@ function pinClaim(headers: HeadersInit | undefined): string {
 
 let lastHeaders: HeadersInit | undefined;
 
-async function createWith(
+async function createRaw(
   sdkVersion: string | null,
   opts: { runtime?: string | null; env?: Env } = {},
-): Promise<string> {
+): Promise<{ resp: Response; fetchSpy: ReturnType<typeof vi.fn> }> {
   freshOrg(opts.runtime ?? null);
   const env = opts.env ?? makeEnv();
   const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) =>
@@ -134,6 +134,14 @@ async function createWith(
     env,
     ctx,
   );
+  return { resp, fetchSpy };
+}
+
+async function createWith(
+  sdkVersion: string | null,
+  opts: { runtime?: string | null; env?: Env } = {},
+): Promise<string> {
+  const { resp, fetchSpy } = await createRaw(sdkVersion, opts);
   expect(resp.status, `create failed: ${await resp.clone().text()}`).toBe(201);
   expect(fetchSpy).toHaveBeenCalled();
   lastHeaders = fetchSpy.mock.calls[0][1]?.headers;
@@ -150,18 +158,21 @@ describe("create routes by SDK version", () => {
     expect(await createWith("1.0.0")).toBe("microvm");
   });
 
-  it("leaves an unpinned org's older create on the fleet", async () => {
-    expect(await createWith("0.15.7")).toBe("");
-    expect(await createWith(null)).toBe("");
-  });
-
-  it("honours both pins over the calling SDK", async () => {
+  // A microvm pin still wins over an old SDK: that is how an org that has
+  // finished migrating stays migrated when one stale script is left behind.
+  it("honours a microvm pin over an old calling SDK", async () => {
     expect(await createWith("0.15.7", { runtime: "microvm" })).toBe("microvm");
-    expect(await createWith("1.0.0", { runtime: "qemu" })).toBe("qemu");
   });
 
-  it("SDK_RUNTIME_GATE=0 holds every unpinned create on the fleet", async () => {
-    expect(await createWith("1.0.0", { env: makeEnv({ SDK_RUNTIME_GATE: "0" } as Partial<Env>) })).toBe("");
+  // The kill switch used to hold every unpinned create on the fleet. The fleet
+  // is gone, so what it now does is refuse them — worth pinning, because an env
+  // var left set to 0 would take every create down rather than roll anything
+  // back.
+  it("SDK_RUNTIME_GATE=0 now refuses instead of rolling back", async () => {
+    const { resp } = await createRaw("1.0.0", {
+      env: makeEnv({ SDK_RUNTIME_GATE: "0" } as Partial<Env>),
+    });
+    expect(resp.status).toBe(410);
   });
 });
 
@@ -175,7 +186,10 @@ describe("snapshot builds route by SDK version", () => {
     orgRuntime = null;
   });
 
-  async function snapshotWith(sdkVersion: string | null, runtime: string | null = null): Promise<string> {
+  async function snapshotRaw(
+    sdkVersion: string | null,
+    runtime: string | null = null,
+  ): Promise<{ resp: Response; fetchSpy: ReturnType<typeof vi.fn> }> {
     freshOrg(runtime);
     const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
@@ -190,6 +204,11 @@ describe("snapshot builds route by SDK version", () => {
       makeEnv(),
       ctx,
     );
+    return { resp, fetchSpy };
+  }
+
+  async function snapshotWith(sdkVersion: string | null, runtime: string | null = null): Promise<string> {
+    const { resp, fetchSpy } = await snapshotRaw(sdkVersion, runtime);
     expect(resp.status, `snapshot create failed: ${await resp.clone().text()}`).toBe(200);
     return runtimeClaim(fetchSpy.mock.calls[0][1]?.headers);
   }
@@ -198,12 +217,18 @@ describe("snapshot builds route by SDK version", () => {
     expect(await snapshotWith("1.0.0")).toBe("microvm");
   });
 
-  it("leaves an older caller's template on the fleet", async () => {
-    expect(await snapshotWith("0.15.7")).toBe("");
+  // A v1 template is a whole-disk checkpoint and nothing left can restore one,
+  // so the build is refused with the same message as a create rather than
+  // producing an artifact that cannot be used.
+  it("refuses an older caller's template build", async () => {
+    const { resp } = await snapshotRaw("0.15.7");
+    expect(resp.status).toBe(410);
+    expect(((await resp.json()) as Record<string, string>).code).toBe("v1_retired");
   });
 
-  it("honours the org pin", async () => {
-    expect(await snapshotWith("1.0.0", "qemu")).toBe("qemu");
+  it("refuses a template build for an org still pinned to qemu", async () => {
+    const { resp } = await snapshotRaw("1.0.0", "qemu");
+    expect(resp.status).toBe(410);
   });
 });
 
@@ -231,8 +256,25 @@ describe("SDK routing does not pin the org", () => {
     expect(pinClaim(lastHeaders)).toBe("microvm");
   });
 
-  it("leaves the pin empty for an old SDK too", async () => {
-    expect(await createWith("0.15.7")).toBe("");
-    expect(pinClaim(lastHeaders)).toBe("");
+  // The v1 fleet is gone, so the population that used to route to it is now
+  // refused here rather than forwarded to a cell that cannot serve it.
+  it("refuses an old SDK with the migration guide, and forwards nothing", async () => {
+    const { resp, fetchSpy } = await createRaw("0.15.7");
+    expect(resp.status).toBe(410);
+    const body = (await resp.json()) as Record<string, string>;
+    expect(body.code).toBe("v1_retired");
+    expect(body.migration_guide).toBe("https://docs.opencomputer.dev/migrating-from-v1");
+    expect(body.error).toContain("@opencomputer/sdk@^1");
+    expect(fetchSpy, "a retired create must never reach a cell").not.toHaveBeenCalled();
+  });
+
+  it("refuses a client that does not announce a version at all", async () => {
+    const { resp } = await createRaw(null);
+    expect(resp.status).toBe(410);
+  });
+
+  it("refuses an org still pinned to qemu, pin or no pin", async () => {
+    const { resp } = await createRaw("1.2.3", { runtime: "qemu" });
+    expect(resp.status).toBe(410);
   });
 });

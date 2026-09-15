@@ -42,6 +42,7 @@ export interface BuiltAgentArtifact {
   httpConnections: HttpConnectionManifest[];
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
+  models: Array<{ provider: string; model: string }>;
   body: Buffer;
   digest: string;
   elapsedMs: number;
@@ -465,9 +466,7 @@ export default function Agent() {
         private: true,
         type: "module",
         scripts: {
-          ...(spa
-            ? { "dev:web": "vite", build: "tsc -b && vite build" }
-            : {}),
+          ...(spa ? { "dev:web": "vite", build: "tsc -b && vite build" } : {}),
           session: "opencomputer session",
           deploy: "opencomputer deploy",
         },
@@ -787,6 +786,43 @@ function literalHookIds(source: string, hook: string): string[] {
   return [...source.matchAll(pattern)].map((match) => match[1]!).sort();
 }
 
+/**
+ * The grant a managed service belongs to.
+ *
+ * The platform gates a session's connections on the PROVIDER, not the service:
+ * gmail, calendar, drive and sheets are one Google grant, and github is its
+ * own. An agent declares the service it uses, because that is what it calls;
+ * the deployment records the provider, because that is what was consented to.
+ */
+const MANAGED_SERVICE_PROVIDERS: Readonly<Record<string, string>> = {
+  gmail: "google",
+  google: "google",
+  calendar: "google",
+  drive: "google",
+  sheets: "google",
+  github: "github",
+};
+
+function declaredServiceProviders(agentSource: string): string[] {
+  const declared = literalHookIds(agentSource, "useService");
+  const unknown = declared.find(
+    (service) => !MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()],
+  );
+  if (unknown) {
+    throw new Error(
+      `useService(${JSON.stringify(unknown)}) names no managed service; ` +
+        `expected one of ${Object.keys(MANAGED_SERVICE_PROVIDERS).join(", ")}`,
+    );
+  }
+  return [
+    ...new Set(
+      declared.map(
+        (service) => MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()]!,
+      ),
+    ),
+  ];
+}
+
 function definedConnectionBindings(
   source: string,
   path: string,
@@ -903,11 +939,12 @@ function definedMcpServers(
  */
 type MemoryAuthoringFunction = "defineMemory" | "documentMemory" | "httpMemory";
 
-const MEMORY_AUTHORING_FUNCTIONS: ReadonlySet<string> = new Set<MemoryAuthoringFunction>([
-  "defineMemory",
-  "documentMemory",
-  "httpMemory",
-]);
+const MEMORY_AUTHORING_FUNCTIONS: ReadonlySet<string> =
+  new Set<MemoryAuthoringFunction>([
+    "defineMemory",
+    "documentMemory",
+    "httpMemory",
+  ]);
 
 const AGENT_PACKAGE = "@opencomputer/agent";
 
@@ -956,8 +993,14 @@ class MemorySourceResolver {
     let file = this.files.get(path);
     if (!file) {
       const module = this.modules.find((candidate) => candidate.path === path);
-      if (!module) throw new Error(`Agent source module ${path} is not in the build`);
-      file = ts.createSourceFile(path, module.source, ts.ScriptTarget.Latest, true);
+      if (!module)
+        throw new Error(`Agent source module ${path} is not in the build`);
+      file = ts.createSourceFile(
+        path,
+        module.source,
+        ts.ScriptTarget.Latest,
+        true,
+      );
       this.files.set(path, file);
     }
     return file;
@@ -977,7 +1020,9 @@ class MemorySourceResolver {
       ...["ts", "tsx", "js", "jsx", "mts", "mjs", "cts", "cjs"].map(
         (extension) => `${base}.${extension}`,
       ),
-      ...["ts", "tsx", "js", "jsx"].map((extension) => `${base}/index.${extension}`),
+      ...["ts", "tsx", "js", "jsx"].map(
+        (extension) => `${base}/index.${extension}`,
+      ),
     ];
     return candidates.find((candidate) =>
       this.modules.some((module) => module.path === candidate),
@@ -1006,7 +1051,8 @@ class MemorySourceResolver {
           : undefined;
       if (!statement.exportClause) {
         // export * from "..."
-        for (const [name, fn] of from?.functions ?? []) result.functions.set(name, fn);
+        for (const [name, fn] of from?.functions ?? [])
+          result.functions.set(name, fn);
         for (const name of from?.namespaces ?? []) result.namespaces.add(name);
         continue;
       }
@@ -1045,10 +1091,16 @@ class MemorySourceResolver {
     for (const statement of this.file(path).statements) {
       if (!ts.isImportDeclaration(statement)) continue;
       const clause = statement.importClause;
-      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(statement.moduleSpecifier)) {
+      if (
+        !clause ||
+        clause.isTypeOnly ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
         continue;
       }
-      const from = this.exportsOf(this.target(path, statement.moduleSpecifier.text));
+      const from = this.exportsOf(
+        this.target(path, statement.moduleSpecifier.text),
+      );
       if (!from.functions.size && !from.namespaces.size) continue;
       const named = clause.namedBindings;
       if (named && ts.isNamespaceImport(named)) {
@@ -1059,7 +1111,8 @@ class MemorySourceResolver {
           const imported = (specifier.propertyName ?? specifier.name).text;
           const fn = from.functions.get(imported);
           if (fn) bindings.functions.set(specifier.name.text, fn);
-          if (from.namespaces.has(imported)) bindings.namespaces.add(specifier.name.text);
+          if (from.namespaces.has(imported))
+            bindings.namespaces.add(specifier.name.text);
         }
       }
     }
@@ -1111,12 +1164,19 @@ function assertMemoryFunctionsCalledDirectly(
   const bindings = resolver.bindingsOf(path);
   const visit = (node: ts.Node): void => {
     if (isTypeOnlyContext(node)) return;
-    if (ts.isExportDeclaration(node) && node.moduleSpecifier && node.exportClause &&
-        ts.isNamedExports(node.exportClause) && ts.isStringLiteral(node.moduleSpecifier)) {
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      node.exportClause &&
+      ts.isNamedExports(node.exportClause) &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
       // export { a as b } from "...": an aliased re-export of an authoring
       // function would let importers call it under a name the compiler does
       // not register from.
-      const from = resolver.exportsOf(resolver.target(path, node.moduleSpecifier.text));
+      const from = resolver.exportsOf(
+        resolver.target(path, node.moduleSpecifier.text),
+      );
       for (const specifier of node.exportClause.elements) {
         if (specifier.isTypeOnly || !specifier.propertyName) continue;
         const imported = specifier.propertyName.text;
@@ -1132,7 +1192,8 @@ function assertMemoryFunctionsCalledDirectly(
     if (
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+        (ts.isIdentifier(node.expression) &&
+          node.expression.text === "require"))
     ) {
       const argument = node.arguments[0];
       if (argument && ts.isStringLiteralLike(argument)) {
@@ -1166,13 +1227,21 @@ function assertMemoryFunctionsCalledDirectly(
           );
         }
       }
-      if (bindings.namespaces.has(node.text) && !ts.isNamespaceImport(parent) &&
-          !(ts.isImportSpecifier(parent) && parent.name === node)) {
+      if (
+        bindings.namespaces.has(node.text) &&
+        !ts.isNamespaceImport(parent) &&
+        !(ts.isImportSpecifier(parent) && parent.name === node)
+      ) {
         const namespace = node.text;
-        if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        if (
+          ts.isPropertyAccessExpression(parent) &&
+          parent.expression === node
+        ) {
           const member = parent.name.text;
           if (MEMORY_AUTHORING_FUNCTIONS.has(member)) {
-            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            const called =
+              ts.isCallExpression(parent.parent) &&
+              parent.parent.expression === parent;
             throw new Error(
               called
                 ? `${path} calls ${namespace}.${member}(); ${DIRECT_CALL_HINT(member)}`
@@ -1181,7 +1250,10 @@ function assertMemoryFunctionsCalledDirectly(
           }
           return;
         }
-        if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+        if (
+          ts.isElementAccessExpression(parent) &&
+          parent.expression === node
+        ) {
           const key = parent.argumentExpression;
           if (!ts.isStringLiteralLike(key)) {
             throw new Error(
@@ -1189,7 +1261,9 @@ function assertMemoryFunctionsCalledDirectly(
             );
           }
           if (MEMORY_AUTHORING_FUNCTIONS.has(key.text)) {
-            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            const called =
+              ts.isCallExpression(parent.parent) &&
+              parent.parent.expression === parent;
             throw new Error(
               called
                 ? `${path} calls ${namespace}[${JSON.stringify(key.text)}](); ${DIRECT_CALL_HINT(key.text)}`
@@ -1238,10 +1312,7 @@ function literalObjectEntries(
         `${label} cannot use methods or accessors; write each option as a literal property`,
       );
     }
-    return [
-      staticPropertyName(property.name, label),
-      property.initializer,
-    ];
+    return [staticPropertyName(property.name, label), property.initializer];
   });
 }
 
@@ -1415,9 +1486,15 @@ function definedMemory(
  * naming both origins.
  */
 export function mergeMemoryDeclarations(
-  entries: ReadonlyArray<{ origin: string; memory: readonly MemoryDeclaration[] }>,
+  entries: ReadonlyArray<{
+    origin: string;
+    memory: readonly MemoryDeclaration[];
+  }>,
 ): MemoryDeclaration[] {
-  const merged = new Map<string, { origin: string; declaration: MemoryDeclaration }>();
+  const merged = new Map<
+    string,
+    { origin: string; declaration: MemoryDeclaration }
+  >();
   for (const { origin, memory } of entries) {
     for (const declaration of memory) {
       const existing = merged.get(declaration.id);
@@ -1609,7 +1686,9 @@ function replyDestinationsManifest(
         throw new Error(`${path} has invalid destination ${name}`);
       }
       if (!ts.isObjectLiteralExpression(property.initializer)) {
-        throw new Error(`${path} destination ${name} must be an object literal`);
+        throw new Error(
+          `${path} destination ${name} must be an object literal`,
+        );
       }
       const type = literalStringValue(
         objectProperty(property.initializer, "type"),
@@ -1636,7 +1715,10 @@ function channelDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineChannel() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} channel id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} channel id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid channel id`);
   }
@@ -1710,7 +1792,9 @@ function channelDefinition(
         throw new Error(`${path} has invalid destination ${name}`);
       }
       if (!ts.isObjectLiteralExpression(property.initializer)) {
-        throw new Error(`${path} destination ${name} must be an object literal`);
+        throw new Error(
+          `${path} destination ${name} must be an object literal`,
+        );
       }
       const destinationType = literalStringValue(
         objectProperty(property.initializer, "type"),
@@ -1726,7 +1810,8 @@ function channelDefinition(
       ) {
         throw new Error(`${path} destination ${name} is unsupported`);
       }
-      const required = visibility === "private" ? "groups:read" : "channels:read";
+      const required =
+        visibility === "private" ? "groups:read" : "channels:read";
       if (!scopes.includes(required) || !scopes.includes("chat:write")) {
         throw new Error(
           `${path} destination ${name} requires ${required} and chat:write`,
@@ -1767,7 +1852,8 @@ function channelRegistration(
     "channel",
   );
   const channel = channels.get(channelId);
-  if (!channel) throw new Error(`${path} references unknown channel ${channelId}`);
+  if (!channel)
+    throw new Error(`${path} references unknown channel ${channelId}`);
   const triggers = [
     ...new Set(
       literalStringArray(objectProperty(input, "on"), `${path} triggers`),
@@ -1792,7 +1878,9 @@ function channelRegistration(
     }
     const event = triggerEvents[trigger];
     if (!event || !channel.events.includes(event)) {
-      throw new Error(`${path} trigger ${trigger} is not declared by ${channelId}`);
+      throw new Error(
+        `${path} trigger ${trigger} is not declared by ${channelId}`,
+      );
     }
   }
   return {
@@ -1812,7 +1900,10 @@ function outboxDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineOutbox() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} outbox id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} outbox id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid outbox id`);
   }
@@ -1822,7 +1913,9 @@ function outboxDefinition(
   }
   const channelExpression = objectProperty(delivery, "channel");
   if (!channelExpression || !ts.isIdentifier(channelExpression)) {
-    throw new Error(`${path} delivery.channel must reference an imported channel`);
+    throw new Error(
+      `${path} delivery.channel must reference an imported channel`,
+    );
   }
   const channelId = importedResourceId(
     source,
@@ -1907,7 +2000,10 @@ function scheduleDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineSchedule() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} schedule id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} schedule id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid schedule id`);
   }
@@ -1956,7 +2052,10 @@ function scheduleDefinition(
     throw new Error(`${path} overlap must be "skip" or "allow"`);
   }
   const dispatchExpression = objectProperty(input, "dispatch");
-  if (!dispatchExpression || !ts.isObjectLiteralExpression(dispatchExpression)) {
+  if (
+    !dispatchExpression ||
+    !ts.isObjectLiteralExpression(dispatchExpression)
+  ) {
     throw new Error(`${path} dispatch must be an object literal`);
   }
   const textExpression = objectProperty(dispatchExpression, "text");
@@ -2000,20 +2099,25 @@ export async function readProjectResources(
 ): Promise<BuiltProjectResources> {
   const opencomputer = resolve(projectRoot, "opencomputer");
   const channelDefinitions = await Promise.all(
-    (await typescriptFiles(resolve(opencomputer, "channels"))).map(async (path) =>
-      channelDefinition(await readFile(path, "utf8"), path),
+    (await typescriptFiles(resolve(opencomputer, "channels"))).map(
+      async (path) => channelDefinition(await readFile(path, "utf8"), path),
     ),
   );
-  const channels = new Map(channelDefinitions.map((channel) => [channel.id, channel]));
+  const channels = new Map(
+    channelDefinitions.map((channel) => [channel.id, channel]),
+  );
   if (channels.size !== channelDefinitions.length) {
     throw new Error("Project channel IDs must be unique");
   }
   const outboxDefinitions = await Promise.all(
-    (await typescriptFiles(resolve(opencomputer, "outboxes"))).map(async (path) =>
-      outboxDefinition(await readFile(path, "utf8"), path, channels),
+    (await typescriptFiles(resolve(opencomputer, "outboxes"))).map(
+      async (path) =>
+        outboxDefinition(await readFile(path, "utf8"), path, channels),
     ),
   );
-  const outboxes = new Map(outboxDefinitions.map((outbox) => [outbox.id, outbox]));
+  const outboxes = new Map(
+    outboxDefinitions.map((outbox) => [outbox.id, outbox]),
+  );
   if (outboxes.size !== outboxDefinitions.length) {
     throw new Error("Project outbox IDs must be unique");
   }
@@ -2042,7 +2146,9 @@ export async function readProjectResources(
         ),
       );
     }
-    for (const path of await typescriptFiles(resolve(agent.root, "schedules"))) {
+    for (const path of await typescriptFiles(
+      resolve(agent.root, "schedules"),
+    )) {
       schedules.push(
         scheduleDefinition(await readFile(path, "utf8"), path, agent.localId),
       );
@@ -2054,16 +2160,26 @@ export async function readProjectResources(
   }
   const manifest: ProjectResourceManifest = {
     version: 1,
-    channels: channelDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
-    channelRegistrations: channelRegistrations.sort((left, right) =>
-      `${left.channelId}:${left.agentId}`.localeCompare(`${right.channelId}:${right.agentId}`),
+    channels: channelDefinitions.sort((left, right) =>
+      left.id.localeCompare(right.id),
     ),
-    outboxes: outboxDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
+    channelRegistrations: channelRegistrations.sort((left, right) =>
+      `${left.channelId}:${left.agentId}`.localeCompare(
+        `${right.channelId}:${right.agentId}`,
+      ),
+    ),
+    outboxes: outboxDefinitions.sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
     outboxRegistrations: outboxRegistrations.sort((left, right) =>
-      `${left.outboxId}:${left.agentId}`.localeCompare(`${right.outboxId}:${right.agentId}`),
+      `${left.outboxId}:${left.agentId}`.localeCompare(
+        `${right.outboxId}:${right.agentId}`,
+      ),
     ),
     schedules: schedules.sort((left, right) =>
-      `${left.agentId}:${left.id}`.localeCompare(`${right.agentId}:${right.id}`),
+      `${left.agentId}:${left.id}`.localeCompare(
+        `${right.agentId}:${right.id}`,
+      ),
     ),
   };
   const serialized = JSON.stringify(manifest);
@@ -2327,7 +2443,9 @@ function definedGitHubConnections(
       );
       for (const property of input.properties) {
         if (!ts.isPropertyAssignment(property)) {
-          throw new Error(`Connection ${id} cannot use spreads or shorthand properties`);
+          throw new Error(
+            `Connection ${id} cannot use spreads or shorthand properties`,
+          );
         }
         const name = staticPropertyName(property.name, `Connection ${id}`);
         if (name !== "id" && name !== "provider") {
@@ -2354,7 +2472,9 @@ function definedGitHubConnections(
       }
       for (const property of options.properties) {
         if (!ts.isPropertyAssignment(property)) {
-          throw new Error(`Connection ${id} githubApp() options must be static`);
+          throw new Error(
+            `Connection ${id} githubApp() options must be static`,
+          );
         }
         if (
           staticPropertyName(property.name, `Connection ${id} githubApp()`) !==
@@ -2450,6 +2570,44 @@ function staticModelSelections(
     ts.ScriptKind.TS,
   );
   const selections: Array<{ provider: string; model: string }> = [];
+  const selectionValues = (
+    value: ts.Expression,
+  ): Array<{ provider: string; model: string }> | undefined => {
+    if (ts.isStringLiteralLike(value)) {
+      return [{ provider: "openrouter", model: value.text }];
+    }
+    if (ts.isObjectLiteralExpression(value)) {
+      let provider: string | undefined;
+      let model: string | undefined;
+      for (const property of value.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = ts.isIdentifier(property.name)
+          ? property.name.text
+          : ts.isStringLiteralLike(property.name)
+            ? property.name.text
+            : undefined;
+        if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
+        if (name === "provider") provider = property.initializer.text;
+        if (name === "model") model = property.initializer.text;
+      }
+      return provider && model ? [{ provider, model }] : undefined;
+    }
+    if (ts.isConditionalExpression(value)) {
+      const whenTrue = selectionValues(value.whenTrue);
+      const whenFalse = selectionValues(value.whenFalse);
+      return whenTrue && whenFalse ? [...whenTrue, ...whenFalse] : undefined;
+    }
+    if (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertionExpression(value) ||
+      ts.isSatisfiesExpression(value) ||
+      ts.isNonNullExpression(value)
+    ) {
+      return selectionValues(value.expression);
+    }
+    return undefined;
+  };
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -2457,36 +2615,33 @@ function staticModelSelections(
       node.expression.text === "useModel"
     ) {
       const value = node.arguments[0];
-      if (value && ts.isStringLiteralLike(value)) {
-        selections.push({ provider: "openrouter", model: value.text });
-      } else if (value && ts.isObjectLiteralExpression(value)) {
-        let provider: string | undefined;
-        let model: string | undefined;
-        for (const property of value.properties) {
-          if (!ts.isPropertyAssignment(property)) continue;
-          const name = ts.isIdentifier(property.name)
-            ? property.name.text
-            : ts.isStringLiteralLike(property.name)
-              ? property.name.text
-              : undefined;
-          if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
-          if (name === "provider") provider = property.initializer.text;
-          if (name === "model") model = property.initializer.text;
+      if (value) {
+        const values = selectionValues(value);
+        if (!values) {
+          throw new Error(
+            "useModel() must use a literal model selection or a conditional whose branches are literal selections",
+          );
         }
-        if (provider && model) selections.push({ provider, model });
+        selections.push(...values);
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
-  return selections.filter(
-    (selection, index) =>
-      selections.findIndex(
-        (candidate) =>
-          candidate.provider === selection.provider &&
-          candidate.model === selection.model,
-      ) === index,
-  );
+  return selections
+    .filter(
+      (selection, index) =>
+        selections.findIndex(
+          (candidate) =>
+            candidate.provider === selection.provider &&
+            candidate.model === selection.model,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.provider}/${left.model}`.localeCompare(
+        `${right.provider}/${right.model}`,
+      ),
+    );
 }
 
 /**
@@ -2530,6 +2685,59 @@ export const githubApp = (options) => {
   }
   return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
 };
+export const callService = async (request) => {
+  const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer managed connections are unavailable");
+  if (!request?.path?.startsWith("/")) throw new Error("Service requests require an absolute path");
+  const service = String(request.service ?? "").trim().toLowerCase();
+  if (!service) throw new Error("A service request needs a service");
+  const provider = service === "github" ? "github" : "google";
+  const root = base.endsWith("/") ? base.slice(0, -1) : base;
+  const response = await fetch(root + "/" + provider + "/fetch", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({
+      service,
+      ...(request.label ? { label: request.label } : {}),
+      method: (request.method ?? "GET").toUpperCase(),
+      path: request.path,
+      ...(request.headers ? { headers: request.headers } : {}),
+      ...(request.body === undefined ? {} : { body: request.body }),
+    }),
+    ...(request.signal ? { signal: request.signal } : {}),
+  });
+  // A managed connection answers with an envelope wrapped in a 200. Open it so
+  // callers see the service's real status instead of the proxy's.
+  if (!response.ok) return response;
+  const envelope = await response.clone().json().catch(() => null);
+  if (!envelope || typeof envelope.status !== "number" || typeof envelope.body !== "string") return response;
+  const headers = {};
+  for (const [name, value] of Object.entries(envelope.headers || {})) {
+    if (typeof value === "string") headers[name] = value;
+  }
+  return new Response(envelope.body, { status: envelope.status, headers });
+};
+
+export const listServices = async (options = {}) => {
+  const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer managed connections are unavailable");
+  const root = base.endsWith("/") ? base.slice(0, -1) : base;
+  const response = await fetch(root + "/opencomputer/fetch", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ action: "list" }),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (!response.ok) throw new Error("Listing connected services failed: " + response.status + " " + (await response.text()).slice(0, 300));
+  const body = await response.json();
+  const provider = options.provider ? String(options.provider).trim().toLowerCase() : "";
+  return (body.connections ?? []).filter((connection) =>
+    (!provider || String(connection.provider ?? "").toLowerCase() === provider) &&
+    (options.connectedOnly === false || connection.status === "connected"));
+};
+
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
   if (input.provider) {
@@ -2622,6 +2830,7 @@ export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useConnection = (connection) => hooks().useConnection(connection);
+export const useService = (service) => hooks().useService?.(service);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
@@ -2667,10 +2876,10 @@ async function bundleAgentSourceModules(
       {
         name: "opencomputer-agent-runtime",
         setup(build) {
-          build.onResolve(
-            { filter: /^@opencomputer\/agent$/ },
-            () => ({ path: "api", namespace: "opencomputer-agent-runtime" }),
-          );
+          build.onResolve({ filter: /^@opencomputer\/agent$/ }, () => ({
+            path: "api",
+            namespace: "opencomputer-agent-runtime",
+          }));
           build.onLoad(
             { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
             () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
@@ -2937,7 +3146,15 @@ the product or support surface presented to users.
         tools,
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
-        connections: allConnections.map((connection) => connection.id).sort(),
+        // Declared HTTP connections AND managed-service grants: the platform
+        // reads one list, and a provider grant absent from it makes every
+        // connected mailbox invisible to listServices().
+        connections: [
+          ...new Set([
+            ...allConnections.map((connection) => connection.id),
+            ...declaredServiceProviders(agentSource),
+          ]),
+        ].sort(),
         httpConnections,
         githubConnections,
         mcpServers: [
@@ -2991,11 +3208,13 @@ export async function buildAgentArtifact(
     httpConnections?: HttpConnectionManifest[];
     githubConnections?: GitHubConnectionManifest[];
     memory?: MemoryDeclaration[];
+    models?: Array<{ provider: string; model: string }>;
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const githubConnections = reactive.githubConnections ?? [];
   const memory = reactive.memory ?? [];
+  const models = reactive.models ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -3011,6 +3230,7 @@ export async function buildAgentArtifact(
     httpConnections,
     githubConnections,
     memory,
+    models,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),

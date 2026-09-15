@@ -35,6 +35,9 @@ import {
   RUNTIME_MICROVM,
   SDK_VERSION_HEADER,
   effectiveRuntime,
+  isRetiredRuntime,
+  v1RetiredError,
+  V1_RETIRED_STATUS,
   isMicrovmWorkerID,
 } from "./runtime_gate";
 import {
@@ -1015,11 +1018,27 @@ async function loadCreateContextUncoalesced(
         puts.push(coloPut("count", orgID, { count: activeCount, cachedAtMs: nowMs }, CONCURRENCY_STALE_MAX_MS / 1000));
       } else {
         cells = (res[i].results as CellRow[]) ?? [];
-        activeCellsCache = { cells, cachedAtMs: nowMs };
-        // Entry TTL is the STALE window, not CELL_TTL_MS: an entry that expires
-        // at 5s can never be served stale, which is the whole point of the
-        // branch above. Freshness is decided by cachedAtMs on read.
-        puts.push(coloPut("cells", "active", { cells, cachedAtMs: nowMs }, CELL_STALE_MAX_MS / 1000));
+        // An empty list is never cached. readCellRow already refuses to cache a
+        // miss — "caching a null would let one failed read blind every isolate
+        // in the colo to a live cell" — but the active-cells LIST had no such
+        // guard, so an empty result would be served for CELL_TTL_MS locally and
+        // CELL_STALE_MAX_MS colo-wide. There is no confirmed incident behind
+        // this; it is the same asymmetry, closed.
+        if (cells.length === 0) {
+          console.log(
+            JSON.stringify({
+              level: "warn",
+              msg: "active-cells query returned no rows — not caching",
+              orgID,
+            }),
+          );
+        } else {
+          activeCellsCache = { cells, cachedAtMs: nowMs };
+          // Entry TTL is the STALE window, not CELL_TTL_MS: an entry that expires
+          // at 5s can never be served stale, which is the whole point of the
+          // branch above. Freshness is decided by cachedAtMs on read.
+          puts.push(coloPut("cells", "active", { cells, cachedAtMs: nowMs }, CELL_STALE_MAX_MS / 1000));
+        }
       }
     }
     await Promise.all(puts);
@@ -2070,6 +2089,10 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // reads its backend off. Reading org.runtime directly at any of those points
   // again would route the create one way and label it another.
   const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
+  // The v1 fleet it would route to no longer exists. Refused here rather than
+  // forwarded, so the caller gets the upgrade instruction instead of whatever
+  // a create against a shut-down fleet happens to look like.
+  if (isRetiredRuntime(runtime)) return json(v1RetiredError(), V1_RETIRED_STATUS);
 
   // Read body once — used for size-gating, the hard-pin cell peek, and the
   // verbatim forward to the CP.
@@ -2137,6 +2160,43 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   mark("gatecell");
   if (gate) return gate;
   if (!cell) {
+    // Why, not just that. This returned a bare 503 and logged nothing, so a
+    // customer could report "no cells available with capacity" and a two-week
+    // search of the edge dataset would find no trace of it — the string existed
+    // only in their client. Four different conditions produce this refusal
+    // (below); without naming which one fired, they are indistinguishable.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const observedSec = Math.floor(cellsAtMs / 1000);
+    console.log(
+      JSON.stringify({
+        level: "error",
+        msg: "create refused: no cell passed the health gate",
+        orgID: caller.orgID,
+        requestedCellID,
+        homeCell: org.home_cell,
+        considered: cells.length,
+        // How stale the snapshot itself was, which is its own failure mode:
+        // an empty or old list is served for up to CELL_STALE_MAX_MS.
+        snapshotAgeSec: nowSec - observedSec,
+        cells: cells.map((c) => ({
+          cell: c.cell_id,
+          status: c.status,
+          available: c.available_workers,
+          heartbeatAgeSec:
+            c.capacity_updated_at == null ? null : observedSec - c.capacity_updated_at,
+          why:
+            c.status !== "active"
+              ? "not active"
+              : c.capacity_updated_at == null
+                ? "no capacity report"
+                : observedSec - c.capacity_updated_at > CAPACITY_FRESH_SEC
+                  ? "heartbeat stale"
+                  : c.available_workers <= 0
+                    ? "no available workers"
+                    : "healthy",
+        })),
+      }),
+    );
     return json(
       requestedCellID
         ? { error: `cell ${requestedCellID} is not available` }
@@ -3408,6 +3468,9 @@ async function proxyToCellAuthed(
   // restore: a customer would migrate successfully and then find every template
   // they built unusable. Same decision, same inputs as createSandbox.
   const runtime = effectiveRuntime(env, org.runtime, req.headers.get(SDK_VERSION_HEADER));
+  // A template built for v1 is a whole-disk checkpoint, which nothing left can
+  // restore. Same refusal as a create.
+  if (isRetiredRuntime(runtime)) return json(v1RetiredError(), V1_RETIRED_STATUS);
 
   const cell = opts.cellId
     ? await lookupCell(env, opts.cellId)

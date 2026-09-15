@@ -148,6 +148,11 @@ func TestOCRoutesBeatTheAgentCatchAll(t *testing.T) {
 		ocFSPrefix + "stat", ocFSPrefix + "download", ocFSPrefix + "upload",
 		ocStatsPath, ocRebootPath, ocPortPrefix + "3000/",
 		ocRunPath, ocClaimPath, ocClaimRunPath,
+		// Absent from this list until 2026-09-14, and the omission was not
+		// theoretical: a published image that did not serve /oc/secrets failed
+		// every create carrying a secret or an egress allowlist, with the
+		// unexplained 415 this test exists to catch.
+		ocSecretsPath, ocSecretsUpdatePath, ocEnvsPath,
 	} {
 		_, pattern := mux.Handler(httptest.NewRequest(http.MethodPost, path, nil))
 		if pattern == "/" {

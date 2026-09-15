@@ -92,6 +92,30 @@ RESOURCES="[{\"minimumMemoryInMiB\":${MEMORY_MB}}]"
 # instead of wherever the service would otherwise default.
 LOGGING="{\"cloudWatch\":{\"logGroup\":\"/aws/lambda/microvms/${NAME}\"}}"
 
+# Egress connectors are carried explicitly on every update.
+#
+# They were not, and omitting them on an update is not "leave as it was" — the
+# same way base-image-arn and build-role-arn are required on every update. A
+# routine rebuild would have detached INTERNET_EGRESS from the image and every
+# new sandbox would have booted with no route off the box, which looks like the
+# customer's code hanging rather than like a deploy. Read what the image already
+# has and pass it back; fall back to AWS's internet connector for a new image.
+EXISTING_EGRESS="$(aws lambda-microvms list-microvm-image-versions \
+  --image-identifier "$IMAGE_ARN" --region "$REGION" \
+  --query 'items[0].egressNetworkConnectors' --output json 2>/dev/null || echo 'null')"
+if [[ -z "$EXISTING_EGRESS" || "$EXISTING_EGRESS" == "null" || "$EXISTING_EGRESS" == "[]" ]]; then
+  EGRESS="${MICROVM_EGRESS_CONNECTORS:-arn:aws:lambda:${REGION}:aws:network-connector:aws-network-connector:INTERNET_EGRESS}"
+else
+  EGRESS="$(printf '%s' "$EXISTING_EGRESS" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)))')"
+fi
+echo "egress connectors: ${EGRESS}"
+
+# The stamp that makes drift detectable. The image API has no tags, so the guest
+# source hash rides in the description and manifest.py check-drift compares it
+# against what the checkout would build. Without it, "is this image current?"
+# has no answer short of rebuilding and diffing binaries.
+DESCRIPTION="${MICROVM_IMAGE_DESCRIPTION:-guest=unstamped}"
+
 common=(
   --code-artifact "uri=${DEST}"
   --base-image-arn "$BASE_IMAGE_ARN"
@@ -100,6 +124,8 @@ common=(
   --cpu-configurations "$CPU"
   --resources "$RESOURCES"
   --logging "$LOGGING"
+  --description "$DESCRIPTION"
+  --egress-network-connectors "$EGRESS"
   --region "$REGION"
 )
 

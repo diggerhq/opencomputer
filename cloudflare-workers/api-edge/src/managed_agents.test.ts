@@ -1391,6 +1391,44 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("preserves the unavailable model id in deployment validation errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "invalid_model_selection",
+              message:
+                'Model "openrouter/anthropic/claude-sonnet-999" is not available in the OpenRouter catalog',
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/deployments/test",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "invalid_model_selection",
+        message:
+          'Model "openrouter/anthropic/claude-sonnet-999" is not available in the OpenRouter catalog',
+      },
+    });
+  });
+
   it("does not expose arbitrary private backend routes", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -1410,7 +1448,25 @@ describe("managed agents proxy", () => {
   });
 
   it("uploads source without exposing provider details to the CLI", async () => {
-    const source = JSON.stringify({ version: 1, files: [] });
+    const source = JSON.stringify({
+      version: 1,
+      files: [
+        {
+          path: ".opencomputer/reactive.json",
+          content: btoa(
+            JSON.stringify({
+              version: 2,
+              models: [
+                {
+                  provider: "openrouter",
+                  model: "anthropic/claude-sonnet-5",
+                },
+              ],
+            }),
+          ),
+        },
+      ],
+    });
     const digestBytes = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(source),
@@ -1509,6 +1565,12 @@ describe("managed agents proxy", () => {
                 provider: { kind: "document", maxBytes: 8192 },
               },
             ],
+            models: [
+              {
+                provider: "openrouter",
+                model: "anthropic/claude-sonnet-5",
+              },
+            ],
             source: {
               digest,
               size: source.length,
@@ -1564,6 +1626,12 @@ describe("managed agents proxy", () => {
           id: "requirements",
           description: "Verified requirements.",
           provider: { kind: "document", maxBytes: 8192 },
+        },
+      ],
+      models: [
+        {
+          provider: "openrouter",
+          model: "anthropic/claude-sonnet-5",
         },
       ],
     });

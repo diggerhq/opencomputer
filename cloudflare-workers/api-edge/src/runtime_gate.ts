@@ -128,3 +128,51 @@ export function isMicrovmWorkerID(workerID: string | null | undefined): boolean 
   if (!workerID) return false;
   return MICROVM_WORKER_PREFIXES.some((p) => workerID.startsWith(p));
 }
+
+// ── v1 retirement ────────────────────────────────────────────────────────────
+
+/**
+ * The v1 fleet is gone.
+ *
+ * `effectiveRuntime` still answers "" for a caller that routes to QEMU, because
+ * that answer is what the capability token has always carried and the cell
+ * still reads. What changed is that there is no longer anything on the other
+ * end: the Azure workers that served it have been shut down. So the decision is
+ * unchanged and the *outcome* is refusal — a request that would have gone to
+ * QEMU is answered here rather than forwarded to a fleet that cannot serve it.
+ *
+ * Kept beside the routing it mirrors so the two cannot drift: if the threshold
+ * moves, the population that gets this message moves with it.
+ */
+export function isRetiredRuntime(runtime: string): boolean {
+  return runtime !== RUNTIME_MICROVM;
+}
+
+/** Where a caller is sent to fix it. One string, used by every refusal. */
+export const V1_MIGRATION_GUIDE_URL =
+  "https://docs.opencomputer.dev/migrating-from-v1";
+
+/**
+ * What a retired-runtime caller is told.
+ *
+ * Names the cause, the fix, and where the fix is written down. `code` is there
+ * so a caller can branch on this without matching prose, and the SDK can turn
+ * it into a typed error later without another API change.
+ */
+export function v1RetiredError(): {
+  error: string;
+  code: string;
+  migration_guide: string;
+} {
+  return {
+    error:
+      "OpenComputer v1 sandboxes have been retired. Upgrade to the v2 SDK — " +
+      "`npm install @opencomputer/sdk@^1` (or `pip install -U opencomputer`) — " +
+      `and see ${V1_MIGRATION_GUIDE_URL}. Existing v1 sandboxes are no longer reachable.`,
+    code: "v1_retired",
+    migration_guide: V1_MIGRATION_GUIDE_URL,
+  };
+}
+
+/** The status a retired-runtime request is refused with: the fleet is Gone. */
+export const V1_RETIRED_STATUS = 410;
