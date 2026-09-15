@@ -66,6 +66,7 @@ async function registerBuiltDeployment(
     connections: built.connections,
     httpConnections: built.httpConnections,
     memory: built.memory,
+    models: built.models,
     ...(projectDeployment ? { projectDeployment } : {}),
     source: {
       digest: built.digest,

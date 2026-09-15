@@ -164,7 +164,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    if (backendCode === "destination_verification_failed") {
+    if (backendCode === "invalid_model_selection") {
+      message = backendMessage || "The deployment selects an unavailable model.";
+    } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
       ) {
@@ -360,6 +362,26 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(Array.isArray(deployment.models)
+      ? {
+          models: deployment.models.flatMap((value) => {
+            const model = record(value);
+            return model &&
+              typeof model.provider === "string" &&
+              typeof model.model === "string"
+              ? [{ provider: model.provider, model: model.model }]
+              : [];
+          }),
+        }
+      : {}),
+    ...(record(deployment.defaultModel)
+      ? {
+          defaultModel: {
+            provider: record(deployment.defaultModel)?.provider,
+            model: record(deployment.defaultModel)?.model,
+          },
+        }
+      : {}),
     ...(Array.isArray(deployment.memory)
       ? { memory: deployment.memory.map(publicMemoryDeclaration) }
       : {}),
@@ -1416,6 +1438,60 @@ async function sha256Hex(value: Uint8Array): Promise<string> {
     .join("");
 }
 
+function deploymentModelsFromArtifact(
+  source: string,
+): Array<{ provider: string; model: string }> | null {
+  let bundle: unknown;
+  try {
+    bundle = JSON.parse(source);
+  } catch {
+    return null;
+  }
+  const files = record(bundle)?.files;
+  if (!Array.isArray(files)) return null;
+  const manifestFile = files.find(
+    (value) => record(value)?.path === ".opencomputer/reactive.json",
+  );
+  if (!manifestFile) return [];
+  const content = record(manifestFile)?.content;
+  if (typeof content !== "string") return null;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(atob(content));
+  } catch {
+    return null;
+  }
+  const models = record(manifest)?.models;
+  if (!Array.isArray(models) || models.length > 100) return null;
+  const result: Array<{ provider: string; model: string }> = [];
+  for (const value of models) {
+    const model = record(value);
+    if (
+      !model ||
+      typeof model.provider !== "string" ||
+      typeof model.model !== "string" ||
+      !model.provider ||
+      !model.model
+    ) {
+      return null;
+    }
+    if (
+      !result.some(
+        (candidate) =>
+          candidate.provider === model.provider &&
+          candidate.model === model.model,
+      )
+    ) {
+      result.push({ provider: model.provider, model: model.model });
+    }
+  }
+  return result.sort((left, right) =>
+    `${left.provider}/${left.model}`.localeCompare(
+      `${right.provider}/${right.model}`,
+    ),
+  );
+}
+
 async function deploySourceAgent(
   request: Request,
   base: string,
@@ -1443,6 +1519,12 @@ async function deploySourceAgent(
   ) {
     return invalidDeploymentResponse(
       "The agent source size or digest did not match.",
+    );
+  }
+  const models = deploymentModelsFromArtifact(source.body);
+  if (!models) {
+    return invalidDeploymentResponse(
+      "The agent artifact contains an invalid reactive model registry.",
     );
   }
 
@@ -1504,6 +1586,7 @@ async function deploySourceAgent(
         ? body.httpConnections
         : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
+      models,
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
         : {}),

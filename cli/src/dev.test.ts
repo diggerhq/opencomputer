@@ -87,6 +87,9 @@ test("development publish builds an immutable artifact under the development ali
     assert.equal(input?.agentId, "hello-agent");
     assert.equal(input?.alias, "development");
     assert.equal(input?.source.digest, result.built.digest);
+    assert.deepEqual(input?.models, [
+      { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
+    ]);
     assert.match(result.deployment.id, /^hello-agent:[a-f0-9]{64}$/);
   } finally {
     await rm(parent, { recursive: true, force: true });

@@ -42,6 +42,8 @@ export interface ManagedAgentDeployment {
   projectDeploymentId?: string;
   localAgentId?: string;
   createdAt: string;
+  models?: Array<{ provider: string; model: string }>;
+  defaultModel?: { provider: string; model: string };
 }
 
 export interface ManagedAgentEvent {
@@ -964,6 +966,7 @@ export class OpenComputerClient {
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
     }>;
     memory: MemoryDeclaration[];
+    models: Array<{ provider: string; model: string }>;
     projectDeployment?: {
       id: string;
       digest: string;
