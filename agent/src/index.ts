@@ -387,6 +387,9 @@ interface AgentHooks {
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
+  /** Optional: the declaration is extracted at build time, so a host
+   *  that does nothing at run time is still correct. */
+  useService?(service: string): void;
   useMemory(memory: string): MemoryProjection | undefined;
 }
 
@@ -428,6 +431,205 @@ export function secretHeader(
 
 export function bearer(secret: SecretReference): SecretHeaderReference {
   return secretHeader(secret, { prefix: "Bearer " });
+}
+
+/**
+ * A service the platform holds an OAuth credential for.
+ *
+ * `defineConnection` covers the case where WE hold the secret: the egress proxy
+ * attaches a managed secret to a declared origin. It cannot express an OAuth
+ * integration, because the credential is short-lived, per-person, and has to be
+ * refreshed — which is why the runtime is forbidden from setting `Authorization`
+ * on a declared connection at all.
+ *
+ * This is the other half, and the platform already implements it: the request
+ * names a service and a mailbox rather than a URL and a header, and the
+ * credential is resolved, refreshed and attached on the way out. The agent never
+ * sees a token, which is the same guarantee, reached differently.
+ */
+export type ManagedService =
+  | "gmail"
+  | "calendar"
+  | "drive"
+  | "sheets"
+  | "github";
+
+export interface ServiceRequest {
+  /** Which service. `google` is accepted as an alias for `gmail`. */
+  service: ManagedService | string;
+  /**
+   * Which connected account, when a user has more than one. This is the label
+   * the connection was linked under — an agent sweeping two mailboxes asks for
+   * each by name rather than hoping the right one is first.
+   */
+  label?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  /** Path on the service, e.g. `/gmail/v1/users/me/messages`. */
+  path: string;
+  headers?: Readonly<Record<string, string>>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Call a service the platform is connected to on this session's behalf.
+ *
+ * Returns the upstream response, so a caller reads status and body exactly as
+ * it would from `fetch` — a 404 from the service arrives as a 404, not as an
+ * exception that has lost the distinction.
+ *
+ * The transport does not make that free. A managed connection answers with an
+ * envelope — `{status, headers, body}`, the body a string — wrapped in a 200,
+ * because the proxy has to report its own failures separately from the
+ * service's. Handing that to a caller means every one of them reinvents the
+ * unwrapping, and the ones that forget see `ok` on a request that failed. So
+ * the envelope is opened here and a real Response is rebuilt from it. A
+ * non-2xx from the proxy itself is passed through untouched: that is the
+ * platform failing, not the service.
+ */
+export async function callService(request: ServiceRequest): Promise<Response> {
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const base = runtime.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = runtime.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer managed connections are unavailable");
+  }
+  if (!request.path.startsWith("/")) {
+    throw new Error("Service requests require an absolute path");
+  }
+  const service = request.service.trim().toLowerCase();
+  if (!service) throw new Error("A service request needs a service");
+  // The provider segment routes the supervisor; the service in the body is what
+  // the platform resolves a credential for. GitHub and Google are separate
+  // providers with separate grants, so the two cannot be collapsed.
+  const provider = service === "github" ? "github" : "google";
+  const response = await fetch(`${base.replace(/\/$/, "")}/${provider}/fetch`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      service,
+      ...(request.label ? { label: request.label } : {}),
+      method: (request.method ?? "GET").toUpperCase(),
+      path: request.path,
+      ...(request.headers ? { headers: request.headers } : {}),
+      ...(request.body === undefined ? {} : { body: request.body }),
+    }),
+    ...(request.signal ? { signal: request.signal } : {}),
+  });
+  return unwrapServiceResponse(response);
+}
+
+/**
+ * Rebuild the upstream response from the proxy's envelope.
+ *
+ * Anything that is not a well-formed envelope is returned as it arrived —
+ * a proxy error, or a future shape this does not recognise, should reach the
+ * caller rather than be flattened into a confusing success.
+ */
+async function unwrapServiceResponse(response: Response): Promise<Response> {
+  if (!response.ok) return response;
+  const envelope = (await response.clone().json().catch(() => null)) as {
+    status?: unknown;
+    headers?: unknown;
+    body?: unknown;
+  } | null;
+  if (
+    !envelope ||
+    typeof envelope.status !== "number" ||
+    typeof envelope.body !== "string"
+  ) {
+    return response;
+  }
+  const headers =
+    envelope.headers && typeof envelope.headers === "object"
+      ? Object.fromEntries(
+          Object.entries(envelope.headers as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  return new Response(envelope.body, { status: envelope.status, headers });
+}
+
+/** A service account the platform holds a credential for, as listed. */
+export interface ConnectedService {
+  readonly id: string;
+  /** `google` or `github` — the grant, not the API being called. */
+  readonly provider: string;
+  /** The alias this account was connected under. Pass it as `label`. */
+  readonly label: string;
+  /** Who the account belongs to, e.g. the mailbox address. */
+  readonly displayName?: string;
+  readonly scopes?: readonly string[];
+  /** `connected` accounts are usable; anything else is not yet. */
+  readonly status: string;
+}
+
+/**
+ * The service accounts this session can reach.
+ *
+ * An agent that sweeps several mailboxes cannot hold their names in its
+ * source: they are connected and disconnected by an operator long after the
+ * artifact is built. This answers "which ones exist right now" so the loop is
+ * over live state rather than over a list someone has to remember to redeploy.
+ *
+ * The platform reconciles pending consents before answering, so an account
+ * connected a moment ago is already `connected` here rather than on the next
+ * run. Only providers the deployment declares are returned.
+ *
+ * Unlike `callService`, this returns parsed rows rather than a `Response` —
+ * it is the platform's own API, not an upstream service whose status codes
+ * the caller needs to see.
+ */
+export async function listServices(options: {
+  /** Restrict to one grant, e.g. `google`. Omit for everything. */
+  provider?: string;
+  /** Omit unusable accounts. Defaults to true. */
+  connectedOnly?: boolean;
+  signal?: AbortSignal;
+} = {}): Promise<ConnectedService[]> {
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const base = runtime.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = runtime.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer managed connections are unavailable");
+  }
+  // `opencomputer` is the reserved provider segment for the platform's own
+  // connection actions; a body carrying no method and no path is what routes
+  // this to them rather than to managed egress.
+  const response = await fetch(
+    `${base.replace(/\/$/, "")}/opencomputer/fetch`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ action: "list" }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Listing connected services failed: ${response.status} ${(
+        await response.text()
+      ).slice(0, 300)}`,
+    );
+  }
+  const body = (await response.json()) as { connections?: ConnectedService[] };
+  const provider = options.provider?.trim().toLowerCase();
+  return (body.connections ?? []).filter(
+    (connection) =>
+      (!provider || connection.provider?.toLowerCase() === provider) &&
+      (options.connectedOnly === false || connection.status === "connected"),
+  );
 }
 
 export function defineConnection(input: {
@@ -966,6 +1168,21 @@ export const useModel = (model: ModelSelection): void =>
   hooks().useModel(model);
 export const useTool = (tool: string | ResourceReference): void =>
   hooks().useTool(tool);
+/**
+ * Declare that this agent reaches a managed service.
+ *
+ * `callService` works without this, but two things do not. The capability
+ * manifest is extracted from source at build time and is meant to be the whole
+ * statement of what an agent can reach — an undeclared `callService("gmail")`
+ * is reach that no reviewer can see. And `listServices()` only returns grants
+ * the deployment declares, so an agent that sweeps mailboxes without declaring
+ * `gmail` is told, truthfully and uselessly, that none are connected.
+ *
+ * Pass a literal string: it is read out of the source, not evaluated.
+ */
+export const useService = (service: string): void =>
+  hooks().useService?.(service);
+
 export const useSubagent = (agent: string | ResourceReference): void =>
   hooks().useSubagent(agent);
 export const useMcpServer = (server: string | ResourceReference): void =>
