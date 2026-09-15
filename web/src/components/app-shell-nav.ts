@@ -11,6 +11,7 @@ import {
   MessagesSquare,
   Monitor,
   Package,
+  Plug,
   Radio,
   Rocket,
   Send,
@@ -117,6 +118,17 @@ export function managedAgentsNav(options: {
       items: [{ to: '/', label: 'Projects', icon: FolderKanban, end: true }],
     })
   }
+
+  groups.push({
+    label: 'Account',
+    items: [
+      {
+        to: '/managed-agents/connections',
+        label: 'Connections',
+        icon: Plug,
+      },
+    ],
+  })
 
   if (options.durableSessionsEnabled) {
     groups.push({

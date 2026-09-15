@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BrainCircuit, KeySquare } from 'lucide-react'
+import { BrainCircuit, KeySquare, Plug } from 'lucide-react'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
@@ -13,8 +13,13 @@ describe('managed agents navigation', () => {
       managedAgentsNav(defaults).map((group) =>
         group.items.map((item) => item.label),
       ),
-    ).toEqual([['Projects']])
+    ).toEqual([['Projects'], ['Connections']])
     expect(managedAgentsNav(defaults)[0]?.items[0]?.end).toBe(true)
+    expect(managedAgentsNav(defaults)[1]?.items[0]).toMatchObject({
+      to: '/managed-agents/connections',
+      label: 'Connections',
+      icon: Plug,
+    })
   })
 
   it('shows project navigation only after a project is selected', () => {
@@ -52,14 +57,14 @@ describe('managed agents navigation', () => {
         ...defaults,
         durableSessionsEnabled: true,
       }).map((group) => group.label),
-    ).toEqual([undefined, 'Durable sessions'])
+    ).toEqual([undefined, 'Account', 'Durable sessions'])
 
     expect(
       managedAgentsNav({
         ...defaults,
         infrastructureEnabled: true,
       }).map((group) => group.label),
-    ).toEqual([undefined, 'Infrastructure'])
+    ).toEqual([undefined, 'Account', 'Infrastructure'])
   })
 
   it('keeps enabled advanced areas below project navigation', () => {
@@ -69,6 +74,12 @@ describe('managed agents navigation', () => {
         durableSessionsEnabled: true,
         infrastructureEnabled: true,
       }).map((group) => group.label),
-    ).toEqual([undefined, undefined, 'Durable sessions', 'Infrastructure'])
+    ).toEqual([
+      undefined,
+      undefined,
+      'Account',
+      'Durable sessions',
+      'Infrastructure',
+    ])
   })
 })

@@ -305,6 +305,20 @@ const connectionLinkSchema = z.object({
   authorizationUrl: z.string().url().optional(),
 })
 
+const connectionStatusSchema = z.object({
+  connectionId: z.string(),
+  service: z.string(),
+  label: z.string(),
+  status: z.enum(['connected', 'pending']),
+})
+
+const connectionDisconnectSchema = z.object({
+  connectionId: z.string(),
+  service: z.string(),
+  label: z.string(),
+  status: z.string(),
+})
+
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
@@ -919,6 +933,32 @@ export async function linkManagedAgentConnection(
       body: JSON.stringify({ service, label }),
     },
     connectionLinkSchema,
+  )
+}
+
+export async function refreshManagedAgentConnection(
+  provider: 'google' | 'github',
+  service: string,
+  connectionId: string,
+) {
+  const query = new URLSearchParams({ service, connectionId })
+  return apiFetch(
+    `/managed-agents/connections/${provider}/status?${query.toString()}`,
+    undefined,
+    connectionStatusSchema,
+  )
+}
+
+export async function disconnectManagedAgentConnection(
+  provider: 'google' | 'github',
+  service: string,
+  connectionId: string,
+) {
+  const query = new URLSearchParams({ service, connectionId })
+  return apiFetch(
+    `/managed-agents/connections/${provider}?${query.toString()}`,
+    { method: 'DELETE' },
+    connectionDisconnectSchema,
   )
 }
 
