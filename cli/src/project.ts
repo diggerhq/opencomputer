@@ -65,7 +65,18 @@ export interface HttpConnectionManifest {
   origin: string;
   headers: Record<
     string,
-    string | { kind: "secret"; name: string; prefix?: string; suffix?: string }
+    | string
+    | {
+        kind: "secret";
+        name: string;
+        /**
+         * Omitted means project-wide; "tenant" resolves per installation and
+         * "user" per person acted for.
+         */
+        scope?: "tenant" | "user";
+        prefix?: string;
+        suffix?: string;
+      }
   >;
   methods?: string[];
   pathPrefix?: string;
@@ -137,6 +148,11 @@ export interface ScheduleDefinitionManifest {
   };
 }
 
+export interface GatedToolManifest {
+  agentId: string;
+  toolId: string;
+}
+
 export interface ProjectResourceManifest {
   version: 1;
   channels: ChannelDefinitionManifest[];
@@ -144,6 +160,12 @@ export interface ProjectResourceManifest {
   outboxes: OutboxDefinitionManifest[];
   outboxRegistrations: OutboxRegistrationManifest[];
   schedules: ScheduleDefinitionManifest[];
+  /**
+   * Which tools wait for a human. Declared here as well as in the agent's own
+   * manifest because the platform authorizes a proposal before any agent code
+   * is involved.
+   */
+  gatedTools: GatedToolManifest[];
 }
 
 export interface BuiltProjectResources {
@@ -2125,7 +2147,15 @@ export async function readProjectResources(
   const channelRegistrations: ChannelRegistrationManifest[] = [];
   const outboxRegistrations: OutboxRegistrationManifest[] = [];
   const schedules: ScheduleDefinitionManifest[] = [];
+  const gatedTools: GatedToolManifest[] = [];
   for (const agent of agents) {
+    for (const path of await typescriptFiles(resolve(agent.root, "tools"))) {
+      for (const tool of definedTools(await readFile(path, "utf8"), path)) {
+        if (tool.gated) {
+          gatedTools.push({ agentId: agent.localId, toolId: tool.id });
+        }
+      }
+    }
     for (const path of await typescriptFiles(resolve(agent.root, "channels"))) {
       channelRegistrations.push(
         channelRegistration(
@@ -2181,6 +2211,11 @@ export async function readProjectResources(
         `${right.agentId}:${right.id}`,
       ),
     ),
+    gatedTools: gatedTools.sort((left, right) =>
+      `${left.agentId}:${left.toolId}`.localeCompare(
+        `${right.agentId}:${right.toolId}`,
+      ),
+    ),
   };
   const serialized = JSON.stringify(manifest);
   return {
@@ -2189,7 +2224,17 @@ export async function readProjectResources(
   };
 }
 
-function secretNameFromExpression(expression: ts.Expression): string {
+/**
+ * A secret reference, as written in source.
+ *
+ * The scope is read here rather than resolved later because the manifest is
+ * the record of what an agent can reach: a reviewer should be able to see that
+ * a credential is per-installation without running anything.
+ */
+function secretFromExpression(expression: ts.Expression): {
+  name: string;
+  scope?: "tenant" | "user";
+} {
   if (
     !ts.isCallExpression(expression) ||
     !ts.isIdentifier(expression.expression) ||
@@ -2197,7 +2242,19 @@ function secretNameFromExpression(expression: ts.Expression): string {
   ) {
     throw new Error("Connection secret headers must reference useSecret()");
   }
-  return literalStringValue(expression.arguments[0], "useSecret name");
+  const name = literalStringValue(expression.arguments[0], "useSecret name");
+  const options = expression.arguments[1];
+  if (!options) return { name };
+  if (!ts.isObjectLiteralExpression(options)) {
+    throw new Error("useSecret options must be an object literal");
+  }
+  const scope = objectProperty(options, "scope");
+  if (!scope) return { name };
+  const value = literalStringValue(scope, "useSecret scope");
+  if (value !== "project" && value !== "tenant" && value !== "user") {
+    throw new Error(`useSecret scope must be "project", "tenant" or "user"`);
+  }
+  return value === "project" ? { name } : { name, scope: value };
 }
 
 function connectionHeaderValue(
@@ -2218,7 +2275,7 @@ function connectionHeaderValue(
     if (!secret) throw new Error("bearer() requires useSecret()");
     return {
       kind: "secret",
-      name: secretNameFromExpression(secret),
+      ...secretFromExpression(secret),
       prefix: "Bearer ",
     };
   }
@@ -2228,9 +2285,10 @@ function connectionHeaderValue(
     const result: {
       kind: "secret";
       name: string;
+      scope?: "tenant" | "user";
       prefix?: string;
       suffix?: string;
-    } = { kind: "secret", name: secretNameFromExpression(secret) };
+    } = { kind: "secret", ...secretFromExpression(secret) };
     const options = expression.arguments[1];
     if (options) {
       if (!ts.isObjectLiteralExpression(options)) {
@@ -2549,14 +2607,70 @@ function definedGitHubConnections(
   return definitions;
 }
 
-function definedToolIds(source: string): string[] {
-  return [
-    ...source.matchAll(
-      /\bdefineTool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bname\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-    ),
-  ]
-    .map((match) => match[1]!)
-    .sort();
+interface DefinedTool {
+  readonly id: string;
+  /** Has preview() and apply(), so the model's call is a proposal. */
+  readonly gated: boolean;
+}
+
+/** Matches `preview: fn`, `preview(ctx) {}` and `async preview(ctx) {}` alike. */
+function hasMember(object: ts.ObjectLiteralExpression, name: string): boolean {
+  return object.properties.some((property) => {
+    if (
+      !ts.isPropertyAssignment(property) &&
+      !ts.isMethodDeclaration(property) &&
+      !ts.isShorthandPropertyAssignment(property)
+    ) {
+      return false;
+    }
+    const key = property.name;
+    return (
+      (!!key && ts.isIdentifier(key) && key.text === name) ||
+      (!!key && ts.isStringLiteral(key) && key.text === name)
+    );
+  });
+}
+
+/**
+ * Every tool a module defines, and whether it waits for approval.
+ *
+ * Read from the syntax tree rather than by regex, because gated-ness is no
+ * longer visible in the function's name — it is the presence of `preview` and
+ * `apply` on the object literal. A textual match would see those words inside
+ * a nested JSON Schema (a tool whose input has a property called `preview` is
+ * perfectly legal) and declare an ordinary tool gated, which the runtime then
+ * refuses to render at all.
+ */
+function definedTools(source: string, path: string): DefinedTool[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const tools: DefinedTool[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineTool"
+    ) {
+      const argument = node.arguments[0];
+      if (!argument || !ts.isObjectLiteralExpression(argument)) {
+        throw new Error(`${path} defineTool() requires an object literal`);
+      }
+      const id = literalStringValue(
+        objectProperty(argument, "name"),
+        `${path} tool name`,
+      );
+      tools.push({
+        id,
+        // Either half marks it gated; defineTool() rejects a lone one at run
+        // time. Treating a half-gate as ordinary here would let a tool that
+        // means to wait be registered as one that does not.
+        gated:
+          hasMember(argument, "preview") || hasMember(argument, "apply"),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return tools.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function staticModelSelections(
@@ -2666,10 +2780,12 @@ function id(value, kind) {
   if (!normalized) throw new Error(kind + " requires a non-empty id");
   return normalized;
 }
-export const useSecret = (value) => {
+export const useSecret = (value, options = {}) => {
   const name = id(value, "useSecret");
+  const scope = options.scope ?? "project";
+  if (scope !== "project" && scope !== "tenant" && scope !== "user") throw new Error('A secret scope must be "project", "tenant" or "user"');
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
-  return Object.freeze({ kind: "secret", id: name });
+  return Object.freeze({ kind: "secret", id: name, scope });
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
@@ -2798,7 +2914,59 @@ export const defineTool = (input) => {
   if (!String(input.description).trim()) throw new Error("defineTool requires a non-empty description");
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
-  return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+  const gated = typeof input.preview === "function" || typeof input.apply === "function";
+  if (!gated) {
+    if (typeof input.run !== "function") throw new Error("defineTool requires run(), or preview() and apply() for a tool that waits for approval");
+    return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+  }
+  if (typeof input.preview !== "function") throw new Error("A tool with apply() also requires preview()");
+  if (typeof input.apply !== "function") throw new Error("A tool with preview() also requires apply()");
+  if (typeof input.run === "function") throw new Error("A tool has either run(), or preview() and apply() - not both; run() is written for you when the tool waits for approval");
+  return Object.freeze({
+    kind: "gated-tool", version: 1, ...input, id: toolId, name: toolId,
+    async run(context) {
+      const preview = approvalPreview(await input.preview(context), toolId);
+      const result = await publishApproval(toolId, {
+        input: context.input,
+        preview,
+        idempotencyKey: context.messageId,
+      });
+      return result.message;
+    },
+  });
+};
+const approvalPreview = (value, toolId) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Tool " + toolId + " preview must return an object");
+  if (typeof value.title !== "string" || !value.title.trim()) throw new Error("Tool " + toolId + " preview requires a non-empty title");
+  if (value.summary !== undefined && typeof value.summary !== "string") throw new Error("Tool " + toolId + " preview summary must be a string");
+  if (value.facts !== undefined) {
+    if (!Array.isArray(value.facts)) throw new Error("Tool " + toolId + " preview facts must be an array");
+    if (value.facts.length > 20) throw new Error("Tool " + toolId + " preview may carry at most 20 facts");
+    for (const fact of value.facts) {
+      if (!fact || typeof fact.label !== "string" || typeof fact.value !== "string") throw new Error("Tool " + toolId + " preview facts must each have a label and a value");
+    }
+  }
+  return value;
+};
+export const publishApproval = async (tool, input) => {
+  const toolId = id(typeof tool === "string" ? tool : tool.id, "publishApproval");
+  const idempotencyKey = String(input.idempotencyKey).trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) throw new Error("Approval idempotency keys must contain 1 to 256 characters");
+  const base = globalThis.process?.env?.OPENCOMPUTER_APPROVAL_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_APPROVAL_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer approvals are unavailable");
+  const response = await fetch(base.replace(/\\/$/, ""), {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ toolId, input: input.input, preview: input.preview, idempotencyKey }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    let message = "";
+    try { message = JSON.parse(detail)?.error?.message ?? ""; } catch {}
+    throw new Error(message || ("Recording the approval failed with status " + response.status));
+  }
+  return await response.json();
 };
 export const publishOutbox = async (outbox, input) => {
   const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
@@ -2987,7 +3155,15 @@ the product or support surface presented to users.
           ...(config.model === undefined && inferredModel
             ? { model: inferredModel }
             : {}),
-          tools: { ...configuredTools, question: !questionDenied },
+          // The skill tool is what loads a packaged skill's body. OpenCode
+          // injects skill names and descriptions either way, so without this
+          // an agent knows its skills exist and can never read one — which is
+          // exactly how nine skills shipped in an artifact and none was used.
+          tools: {
+            use_skill: true,
+            ...configuredTools,
+            question: !questionDenied,
+          },
           permission: {
             ...configuredPermission,
             ...(configuredPermission.calendar_create_time_off === "ask"
@@ -3037,19 +3213,17 @@ the product or support surface presented to users.
       candidate.path.startsWith("tools/"),
   );
   const reactiveTools: string[] = [];
+  const gatedTools: string[] = [];
   const toolModules: string[] = [];
   for (const candidate of toolSources) {
-    const ids = definedToolIds(candidate.source);
-    const calls = [
-      ...candidate.source.matchAll(/\bdefineTool(?:<[^>]+>)?\s*\(/g),
-    ].length;
-    if (ids.length !== calls) {
-      throw new Error(
-        `${candidate.path} must give every defineTool() a literal string name`,
+    // literalStringValue throws on a computed name, which is what used to be
+    // caught by counting calls against extracted ids.
+    const defined = definedTools(candidate.source, candidate.path);
+    if (defined.length > 0) {
+      reactiveTools.push(...defined.map((tool) => tool.id));
+      gatedTools.push(
+        ...defined.filter((tool) => tool.gated).map((tool) => tool.id),
       );
-    }
-    if (ids.length > 0) {
-      reactiveTools.push(...ids);
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
     }
   }
@@ -3144,6 +3318,7 @@ the product or support surface presented to users.
         version: 2,
         entry: "../agent.js",
         tools,
+        gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform

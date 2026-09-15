@@ -9,6 +9,7 @@ the narrowest capability that fits the job.
 | Capability | Use it for | Where the work happens | How it is attached |
 | --- | --- | --- | --- |
 | Code-defined tool | One typed operation you implement | Your TypeScript `run()` function | `useTool(tool)` |
+| Tool that waits for approval | A write a person should agree to first | Your `preview()` shows it; your `apply()` runs after a decision | `useTool(tool)` — the same tool, defined with `preview`/`apply` instead of `run` |
 | MCP server | A service that already publishes a collection of tools | The remote MCP server | `useMcpServer(server)` |
 | Skill | A reusable procedure, checklist, or supporting files | The agent follows the loaded instructions | Place it under `skills/` |
 | Subagent | Delegating a focused task to another project agent | The delegated agent | `useSubagent(agentId)` |
