@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, Loader2, Unplug } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { GithubMark } from '@/components/github-mark'
 import {
@@ -13,7 +15,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  connectManagedGitHub,
+  attachManagedGitHub,
   disconnectManagedGitHub,
   getManagedGitHubStatus,
 } from './api'
@@ -26,6 +28,7 @@ export function ManagedProjectGitHub({
   environment: 'development' | 'production'
 }) {
   const queryClient = useQueryClient()
+  const [selectedConnectionId, setSelectedConnectionId] = useState('')
   const queryKey = ['managed-github', projectId]
   const status = useQuery({
     queryKey,
@@ -34,18 +37,19 @@ export function ManagedProjectGitHub({
   const current = status.data?.environments.find(
     (candidate) => candidate.environment === environment,
   )
-  const connect = useMutation({
-    mutationFn: (_mode: 'install' | 'existing') =>
-      connectManagedGitHub({ projectId, environments: [environment] }),
-    onSuccess: ({ installUrl, authorizeUrl }, mode) => {
-      window.open(
-        mode === 'existing' ? authorizeUrl : installUrl,
-        '_blank',
-        'noopener,noreferrer',
-      )
+  const availableConnections = (status.data?.connections ?? []).filter(
+    (connection) => connection.state === 'active',
+  )
+  const connectionId = selectedConnectionId || availableConnections[0]?.id || ''
+  const attach = useMutation({
+    mutationFn: () =>
+      attachManagedGitHub({ projectId, environment, connectionId }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey })
+      notifySuccess(`GitHub attached to ${environment}.`)
     },
     onError: (error) =>
-      notifyError("Couldn't start the GitHub installation.", error),
+      notifyError("Couldn't attach the GitHub connection.", error),
   })
   const disconnect = useMutation({
     mutationFn: () => disconnectManagedGitHub({ projectId, environment }),
@@ -132,26 +136,43 @@ export function ManagedProjectGitHub({
               <p className="text-muted-foreground max-w-2xl text-sm">
                 No GitHub installation is connected to {environment}.
               </p>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  disabled={!status.data?.app || connect.isPending}
-                  onClick={() => connect.mutate('existing')}
-                >
-                  Connect existing installation
-                </Button>
-                <Button
-                  disabled={!status.data?.app || connect.isPending}
-                  onClick={() => connect.mutate('install')}
-                >
-                  {connect.isPending ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
+              {availableConnections.length ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {availableConnections.length > 1 ? (
+                    <select
+                      value={connectionId}
+                      onChange={(event) =>
+                        setSelectedConnectionId(event.target.value)
+                      }
+                      className="border-input bg-background h-9 rounded-md border px-3 text-sm"
+                    >
+                      {availableConnections.map((connection) => (
+                        <option key={connection.id} value={connection.id}>
+                          {connection.accountLogin}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  <Button
+                    disabled={!connectionId || attach.isPending}
+                    onClick={() => attach.mutate()}
+                  >
+                    {attach.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <GithubMark className="size-4" />
+                    )}
+                    Attach GitHub connection
+                  </Button>
+                </div>
+              ) : (
+                <Button asChild>
+                  <Link to="/managed-agents/connections?service=github">
                     <GithubMark className="size-4" />
-                  )}
-                  Install GitHub App
+                    Add GitHub connection
+                  </Link>
                 </Button>
-              </div>
+              )}
             </div>
           )}
           {!status.data?.app ? (

@@ -267,6 +267,12 @@ const githubStatusSchema = z.object({
       installation: githubInstallationSchema.optional(),
     }),
   ),
+  connections: z.array(githubInstallationSchema),
+  app: z.object({ slug: z.string() }).nullable(),
+})
+
+const githubConnectionsSchema = z.object({
+  connections: z.array(githubInstallationSchema),
   app: z.object({ slug: z.string() }).nullable(),
 })
 
@@ -780,6 +786,37 @@ export async function connectManagedGitHub(input: {
       body: JSON.stringify({ environments: input.environments }),
     },
     githubConnectSchema,
+  )
+}
+
+export async function getManagedGitHubConnections() {
+  return apiFetch('/managed-agents/github', undefined, githubConnectionsSchema)
+}
+
+export async function addManagedGitHubConnection(mode: 'install' | 'existing') {
+  const result = await apiFetch(
+    '/managed-agents/github/connect',
+    { method: 'POST', body: '{}' },
+    githubConnectSchema,
+  )
+  return mode === 'existing' ? result.authorizeUrl : result.installUrl
+}
+
+export async function attachManagedGitHub(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  connectionId: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/attach`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        environment: input.environment,
+        connectionId: input.connectionId,
+      }),
+    },
+    z.object({ attached: z.boolean() }),
   )
 }
 

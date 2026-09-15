@@ -19,9 +19,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   displayManagedAgentName,
+  addManagedGitHubConnection,
   claimManagedAgentChannelIdentity,
   disconnectManagedAgentConnection,
   getManagedAgentConnections,
+  getManagedGitHubConnections,
   getManagedAgents,
   linkManagedAgentConnection,
   refreshManagedAgentConnection,
@@ -118,6 +120,10 @@ export default function ManagedAgentConnections() {
     queryKey: ['managed-agent-connections'],
     queryFn: loadManagedAgentConnections,
   })
+  const githubConnections = useQuery({
+    queryKey: ['managed-github-connections'],
+    queryFn: getManagedGitHubConnections,
+  })
   const agents = useQuery({
     queryKey: ['managed-agents'],
     queryFn: getManagedAgents,
@@ -155,7 +161,13 @@ export default function ManagedAgentConnections() {
     }
     connectionStarted.current = true
     setConnectionRequestState('connecting')
-    void linkManagedAgentConnection(requestedService, requestedAlias)
+    void (
+      requestedService === 'github'
+        ? addManagedGitHubConnection('existing').then((authorizationUrl) => ({
+            authorizationUrl,
+          }))
+        : linkManagedAgentConnection(requestedService, requestedAlias)
+    )
       .then((result) => {
         if (result.authorizationUrl) {
           window.location.assign(result.authorizationUrl)
@@ -223,6 +235,36 @@ export default function ManagedAgentConnections() {
           </PanelContent>
         </Panel>
       )}
+
+      {githubConnections.data?.connections.length ? (
+        <div className="mb-3 grid gap-3 md:grid-cols-2">
+          {githubConnections.data.connections.map((connection) => (
+            <Panel key={connection.id}>
+              <PanelContent className="flex items-center gap-3">
+                <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
+                  <Plug className="size-4" aria-hidden />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {connection.accountLogin}
+                  </p>
+                  <p className="text-muted-foreground truncate text-xs">
+                    GitHub ·{' '}
+                    {connection.repositorySelection === 'all'
+                      ? 'All repositories'
+                      : 'Selected repositories'}
+                  </p>
+                </div>
+                <StatusBadge
+                  status={
+                    connection.state === 'active' ? 'connected' : 'stopped'
+                  }
+                />
+              </PanelContent>
+            </Panel>
+          ))}
+        </div>
+      ) : null}
 
       {connections.isLoading ? (
         <div className="flex min-h-48 items-center justify-center">
@@ -334,7 +376,13 @@ export default function ManagedAgentConnections() {
               if (!alias || connectionRequestState === 'connecting') return
               setAddConnectionError(undefined)
               setConnectionRequestState('connecting')
-              void linkManagedAgentConnection(newService, alias)
+              void (
+                newService === 'github'
+                  ? addManagedGitHubConnection('install').then(
+                      (authorizationUrl) => ({ authorizationUrl }),
+                    )
+                  : linkManagedAgentConnection(newService, alias)
+              )
                 .then((result) => {
                   if (result.authorizationUrl) {
                     window.location.assign(result.authorizationUrl)
@@ -371,20 +419,27 @@ export default function ManagedAgentConnections() {
                 <option value="github">GitHub</option>
               </select>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="connection-alias">Account alias</Label>
-              <Input
-                id="connection-alias"
-                value={newAlias}
-                onChange={(event) => setNewAlias(event.target.value)}
-                pattern="[A-Za-z0-9._-]+"
-                placeholder="work-gmail"
-                required
-              />
-              <p className="text-muted-foreground text-xs">
-                Agents use this alias to select the account in callService().
+            {newService === 'github' ? (
+              <p className="text-muted-foreground text-sm">
+                Install the managed OpenComputer GitHub App and choose its
+                repository access in GitHub.
               </p>
-            </div>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="connection-alias">Account alias</Label>
+                <Input
+                  id="connection-alias"
+                  value={newAlias}
+                  onChange={(event) => setNewAlias(event.target.value)}
+                  pattern="[A-Za-z0-9._-]+"
+                  placeholder="work-gmail"
+                  required
+                />
+                <p className="text-muted-foreground text-xs">
+                  Agents use this alias to select the account in callService().
+                </p>
+              </div>
+            )}
             {addConnectionError ? (
               <p className="text-destructive text-sm">{addConnectionError}</p>
             ) : null}
@@ -400,7 +455,8 @@ export default function ManagedAgentConnections() {
               <Button
                 type="submit"
                 disabled={
-                  !newAlias.trim() || connectionRequestState === 'connecting'
+                  (newService !== 'github' && !newAlias.trim()) ||
+                  connectionRequestState === 'connecting'
                 }
               >
                 {connectionRequestState === 'connecting' ? (
