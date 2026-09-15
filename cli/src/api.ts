@@ -83,6 +83,19 @@ export interface ManagedGitHubStatus {
 
 // Model access (work 011). The provider token is write-only; these shapes
 // carry only normalized metadata.
+/** An account the platform holds an OAuth credential for. */
+export interface ServiceConnection {
+  id: string;
+  /** `google` or `github` — the grant, not the API being called. */
+  provider: string;
+  /** The alias it was connected under; what an agent passes as `label`. */
+  label: string;
+  /** Who the account belongs to, e.g. the mailbox address. */
+  displayName?: string;
+  scopes?: string[];
+  status: string;
+}
+
 export interface ModelAccessConnection {
   id: string;
   organizationId: string;
@@ -615,6 +628,76 @@ export class OpenComputerClient {
     if (input.agentId) query.set("agentId", input.agentId);
     return this.request<void>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/secrets/${encodeURIComponent(input.name)}?${query.toString()}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // ── Connected services ───────────────────────────────────────────────────
+  // Accounts the platform holds an OAuth credential for, reached from an agent
+  // with callService(). The provider segment is the grant — google covers
+  // gmail, calendar, drive and sheets; github is its own.
+
+  async serviceConnections(): Promise<ServiceConnection[]> {
+    const result = await this.request<{ connections: ServiceConnection[] }>(
+      "/api/managed-agents/connections",
+    );
+    return result.connections ?? [];
+  }
+
+  /**
+   * Begin connecting an account. Returns a link for whoever owns it to open;
+   * no credential passes through the CLI, and the person consenting never
+   * signs in to OpenComputer.
+   */
+  linkServiceConnection(input: { service: string; label?: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    return this.request<{
+      service: string;
+      label: string;
+      status: string;
+      authorizationUrl?: string;
+      connectionId?: string;
+      expiresAt?: string;
+    }>(`/api/managed-agents/connections/${provider}/link`, {
+      method: "POST",
+      body: JSON.stringify({
+        service: input.service,
+        ...(input.label ? { label: input.label } : {}),
+      }),
+    });
+  }
+
+  /**
+   * Live status for one connected account.
+   *
+   * Unlike the listing, this reconciles: it asks the provider whether the
+   * consent completed and records the answer. A connection that was left
+   * `pending` in the listing becomes `connected` here once someone has
+   * actually authorized it.
+   */
+  serviceConnectionStatus(input: { service: string; label: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    const query = new URLSearchParams({
+      service: input.service,
+      label: input.label,
+    });
+    return this.request<{
+      service: string;
+      label: string;
+      status: string;
+      connectionId?: string;
+      scopes?: string[];
+    }>(`/api/managed-agents/connections/${provider}/status?${query.toString()}`);
+  }
+
+  disconnectServiceConnection(input: { service: string; connectionId: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    const query = new URLSearchParams({
+      service: input.service,
+      connectionId: input.connectionId,
+    });
+    return this.request<void>(
+      `/api/managed-agents/connections/${provider}?${query.toString()}`,
       { method: "DELETE" },
     );
   }

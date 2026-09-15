@@ -1311,6 +1311,190 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
+/**
+ * Which service a connected account is for.
+ *
+ * The listing reports the PROVIDER — `google` covers gmail, calendar, drive
+ * and sheets — but the disconnect route wants the service. The grant's scopes
+ * are what distinguish them.
+ */
+function serviceOfConnection(connection: {
+  provider: string;
+  scopes?: string[];
+}): string {
+  if (connection.provider === "github") return "github";
+  const scopes = (connection.scopes ?? []).join(" ");
+  if (scopes.includes("/auth/calendar")) return "calendar";
+  if (scopes.includes("/auth/spreadsheets")) return "sheets";
+  if (scopes.includes("/auth/drive")) return "drive";
+  return "gmail";
+}
+
+  if (command === "connection" || command === "connections") {
+    // Accounts the platform holds an OAuth credential for. Nothing secret
+    // passes through here: `add` returns a link for the account's owner to
+    // open, and the token is minted and refreshed server-side.
+    const SERVICES = ["gmail", "calendar", "drive", "sheets", "github"];
+    const action = args.shift();
+
+    if (action === "add" || action === "connect") {
+      const service = args.shift();
+      if (!service || !SERVICES.includes(service)) {
+        throw new Error(`Use \`opencomputer connection add <${SERVICES.join("|")}>\``);
+      }
+      const label = option(args, "--alias") ?? option(args, "--label");
+      const noWait = flag(args, "--no-wait");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const result = await client.linkServiceConnection({ service, label });
+      // --json is for scripting, where blocking for a consent that may never
+      // come is the wrong default.
+      if (globals.json) {
+        printJSON(result);
+        return;
+      }
+      if (!result.authorizationUrl) {
+        process.stdout.write(
+          `${service} is already connected as ${result.label}.\n`,
+        );
+        return;
+      }
+      // Deliberately not opened for you: the account often belongs to someone
+      // else, and this runs on servers and in CI as readily as on a laptop.
+      process.stdout.write(
+        `Connect ${service} as "${result.label}" by opening:\n\n  ${result.authorizationUrl}\n\n`,
+      );
+      if (noWait) {
+        process.stdout.write(
+          `Run \`opencomputer connection list\` once it has been authorized.\n`,
+        );
+        return;
+      }
+
+      // Poll the status route rather than the listing: only the status route
+      // reconciles, so a listing can report `pending` long after the consent
+      // completed. Without this, "did it work?" has no reliable answer.
+      const deadline = result.expiresAt
+        ? Date.parse(result.expiresAt)
+        : Date.now() + 5 * 60_000;
+      process.stdout.write("Waiting for authorization… (Ctrl-C to stop)\n");
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        let status: string | undefined;
+        try {
+          status = (
+            await client.serviceConnectionStatus({
+              service,
+              label: result.label,
+            })
+          ).status;
+        } catch {
+          // A transient failure mid-consent should not end the wait; the
+          // deadline is what ends it.
+          continue;
+        }
+        if (status === "connected") {
+          process.stdout.write(`Connected ${service} as "${result.label}".\n`);
+          return;
+        }
+      }
+      process.stdout.write(
+        `Still not authorized. The link may have expired — run ` +
+          `\`opencomputer connection list\` to check, or add it again.\n`,
+      );
+      return;
+    }
+
+    if (action === "list" || action === "ls" || action === undefined) {
+      const listed = await client.serviceConnections();
+      // The listing route does not re-check with the provider, so an account
+      // authorized minutes ago can still read `pending`. The status route does
+      // reconcile, so ask it about the pending ones — and only those, so a
+      // settled list costs nothing extra.
+      const connections = await Promise.all(
+        listed.map(async (connection) => {
+          if (connection.status === "connected") return connection;
+          try {
+            const live = await client.serviceConnectionStatus({
+              service: serviceOfConnection(connection),
+              label: connection.label,
+            });
+            return { ...connection, status: live.status };
+          } catch {
+            return connection;
+          }
+        }),
+      );
+      if (globals.json) {
+        printJSON(connections);
+        return;
+      }
+      if (!connections.length) {
+        process.stdout.write(
+          "No connected accounts. Add one with `opencomputer connection add gmail`.\n",
+        );
+        return;
+      }
+      for (const connection of connections) {
+        // The id is here because removing through the API needs it — the docs
+        // say to take it "from the listing", and without this that is only
+        // true of --json.
+        process.stdout.write(
+          `${connection.label.padEnd(18)} ${connection.provider.padEnd(7)} ` +
+            `${connection.status.padEnd(10)} ` +
+            `${(connection.displayName ?? "").padEnd(26)} ${connection.id}\n`,
+        );
+      }
+      return;
+    }
+
+    if (action === "remove" || action === "disconnect") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error("Use `opencomputer connection remove <alias|connection-id>`");
+      }
+      const service = option(args, "--service");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connections = await client.serviceConnections();
+      // Accept either the alias a person remembers or the id the API returns.
+      let matches = connections.filter(
+        (connection) => connection.label === target || connection.id === target,
+      );
+      if (service) {
+        matches = matches.filter(
+          (connection) => serviceOfConnection(connection) === service,
+        );
+      }
+      if (!matches.length) {
+        throw new Error(
+          `No connection named ${JSON.stringify(target)}${service ? ` for ${service}` : ""}. ` +
+            `Run \`opencomputer connection list\` to see them.`,
+        );
+      }
+      if (matches.length > 1) {
+        // Deleting the wrong account is not recoverable from here, so narrow
+        // it or refuse. The id in `connection list` is always unambiguous.
+        const services = [...new Set(matches.map(serviceOfConnection))];
+        throw new Error(
+          `${matches.length} connections use the alias ${JSON.stringify(target)}` +
+            (services.length > 1
+              ? ` — add --service <${services.join("|")}> to choose one.`
+              : `. Remove it by connection id instead; \`opencomputer connection list\` shows them.`),
+        );
+      }
+      const connection = matches[0]!;
+      const resolved = service ?? serviceOfConnection(connection);
+      await client.disconnectServiceConnection({
+        service: resolved,
+        connectionId: connection.id,
+      });
+      if (globals.json) printJSON({ removed: connection.id, label: connection.label });
+      else process.stdout.write(`Removed ${connection.label} (${resolved}).\n`);
+      return;
+    }
+
+    throw new Error("Use `opencomputer connection add|list|remove`.");
+  }
+
   if (command === "model-access") {
     const action = args.shift();
     if (action === "connect") {

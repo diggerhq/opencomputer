@@ -75,6 +75,9 @@ Usage:
   opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer connection add <gmail|calendar|drive|sheets|github> [--alias <name>] [--no-wait]
+  opencomputer connection list
+  opencomputer connection remove <alias|connection-id> [--service <name>]
   opencomputer model-access connect codex [--project <id|slug>]
   opencomputer model-access list
   opencomputer model-access disconnect codex

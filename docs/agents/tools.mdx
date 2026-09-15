@@ -129,6 +129,10 @@ Declare an HTTP connection, store the value as an OpenComputer secret, and
 call the connection's `fetch()` method. See
 [Secrets and outbound requests](/agents/secrets) for a complete example.
 
+For Gmail, Calendar, Drive, Sheets or GitHub, the credential belongs to whoever
+connected the account and the platform refreshes it — call those with
+[`callService`](/agents/services) instead.
+
 ## Wait for a person before writing
 
 Some writes should not happen because a model decided they should. Such a tool
