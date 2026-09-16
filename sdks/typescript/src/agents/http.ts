@@ -54,7 +54,11 @@ export class Http {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     const f = options.fetch ?? (typeof fetch === "function" ? fetch : undefined);
     if (!f) throw new Error("No global fetch is available; pass { fetch } to the client.");
-    this.doFetch = f;
+    // Call it as a plain function, never as a method of this client: a native
+    // fetch checks its receiver, and workerd answers `Illegal invocation` when
+    // the receiver is anything but the global; a caller's own fetch keeps
+    // whatever binding it came with.
+    this.doFetch = (input, init) => f(input, init);
   }
 
   url(path: string, query?: Query): string {

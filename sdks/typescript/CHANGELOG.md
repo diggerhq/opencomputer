@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1
+
+- `@opencomputer/sdk/agents`: the transport called `fetch` as a method of the client, which a native fetch refuses with `Illegal invocation` in workerd; it is now called as a plain function. Found by the Development proof of a Worker without Node compatibility. No API change.
+
 ## 2.0.0
 
 Breaking. The `OpenComputer` class that wrapped the Durable Agent Sessions
