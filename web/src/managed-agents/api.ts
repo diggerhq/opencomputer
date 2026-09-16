@@ -192,9 +192,15 @@ const modelAccessConnectionSchema = z.object({
   id: z.string(),
   organizationId: z.string().optional(),
   connectedByUserId: z.string().optional(),
-  provider: z.enum(['anthropic', 'openai']),
-  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  provider: z.enum(['anthropic', 'openai', 'openrouter', 'openai_compatible']),
+  kind: z.enum([
+    'claude_subscription',
+    'codex_subscription',
+    'openrouter_api_key',
+    'openai_compatible_api',
+  ]),
   label: z.string(),
+  baseUrl: z.string().url().nullish(),
   externalAccountHint: z.string().nullish(),
   status: z.enum([
     'connecting',
@@ -233,6 +239,23 @@ const modelAccessBindingSchema = z.object({
 
 const modelAccessBindingsResponseSchema = z.object({
   data: z.array(modelAccessBindingSchema),
+})
+
+const projectModelRouteSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string().nullish(),
+  connectionId: z.string(),
+  model: z.string(),
+  fallback: z.enum(['fail', 'managed']),
+  revision: z.number(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelRoutesResponseSchema = z.object({
+  data: z.array(projectModelRouteSchema),
 })
 
 const runtimeVariableSchema = z.object({
@@ -505,7 +528,7 @@ const modelRouteSchema = z.object({
     .optional(),
   runtime: z.string(),
   access: z.object({
-    type: z.enum(['managed', 'external_subscription']),
+    type: z.enum(['managed', 'external_subscription', 'external_api_key']),
     connectionId: z.string().optional(),
     connectionKind: z.string().optional(),
   }),
@@ -667,6 +690,7 @@ export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
 >
 export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
+export type ManagedProjectModelRoute = z.infer<typeof projectModelRouteSchema>
 export type TemplateInspection = z.infer<typeof templateInspectionSchema>
 export type TemplateInstallation = z.infer<typeof templateInstallationSchema>
 
@@ -845,6 +869,60 @@ export async function connectManagedModelAccess() {
     '/managed-agents/model-access/connections',
     { method: 'POST', body: JSON.stringify({ provider: 'openai' }) },
     modelAccessConnectResponseSchema,
+  )
+}
+
+export async function connectManagedModelApiKey(input: {
+  provider: 'openrouter' | 'openai_compatible'
+  apiKey: string
+  baseUrl?: string
+  label?: string
+}) {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: input.provider,
+        api_key: input.apiKey,
+        base_url: input.baseUrl,
+        label: input.label,
+      }),
+    },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function getManagedModelRoutes(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/model-routes`,
+      undefined,
+      modelRoutesResponseSchema,
+    )
+  ).data
+}
+
+export async function putManagedModelRoute(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  connectionId: string
+  model: string
+  fallback: 'fail' | 'managed'
+  agentId?: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        connection_id: input.connectionId,
+        model: input.model,
+        fallback: input.fallback,
+        agent_id: input.agentId,
+      }),
+    },
+    projectModelRouteSchema,
   )
 }
 

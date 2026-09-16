@@ -465,6 +465,7 @@ function publicModelAccessConnection(
     provider: connection.provider,
     kind: connection.kind,
     label: connection.label,
+    baseUrl: connection.baseUrl,
     status: connection.status,
     checkedAt: connection.checkedAt,
     createdAt: connection.createdAt,
@@ -476,6 +477,22 @@ function publicModelAccessConnection(
           externalAccountHint: connection.externalAccountHint,
         }
       : {}),
+  };
+}
+
+function publicModelRoute(value: unknown): Record<string, unknown> {
+  const route = record(value) ?? {};
+  return {
+    id: route.id,
+    projectId: route.projectId,
+    environment: route.environment,
+    agentId: route.agentId,
+    connectionId: route.connectionId,
+    model: route.model,
+    fallback: route.fallback,
+    revision: route.revision,
+    createdAt: route.createdAt,
+    updatedAt: route.updatedAt,
   };
 }
 
@@ -1211,11 +1228,9 @@ function publicSuccessBody(
   if (method === "GET" && suffix === "/model-access/connections") {
     return {
       data: Array.isArray(body.data)
-        ? body.data
-            .filter((value) => record(value)?.provider === "openai")
-            .map((value) =>
-              publicModelAccessConnection(value, includeAdminMetadata),
-            )
+        ? body.data.map((value) =>
+            publicModelAccessConnection(value, includeAdminMetadata),
+          )
         : [],
     };
   }
@@ -1254,6 +1269,14 @@ function publicSuccessBody(
     /^\/projects\/[^/]+\/model-access\/bindings\/[^/]+\/[^/]+$/.test(suffix)
   ) {
     return publicModelAccessBinding(body);
+  }
+  if (method === "GET" && /^\/projects\/[^/]+\/model-routes$/.test(suffix)) {
+    return {
+      data: Array.isArray(body.data) ? body.data.map(publicModelRoute) : [],
+    };
+  }
+  if (method === "PUT" && /^\/projects\/[^/]+\/model-routes\/[^/]+$/.test(suffix)) {
+    return publicModelRoute(body);
   }
   if (method === "POST" && suffix === "/deployments") {
     return publicDeployment(body);
@@ -1659,6 +1682,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/model-routes(?:\/[^/]+)?$/.test(suffix)
   ) {
     return true;
   }
@@ -2104,12 +2133,16 @@ export async function proxyManagedAgents(
         .json()
         .catch(() => null),
     );
-    if (payload?.provider !== "openai") {
+    if (
+      payload?.provider !== "openai" &&
+      payload?.provider !== "openrouter" &&
+      payload?.provider !== "openai_compatible"
+    ) {
       return Response.json(
         {
           error: {
             code: "unsupported_provider",
-            message: "Codex is the only supported BYOK account provider.",
+            message: "Supported providers are Codex, OpenRouter, and OpenAI-compatible APIs.",
           },
         },
         { status: 400 },
@@ -2130,7 +2163,10 @@ export async function proxyManagedAgents(
         .json()
         .catch(() => null),
     )?.enabled === true;
-  if (modelAccessConnectionWrite || modelAccessBindingEnable) {
+  const modelRouteWrite =
+    (method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/model-routes\/[^/]+$/.test(suffix);
+  if (modelAccessConnectionWrite || modelAccessBindingEnable || modelRouteWrite) {
     try {
       if (!(await hasBYOKPlanAccess(env, caller.orgID))) {
         return byokPlanRequired();
@@ -2154,24 +2190,6 @@ export async function proxyManagedAgents(
         { status: 503 },
       );
     }
-  }
-  const bindingProvider = suffix.match(
-    /^\/projects\/[^/]+\/model-access\/bindings\/([^/]+)\/[^/]+$/,
-  )?.[1];
-  if (
-    request.method.toUpperCase() === "PUT" &&
-    bindingProvider &&
-    bindingProvider !== "openai"
-  ) {
-    return Response.json(
-      {
-        error: {
-          code: "unsupported_provider",
-          message: "Codex is the only supported BYOK account provider.",
-        },
-      },
-      { status: 400 },
-    );
   }
   const base = (
     env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL

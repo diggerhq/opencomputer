@@ -26,9 +26,12 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  connectManagedModelApiKey,
   disconnectManagedModelAccessConnection,
   getManagedModelAccessConnections,
   getManagedModelAccessBindings,
+  getManagedModelRoutes,
+  putManagedModelRoute,
   putManagedModelAccessBinding,
   validateManagedModelAccessConnection,
 } from './api'
@@ -97,10 +100,18 @@ export function ManagedProjectBYOK({
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [apiProvider, setApiProvider] = useState<
+    'openrouter' | 'openai_compatible'
+  >('openrouter')
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('https://api.scx.ai/v1')
+  const [routeModel, setRouteModel] = useState('GLM-5.3')
+  const [routeFallback, setRouteFallback] = useState<'fail' | 'managed'>('fail')
   const canManageConnection = user?.capabilities?.manageMembers !== false
   const cliCommand = modelAccessCLICommand(projectSlug, window.location)
   const connectionQueryKey = ['managed-model-access-connections']
   const bindingQueryKey = ['managed-model-access-bindings', projectId]
+  const routeQueryKey = ['managed-model-routes', projectId]
   const billing = useQuery({
     queryKey: ['billing'],
     queryFn: getBilling,
@@ -129,6 +140,11 @@ export function ManagedProjectBYOK({
   const bindings = useQuery({
     queryKey: bindingQueryKey,
     queryFn: () => getManagedModelAccessBindings(projectId),
+    enabled: planEligible,
+  })
+  const routes = useQuery({
+    queryKey: routeQueryKey,
+    queryFn: () => getManagedModelRoutes(projectId),
     enabled: planEligible,
   })
   const codex = connections.data?.find(
@@ -180,9 +196,40 @@ export function ManagedProjectBYOK({
     onError: (error) =>
       notifyError("Couldn't disconnect the Codex account.", error),
   })
+  const configureApiRoute = useMutation({
+    mutationFn: async () => {
+      const connection = await connectManagedModelApiKey({
+        provider: apiProvider,
+        apiKey,
+        ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+      })
+      return Promise.all(
+        (['development', 'production'] as const).map((environment) =>
+          putManagedModelRoute({
+            projectId,
+            environment,
+            connectionId: connection.id,
+            model: routeModel,
+            fallback: routeFallback,
+          }),
+        ),
+      )
+    },
+    onSuccess: async () => {
+      setApiKey('')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: connectionQueryKey }),
+        queryClient.invalidateQueries({ queryKey: routeQueryKey }),
+      ])
+      notifySuccess('Model connection and project route configured.')
+    },
+    onError: (error) =>
+      notifyError("Couldn't configure the model route.", error),
+  })
   if (
     billingLoading ||
-    (planEligible && (connections.isLoading || bindings.isLoading))
+    (planEligible &&
+      (connections.isLoading || bindings.isLoading || routes.isLoading))
   ) {
     return (
       <Panel>
@@ -195,7 +242,8 @@ export function ManagedProjectBYOK({
 
   if (
     billingError ||
-    (planEligible && (connections.isError || bindings.isError))
+    (planEligible &&
+      (connections.isError || bindings.isError || routes.isError))
   ) {
     return (
       <Panel>
@@ -241,6 +289,118 @@ export function ManagedProjectBYOK({
 
   return (
     <div className="space-y-5">
+      <Panel>
+        <PanelHeader>
+          <div>
+            <PanelTitle>Project model route</PanelTitle>
+            <PanelDescription className="mt-1 max-w-2xl">
+              Route every new session through an organization connection. This
+              overrides useModel() and also works when agent code selects no
+              model.
+            </PanelDescription>
+          </div>
+        </PanelHeader>
+        <PanelContent className="space-y-4">
+          {routes.data?.length ? (
+            <div className="space-y-2">
+              {routes.data.map((route) => (
+                <div
+                  key={route.id}
+                  className="flex flex-wrap items-center gap-2 text-sm"
+                >
+                  <StatusBadge status="running" label={route.environment} />
+                  <span>{route.model}</span>
+                  <span className="text-muted-foreground">
+                    via {route.connectionId} · {route.fallback} · r
+                    {route.revision}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm">
+              No project override. Agent code and the platform default determine
+              the model.
+            </p>
+          )}
+          {canManageConnection ? (
+            <div className="grid gap-3 border-t pt-4 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">Provider</span>
+                <select
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={apiProvider}
+                  onChange={(event) =>
+                    setApiProvider(
+                      event.target.value as 'openrouter' | 'openai_compatible',
+                    )
+                  }
+                >
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">Effective model</span>
+                <input
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={routeModel}
+                  onChange={(event) => setRouteModel(event.target.value)}
+                />
+              </label>
+              {apiProvider === 'openai_compatible' ? (
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Base URL</span>
+                  <input
+                    className="border-input bg-background h-9 w-full rounded-md border px-3"
+                    type="url"
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">API key</span>
+                <input
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  type="password"
+                  autoComplete="off"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">If unavailable</span>
+                <select
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={routeFallback}
+                  onChange={(event) =>
+                    setRouteFallback(event.target.value as 'fail' | 'managed')
+                  }
+                >
+                  <option value="fail">Fail closed</option>
+                  <option value="managed">Use Managed</option>
+                </select>
+              </label>
+              <div className="flex items-end">
+                <Button
+                  disabled={
+                    !apiKey || !routeModel || configureApiRoute.isPending
+                  }
+                  onClick={() => configureApiRoute.mutate()}
+                >
+                  {configureApiRoute.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Link2 />
+                  )}
+                  Save connection and route
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </PanelContent>
+      </Panel>
       <Panel>
         <PanelHeader>
           <div>
@@ -368,10 +528,10 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Use the account in agent code</PanelTitle>
+            <PanelTitle>Code-selected model fallback</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Select the model-access provider explicitly. Connected accounts
-              use their native provider; Managed models use OpenRouter.
+              These selections apply only when this project has no matching
+              project or agent route.
             </PanelDescription>
           </div>
         </PanelHeader>

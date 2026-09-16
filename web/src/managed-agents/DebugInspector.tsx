@@ -211,9 +211,11 @@ export function DebugInspector({
       ? route.access.connectionKind === 'codex_subscription'
         ? 'Codex account · BYOK'
         : 'Connected account · BYOK'
-      : route?.access.type === 'managed'
-        ? 'Managed · usage-based'
-        : 'Not resolved yet'
+      : route?.access.type === 'external_api_key'
+        ? 'Connected API · BYOK'
+        : route?.access.type === 'managed'
+          ? 'Managed · usage-based'
+          : 'Not resolved yet'
   const activity = events
     .filter(
       (event) =>

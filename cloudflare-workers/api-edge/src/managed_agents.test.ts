@@ -284,10 +284,108 @@ describe("managed agents proxy", () => {
     expect(body).toMatchObject({
       error: {
         code: "unsupported_provider",
-        message: "Codex is the only supported BYOK account provider.",
+        message: "Supported providers are Codex, OpenRouter, and OpenAI-compatible APIs.",
       },
     });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts an OpenAI-compatible connection and strips custody fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input, init) => {
+        expect(await new Response(init?.body).json()).toMatchObject({
+          provider: "openai_compatible",
+          api_key: "write-only-key",
+          base_url: "https://api.scx.ai/v1",
+        });
+        return Response.json({
+          id: "mac_scx",
+          organizationId: "org_test",
+          connectedByUserId: "user_test",
+          provider: "openai_compatible",
+          kind: "openai_compatible_api",
+          label: "SCX",
+          baseUrl: "https://api.scx.ai/v1",
+          status: "connected",
+          credentialCiphertext: "must-not-leak",
+        });
+      }),
+    );
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/model-access/connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: "openai_compatible",
+          api_key: "write-only-key",
+          base_url: "https://api.scx.ai/v1",
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      id: "mac_scx",
+      provider: "openai_compatible",
+      kind: "openai_compatible_api",
+      baseUrl: "https://api.scx.ai/v1",
+    });
+    expect(JSON.stringify(body)).not.toMatch(/write-only-key|credentialCiphertext|must-not-leak/);
+  });
+
+  it("proxies project model routes without exposing private audit metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "mr_test",
+          organizationId: "org_test",
+          projectId: "prj_test",
+          environment: "development",
+          connectionId: "mac_scx",
+          model: "GLM-5.3",
+          fallback: "fail",
+          revision: 2,
+          updatedByUserId: "user_test",
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          connection_id: "mac_scx",
+          model: "GLM-5.3",
+          fallback: "fail",
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      id: "mr_test",
+      projectId: "prj_test",
+      model: "GLM-5.3",
+      revision: 2,
+    });
+    expect(body).not.toHaveProperty("organizationId");
+    expect(body).not.toHaveProperty("updatedByUserId");
   });
 
   it("rejects BYOK connection and enablement on the base plan", async () => {
