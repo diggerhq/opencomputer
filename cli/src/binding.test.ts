@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -140,4 +140,55 @@ test("cloud agent ids and the resolution a command prints", async () => {
       "Agent:   reviewer -> workbench--reviewer\n",
   );
   assert.match(describeResolution({ binding: null, localIds: ["worker"] }), /not linked/);
+});
+
+test("the name in project.ts selects an existing project without a link", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      `export default { name: "Existing project", agents: ["hello-world"] };\n`,
+    );
+    let creates = 0;
+    const client = {
+      async projects() {
+        return [project()];
+      },
+      async createProject() {
+        creates += 1;
+        return project();
+      },
+    };
+    const config = { apiUrl: "https://app.opencomputer.dev", apiKey: "test" };
+    const warnings: string[] = [];
+    const bound = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(bound.projectId, "prj_existing");
+    assert.equal(bound.agentId, "agent-cloud");
+    assert.equal(creates, 0);
+    assert.equal(warnings.length, 0);
+
+    // A link to a project this account does not have, as a fork inherits one:
+    // the warning names it, and the name in project.ts wins.
+    await writeFile(
+      resolve(root, ".opencomputer", "project.json"),
+      JSON.stringify({
+        version: 1,
+        apiUrl: config.apiUrl,
+        projectId: "prj_someone_elses",
+        projectName: "Someone else's",
+        agentId: "theirs",
+      }),
+    );
+    const rebound = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(rebound.projectId, "prj_existing");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /prj_someone_elses/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
