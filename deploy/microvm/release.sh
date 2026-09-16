@@ -39,7 +39,15 @@ echo "=== memory tiers (publishing may change code, never size) ==="
 "$MANIFEST" check-memory "$ENVIRONMENT"
 
 # Stamped onto every image so drift is an exact comparison later, not a guess.
-GUEST_HASH="$("$MANIFEST" guest-hash "$ENVIRONMENT")"
+#
+# Taken from the environment when the caller already computed it. The hash is
+# derived from `go list -deps`, whose answer depends on the state of the module
+# cache, so computing it twice in one run does not reliably give the same value
+# twice: CI's drift check saw 733b02f8629c93d4 and this stamp said
+# d8348d77e993a933, three seconds apart on one machine at one commit. The check
+# then failed against the stamp it had just caused to be written, every run,
+# forever. One value per run, computed once, passed down.
+GUEST_HASH="${MICROVM_GUEST_HASH:-$("$MANIFEST" guest-hash "$ENVIRONMENT")}"
 GIT_SHA="$(git -C "$HERE/../.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export MICROVM_IMAGE_DESCRIPTION="guest=${GUEST_HASH} git=${GIT_SHA}"
 echo "stamp       : $MICROVM_IMAGE_DESCRIPTION"

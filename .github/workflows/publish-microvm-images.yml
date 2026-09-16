@@ -59,7 +59,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
+      # One hash for the whole run. It is derived from `go list -deps`, whose
+      # answer moves with the state of the module cache, so computing it in
+      # each step gave the drift check and the stamp different values on one
+      # machine at one commit — and the check then failed against the stamp it
+      # had itself caused to be written. Warm the cache, resolve it once, and
+      # hand the same value to every step.
+      - run: go mod download
+      - id: guest
+        run: echo "hash=$(./deploy/microvm/manifest.py guest-hash dev)" >> "$GITHUB_OUTPUT"
+
       - id: dev_drift
+        env:
+          MICROVM_GUEST_HASH: ${{ steps.guest.outputs.hash }}
         run: |
           if ./deploy/microvm/manifest.py check-drift dev; then
             echo "stale=false" >> "$GITHUB_OUTPUT"
@@ -72,8 +84,11 @@ jobs:
         run: ./deploy/microvm/release.sh dev
         env:
           MICROVM_ALLOW_RESIZE: ${{ github.event.inputs.allow_resize && '1' || '0' }}
+          MICROVM_GUEST_HASH: ${{ steps.guest.outputs.hash }}
 
       - id: prod_drift
+        env:
+          MICROVM_GUEST_HASH: ${{ steps.guest.outputs.hash }}
         run: |
           if ./deploy/microvm/manifest.py check-drift prod; then
             echo "stale=false" >> "$GITHUB_OUTPUT"
@@ -87,8 +102,11 @@ jobs:
         run: ./deploy/microvm/release.sh prod
         env:
           MICROVM_ALLOW_RESIZE: ${{ github.event.inputs.allow_resize && '1' || '0' }}
+          MICROVM_GUEST_HASH: ${{ steps.guest.outputs.hash }}
 
       - name: Confirm nothing is behind
+        env:
+          MICROVM_GUEST_HASH: ${{ steps.guest.outputs.hash }}
         run: |
           ./deploy/microvm/manifest.py check-drift dev
           ./deploy/microvm/manifest.py check-drift prod
