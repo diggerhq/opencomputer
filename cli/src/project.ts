@@ -364,6 +364,38 @@ function projectAgentIds(source: string, path: string): string[] {
   );
 }
 
+/** The `name` the project declares in opencomputer/project.ts, or undefined when it declares none. */
+function projectDeclaredName(source: string, path: string): string | undefined {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  for (const statement of file.statements) {
+    if (
+      !ts.isExportAssignment(statement) ||
+      !ts.isObjectLiteralExpression(statement.expression)
+    ) {
+      continue;
+    }
+    const property = statement.expression.properties.find(
+      (candidate): candidate is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(candidate) &&
+        ((ts.isIdentifier(candidate.name) && candidate.name.text === "name") ||
+          (ts.isStringLiteral(candidate.name) && candidate.name.text === "name")),
+    );
+    if (!property) return undefined;
+    if (!ts.isStringLiteralLike(property.initializer)) {
+      throw new Error("opencomputer/project.ts name must be a string literal");
+    }
+    return property.initializer.text;
+  }
+  return undefined;
+}
+
+export async function readProjectName(
+  projectRoot: string,
+): Promise<string | undefined> {
+  const path = resolve(projectRoot, "opencomputer", "project.ts");
+  return projectDeclaredName(await readFile(path, "utf8"), path);
+}
+
 export async function readProjectAgents(
   projectRoot: string,
 ): Promise<ProjectAgentSource[]> {

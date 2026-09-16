@@ -61,9 +61,12 @@ npx --package @opencomputer/cli opencomputer deploy --watch --project <project-i
 npx --package @opencomputer/cli opencomputer deploy --watch --create-project "Support agents"
 ```
 
-Later commands reuse `.opencomputer/project.json`. Run `opencomputer link` with
-an explicit selector again when you intentionally want this source directory
-to target another project.
+Later commands reuse `.opencomputer/project.json`. When there is no link, or
+the linked project is not in your account (a fork of someone else's app), the
+`name` in `opencomputer/project.ts` selects a project of yours with that name;
+nothing is created without `--create-project`. Run `opencomputer link` with an
+explicit selector when you intentionally want this source directory to target
+another project.
 
 ## Add another agent
 

@@ -22,7 +22,9 @@ npm run deploy -- --watch
 `opencomputer link --project <id|slug>` links an existing project;
 `opencomputer link --create-project <name>` creates and links one. Later
 commands reuse that local binding without prompting. An unlinked command fails
-with the exact link command needed to proceed. `opencomputer doctor` and
+with the exact link command needed to proceed; when the `name` in
+`opencomputer/project.ts` matches a project of yours, commands use it without
+a link. `opencomputer doctor` and
 `opencomputer deploy` print the project they resolved and the cloud id each
 local agent deploys as before acting. Compiled bundles are cached under
 `node_modules/.cache/opencomputer/`, never inside `opencomputer/`.

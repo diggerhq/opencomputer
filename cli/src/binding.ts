@@ -3,9 +3,7 @@ import { dirname, resolve } from "node:path";
 
 import type { ManagedProject, OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
-import {
-  agentIdFromName,
-} from "./project.js";
+import { agentIdFromName, readProjectName } from "./project.js";
 
 export interface ProjectBinding {
   version: 1;
@@ -18,6 +16,8 @@ export interface ProjectBinding {
 export interface ProjectBindingOptions {
   project?: string;
   createProjectName?: string;
+  /** Where a warning about the checkout's link goes; standard error by default. */
+  warn?: (message: string) => void;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -160,6 +160,7 @@ export async function ensureProjectBinding(
   }
   const projectRoot = await findOpenComputerProjectRoot(agentRoot);
   const projects = await client.projects();
+  const warn = options.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
   if (!options.project && !options.createProjectName) {
     const existing = await readBinding(projectRoot, config.apiUrl);
     if (
@@ -171,6 +172,23 @@ export async function ensureProjectBinding(
       )
     ) {
       return existing;
+    }
+    if (existing) {
+      warn(
+        `The linked project ${existing.projectName} (${existing.projectId}) is not in this account; ` +
+          "resolving the project by the name in opencomputer/project.ts instead.",
+      );
+    }
+    // Identity by name: the name opencomputer/project.ts declares selects a
+    // project of this account by slug or name, so a checkout needs no link
+    // file. Nothing is created here; creation stays explicit.
+    const declared = await readProjectName(projectRoot);
+    if (declared) {
+      const slug = agentIdFromName(declared);
+      const named = projects.find(
+        (candidate) => candidate.slug === slug || candidate.name === declared,
+      );
+      if (named) return persistBinding(projectRoot, config, named);
     }
   }
 
