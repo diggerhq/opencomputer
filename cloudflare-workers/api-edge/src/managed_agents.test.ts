@@ -92,6 +92,45 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("forwards an agent rename and shapes the agent it returns", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        id: "support",
+        name: "Support triage",
+        activeAlias: "production",
+        activeDeploymentId: "support:abc",
+        deploymentCount: 3,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/agents/support", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Support triage" }),
+      }),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "support",
+      name: "Support triage",
+      deploymentCount: 3,
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/agents/support",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+  });
+
   it("forwards a project delete and reports what it tore down", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
