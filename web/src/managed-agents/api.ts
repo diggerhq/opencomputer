@@ -4,7 +4,8 @@ import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 const agentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  activeAlias: z.string(),
+  // Both are null until the agent has been deployed at least once.
+  activeAlias: z.string().nullish(),
   activeDeploymentId: z.string().nullish(),
   deploymentCount: z.number(),
   createdAt: z.string(),
