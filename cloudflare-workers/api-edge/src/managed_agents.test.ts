@@ -839,6 +839,52 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
+  it("proxies bounded project database queries without exposing backend fields", async () => {
+    const fetchSpy = vi.fn(async () => Response.json({
+      environment: "development",
+      result: {
+        columns: ["id", "token"],
+        rows: [{ id: 1, token: "application-owned-value", private: "drop" }],
+        rowsAffected: 0,
+        truncated: false,
+        provider: "private",
+      },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/projects/prj_test/database/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          environment: "development",
+          sql: "SELECT id, token FROM records",
+          parameters: [],
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      environment: "development",
+      result: {
+        columns: ["id", "token"],
+        rows: [{ id: 1, token: "application-owned-value" }],
+        rowsAffected: 0,
+        truncated: false,
+      },
+    });
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "https://managedagents.test/v1/projects/prj_test/database/query",
+    );
+  });
+
   it("exposes public template provenance on a project overview", async () => {
     vi.stubGlobal(
       "fetch",

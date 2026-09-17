@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BrainCircuit, KeySquare, Plug } from 'lucide-react'
+import { BrainCircuit, Database, KeySquare, Plug } from 'lucide-react'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
@@ -36,6 +36,7 @@ describe('managed agents navigation', () => {
       'Schedules',
       'Webhooks',
       'Memory',
+      'Database',
       'Secrets',
       'Connections',
       'BYOK',
@@ -46,6 +47,9 @@ describe('managed agents navigation', () => {
     )
     expect(nav[1]?.items.find((item) => item.label === 'Secrets')?.icon).toBe(
       KeySquare,
+    )
+    expect(nav[1]?.items.find((item) => item.label === 'Database')?.icon).toBe(
+      Database,
     )
     expect(nav[1]?.items.find((item) => item.label === 'Connections')?.to).toBe(
       '/projects/project%20one/connections',

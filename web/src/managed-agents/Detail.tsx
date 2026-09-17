@@ -79,6 +79,7 @@ import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
+import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
 import { AgentMarkdown } from './AgentMarkdown'
@@ -96,6 +97,7 @@ type DetailTab =
   | 'schedules'
   | 'webhooks'
   | 'memory'
+  | 'database'
   | 'secrets'
   | 'connections'
   | 'github'
@@ -110,6 +112,7 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'schedules',
   'webhooks',
   'memory',
+  'database',
   'secrets',
   'connections',
   'github',
@@ -748,6 +751,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
+    ...(project ? ([{ id: 'database', label: 'Database' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
     ...(project
       ? ([{ id: 'connections', label: 'Connections' }] as const)
@@ -1241,6 +1245,15 @@ export default function ManagedAgentDetail({
                 ),
             ),
           ]}
+        />
+      ) : null}
+
+      {activeTab === 'database' && project ? (
+        <ManagedProjectDatabase
+          key={`${project.project.id}:${environment}`}
+          projectId={project.project.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
         />
       ) : null}
 

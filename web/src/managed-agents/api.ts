@@ -103,6 +103,18 @@ const projectSchema = z.object({
 
 const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
 
+const databaseValueSchema = z.union([z.string(), z.number(), z.null()])
+const databaseResultSchema = z.object({
+  columns: z.array(z.string()),
+  rows: z.array(z.record(z.string(), databaseValueSchema)),
+  rowsAffected: z.number(),
+  truncated: z.boolean(),
+})
+const databaseQueryResponseSchema = z.object({
+  environment: z.enum(['development', 'production']),
+  result: databaseResultSchema,
+})
+
 const templateInspectionSchema = z.object({
   id: z.string(),
   repository: z.object({
@@ -807,6 +819,31 @@ export async function getManagedProject(projectId: string) {
     undefined,
     projectOverviewSchema,
   )
+}
+
+export type ManagedDatabaseValue = z.infer<typeof databaseValueSchema>
+export type ManagedDatabaseResult = z.infer<typeof databaseResultSchema>
+
+export async function queryManagedProjectDatabase(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  sql: string
+  parameters?: Array<string | number | boolean | null>
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          environment: input.environment,
+          sql: input.sql,
+          parameters: input.parameters ?? [],
+        }),
+      },
+      databaseQueryResponseSchema,
+    )
+  ).result
 }
 
 export async function getManagedGitHubStatus(projectId: string) {

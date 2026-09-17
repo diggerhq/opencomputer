@@ -123,6 +123,38 @@ function environmentOption(
   throw new Error("--environment must be development or production");
 }
 
+function databaseParameter(value: string): string | number | boolean | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed === "string" || typeof parsed === "boolean" ||
+      (typeof parsed === "number" && Number.isFinite(parsed))) return parsed;
+  } catch {
+    // The error below explains the accepted CLI form.
+  }
+  throw new Error(
+    `--parameter expects a JSON string, finite number, boolean, or null; received ${JSON.stringify(value)}`,
+  );
+}
+
+function printDatabaseResult(result: {
+  columns: string[];
+  rows: Array<Record<string, string | number | null>>;
+  truncated: boolean;
+}): void {
+  if (!result.columns.length) {
+    process.stdout.write("Query completed without returning columns.\n");
+    return;
+  }
+  process.stdout.write(`${result.columns.join("\t")}\n`);
+  for (const row of result.rows) {
+    process.stdout.write(`${result.columns.map((column) => {
+      const value = row[column];
+      return value === null || value === undefined ? "NULL" : String(value).replace(/[\t\r\n]+/g, " ");
+    }).join("\t")}\n`);
+  }
+  if (result.truncated) process.stdout.write("Result truncated; add LIMIT and paginate the query.\n");
+}
+
 function consumeModelAccessProvider(args: string[]): "claude" | "codex" {
   if (args[0] === "claude" || args[0] === "codex") {
     return args.shift() as "claude" | "codex";
@@ -1833,6 +1865,27 @@ function serviceOfConnection(connection: {
     throw new Error(
       "Use `opencomputer webhooks list|create|update|enable|disable|rotate-token|remove`.",
     );
+  }
+
+  if (command === "database") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const environment = environmentOption(option(args, "--environment"));
+    const parameters = options(args, "--parameter").map(databaseParameter);
+    const sql = args.shift();
+    if (action !== "query" || !sql || args.length) {
+      throw new Error("Use `opencomputer database query <sql> [--environment development|production] [--parameter <json>]... [--project <id|slug>]`.");
+    }
+    const project = await selectedProject(client, config, projectReference);
+    const result = await client.databaseQuery({
+      projectId: project.projectId,
+      environment,
+      sql,
+      parameters,
+    });
+    if (globals.json) printJSON(result);
+    else printDatabaseResult(result);
+    return;
   }
 
   if (command === "memory") {

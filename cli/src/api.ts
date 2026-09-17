@@ -35,6 +35,15 @@ export interface ManagedProject {
   updatedAt: string;
 }
 
+export type DatabaseValue = string | number | null;
+
+export interface DatabaseResult {
+  columns: string[];
+  rows: Array<Record<string, DatabaseValue>>;
+  rowsAffected: number;
+  truncated: boolean;
+}
+
 export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
@@ -934,6 +943,26 @@ export class OpenComputerClient {
         }>;
       }
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
+  }
+
+  async databaseQuery(input: {
+    projectId: string;
+    environment: "development" | "production";
+    sql: string;
+    parameters?: Array<string | number | boolean | null>;
+  }): Promise<DatabaseResult> {
+    const response = await this.request<{
+      environment: "development" | "production";
+      result: DatabaseResult;
+    }>(`/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`, {
+      method: "POST",
+      body: JSON.stringify({
+        environment: input.environment,
+        sql: input.sql,
+        parameters: input.parameters ?? [],
+      }),
+    });
+    return response.result;
   }
 
   // Project memory (docs/agents/document-memory.mdx, "Management API").

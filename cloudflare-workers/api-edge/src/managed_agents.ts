@@ -1270,6 +1270,29 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
   }
+  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+    const result = record(body.result) ?? {};
+    const columns = strings(result.columns);
+    return {
+      environment: body.environment,
+      result: {
+        columns,
+        rows: Array.isArray(result.rows)
+          ? result.rows.map((value) => {
+              const row = record(value) ?? {};
+              return Object.fromEntries(
+                columns.map((column) => {
+                  const cell = row[column];
+                  return [column, typeof cell === "string" || typeof cell === "number" ? cell : null];
+                }),
+              );
+            })
+          : [],
+        rowsAffected: typeof result.rowsAffected === "number" ? result.rowsAffected : 0,
+        truncated: result.truncated === true,
+      },
+    };
+  }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
     /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(suffix)
@@ -1808,6 +1831,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+    return true;
+  }
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }

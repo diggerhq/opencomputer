@@ -95,6 +95,7 @@ Usage:
   opencomputer memory unfreeze <resource> <id> [--environment development|production]
   opencomputer memory export --out <dir> [--resource <id>] [--environment development|production]
   opencomputer memory remove <resource> <id> [--environment development|production]
+  opencomputer database query <sql> [--environment development|production] [--parameter <json>]... [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]

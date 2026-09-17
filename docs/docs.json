@@ -41,6 +41,7 @@
               "agents/reactive-agents",
               "agents/sessions",
               "agents/memory",
+              "agents/database",
               "agents/schedules",
               "agents/webhooks",
               "agents/capabilities",

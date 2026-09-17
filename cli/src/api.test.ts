@@ -133,3 +133,32 @@ test("memory precondition failures surface the API's code", async (context) => {
       error.message === "The document changed.",
   );
 });
+
+test("database queries use the project read endpoint with positional parameters", async (context) => {
+  let request: Request | undefined;
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    request = new Request(input, init);
+    return Response.json({
+      environment: "production",
+      result: { columns: ["id"], rows: [{ id: 7 }], rowsAffected: 0, truncated: false },
+    });
+  });
+  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" });
+
+  const result = await client.databaseQuery({
+    projectId: "prj_1",
+    environment: "production",
+    sql: "SELECT id FROM records WHERE name = ? LIMIT ?",
+    parameters: ["pricing", 20],
+  });
+
+  assert.deepEqual(result.rows, [{ id: 7 }]);
+  assert.ok(request);
+  assert.equal(request.url, "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/database/query");
+  assert.equal(request.method, "POST");
+  assert.deepEqual(await request.json(), {
+    environment: "production",
+    sql: "SELECT id FROM records WHERE name = ? LIMIT ?",
+    parameters: ["pricing", 20],
+  });
+});
