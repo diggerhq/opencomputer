@@ -398,6 +398,21 @@ function publicDeployment(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicAgent(value: unknown): Record<string, unknown> {
+  const agent = record(value) ?? {};
+  return {
+    id: agent.id,
+    // An agent that was never named falls back to its id, so the dashboard
+    // always has something to render.
+    name: typeof agent.name === "string" && agent.name ? agent.name : agent.id,
+    activeAlias: agent.activeAlias,
+    activeDeploymentId: agent.activeDeploymentId,
+    deploymentCount: agent.deploymentCount,
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt,
+  };
+}
+
 function publicProject(value: unknown): Record<string, unknown> {
   const project = record(value) ?? {};
   const agentId =
@@ -1241,24 +1256,12 @@ function publicSuccessBody(
   const body = record(value) ?? {};
   if (method === "GET" && suffix === "/agents") {
     return {
-      agents: Array.isArray(body.agents)
-        ? body.agents.map((value) => {
-            const agent = record(value) ?? {};
-            return {
-              id: agent.id,
-              name:
-                typeof agent.name === "string" && agent.name
-                  ? agent.name
-                  : agent.id,
-              activeAlias: agent.activeAlias,
-              activeDeploymentId: agent.activeDeploymentId,
-              deploymentCount: agent.deploymentCount,
-              createdAt: agent.createdAt,
-              updatedAt: agent.updatedAt,
-            };
-          })
-        : [],
+      agents: Array.isArray(body.agents) ? body.agents.map(publicAgent) : [],
     };
+  }
+  // A rename answers with the agent it renamed, shaped like one in the list.
+  if (method === "PATCH" && /^\/agents\/[^/]+$/.test(suffix)) {
+    return publicAgent(body);
   }
   if (method === "GET" && suffix === "/projects") {
     return {
@@ -1269,6 +1272,21 @@ function publicSuccessBody(
   }
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
+  }
+  if (method === "DELETE" && /^\/projects\/[^/]+$/.test(suffix)) {
+    // What the delete tore down, so the dashboard can say what it stopped
+    // rather than just that the project is gone.
+    const stopped = record(body.stopped) ?? {};
+    return {
+      id: typeof body.id === "string" ? body.id : "",
+      slug: typeof body.slug === "string" ? body.slug : "",
+      deleted: body.deleted === true,
+      stopped: {
+        sessions: typeof stopped.sessions === "number" ? stopped.sessions : 0,
+        connections:
+          typeof stopped.connections === "number" ? stopped.connections : 0,
+      },
+    };
   }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
@@ -1801,6 +1819,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && suffix === "/agents") return true;
+  // Renaming moves only the display name; the id every deployment, session and
+  // secret is keyed by is not editable.
+  if (method === "PATCH" && /^\/agents\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && suffix === "/me") return true;
   if ((method === "GET" || method === "POST") && suffix === "/projects") {
     return true;
@@ -1808,6 +1829,10 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  // Deleting a project takes everything under it with it, including any
+  // running session and the runtime behind it. The backend does the tearing
+  // down and refuses the delete if it cannot stop something first.
+  if (method === "DELETE" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }

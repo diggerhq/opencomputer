@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   collectManagedAgentEventPages,
   displayManagedAgentName,
   managedAgentModelRoute,
   managedAgentRenderDebug,
   nextAgentEventDeadline,
+  renameManagedAgent,
 } from './api'
 
 describe('collectManagedAgentEventPages', () => {
@@ -126,5 +127,39 @@ describe('managedAgentModelRoute', () => {
     expect(
       managedAgentModelRoute({ ...event, type: 'agent.rendered' }),
     ).toBeUndefined()
+  })
+})
+
+describe('renameManagedAgent', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('accepts an agent that has never been deployed', async () => {
+    // activeAlias and activeDeploymentId are both null until a first deploy —
+    // the API really does send null, so the schema has to take it. Requiring a
+    // string here rejected the response and reported a rename that had in fact
+    // already been applied as a failure.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: 'keep-me',
+            name: 'Renamed Agent',
+            activeAlias: null,
+            activeDeploymentId: null,
+            deploymentCount: 0,
+            createdAt: '2026-09-17T00:10:00.492Z',
+            updatedAt: '2026-09-17T00:51:11.574Z',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    )
+
+    await expect(
+      renameManagedAgent({ agentId: 'keep-me', name: 'Renamed Agent' }),
+    ).resolves.toMatchObject({ id: 'keep-me', name: 'Renamed Agent' })
   })
 })

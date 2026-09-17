@@ -4,7 +4,8 @@ import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 const agentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  activeAlias: z.string(),
+  // Both are null until the agent has been deployed at least once.
+  activeAlias: z.string().nullish(),
   activeDeploymentId: z.string().nullish(),
   deploymentCount: z.number(),
   createdAt: z.string(),
@@ -728,6 +729,22 @@ export async function getManagedAgents() {
   ).agents
 }
 
+/**
+ * Rename an agent. Only the display name changes — the agent id is what its
+ * deployments, sessions and secrets are keyed by, and what ties it to its
+ * project, so it is not editable.
+ */
+export async function renameManagedAgent(input: {
+  agentId: string
+  name: string
+}) {
+  return apiFetch(
+    `/managed-agents/agents/${encodeURIComponent(input.agentId)}`,
+    { method: 'PATCH', body: JSON.stringify({ name: input.name }) },
+    agentSchema,
+  )
+}
+
 export async function getManagedProjects() {
   return (
     await apiFetch(
@@ -743,6 +760,27 @@ export async function createManagedProject(name: string) {
     '/managed-agents/projects',
     { method: 'POST', body: JSON.stringify({ name }) },
     projectSchema,
+  )
+}
+
+const projectDeletionSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  deleted: z.boolean(),
+  stopped: z.object({ sessions: z.number(), connections: z.number() }),
+})
+
+/**
+ * Delete a project and everything under it: its agents and deployments, and
+ * any session still running, whose runtime is stopped first. The backend
+ * refuses the delete outright if it cannot stop something, so a success here
+ * means nothing was left behind.
+ */
+export async function deleteManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}`,
+    { method: 'DELETE' },
+    projectDeletionSchema,
   )
 }
 
