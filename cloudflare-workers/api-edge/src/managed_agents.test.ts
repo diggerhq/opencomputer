@@ -840,7 +840,7 @@ describe("managed agents proxy", () => {
   });
 
   it("proxies bounded project database queries without exposing backend fields", async () => {
-    const fetchSpy = vi.fn(async () => Response.json({
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => Response.json({
       environment: "development",
       result: {
         columns: ["id", "token"],
