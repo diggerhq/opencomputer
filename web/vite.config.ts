@@ -1,4 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
+import type { Connect } from 'vite'
 import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -32,10 +33,13 @@ const managedAgentsTarget =
   process.env.OC_MANAGED_AGENTS_TARGET || 'https://managedagents.opencomputer.dev'
 const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
   ? {
-      '/api/managed-agents': {
+      // The dashboard's API base is /api/dashboard, so its managed-agents
+      // calls arrive under /api/dashboard/managed-agents — the same prefix
+      // dashboard.ts proxies from in the edge.
+      '/api/dashboard/managed-agents': {
         target: managedAgentsTarget,
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api\/managed-agents/, '/v1'),
+        rewrite: (p) => p.replace(/^\/api\/dashboard\/managed-agents/, '/v1'),
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
             proxyReq.setHeader(
@@ -69,8 +73,39 @@ const v3Proxy: Record<string, ProxyOptions> = v3Key
     }
   : {}
 
+// Paired with the bypass above: ProtectedRoute redirects to /auth/login unless
+// /me resolves, and /auth is the edge's own route, which a local dev server has
+// no way to satisfy. Single-tenant development mode is supposed to return a
+// local user from /me, so serve exactly that — gated on the same token, ahead
+// of the proxy, and only for this one path.
+const localUser = {
+  name: 'managed-agents-local-user',
+  configureServer(server: { middlewares: Connect.Server }) {
+    if (!managedAgentsToken) return
+    server.middlewares.use((req, res, next) => {
+      if (req.url !== '/api/dashboard/me') return next()
+      res.setHeader('content-type', 'application/json')
+      res.end(
+        JSON.stringify({
+          id: 'local-dev-user',
+          email: 'local@dev.invalid',
+          orgId: 'local-dev-org',
+          durableSessionsEnabled: false,
+          infrastructureEnabled: false,
+          authMode: 'development',
+          capabilities: {
+            signOut: false,
+            manageMembers: false,
+            switchOrganizations: false,
+          },
+        }),
+      )
+    })
+  },
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), localUser],
   base: '/',
   resolve: {
     alias: {
