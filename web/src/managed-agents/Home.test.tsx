@@ -45,4 +45,35 @@ describe('projects home onboarding', () => {
     expect(markup).toContain('href="/new"')
     expect(markup).not.toContain('Start from a template')
   })
+
+  it('offers each project its own delete control, named after the project', () => {
+    const now = new Date().toISOString()
+    const markup = renderProjects([
+      {
+        id: 'project_1',
+        slug: 'support',
+        name: 'Support',
+        environments: [{ name: 'development', updatedAt: now }],
+        agents: [{ id: 'agent_1', name: 'Support agent' }],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'project_2',
+        slug: 'billing',
+        name: 'Billing',
+        environments: [{ name: 'development', updatedAt: now }],
+        agents: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ])
+
+    // Named per project: the card is a link to the project, so the control
+    // that destroys it has to be distinguishable from the one next to it.
+    expect(markup).toContain('aria-label="Delete Support"')
+    expect(markup).toContain('aria-label="Delete Billing"')
+    // The confirm dialog is what actually deletes, so nothing is armed on render.
+    expect(markup).not.toContain('Delete project')
+  })
 })

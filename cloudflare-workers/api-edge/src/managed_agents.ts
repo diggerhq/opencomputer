@@ -1270,6 +1270,21 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
   }
+  if (method === "DELETE" && /^\/projects\/[^/]+$/.test(suffix)) {
+    // What the delete tore down, so the dashboard can say what it stopped
+    // rather than just that the project is gone.
+    const stopped = record(body.stopped) ?? {};
+    return {
+      id: typeof body.id === "string" ? body.id : "",
+      slug: typeof body.slug === "string" ? body.slug : "",
+      deleted: body.deleted === true,
+      stopped: {
+        sessions: typeof stopped.sessions === "number" ? stopped.sessions : 0,
+        connections:
+          typeof stopped.connections === "number" ? stopped.connections : 0,
+      },
+    };
+  }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
     /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(suffix)
@@ -1808,6 +1823,10 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  // Deleting a project takes everything under it with it, including any
+  // running session and the runtime behind it. The backend does the tearing
+  // down and refuses the delete if it cannot stop something first.
+  if (method === "DELETE" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }

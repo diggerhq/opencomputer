@@ -19,6 +19,35 @@ const injectKey: ProxyOptions['configure'] = (proxy) => {
     if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
   })
 }
+// Dev-only managed-agents bypass. With OC_MANAGED_AGENTS_TOKEN set, Vite
+// forwards /api/managed-agents/* straight to a managed-agents backend
+// (OC_MANAGED_AGENTS_TARGET) and injects the agent token server-side — so the
+// projects UI works in `npm run dev` against a personal dev Worker, with no
+// api-edge deploy and no WorkOS session. The token lives only in the Node dev
+// server, never in the browser bundle (not a VITE_ var). Prod still goes
+// through the edge, which mints its own token per request; this shortcut is
+// local-only, and it bypasses the edge's route allowlist and response shaping.
+const managedAgentsToken = process.env.OC_MANAGED_AGENTS_TOKEN
+const managedAgentsTarget =
+  process.env.OC_MANAGED_AGENTS_TARGET || 'https://managedagents.opencomputer.dev'
+const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
+  ? {
+      '/api/managed-agents': {
+        target: managedAgentsTarget,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/managed-agents/, '/v1'),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader(
+              'x-opencomputer-agent-token',
+              managedAgentsToken,
+            )
+          })
+        },
+      },
+    }
+  : {}
+
 // Both must precede '/api/' below — first matching rule wins.
 const v3Proxy: Record<string, ProxyOptions> = v3Key
   ? {
@@ -52,6 +81,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       ...v3Proxy,
+      ...managedAgentsProxy,
       '/auth': target,
       // Trailing slash so the SPA route `/api-keys` isn't proxied to the
       // backend; all real API paths live under `/api/dashboard/`.

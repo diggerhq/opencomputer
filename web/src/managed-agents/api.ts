@@ -746,6 +746,27 @@ export async function createManagedProject(name: string) {
   )
 }
 
+const projectDeletionSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  deleted: z.boolean(),
+  stopped: z.object({ sessions: z.number(), connections: z.number() }),
+})
+
+/**
+ * Delete a project and everything under it: its agents and deployments, and
+ * any session still running, whose runtime is stopped first. The backend
+ * refuses the delete outright if it cannot stop something, so a success here
+ * means nothing was left behind.
+ */
+export async function deleteManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}`,
+    { method: 'DELETE' },
+    projectDeletionSchema,
+  )
+}
+
 export async function inspectManagedTemplate(
   repositoryUrl: string,
 ): Promise<z.infer<typeof templateInspectionSchema>> {

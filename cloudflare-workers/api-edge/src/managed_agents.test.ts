@@ -92,6 +92,41 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("forwards a project delete and reports what it tore down", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        id: "prj_test",
+        slug: "delete-me",
+        deleted: true,
+        stopped: { sessions: 2, connections: 1 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test", {
+        method: "DELETE",
+      }),
+      {
+        MANAGED_AGENTS_API_URL: "https://manage-agents.mo-oc-dev.com",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id: "prj_test",
+      slug: "delete-me",
+      deleted: true,
+      stopped: { sessions: 2, connections: 1 },
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://manage-agents.mo-oc-dev.com/v1/projects/prj_test",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
+  });
+
   it("forwards the GitHub repository listing with its query and the page it returns", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
