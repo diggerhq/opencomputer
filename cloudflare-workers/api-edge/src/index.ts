@@ -94,6 +94,10 @@ import {
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
+  // Narrow HMAC used only by the read-only managed-session cost report. Keep
+  // separate from CF_ADMIN_SECRET so diagnosis never needs a sandbox/control-
+  // plane administration credential.
+  SESSION_COST_REPORT_SECRET?: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
   // Coarse distributed abuse limits for the two unauthenticated WorkOS device
@@ -5172,12 +5176,15 @@ export default {
 
     // Read-only operator report for reconciling the org-level OpenRouter billing
     // watermark with durable per-session usage attribution. Prompts and event
-    // bodies are deliberately excluded. HMAC-auth'd with CF_ADMIN_SECRET.
+    // bodies are deliberately excluded. HMAC-auth'd with its own narrow secret.
     if (path === "/internal/model-billing/session-costs" && req.method === "GET") {
+      if (!env.SESSION_COST_REPORT_SECRET) {
+        return json({ error: "session cost report is not configured" }, 503);
+      }
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
       const expected = await hmacHex(
-        env.CF_ADMIN_SECRET,
+        env.SESSION_COST_REPORT_SECRET,
         `${ts}.${path}${url.search}`,
       );
       if (!constantTimeEqual(expected, sig)) {

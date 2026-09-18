@@ -408,8 +408,8 @@ Base `https://openrouter.ai/api/v1`.
 
 **2026-09-18 attribution follow-up.** Runtime-self-reported usage is now retained
 durably on each managed-agent session and powers the customer Billing table. For
-incident response, the API edge exposes an admin-HMAC-only, read-only session-cost
-report that calls that existing tenant-scoped aggregation as the requested org,
+incident response, the API edge exposes a dedicated-operator-HMAC-only, read-only
+session-cost report that calls that existing tenant-scoped aggregation as the requested org,
 removes prompts/event bodies, and reconciles the returned session total against
 the D1 OpenRouter committed-spend watermark. The report is diagnostic, not a new
 billing ledger: Autumn remains authoritative for credits, OpenRouter remains

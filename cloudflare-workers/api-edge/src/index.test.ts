@@ -479,8 +479,11 @@ describe("/internal/warm-org — auth boundary", () => {
 });
 
 describe("/internal/model-billing/session-costs — auth boundary", () => {
-  const ADMIN = "admin-secret";
-  const authEnv = { ...env, CF_ADMIN_SECRET: ADMIN } as unknown as Env;
+  const REPORT_SECRET = "report-secret";
+  const authEnv = {
+    ...env,
+    SESSION_COST_REPORT_SECRET: REPORT_SECRET,
+  } as unknown as Env;
   const sign = async (
     secret: string,
     ts: string,
@@ -508,7 +511,7 @@ describe("/internal/model-billing/session-costs — auth boundary", () => {
     const search = o.search ?? "?org_id=org-x&limit=100";
     const path = "/internal/model-billing/session-costs";
     const ts = o.ts ?? Math.floor(Date.now() / 1000).toString();
-    const sig = await sign(o.secret ?? ADMIN, ts, `${path}${search}`);
+    const sig = await sign(o.secret ?? REPORT_SECRET, ts, `${path}${search}`);
     return worker.fetch(
       new Request(`https://app.opencomputer.dev${path}${search}`, {
         headers: { "X-Timestamp": ts, "X-Signature": sig },
@@ -531,8 +534,19 @@ describe("/internal/model-billing/session-costs — auth boundary", () => {
     expect((await get({ search: "?limit=100" })).status).toBe(400);
   });
 
-  it("accepts admin auth before resolving the requested org", async () => {
+  it("accepts report auth before resolving the requested org", async () => {
     expect((await get()).status).toBe(404);
+  });
+
+  it("fails closed when the dedicated report secret is not configured", async () => {
+    const response = await worker.fetch(
+      new Request(
+        "https://app.opencomputer.dev/internal/model-billing/session-costs?org_id=org-x",
+      ),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(503);
   });
 });
 
