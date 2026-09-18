@@ -73,6 +73,10 @@ import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
 import {
+  sessionCostDetail,
+  sessionCostReport,
+} from "./session_cost_report";
+import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
 } from "./managed_agent_credit_gate";
@@ -93,6 +97,10 @@ import {
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
+  // Narrow HMAC used only by the read-only managed-session cost report. Keep
+  // separate from CF_ADMIN_SECRET so diagnosis never needs a sandbox/control-
+  // plane administration credential.
+  SESSION_COST_REPORT_SECRET?: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
   // Coarse distributed abuse limits for the two unauthenticated WorkOS device
@@ -5167,6 +5175,33 @@ export default {
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       await runModelMeter(env, Date.now());
       return json({ ok: true });
+    }
+
+    // Read-only operator report for reconciling the org-level OpenRouter billing
+    // watermark with durable per-session usage attribution. Prompts and event
+    // bodies are deliberately excluded. HMAC-auth'd with its own narrow secret.
+    if (path === "/internal/model-billing/session-costs" && req.method === "GET") {
+      if (!env.SESSION_COST_REPORT_SECRET) {
+        return json({ error: "session cost report is not configured" }, 503);
+      }
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const expected = await hmacHex(
+        env.SESSION_COST_REPORT_SECRET,
+        `${ts}.${path}${url.search}`,
+      );
+      if (!constantTimeEqual(expected, sig)) {
+        return json({ error: "signature mismatch" }, 401);
+      }
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) {
+        return json({ error: "timestamp out of window" }, 401);
+      }
+      const orgID = url.searchParams.get("org_id") ?? "";
+      if (!orgID) return json({ error: "org_id required" }, 400);
+      const sessionID = url.searchParams.get("session_id") ?? "";
+      if (sessionID) return sessionCostDetail(env, orgID, sessionID);
+      const limit = Number.parseInt(url.searchParams.get("limit") ?? "100", 10);
+      return sessionCostReport(env, orgID, limit);
     }
 
     if (path === "/internal/org-policy") {

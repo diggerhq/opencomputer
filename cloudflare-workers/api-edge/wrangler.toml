@@ -150,6 +150,8 @@ deleted_classes = ["VmSession"]
 #                            exposure alerts from sessions-api.
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend.
+#   SESSION_COST_REPORT_SECRET — narrow HMAC for the read-only operator session
+#                            cost report; never shared with sandbox control planes.
 # The VM-DO exec data plane (VM_SESSIONS DO) needs NO dedicated secret: the worker
 # host authenticates its /internal/vms/:id/connect dial with a per-sandbox HMAC
 # over the already-shared SESSION_JWT_SECRET (minted by the CP, re-derived here).
