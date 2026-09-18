@@ -508,6 +508,36 @@ describe("managed agents proxy", () => {
     expect(body).not.toHaveProperty("updatedByUserId");
   });
 
+  it("removes a project model route without deleting its connection", async () => {
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("DELETE");
+      expect(await new Response(init?.body).text()).toBe("{}");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(204);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "https://managedagents.test/v1/projects/prj_test/model-routes/development",
+    );
+  });
+
   it("rejects BYOK connection and enablement on the base plan", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);

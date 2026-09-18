@@ -1101,6 +1101,20 @@ export async function putManagedModelRoute(input: {
   )
 }
 
+export async function deleteManagedModelRoute(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify(input.agentId ? { agent_id: input.agentId } : {}),
+    },
+  )
+}
+
 export async function completeManagedModelAccess(
   id: string,
   code: string,
