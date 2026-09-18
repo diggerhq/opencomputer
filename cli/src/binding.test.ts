@@ -121,3 +121,23 @@ test("explicit project creation reuses the existing slug on retry", async () => 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("cloud agent ids and the resolution a command prints", async () => {
+  const { cloudAgentId, describeResolution } = await import("./binding.js");
+  const binding = {
+    version: 1 as const,
+    apiUrl: "https://app.opencomputer.dev",
+    projectId: "prj_1",
+    projectName: "Workbench",
+    agentId: "workbench",
+  };
+  assert.equal(cloudAgentId(binding, "worker", 0), "workbench");
+  assert.equal(cloudAgentId(binding, "reviewer", 1), "workbench--reviewer");
+  assert.equal(
+    describeResolution({ binding, localIds: ["worker", "reviewer"], alias: "development" }),
+    "Project: Workbench (prj_1) at https://app.opencomputer.dev, alias development\n" +
+      "Agent:   worker -> workbench\n" +
+      "Agent:   reviewer -> workbench--reviewer\n",
+  );
+  assert.match(describeResolution({ binding: null, localIds: ["worker"] }), /not linked/);
+});

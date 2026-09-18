@@ -40,6 +40,12 @@ interface AgentInput {
 string, array, or object. Both `text` and `payload` are optional, so check them
 before use.
 
+A payload comes from whatever started the turn. An application sends one on
+the [turns route](/agents/api#turns) next to the text, and the agent reads it
+with `source: "user"`; a [webhook](/agents/webhooks) delivers its body as the
+payload; a [schedule](/agents/schedules) dispatches the payload it was
+configured with. The agent reads all of them the same way.
+
 ## Adapt to the source
 
 The current direct and delegated flows can share one agent definition:

@@ -33,6 +33,7 @@ interface Call {
 function fakeSession(sessionId: string) {
   const log: AgentEvent[] = [];
   const calls: Call[] = [];
+  const admitted = new Map<string, string>();
   let failNext = 0;
   let turns = 0;
   // While set, turn admissions are recorded in the log at once but their
@@ -65,8 +66,20 @@ function fakeSession(sessionId: string) {
       });
     }
     if (call.method === "POST" && url.pathname === `${prefix}/turns`) {
+      // A repeated key returns the existing turn with its persisted status,
+      // as the API does: the log's last word on the turn, `duplicate: true`.
+      const key = typeof call.body?.idempotencyKey === "string" ? call.body.idempotencyKey : undefined;
+      const known = key === undefined ? undefined : admitted.get(key);
+      if (known) {
+        const last = [...log].reverse().find(
+          (event) => event.turnId === known && event.type.startsWith("turn."),
+        );
+        const status = last ? last.type.slice("turn.".length) : "queued";
+        return Response.json({ turnId: known, status, duplicate: true }, { status: 200 });
+      }
       turns += 1;
       const turnId = `turn-${String(turns)}`;
+      if (key !== undefined) admitted.set(key, turnId);
       append({
         turnId,
         type: "message.received",
@@ -272,7 +285,7 @@ test("attach sends turns and interrupts through the app's routes without duplica
   await act(async () => {
     receipt = await view.result().send("  Book the venue  ");
   });
-  assert.deepEqual(receipt, { sessionId: "ses-3", turnId: "turn-1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-3", turnId: "turn-1", status: "queued", duplicate: false });
   const sent = view.result();
   assert.equal(sent.isRunning, true);
   assert.deepEqual(sent.messages, [
@@ -295,6 +308,49 @@ test("attach sends turns and interrupts through the app's routes without duplica
   session.append({ turnId: "turn-1", type: "turn.cancelled", data: { reason: "interrupted" } });
   const stopped = await view.until((result) => !result.isRunning, "cancellation");
   assert.equal(stopped.error, undefined);
+  await view.unmount();
+});
+
+test("stop rejects when the interrupt request fails, sets error, and can be retried", async (t) => {
+  const session = fakeSession("ses-stop");
+  let interruptFails = true;
+  const fetchWithFailingInterrupt = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/interrupt") && interruptFails) {
+      return Response.json(
+        { error: { code: "interrupt_unavailable", message: "The interrupt could not be delivered" } },
+        { status: 503 },
+      );
+    }
+    return session.fetch(input, init);
+  };
+  const view = mount(t, { sessionId: "ses-stop", basePath: "/app/agent", fetch: fetchWithFailingInterrupt, pollIntervalMs: 5 });
+  await view.render();
+  session.append({ turnId: "t1", type: "turn.started", data: {} });
+  await view.until((result) => result.isRunning, "running turn");
+
+  let rejection: unknown;
+  await act(async () => {
+    rejection = await view.result().stop().catch((cause: unknown) => cause);
+  });
+  assert.ok(rejection instanceof SendError, "a failed interrupt rejects");
+  assert.equal(rejection.status, 503);
+  assert.equal(rejection.code, "interrupt_unavailable");
+  assert.equal(view.result().error, "The interrupt could not be delivered");
+  assert.equal(view.result().isRunning, true, "work continues; the caller can retry");
+
+  interruptFails = false;
+  await act(async () => {
+    await view.result().stop();
+  });
+  assert.equal(
+    session.calls.filter((call) => call.method === "POST" && call.path === "/app/agent/sessions/ses-stop/interrupt").length,
+    1,
+    "the retry reached the route",
+  );
+  session.append({ turnId: "t1", type: "turn.cancelled", data: { reason: "interrupted" } });
+  const stopped = await view.until((result) => !result.isRunning, "cancellation after the retry");
+  assert.equal(stopped.error, "The interrupt could not be delivered", "the earlier failure stays visible until a newer one");
   await view.unmount();
 });
 
@@ -387,7 +443,7 @@ test("a send admitted by one session never lands in the session attached later",
   // A's response lands now: A's caller gets A's receipt, B is untouched.
   release();
   const receipt = await sent!;
-  assert.deepEqual(receipt, { sessionId: "ses-a", turnId: "turn-1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-a", turnId: "turn-1", status: "queued", duplicate: false });
   await tick();
   await tick();
   assert.equal(latest!.sessionId, "ses-b");
@@ -570,7 +626,7 @@ test("create mode still creates the session on the first send and streams the re
   await act(async () => {
     receipt = await view.result().send("Hi");
   });
-  assert.deepEqual(receipt, { sessionId: "ses-new", turnId: "t1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-new", turnId: "t1", status: "queued", duplicate: false });
   const result = view.result();
   assert.equal(result.sessionId, "ses-new");
   assert.equal(result.isRunning, false);
@@ -591,5 +647,114 @@ test("create mode still creates the session on the first send and streams the re
     ],
   );
   assert.deepEqual(calls[0].body, { agentId: "hello-world@development", source: "local-react" });
+  await view.unmount();
+});
+
+test("send carries a caller-retained key and a payload, and generates a key when given none", async (t) => {
+  const session = fakeSession("ses-keys");
+  const view = mount(t, { sessionId: "ses-keys", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying, "empty history");
+
+  await act(async () => {
+    await view.result().send("Fix the login page", {
+      idempotencyKey: "task_1/1",
+      payload: { repo: "acme/web", ref: "main" },
+    });
+  });
+  await act(async () => {
+    await view.result().send("Also fix signup");
+  });
+  const turns = session.calls.filter((call) => call.method === "POST" && call.path.endsWith("/turns"));
+  assert.equal(turns.length, 2);
+  assert.deepEqual(turns[0]?.body, {
+    input: "Fix the login page",
+    idempotencyKey: "task_1/1",
+    payload: { repo: "acme/web", ref: "main" },
+  });
+  assert.equal(turns[1]?.body?.input, "Also fix signup");
+  assert.equal(typeof turns[1]?.body?.idempotencyKey, "string");
+  assert.notEqual(turns[1]?.body?.idempotencyKey, "task_1/1");
+  assert.equal("payload" in (turns[1]?.body ?? {}), false);
+  await view.unmount();
+});
+
+// The review's receipt case: a retry of a turn that has since completed
+// reported `queued`, because every status except `running` was mapped to
+// it. The receipt keeps what the platform persisted, and a settled duplicate
+// never counts as a pending admission.
+test("a retried send returns the turn's persisted status, settled ones included, and does not reopen it", async (t) => {
+  const session = fakeSession("ses-receipts");
+  const view = mount(t, { sessionId: "ses-receipts", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying, "replay");
+  let first: SendReceipt | undefined;
+  await act(async () => {
+    first = await view.result().send("Fix the login page", { idempotencyKey: "task-1/start" });
+  });
+  assert.deepEqual(first, { sessionId: "ses-receipts", turnId: "turn-1", status: "queued", duplicate: false });
+  session.append({ turnId: "turn-1", type: "message.completed", data: { text: "Done." } });
+  session.append({ turnId: "turn-1", type: "turn.completed", data: {} });
+  await view.until((result) => !result.isRunning, "turn settled");
+  let again: SendReceipt | undefined;
+  await act(async () => {
+    again = await view.result().send("Fix the login page", { idempotencyKey: "task-1/start" });
+  });
+  assert.deepEqual(again, { sessionId: "ses-receipts", turnId: "turn-1", status: "completed", duplicate: true });
+  assert.equal(view.result().isRunning, false);
+  assert.equal(view.result().turns.length, 1);
+  await view.unmount();
+});
+
+test("attach exposes turns with their tool activity and result, the same after a replay", async (t) => {
+  const session = fakeSession("ses-turns");
+  session.append({ turnId: "t0", type: "message.received", data: { input: "Clone and report" } });
+  session.append({ turnId: "t0", type: "turn.started", data: {} });
+  session.append({ turnId: "t0", type: "tool.started", data: { tool: "shell", callId: "c1", title: "git clone" } });
+  session.append({ turnId: "t0", type: "tool.completed", data: { tool: "shell", callId: "c1", title: "git clone", output: { exitCode: 0 } } });
+  session.append({ turnId: "t0", type: "tool.started", data: { tool: "report", callId: "c2", title: "report" } });
+  session.append({ turnId: "t0", type: "tool.completed", data: { tool: "report", callId: "c2", title: "report", output: { baseSha: "abc" }, result: true } });
+  session.append({ turnId: "t0", type: "message.completed", data: { text: "Done." } });
+  session.append({ turnId: "t0", type: "turn.completed", data: {} });
+
+  const view = mount(t, { sessionId: "ses-turns", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  const replayed = await view.until((result) => !result.isReplaying, "history replay");
+  assert.equal(replayed.turns.length, 1);
+  const [turn] = replayed.turns;
+  assert.equal(turn?.id, "t0");
+  assert.equal(turn?.status, "completed");
+  assert.equal(turn?.input, "Clone and report");
+  assert.deepEqual(turn?.toolCalls.map((call) => [call.callId, call.title, call.status]), [
+    ["c1", "git clone", "completed"],
+    ["c2", "report", "completed"],
+  ]);
+  assert.deepEqual(turn?.result, { baseSha: "abc" });
+  assert.deepEqual(turn?.messages.map((message) => message.text), ["Clone and report", "Done."]);
+
+  // A live turn appears with its activity as the log grows.
+  await act(async () => {
+    await view.result().send("Run the checks");
+  });
+  session.append({ turnId: "turn-1", type: "tool.started", data: { tool: "shell", callId: "c3", title: "npm test" } });
+  const live = await view.until((result) => result.turns[1]?.toolCalls.length === 1, "live tool call");
+  assert.equal(live.turns[1]?.id, "turn-1");
+  assert.equal(live.turns[1]?.status, "running");
+  assert.equal(live.turns[1]?.input, "Run the checks");
+  assert.deepEqual(live.turns[1]?.toolCalls, [{ callId: "c3", tool: "shell", title: "npm test", status: "running" }]);
+
+  // A second hook reading the same log from the start agrees with what the first saw live.
+  const again = mount(t, { sessionId: "ses-turns", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await again.render();
+  const fresh = await again.until((result) => !result.isReplaying && result.turns.length === 2, "second replay");
+  assert.deepEqual(fresh.turns, live.turns);
+
+  // An interrupt settles the running call with the turn: the hook shows no
+  // running call on a cancelled turn, and stops counting the turn as running.
+  session.append({ turnId: "turn-1", type: "turn.cancelled", data: { reason: "interrupted", operationsSettled: 1 } });
+  const settled = await view.until((result) => result.turns[1]?.status === "cancelled", "cancelled turn");
+  assert.deepEqual(settled.turns[1]?.toolCalls, [{ callId: "c3", tool: "shell", title: "npm test", status: "cancelled" }]);
+  assert.equal(settled.isRunning, false);
+  await again.unmount();
   await view.unmount();
 });

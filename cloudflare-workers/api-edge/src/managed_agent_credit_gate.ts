@@ -4,6 +4,14 @@ export interface ManagedAgentCreditGateEnv {
 
 interface ManagedAgentCreditRow {
   is_halted: number;
+  halted_at: number | null;
+}
+
+export interface ManagedAgentBillingAdmission {
+  allowed: boolean;
+  isHalted: boolean;
+  haltedAt: number | null;
+  reason: "insufficient_credits" | null;
 }
 
 export function isManagedAgentBillableRequest(
@@ -22,12 +30,25 @@ export async function isManagedAgentCreditHalted(
   env: ManagedAgentCreditGateEnv,
   orgID: string,
 ): Promise<boolean> {
+  return (await getManagedAgentBillingAdmission(env, orgID)).isHalted;
+}
+
+export async function getManagedAgentBillingAdmission(
+  env: ManagedAgentCreditGateEnv,
+  orgID: string,
+): Promise<ManagedAgentBillingAdmission> {
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<ManagedAgentCreditRow>();
-  return row?.is_halted === 1;
+  const isHalted = row?.is_halted === 1;
+  return {
+    allowed: !isHalted,
+    isHalted,
+    haltedAt: row?.halted_at ?? null,
+    reason: isHalted ? "insufficient_credits" : null,
+  };
 }
 
 export function insufficientManagedAgentCredits(request: Request): Response {

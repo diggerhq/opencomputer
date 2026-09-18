@@ -40,6 +40,9 @@ by the model through memory tools, and owned by you.
   <Card title="Sessions" icon="comments" href="/agents/sessions">
     Stream responses and inspect durable conversations.
   </Card>
+  <Card title="Build an application" icon="window" href="/agents/react">
+    Create sessions on your server and attach a React interface.
+  </Card>
   <Card title="Capabilities" icon="shapes" href="/agents/capabilities">
     Choose between tools, MCP servers, skills, and subagents.
   </Card>
@@ -58,12 +61,14 @@ npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
+npx --package @opencomputer/cli opencomputer link --create-project "my-agent"
 npm run deploy -- --watch
 ```
 
-The initializer creates one hello-world agent. The first watched deployment
-lets you create a cloud project or select an existing one, prints its dashboard
-URL, and syncs every configured agent to `development`.
+The initializer creates one hello-world agent. `link` connects the directory
+to a cloud project; [link by ID or slug](/agents/projects#create-or-select-the-cloud-project)
+to use an existing one. The watcher prints the dashboard URL and syncs every
+configured agent to `development`.
 
 <Note>
   There is no local agent server. Agent code runs in OpenComputer's managed

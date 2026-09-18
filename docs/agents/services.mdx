@@ -1,0 +1,281 @@
+---
+title: "Connected services"
+description: "Call Gmail, Calendar, Drive, Sheets and GitHub with a credential the platform holds and refreshes"
+---
+
+Some credentials cannot be a secret you set. An OAuth token is short-lived,
+belongs to a person rather than to your project, and has to be refreshed. So
+the platform holds it: someone connects their account once, and your agent asks
+for a service by name instead of a URL and a header.
+
+The access token never enters your runtime — there is nothing to log, leak, or
+hand to a model.
+
+<Note>
+This is the other half of [declared connections](/agents/secrets). Use
+`defineConnection` when **you** hold the credential and it is a static secret.
+Use `callService` when the **platform** holds it and has to refresh it.
+</Note>
+
+## 1. Connect an account
+
+Do this first — the code below returns `404` until an account exists.
+
+Each account is connected under a **label**, which is how your agent addresses
+it. Use the CLI, or the API directly if you are scripting.
+
+<CodeGroup>
+```bash CLI
+opencomputer connection add gmail --alias support
+```
+
+```bash API
+export OC_API_URL=https://app.opencomputer.dev
+
+curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"service":"gmail","label":"support"}'
+```
+</CodeGroup>
+
+Both return a link. Whoever opens it consents with their own account and it is
+connected under that label — they never sign in to OpenComputer, and no
+credential passes through your side.
+
+The CLI then waits and prints `Connected` once the account is authorized, so
+you know it worked. It does not open a browser: the account often belongs to
+somebody else, and this runs on servers as readily as on a laptop. Send them
+the link and leave it waiting, or press Ctrl-C — the connection is unaffected.
+
+For minting several links at once, `--no-wait` prints the link and exits.
+`--json` does the same and is the one to script against.
+
+Omitting the label connects it as `default`, which is what the examples below
+assume. **`default` is a literal name, not a fallback**: if you connect an
+account as `support`, a call that passes no `label` looks for one called
+`default` and gets a `404` even though `support` is the only account you have.
+
+The provider segment in the URL is the grant, not the service — `google` for
+gmail, calendar, drive and sheets; `github` for github.
+
+**Listing what is connected:**
+
+<CodeGroup>
+```bash CLI
+opencomputer connection list
+# support            google  connected  ops@example.com            3f9c1e77-...
+# label              provider  status   account                    connection id
+```
+
+```bash API
+curl "$OC_API_URL/api/managed-agents/connections" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+```
+</CodeGroup>
+
+<Note>
+A connection that is not yet `connected` is re-checked with the provider each
+time it is listed, so `pending` means what it says. A **`connected`** account
+is not re-checked: if someone revokes access at the provider, it keeps reading
+`connected` until the next call to it fails. Treat `connected` as "was working",
+not "is working".
+</Note>
+
+**Disconnecting one.** The CLI takes the label or the id; the API takes the id
+from the listing above, and the service rather than the provider. If a label is
+ever ambiguous the CLI refuses rather than guessing — `--service <name>` picks
+one.
+
+<CodeGroup>
+```bash CLI
+opencomputer connection remove support
+```
+
+```bash API
+curl -X DELETE \
+  "$OC_API_URL/api/managed-agents/connections/google?service=gmail&connectionId=$ID" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+```
+</CodeGroup>
+
+Every CLI command takes `--json` if you want to parse its output.
+
+## 2. Declare the service
+
+```tsx
+import { useService, useTool } from "@opencomputer/agent";
+import { unread } from "./tools/mail.js";
+
+export default function Agent() {
+  useService("gmail");
+  useTool(unread);
+  return "Answer questions about the triage queue.";
+}
+```
+
+`useService` takes a literal string, read out of your source at build time. It
+puts the service in the capability manifest, so what your agent can reach is
+reviewable without running it, and it asks the deployment for that grant —
+without it, `listServices()` returns nothing.
+
+| Service | Reaches | Grant |
+| --- | --- | --- |
+| `gmail` | `gmail.googleapis.com` | Google |
+| `calendar` | `www.googleapis.com` | Google |
+| `drive` | `www.googleapis.com` | Google |
+| `sheets` | `www.googleapis.com` | Google |
+| `github` | GitHub's API | GitHub |
+
+The Google services share one grant; GitHub is its own. A name outside that
+list fails the build rather than the request.
+
+<Note>
+There are two ways to reach GitHub, and they are for different jobs. Use
+`callService({ service: "github" })` to call the REST API on an account someone
+connected. Use a [GitHub App connection](/agents/github) when the agent needs
+to run `git` and `gh` itself — that one injects a token into the sandbox rather
+than proxying requests.
+</Note>
+
+## 3. Call it from a tool
+
+`useService` goes in the agent; `callService` goes in a tool. An agent renders
+synchronously and cannot wait for a request.
+
+```tsx
+import { callService, defineTool } from "@opencomputer/agent";
+
+export const unread = defineTool({
+  name: "unread_reports",
+  description: "Count unread messages labelled triage",
+  async run({ signal }) {
+    const response = await callService({
+      service: "gmail",
+      path: "/gmail/v1/users/me/messages?q=label:triage+is:unread",
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`gmail: ${response.status} ${await response.text()}`);
+    }
+    const { messages = [] } = (await response.json()) as {
+      messages?: unknown[];
+    };
+    return { waiting: messages.length };
+  },
+});
+```
+
+Note what that counts. Gmail returns at most 100 message ids per page, so
+`messages.length` is the size of the first page, not the total — real counting
+means following `nextPageToken`. Most collection APIs behave this way.
+
+`callService` returns the service's own response — status, headers and body — as
+`fetch` would, so a `403` for a missing scope stays distinguishable from a `404` for a
+deleted message. Check `response.ok`; a model told only "it failed" will retry
+forever.
+
+Writes take the same shape:
+
+```tsx
+await callService({
+  service: "gmail",
+  label: "support",
+  method: "POST",
+  path: "/gmail/v1/users/me/messages/abc/modify",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ removeLabelIds: ["UNREAD"] }),
+  signal,
+});
+```
+
+## 4. Several accounts
+
+Accounts are connected and disconnected long after the artifact is built, so
+ask for them rather than naming them in source.
+
+```tsx
+export const sweep = defineTool({
+  name: "sweep_mailboxes",
+  description: "Count unread mail in every connected mailbox",
+  async run({ signal }) {
+    const mailboxes = await listServices({ provider: "google", signal });
+    const counts: Record<string, number> = {};
+
+    for (const mailbox of mailboxes) {
+      const response = await callService({
+        service: "gmail",
+        label: mailbox.label,
+        path: "/gmail/v1/users/me/messages?q=is:unread",
+        signal,
+      });
+      const { messages = [] } = (await response.json()) as {
+        messages?: unknown[];
+      };
+      counts[mailbox.displayName ?? mailbox.label] = messages.length;
+    }
+    return counts;
+  },
+});
+```
+
+| Field | What it is |
+| --- | --- |
+| `id` | The connection's id, for the disconnect route |
+| `label` | The alias it was connected under. Pass this as `label`. |
+| `displayName` | Who the account belongs to, e.g. the mailbox address |
+| `provider` | `google` or `github` |
+| `scopes` | What was granted at consent |
+| `status` | `connected` accounts are usable |
+
+Only connected accounts are returned by default; pass `connectedOnly: false`
+for pending ones too. Connecting an account needs no redeploy — the next run
+sees it, and a consent finished seconds ago is reconciled before the list is
+answered.
+
+## Limits
+
+A proxied request is not an unrestricted `fetch`.
+
+| | |
+| --- | --- |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| Request headers | Only `accept`, `content-type`, `if-match`, `if-none-match` |
+| Request body | 4 MB |
+| Response body | 4 MB |
+| Time | 30 seconds |
+
+**Other request headers are dropped, not rejected.** The request is still sent
+without them, so an API that changes behaviour on a header you set will act as
+though you never set it. There is no error to catch.
+
+Authentication headers are dropped for the reason they are on a declared
+connection: the credential is the platform's to attach, and a request that
+could overwrite it could also send it elsewhere.
+
+Both size limits raise an error rather than truncating, so an unexpectedly
+large response fails loudly instead of arriving half-parsed. Page through large
+collections rather than asking for them in one call.
+
+## When something fails
+
+| You see | It means | Do this |
+| --- | --- | --- |
+| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | `opencomputer connection list` to see the labels, then pass the matching one — or connect an account |
+| `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
+| `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
+| `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
+| A connection stays `pending` | Nobody opened the link, or it expired | Send the link again with `connection add` |
+| A `connected` account returns `401` | Access was revoked at the provider; the stored status has not caught up | Reconnect it — `connection add` with the same label |
+| A header you set is ignored | It is not in the allowlist above | Nothing — it cannot be sent |
+| Throws *managed connections are unavailable* | No connection layer | You are running outside the platform |
+
+A `403` cannot be fixed from the agent. What a request may do is fixed by the
+consent that created the connection; read `scopes` from `listServices()` to see
+what was actually granted.
+
+## What this does not do
+
+The platform does not proxy arbitrary hosts. A service reaches its own API and
+nothing else — for anything outside the table above, declare an
+[HTTP connection](/agents/secrets) instead.

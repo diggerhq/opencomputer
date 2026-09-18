@@ -1,0 +1,227 @@
+{
+  "description": "One full turn of a managed session on the Workerd runtime, as the public event log records it: a failed ordinary tool call (call-0), then the agent's result tool (call-1) started, reporting progress, and completed by its commit with the decoded value and result: true. Volatile values are normalized: <uuid>, <timestamp>, <turn>, <render-id>, <n> ms, and every *Ms measurement is 0.",
+  "recordedBy": "bluecode test/managed-session-workerd.test.ts, 'public tool events' (the fake Workerd runtime speaking OpenCode's native event shapes through the real Session object)",
+  "runtime": "workerd",
+  "events": [
+    {
+      "seq": 1,
+      "type": "session.created",
+      "data": {
+        "agentId": "workerd-public-events",
+        "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "seq": 2,
+      "type": "runtime.log",
+      "data": {
+        "phase": "workerd_prewarm_miss",
+        "runtime": "workerd",
+        "prewarmHit": false,
+        "standbyAgeMs": 0,
+        "checkoutMs": 0,
+        "message": "No prewarmed agent runtime was ready · created on demand"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "runtime.log",
+      "data": {
+        "phase": "workerd_session_ready",
+        "runtime": "workerd",
+        "activation": 1,
+        "initializationMs": 0,
+        "message": "Agent runtime ready in its Durable Object · activation 1 · OpenCode initialized in <n> ms"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "runtime.connected",
+      "data": {
+        "runtimeId": "<runtime-id>",
+        "epoch": 0,
+        "runtime": "workerd"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "session.status_changed",
+      "data": {
+        "from": "new",
+        "to": "idle"
+      }
+    },
+    {
+      "seq": 6,
+      "type": "message.received",
+      "turnId": "<turn>",
+      "data": {
+        "input": "Report the branch [stall 600ms][tool-fails call-0][result-call call-1]",
+        "mode": "queue"
+      }
+    },
+    {
+      "seq": 7,
+      "type": "turn.queued",
+      "turnId": "<turn>",
+      "data": {
+        "mode": "queue"
+      }
+    },
+    {
+      "seq": 8,
+      "type": "turn.started",
+      "turnId": "<turn>",
+      "data": {}
+    },
+    {
+      "seq": 9,
+      "type": "session.status_changed",
+      "data": {
+        "from": "idle",
+        "to": "running"
+      }
+    },
+    {
+      "seq": 10,
+      "type": "runtime.log",
+      "turnId": "<turn>",
+      "data": {
+        "phase": "workerd_reused",
+        "runtime": "workerd",
+        "activation": 1,
+        "requestReadyMs": 0,
+        "activationAgeMs": 0,
+        "message": "Agent runtime reused · activation 1 · turn ready in <n> ms"
+      }
+    },
+    {
+      "seq": 11,
+      "type": "agent.rendered",
+      "turnId": "<turn>",
+      "data": {
+        "renderId": "<render-id>",
+        "responseId": "response-managed-test",
+        "providerTurn": 1,
+        "stateVersion": 0,
+        "instructionsHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "instructions": "These are the deployed agent instructions.",
+        "enabledTools": [],
+        "enabledSubagents": [],
+        "requiredConnections": [],
+        "enabledMcpServers": [],
+        "input": {
+          "source": "user",
+          "text": "Report the branch [stall 600ms][tool-fails call-0][result-call call-1]"
+        },
+        "tools": [],
+        "model": {
+          "provider": "openrouter",
+          "model": "anthropic/claude-sonnet-4.6"
+        },
+        "renderedAt": "<timestamp>"
+      }
+    },
+    {
+      "seq": 12,
+      "type": "message.delta",
+      "turnId": "<turn>",
+      "data": {
+        "text": "Managed OpenCode is "
+      }
+    },
+    {
+      "seq": 13,
+      "type": "tool.started",
+      "turnId": "<turn>",
+      "data": {
+        "callId": "call-0",
+        "tool": "lookup",
+        "title": "lookup",
+        "input": {
+          "q": "x"
+        }
+      }
+    },
+    {
+      "seq": 14,
+      "type": "tool.failed",
+      "turnId": "<turn>",
+      "data": {
+        "callId": "call-0",
+        "tool": "lookup",
+        "title": "lookup",
+        "message": "lookup exploded"
+      }
+    },
+    {
+      "seq": 15,
+      "type": "tool.started",
+      "turnId": "<turn>",
+      "data": {
+        "callId": "call-1",
+        "tool": "report",
+        "title": "report",
+        "input": {
+          "branch": "task/1"
+        }
+      }
+    },
+    {
+      "seq": 16,
+      "type": "tool.progress",
+      "turnId": "<turn>",
+      "data": {
+        "stage": "verifying",
+        "callId": "call-1",
+        "tool": "report"
+      }
+    },
+    {
+      "seq": 17,
+      "type": "tool.completed",
+      "turnId": "<turn>",
+      "data": {
+        "tool": "report",
+        "callId": "call-1",
+        "title": "report",
+        "output": {
+          "branch": "task/1"
+        },
+        "result": true
+      }
+    },
+    {
+      "seq": 18,
+      "type": "message.delta",
+      "turnId": "<turn>",
+      "data": {
+        "text": "running in the Durable Object."
+      }
+    },
+    {
+      "seq": 19,
+      "type": "message.completed",
+      "turnId": "<turn>",
+      "data": {
+        "text": "Managed OpenCode is running in the Durable Object.",
+        "finalText": "Managed OpenCode is running in the Durable Object.",
+        "source": "opencode-workerd"
+      }
+    },
+    {
+      "seq": 20,
+      "type": "turn.completed",
+      "turnId": "<turn>",
+      "data": {}
+    },
+    {
+      "seq": 21,
+      "type": "session.status_changed",
+      "data": {
+        "from": "running",
+        "to": "idle"
+      }
+    }
+  ]
+}

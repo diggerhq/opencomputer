@@ -75,6 +75,9 @@ Usage:
   opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
+  opencomputer connection add <gmail|calendar|drive|sheets|github> [--alias <name>] [--no-wait]
+  opencomputer connection list
+  opencomputer connection remove <alias|connection-id> [--service <name>]
   opencomputer model-access connect codex [--project <id|slug>]
   opencomputer model-access connect openrouter [--api-key-stdin] [--project <id|slug>]
   opencomputer model-access connect openai-compatible --base-url <url> [--api-key-stdin] [--project <id|slug>]
@@ -97,6 +100,7 @@ Usage:
   opencomputer memory unfreeze <resource> <id> [--environment development|production]
   opencomputer memory export --out <dir> [--resource <id>] [--environment development|production]
   opencomputer memory remove <resource> <id> [--environment development|production]
+  opencomputer database query <sql> [--environment development|production] [--parameter <json>]... [--project <id|slug>]
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]

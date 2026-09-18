@@ -418,6 +418,12 @@ export interface ToolDefinition<
   readonly description: string;
   readonly input?: ToolInputSchema;
   readonly output?: ToolInputSchema;
+  /**
+   * The agent's result tool: its latest committed output is the session's
+   * `result`. At most one tool per agent; `output` is required so the host
+   * can validate every value before it is committed.
+   */
+  readonly result?: true;
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
@@ -1447,13 +1453,22 @@ export function registerOutbox(
   });
 }
 
-export interface ToolInput<Output extends DataValue = DataValue> {
+/**
+ * What `defineTool()` accepts. A result tool must declare `output`: the
+ * schema is pinned in the deployment and the host rejects a value that does
+ * not match it before anything is committed. A tool that waits for a person
+ * (`preview` and `apply`) is a `GatedToolInput` and cannot be the result
+ * tool: the model's call records a proposal, not the output.
+ */
+export type ToolInput<Output extends DataValue = DataValue> = {
   name: string;
   description: string;
   input?: ToolInputSchema;
-  output?: ToolInputSchema;
   run(context: ToolExecutionContext): Output | Promise<Output>;
-}
+} & (
+  | { result?: false; output?: ToolInputSchema }
+  | { result: true; output: ToolInputSchema }
+);
 
 export interface GatedToolInput<Output extends DataValue = DataValue> {
   name: string;
@@ -1519,13 +1534,31 @@ export function defineTool<Output extends DataValue = DataValue>(
         "defineTool requires run(), or preview() and apply() for a tool that waits for approval",
       );
     }
+    const tool = input as ToolInput<Output>;
+    if (tool.result !== undefined && typeof tool.result !== "boolean") {
+      throw new Error("defineTool result must be true or false");
+    }
+    if (tool.result === true && !tool.output) {
+      throw new Error(
+        "defineTool result tools require an output schema; the host validates every result against it before committing",
+      );
+    }
+    const { result, ...definition } = tool;
     return Object.freeze({
       kind: "tool" as const,
       version: 1 as const,
-      ...(input as ToolInput<Output>),
+      ...definition,
+      ...(result === true ? { result: true as const } : {}),
       id,
       name: id,
     });
+  }
+
+  // The result tool's committed output is what its run() returns; a gated
+  // tool's run() is written here and returns the platform's sentence, so the
+  // two cannot be one tool.
+  if ("result" in candidate) {
+    throw new Error("A tool that waits for approval cannot be the result tool");
   }
 
   // Half a gate is the dangerous shape: a preview with no apply asks for a

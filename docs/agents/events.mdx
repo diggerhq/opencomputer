@@ -43,28 +43,59 @@ unknown type as informational and keep reading.
 | Type | When | `data` |
 | --- | --- | --- |
 | `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
-| `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
-| `session.ended` | The owner ended the session. Queued and running turns were cancelled and memory writes revoked. | none |
+| `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
+| `session.ended` | The session accepts no more turns; queued and running turns were marked cancelled. Memory revocation and remote cleanup may still be pending. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
+
+`stopping` follows an [interrupt](/agents/api#end-and-interrupt) or an
+interrupt-mode turn: the session stays there until the stopped turn's
+commands are confirmed stopped or its computer is terminated, then `idle`
+follows and the next turn can start. See the API's compatibility note for
+sessions that cancel immediately instead.
+
+`session.ended` is not a command-settlement or memory-revocation receipt.
+The [end response](/agents/api#end-and-interrupt) confirms memory revocation;
+remote cleanup continues in the background.
 
 ### Turns
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt` |
+| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt`; `payload`: the structured value the turn was sent with, when there was one |
 | `turn.queued` | The turn waits for earlier turns | `mode` |
 | `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
-| `turn.interrupted` | This turn cancelled the turns that were running | `interruptedTurnIds` |
+| `turn.interrupted` | This turn requested interruption of the running turns | `interruptedTurnIds` |
 | `turn.started` | The runtime began the turn | none |
 | `turn.completed` | The turn finished and the session is idle again | none |
 | `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
-| `turn.cancelled` | The turn was stopped by an interrupt | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it |
+| `turn.cancelled` | The turn was cancelled by an interrupt or session end | `reason`: `interrupted` or `session_ended`; optional `replacementTurnId`, `settledAfterMs`, `operationsSettled`, `computerTerminated` |
+
+For an interrupt that waits for commands, `settledAfterMs` records the wait,
+`operationsSettled` counts the settled commands, and `computerTerminated`
+says whether stopping required terminating the computer. Cancellation with
+`reason: "session_ended"` has no settlement fields: it records the session's
+decision to end, before remote cleanup finishes. Immediate-cancellation
+sessions also omit these fields; see [End and interrupt](/agents/api#end-and-interrupt).
 
 #### Public failures
 
 A failure's `data` is a stable `code`, a fixed `message` for that code, and
 at most one parameter. The runtime's own error text is never sent; a failure
 no rule recognizes is `agent_failed`.
+
+A model call that fails in flight may be retried inside the turn before
+the turn fails. The runtime retries provider errors, rate limits,
+incomplete response streams and transport failures that interrupt a
+started response on its own schedule, per model call; the host adds one
+retry for a transport failure or an invalid response the runtime would
+not retry on its own. The agent's own calls are covered; the runtime's
+auxiliary calls (compacting the conversation, titling it) are not
+retried. Each retry appears in the log as a `runtime.log` milestone with
+`phase: "model_retry"`, the attempt and the failure's class (for example
+`provider.transport`), never the provider's own text. A rejection is not
+retried: credentials, quota, content policy and an invalid request are
+`model_rejected` at once. A `model_stream_failed` message names its retry
+only when one happened.
 
 | `code` | Meaning | Parameter |
 | --- | --- | --- |
@@ -79,6 +110,7 @@ no rule recognizes is `agent_failed`.
 | `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
 | `sandbox_timeout` | A sandbox command did not finish in time | |
 | `sandbox_failed` | The sandbox could not run the turn | |
+| `model_stream_failed` | The model call failed before it finished, or its response stream broke; when it was retried, the retry failed too | `model`: the model id, when known |
 | `agent_failed` | Any other failure | |
 
 ### Messages
@@ -94,15 +126,38 @@ no rule recognizes is `agent_failed`.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input` |
+| `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input`: the arguments as a JSON value |
 | `tool.progress` | The tool reported progress | runtime-defined |
-| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output` |
-| `tool.failed` | The tool raised an error | `tool`, `callId`, `message` |
+| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output`: what the tool returned as a JSON value; `result: true` when the output became the session's result |
+| `tool.failed` | The tool raised an error, or its turn ended before it completed | `tool`, `callId`, `title`, `message`; `settledBy` when the turn's end settled the call: `turn.completed`, `turn.failed` or `turn.cancelled` |
 
 The exact fields come from the runtime's tool record; read them as optional
 and key a tool call on `callId` when it is present. The memory tools
 (`memory_save`, `memory_read`, `memory_list`) appear here like any other
 tool; the save itself is reported separately.
+
+`input` and `output` are JSON values, never JSON text: an object comes as an
+object, and a consumer reads it without parsing. Tool events recorded before
+these fields were introduced keep the shape they were recorded with, so the
+React hook's [`turns`](/agents/react#hook-reference) shows those calls unnamed and
+without output; `messages` is unaffected.
+
+A successful call of the agent's [result tool](/agents/tools#the-session-result)
+is recorded with `result: true`; its `output` is the validated value, the
+same JSON value `GET /sessions/<id>` returns as `result.data`. The session
+writes this event when it commits the result, before the model sees the call
+succeed, and there is one per call.
+
+Every tool call ends in the log. The runtime reports a `tool.completed` or
+`tool.failed` per call; when a turn ends with a call still open, whether
+the turn completed, failed or was cancelled, the session records a
+`tool.failed` for that call ahead of the terminal turn event, in the same
+write, with `settledBy` naming the terminal event (`turn.completed`,
+`turn.failed` or `turn.cancelled`) and a `message` saying the turn ended
+first. A consumer therefore never sees a settled turn with a running call;
+one that keys rows on `callId` needs no rule of its own for the turn's end.
+This settles the call in the log; it does not strengthen the command-stop
+guarantees of the terminal turn event.
 
 ### Memory
 
@@ -138,10 +193,14 @@ reconnecting and completing work. See
 | Type | When | `data` |
 | --- | --- | --- |
 | `runtime.connected` | An agent runtime attached to the session | none |
-| `runtime.disconnected` | The runtime went away; a running turn is queued again and resumes on the next runtime | none |
+| `runtime.disconnected` | The runtime connection closed; running turns return to the queue to await a runtime | none |
 | `runtime.suspended` | The runtime was suspended between turns | none |
 | `runtime.resumed` | The runtime was resumed | none |
 | `runtime.log` | A line of runtime output or a platform milestone | `level`, `stream`, `message` for output; `phase` and `message` for milestones such as the runtime starting |
+
+A runtime disconnect does not prove that a command stopped or that its
+effects were undone. Follow the subsequent turn events to learn whether
+work continued or failed; see [Durability and recovery](/agents/sessions#durability-and-recovery).
 
 ### Agent renders
 

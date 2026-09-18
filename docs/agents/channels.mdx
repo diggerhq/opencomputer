@@ -78,6 +78,12 @@ conversation that waits hours for an answer should not bill for those hours.
 
 ## Define a Slack channel
 
+Declaring a channel is optional. An agent whose deployment declares none gets a
+dedicated Slack app with the standard configuration: mentions and direct
+messages go to that one agent. Declare a channel to narrow or extend what the
+app can do, to share one app between several agents, or to publish through
+[outboxes](/agents/outboxes).
+
 Create a project-level channel under `opencomputer/channels/`:
 
 ```tsx opencomputer/channels/team-slack.ts
@@ -137,25 +143,70 @@ OpenComputer asks the user which agent should handle it instead of guessing.
 
 ## Connect Slack
 
+Each declared channel gets its own Slack app per environment, and so does an
+agent whose deployment declares none. OpenComputer creates the app from the
+capabilities declared in code and installs it into your workspace; you paste
+one short-lived token and approve the installation in Slack.
+
 After the deployment is synchronized:
 
-1. Open the project in the dashboard.
-2. Select **Development** or **Production**.
-3. Open **Channels** and choose **Connect Slack**.
-4. Create or update the Slack app from the generated manifest.
-5. Install the app to the intended Slack workspace.
-6. Enter the installed app credentials when prompted.
-7. Invite the app to each Slack conversation it will use.
-8. Bind each code-defined destination to that conversation's Slack ID and
-   verify it.
+1. Open the project in the dashboard and select **Development** or
+   **Production**.
+2. Open **Connections**. The Slack panel lists each declared channel with the
+   agents that receive its messages, or the agent's dedicated app when the
+   deployment declares no channel.
+3. Choose **Create Slack bot** and enter the bot's name.
+4. Paste an **App configuration access token** from
+   [your Slack apps](https://api.slack.com/apps): under **Your App
+   Configuration Tokens**, choose **Generate Token**, choose the workspace the
+   bot will live in, and copy the **Access Token** (not the refresh token).
+5. Approve the installation in Slack. You are returned to the same project
+   and environment.
+6. Invite the bot to each conversation it will use and mention it.
 
-For a public destination, include `channels:read` and `chat:write`. For a
-private destination, include `groups:read` and `chat:write`. The app must be a
-member of the selected conversation. OpenComputer does not request
-`chat:write.public` automatically.
+The panel distinguishes **Connected**, meaning the installed credentials are
+stored, from **First message received**, meaning a real Slack message reached
+the agent. Slack's URL verification is not a message; mention the bot once to
+confirm delivery.
 
-Adding a scope in code changes the generated manifest. Update and reinstall
-the Slack app so its granted scopes satisfy the current deployment.
+The configuration token is used once, to create the app, and is never stored.
+It expires 12 hours after it is generated; the installed bot does not expire
+with it. Changing prompts, tools or other code and redeploying does not
+require reconnecting Slack.
+
+If Slack's consent page is closed before approval, the created app is kept:
+open Connections again and choose **Authorize in Slack**. When the outcome of app
+creation is unknown, the panel says so and links to your Slack app list rather
+than creating a second app; finish with manual setup if the app exists, or
+cancel and start again if it does not. Cancelling a setup never deletes an
+app in Slack.
+
+### Set up manually
+
+Manual setup remains available for workspaces where you cannot generate a
+configuration token, or to connect an app you created yourself. In the Slack
+panel choose **Set up manually**:
+
+1. Create or update the Slack app from the generated manifest.
+2. Install the app to the intended Slack workspace.
+3. Enter the installed app's ID, signing secret and bot token when prompted.
+4. Invite the app to each Slack conversation it will use.
+
+Both paths produce the same app configuration and the same connection.
+Credentials, destination bindings and disconnecting are managed in the same
+place afterwards.
+
+### Destinations and scopes
+
+Under **Channels**, bind each code-defined destination to that conversation's
+Slack ID and verify it. For a public destination, include `channels:read` and
+`chat:write`. For a private destination, include `groups:read` and
+`chat:write`. The app must be a member of the selected conversation.
+OpenComputer does not request `chat:write.public` automatically.
+
+Adding a scope or event in code changes the generated app configuration.
+Update the Slack app from the current manifest and reinstall it so its granted
+scopes satisfy the deployment; other code changes need no reconnection.
 
 Inspect delivery health without opening the dashboard:
 
@@ -185,11 +236,12 @@ not change the route, although its display label may refresh later.
 
 ## Current limits
 
-- Slack is the only channel provider.
 - Destination binding currently uses a Slack conversation ID.
 - Direct Slack user mapping and outbound DMs are not available.
 - A registration can receive mentions or direct messages only when the
   corresponding event and scope are declared.
+- A Slack app is installed into a single workspace; organization-wide
+  installations are not supported.
 
 Use an [outbox](/agents/outboxes) when an agent needs to publish a proactive
 message to a configured Slack destination.

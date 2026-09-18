@@ -1,0 +1,30 @@
+{
+  "events": [
+    { "id": "evt_1", "seq": 1, "timestamp": "2026-09-15T10:00:00.000Z", "sessionId": "ses_1", "turnId": "t1", "type": "message.received", "data": { "input": "Fix the login page", "mode": "queue", "payload": { "repo": "acme/web", "ref": "main" } } },
+    { "id": "evt_2", "seq": 2, "timestamp": "2026-09-15T10:00:00.100Z", "sessionId": "ses_1", "turnId": "t1", "type": "turn.started", "data": {} },
+    { "id": "evt_3", "seq": 3, "timestamp": "2026-09-15T10:00:01.000Z", "sessionId": "ses_1", "turnId": "t1", "type": "tool.started", "data": { "tool": "shell", "callId": "c1", "title": "git clone", "input": { "command": "git clone https://github.com/acme/web.git" } } },
+    { "id": "evt_4", "seq": 4, "timestamp": "2026-09-15T10:00:03.000Z", "sessionId": "ses_1", "turnId": "t1", "type": "tool.completed", "data": { "tool": "shell", "callId": "c1", "title": "git clone", "output": { "exitCode": 0, "stdout": "Cloning into 'web'...\n" } } },
+    { "id": "evt_5", "seq": 5, "timestamp": "2026-09-15T10:00:20.000Z", "sessionId": "ses_1", "turnId": "t1", "type": "tool.started", "data": { "tool": "report", "callId": "c2", "title": "report", "input": { "branch": "task/1", "pr": { "number": 7, "url": "https://github.com/acme/web/pull/7" } } } },
+    { "id": "evt_6", "seq": 6, "timestamp": "2026-09-15T10:00:20.500Z", "sessionId": "ses_1", "turnId": "t1", "type": "tool.completed", "data": { "tool": "report", "callId": "c2", "title": "report", "output": { "branch": "task/1", "pr": { "number": 7, "url": "https://github.com/acme/web/pull/7" } }, "result": true } },
+    { "id": "evt_7", "seq": 7, "timestamp": "2026-09-15T10:00:21.000Z", "sessionId": "ses_1", "turnId": "t1", "type": "message.delta", "data": { "text": "Opened " } },
+    { "id": "evt_8", "seq": 8, "timestamp": "2026-09-15T10:00:21.200Z", "sessionId": "ses_1", "turnId": "t1", "type": "message.delta", "data": { "text": "PR 7." } },
+    { "id": "evt_9", "seq": 9, "timestamp": "2026-09-15T10:00:21.400Z", "sessionId": "ses_1", "turnId": "t1", "type": "message.completed", "data": { "text": "Opened PR 7." } },
+    { "id": "evt_10", "seq": 10, "timestamp": "2026-09-15T10:00:21.500Z", "sessionId": "ses_1", "turnId": "t1", "type": "turn.completed", "data": {} }
+  ],
+  "turns": [
+    {
+      "id": "t1",
+      "status": "completed",
+      "input": "Fix the login page",
+      "toolCalls": [
+        { "callId": "c1", "tool": "shell", "title": "git clone", "input": { "command": "git clone https://github.com/acme/web.git" }, "output": { "exitCode": 0, "stdout": "Cloning into 'web'...\n" }, "status": "completed" },
+        { "callId": "c2", "tool": "report", "title": "report", "input": { "branch": "task/1", "pr": { "number": 7, "url": "https://github.com/acme/web/pull/7" } }, "output": { "branch": "task/1", "pr": { "number": 7, "url": "https://github.com/acme/web/pull/7" } }, "status": "completed" }
+      ],
+      "result": { "branch": "task/1", "pr": { "number": 7, "url": "https://github.com/acme/web/pull/7" } },
+      "messages": [
+        { "id": "turn:t1:input", "role": "user", "text": "Fix the login page", "turnId": "t1" },
+        { "id": "turn:t1:reply", "role": "assistant", "text": "Opened PR 7.", "turnId": "t1", "streaming": false }
+      ]
+    }
+  ]
+}

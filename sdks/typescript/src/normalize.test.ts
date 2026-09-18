@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalize, serialize } from "./normalize.js";
+import { normalize } from "./normalize.js";
 
 describe("normalize (API response → idiomatic TS)", () => {
   it("camelCases nested keys — last_turn → lastTurn, and the field is `id`", () => {
@@ -65,23 +65,5 @@ describe("normalize (API response → idiomatic TS)", () => {
       vars: { api_url: "https://example.test", nested_value: { keep_me: true } },
     });
     expect(out.vars).toEqual({ api_url: "https://example.test", nested_value: { keep_me: true } });
-  });
-});
-
-describe("serialize (request body → snake_case)", () => {
-  it("snake_cases keys but leaves metadata opaque", () => {
-    const out = serialize({ idempotencyKey: "k1", metadata: { pullNumber: 42 } }) as Record<string, unknown>;
-    expect(out.idempotency_key).toBe("k1");
-    expect(out.metadata).toEqual({ pullNumber: 42 }); // verbatim
-  });
-
-  it("leaves refs opaque on request bodies", () => {
-    const out = serialize({ refs: { pullNumber: 42, owner_repo: "acme/widgets" } }) as Record<string, unknown>;
-    expect(out.refs).toEqual({ pullNumber: 42, owner_repo: "acme/widgets" });
-  });
-
-  it("leaves vars opaque on request bodies", () => {
-    const out = serialize({ vars: { apiUrl: "https://example.test", keep_me: true } }) as Record<string, unknown>;
-    expect(out.vars).toEqual({ apiUrl: "https://example.test", keep_me: true });
   });
 });

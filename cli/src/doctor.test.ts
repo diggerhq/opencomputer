@@ -107,3 +107,57 @@ export default defineConnection({ id: "inline", origin: "https://api.example.com
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("doctor scans only source and reports what the checkout resolves to", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const tool = (name: string) =>
+      `import { defineTool } from "@opencomputer/agent";
+export const ${name} = defineTool({ name: "${name}", description: "Echo", async run({ input }) { return input; } });
+`;
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(resolve(initialized.agentRoot, "tools", "echo.ts"), tool("echo"));
+    // Build output an earlier release wrote inside the source tree, a dependency, and a workspace:
+    // none of them is source, so none of them may count as a second declaration.
+    for (const directory of [
+      resolve(initialized.agentRoot, ".opencomputer", "runtime", "tools"),
+      resolve(initialized.agentRoot, "node_modules", "dep"),
+      resolve(initialized.agentRoot, "workspace", "tools"),
+    ]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "echo.ts"), tool("echo"));
+    }
+
+    let result = await doctorProject(root);
+    assert.deepEqual(
+      result.diagnostics.filter((diagnostic) =>
+        ["tool_name_duplicate", "tool_location_invalid"].includes(diagnostic.code),
+      ),
+      [],
+    );
+    assert.deepEqual(result.resolution, {
+      project: null,
+      agents: [{ localId: "hello-world", agentId: null }],
+    });
+
+    await mkdir(resolve(root, ".opencomputer"), { recursive: true });
+    await writeFile(
+      resolve(root, ".opencomputer", "project.json"),
+      JSON.stringify({
+        version: 1,
+        apiUrl: "https://app.opencomputer.dev",
+        projectId: "prj_1",
+        projectName: "Workbench",
+        agentId: "workbench",
+      }),
+    );
+    result = await doctorProject(root);
+    assert.deepEqual(result.resolution, {
+      project: { id: "prj_1", name: "Workbench", apiUrl: "https://app.opencomputer.dev" },
+      agents: [{ localId: "hello-world", agentId: "workbench" }],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

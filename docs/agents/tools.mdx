@@ -58,7 +58,8 @@ the result to the model.
 | `name` | yes | ID the model calls; letters, numbers, underscores, and hyphens only |
 | `description` | yes | Explains what the tool does and when to use it |
 | `input` | no | JSON Schema for tool arguments |
-| `output` | no | JSON Schema describing the result |
+| `output` | no | JSON Schema describing the result; required on the result tool |
+| `result` | no | `true` marks this tool as the agent's [result tool](#the-session-result); one per agent, and it must have `run` |
 | `run` | yes* | Synchronous or asynchronous implementation |
 | `preview` / `apply` | no | Supply these *instead of* `run` to [wait for a person](#wait-for-a-person-before-writing) |
 
@@ -77,6 +78,7 @@ The `run` function receives:
 | `input` | Arguments created for the tool call |
 | `sessionId` | Current session ID |
 | `messageId` | Message containing the tool call |
+| `toolCallId` | ID of this invocation, unique within the session |
 | `agentId` | Agent executing the call |
 | `signal` | Optional cancellation signal for abortable work |
 | `reportProgress(metadata)` | Emits JSON-compatible progress metadata |
@@ -98,6 +100,110 @@ export const importCatalog = defineTool({
 ```
 
 Tool results and progress metadata must be JSON-compatible values.
+
+For an external write, `${sessionId}:${toolCallId}` can identify the invocation
+in a downstream idempotency key. It stays the same when that invocation is
+retried. A new call from the model has a new ID, even if it requests the same
+action; use a business-level key when those calls must also converge.
+
+## The session result
+
+An agent may mark one tool as its result tool. Its latest committed output
+is the session's `result`: the structured outcome an application reads
+instead of parsing the final message. This tool checks a URL itself rather
+than accepting a claimed status from the model:
+
+```tsx
+import { defineTool } from "@opencomputer/agent";
+
+const checkResult = {
+  type: "object",
+  properties: {
+    url: { type: "string" },
+    status: { type: "integer" },
+  },
+  required: ["url", "status"],
+  additionalProperties: false,
+} as const;
+
+export const checkUrl = defineTool({
+  name: "check_url",
+  description: "Check an HTTPS URL and report its HTTP status",
+  input: {
+    type: "object",
+    properties: { url: { type: "string" } },
+    required: ["url"],
+    additionalProperties: false,
+  },
+  output: checkResult,
+  result: true,
+  async run({ input, signal }) {
+    const url = new URL(String(input.url));
+    if (url.protocol !== "https:") throw new Error("Use an HTTPS URL");
+    const response = await fetch(url, { method: "HEAD", signal });
+    return { url: response.url, status: response.status };
+  },
+});
+```
+
+The build enforces three rules: an agent declares at most one result tool,
+a result tool declares `output`, and it runs with `run()` rather than
+[waiting for a person](#wait-for-a-person-before-writing). The schema is
+recorded with the deployment, and every value the tool returns is validated
+against it.
+
+A call to the result tool succeeds only once its output is committed to
+the session:
+
+- The value `run()` returns is validated against `output` and committed
+  before the model is told the call succeeded. The session's `result`
+  becomes `{ turnId, callId, reportedAt, data }`, and the call's
+  `tool.completed` event carries `result: true`
+  ([Session events](/agents/events#tools)).
+- A value that does not match `output`, or exceeds 8 KiB of JSON, fails the
+  call; the model sees the reason and can call again. The previous result
+  stands.
+- A call from a turn that was interrupted or has ended, or from a runtime
+  the session no longer runs on, is refused the same way.
+- A later call replaces the entire value. Reporting does not finish the turn.
+  A subsequent turn that fails or is cancelled does not clear the result, and
+  the event log keeps every call.
+
+The result says what the agent reported, not that the work succeeded.
+Verify claims inside `run()`, where a tool can check that a branch exists
+or a pull request is open, and throw to reject them; let the application
+check what the result references. Read it from
+[`GET /sessions/<id>`](/agents/api#get-and-list). For a review-ready UI, also
+check current activity and whether `result.turnId` belongs to the last settled
+turn. An existing result may describe earlier work.
+
+If the commit acknowledgement is lost, the tool can fail even though its
+result was saved. OpenComputer retries the commit for the same tool call;
+that deduplicates the saved result, not external writes inside `run()`. Prefer
+tools that verify and report existing work. Give any external write its own
+idempotency key.
+
+### Schema declarations
+
+The result tool's `output` is copied into the deployment without evaluating
+code. Use one of these forms:
+
+- An object literal in the `defineTool()` call.
+- A `const` object literal in the same module, as above.
+- A named import of such a `const` from a module inside the agent directory.
+
+Function calls, `let` bindings, namespace members such as `schemas.report`,
+package imports and re-exports are not supported for this `output` schema.
+The build error names the unsupported form. `input` may use these static
+forms or a schema constructed when the tool module loads; it is not subject
+to result-output extraction. Neither schema infers the TypeScript type of
+`run`'s `input`, which remains `Record<string, unknown>`. `as const` preserves
+the schema's literal types for your own typing and validation.
+
+Write `name`, `result` and `output` as ordinary properties on the
+`defineTool()` object. Spreads, computed property names, and a `result` value
+other than literal `true` or `false` fail the build. A tool module whose
+`result` declaration disagrees with its deployment fails to load.
 
 ## Conditional tools
 
@@ -124,10 +230,18 @@ runtime already provides that tool.
 
 ## Call external APIs safely
 
-Do not embed API keys in a tool or read them from the runtime environment.
-Declare an HTTP connection, store the value as an OpenComputer secret, and
-call the connection's `fetch()` method. See
-[Secrets and outbound requests](/agents/secrets) for a complete example.
+For authenticated HTTP APIs, declare a connection, store the key as an
+OpenComputer secret, and call the connection's `fetch()` method. This keeps
+the credential outside the agent runtime; see
+[Secrets and outbound requests](/agents/secrets).
+
+[Managed GitHub connections](/agents/github) are the exception: they supply
+short-lived environment credentials so Git and `gh` work directly. Never
+embed credentials in tool source or return them to the model.
+
+For Gmail, Calendar, Drive, Sheets or GitHub, the credential belongs to whoever
+connected the account and the platform refreshes it — call those with
+[`callService`](/agents/services) instead.
 
 ## Wait for a person before writing
 
@@ -212,6 +326,33 @@ person agreed to, whether or not the session that proposed it still exists.
 
 A tool that waits needs a conversation to ask in. Called from the playground,
 a schedule or a webhook, there is nobody to ask, and the call fails saying so.
+
+## Computer commands
+
+A session gets an isolated computer when it needs one; conversation alone
+does not require a computer. The model runs commands through the built-in
+`shell` tool. A command runs in the session's workspace and takes `command`
+and an optional `timeoutSeconds`: 120 by default, at
+most 1800, and never more than the computer's remaining lifetime allows; a
+value out of range fails the call before anything runs. A command is not
+started on a computer that cannot host it for its full timeout; a fresh
+computer is used instead.
+
+When the timeout passes, the command and every process it started are
+stopped, and the call fails as a tool error the model sees: it names the
+command and the timeout and carries the output so far. The turn continues,
+and files the command wrote before it was stopped remain.
+
+A command counts as stopped only once that is confirmed: every process it
+started, detached ones included, is gone, or the computer itself was
+terminated. When the computer stops answering while a command runs, its
+outcome is unknown, and the call fails with that as the reason; the model
+is never told a command was stopped when that was not confirmed. That
+computer runs no further command until the unknown one is confirmed
+stopped or the computer is replaced by a fresh one with the session's
+workspace, which the next command does on its own. See
+[End and interrupt](/agents/api#end-and-interrupt) for cancellation guarantees
+and the compatibility limit for sessions using the older runtime.
 
 ## Tools versus skills and MCP
 

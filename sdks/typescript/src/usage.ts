@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 // Usage + tags — TypeScript SDK surface.
 //
 // All numeric fields are GB-seconds. Dollars live in Stripe; the SDK
@@ -172,7 +173,7 @@ export class Usage {
       limit: opts.limit?.toString(),
       cursor: opts.cursor,
     }, opts.filter);
-    const resp = await fetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
+    const resp = await apiFetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
     if (!resp.ok) await throwApiError(resp, "fetch usage");
     return resp.json();
   }
@@ -187,7 +188,7 @@ export class Usage {
       limit: opts.limit?.toString(),
       cursor: opts.cursor,
     }, opts.filter);
-    const resp = await fetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
+    const resp = await apiFetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
     if (!resp.ok) await throwApiError(resp, "fetch usage");
     return resp.json();
   }
@@ -195,7 +196,7 @@ export class Usage {
   /** `GET /sandboxes/:id/usage` — per-sandbox drilldown. */
   async forSandbox(sandboxId: string, opts: Pick<UsageQueryOpts, "from" | "to"> = {}): Promise<SandboxUsageResponse> {
     const qs = this.buildQueryString({ from: opts.from, to: opts.to });
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${sandboxId}/usage${qs}`, { headers: this.headers });
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${sandboxId}/usage${qs}`, { headers: this.headers });
     if (!resp.ok) await throwApiError(resp, "fetch sandbox usage");
     return resp.json();
   }
@@ -219,7 +220,7 @@ export class Tags {
 
   /** `GET /tags` — discovery of all tag keys across the org. */
   async listKeys(): Promise<TagKeyInfo[]> {
-    const resp = await fetch(`${this.apiUrl}/tags`, { headers: this.headers });
+    const resp = await apiFetch(`${this.apiUrl}/tags`, { headers: this.headers });
     if (!resp.ok) await throwApiError(resp, "list tag keys");
     const body = await resp.json();
     return body.keys;
@@ -227,14 +228,14 @@ export class Tags {
 
   /** `GET /sandboxes/:id/tags` — current tag set. */
   async get(sandboxId: string): Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${sandboxId}/tags`, { headers: this.headers });
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${sandboxId}/tags`, { headers: this.headers });
     if (!resp.ok) await throwApiError(resp, "get tags");
     return resp.json();
   }
 
   /** `PUT /sandboxes/:id/tags` — full replace. `{}` clears all tags. */
   async set(sandboxId: string, tags: Record<string, string>): Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${sandboxId}/tags`, {
+    const resp = await apiFetch(`${this.apiUrl}/sandboxes/${sandboxId}/tags`, {
       method: "PUT",
       headers: this.headers,
       body: JSON.stringify(tags),

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Radio } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowUpRight, Loader2, Radio } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Panel, PanelContent } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
@@ -8,6 +9,7 @@ import {
   displayManagedAgentName,
   getManagedAgentChannels,
   getManagedAgents,
+  getManagedProjects,
 } from './api'
 
 function displayResourceName(value: string) {
@@ -25,11 +27,21 @@ export default function ManagedAgentChannels() {
     queryKey: ['managed-agents'],
     queryFn: getManagedAgents,
   })
+  const projects = useQuery({
+    queryKey: ['managed-projects'],
+    queryFn: getManagedProjects,
+  })
   const agentNames = new Map(
     (agents.data ?? []).map((agent) => [
       agent.id,
       displayManagedAgentName(agent),
     ]),
+  )
+  // Setup and connection details live on the project's Connections tab.
+  const projectByAgent = new Map(
+    (projects.data ?? []).flatMap((project) =>
+      project.agents.map((agent) => [agent.id, project.id] as const),
+    ),
   )
 
   return (
@@ -62,7 +74,15 @@ export default function ManagedAgentChannels() {
       ) : channels.data?.length ? (
         <div className="grid gap-3 md:grid-cols-2">
           {channels.data.map((channel) => {
-            const agentName = agentNames.get(channel.agentId)
+            const consumers = (
+              channel.agents.length ? channel.agents : [channel.agentId]
+            ).map((agentId) => agentNames.get(agentId) ?? agentId)
+            const projectId = projectByAgent.get(channel.agentId)
+            // Slack apps are set up on Connections; Twilio has no section
+            // there, its wizard lives on the project's Channels tab.
+            const tab =
+              channel.channel === 'twilio' ? 'channels' : 'connections'
+            const tabLabel = tab === 'channels' ? 'Channels' : 'Connections'
             return (
               <Panel key={channel.id}>
                 <PanelContent className="flex items-center gap-3">
@@ -76,10 +96,23 @@ export default function ManagedAgentChannels() {
                     </p>
                     <p className="text-muted-foreground truncate text-xs">
                       {displayResourceName(channel.channel)}
-                      {agentName ? ` · ${agentName}` : ''}
+                      {' · '}
+                      {channel.alias}
+                      {' · '}
+                      {consumers.join(', ')}
                     </p>
                   </div>
                   <StatusBadge status={channel.status} />
+                  {projectId ? (
+                    <Button asChild variant="ghost" size="sm">
+                      <Link
+                        to={`/projects/${encodeURIComponent(projectId)}/${tab}?environment=${channel.alias}`}
+                        aria-label={`Open in project ${tabLabel}`}
+                      >
+                        {tabLabel} <ArrowUpRight />
+                      </Link>
+                    </Button>
+                  ) : null}
                 </PanelContent>
               </Panel>
             )
@@ -93,7 +126,8 @@ export default function ManagedAgentChannels() {
             </div>
             <p className="text-sm font-medium">No channels yet</p>
             <p className="text-muted-foreground mt-1 max-w-sm text-sm">
-              Add a channel with the OpenComputer CLI and it will appear here.
+              Deploy an agent, then connect Slack from its project’s Connections
+              tab.
             </p>
           </PanelContent>
         </Panel>

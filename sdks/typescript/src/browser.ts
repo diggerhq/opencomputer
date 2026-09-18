@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 const DEFAULT_BROWSER_API_URL = "https://browser.opencomputer.dev";
 
 function resolveBrowserApiUrl(url?: string): string {
@@ -133,7 +134,7 @@ export class Browser {
   static async create(opts: BrowserCreateOpts = {}): Promise<Browser> {
     const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
-    const resp = await fetch(`${apiUrl}/v1/browsers`, {
+    const resp = await apiFetch(`${apiUrl}/v1/browsers`, {
       method: "POST",
       headers: headers(apiKey),
       body: JSON.stringify(toCreateBody(opts)),
@@ -147,7 +148,7 @@ export class Browser {
   static async connect(id: string, opts: { apiKey?: string; apiUrl?: string } = {}): Promise<Browser> {
     const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
-    const resp = await fetch(`${apiUrl}/v1/browsers/${encodeURIComponent(id)}`, {
+    const resp = await apiFetch(`${apiUrl}/v1/browsers/${encodeURIComponent(id)}`, {
       headers: headers(apiKey),
     });
     if (!resp.ok) {
@@ -157,7 +158,7 @@ export class Browser {
   }
 
   async delete(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/v1/browsers/${encodeURIComponent(this.id)}`, {
+    const resp = await apiFetch(`${this.apiUrl}/v1/browsers/${encodeURIComponent(this.id)}`, {
       method: "DELETE",
       headers: headers(this.apiKey),
     });
@@ -202,7 +203,7 @@ export class BrowserProfile {
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
     const body: Record<string, unknown> = {};
     if (opts.name !== undefined) body.name = opts.name;
-    const resp = await fetch(`${apiUrl}/v1/profiles`, {
+    const resp = await apiFetch(`${apiUrl}/v1/profiles`, {
       method: "POST",
       headers: headers(apiKey),
       body: JSON.stringify(body),
@@ -216,7 +217,7 @@ export class BrowserProfile {
   static async list(opts: { apiKey?: string; apiUrl?: string } = {}): Promise<BrowserProfile[]> {
     const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
-    const resp = await fetch(`${apiUrl}/v1/profiles`, {
+    const resp = await apiFetch(`${apiUrl}/v1/profiles`, {
       headers: headers(apiKey),
     });
     if (!resp.ok) {
@@ -229,7 +230,7 @@ export class BrowserProfile {
   static async connect(idOrName: string, opts: { apiKey?: string; apiUrl?: string } = {}): Promise<BrowserProfile> {
     const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
-    const resp = await fetch(`${apiUrl}/v1/profiles/${encodeURIComponent(idOrName)}`, {
+    const resp = await apiFetch(`${apiUrl}/v1/profiles/${encodeURIComponent(idOrName)}`, {
       headers: headers(apiKey),
     });
     if (!resp.ok) {
@@ -239,7 +240,7 @@ export class BrowserProfile {
   }
 
   async delete(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/v1/profiles/${encodeURIComponent(this.id)}`, {
+    const resp = await apiFetch(`${this.apiUrl}/v1/profiles/${encodeURIComponent(this.id)}`, {
       method: "DELETE",
       headers: headers(this.apiKey),
     });
@@ -249,7 +250,7 @@ export class BrowserProfile {
   }
 
   async checkAuth(opts: BrowserProfileAuthCheckCreateOpts): Promise<BrowserProfileAuthCheck> {
-    const resp = await fetch(`${this.apiUrl}/v1/profiles/${encodeURIComponent(this.id)}/auth-checks`, {
+    const resp = await apiFetch(`${this.apiUrl}/v1/profiles/${encodeURIComponent(this.id)}/auth-checks`, {
       method: "POST",
       headers: headers(this.apiKey),
       body: JSON.stringify(toAuthCheckBody(opts)),
@@ -306,7 +307,7 @@ export class BrowserProfileAuthCheck {
   static async connect(id: string, opts: { apiKey?: string; apiUrl?: string } = {}): Promise<BrowserProfileAuthCheck> {
     const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
     const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
-    const resp = await fetch(`${apiUrl}/v1/profile-auth-checks/${encodeURIComponent(id)}`, {
+    const resp = await apiFetch(`${apiUrl}/v1/profile-auth-checks/${encodeURIComponent(id)}`, {
       headers: headers(apiKey),
     });
     if (!resp.ok) {

@@ -128,7 +128,11 @@ result. See [Agent capabilities](/agents/capabilities) for the full comparison.
 ## Deployment registers; rendering selects
 
 A deployment packages the agents and resources that are allowed to exist. A
-render selects which of those resources are available for one model step.
+render selects the tools, instructions and other resources for one model step.
+
+[Managed GitHub access](/agents/github#declare-access) is session-wide: its
+token carries the deployment's declared GitHub permissions. Conditional
+`useConnection()` calls do not change that token's authority.
 
 ```mermaid
 flowchart LR

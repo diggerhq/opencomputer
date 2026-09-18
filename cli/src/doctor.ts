@@ -2,7 +2,11 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import ts from "typescript";
 
+import { cloudAgentId, readLinkedProject } from "./binding.js";
 import { readProjectAgents, readProjectResources } from "./project.js";
+
+/** Directories that are never source: the CLI's own state and build output, dependencies, workspaces. */
+const NOT_SOURCE = new Set([".opencomputer", "node_modules", "workspace", ".git", "dist"]);
 
 export interface DoctorDiagnostic {
   code: string;
@@ -13,11 +17,18 @@ export interface DoctorDiagnostic {
   hint: string;
 }
 
+/** What the checkout resolves to: the linked project, if any, and each local agent's cloud id. */
+export interface DoctorResolution {
+  project: { id: string; name: string; apiUrl: string } | null;
+  agents: Array<{ localId: string; agentId: string | null }>;
+}
+
 export interface DoctorResult {
   ok: boolean;
   durationMs: number;
   diagnostics: DoctorDiagnostic[];
   summary: { errors: number; warnings: number; files: number };
+  resolution: DoctorResolution;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -34,7 +45,10 @@ async function sourceFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...(await sourceFiles(path)));
+    if (entry.isDirectory()) {
+      if (NOT_SOURCE.has(entry.name)) continue;
+      files.push(...(await sourceFiles(path)));
+    }
     else if (entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name)) files.push(path);
   }
   return files.sort();
@@ -207,8 +221,9 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
       hint: "Give every tool in the project a unique literal name.",
     });
   }
+  let localIds: string[] = [];
   try {
-    await readProjectAgents(projectRoot);
+    localIds = (await readProjectAgents(projectRoot)).map((agent) => agent.localId);
     await readProjectResources(projectRoot);
   } catch (error) {
     diagnostics.push({
@@ -249,6 +264,16 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
       });
     }
   }
+  const linked = await readLinkedProject(projectRoot);
+  const resolution: DoctorResolution = {
+    project: linked
+      ? { id: linked.projectId, name: linked.projectName, apiUrl: linked.apiUrl }
+      : null,
+    agents: localIds.map((localId, index) => ({
+      localId,
+      agentId: linked ? cloudAgentId(linked, localId, index) : null,
+    })),
+  };
   const errors = diagnostics.filter((item) => item.severity === "error").length;
   const warnings = diagnostics.length - errors;
   return {
@@ -256,5 +281,6 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
     durationMs: Math.round((performance.now() - started) * 100) / 100,
     diagnostics,
     summary: { errors, warnings, files: files.length },
+    resolution,
   };
 }

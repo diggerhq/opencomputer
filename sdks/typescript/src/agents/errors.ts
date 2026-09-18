@@ -1,59 +1,77 @@
-/** The error envelope the API returns: `{ error: { type, message, code, param?, request_id } }`. */
-export interface ApiErrorBody {
-  type?: string;
-  message?: string;
-  code?: string;
-  param?: string;
-  request_id?: string;
+// The one error the management client throws. The API answers every failure
+// with `{ error: { code, message } }` (docs/agents/api.mdx, "Errors"); a
+// missing key or an unknown route answers `{ error: "<text>" }` without a
+// code. Both land here as `{ code, status, message }`, with `code` filled from
+// the status when the body carried none, so a caller always has one string to
+// branch on.
+
+/**
+ * The wire envelope: `{ error: { code, message } }` or `{ error: "<text>" }`.
+ * An error the API ties to a session names it beside the code
+ * (`session_publication_unconfirmed` carries `sessionId`).
+ */
+export interface ApiErrorEnvelope {
+  error?: { code?: string; message?: string; sessionId?: string } | string;
 }
 
-/** Base error for every failed API call. Thrown (never returned). */
-export class OpenComputerError extends Error {
-  readonly status: number;
-  readonly code?: string;
-  readonly type?: string;
-  readonly param?: string;
-  readonly requestId?: string;
+/** What an error carries beside its status, code and message. */
+export interface OpenComputerErrorDetails {
+  /** Seconds to wait before retrying, from `Retry-After`, when the API sent one. */
+  retryAfter?: number;
+  /** The session the failure concerns, when the API named one. */
+  sessionId?: string;
+}
 
-  constructor(status: number, body: ApiErrorBody | undefined, fallback: string) {
-    super(body?.message || fallback);
+const CODE_BY_STATUS: Record<number, string> = {
+  400: "invalid_request",
+  401: "unauthorized",
+  402: "insufficient_credits",
+  403: "forbidden",
+  404: "not_found",
+  409: "conflict",
+  429: "rate_limited",
+};
+
+export class OpenComputerError extends Error {
+  /** The API's stable error code, or one derived from the status when the body had none. */
+  readonly code: string;
+  /** The HTTP status. */
+  readonly status: number;
+  /** Seconds to wait before retrying, from `Retry-After`, when the API sent one. */
+  readonly retryAfter?: number;
+  /**
+   * The session the failure concerns, when the API named one:
+   * `session_publication_unconfirmed` carries the id of the session that
+   * exists, or whose labels are recorded, but is not confirmed in the list
+   * yet. The client does not retry; the caller repeats the same call.
+   */
+  readonly sessionId?: string;
+
+  constructor(
+    status: number,
+    code: string | undefined,
+    message: string | undefined,
+    details: OpenComputerErrorDetails = {},
+  ) {
+    super(message || `OpenComputer request failed (${status})`);
     this.name = "OpenComputerError";
     this.status = status;
-    this.code = body?.code;
-    this.type = body?.type;
-    this.param = body?.param;
-    this.requestId = body?.request_id;
+    this.code = code || CODE_BY_STATUS[status] || (status >= 500 ? "unavailable" : "request_failed");
+    if (details.retryAfter !== undefined) this.retryAfter = details.retryAfter;
+    if (details.sessionId !== undefined) this.sessionId = details.sessionId;
   }
 }
 
-export class AuthError extends OpenComputerError { name = "AuthError"; }        // 401 / 403
-export class NotFoundError extends OpenComputerError { name = "NotFoundError"; } // 404
-export class ConflictError extends OpenComputerError { name = "ConflictError"; } // 409
-export class ValidationError extends OpenComputerError { name = "ValidationError"; } // 422
-
-export class RateLimitError extends OpenComputerError {
-  name = "RateLimitError";
-  /** Seconds to wait, from the `Retry-After` header, if present. */
-  readonly retryAfter?: number;
-  constructor(status: number, body: ApiErrorBody | undefined, fallback: string, retryAfter?: number) {
-    super(status, body, fallback);
-    this.retryAfter = retryAfter;
-  }
-}
-
-export function errorFromResponse(
-  status: number,
-  body: ApiErrorBody | undefined,
-  retryAfter?: number,
-): OpenComputerError {
-  const fallback = `OpenComputer request failed (${status})`;
-  switch (status) {
-    case 401:
-    case 403: return new AuthError(status, body, fallback);
-    case 404: return new NotFoundError(status, body, fallback);
-    case 409: return new ConflictError(status, body, fallback);
-    case 422: return new ValidationError(status, body, fallback);
-    case 429: return new RateLimitError(status, body, fallback, retryAfter);
-    default:  return new OpenComputerError(status, body, fallback);
-  }
+/** Builds the error for a failed response from its status, parsed body and headers. */
+export function errorFromResponse(status: number, body: unknown, headers?: Headers): OpenComputerError {
+  const envelope = body && typeof body === "object" ? (body as ApiErrorEnvelope) : undefined;
+  const error = envelope?.error;
+  const fields = typeof error === "object" && error ? error : undefined;
+  const message = typeof error === "string" ? error : fields?.message;
+  const retryAfterHeader = headers?.get("retry-after");
+  const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
+  const details: OpenComputerErrorDetails = {};
+  if (Number.isFinite(retryAfter) && retryAfter > 0) details.retryAfter = retryAfter;
+  if (typeof fields?.sessionId === "string" && fields.sessionId) details.sessionId = fields.sessionId;
+  return new OpenComputerError(status, fields?.code, message, details);
 }

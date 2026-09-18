@@ -35,6 +35,15 @@ export interface ManagedProject {
   updatedAt: string;
 }
 
+export type DatabaseValue = string | number | null;
+
+export interface DatabaseResult {
+  columns: string[];
+  rows: Array<Record<string, DatabaseValue>>;
+  rowsAffected: number;
+  truncated: boolean;
+}
+
 export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
@@ -83,6 +92,19 @@ export interface ManagedGitHubStatus {
 
 // Model access (work 011). The provider token is write-only; these shapes
 // carry only normalized metadata.
+/** An account the platform holds an OAuth credential for. */
+export interface ServiceConnection {
+  id: string;
+  /** `google` or `github` — the grant, not the API being called. */
+  provider: string;
+  /** The alias it was connected under; what an agent passes as `label`. */
+  label: string;
+  /** Who the account belongs to, e.g. the mailbox address. */
+  displayName?: string;
+  scopes?: string[];
+  status: string;
+}
+
 export interface ModelAccessConnection {
   id: string;
   organizationId: string;
@@ -269,6 +291,32 @@ export interface ManagedSessionSnapshot {
     createdAt: string;
     updatedAt: string;
   }>;
+}
+
+/** One row of `GET /sessions` (docs/agents/api.mdx, "Get and list"): no turns. */
+export interface ManagedSessionSummary {
+  id: string;
+  projectId: string;
+  agentId: string;
+  deploymentId: string;
+  environment: "development" | "production" | null;
+  source: string;
+  status: string;
+  labels: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+  activity: {
+    activeTurnId: string | null;
+    queued: number;
+    lastSettledTurn: { id: string; status: string; at: string } | null;
+  };
+  result: { turnId: string; callId: string; reportedAt: string; data: unknown } | null;
+}
+
+export interface ManagedSessionPage {
+  sessions: ManagedSessionSummary[];
+  nextCursor: string | null;
 }
 
 export type MemoryEnvironment = "development" | "production";
@@ -637,6 +685,76 @@ export class OpenComputerClient {
     );
   }
 
+  // ── Connected services ───────────────────────────────────────────────────
+  // Accounts the platform holds an OAuth credential for, reached from an agent
+  // with callService(). The provider segment is the grant — google covers
+  // gmail, calendar, drive and sheets; github is its own.
+
+  async serviceConnections(): Promise<ServiceConnection[]> {
+    const result = await this.request<{ connections: ServiceConnection[] }>(
+      "/api/managed-agents/connections",
+    );
+    return result.connections ?? [];
+  }
+
+  /**
+   * Begin connecting an account. Returns a link for whoever owns it to open;
+   * no credential passes through the CLI, and the person consenting never
+   * signs in to OpenComputer.
+   */
+  linkServiceConnection(input: { service: string; label?: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    return this.request<{
+      service: string;
+      label: string;
+      status: string;
+      authorizationUrl?: string;
+      connectionId?: string;
+      expiresAt?: string;
+    }>(`/api/managed-agents/connections/${provider}/link`, {
+      method: "POST",
+      body: JSON.stringify({
+        service: input.service,
+        ...(input.label ? { label: input.label } : {}),
+      }),
+    });
+  }
+
+  /**
+   * Live status for one connected account.
+   *
+   * Unlike the listing, this reconciles: it asks the provider whether the
+   * consent completed and records the answer. A connection that was left
+   * `pending` in the listing becomes `connected` here once someone has
+   * actually authorized it.
+   */
+  serviceConnectionStatus(input: { service: string; label: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    const query = new URLSearchParams({
+      service: input.service,
+      label: input.label,
+    });
+    return this.request<{
+      service: string;
+      label: string;
+      status: string;
+      connectionId?: string;
+      scopes?: string[];
+    }>(`/api/managed-agents/connections/${provider}/status?${query.toString()}`);
+  }
+
+  disconnectServiceConnection(input: { service: string; connectionId: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    const query = new URLSearchParams({
+      service: input.service,
+      connectionId: input.connectionId,
+    });
+    return this.request<void>(
+      `/api/managed-agents/connections/${provider}?${query.toString()}`,
+      { method: "DELETE" },
+    );
+  }
+
   // ── Model access (work 011) ──────────────────────────────────────────────
   async modelAccessConnections(): Promise<ModelAccessConnection[]> {
     const result = await this.request<{ data: ModelAccessConnection[] }>(
@@ -900,6 +1018,26 @@ export class OpenComputerClient {
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
   }
 
+  async databaseQuery(input: {
+    projectId: string;
+    environment: "development" | "production";
+    sql: string;
+    parameters?: Array<string | number | boolean | null>;
+  }): Promise<DatabaseResult> {
+    const response = await this.request<{
+      environment: "development" | "production";
+      result: DatabaseResult;
+    }>(`/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`, {
+      method: "POST",
+      body: JSON.stringify({
+        environment: input.environment,
+        sql: input.sql,
+        parameters: input.parameters ?? [],
+      }),
+    });
+    return response.result;
+  }
+
   // Project memory (docs/agents/document-memory.mdx, "Management API").
   // Every mutation is conditional: the caller sends back the ETag it read.
 
@@ -1137,11 +1275,13 @@ export class OpenComputerClient {
     return { created: response.status === 201, ...body };
   }
 
-  async sessions(): Promise<ManagedSessionSnapshot[]> {
-    const result = await this.request<{
-      sessions: ManagedSessionSnapshot[];
-    }>("/api/managed-agents/sessions");
-    return result.sessions;
+  /** One page of session rows, newest created first; pass `cursor` for the next page. */
+  async sessions(options: { cursor?: string; limit?: number } = {}): Promise<ManagedSessionPage> {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return this.request<ManagedSessionPage>(`/api/managed-agents/sessions${suffix}`);
   }
 
   session(sessionId: string) {

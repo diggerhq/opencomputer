@@ -22,7 +22,10 @@ npm run deploy -- --watch
 `opencomputer link --project <id|slug>` links an existing project;
 `opencomputer link --create-project <name>` creates and links one. Later
 commands reuse that local binding without prompting. An unlinked command fails
-with the exact link command needed to proceed.
+with the exact link command needed to proceed. `opencomputer doctor` and
+`opencomputer deploy` print the project they resolved and the cloud id each
+local agent deploys as before acting. Compiled bundles are cached under
+`node_modules/.cache/opencomputer/`, never inside `opencomputer/`.
 
 The production cloud API (`https://app.opencomputer.dev`) is the default.
 Override it only with `--api-url` or `OPENCOMPUTER_API_URL`.

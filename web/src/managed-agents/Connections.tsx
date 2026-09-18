@@ -47,44 +47,37 @@ function displayResourceName(value: string) {
     .replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
+// A Google grant's scopes say which service it is; the provider does not.
+// Sheets is checked before Drive because a Sheets grant carries drive scopes
+// too, and Drive first would claim it.
+const GOOGLE_SERVICES = [
+  { id: 'calendar', name: 'Google Calendar', scope: '/auth/calendar' },
+  { id: 'sheets', name: 'Google Sheets', scope: '/auth/spreadsheets' },
+  { id: 'drive', name: 'Google Drive', scope: '/auth/drive' },
+  { id: 'gmail', name: 'Gmail', scope: '/auth/gmail.' },
+] as const
+
+function googleServiceFor(scopes: string[]) {
+  return GOOGLE_SERVICES.find((service) =>
+    scopes.some((scope) => scope.toLowerCase().includes(service.scope)),
+  )
+}
+
 function connectionService(connection: { provider: string; scopes: string[] }) {
-  if (
-    connection.scopes.some((scope) =>
-      scope.toLowerCase().includes('/auth/calendar'),
-    )
-  ) {
-    return 'Google Calendar'
-  }
-  if (
-    connection.scopes.some((scope) =>
-      scope.toLowerCase().includes('/auth/gmail.'),
-    )
-  ) {
-    return 'Gmail'
-  }
-  return displayResourceName(connection.provider)
+  return (
+    googleServiceFor(connection.scopes)?.name ??
+    displayResourceName(connection.provider)
+  )
 }
 
 function connectionServiceId(
   connection: ManagedAgentConnection,
-): 'gmail' | 'calendar' | 'github' | undefined {
+): 'gmail' | 'calendar' | 'drive' | 'sheets' | 'github' | undefined {
   if (connection.provider === 'github') return 'github'
   if (connection.provider !== 'google') return undefined
-  if (
-    connection.scopes.some((scope) =>
-      scope.toLowerCase().includes('/auth/calendar'),
-    )
-  ) {
-    return 'calendar'
-  }
-  if (
-    connection.scopes.some((scope) =>
-      scope.toLowerCase().includes('/auth/gmail.'),
-    )
-  ) {
-    return 'gmail'
-  }
-  return undefined
+  // Returning undefined here strands the connection: the page skips it when
+  // reconciling and cannot disconnect it either.
+  return googleServiceFor(connection.scopes)?.id
 }
 
 async function loadManagedAgentConnections() {
@@ -572,6 +565,8 @@ export default function ManagedAgentConnections() {
               >
                 <option value="gmail">Gmail</option>
                 <option value="calendar">Google Calendar</option>
+                <option value="drive">Google Drive</option>
+                <option value="sheets">Google Sheets</option>
               </select>
             </div>
             <div className="grid gap-2">

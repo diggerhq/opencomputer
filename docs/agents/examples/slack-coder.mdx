@@ -1,0 +1,101 @@
+---
+title: "A coding agent in Slack"
+description: "Deploy a coding teammate that takes work from Slack and opens draft pull requests"
+---
+
+The Slack coder example is a small deployed agent that receives coding tasks
+in Slack. Mention it with a task; it clones the repository on its OpenComputer
+computer, changes code on a branch, runs the relevant checks, opens a draft
+pull request and replies with the result. Mention it again in the same thread
+to continue on the same branch and pull request. It keeps working after you
+close your terminal.
+
+The repository is two files:
+
+```text
+opencomputer/project.ts
+opencomputer/agents/coder/agent.ts
+```
+
+OpenComputer supplies the rest: the coding harness and computer, deployed
+execution, conversation routing, GitHub credentials and the Slack app. There
+is no server, message parser, GitHub client or Slack reply code to write.
+
+[Browse the source on GitHub](https://github.com/diggerhq/opencomputer-slack-coder).
+
+## What the agent does
+
+`opencomputer/agents/coder/agent.ts` declares a GitHub connection with write
+access to contents and pull requests, selects a model, enables the built-in
+shell tool and returns the instructions the agent works from: read the
+repository's instructions, inspect the code, work on a branch, run the checks
+and report their actual results, push the branch and open a draft pull
+request, continue follow-ups on that branch, never merge, and never print
+credentials or put them in files or Git URLs.
+
+The example declares no Slack channel, so the agent gets a dedicated Slack app
+with the standard configuration: mentions and direct messages go to this one
+agent. To narrow or extend what the app can do, declare a channel under
+`opencomputer/channels/` as described in [Channels](/agents/channels).
+
+## Deploy it
+
+You need Node.js 22 or later, an OpenComputer account with available usage,
+permission to install a Slack app in your workspace, and GitHub access to
+install the managed OpenComputer App on the repositories the agent may change.
+
+```bash
+git clone https://github.com/diggerhq/opencomputer-slack-coder.git
+cd opencomputer-slack-coder
+npm ci
+npx --package @opencomputer/cli opencomputer login
+npx --package @opencomputer/cli opencomputer link --create-project slack-coder
+npm run deploy -- --alias production
+```
+
+The deploy command exits after publishing; nothing keeps running on your
+machine. Open the printed project URL and select **Production**.
+
+## Connect GitHub
+
+In **Connections**, install the managed OpenComputer GitHub App, select the
+repositories the agent may change, and attach the installation to Production.
+That selection is the complete boundary of what the agent can reach. Anyone
+who can message the bot can direct it at those repositories, so invite the bot
+to conversations accordingly. See
+[GitHub App connections](/agents/github).
+
+## Connect Slack
+
+In the same Connections tab, the Slack panel shows the agent that will receive
+messages. Choose **Create Slack bot**, name it, paste an app configuration
+access token from [your Slack apps](https://api.slack.com/apps), and approve
+the installation in Slack. You are returned to the same project and
+environment. Invite the bot to a channel and mention it once; the panel
+reports the first message received.
+[Connect Slack](/agents/channels#connect-slack) covers the token and the
+manual alternative.
+
+## Give it a task
+
+Mention the bot by the name you gave it, in a channel it has been invited to,
+naming a repository the installation can reach. The examples call it Patch:
+
+> @Patch In acme/service, CSV export breaks when a customer's name contains a
+> comma. Reproduce it, fix it, run the tests and open a draft PR.
+
+The reply reports what was run, the check results and the draft pull request
+link. Follow up in the same thread, from the same Slack account:
+
+> @Patch Also cover names containing newlines in that PR.
+
+The same session continues on the same branch and updates the same pull
+request. A new thread starts independent work. Each conversation belongs to
+the Slack user and thread it started in.
+
+## Change the agent
+
+Edit the instructions or the model in `agent.ts` and run the deploy command
+again. New conversations use the promoted version; conversations already
+running keep the version they started with. Redeploying does not require
+reconnecting GitHub or Slack.

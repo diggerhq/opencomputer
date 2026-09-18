@@ -51,12 +51,14 @@ import {
   getManagedAgentDeployment,
   getManagedAgentDeployments,
   getManagedAgentChannels,
+  getManagedAgentSession,
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
+  type ManagedAgentSessionSummary,
   type ManagedAgentSummary,
   type ManagedProjectOverview,
 } from './api'
@@ -71,12 +73,14 @@ import {
   sessionsForEnvironment,
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
+import { ManagedProjectSlack } from './Slack'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedTwilioWizard } from './TwilioWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
+import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
 import { AgentMarkdown } from './AgentMarkdown'
@@ -94,6 +98,7 @@ type DetailTab =
   | 'schedules'
   | 'webhooks'
   | 'memory'
+  | 'database'
   | 'secrets'
   | 'connections'
   | 'github'
@@ -108,6 +113,7 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'schedules',
   'webhooks',
   'memory',
+  'database',
   'secrets',
   'connections',
   'github',
@@ -122,6 +128,22 @@ function formatDate(value: string) {
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
+}
+
+/** What a list row says about its turns: running, waiting, or how the last one ended. */
+function sessionActivityLabel(session: ManagedAgentSessionSummary) {
+  const { activity } = session
+  const parts: string[] = []
+  if (activity.activeTurnId) parts.push('running')
+  if (activity.queued) parts.push(`${activity.queued} queued`)
+  if (!parts.length) {
+    parts.push(
+      activity.lastSettledTurn
+        ? `last ${activity.lastSettledTurn.status}`
+        : 'no turns yet',
+    )
+  }
+  return parts.join(' · ')
 }
 
 function historicalMessages(
@@ -613,6 +635,13 @@ export default function ManagedAgentDetail({
     enabled: Boolean(selectedPlaygroundId),
     refetchInterval: 1_000,
   })
+  // The list carries rows; the open session's turns come from its own route.
+  const selectedPlaygroundSession = useQuery({
+    queryKey: ['managed-agent-session', selectedPlaygroundId],
+    queryFn: () => getManagedAgentSession(selectedPlaygroundId!),
+    enabled: Boolean(selectedPlaygroundId),
+    refetchInterval: 5_000,
+  })
   const continuationCommand =
     project?.templateSource?.cloneReady &&
     projectCloneCommand(project.project.id)
@@ -639,8 +668,13 @@ export default function ManagedAgentDetail({
   const activeAliasChannel = activeAliasChannels[0]
   const declaredChannels =
     activeDeployment.data?.projectDeployment?.resources.channels ?? []
+  // Slack apps are set up on Connections; the wizard points there when a
+  // manual completion is blocked by an automated setup.
+  const connectionsHref = project
+    ? `/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`
+    : undefined
 
-  const sessionColumns: Column<ManagedAgentSession>[] = [
+  const sessionColumns: Column<ManagedAgentSessionSummary>[] = [
     {
       key: 'session',
       header: 'Session',
@@ -663,11 +697,22 @@ export default function ManagedAgentDetail({
       cell: (session) => <StatusBadge status={session.status} />,
     },
     {
-      key: 'turns',
-      header: 'Turns',
+      key: 'activity',
+      header: 'Activity',
       cell: (session) => (
         <span className="text-muted-foreground text-xs">
-          {session.turns.length}
+          {sessionActivityLabel(session)}
+        </span>
+      ),
+    },
+    {
+      key: 'labels',
+      header: 'Labels',
+      cell: (session) => (
+        <span className="text-muted-foreground truncate font-mono text-[10px]">
+          {Object.entries(session.labels)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(' ')}
         </span>
       ),
     },
@@ -712,6 +757,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
+    ...(project ? ([{ id: 'database', label: 'Database' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
     ...(project
       ? ([{ id: 'connections', label: 'Connections' }] as const)
@@ -942,11 +988,10 @@ export default function ManagedAgentDetail({
                     )}
                   >
                     <span className="block truncate text-xs font-medium">
-                      {session.turns[0]?.input || 'Playground session'}
+                      Playground session
                     </span>
                     <span className="text-muted-foreground mt-0.5 block text-[10px]">
-                      {session.turns.length}{' '}
-                      {session.turns.length === 1 ? 'turn' : 'turns'} ·{' '}
+                      {sessionActivityLabel(session)} ·{' '}
                       {formatDate(session.updatedAt)}
                     </span>
                     <span className="text-muted-foreground mt-0.5 block truncate font-mono text-[10px]">
@@ -958,7 +1003,8 @@ export default function ManagedAgentDetail({
             </aside>
             {selectedPlaygroundId &&
             selectedPlaygroundId !== adoptedPlaygroundId &&
-            selectedPlaygroundEvents.isLoading ? (
+            (selectedPlaygroundEvents.isLoading ||
+              selectedPlaygroundSession.isLoading) ? (
               <div className="text-muted-foreground flex min-h-0 items-center justify-center gap-2 text-sm">
                 <Loader2 className="size-4 animate-spin" /> Loading session…
               </div>
@@ -967,7 +1013,11 @@ export default function ManagedAgentDetail({
                 key={`${environment}:${playgroundChatId}`}
                 chatId={`${environment}:${playgroundChatId}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
-                session={selectedPlayground}
+                session={
+                  selectedPlaygroundId
+                    ? selectedPlaygroundSession.data
+                    : undefined
+                }
                 events={
                   selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
                 }
@@ -1106,6 +1156,17 @@ export default function ManagedAgentDetail({
                 Messaging channels connected to this deployed agent.
               </PanelDescription>
             </div>
+            {project ? (
+              // Slack apps are created and installed from Connections; this
+              // tab keeps routing, destinations and delivery.
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={`/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`}
+                >
+                  Slack setup in Connections
+                </Link>
+              </Button>
+            ) : null}
           </PanelHeader>
           {agent && activeDeployment.data ? (
             declaredChannels.length ? (
@@ -1138,6 +1199,7 @@ export default function ManagedAgentDetail({
                     )}
                     channelId={declaredChannel.id}
                     destinations={Object.keys(declaredChannel.destinations)}
+                    connectionsHref={connectionsHref}
                   />
                 ),
               )
@@ -1147,6 +1209,7 @@ export default function ManagedAgentDetail({
                 alias={activeDeployment.data.alias}
                 agentName={displayManagedAgentName(agent)}
                 connection={activeAliasChannel}
+                connectionsHref={connectionsHref}
               />
             )
           ) : (
@@ -1206,6 +1269,15 @@ export default function ManagedAgentDetail({
         />
       ) : null}
 
+      {activeTab === 'database' && project ? (
+        <ManagedProjectDatabase
+          key={`${project.project.id}:${environment}`}
+          projectId={project.project.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
       {activeTab === 'secrets' && project ? (
         <ManagedProjectSecrets
           projectId={project.project.id}
@@ -1222,10 +1294,16 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'connections' && project ? (
-        <ManagedProjectGitHub
-          projectId={project.project.id}
-          environment={environment}
-        />
+        <div className="space-y-5">
+          <ManagedProjectGitHub
+            projectId={project.project.id}
+            environment={environment}
+          />
+          <ManagedProjectSlack
+            projectId={project.project.id}
+            environment={environment}
+          />
+        </div>
       ) : null}
     </div>
   )

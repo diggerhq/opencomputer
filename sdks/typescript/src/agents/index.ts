@@ -1,72 +1,63 @@
-export { OpenComputer, type OpenComputerOptions } from "./client.js";
-export { connectSession, type ConnectSessionOptions } from "./connect.js";
+// @opencomputer/sdk/agents: the management API client and its types.
+//
+// This module graph is portable: fetch, URL, Headers and Web Crypto only, no
+// Node built-ins, nothing run at import. It loads the same in a Cloudflare
+// Worker without Node compatibility, on Vercel, on Deno and on Node. The
+// sandbox client at the package root is Node-only and lives apart on purpose.
 
-export { Sessions, Session, ClientSession } from "./sessions.js";
-export type {
-  CreateSessionParams, StreamOptions, Envelope, ListPage,
-  SessionSource, RegisteredRepoSource, InlineRepoSource, SourceAuth, SourceStatus,
-  SourceErrorCode, SourceSummary,
-} from "./sessions.js";
-export { Agents } from "./agents.js";
-export type {
-  CreateAgentParams, UpdateAgentParams, Page,
-  SlackManifest, SlackConnection, ConnectSlackParams,
-  ManagedSlackAuthorization, ManagedSlackConnection, ManagedSlackWorkspaceConnection,
-  RepositoryAccessPolicy, RepositoryAccessGrant, RepositoryAccessRepository,
-  UnavailableSelectedRepository, RepositoryAccess,
-} from "./agents.js";
-export { AgentHooks } from "./hooks.js";
-export type {
-  AgentHook, HookStatus, HookRevokedReason, CreateAgentHookParams,
-  ListAgentHooksParams, CreatedAgentHook,
-} from "./hooks.js";
-export { AgentRepository } from "./repository-agents.js";
-export type {
-  SourceProfileId, RepositoryAgentSource, ReviewRepositoryAgentParams,
-  RepositoryReviewIssue, RepositoryCandidateRoot, FlueSourceProfile,
-  RepositorySourceInterpretation, RepositoryAgentReview, RepositoryReviewReceipt,
-  ImportRepositoryAgentParams, ImportRepositoryAgentResult,
-} from "./repository-agents.js";
 export {
-  Deployments, Revisions, Activations, Skills, DeploymentSourceResource,
-} from "./deployments.js";
+  OpenComputer,
+  Sessions,
+  Turns,
+  Events,
+  Projects,
+  Memory,
+  MemoryDocuments,
+  Webhooks,
+  EventSubscriptions,
+  GitHub,
+  Agents,
+  Deployments,
+  startSessionOnDocument,
+  type OpenComputerOptions,
+  type CallOptions,
+  type CreateSessionOptions,
+  type EnvironmentOptions,
+  type DocumentWriteOptions,
+  type ListDocumentsOptions,
+  type StartSessionOnDocumentParams,
+  type StartSessionOnDocumentResult,
+} from "./client.js";
+export { sessionIdempotencyKey, type StartOnDocumentParams, type StartOnDocumentResult } from "./start-on-document.js";
+export { OpenComputerError, type ApiErrorEnvelope, type OpenComputerErrorDetails } from "./errors.js";
+export { DEFAULT_BASE_URL, type HttpOptions } from "./http.js";
+export type * from "./types.js";
 export type {
-  DeployInput, InlineDeployInput, GithubDeployInput, InlineSkillFile, CreateDeploymentParams,
-  Deployment, Revision, RevisionFile, Activation, AgentSkills, SkillSummary,
-  DeploymentSource, LinkParams, LinkResult, SkillZip,
-} from "./deployments.js";
-export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
-export type {
-  CreateRepoParams, UpdateRepoParams, Repo,
-  GitHubApp, GitHubAppMode, GitHubAppStatus, GitHubInstallation,
-  ListGitHubInstallationsParams,
-} from "./repos.js";
-export { Credentials } from "./credentials.js";
-export type { CreateCredentialParams } from "./credentials.js";
-export { Destinations, Deliveries } from "./destinations.js";
-export type { CreateDestinationParams, UpdateDestinationParams } from "./destinations.js";
-export { Watches } from "./watches.js";
-export type { Watch, WatchStatus, WakeOn, CreateWatchParams } from "./watches.js";
-export { Schedules } from "./schedules.js";
-export type {
-  Schedule, ScheduleRun, ScheduleState, RunOutcome, Overlap,
-  CreateScheduleParams, UpdateScheduleParams, RunsPage,
-} from "./schedules.js";
-export { verifyWebhook, WebhookVerificationError } from "./webhooks.js";
-export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
-export { startSessionOnDocument, sessionIdempotencyKey } from "./memory-sessions.js";
-export type { StartSessionOnDocumentParams, StartSessionOnDocumentResult } from "./memory-sessions.js";
-export type {
-  OutcomeEventType, SessionDestination, CreateEventSubscriptionBody, EventSubscription,
-  OutcomeEvent, EventInput, TurnOutcomeDelivery, EventSubscriptionErrorCode,
-} from "./event-subscriptions.js";
-export type {
-  MemoryEnvironment, MemoryAccess, MemoryAgentWrites, MemoryBinding, MemoryBindings,
-  SessionMemoryBinding, MemoryWriter, MemoryDocumentMeta, MemoryDocument, MemoryDocumentPage,
-  MemoryResource, MemoryResourceInventory,
-  CreateMemoryDocumentBody, ReplaceMemoryDocumentBody, PatchMemoryDocumentBody,
-  MemorySavedEvent, MemoryErrorCode,
+  MemoryEnvironment,
+  MemoryAccess,
+  MemoryAgentWrites,
+  MemoryBinding,
+  MemoryBindings,
+  SessionMemoryBinding,
+  MemoryWriter,
+  MemoryDocumentMeta,
+  MemoryDocument,
+  MemoryDocumentPage,
+  MemoryResource,
+  MemoryResourceInventory,
+  CreateMemoryDocumentBody,
+  ReplaceMemoryDocumentBody,
+  PatchMemoryDocumentBody,
+  MemorySavedEvent,
+  MemoryErrorCode,
 } from "./memory.js";
-
-export * from "./types.js";
-export * from "./errors.js";
+export type {
+  OutcomeEventType,
+  SessionDestination,
+  CreateEventSubscriptionBody,
+  EventSubscription,
+  OutcomeEvent,
+  EventInput,
+  TurnOutcomeDelivery,
+  EventSubscriptionErrorCode,
+} from "./event-subscriptions.js";

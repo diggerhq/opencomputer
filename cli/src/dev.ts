@@ -7,6 +7,8 @@ import { resolve } from "node:path";
 import type { OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
 import {
+  cloudAgentId,
+  describeResolution,
   ensureProjectBinding,
   findOpenComputerProjectRoot,
   type ProjectBinding,
@@ -79,13 +81,7 @@ async function registerBuiltDeployment(
   return { built, deployment };
 }
 
-export function cloudAgentId(
-  binding: ProjectBinding,
-  localId: string,
-  index: number,
-) {
-  return index === 0 ? binding.agentId : `${binding.agentId}--${localId}`;
-}
+export { cloudAgentId };
 
 export async function publishProjectDevelopment(
   client: Pick<OpenComputerClient, "registerDeployment">,
@@ -254,6 +250,15 @@ export async function runDeploymentWatch(
     config,
     projectRoot,
     options,
+  );
+  process.stdout.write(
+    describeResolution({
+      binding,
+      localIds: (await readProjectAgents(projectRoot)).map(
+        (agent) => agent.localId,
+      ),
+      alias: DEVELOPMENT_ALIAS,
+    }),
   );
   const gateway = await startGateway(config);
   const stateDirectory = resolve(projectRoot, ".opencomputer");

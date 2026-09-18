@@ -122,6 +122,65 @@ function copyRequestHeaders(request: Request): Headers {
   return headers;
 }
 
+// Automated Slack setup (docs/agents/channels.mdx "Connect Slack"). The
+// backend's codes are stable; the messages are written here so a provider
+// phrase never reaches the dashboard.
+const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
+  slack_setup_conflict:
+    "This setup request was already used with a different bot name or target. Start a new setup.",
+  slack_setup_active:
+    "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
+  slack_already_connected:
+    "Slack is already connected for this agent and environment. Disconnect it before creating another app.",
+  slack_setup_unavailable:
+    "Automatic Slack setup is not available right now. Set up the app manually instead.",
+  slack_setup_not_found: "That Slack setup does not exist.",
+  slack_configuration_token_invalid:
+    "Slack rejected the configuration access token. Generate a new token at api.slack.com/apps and try again.",
+  slack_configuration_token_expired:
+    "The configuration access token has expired. Generate a new one at api.slack.com/apps and try again.",
+  slack_manifest_rejected:
+    "Slack rejected the generated app manifest. Check the channel's declared scopes and events.",
+  slack_app_limit_reached:
+    "This Slack workspace has reached its app limit. Remove an unused app in Slack or choose another workspace.",
+  slack_rate_limited:
+    "Slack is rate limiting app creation. Wait a moment and try again.",
+  slack_provider_unavailable:
+    "Slack is temporarily unavailable. Try again shortly.",
+  slack_creation_uncertain:
+    "Slack may have created the app, but the result was lost. Check your Slack app list before creating another.",
+  slack_exchange_uncertain:
+    "The installation could not be confirmed. Authorize the app again.",
+  slack_exchange_failed:
+    "Slack did not confirm the installation. Authorize the app again.",
+  slack_setup_not_authorizable:
+    "This setup cannot be authorized in its current state. Reload to see its next step.",
+  slack_setup_connected:
+    "This setup is already connected and cannot be cancelled. Disconnect the Slack connection instead.",
+  slack_setup_busy:
+    "This Slack setup is in progress. Wait for it to finish before cancelling.",
+  slack_setup_cancelled:
+    "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there.",
+  slack_manual_completion_blocked:
+    "Manual completion is blocked: cancel the automated setup for this connection, then generate a new manifest (Reconnect) before entering credentials.",
+  slack_connection_changed:
+    "This connection changed while the request was in flight. Reload the page to see its current state before trying again.",
+  slack_authorization_denied:
+    "The Slack installation was declined. Authorize the app again when you are ready.",
+  slack_authorization_expired:
+    "The Slack authorization link expired. Authorize the app again.",
+  slack_app_mismatch:
+    "Slack installed a different app than the one created for this agent. Authorize the generated app again.",
+  slack_workspace_mismatch:
+    "The app was installed to a different Slack workspace than the one already connected.",
+  slack_scope_missing:
+    "The installed app is missing a permission the deployment declares. Authorize it again to reinstall with the current manifest.",
+  slack_enterprise_install_unsupported:
+    "Organization-wide Slack installations are not supported. Install the app into a single workspace.",
+  slack_setup_superseded:
+    "This setup no longer owns the connection. Use Set up manually or start again.",
+};
+
 async function publicErrorResponse(upstream: Response): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
@@ -151,7 +210,12 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     ? "template_manifest_missing"
     : backendCode;
   let message = "The agent request could not be completed.";
-  if (missingTemplateManifest) {
+  const slackSetupMessage = Object.hasOwn(SLACK_SETUP_ERROR_MESSAGES, backendCode)
+    ? SLACK_SETUP_ERROR_MESSAGES[backendCode]
+    : undefined;
+  if (slackSetupMessage) {
+    message = slackSetupMessage;
+  } else if (missingTemplateManifest) {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
   } else if (upstream.status === 400) {
@@ -167,6 +231,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     if (backendCode === "invalid_model_selection") {
       message =
         backendMessage || "The deployment selects an unavailable model.";
+    } else if (backendCode === "database_not_provisioned") {
+      message = "Redeploy this project to provision its database.";
     } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
@@ -200,8 +266,16 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   const headers = new Headers({ "content-type": "application/json" });
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("retry-after", retryAfter);
+  // The one extra field an error may carry: the id of the setup already in
+  // progress for the target, so the caller can resume it.
+  const setupId =
+    backendCode === "slack_setup_active" &&
+    typeof backendError?.setupId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
+      ? { setupId: backendError.setupId }
+      : {};
   return new Response(
-    JSON.stringify({ error: { code: publicCode, message } }),
+    JSON.stringify({ error: { code: publicCode, message, ...setupId } }),
     { status: upstream.status, headers },
   );
 }
@@ -547,6 +621,83 @@ function publicChannel(value: unknown): Record<string, unknown> {
     ...(Array.isArray(channel.destinations)
       ? { destinations: channel.destinations.map(stripPrivateValues) }
       : {}),
+    // The agents whose registrations consume this channel in the
+    // connection's environment; what Project Connections lists as consumers.
+    ...(Array.isArray(channel.agents)
+      ? { agents: strings(channel.agents) }
+      : {}),
+  };
+}
+
+const SLACK_SETUP_ACTIONS = new Set(["create", "authorize", "manual", "cancel"]);
+const SLACK_SETUPS_ROUTE = /^\/channels\/slack\/setups$/;
+const SLACK_SETUP_ROUTE = /^\/channels\/slack\/setups\/[^/]+$/;
+const SLACK_SETUP_AUTHORIZE_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/authorize$/;
+const SLACK_SETUP_CANCEL_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/cancel$/;
+
+/**
+ * The automated Slack setup record. Redaction is by whitelist: the backend
+ * row also carries the generated app credentials, the manifest snapshot and
+ * the webhook identity, none of which the dashboard needs to resume.
+ */
+function isSlackSetupRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      SLACK_SETUPS_ROUTE.test(suffix)) ||
+    (method === "GET" && SLACK_SETUP_ROUTE.test(suffix)) ||
+    (method === "POST" &&
+      (SLACK_SETUP_AUTHORIZE_ROUTE.test(suffix) ||
+        SLACK_SETUP_CANCEL_ROUTE.test(suffix)))
+  );
+}
+
+function publicSlackSetup(value: unknown): Record<string, unknown> {
+  const setup = record(value) ?? {};
+  const app = record(setup.app);
+  const workspace = record(setup.workspace);
+  const error = record(setup.error);
+  return {
+    id: setup.id,
+    requestKey: setup.requestKey,
+    projectId: setup.projectId,
+    agentId: setup.agentId,
+    alias: setup.alias,
+    channelId: setup.channelId,
+    name: setup.name,
+    connectionId: setup.connectionId,
+    phase: setup.phase,
+    ...(app ? { app: { id: app.id, name: app.name } } : {}),
+    ...(workspace
+      ? { workspace: { id: workspace.id, name: workspace.name } }
+      : {}),
+    ...(typeof setup.botUserId === "string"
+      ? { botUserId: setup.botUserId }
+      : {}),
+    ...(error
+      ? {
+          error: {
+            code: error.code,
+            message:
+              typeof error.code === "string" &&
+              Object.hasOwn(SLACK_SETUP_ERROR_MESSAGES, error.code)
+                ? SLACK_SETUP_ERROR_MESSAGES[error.code]
+                : "The last Slack setup step did not complete.",
+            recoverable: error.recoverable === true,
+            ...(typeof error.retryAfterMs === "number"
+              ? { retryAfterMs: error.retryAfterMs }
+              : {}),
+            ...(typeof error.pointer === "string"
+              ? { pointer: error.pointer }
+              : {}),
+            at: error.at,
+          },
+        }
+      : {}),
+    actions: strings(setup.actions).filter((action) =>
+      SLACK_SETUP_ACTIONS.has(action),
+    ),
+    createdAt: setup.createdAt,
+    updatedAt: setup.updatedAt,
   };
 }
 
@@ -765,16 +916,110 @@ function publicDelivery(value: unknown): Record<string, unknown> {
   };
 }
 
-function publicSessionSnapshot(value: unknown): unknown {
-  const session = record(stripPrivateValues(value));
-  if (!session || !Array.isArray(session.turns)) return session ?? value;
+/**
+ * Session labels are the owner's own strings under the owner's own keys.
+ * They are read from the source, never from a stripped copy, so a label the
+ * owner happened to call `user_id` or `runtime_id` is kept.
+ */
+function ownerLabels(source: Record<string, unknown>): Record<string, string> {
+  const labels = record(source.labels) ?? {};
+  return Object.fromEntries(
+    Object.entries(labels).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/**
+ * The session's result as documented: the call that reported it and its
+ * `data` verbatim. `data` is the application's own JSON, so nothing inside
+ * it is inspected or renamed; `null` when no turn has reported one.
+ */
+function publicSessionResult(value: unknown): unknown {
+  const result = record(value);
+  if (!result) return null;
   return {
-    ...session,
-    turns: session.turns.map((entry) => {
-      const turn = record(entry);
-      if (!turn || !Array.isArray(turn.deliveries)) return entry;
-      return { ...turn, deliveries: turn.deliveries.map(publicDelivery) };
+    turnId: result.turnId,
+    callId: result.callId,
+    reportedAt: result.reportedAt,
+    data: result.data,
+  };
+}
+
+/**
+ * Platform-internal fields of the session envelope that no public route
+ * documents: the runtime generation counter, the name of the memory object
+ * the bindings were admitted against, and the creation intent the platform
+ * compares on an idempotent replay. Dropped by position, since the name
+ * filter is for the fields it lists.
+ */
+const PRIVATE_SESSION_FIELDS = new Set(["runtimeEpoch", "memoryObject", "creation"]);
+
+/**
+ * One turn of the snapshot. `payload` is the caller's own JSON and passes
+ * through untouched; `deliveries` are platform records with their own public
+ * shape; the rest of the turn is platform envelope and keeps the name strip.
+ */
+function publicTurn(entry: unknown): unknown {
+  const turn = record(entry);
+  if (!turn) return entry;
+  return Object.fromEntries(
+    Object.entries(turn).flatMap(([key, child]): Array<[string, unknown]> => {
+      if (key === "payload") return [[key, child]];
+      if (key === "deliveries") {
+        return [[key, Array.isArray(child) ? child.map(publicDelivery) : child]];
+      }
+      if (PRIVATE_EVENT_KEYS.has(key)) return [];
+      return [[key, stripPrivateValues(child)]];
     }),
+  );
+}
+
+/**
+ * The public session. Redaction is by position: the platform envelope (the
+ * session's own fields, memory bindings, turn records, deliveries) is
+ * stripped of private fields, while the positions that hold application
+ * data, `labels`, `result.data` and each turn's `payload`, are copied
+ * verbatim. A recursive strip over the whole object used to remove keys
+ * such as `userId` or `runtimeId` from inside an application's result,
+ * which the list row (assembled separately) kept, so the same session
+ * answered two routes with two different results.
+ */
+function publicSessionSnapshot(value: unknown): unknown {
+  const source = record(value);
+  if (!source) return value;
+  return Object.fromEntries(
+    Object.entries(source).flatMap(([key, child]): Array<[string, unknown]> => {
+      if (key === "labels") return [[key, ownerLabels(source)]];
+      if (key === "result") return [[key, publicSessionResult(child)]];
+      if (key === "turns") {
+        return [[key, Array.isArray(child) ? child.map(publicTurn) : stripPrivateValues(child)]];
+      }
+      if (PRIVATE_EVENT_KEYS.has(key) || PRIVATE_SESSION_FIELDS.has(key)) return [];
+      return [[key, stripPrivateValues(child)]];
+    }),
+  );
+}
+
+/** One list row as documented: nothing private is in it, and the labels and result are the owner's. */
+function publicSessionSummary(value: unknown): unknown {
+  const source = record(value);
+  const row = record(stripPrivateValues(value));
+  if (!row || !source) return row ?? value;
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    agentId: row.agentId,
+    deploymentId: row.deploymentId,
+    environment: row.environment ?? null,
+    source: row.source,
+    status: row.status,
+    labels: ownerLabels(source),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    revision: row.revision,
+    activity: row.activity,
+    result: publicSessionResult(source.result),
   };
 }
 
@@ -813,6 +1058,7 @@ export type PublicFailureCode =
   | "tool_failed"
   | "sandbox_timeout"
   | "sandbox_failed"
+  | "model_stream_failed"
   | "agent_failed";
 
 /**
@@ -847,6 +1093,7 @@ const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
   tool_failed: "A tool failed.",
   sandbox_timeout: "A sandbox command did not finish in time.",
   sandbox_failed: "The sandbox could not run this turn.",
+  model_stream_failed: "The model call failed before it finished.",
   agent_failed: GENERIC_FAILURE_MESSAGE,
 };
 
@@ -873,6 +1120,11 @@ function validParameter(pattern: RegExp, value: string | undefined) {
     : undefined;
 }
 
+// The runtime's word that the conversation outgrew the model's window, in
+// the provider's text.
+const CONTEXT_TOO_LONG =
+  /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i;
+
 // Message rules, first match wins. Each names the runtime error family it
 // recognizes; the captured group, if any, is the parameter.
 const FAILURE_MESSAGE_RULES: ReadonlyArray<{
@@ -895,11 +1147,7 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
     pattern:
       /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
   },
-  {
-    code: "context_too_long",
-    pattern:
-      /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i,
-  },
+  { code: "context_too_long", pattern: CONTEXT_TOO_LONG },
   {
     code: "model_rejected",
     pattern:
@@ -935,6 +1183,71 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
   },
 ];
 
+// A model call's failure by the provider's typed class, as the runtime
+// records it in the failure's `failure` fields. A rejection stays one, a
+// route with no model is unavailable, and everything that failed in flight
+// (the transport, the provider, a broken or malformed response) is
+// `model_stream_failed`.
+const PROVIDER_FAILURE_CODES: Record<string, PublicFailureCode> = {
+  auth: "model_rejected",
+  quota: "model_rejected",
+  "content-filter": "model_rejected",
+  "rate-limit": "model_rejected",
+  "invalid-request": "model_rejected",
+  "no-route": "model_unavailable",
+  transport: "model_stream_failed",
+  internal: "model_stream_failed",
+  "invalid-output": "model_stream_failed",
+  unknown: "model_stream_failed",
+};
+
+/**
+ * The public failure from the typed fields the runtime recorded, when it
+ * recorded a provider failure: `{ class: "provider", subtype, model?,
+ * retry: { attempts } }`. The provider's text decides one thing only, on
+ * an invalid request: whether the conversation outgrew the model's window.
+ * The retry is named only when one happened; a call that bypasses the
+ * runtime's retry (compaction, titling) fails on its first attempt.
+ */
+function structuredFailure(
+  data: Record<string, unknown>,
+  firstLine: string,
+): PublicFailure | undefined {
+  const failure = record(data.failure);
+  if (!failure || failure.class !== "provider") return undefined;
+  const subtype = typeof failure.subtype === "string" ? failure.subtype : "";
+  const code = PROVIDER_FAILURE_CODES[subtype];
+  if (!code) return undefined;
+  if (subtype === "invalid-request" && CONTEXT_TOO_LONG.test(firstLine)) {
+    return {
+      code: "context_too_long",
+      message: PUBLIC_FAILURE_MESSAGES.context_too_long,
+    };
+  }
+  const model = validParameter(
+    MODEL_ID,
+    typeof failure.model === "string" ? failure.model : undefined,
+  );
+  if (code === "model_unavailable" && model) {
+    return {
+      code,
+      message: `The model ${model} is not available to this agent.`,
+      model,
+    };
+  }
+  if (code === "model_stream_failed") {
+    const retry = record(failure.retry);
+    const retried =
+      typeof retry?.attempts === "number" && retry.attempts > 1;
+    return {
+      code,
+      message: `The model call${model ? ` to ${model}` : ""} failed before it finished${retried ? " and its retry failed too" : ""}.`,
+      ...(model ? { model } : {}),
+    };
+  }
+  return { code, message: PUBLIC_FAILURE_MESSAGES[code] };
+}
+
 export function publicFailure(value: unknown): PublicFailure {
   const data = record(value) ?? {};
   const reason = typeof data.reason === "string" ? data.reason : "";
@@ -944,6 +1257,10 @@ export function publicFailure(value: unknown): PublicFailure {
   // Classification reads only the first line: the sentence the runtime
   // wrote, before any stack frame or cause chain.
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  // The runtime's typed fields come first; the text rules serve runtimes
+  // that recorded none.
+  const structured = structuredFailure(data, firstLine);
+  if (structured) return structured;
   for (const rule of FAILURE_MESSAGE_RULES) {
     const match = firstLine.match(rule.pattern);
     if (!match) continue;
@@ -1121,9 +1438,32 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
   }
+  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+    const result = record(body.result) ?? {};
+    const columns = strings(result.columns);
+    return {
+      environment: body.environment,
+      result: {
+        columns,
+        rows: Array.isArray(result.rows)
+          ? result.rows.map((value) => {
+              const row = record(value) ?? {};
+              return Object.fromEntries(
+                columns.map((column) => {
+                  const cell = row[column];
+                  return [column, typeof cell === "string" || typeof cell === "number" ? cell : null];
+                }),
+              );
+            })
+          : [],
+        rowsAffected: typeof result.rowsAffected === "number" ? result.rowsAffected : 0,
+        truncated: result.truncated === true,
+      },
+    };
+  }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
-    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach))?$/.test(suffix)
+    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(suffix)
   ) {
     return stripPrivateValues(body);
   }
@@ -1355,6 +1695,28 @@ function publicSuccessBody(
     return publicChannel(body);
   }
   if (
+    (method === "POST" && SLACK_SETUPS_ROUTE.test(suffix)) ||
+    (method === "GET" && SLACK_SETUP_ROUTE.test(suffix)) ||
+    (method === "POST" && SLACK_SETUP_CANCEL_ROUTE.test(suffix))
+  ) {
+    return { setup: publicSlackSetup(body.setup) };
+  }
+  if (method === "GET" && SLACK_SETUPS_ROUTE.test(suffix)) {
+    // Lookup by target: the latest resumable setup, or null.
+    return { setup: record(body.setup) ? publicSlackSetup(body.setup) : null };
+  }
+  if (method === "POST" && SLACK_SETUP_AUTHORIZE_ROUTE.test(suffix)) {
+    return {
+      authorizationUrl: body.authorizationUrl,
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (suffix.startsWith("/channels/slack/setups")) {
+    // Every setup response is shaped explicitly above; nothing under this
+    // prefix may fall through to the generic key filter.
+    throw new Error("Unsupported managed agents response");
+  }
+  if (
     (method === "GET" && suffix.startsWith("/connections")) ||
     (method === "POST" && suffix.startsWith("/connections")) ||
     (method === "PUT" && suffix.startsWith("/connections")) ||
@@ -1418,14 +1780,15 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/sessions") {
     return {
-      ...(record(stripPrivateValues(body)) ?? {}),
       sessions: Array.isArray(body.sessions)
-        ? body.sessions.map(publicSessionSnapshot)
+        ? body.sessions.map(publicSessionSummary)
         : [],
+      nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
     };
   }
   if (
     (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
+    (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) ||
     (method === "POST" &&
       /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
   ) {
@@ -1445,7 +1808,11 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
-  if (suffix.includes("/webhooks") || suffix.includes("/event-subscriptions")) {
+  if (
+    suffix.includes("/webhooks") ||
+    suffix.includes("/event-subscriptions") ||
+    suffix.startsWith("/channels/slack/setups")
+  ) {
     headers.set("cache-control", "no-store");
   }
   return new Response(
@@ -1664,6 +2031,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+    return true;
+  }
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
     return true;
   }
@@ -1671,6 +2041,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     (method === "GET" || method === "DELETE") &&
     /^\/projects\/[^/]+\/github$/.test(suffix)
   ) {
+    return true;
+  }
+  if (method === "GET" && /^\/projects\/[^/]+\/github\/repositories$/.test(suffix)) {
     return true;
   }
   if (
@@ -1732,6 +2105,11 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/schedule-runs") return true;
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix))
     return true;
+  // Automated Slack setup: only the contract's routes, before the /channels
+  // catch-all below can admit anything else under the prefix.
+  if (suffix.startsWith("/channels/slack/setups")) {
+    return isSlackSetupRoute(method, suffix);
+  }
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||
@@ -1768,6 +2146,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/sessions") return true;
   if (method === "GET" && suffix === "/billing/sessions") return true;
   if (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) return true;
+  if (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) {
+    return true;
+  }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
   }
@@ -1816,6 +2197,62 @@ export async function handleManagedGitHubCallback(
     });
   } catch {
     return new Response("GitHub connection is temporarily unavailable", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+/**
+ * Slack's OAuth redirect for apps created by the automated setup. The exact
+ * public URL is registered on every generated app, so it forwards the query
+ * verbatim and never reinterprets it. The backend resolves the single-use
+ * state and answers with a redirect into the project's Connections tab, or
+ * a no-store HTML page for a malformed state; both pass through unchanged.
+ */
+export async function handleManagedSlackCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const requestURL = new URL(request.url);
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(
+    `${base}/v1/channels/slack/oauth/callback${requestURL.search}`,
+  );
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return new Response("Slack connection is unavailable", { status: 503 });
+  }
+  try {
+    const upstream = await fetch(target, { redirect: "manual" });
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "cache-control",
+      "content-security-policy",
+      "referrer-policy",
+      "x-content-type-options",
+      "x-frame-options",
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    if (upstream.status >= 300 && upstream.status < 400) {
+      const location = upstream.headers.get("location");
+      if (location) headers.set("location", location);
+    }
+    headers.set("cache-control", "no-store");
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
+    });
+  } catch {
+    return new Response("Slack connection is temporarily unavailable", {
       status: 502,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });

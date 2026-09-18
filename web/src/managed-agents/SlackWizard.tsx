@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { ApiError } from '@/api/client'
 import {
   Check,
   Copy,
@@ -31,6 +33,7 @@ import {
   type ManagedAgentChannel,
   type ManagedSlackManifest,
 } from './api'
+import { slackSetupAnchorId } from './slack-setup'
 
 type Step = 'create' | 'details' | 'install' | 'done'
 const CREATE_STEPS = ['Create app', 'Details', 'Install', 'Verify']
@@ -97,6 +100,31 @@ function SlackDestinationSetup({
   )
 }
 
+/** A platform refusal shown where the person is, with its way forward. */
+function WizardNotice({
+  message,
+  children,
+}: {
+  message: string
+  children?: ReactNode
+}) {
+  return (
+    <div
+      role="alert"
+      className="bg-status-error-bg/30 space-y-2 rounded-md px-3 py-2"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert
+          className="text-status-error mt-0.5 size-4 shrink-0"
+          aria-hidden
+        />
+        <p className="text-sm">{message}</p>
+      </div>
+      {children}
+    </div>
+  )
+}
+
 function WizardSteps({ current, steps }: { current: number; steps: string[] }) {
   return (
     <ol className="flex items-center gap-2 pt-2">
@@ -139,6 +167,9 @@ export function ManagedSlackWizard({
   connection,
   channelId,
   destinations = [],
+  consumers,
+  setup,
+  connectionsHref,
 }: {
   agentId: string
   alias: string
@@ -147,6 +178,18 @@ export function ManagedSlackWizard({
   connection?: ManagedAgentChannel
   channelId?: string
   destinations?: string[]
+  /** Who receives this channel's messages, as a sentence. */
+  consumers?: string
+  /**
+   * Automatic setup rendered under the header (Project Connections). When
+   * present this wizard is the "Set up manually" fallback.
+   */
+  setup?: ReactNode
+  /**
+   * Where the automated setup lives when it is not on this page (the
+   * project's Connections tab), for a blocked manual completion.
+   */
+  connectionsHref?: string
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -160,6 +203,43 @@ export function ManagedSlackWizard({
   const [verificationBaseline, setVerificationBaseline] = useState<string>()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
+  // The platform's reason a manual save is refused while an automated setup
+  // owns this connection or the pasted manifest is stale.
+  // A platform refusal the person can act on from here: an automated setup
+  // already working on this target (resume it on its card), a manual
+  // completion that setup blocks, or a connection that changed under the
+  // request. The first and last make what the page knows stale; it is
+  // re-read.
+  const [notice, setNotice] = useState<{
+    message: string
+    pointToSetup: boolean
+  }>()
+  const setupAnchor = slackSetupAnchorId({ agentId, alias, channelId })
+  const setupOnPage = Boolean(
+    notice?.pointToSetup && document.getElementById(setupAnchor),
+  )
+  const reread = () => {
+    void queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
+    void queryClient.invalidateQueries({ queryKey: ['managed-slack-setup'] })
+  }
+  const refusal = (error: unknown) => {
+    if (!(error instanceof ApiError)) return false
+    switch (error.type) {
+      case 'slack_setup_active':
+        reread()
+        setNotice({ message: error.message, pointToSetup: true })
+        return true
+      case 'slack_manual_completion_blocked':
+        setNotice({ message: error.message, pointToSetup: true })
+        return true
+      case 'slack_connection_changed':
+        reread()
+        setNotice({ message: error.message, pointToSetup: false })
+        return true
+      default:
+        return false
+    }
+  }
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
@@ -176,7 +256,10 @@ export function ManagedSlackWizard({
       setManifest(result)
       void invalidate()
     },
-    onError: (error) => notifyError("Couldn't prepare the Slack app.", error),
+    onError: (error) => {
+      if (refusal(error)) return
+      notifyError("Couldn't prepare the Slack app.", error)
+    },
   })
   const complete = useMutation({
     mutationFn: () => {
@@ -195,8 +278,10 @@ export function ManagedSlackWizard({
       setBotToken('')
       void invalidate()
     },
-    onError: (error) =>
-      notifyError('Slack rejected those values. Double-check them.', error),
+    onError: (error) => {
+      if (refusal(error)) return
+      notifyError('Slack rejected those values. Double-check them.', error)
+    },
   })
   const disconnect = useMutation({
     mutationFn: () => disconnectManagedAgentSlack(connection!.id),
@@ -208,6 +293,7 @@ export function ManagedSlackWizard({
   })
 
   const reset = () => {
+    setNotice(undefined)
     setStep('create')
     setEditing(false)
     setManifest(undefined)
@@ -219,6 +305,13 @@ export function ManagedSlackWizard({
   const begin = () => {
     reset()
     setOpen(true)
+  }
+  const showAutomatedSetup = () => {
+    setOpen(false)
+    reset()
+    document
+      .getElementById(setupAnchor)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
   const beginEdit = () => {
     reset()
@@ -266,6 +359,27 @@ export function ManagedSlackWizard({
     return () => window.clearInterval(interval)
   }, [eventVerified, open, queryClient, step, verificationFailed])
 
+  const noticeElement = notice ? (
+    <WizardNotice message={notice.message}>
+      {notice.pointToSetup ? (
+        setupOnPage ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={showAutomatedSetup}
+          >
+            Show the automated setup
+          </Button>
+        ) : connectionsHref ? (
+          <Button asChild variant="outline" size="sm">
+            <Link to={connectionsHref}>Open Connections</Link>
+          </Button>
+        ) : null
+      ) : null}
+    </WizardNotice>
+  ) : null
+
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
@@ -283,6 +397,11 @@ export function ManagedSlackWizard({
                 ? `Slack · ${connection.teamName || 'Connected workspace'}`
                 : `Connect a dedicated Slack app to @${alias}`}
             </p>
+            {consumers ? (
+              <p className="text-muted-foreground mt-1 truncate text-xs">
+                {consumers}
+              </p>
+            ) : null}
             {destinations.length ? (
               <p className="text-muted-foreground mt-1 truncate text-xs">
                 Destinations: {destinations.join(', ')}
@@ -319,11 +438,17 @@ export function ManagedSlackWizard({
           {connection?.status !== 'connected' &&
           !connection?.verificationError ? (
             <Button size="sm" variant="outline" onClick={begin}>
-              {connection ? 'Continue setup' : 'Connect Slack'}
+              {setup
+                ? 'Set up manually'
+                : connection
+                  ? 'Continue setup'
+                  : 'Connect Slack'}
             </Button>
           ) : null}
         </div>
       </div>
+
+      {setup}
 
       {connection?.status === 'connected'
         ? destinations.map((destination) => (
@@ -415,6 +540,7 @@ export function ManagedSlackWizard({
                   </pre>
                 </>
               )}
+              {noticeElement}
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setOpen(false)}>
                   Cancel
@@ -492,6 +618,7 @@ export function ManagedSlackWizard({
                   placeholder="xoxb-…"
                 />
               </Field>
+              {noticeElement}
               <DialogFooter>
                 <Button
                   type="button"

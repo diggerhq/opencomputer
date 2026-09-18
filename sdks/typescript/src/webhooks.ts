@@ -1,3 +1,4 @@
+import { apiFetch } from "./http2.js";
 // Sandbox lifecycle webhooks — the account-level control surface.
 //
 // PREVIEW: newly available functionality; the surface may change.
@@ -13,7 +14,7 @@
 //   const { id, secret } = await webhooks.create({ url: "https://app.example.com/oc" });
 //   // `secret` verifies deliveries; it's returned here and re-fetchable via webhooks.getSecret(id).
 
-import type { WebhookDelivery } from "./agents/webhooks.js";
+import type { WebhookDelivery } from "./verify-webhook.js";
 
 function resolveApiUrl(url: string): string {
   const base = url.replace(/\/+$/, "");
@@ -201,7 +202,7 @@ export class WebhookDeliveries {
 
   /** List recent delivery attempts for a destination. */
   async list(destinationId: string): Promise<WebhookDeliveryRecord[]> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries`, {
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries`, {
       headers: this.headers,
     });
     if (!resp.ok) return fail(resp, "list deliveries");
@@ -211,7 +212,7 @@ export class WebhookDeliveries {
 
   /** Fetch one delivered message by id. */
   async get(destinationId: string, deliveryId: string): Promise<WebhookMessage> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}`, {
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}`, {
       headers: this.headers,
     });
     if (!resp.ok) return fail(resp, "get delivery");
@@ -223,7 +224,7 @@ export class WebhookDeliveries {
    * receiver that dedupes treats it as the same message — for when the original never landed.
    */
   async redeliver(destinationId: string, deliveryId: string): Promise<{ ok: boolean }> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}/redeliver`, {
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}/redeliver`, {
       method: "POST",
       headers: this.headers,
     });
@@ -263,7 +264,7 @@ export class Webhooks {
    */
   async create(params: CreateWebhookParams): Promise<CreateWebhookResult> {
     const { idempotencyKey, ...body } = params;
-    const resp = await fetch(`${this.apiUrl}/webhooks`, {
+    const resp = await apiFetch(`${this.apiUrl}/webhooks`, {
       method: "POST",
       headers: this.headers(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
       body: JSON.stringify(body),
@@ -273,14 +274,14 @@ export class Webhooks {
   }
 
   async list(): Promise<WebhookDestination[]> {
-    const resp = await fetch(`${this.apiUrl}/webhooks`, { headers: this.headers() });
+    const resp = await apiFetch(`${this.apiUrl}/webhooks`, { headers: this.headers() });
     if (!resp.ok) return fail(resp, "list webhooks");
     const body = (await resp.json()) as { data?: WebhookDestination[] } | WebhookDestination[];
     return Array.isArray(body) ? body : body.data ?? [];
   }
 
   async get(id: string): Promise<WebhookDestination> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${id}`, { headers: this.headers() });
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${id}`, { headers: this.headers() });
     if (!resp.ok) return fail(resp, "get webhook");
     return resp.json();
   }
@@ -290,7 +291,7 @@ export class Webhooks {
    * owner (API key) — use it to verify deliveries. Rotate with `update(id, { rotateSecret: true })`.
    */
   async getSecret(id: string): Promise<string> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${id}/secret`, { headers: this.headers() });
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${id}/secret`, { headers: this.headers() });
     if (!resp.ok) return fail(resp, "get webhook secret");
     const body = (await resp.json()) as { secret: string };
     return body.secret;
@@ -298,7 +299,7 @@ export class Webhooks {
 
   /** Update a destination — pause/resume (`enabled`), retune `eventTypes`, change `url`, or rotate `secret`. */
   async update(id: string, params: UpdateWebhookParams): Promise<CreateWebhookResult> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${id}`, {
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${id}`, {
       method: "PATCH",
       headers: this.headers(),
       body: JSON.stringify(params),
@@ -309,7 +310,7 @@ export class Webhooks {
 
   /** Delete a destination (removes its Svix endpoint). Delivery history for a deleted destination is no longer queryable. */
   async delete(id: string): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${id}`, { method: "DELETE", headers: this.headers() });
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${id}`, { method: "DELETE", headers: this.headers() });
     if (!resp.ok) return fail(resp, "delete webhook");
   }
 
@@ -318,7 +319,7 @@ export class Webhooks {
    * Returns the queued Svix message; delivery is asynchronous — check `deliveries` for the result.
    */
   async test(id: string): Promise<WebhookTestResult> {
-    const resp = await fetch(`${this.apiUrl}/webhooks/${id}/test`, { method: "POST", headers: this.headers() });
+    const resp = await apiFetch(`${this.apiUrl}/webhooks/${id}/test`, { method: "POST", headers: this.headers() });
     if (!resp.ok) return fail(resp, "test webhook");
     return resp.json();
   }

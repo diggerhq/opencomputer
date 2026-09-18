@@ -1,15 +1,13 @@
 // Project memory types — the shapes of the management API documented at
 // docs/agents/document-memory.mdx ("Session bindings", "Management API") and
-// the `memory` field a session carries.
-//
-// These are types only. This client wraps the Durable Agent Sessions API
-// (`/v3`); the memory management routes live on the project-scoped
-// Serverless Agents surface (`/api/managed-agents/projects/<id>/memory/...`),
-// which this package does not call. Use them to type the bodies you send with
-// your own HTTP client, the CLI's `--json` output (`opencomputer memory ...`),
-// or an export produced by `opencomputer memory export`.
+// the `memory` field a session carries. `oc.projects.memory` sends and
+// returns them; they also type the CLI's `--json` output
+// (`opencomputer memory ...`) and an export produced by
+// `opencomputer memory export`.
 
-export type MemoryEnvironment = "development" | "production";
+import type { Environment } from "./types.js";
+
+export type MemoryEnvironment = Environment;
 
 export type MemoryAccess = "read" | "read-write";
 

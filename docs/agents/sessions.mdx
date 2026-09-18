@@ -8,7 +8,8 @@ input and streamed runtime events to the session, allowing clients to resume a
 conversation without rebuilding its history locally. The events are listed on
 [Session events](/agents/events).
 
-A session pins the deployment it was created on. Advancing Development or
+A session keeps the deployment it was created on, chosen by the platform
+from the alias it was addressed to. Advancing Development or
 promoting to Production changes which deployment new sessions get; turns sent
 to an existing session keep running the code it started with, including its
 declared tools and memory resources. To run new code, start a new session.
@@ -27,6 +28,50 @@ inspected.
 
 See [Playground and debugging](/agents/playground) for target selection and the
 debug inspector.
+
+## Finding sessions
+
+Give a session labels when you create it, such as the ticket, repository or
+user it works for, and list sessions by project, environment, agent, status
+and label instead of keeping your own index of session ids. The list returns
+rows with the session's status, its current turn activity and its latest
+result; open a session for its turns and events. The query, the row shape and
+the label bounds are on the [API reference](/agents/api#get-and-list).
+
+## Execution, labels and results
+
+These describe different parts of a session:
+
+| Field | What it answers |
+| --- | --- |
+| `status` and `activity` | Is work queued, running, stopping or finished? |
+| `labels` | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work. |
+| `result` | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
+
+A report does not finish a turn, and each report replaces the whole result.
+Later work can run, fail or be cancelled while an earlier result remains.
+For a review queue, check current activity, the last settled turn's status,
+and whether `result.turnId` matches that turn before treating the report as
+ready. Your application decides what the reported data means.
+
+## Durability and recovery
+
+Closing the browser or redeploying your application does not discard work
+the API has accepted. Reopen the session and resume reading its durable
+event log. If a submission's response was lost, retry with the same request
+key and body; see [Starting work from an application](/agents/api#start-work-from-an-application).
+
+Durable history does not make every command resumable. A lost computer can
+leave a command's outcome unknown; OpenComputer does not automatically
+replay that command or roll back its effects. The turn can continue with a
+tool error or fail. Inspect the recorded outcome and verify external
+effects before asking the agent to retry.
+
+[Interrupt](/agents/api#end-and-interrupt) stops the current turn while
+keeping the session available for more work. End closes the session and
+revokes its memory writes. Neither operation undoes completed writes;
+their different acknowledgement and cleanup guarantees are described in
+the API reference.
 
 ## CLI
 
@@ -94,9 +139,10 @@ the command exits.
 
 Applications create sessions with the [management API](/agents/api): `POST
 /api/managed-agents/sessions` with an API key, then turns and the event log
-under that session. `startSessionOnDocument` in the
-[TypeScript SDK](/reference/typescript-sdk#serverless-agents-helpers) creates
-a memory document and a session bound to it in one call. In the browser, the
+under that session. The
+[TypeScript client](/reference/typescript-sdk/agents) wraps those
+routes; its `sessions.startOnDocument` creates a memory document and a
+session bound to it in one call. In the browser, the
 [`useAgent`](/agents/react) hook attaches to a session your server created
 and renders its messages.
 

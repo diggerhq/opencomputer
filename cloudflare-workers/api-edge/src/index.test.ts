@@ -477,3 +477,43 @@ describe("/internal/warm-org — auth boundary", () => {
     expect((await post()).status).not.toBe(401);
   });
 });
+
+describe("/api/managed-agents/slack/callback — unauthenticated mount", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Slack calls this URL with no OpenComputer credentials; it is registered on
+  // every app the automated setup creates, so the mount must stay above the
+  // API-key check and forward the query untouched.
+  it("forwards Slack's redirect to the backend callback without an API key", async () => {
+    const fetchSpy = vi.fn(
+      async (_target: URL | RequestInfo, _init?: RequestInit) =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              "https://app.opencomputer.dev/projects/prj_test/connections?environment=development&slack=connected&setup=setup_1",
+          },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resp = await worker.fetch(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/slack/callback?state=x&code=y",
+      ),
+      { ...env, MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+      ctx,
+    );
+
+    expect(resp.status).toBe(302);
+    expect(resp.headers.get("location")).toBe(
+      "https://app.opencomputer.dev/projects/prj_test/connections?environment=development&slack=connected&setup=setup_1",
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0].toString()).toBe(
+      "https://managedagents.test/v1/channels/slack/oauth/callback?state=x&code=y",
+    );
+  });
+});

@@ -1,0 +1,40 @@
+{
+  "events": [
+    { "id": "evt_1", "seq": 1, "timestamp": "2026-09-15T11:00:00.000Z", "sessionId": "ses_2", "turnId": "t1", "type": "message.received", "data": { "input": "Run the full suite", "mode": "queue" } },
+    { "id": "evt_2", "seq": 2, "timestamp": "2026-09-15T11:00:00.100Z", "sessionId": "ses_2", "turnId": "t1", "type": "turn.started", "data": {} },
+    { "id": "evt_3", "seq": 3, "timestamp": "2026-09-15T11:00:01.000Z", "sessionId": "ses_2", "turnId": "t1", "type": "tool.started", "data": { "tool": "shell", "callId": "c1", "title": "npm test", "input": { "command": "npm test", "timeoutSeconds": 600 } } },
+    { "id": "evt_4", "seq": 4, "timestamp": "2026-09-15T11:00:30.000Z", "sessionId": "ses_2", "turnId": "t2", "type": "message.received", "data": { "input": "Stop, run the fast suite instead", "mode": "interrupt" } },
+    { "id": "evt_5", "seq": 5, "timestamp": "2026-09-15T11:00:30.010Z", "sessionId": "ses_2", "turnId": "t2", "type": "turn.interrupted", "data": { "interruptedTurnIds": ["t1"] } },
+    { "id": "evt_6", "seq": 6, "timestamp": "2026-09-15T11:00:31.200Z", "sessionId": "ses_2", "turnId": "t1", "type": "turn.cancelled", "data": { "reason": "interrupted", "replacementTurnId": "t2", "settledAfterMs": 1190, "operationsSettled": 1, "computerTerminated": false } },
+    { "id": "evt_7", "seq": 7, "timestamp": "2026-09-15T11:00:31.300Z", "sessionId": "ses_2", "turnId": "t2", "type": "turn.started", "data": {} },
+    { "id": "evt_8", "seq": 8, "timestamp": "2026-09-15T11:00:32.000Z", "sessionId": "ses_2", "turnId": "t2", "type": "tool.started", "data": { "tool": "shell", "callId": "c2", "title": "npm test -- --fast", "input": { "command": "npm test -- --fast" } } },
+    { "id": "evt_9", "seq": 9, "timestamp": "2026-09-15T11:00:40.000Z", "sessionId": "ses_2", "turnId": "t2", "type": "tool.completed", "data": { "tool": "shell", "callId": "c2", "title": "npm test -- --fast", "output": { "exitCode": 0 } } },
+    { "id": "evt_10", "seq": 10, "timestamp": "2026-09-15T11:00:41.000Z", "sessionId": "ses_2", "turnId": "t2", "type": "message.completed", "data": { "text": "The fast suite passed." } },
+    { "id": "evt_11", "seq": 11, "timestamp": "2026-09-15T11:00:41.100Z", "sessionId": "ses_2", "turnId": "t2", "type": "turn.completed", "data": {} }
+  ],
+  "turns": [
+    {
+      "id": "t1",
+      "status": "cancelled",
+      "input": "Run the full suite",
+      "toolCalls": [
+        { "callId": "c1", "tool": "shell", "title": "npm test", "input": { "command": "npm test", "timeoutSeconds": 600 }, "status": "cancelled" }
+      ],
+      "messages": [
+        { "id": "turn:t1:input", "role": "user", "text": "Run the full suite", "turnId": "t1" }
+      ]
+    },
+    {
+      "id": "t2",
+      "status": "completed",
+      "input": "Stop, run the fast suite instead",
+      "toolCalls": [
+        { "callId": "c2", "tool": "shell", "title": "npm test -- --fast", "input": { "command": "npm test -- --fast" }, "output": { "exitCode": 0 }, "status": "completed" }
+      ],
+      "messages": [
+        { "id": "turn:t2:input", "role": "user", "text": "Stop, run the fast suite instead", "turnId": "t2" },
+        { "id": "turn:t2:reply", "role": "assistant", "text": "The fast suite passed.", "turnId": "t2", "streaming": false }
+      ]
+    }
+  ]
+}
