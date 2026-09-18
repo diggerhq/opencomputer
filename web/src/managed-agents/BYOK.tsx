@@ -39,6 +39,41 @@ import {
 export const MODEL_ACCESS_RETURN_TO_KEY = 'opencomputer:model-access:return-to'
 export const MODEL_ACCESS_PROJECT_KEY = 'opencomputer:model-access:project'
 
+export type ModelRouteProviderChoice =
+  | 'codex'
+  | 'claude'
+  | 'openrouter'
+  | 'openai_compatible'
+
+export const MODEL_ROUTE_PROVIDER_DEFAULTS: Record<
+  ModelRouteProviderChoice,
+  { model: string; connectionProvider: string }
+> = {
+  codex: { model: 'gpt-5.6-sol', connectionProvider: 'openai' },
+  claude: { model: 'claude-sonnet-4-6', connectionProvider: 'anthropic' },
+  openrouter: {
+    model: 'openai/gpt-5',
+    connectionProvider: 'openrouter',
+  },
+  openai_compatible: { model: '', connectionProvider: 'openai_compatible' },
+}
+export const DEFAULT_MODEL_ROUTE_PROVIDER: ModelRouteProviderChoice = 'codex'
+
+export function modelConnectionLabel(connection: {
+  id: string
+  label: string
+  baseUrl?: string | null
+}) {
+  if (connection.baseUrl) {
+    try {
+      return `${connection.label} · ${new URL(connection.baseUrl).hostname}`
+    } catch {
+      // The API validates URLs; retain the safe label if older data does not.
+    }
+  }
+  return connection.label || connection.id
+}
+
 function connectionTone(status: string) {
   if (status === 'connected') return 'running'
   if (status === 'revoked' || status === 'unavailable') return 'stopped'
@@ -100,12 +135,14 @@ export function ManagedProjectBYOK({
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
-  const [apiProvider, setApiProvider] = useState<
-    'openrouter' | 'openai_compatible'
-  >('openrouter')
+  const [apiProvider, setApiProvider] = useState<ModelRouteProviderChoice>(
+    DEFAULT_MODEL_ROUTE_PROVIDER,
+  )
   const [apiKey, setApiKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('https://api.scx.ai/v1')
-  const [routeModel, setRouteModel] = useState('GLM-5.3')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [routeModel, setRouteModel] = useState(
+    MODEL_ROUTE_PROVIDER_DEFAULTS[DEFAULT_MODEL_ROUTE_PROVIDER].model,
+  )
   const [routeFallback, setRouteFallback] = useState<'fail' | 'managed'>('fail')
   const canManageConnection = user?.capabilities?.manageMembers !== false
   const cliCommand = modelAccessCLICommand(projectSlug, window.location)
@@ -149,6 +186,12 @@ export function ManagedProjectBYOK({
   })
   const codex = connections.data?.find(
     (connection) => connection.provider === 'openai',
+  )
+  const selectedConnection = connections.data?.find(
+    (connection) =>
+      connection.provider ===
+        MODEL_ROUTE_PROVIDER_DEFAULTS[apiProvider].connectionProvider &&
+      connection.status === 'connected',
   )
   const projectEnabled = hasProjectCodexAccess(bindings.data)
   const updateProjectAccess = useMutation({
@@ -198,11 +241,19 @@ export function ManagedProjectBYOK({
   })
   const configureApiRoute = useMutation({
     mutationFn: async () => {
-      const connection = await connectManagedModelApiKey({
-        provider: apiProvider,
-        apiKey,
-        ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
-      })
+      const connection =
+        apiProvider === 'codex' || apiProvider === 'claude'
+          ? selectedConnection
+          : await connectManagedModelApiKey({
+              provider: apiProvider,
+              apiKey,
+              ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+            })
+      if (!connection) {
+        throw new Error(
+          `Connect ${apiProvider === 'codex' ? 'Codex' : 'Claude'} first.`,
+        )
+      }
       return Promise.all(
         (['development', 'production'] as const).map((environment) =>
           putManagedModelRoute({
@@ -303,19 +354,27 @@ export function ManagedProjectBYOK({
         <PanelContent className="space-y-4">
           {routes.data?.length ? (
             <div className="space-y-2">
-              {routes.data.map((route) => (
-                <div
-                  key={route.id}
-                  className="flex flex-wrap items-center gap-2 text-sm"
-                >
-                  <StatusBadge status="running" label={route.environment} />
-                  <span>{route.model}</span>
-                  <span className="text-muted-foreground">
-                    via {route.connectionId} · {route.fallback} · r
-                    {route.revision}
-                  </span>
-                </div>
-              ))}
+              {routes.data.map((route) => {
+                const connection = connections.data?.find(
+                  (candidate) => candidate.id === route.connectionId,
+                )
+                return (
+                  <div
+                    key={route.id}
+                    className="flex flex-wrap items-center gap-2 text-sm"
+                  >
+                    <StatusBadge status="running" label={route.environment} />
+                    <span>{route.model}</span>
+                    <span className="text-muted-foreground">
+                      via{' '}
+                      {connection
+                        ? modelConnectionLabel(connection)
+                        : route.connectionId}{' '}
+                      · {route.fallback} · r{route.revision}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <p className="text-muted-foreground text-sm">
@@ -330,18 +389,27 @@ export function ManagedProjectBYOK({
                 <select
                   className="border-input bg-background h-9 w-full rounded-md border px-3"
                   value={apiProvider}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setApiProvider(
-                      event.target.value as 'openrouter' | 'openai_compatible',
+                      event.target.value as ModelRouteProviderChoice,
                     )
-                  }
+                    setRouteModel(
+                      MODEL_ROUTE_PROVIDER_DEFAULTS[
+                        event.target.value as ModelRouteProviderChoice
+                      ].model,
+                    )
+                  }}
                 >
+                  <option value="codex">Codex account</option>
+                  <option value="claude">Claude account</option>
                   <option value="openrouter">OpenRouter</option>
-                  <option value="openai_compatible">OpenAI-compatible</option>
+                  <option value="openai_compatible">
+                    Custom OpenAI-compatible API
+                  </option>
                 </select>
               </label>
               <label className="space-y-1 text-sm">
-                <span className="font-medium">Effective model</span>
+                <span className="font-medium">Provider model ID</span>
                 <input
                   className="border-input bg-background h-9 w-full rounded-md border px-3"
                   value={routeModel}
@@ -355,20 +423,30 @@ export function ManagedProjectBYOK({
                     className="border-input bg-background h-9 w-full rounded-md border px-3"
                     type="url"
                     value={baseUrl}
+                    placeholder="https://api.example.com/v1"
                     onChange={(event) => setBaseUrl(event.target.value)}
                   />
                 </label>
               ) : null}
-              <label className="space-y-1 text-sm">
-                <span className="font-medium">API key</span>
-                <input
-                  className="border-input bg-background h-9 w-full rounded-md border px-3"
-                  type="password"
-                  autoComplete="off"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-              </label>
+              {apiProvider === 'openrouter' ||
+              apiProvider === 'openai_compatible' ? (
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">API key</span>
+                  <input
+                    className="border-input bg-background h-9 w-full rounded-md border px-3"
+                    type="password"
+                    autoComplete="off"
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+              ) : (
+                <div className="text-muted-foreground flex items-end text-sm">
+                  {selectedConnection
+                    ? `Using ${modelConnectionLabel(selectedConnection)}.`
+                    : `Connect a ${apiProvider === 'codex' ? 'Codex' : 'Claude'} account before saving this route.`}
+                </div>
+              )}
               <label className="space-y-1 text-sm">
                 <span className="font-medium">If unavailable</span>
                 <select
@@ -385,7 +463,14 @@ export function ManagedProjectBYOK({
               <div className="flex items-end">
                 <Button
                   disabled={
-                    !apiKey || !routeModel || configureApiRoute.isPending
+                    !routeModel ||
+                    (apiProvider === 'openai_compatible' && !baseUrl) ||
+                    ((apiProvider === 'openrouter' ||
+                      apiProvider === 'openai_compatible') &&
+                      !apiKey) ||
+                    ((apiProvider === 'codex' || apiProvider === 'claude') &&
+                      !selectedConnection) ||
+                    configureApiRoute.isPending
                   }
                   onClick={() => configureApiRoute.mutate()}
                 >

@@ -1,12 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_MODEL_ROUTE_PROVIDER,
   hasBYOKPlanAccess,
   hasProjectCodexAccess,
+  MODEL_ROUTE_PROVIDER_DEFAULTS,
+  modelConnectionLabel,
   modelAccessCLICommand,
   projectCodexBindingUpdates,
 } from './BYOK'
 
 describe('project BYOK presentation', () => {
+  it('uses mainstream defaults and leaves custom providers explicit', () => {
+    expect(DEFAULT_MODEL_ROUTE_PROVIDER).toBe('codex')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.codex.model).toBe('gpt-5.6-sol')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.claude.model).toBe('claude-sonnet-4-6')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.openrouter.model).toBe('openai/gpt-5')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.openai_compatible.model).toBe('')
+    expect(JSON.stringify(MODEL_ROUTE_PROVIDER_DEFAULTS)).not.toContain(
+      'scx.ai',
+    )
+  })
+
+  it('shows a safe custom-provider origin instead of an opaque id', () => {
+    expect(
+      modelConnectionLabel({
+        id: 'mac_1',
+        label: 'OpenAI-compatible API',
+        baseUrl: 'https://api.example.com/v1',
+      }),
+    ).toBe('OpenAI-compatible API · api.example.com')
+  })
+
   it('limits BYOK to Pro and Max plans', () => {
     expect(hasBYOKPlanAccess('base')).toBe(false)
     expect(hasBYOKPlanAccess('pro')).toBe(true)

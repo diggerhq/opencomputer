@@ -532,6 +532,12 @@ const modelRouteSchema = z.object({
     connectionId: z.string().optional(),
     connectionKind: z.string().optional(),
   }),
+  source: z
+    .enum(['agent_route', 'project_route', 'use_model', 'platform_default'])
+    .optional(),
+  routeId: z.string().optional(),
+  routeRevision: z.number().optional(),
+  fallback: z.enum(['fail', 'managed']).optional(),
   openComputerModelChargeUsd: z.number().nullable(),
 })
 
