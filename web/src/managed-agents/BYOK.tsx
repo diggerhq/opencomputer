@@ -265,7 +265,7 @@ export function ManagedProjectBYOK({
         <EmptyState
           icon={LockKeyhole}
           title="BYOK is available on Pro"
-          description="Upgrade to Pro to connect a Codex account and enable it for this project's development and production environments."
+          description="Upgrade to Pro to connect your model provider and configure a project model route."
           action={
             <Button asChild>
               <Link to="/billing">Upgrade to Pro</Link>
