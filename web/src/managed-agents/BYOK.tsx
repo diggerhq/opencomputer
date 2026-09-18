@@ -26,6 +26,8 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  connectManagedClaudeSetupToken,
+  connectManagedModelAccess,
   connectManagedModelApiKey,
   disconnectManagedModelAccessConnection,
   getManagedModelAccessConnections,
@@ -217,6 +219,19 @@ export function ManagedProjectBYOK({
         error,
       ),
   })
+  const connectCodex = useMutation({
+    mutationFn: connectManagedModelAccess,
+    onSuccess: (receipt) => {
+      sessionStorage.setItem(
+        MODEL_ACCESS_RETURN_TO_KEY,
+        `${location.pathname}${location.search}`,
+      )
+      sessionStorage.setItem(MODEL_ACCESS_PROJECT_KEY, projectId)
+      window.location.assign(receipt.authorize_url)
+    },
+    onError: (error) =>
+      notifyError("Couldn't start Codex authorization.", error),
+  })
   const validateConnection = useMutation({
     mutationFn: () => validateManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
@@ -242,13 +257,16 @@ export function ManagedProjectBYOK({
   const configureApiRoute = useMutation({
     mutationFn: async () => {
       const connection =
-        apiProvider === 'codex' || apiProvider === 'claude'
+        apiProvider === 'codex'
           ? selectedConnection
-          : await connectManagedModelApiKey({
-              provider: apiProvider,
-              apiKey,
-              ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
-            })
+          : apiProvider === 'claude'
+            ? (selectedConnection ??
+              (await connectManagedClaudeSetupToken(apiKey)))
+            : await connectManagedModelApiKey({
+                provider: apiProvider,
+                apiKey,
+                ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+              })
       if (!connection) {
         throw new Error(
           `Connect ${apiProvider === 'codex' ? 'Codex' : 'Claude'} first.`,
@@ -390,6 +408,7 @@ export function ManagedProjectBYOK({
                   className="border-input bg-background h-9 w-full rounded-md border px-3"
                   value={apiProvider}
                   onChange={(event) => {
+                    setApiKey('')
                     setApiProvider(
                       event.target.value as ModelRouteProviderChoice,
                     )
@@ -428,8 +447,20 @@ export function ManagedProjectBYOK({
                   />
                 </label>
               ) : null}
-              {apiProvider === 'openrouter' ||
-              apiProvider === 'openai_compatible' ? (
+              {apiProvider === 'claude' && !selectedConnection ? (
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Claude setup token</span>
+                  <input
+                    className="border-input bg-background h-9 w-full rounded-md border px-3"
+                    type="password"
+                    autoComplete="off"
+                    value={apiKey}
+                    placeholder="Run claude setup-token, then paste the token"
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+              ) : apiProvider === 'openrouter' ||
+                apiProvider === 'openai_compatible' ? (
                 <label className="space-y-1 text-sm">
                   <span className="font-medium">API key</span>
                   <input
@@ -440,11 +471,27 @@ export function ManagedProjectBYOK({
                     onChange={(event) => setApiKey(event.target.value)}
                   />
                 </label>
+              ) : apiProvider === 'codex' && !selectedConnection ? (
+                <div className="flex items-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={connectCodex.isPending}
+                    onClick={() => connectCodex.mutate()}
+                  >
+                    {connectCodex.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Link2 />
+                    )}
+                    Connect Codex account
+                  </Button>
+                </div>
               ) : (
                 <div className="text-muted-foreground flex items-end text-sm">
                   {selectedConnection
                     ? `Using ${modelConnectionLabel(selectedConnection)}.`
-                    : `Connect a ${apiProvider === 'codex' ? 'Codex' : 'Claude'} account before saving this route.`}
+                    : 'Paste a Claude setup token to connect this account.'}
                 </div>
               )}
               <label className="space-y-1 text-sm">
@@ -468,8 +515,10 @@ export function ManagedProjectBYOK({
                     ((apiProvider === 'openrouter' ||
                       apiProvider === 'openai_compatible') &&
                       !apiKey) ||
-                    ((apiProvider === 'codex' || apiProvider === 'claude') &&
-                      !selectedConnection) ||
+                    (apiProvider === 'codex' && !selectedConnection) ||
+                    (apiProvider === 'claude' &&
+                      !selectedConnection &&
+                      !apiKey) ||
                     configureApiRoute.isPending
                   }
                   onClick={() => configureApiRoute.mutate()}
@@ -479,7 +528,9 @@ export function ManagedProjectBYOK({
                   ) : (
                     <Link2 />
                   )}
-                  Save connection and route
+                  {selectedConnection || apiProvider === 'codex'
+                    ? 'Save route'
+                    : 'Connect and save route'}
                 </Button>
               </div>
             </div>
@@ -607,46 +658,6 @@ export function ManagedProjectBYOK({
               Ask an organization admin to connect a model account.
             </p>
           ) : null}
-        </PanelContent>
-      </Panel>
-
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Code-selected model fallback</PanelTitle>
-            <PanelDescription className="mt-1 max-w-2xl">
-              These selections apply only when this project has no matching
-              project or agent route.
-            </PanelDescription>
-          </div>
-        </PanelHeader>
-        <PanelContent className="space-y-4">
-          <div>
-            <p className="mb-2 text-sm font-medium">Codex account eligible</p>
-            <CopyRow
-              value={'useModel({ provider: "openai", model: "gpt-5.6-sol" })'}
-            />
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">
-              Managed OpenRouter · OpenAI
-            </p>
-            <CopyRow
-              value={
-                'useModel({ provider: "openrouter", model: "openai/gpt-5" })'
-              }
-            />
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">
-              Managed OpenRouter · Anthropic
-            </p>
-            <CopyRow
-              value={
-                'useModel({ provider: "openrouter", model: "anthropic/claude-sonnet-4.6" })'
-              }
-            />
-          </div>
         </PanelContent>
       </Panel>
 

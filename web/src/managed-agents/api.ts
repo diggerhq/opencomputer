@@ -1057,6 +1057,17 @@ export async function connectManagedModelApiKey(input: {
   )
 }
 
+export async function connectManagedClaudeSetupToken(token: string) {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'anthropic', token }),
+    },
+    modelAccessConnectionSchema,
+  )
+}
+
 export async function getManagedModelRoutes(projectId: string) {
   return (
     await apiFetch(

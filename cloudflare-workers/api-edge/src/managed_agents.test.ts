@@ -357,9 +357,26 @@ describe("managed agents proxy", () => {
     );
   });
 
-  it("rejects unsupported Claude account connection", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+  it("accepts a Claude setup token and strips it from the response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input, init) => {
+        expect(await new Response(init?.body).json()).toMatchObject({
+          provider: "anthropic",
+          token: "sk-ant-oat01-write-only-setup-token-value",
+        });
+        return Response.json({
+          id: "mac_claude",
+          organizationId: "org_test",
+          connectedByUserId: "user_test",
+          provider: "anthropic",
+          kind: "claude_subscription",
+          label: "Claude account",
+          status: "connected",
+          credentialCiphertext: "must-not-leak",
+        });
+      }),
+    );
 
     const response = await proxyManagedAgents(
       new Request(
@@ -369,27 +386,28 @@ describe("managed agents proxy", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             provider: "anthropic",
-            token: "must-not-be-returned",
+            token: "sk-ant-oat01-write-only-setup-token-value",
           }),
         },
       ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
       },
       { orgID: "org_test", userID: "user_test", role: "admin" },
       "/api/managed-agents",
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     const body = await response.json<Record<string, unknown>>();
     expect(body).toMatchObject({
-      error: {
-        code: "unsupported_provider",
-        message: "Supported providers are Codex, OpenRouter, and OpenAI-compatible APIs.",
-      },
+      id: "mac_claude",
+      provider: "anthropic",
+      kind: "claude_subscription",
+      status: "connected",
     });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toMatch(/credentialCiphertext|setup-token/);
   });
 
   it("accepts an OpenAI-compatible connection and strips custody fields", async () => {

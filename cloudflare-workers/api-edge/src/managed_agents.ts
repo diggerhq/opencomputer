@@ -2572,6 +2572,7 @@ export async function proxyManagedAgents(
     );
     if (
       payload?.provider !== "openai" &&
+      payload?.provider !== "anthropic" &&
       payload?.provider !== "openrouter" &&
       payload?.provider !== "openai_compatible"
     ) {
@@ -2579,7 +2580,7 @@ export async function proxyManagedAgents(
         {
           error: {
             code: "unsupported_provider",
-            message: "Supported providers are Codex, OpenRouter, and OpenAI-compatible APIs.",
+            message: "Supported providers are Codex, Claude, OpenRouter, and OpenAI-compatible APIs.",
           },
         },
         { status: 400 },
