@@ -28,6 +28,13 @@ interface SessionCostRow {
   runtimeSecondsByTier: Record<string, number>;
 }
 
+interface AccountingEvent {
+  timestamp: string;
+  type: "model.route_resolved" | "usage.recorded";
+  turnId?: string;
+  data: Record<string, unknown>;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -91,6 +98,105 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
     headers: { "cache-control": "no-store" },
+  });
+}
+
+function modelIdentity(value: unknown): Record<string, string> | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  const provider = optionalString(source.provider);
+  const model = optionalString(source.model);
+  return provider && model ? { provider, model } : undefined;
+}
+
+function accountingEvent(value: unknown): AccountingEvent | null {
+  const source = record(value);
+  const data = record(source?.data);
+  if (!source || !data || typeof source.timestamp !== "string") return null;
+  const turnId = optionalString(source.turnId);
+  if (source.type === "model.route_resolved") {
+    const requested = modelIdentity(data.requested);
+    const effective = modelIdentity(data.effective);
+    const runtime = optionalString(data.runtime);
+    const accessType = optionalString(record(data.access)?.type);
+    return {
+      timestamp: source.timestamp,
+      type: source.type,
+      ...(turnId ? { turnId } : {}),
+      data: {
+        ...(requested ? { requested } : {}),
+        ...(effective ? { effective } : {}),
+        ...(runtime ? { runtime } : {}),
+        ...(accessType ? { access: { type: accessType } } : {}),
+        openComputerModelChargeUsd:
+          typeof data.openComputerModelChargeUsd === "number" &&
+          Number.isFinite(data.openComputerModelChargeUsd)
+            ? data.openComputerModelChargeUsd
+            : null,
+      },
+    };
+  }
+  if (source.type !== "usage.recorded") return null;
+  const provider = optionalString(data.provider);
+  const model = optionalString(data.model);
+  const numericFields = [
+    "inputTokens",
+    "outputTokens",
+    "reasoningTokens",
+    "cachedTokens",
+    "cacheWriteTokens",
+    "costUsd",
+  ] as const;
+  return {
+    timestamp: source.timestamp,
+    type: source.type,
+    ...(turnId ? { turnId } : {}),
+    data: {
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+      ...Object.fromEntries(
+        numericFields.map((field) => [field, finiteNumber(data[field])]),
+      ),
+    },
+  };
+}
+
+/** Returns only model-routing and token-accounting fields for one session. */
+export async function sessionCostDetail(
+  env: SessionCostReportEnv,
+  orgID: string,
+  sessionID: string,
+): Promise<Response> {
+  const upstreamRequest = new Request(
+    `https://app.opencomputer.dev/api/managed-agents/sessions/${encodeURIComponent(sessionID)}/events?after=0`,
+  );
+  const upstream = await proxyManagedAgents(
+    upstreamRequest,
+    env,
+    { orgID, userID: null },
+    "/api/managed-agents",
+  );
+  if (!upstream.ok) {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type":
+          upstream.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store",
+      },
+    });
+  }
+  const body = record(await upstream.json().catch(() => null));
+  if (!body || !Array.isArray(body.events)) {
+    return json({ error: "managed-agent events response was invalid" }, 502);
+  }
+  return json({
+    orgId: orgID,
+    sessionId: sessionID,
+    generatedAt: new Date().toISOString(),
+    accountingEvents: body.events
+      .map(accountingEvent)
+      .filter((event): event is AccountingEvent => event !== null),
   });
 }
 

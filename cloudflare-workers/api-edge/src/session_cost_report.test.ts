@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  sessionCostDetail,
   sessionCostReport,
   type SessionCostReportEnv,
 } from "./session_cost_report";
@@ -115,5 +116,90 @@ describe("sessionCostReport", () => {
     const response = await sessionCostReport(testEnv(null), "missing", 100);
     expect(response.status).toBe(404);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("sessionCostDetail", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns only model routes and token accounting, never message content", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        events: [
+          {
+            timestamp: "2026-09-18T19:40:01.000Z",
+            turnId: "turn-1",
+            type: "message.received",
+            data: { text: "private scheduled prompt" },
+          },
+          {
+            timestamp: "2026-09-18T19:40:02.000Z",
+            turnId: "turn-1",
+            type: "model.route_resolved",
+            data: {
+              providerCallId: "private-call-id",
+              requested: { provider: "anthropic", model: "claude-sonnet" },
+              effective: { provider: "anthropic", model: "claude-sonnet" },
+              runtime: "claude",
+              access: { type: "managed", connectionId: "private-connection" },
+              openComputerModelChargeUsd: null,
+            },
+          },
+          {
+            timestamp: "2026-09-18T19:40:03.000Z",
+            turnId: "turn-1",
+            type: "usage.recorded",
+            data: {
+              provider: "openrouter",
+              model: "anthropic/claude-sonnet",
+              inputTokens: 12_000,
+              outputTokens: 500,
+              reasoningTokens: 10,
+              cachedTokens: 2_000,
+              cacheWriteTokens: 100,
+              costUsd: 0,
+              payer: "user",
+              prompt: "must not escape",
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await sessionCostDetail(
+      testEnv(null),
+      "org-example",
+      "session-example",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      orgId: "org-example",
+      sessionId: "session-example",
+      accountingEvents: [
+        {
+          type: "model.route_resolved",
+          data: {
+            effective: { provider: "anthropic", model: "claude-sonnet" },
+            access: { type: "managed" },
+            openComputerModelChargeUsd: null,
+          },
+        },
+        {
+          type: "usage.recorded",
+          data: {
+            model: "anthropic/claude-sonnet",
+            inputTokens: 12_000,
+            outputTokens: 500,
+            costUsd: 0,
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain("private scheduled prompt");
+    expect(JSON.stringify(body)).not.toContain("private-call-id");
+    expect(JSON.stringify(body)).not.toContain("private-connection");
+    expect(JSON.stringify(body)).not.toContain("must not escape");
   });
 });

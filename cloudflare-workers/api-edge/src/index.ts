@@ -72,7 +72,10 @@ import {
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
-import { sessionCostReport } from "./session_cost_report";
+import {
+  sessionCostDetail,
+  sessionCostReport,
+} from "./session_cost_report";
 import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
@@ -5195,6 +5198,8 @@ export default {
       }
       const orgID = url.searchParams.get("org_id") ?? "";
       if (!orgID) return json({ error: "org_id required" }, 400);
+      const sessionID = url.searchParams.get("session_id") ?? "";
+      if (sessionID) return sessionCostDetail(env, orgID, sessionID);
       const limit = Number.parseInt(url.searchParams.get("limit") ?? "100", 10);
       return sessionCostReport(env, orgID, limit);
     }
