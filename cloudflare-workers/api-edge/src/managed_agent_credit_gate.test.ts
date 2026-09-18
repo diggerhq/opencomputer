@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   enforceManagedAgentCreditGate,
+  getManagedAgentBillingAdmission,
   insufficientManagedAgentCredits,
   isManagedAgentBillableRequest,
   isManagedAgentCreditHalted,
@@ -9,7 +10,10 @@ import {
 class FakeStatement {
   private orgID = "";
 
-  constructor(private readonly halted: number | null) {}
+  constructor(
+    private readonly halted: number | null,
+    private readonly haltedAt: number | null,
+  ) {}
 
   bind(orgID: string): this {
     this.orgID = orgID;
@@ -20,16 +24,16 @@ class FakeStatement {
     expect(this.orgID).toBe("org_test");
     return (this.halted === null
       ? null
-      : { is_halted: this.halted }) as T | null;
+      : { is_halted: this.halted, halted_at: this.haltedAt }) as T | null;
   }
 }
 
-function env(halted: number | null) {
+function env(halted: number | null, haltedAt: number | null = null) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
-        expect(sql).toBe("SELECT is_halted FROM orgs WHERE id = ?1");
-        return new FakeStatement(halted);
+        expect(sql).toBe("SELECT is_halted, halted_at FROM orgs WHERE id = ?1");
+        return new FakeStatement(halted, haltedAt);
       },
     } as unknown as D1Database,
   };
@@ -64,6 +68,25 @@ describe("managed-agent credit admission", () => {
     await expect(
       isManagedAgentCreditHalted(env(null), "org_test"),
     ).resolves.toBe(false);
+  });
+
+  it("returns the private autonomous-admission decision", async () => {
+    await expect(
+      getManagedAgentBillingAdmission(env(1, 1_789_707_077), "org_test"),
+    ).resolves.toEqual({
+      allowed: false,
+      isHalted: true,
+      haltedAt: 1_789_707_077,
+      reason: "insufficient_credits",
+    });
+    await expect(
+      getManagedAgentBillingAdmission(env(null), "org_test"),
+    ).resolves.toEqual({
+      allowed: true,
+      isHalted: false,
+      haltedAt: null,
+      reason: null,
+    });
   });
 
   it("returns a typed, actionable 402", async () => {

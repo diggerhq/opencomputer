@@ -76,6 +76,7 @@ import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
 } from "./managed_agent_credit_gate";
+export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
