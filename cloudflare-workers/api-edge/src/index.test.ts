@@ -478,6 +478,64 @@ describe("/internal/warm-org — auth boundary", () => {
   });
 });
 
+describe("/internal/model-billing/session-costs — auth boundary", () => {
+  const ADMIN = "admin-secret";
+  const authEnv = { ...env, CF_ADMIN_SECRET: ADMIN } as unknown as Env;
+  const sign = async (
+    secret: string,
+    ts: string,
+    target: string,
+  ): Promise<string> => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(`${ts}.${target}`),
+    );
+    return [...new Uint8Array(mac)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  };
+  const get = async (
+    o: { secret?: string; ts?: string; search?: string } = {},
+  ) => {
+    const search = o.search ?? "?org_id=org-x&limit=100";
+    const path = "/internal/model-billing/session-costs";
+    const ts = o.ts ?? Math.floor(Date.now() / 1000).toString();
+    const sig = await sign(o.secret ?? ADMIN, ts, `${path}${search}`);
+    return worker.fetch(
+      new Request(`https://app.opencomputer.dev${path}${search}`, {
+        headers: { "X-Timestamp": ts, "X-Signature": sig },
+      }),
+      authEnv,
+      ctx,
+    );
+  };
+
+  it("rejects a wrong signature", async () => {
+    expect((await get({ secret: "not-the-admin-secret" })).status).toBe(401);
+  });
+
+  it("rejects a stale timestamp even with a valid signature", async () => {
+    const ts = (Math.floor(Date.now() / 1000) - 3600).toString();
+    expect((await get({ ts })).status).toBe(401);
+  });
+
+  it("requires org_id", async () => {
+    expect((await get({ search: "?limit=100" })).status).toBe(400);
+  });
+
+  it("accepts admin auth before resolving the requested org", async () => {
+    expect((await get()).status).toBe(404);
+  });
+});
+
 describe("/api/managed-agents/slack/callback — unauthenticated mount", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

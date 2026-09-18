@@ -406,6 +406,16 @@ Base `https://openrouter.ai/api/v1`.
   deferred (per-session keys §9.1, or runtime self-reported usage as display-only).
   Authoritative billing stays in Autumn; this feeds the dashboard + drift checks.
 
+**2026-09-18 attribution follow-up.** Runtime-self-reported usage is now retained
+durably on each managed-agent session and powers the customer Billing table. For
+incident response, the API edge exposes an admin-HMAC-only, read-only session-cost
+report that calls that existing tenant-scoped aggregation as the requested org,
+removes prompts/event bodies, and reconciles the returned session total against
+the D1 OpenRouter committed-spend watermark. The report is diagnostic, not a new
+billing ledger: Autumn remains authoritative for credits, OpenRouter remains
+authoritative for provider spend, and incomplete recent-session coverage is
+reported as unattributed spend rather than silently allocated.
+
 ### 6.6 User-facing taxonomy & surface (the contract)
 
 **Principle: "OpenRouter" is never user-visible.** Per agent, the user makes one

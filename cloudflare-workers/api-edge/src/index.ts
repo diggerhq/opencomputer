@@ -72,6 +72,7 @@ import {
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
+import { sessionCostReport } from "./session_cost_report";
 import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
@@ -5167,6 +5168,28 @@ export default {
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       await runModelMeter(env, Date.now());
       return json({ ok: true });
+    }
+
+    // Read-only operator report for reconciling the org-level OpenRouter billing
+    // watermark with durable per-session usage attribution. Prompts and event
+    // bodies are deliberately excluded. HMAC-auth'd with CF_ADMIN_SECRET.
+    if (path === "/internal/model-billing/session-costs" && req.method === "GET") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const expected = await hmacHex(
+        env.CF_ADMIN_SECRET,
+        `${ts}.${path}${url.search}`,
+      );
+      if (!constantTimeEqual(expected, sig)) {
+        return json({ error: "signature mismatch" }, 401);
+      }
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) {
+        return json({ error: "timestamp out of window" }, 401);
+      }
+      const orgID = url.searchParams.get("org_id") ?? "";
+      if (!orgID) return json({ error: "org_id required" }, 400);
+      const limit = Number.parseInt(url.searchParams.get("limit") ?? "100", 10);
+      return sessionCostReport(env, orgID, limit);
     }
 
     if (path === "/internal/org-policy") {
