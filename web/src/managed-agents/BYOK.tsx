@@ -21,12 +21,18 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  connectManagedClaudeSetupToken,
   connectManagedModelAccess,
   connectManagedModelApiKey,
   disconnectManagedModelAccessConnection,
@@ -43,7 +49,6 @@ export const MODEL_ACCESS_PROJECT_KEY = 'opencomputer:model-access:project'
 
 export type ModelRouteProviderChoice =
   | 'codex'
-  | 'claude'
   | 'openrouter'
   | 'openai_compatible'
 
@@ -52,7 +57,6 @@ export const MODEL_ROUTE_PROVIDER_DEFAULTS: Record<
   { model: string; connectionProvider: string }
 > = {
   codex: { model: 'gpt-5.6-sol', connectionProvider: 'openai' },
-  claude: { model: 'claude-sonnet-4-6', connectionProvider: 'anthropic' },
   openrouter: {
     model: 'openai/gpt-5',
     connectionProvider: 'openrouter',
@@ -60,6 +64,15 @@ export const MODEL_ROUTE_PROVIDER_DEFAULTS: Record<
   openai_compatible: { model: '', connectionProvider: 'openai_compatible' },
 }
 export const DEFAULT_MODEL_ROUTE_PROVIDER: ModelRouteProviderChoice = 'codex'
+
+export const MODEL_ROUTE_MODEL_SUGGESTIONS: Record<
+  ModelRouteProviderChoice,
+  string[]
+> = {
+  codex: ['gpt-5.6-sol'],
+  openrouter: ['openai/gpt-5', 'anthropic/claude-sonnet-4.6'],
+  openai_compatible: [],
+}
 
 export function modelConnectionLabel(connection: {
   id: string
@@ -137,6 +150,7 @@ export function ManagedProjectBYOK({
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [connectCodexOpen, setConnectCodexOpen] = useState(false)
   const [apiProvider, setApiProvider] = useState<ModelRouteProviderChoice>(
     DEFAULT_MODEL_ROUTE_PROVIDER,
   )
@@ -259,18 +273,13 @@ export function ManagedProjectBYOK({
       const connection =
         apiProvider === 'codex'
           ? selectedConnection
-          : apiProvider === 'claude'
-            ? (selectedConnection ??
-              (await connectManagedClaudeSetupToken(apiKey)))
-            : await connectManagedModelApiKey({
-                provider: apiProvider,
-                apiKey,
-                ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
-              })
+          : await connectManagedModelApiKey({
+              provider: apiProvider,
+              apiKey,
+              ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+            })
       if (!connection) {
-        throw new Error(
-          `Connect ${apiProvider === 'codex' ? 'Codex' : 'Claude'} first.`,
-        )
+        throw new Error('Connect Codex first.')
       }
       return Promise.all(
         (['development', 'production'] as const).map((environment) =>
@@ -420,7 +429,6 @@ export function ManagedProjectBYOK({
                   }}
                 >
                   <option value="codex">Codex account</option>
-                  <option value="claude">Claude account</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="openai_compatible">
                     Custom OpenAI-compatible API
@@ -432,8 +440,15 @@ export function ManagedProjectBYOK({
                 <input
                   className="border-input bg-background h-9 w-full rounded-md border px-3"
                   value={routeModel}
+                  list={`model-route-${apiProvider}-models`}
+                  autoComplete="off"
                   onChange={(event) => setRouteModel(event.target.value)}
                 />
+                <datalist id={`model-route-${apiProvider}-models`}>
+                  {MODEL_ROUTE_MODEL_SUGGESTIONS[apiProvider].map((model) => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
               </label>
               {apiProvider === 'openai_compatible' ? (
                 <label className="space-y-1 text-sm">
@@ -447,20 +462,8 @@ export function ManagedProjectBYOK({
                   />
                 </label>
               ) : null}
-              {apiProvider === 'claude' && !selectedConnection ? (
-                <label className="space-y-1 text-sm">
-                  <span className="font-medium">Claude setup token</span>
-                  <input
-                    className="border-input bg-background h-9 w-full rounded-md border px-3"
-                    type="password"
-                    autoComplete="off"
-                    value={apiKey}
-                    placeholder="Run claude setup-token, then paste the token"
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                </label>
-              ) : apiProvider === 'openrouter' ||
-                apiProvider === 'openai_compatible' ? (
+              {apiProvider === 'openrouter' ||
+              apiProvider === 'openai_compatible' ? (
                 <label className="space-y-1 text-sm">
                   <span className="font-medium">API key</span>
                   <input
@@ -477,7 +480,7 @@ export function ManagedProjectBYOK({
                     type="button"
                     variant="outline"
                     disabled={connectCodex.isPending}
-                    onClick={() => connectCodex.mutate()}
+                    onClick={() => setConnectCodexOpen(true)}
                   >
                     {connectCodex.isPending ? (
                       <Loader2 className="animate-spin" />
@@ -491,7 +494,7 @@ export function ManagedProjectBYOK({
                 <div className="text-muted-foreground flex items-end text-sm">
                   {selectedConnection
                     ? `Using ${modelConnectionLabel(selectedConnection)}.`
-                    : 'Paste a Claude setup token to connect this account.'}
+                    : null}
                 </div>
               )}
               <label className="space-y-1 text-sm">
@@ -516,9 +519,6 @@ export function ManagedProjectBYOK({
                       apiProvider === 'openai_compatible') &&
                       !apiKey) ||
                     (apiProvider === 'codex' && !selectedConnection) ||
-                    (apiProvider === 'claude' &&
-                      !selectedConnection &&
-                      !apiKey) ||
                     configureApiRoute.isPending
                   }
                   onClick={() => configureApiRoute.mutate()}
@@ -661,26 +661,36 @@ export function ManagedProjectBYOK({
         </PanelContent>
       </Panel>
 
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>
-              {codex
-                ? 'Replace the organization account with the CLI'
-                : 'Connect an organization account with the CLI'}
-            </PanelTitle>
-            <PanelDescription className="mt-1 max-w-2xl">
-              The Codex command opens OAuth, links or replaces the organization
-              account, and enables it for this project. If the account is
-              already connected, use the button above to enable this project
-              without repeating OAuth.
-            </PanelDescription>
+      <Dialog open={connectCodexOpen} onOpenChange={setConnectCodexOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Connect a Codex account</DialogTitle>
+            <DialogDescription>
+              OAuth links the account to your organization. After it returns,
+              save this project route to send new sessions through Codex.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Button
+              disabled={connectCodex.isPending}
+              onClick={() => connectCodex.mutate()}
+            >
+              {connectCodex.isPending ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Link2 />
+              )}
+              Continue with OAuth
+            </Button>
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-muted-foreground text-sm">
+                Prefer the terminal? Run this equivalent command:
+              </p>
+              <CopyRow value={cliCommand} />
+            </div>
           </div>
-        </PanelHeader>
-        <PanelContent className="space-y-4">
-          <CopyRow value={cliCommand} />
-        </PanelContent>
-      </Panel>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
