@@ -22,6 +22,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
+import { ApiError } from '@/api/client'
 import {
   queryManagedProjectDatabase,
   type ManagedDatabaseResult,
@@ -45,6 +46,10 @@ ORDER BY name`
 
 export function quoteDatabaseIdentifier(value: string) {
   return `"${value.replace(/"/g, '""')}"`
+}
+
+export function isUnprovisionedDatabaseError(error: unknown) {
+  return error instanceof ApiError && error.type === 'database_not_provisioned'
 }
 
 function displayValue(value: ManagedDatabaseValue) {
@@ -169,6 +174,18 @@ export function ManagedProjectDatabase({
           icon={Database}
           title={`No ${environment} database yet`}
           description={`Deploy this project to ${environment} to provision its database and apply migrations.`}
+        />
+      </Panel>
+    )
+  }
+
+  if (tables.isError && isUnprovisionedDatabaseError(tables.error)) {
+    return (
+      <Panel>
+        <EmptyState
+          icon={Database}
+          title={`No ${environment} database yet`}
+          description={`Redeploy this project to ${environment} to provision its database and apply migrations.`}
         />
       </Panel>
     )

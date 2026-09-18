@@ -885,6 +885,53 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("preserves the typed state for a legacy project without a database", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "database_not_provisioned",
+              message:
+                "Redeploy this project to development to provision its database",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test/database/query",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            environment: "development",
+            sql: "SELECT 1",
+            parameters: [],
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "database_not_provisioned",
+        message: "Redeploy this project to provision its database.",
+      },
+    });
+  });
+
   it("exposes public template provenance on a project overview", async () => {
     vi.stubGlobal(
       "fetch",

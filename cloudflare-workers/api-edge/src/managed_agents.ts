@@ -167,6 +167,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     if (backendCode === "invalid_model_selection") {
       message =
         backendMessage || "The deployment selects an unavailable model.";
+    } else if (backendCode === "database_not_provisioned") {
+      message = "Redeploy this project to provision its database.";
     } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
