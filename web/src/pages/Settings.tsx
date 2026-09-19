@@ -32,6 +32,16 @@ import { Field, Input, Label } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Switch } from '@/components/ui/switch'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { getManagedRuntimeProfile } from '@/managed-agents/api'
 
 function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -72,6 +82,15 @@ export default function Settings() {
     queryKey: ['org'],
     queryFn: getOrg,
   })
+  const {
+    data: runtimeProfile,
+    isLoading: runtimeProfileLoading,
+    isError: runtimeProfileError,
+  } = useQuery({
+    queryKey: ['managed-runtime-profile'],
+    queryFn: getManagedRuntimeProfile,
+    retry: false,
+  })
 
   // Local edits override the fetched name; null = "not edited" (avoids an
   // effect to sync the field with the query).
@@ -79,6 +98,7 @@ export default function Settings() {
   const [saved, markSaved] = useTransientFlag(2000)
   const [domainInput, setDomainInput] = useState('')
   const [confirmRemoveDomain, setConfirmRemoveDomain] = useState(false)
+  const [showRuntimeProfileInfo, setShowRuntimeProfileInfo] = useState(false)
   const name = draftName ?? org?.name ?? ''
 
   const saveMutation = useMutation({
@@ -157,6 +177,38 @@ export default function Settings() {
                 navigationMutation.mutate({ infrastructureEnabled: checked })
               }
             />
+          </div>
+        </Panel>
+
+        <Panel className="p-6 lg:col-span-2">
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <PanelTitle>Customize VM packages</PanelTitle>
+              <PanelDescription className="mt-1">
+                Select the tools available to agents when they start a VM.
+              </PanelDescription>
+              <div className="mt-4">
+                <Label>Selected package image</Label>
+                <p className="text-foreground mt-1 text-sm font-medium">
+                  {runtimeProfileLoading
+                    ? 'Loading…'
+                    : runtimeProfileError
+                      ? 'Unavailable'
+                      : (runtimeProfile?.displayName ?? 'OpenComputer default')}
+                </p>
+                {runtimeProfile?.customized ? (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    A dedicated image is assigned to this organization.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setShowRuntimeProfileInfo(true)}
+            >
+              Edit
+            </Button>
           </div>
         </Panel>
 
@@ -366,6 +418,27 @@ export default function Settings() {
           })
         }
       />
+
+      <Dialog
+        open={showRuntimeProfileInfo}
+        onOpenChange={setShowRuntimeProfileInfo}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Custom VM packages</DialogTitle>
+            <DialogDescription>
+              Custom package images are an Enterprise feature. The OpenComputer
+              team builds and validates a dedicated image, then assigns it to
+              your organization. Contact us to get it set up.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button>Got it</Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

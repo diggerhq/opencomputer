@@ -102,6 +102,11 @@ const agentsResponseSchema = z.object({
   agents: z.array(agentSchema),
 })
 
+const managedRuntimeProfileSchema = z.object({
+  customized: z.boolean(),
+  displayName: z.string(),
+})
+
 const projectSchema = z.object({
   id: z.string(),
   slug: z.string(),
@@ -794,6 +799,7 @@ const projectOverviewSchema = z.object({
 })
 
 export type ManagedAgentSummary = z.infer<typeof agentSchema>
+export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
@@ -847,6 +853,14 @@ export async function getManagedAgents() {
   return (
     await apiFetch('/managed-agents/agents', undefined, agentsResponseSchema)
   ).agents
+}
+
+export async function getManagedRuntimeProfile() {
+  return apiFetch(
+    '/managed-agents/account/runtime-profile',
+    undefined,
+    managedRuntimeProfileSchema,
+  )
 }
 
 export async function getManagedProjects() {
