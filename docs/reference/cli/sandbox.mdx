@@ -9,8 +9,8 @@ Create a new sandbox. **Alias:** `oc create`
 
 [HTTP API →](/api-reference/sandboxes/create)
 
-<ParamField query="--timeout" type="int" default="300">
-  Idle timeout in seconds
+<ParamField query="--timeout" type="int" default="0">
+  Idle timeout in seconds. `0` (the default) means never auto-hibernate.
 </ParamField>
 
 <ParamField query="--cpu" type="int" default="0">
@@ -84,7 +84,7 @@ Snapshot VM state and stop the sandbox. Displays snapshot size on success. [HTTP
 
 Resume a hibernated sandbox. [HTTP API →](/api-reference/sandboxes/wake)
 
-<ParamField query="--timeout" type="int" default="300">
+<ParamField query="--timeout" type="int" default="0">
   Idle timeout in seconds after wake
 </ParamField>
 

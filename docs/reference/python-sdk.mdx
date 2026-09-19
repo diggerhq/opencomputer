@@ -26,7 +26,7 @@ Create a new sandbox.
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `template` | str | `"base"` | Template name |
-| `timeout` | int | `300` | Idle timeout in seconds |
+| `timeout` | int | `0` | Idle timeout in seconds |
 | `api_key` | str | env var | API key |
 | `api_url` | str | env var | API URL |
 | `envs` | dict[str, str] | None | Environment variables |
@@ -60,7 +60,7 @@ sandbox = await Sandbox.connect("sb-abc123")
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `checkpoint_id` | str | — | Checkpoint ID (**required**) |
-| `timeout` | int | `300` | Idle timeout |
+| `timeout` | int | `0` | Idle timeout |
 | `api_key` | str | env var | API key |
 | `api_url` | str | env var | API URL |
 

@@ -39,7 +39,7 @@ The sandbox is still starting up, or it's hibernated and hasn't finished waking.
 
 **Command timeout:** Increase the `timeout` parameter on `exec.run()` or use `--timeout` with `oc exec`. Default is 60s for SDK `exec.run()`, unlimited for CLI without `--wait`.
 
-**Idle timeout:** Sandboxes auto-hibernate after 300s of inactivity. Increase with `sandbox.setTimeout()` or `oc sandbox set-timeout`. The timeout resets on every operation.
+**Idle timeout:** By default sandboxes are persistent (`timeout` `0`) and do not auto-hibernate. If you created the sandbox with a positive `timeout`, it auto-hibernates after that many seconds of inactivity. Adjust with `sandbox.setTimeout()` or `oc sandbox set-timeout` (`0` disables auto-hibernate). The timeout resets on every operation.
 
 ### Agent exits immediately
 
