@@ -48,7 +48,7 @@ import {
 import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 
 // An agent connects its OWN Slack app (BYO, 1:1:1). Connect is a two-step,
-// manifest-route wizard (oc-bg-agents/.agents/design/008-slack-presence.md §2):
+// manifest-route wizard (serverless-agents-ws, .agents/archive-durable-agent-sessions/.agents/design/008-slack-presence.md §2):
 // START returns a manifest the user pastes into Slack's "From a manifest"
 // flow; COMPLETE takes the three values Slack then hands back. No OAuth, no
 // secrets in responses.
