@@ -14,10 +14,18 @@ export const MODEL_ROUTE_PROVIDER_DEFAULTS: Record<
 export const DEFAULT_MODEL_ROUTE_PROVIDER: ModelRouteProviderChoice =
   'openrouter'
 
-export const CODEX_ROUTE_AVAILABILITY = {
-  label: 'Codex subscription — Coming soon',
-  disabled: true,
-} as const
+export const SUBSCRIPTION_ROUTE_AVAILABILITY = [
+  {
+    id: 'codex',
+    label: 'Codex subscription — Coming soon',
+    disabled: true,
+  },
+  {
+    id: 'claude',
+    label: 'Claude subscription — Coming soon',
+    disabled: true,
+  },
+] as const
 
 export const MODEL_ROUTE_MODEL_SUGGESTIONS: Record<
   ModelRouteProviderChoice,

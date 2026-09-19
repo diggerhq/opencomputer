@@ -24,12 +24,12 @@ import {
   putManagedModelRoute,
 } from './api'
 import {
-  CODEX_ROUTE_AVAILABILITY,
   DEFAULT_MODEL_ROUTE_PROVIDER,
   hasBYOKPlanAccess,
   MODEL_ROUTE_MODEL_SUGGESTIONS,
   MODEL_ROUTE_PROVIDER_DEFAULTS,
   modelConnectionLabel,
+  SUBSCRIPTION_ROUTE_AVAILABILITY,
   type ModelRouteProviderChoice,
 } from './byok-config'
 
@@ -191,8 +191,8 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
             <PanelTitle>Bring your own model</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
               Send every new session through your OpenRouter or
-              OpenAI-compatible API key. This project route overrides
-              useModel() and also works when agent code selects no model.
+              OpenAI-compatible API key. This project route overrides useModel()
+              and also works when agent code selects no model.
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -267,12 +267,18 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
                   <option value="openai_compatible">
                     Custom OpenAI-compatible API
                   </option>
-                  <option value="codex" disabled>
-                    {CODEX_ROUTE_AVAILABILITY.label}
-                  </option>
+                  {SUBSCRIPTION_ROUTE_AVAILABILITY.map((provider) => (
+                    <option
+                      key={provider.id}
+                      value={provider.id}
+                      disabled={provider.disabled}
+                    >
+                      {provider.label}
+                    </option>
+                  ))}
                 </select>
                 <span className="text-muted-foreground block text-xs">
-                  Codex subscription connections are coming soon.
+                  Codex and Claude subscription connections are coming soon.
                 </span>
               </label>
               <label className="space-y-1 text-sm">

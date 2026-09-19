@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CODEX_ROUTE_AVAILABILITY,
   DEFAULT_MODEL_ROUTE_PROVIDER,
   hasBYOKPlanAccess,
   MODEL_ROUTE_MODEL_SUGGESTIONS,
   MODEL_ROUTE_PROVIDER_DEFAULTS,
   modelConnectionLabel,
+  SUBSCRIPTION_ROUTE_AVAILABILITY,
 } from './byok-config'
 
 describe('project BYOK presentation', () => {
@@ -20,10 +20,18 @@ describe('project BYOK presentation', () => {
     expect(MODEL_ROUTE_MODEL_SUGGESTIONS.openrouter).toContain(
       'anthropic/claude-sonnet-4.6',
     )
-    expect(CODEX_ROUTE_AVAILABILITY).toEqual({
-      label: 'Codex subscription — Coming soon',
-      disabled: true,
-    })
+    expect(SUBSCRIPTION_ROUTE_AVAILABILITY).toEqual([
+      {
+        id: 'codex',
+        label: 'Codex subscription — Coming soon',
+        disabled: true,
+      },
+      {
+        id: 'claude',
+        label: 'Claude subscription — Coming soon',
+        disabled: true,
+      },
+    ])
   })
 
   it('shows a safe custom-provider origin instead of an opaque id', () => {
