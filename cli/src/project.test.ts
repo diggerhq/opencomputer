@@ -628,6 +628,40 @@ export default function Agent() {
       listed.map((connection: { label: string }) => connection.label),
       ["alice"],
     );
+
+    // A full URL is allowed: Sheets v4 is served only on its own host and no
+    // relative path reaches it. Which hosts a service may be asked for is the
+    // platform's call — refusing URLs here would refuse calls it would allow.
+    calls.length = 0;
+    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL = "https://edge.test/conn";
+    globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN = "rt-token";
+    const stubFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ status: 200, headers: {}, body: "{}" }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await runtime.callService({
+        service: "sheets",
+        path: "https://sheets.googleapis.com/v4/spreadsheets",
+      });
+      // Anything that is neither is refused before a request is made. Checked
+      // with the env still present, or the missing-connection error fires
+      // first and the path check is never reached.
+      await assert.rejects(
+        runtime.callService({ service: "gmail", path: "gmail/v1/users/me/profile" }),
+        /path beginning with \/ or an https:\/\/ URL/,
+      );
+    } finally {
+      globalThis.fetch = stubFetch;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL;
+      delete globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+    }
+    assert.equal(
+      JSON.parse(String(calls[0]!.init.body)).path,
+      "https://sheets.googleapis.com/v4/spreadsheets",
+    );
+
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

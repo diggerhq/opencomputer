@@ -802,8 +802,18 @@ export async function callService(request: ServiceRequest): Promise<Response> {
   if (!base || !token) {
     throw new Error("OpenComputer managed connections are unavailable");
   }
-  if (!request.path.startsWith("/")) {
-    throw new Error("Service requests require an absolute path");
+  // A path, or a full URL for a service whose API has a host of its own —
+  // Sheets v4 is served only on sheets.googleapis.com, and nothing relative
+  // reaches it. The platform decides whether a URL names a host this service
+  // may be asked for; refusing it here would only mean refusing calls that
+  // the platform would have allowed.
+  if (
+    !request.path.startsWith("/") &&
+    !request.path.toLowerCase().startsWith("https://")
+  ) {
+    throw new Error(
+      "Service requests take a path beginning with / or an https:// URL on the service's own API",
+    );
   }
   const service = request.service.trim().toLowerCase();
   if (!service) throw new Error("A service request needs a service");

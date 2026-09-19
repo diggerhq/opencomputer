@@ -3150,7 +3150,8 @@ export const callService = async (request) => {
   const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
   const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
   if (!base || !token) throw new Error("OpenComputer managed connections are unavailable");
-  if (!request?.path?.startsWith("/")) throw new Error("Service requests require an absolute path");
+  const target = String(request?.path || "");
+  if (!target.startsWith("/") && !target.toLowerCase().startsWith("https://")) throw new Error("Service requests take a path beginning with / or an https:// URL on the service's own API");
   const service = String(request.service ?? "").trim().toLowerCase();
   if (!service) throw new Error("A service request needs a service");
   const provider = service === "github" ? "github" : "google";
