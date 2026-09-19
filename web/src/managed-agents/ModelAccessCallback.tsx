@@ -4,7 +4,10 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { completeManagedModelAccess, putManagedModelAccessBinding } from './api'
-import { MODEL_ACCESS_PROJECT_KEY, MODEL_ACCESS_RETURN_TO_KEY } from './BYOK'
+import {
+  MODEL_ACCESS_PROJECT_KEY,
+  MODEL_ACCESS_RETURN_TO_KEY,
+} from './byok-config'
 
 type CallbackState = 'completing' | 'failed'
 

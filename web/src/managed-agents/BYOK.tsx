@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BrainCircuit, Link2, LockKeyhole, Loader2, Trash2 } from 'lucide-react'
 import { getAutumnBilling, getBilling } from '@/api/client'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { CopyRow } from '@/components/copy-row'
 import { EmptyState } from '@/components/empty-state'
 import {
   Panel,
@@ -13,97 +12,31 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  connectManagedModelAccess,
   connectManagedModelApiKey,
   deleteManagedModelRoute,
   getManagedModelAccessConnections,
   getManagedModelRoutes,
   putManagedModelRoute,
 } from './api'
+import {
+  CODEX_ROUTE_AVAILABILITY,
+  DEFAULT_MODEL_ROUTE_PROVIDER,
+  hasBYOKPlanAccess,
+  MODEL_ROUTE_MODEL_SUGGESTIONS,
+  MODEL_ROUTE_PROVIDER_DEFAULTS,
+  modelConnectionLabel,
+  type ModelRouteProviderChoice,
+} from './byok-config'
 
-export const MODEL_ACCESS_RETURN_TO_KEY = 'opencomputer:model-access:return-to'
-export const MODEL_ACCESS_PROJECT_KEY = 'opencomputer:model-access:project'
-
-export type ModelRouteProviderChoice =
-  | 'codex'
-  | 'openrouter'
-  | 'openai_compatible'
-
-export const MODEL_ROUTE_PROVIDER_DEFAULTS: Record<
-  ModelRouteProviderChoice,
-  { model: string; connectionProvider: string }
-> = {
-  codex: { model: 'gpt-5.6-sol', connectionProvider: 'openai' },
-  openrouter: {
-    model: 'openai/gpt-5',
-    connectionProvider: 'openrouter',
-  },
-  openai_compatible: { model: '', connectionProvider: 'openai_compatible' },
-}
-export const DEFAULT_MODEL_ROUTE_PROVIDER: ModelRouteProviderChoice = 'codex'
-
-export const MODEL_ROUTE_MODEL_SUGGESTIONS: Record<
-  ModelRouteProviderChoice,
-  string[]
-> = {
-  codex: ['gpt-5.6-sol'],
-  openrouter: ['openai/gpt-5', 'anthropic/claude-sonnet-4.6'],
-  openai_compatible: [],
-}
-
-export function modelConnectionLabel(connection: {
-  id: string
-  label: string
-  baseUrl?: string | null
-}) {
-  if (connection.baseUrl) {
-    try {
-      return `${connection.label} · ${new URL(connection.baseUrl).hostname}`
-    } catch {
-      // The API validates URLs; retain the safe label if older data does not.
-    }
-  }
-  return connection.label || connection.id
-}
-
-export function modelAccessCLICommand(
-  projectSlug: string,
-  location: Pick<Location, 'hostname' | 'origin'>,
-) {
-  const apiArgument =
-    location.hostname === 'app.opencomputer.dev'
-      ? ''
-      : ` --api-url ${location.origin}`
-  return `npx --yes --package=@opencomputer/cli@latest -- opencomputer${apiArgument} model-access connect codex --project ${projectSlug}`
-}
-
-export function hasBYOKPlanAccess(plan: string | undefined) {
-  return plan === 'pro' || plan === 'max'
-}
-
-export function ManagedProjectBYOK({
-  projectId,
-  projectSlug,
-}: {
-  projectId: string
-  projectSlug: string
-}) {
+export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [confirmRemoveRoute, setConfirmRemoveRoute] = useState(false)
-  const [connectCodexOpen, setConnectCodexOpen] = useState(false)
   const [apiProvider, setApiProvider] = useState<ModelRouteProviderChoice>(
     DEFAULT_MODEL_ROUTE_PROVIDER,
   )
@@ -114,7 +47,6 @@ export function ManagedProjectBYOK({
   )
   const [routeFallback, setRouteFallback] = useState<'fail' | 'managed'>('fail')
   const canManageConnection = user?.capabilities?.manageMembers !== false
-  const cliCommand = modelAccessCLICommand(projectSlug, window.location)
   const connectionQueryKey = ['managed-model-access-connections']
   const routeQueryKey = ['managed-model-routes', projectId]
   const billing = useQuery({
@@ -147,25 +79,6 @@ export function ManagedProjectBYOK({
     queryFn: () => getManagedModelRoutes(projectId),
     enabled: planEligible,
   })
-  const selectedConnection = connections.data?.find(
-    (connection) =>
-      connection.provider ===
-        MODEL_ROUTE_PROVIDER_DEFAULTS[apiProvider].connectionProvider &&
-      connection.status === 'connected',
-  )
-  const connectCodex = useMutation({
-    mutationFn: connectManagedModelAccess,
-    onSuccess: (receipt) => {
-      sessionStorage.setItem(
-        MODEL_ACCESS_RETURN_TO_KEY,
-        `${location.pathname}${location.search}`,
-      )
-      sessionStorage.setItem(MODEL_ACCESS_PROJECT_KEY, projectId)
-      window.location.assign(receipt.authorize_url)
-    },
-    onError: (error) =>
-      notifyError("Couldn't start Codex authorization.", error),
-  })
   const removeRoute = useMutation({
     mutationFn: () =>
       Promise.all(
@@ -183,17 +96,11 @@ export function ManagedProjectBYOK({
   })
   const configureApiRoute = useMutation({
     mutationFn: async () => {
-      const connection =
-        apiProvider === 'codex'
-          ? selectedConnection
-          : await connectManagedModelApiKey({
-              provider: apiProvider,
-              apiKey,
-              ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
-            })
-      if (!connection) {
-        throw new Error('Connect Codex first.')
-      }
+      const connection = await connectManagedModelApiKey({
+        provider: apiProvider,
+        apiKey,
+        ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+      })
       return Promise.all(
         (['development', 'production'] as const).map((environment) =>
           putManagedModelRoute({
@@ -281,11 +188,11 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>Project model route</PanelTitle>
+            <PanelTitle>Bring your own model</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Route every new session through an organization connection. This
-              overrides useModel() and also works when agent code selects no
-              model.
+              Send every new session through your OpenRouter or
+              OpenAI-compatible API key. This project route overrides
+              useModel() and also works when agent code selects no model.
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -356,12 +263,17 @@ export function ManagedProjectBYOK({
                     )
                   }}
                 >
-                  <option value="codex">Codex account</option>
-                  <option value="openrouter">OpenRouter</option>
+                  <option value="openrouter">OpenRouter API key</option>
                   <option value="openai_compatible">
                     Custom OpenAI-compatible API
                   </option>
+                  <option value="codex" disabled>
+                    {CODEX_ROUTE_AVAILABILITY.label}
+                  </option>
                 </select>
+                <span className="text-muted-foreground block text-xs">
+                  Codex subscription connections are coming soon.
+                </span>
               </label>
               <label className="space-y-1 text-sm">
                 <span className="font-medium">Provider model ID</span>
@@ -390,41 +302,16 @@ export function ManagedProjectBYOK({
                   />
                 </label>
               ) : null}
-              {apiProvider === 'openrouter' ||
-              apiProvider === 'openai_compatible' ? (
-                <label className="space-y-1 text-sm">
-                  <span className="font-medium">API key</span>
-                  <input
-                    className="border-input bg-background h-9 w-full rounded-md border px-3"
-                    type="password"
-                    autoComplete="off"
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                </label>
-              ) : apiProvider === 'codex' && !selectedConnection ? (
-                <div className="flex items-end">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={connectCodex.isPending}
-                    onClick={() => setConnectCodexOpen(true)}
-                  >
-                    {connectCodex.isPending ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <Link2 />
-                    )}
-                    Connect Codex account
-                  </Button>
-                </div>
-              ) : (
-                <div className="text-muted-foreground flex items-end text-sm">
-                  {selectedConnection
-                    ? `Using ${modelConnectionLabel(selectedConnection)}.`
-                    : null}
-                </div>
-              )}
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">API key</span>
+                <input
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  type="password"
+                  autoComplete="off"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
               <label className="space-y-1 text-sm">
                 <span className="font-medium">If unavailable</span>
                 <select
@@ -443,10 +330,7 @@ export function ManagedProjectBYOK({
                   disabled={
                     !routeModel ||
                     (apiProvider === 'openai_compatible' && !baseUrl) ||
-                    ((apiProvider === 'openrouter' ||
-                      apiProvider === 'openai_compatible') &&
-                      !apiKey) ||
-                    (apiProvider === 'codex' && !selectedConnection) ||
+                    !apiKey ||
                     configureApiRoute.isPending
                   }
                   onClick={() => configureApiRoute.mutate()}
@@ -456,45 +340,13 @@ export function ManagedProjectBYOK({
                   ) : (
                     <Link2 />
                   )}
-                  {selectedConnection || apiProvider === 'codex'
-                    ? 'Save route'
-                    : 'Connect and save route'}
+                  Connect and save route
                 </Button>
               </div>
             </div>
           ) : null}
         </PanelContent>
       </Panel>
-      <Dialog open={connectCodexOpen} onOpenChange={setConnectCodexOpen}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Connect a Codex account</DialogTitle>
-            <DialogDescription>
-              OAuth links the account to your organization. After it returns,
-              save this project route to send new sessions through Codex.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <Button
-              disabled={connectCodex.isPending}
-              onClick={() => connectCodex.mutate()}
-            >
-              {connectCodex.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Link2 />
-              )}
-              Continue with OAuth
-            </Button>
-            <div className="space-y-2 border-t pt-4">
-              <p className="text-muted-foreground text-sm">
-                Prefer the terminal? Run this equivalent command:
-              </p>
-              <CopyRow value={cliCommand} />
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
       <ConfirmDialog
         open={confirmRemoveRoute}
         onOpenChange={setConfirmRemoveRoute}

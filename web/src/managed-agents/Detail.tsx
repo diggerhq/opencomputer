@@ -1287,10 +1287,7 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'byok' && project ? (
-        <ManagedProjectBYOK
-          projectId={project.project.id}
-          projectSlug={project.project.slug}
-        />
+        <ManagedProjectBYOK projectId={project.project.id} />
       ) : null}
 
       {activeTab === 'connections' && project ? (
