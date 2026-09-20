@@ -429,13 +429,22 @@ export default function Settings() {
             <DialogDescription>
               Custom package images are an Enterprise feature. The OpenComputer
               team builds and validates a dedicated image, then assigns it to
-              your organization. Contact us to get it set up.
+              your organization. Book a call with the team to get it set up.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <DialogClose asChild>
-              <Button>Got it</Button>
+              <Button variant="outline">Got it</Button>
             </DialogClose>
+            <Button asChild>
+              <a
+                href="https://cal.com/team/digger/opencomputer-founder-chat"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Book a call
+              </a>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
