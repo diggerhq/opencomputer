@@ -134,6 +134,8 @@ deleted_classes = ["VmSession"]
 #                            browser-session proxy requests
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend
+#   SESSION_COST_REPORT_SECRET — narrow HMAC for the read-only operator session
+#                            cost report; never shared with sandbox control planes
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 
