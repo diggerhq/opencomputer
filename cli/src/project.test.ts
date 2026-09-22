@@ -289,6 +289,7 @@ test("init can explicitly include a separately-run React app", async () => {
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
+      "opencomputer/agents/hello-world/opencomputer.toml",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "vite.config.ts",
@@ -310,6 +311,7 @@ test("the code-first compiler records hook resources without config files", asyn
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
+    await rm(resolve(initialized.agentRoot, "opencomputer.toml"));
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
       `import {
