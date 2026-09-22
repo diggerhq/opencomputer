@@ -121,6 +121,7 @@ const projectSchema = z.object({
     }),
   ),
   agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  archivedAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -880,10 +881,10 @@ export async function getManagedRuntimeProfile() {
   )
 }
 
-export async function getManagedProjects() {
+export async function getManagedProjects(options: { archived?: boolean } = {}) {
   return (
     await apiFetch(
-      '/managed-agents/projects',
+      `/managed-agents/projects${options.archived ? '?archived=true' : ''}`,
       undefined,
       projectsResponseSchema,
     )
@@ -898,24 +899,19 @@ export async function createManagedProject(name: string) {
   )
 }
 
-const projectDeletionSchema = z.object({
-  id: z.string(),
-  slug: z.string(),
-  deleted: z.boolean(),
-  stopped: z.object({ sessions: z.number(), connections: z.number() }),
-})
-
-/**
- * Delete a project and everything under it: its agents and deployments, and
- * any session still running, whose runtime is stopped first. The backend
- * refuses the delete outright if it cannot stop something, so a success here
- * means nothing was left behind.
- */
-export async function deleteManagedProject(projectId: string) {
+export async function archiveManagedProject(projectId: string) {
   return apiFetch(
-    `/managed-agents/projects/${encodeURIComponent(projectId)}`,
-    { method: 'DELETE' },
-    projectDeletionSchema,
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/archive`,
+    { method: 'POST' },
+    projectSchema,
+  )
+}
+
+export async function restoreManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/restore`,
+    { method: 'POST' },
+    projectSchema,
   )
 }
 

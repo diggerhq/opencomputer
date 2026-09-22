@@ -2,11 +2,12 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
+  Archive,
   ChevronRight,
   FolderKanban,
   Loader2,
   Plus,
-  Trash2,
+  RotateCcw,
 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
@@ -14,48 +15,50 @@ import { PageHeader } from '@/components/page-header'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
-import { deleteManagedProject, getManagedProjects } from './api'
+import {
+  archiveManagedProject,
+  getManagedProjects,
+  restoreManagedProject,
+} from './api'
 import ProjectOnboarding from './ProjectOnboarding'
-
-/** What the delete stopped on its way out, phrased for someone reading a toast. */
-function torndown(stopped: { sessions: number; connections: number }): string {
-  const parts = [
-    stopped.sessions > 0
-      ? `${stopped.sessions} running ${stopped.sessions === 1 ? 'session' : 'sessions'}`
-      : '',
-    stopped.connections > 0
-      ? `${stopped.connections} ${stopped.connections === 1 ? 'connection' : 'connections'}`
-      : '',
-  ].filter(Boolean)
-  return parts.length ? `Stopped ${parts.join(' and ')}.` : ''
-}
 
 export default function ProjectsHome() {
   const queryClient = useQueryClient()
   const projects = useQuery({
     queryKey: ['managed-projects'],
-    queryFn: getManagedProjects,
+    queryFn: () => getManagedProjects(),
+  })
+  const archivedProjects = useQuery({
+    queryKey: ['managed-projects', 'archived'],
+    queryFn: () => getManagedProjects({ archived: true }),
   })
   const items = projects.data ?? []
+  const archivedItems = archivedProjects.data ?? []
   // The project the confirm dialog is open for, held whole so the dialog can
   // name it after the list behind it has already been invalidated.
-  const [pendingDelete, setPendingDelete] = useState<{
+  const [pendingArchive, setPendingArchive] = useState<{
     id: string
     name: string
   } | null>(null)
-  const remove = useMutation({
-    mutationFn: deleteManagedProject,
-    onSuccess: async (result) => {
-      setPendingDelete(null)
+  const archive = useMutation({
+    mutationFn: archiveManagedProject,
+    onSuccess: async () => {
+      setPendingArchive(null)
       await queryClient.invalidateQueries({ queryKey: ['managed-projects'] })
-      notifySuccess('Project deleted.', torndown(result.stopped) || undefined)
+      notifySuccess('Project archived.', 'You can restore it at any time.')
     },
-    // A project whose runtime could not be stopped is refused outright and
-    // nothing is deleted, so the dialog stays open for another attempt.
-    onError: (error) => notifyError("Couldn't delete the project.", error),
+    onError: (error) => notifyError("Couldn't archive the project.", error),
+  })
+  const restore = useMutation({
+    mutationFn: restoreManagedProject,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['managed-projects'] })
+      notifySuccess('Project restored.')
+    },
+    onError: (error) => notifyError("Couldn't restore the project.", error),
   })
 
-  if (projects.isLoading) {
+  if (projects.isLoading || archivedProjects.isLoading) {
     return (
       <div className="flex min-h-64 items-center justify-center">
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
@@ -63,7 +66,7 @@ export default function ProjectsHome() {
     )
   }
 
-  if (projects.isError) {
+  if (projects.isError || archivedProjects.isError) {
     return (
       <Panel>
         <EmptyState
@@ -80,7 +83,9 @@ export default function ProjectsHome() {
     )
   }
 
-  if (items.length === 0) return <ProjectOnboarding />
+  if (items.length === 0 && archivedItems.length === 0) {
+    return <ProjectOnboarding />
+  }
 
   return (
     <div className="space-y-8">
@@ -122,17 +127,16 @@ export default function ProjectsHome() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={`Delete ${project.name}`}
-                    className="text-muted-foreground hover:text-destructive size-8 shrink-0"
+                    aria-label={`Archive ${project.name}`}
+                    className="text-muted-foreground size-8 shrink-0"
                     onClick={(event) => {
-                      // The whole card is a link to the project; deleting it
-                      // must not navigate into what is about to be removed.
+                      // The whole card is a link; archiving must not navigate.
                       event.preventDefault()
                       event.stopPropagation()
-                      setPendingDelete({ id: project.id, name: project.name })
+                      setPendingArchive({ id: project.id, name: project.name })
                     }}
                   >
-                    <Trash2 className="size-4" aria-hidden />
+                    <Archive className="size-4" aria-hidden />
                   </Button>
                   <ChevronRight className="text-muted-foreground size-4 transition-transform group-hover:translate-x-0.5" />
                 </PanelContent>
@@ -142,18 +146,56 @@ export default function ProjectsHome() {
         </div>
       </section>
 
+      {archivedItems.length > 0 && (
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-sm font-medium">Archived</h2>
+            <p className="text-muted-foreground text-xs">
+              Archived projects keep their configuration and can be restored.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {archivedItems.map((project) => (
+              <Panel key={project.id} className="bg-muted/20">
+                <PanelContent className="flex items-center gap-3">
+                  <div className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-lg">
+                    <Archive className="size-4" aria-hidden />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {project.name}
+                    </p>
+                    <p className="text-muted-foreground mt-0.5 text-xs">
+                      Archived
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={restore.isPending}
+                    onClick={() => restore.mutate(project.id)}
+                  >
+                    <RotateCcw className="size-4" aria-hidden />
+                    Restore
+                  </Button>
+                </PanelContent>
+              </Panel>
+            ))}
+          </div>
+        </section>
+      )}
+
       <ConfirmDialog
-        open={pendingDelete !== null}
+        open={pendingArchive !== null}
         onOpenChange={(open) => {
-          if (!open) setPendingDelete(null)
+          if (!open) setPendingArchive(null)
         }}
-        title={`Delete ${pendingDelete?.name ?? 'this project'}?`}
-        description="This deletes the project and everything under it — its agents, deployments, secrets and connections — and stops any session still running. It cannot be undone."
-        confirmLabel="Delete project"
-        destructive
-        pending={remove.isPending}
+        title={`Archive ${pendingArchive?.name ?? 'this project'}?`}
+        description="This hides the project and stops its running sessions. Its agents, deployments, secrets and connections are preserved, and you can restore it later."
+        confirmLabel="Archive project"
+        pending={archive.isPending}
         onConfirm={() => {
-          if (pendingDelete) remove.mutate(pendingDelete.id)
+          if (pendingArchive) archive.mutate(pendingArchive.id)
         }}
       />
     </div>

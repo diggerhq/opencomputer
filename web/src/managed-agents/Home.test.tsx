@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest'
 import ProjectsHome from './Home'
 import { INSTALL_CLI_COMMAND } from './ProjectOnboarding'
 
-function renderProjects(projects: unknown[]) {
+function renderProjects(projects: unknown[], archived: unknown[] = []) {
   const queryClient = new QueryClient()
   queryClient.setQueryData(['managed-projects'], projects)
+  queryClient.setQueryData(['managed-projects', 'archived'], archived)
 
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
@@ -46,7 +47,7 @@ describe('projects home onboarding', () => {
     expect(markup).not.toContain('Start from a template')
   })
 
-  it('offers each project its own delete control, named after the project', () => {
+  it('offers each project its own archive control, named after the project', () => {
     const now = new Date().toISOString()
     const markup = renderProjects([
       {
@@ -69,11 +70,31 @@ describe('projects home onboarding', () => {
       },
     ])
 
-    // Named per project: the card is a link to the project, so the control
-    // that destroys it has to be distinguishable from the one next to it.
-    expect(markup).toContain('aria-label="Delete Support"')
-    expect(markup).toContain('aria-label="Delete Billing"')
-    // The confirm dialog is what actually deletes, so nothing is armed on render.
-    expect(markup).not.toContain('Delete project')
+    expect(markup).toContain('aria-label="Archive Support"')
+    expect(markup).toContain('aria-label="Archive Billing"')
+    expect(markup).not.toContain('Archive project')
+  })
+
+  it('shows archived projects with a restore action', () => {
+    const now = new Date().toISOString()
+    const markup = renderProjects(
+      [],
+      [
+        {
+          id: 'project_1',
+          slug: 'support',
+          name: 'Support',
+          environments: [],
+          agents: [{ id: 'agent_1', name: 'Support agent' }],
+          archivedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    )
+
+    expect(markup).toContain('Archived')
+    expect(markup).toContain('Support')
+    expect(markup).toContain('Restore')
   })
 })
