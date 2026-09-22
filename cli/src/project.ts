@@ -456,6 +456,7 @@ export async function initializeAgentProject(
   ]) {
     await rm(resolve(agentRoot, path), { recursive: true, force: true });
   }
+  await writeManifest(agentRoot, manifest);
   await writeFile(
     resolve(agentRoot, "agent.ts"),
     `import { useInput, useModel } from "@opencomputer/agent";
@@ -805,6 +806,7 @@ from \`defineConnection()\` declarations.
     files: [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
+      "opencomputer/agents/hello-world/opencomputer.toml",
       "opencomputer/agents/hello-world/agent.ts",
       ...appFiles,
     ],

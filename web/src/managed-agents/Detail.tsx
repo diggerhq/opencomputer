@@ -17,6 +17,7 @@ import {
   Clipboard,
   GitCommitHorizontal,
   Loader2,
+  Pencil,
   Plus,
   Send,
   TerminalSquare,
@@ -531,6 +532,36 @@ function PlaygroundChat({
   )
 }
 
+function AgentNameSourceDialog({
+  agent,
+}: {
+  agent: Pick<ManagedAgentSummary, 'id' | 'name'>
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground hover:text-foreground size-8"
+          aria-label={`Rename ${displayManagedAgentName(agent)}`}
+        >
+          <Pencil className="size-3.5" aria-hidden />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rename agent</DialogTitle>
+          <DialogDescription>
+            Agent names are defined in code. Update the name in the agent&apos;s{' '}
+            <code>opencomputer.toml</code>, then redeploy the project.
+          </DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function ManagedAgentDetail({
   agentId: agentIdOverride,
   project,
@@ -873,6 +904,7 @@ export default function ManagedAgentDetail({
               </option>
             ))}
           </select>
+          {projectAgent ? <AgentNameSourceDialog agent={projectAgent} /> : null}
         </div>
       ) : null}
 

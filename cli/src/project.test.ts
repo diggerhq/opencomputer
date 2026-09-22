@@ -76,11 +76,14 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     await assert.rejects(stat(resolve(root, "opencomputer", "package.json")));
     const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
     assert.match(
+      await readFile(resolve(agentRoot, "opencomputer.toml"), "utf8"),
+      /id = "hello-world"[\s\S]*name = "Hello World"/,
+    );
+    assert.match(
       await readFile(resolve(agentRoot, "agent.ts"), "utf8"),
       /useInput[\s\S]*useModel\("anthropic\/claude-sonnet-4\.6"\)/,
     );
     for (const removed of [
-      "opencomputer.toml",
       "opencomputer.config.ts",
       "opencomputer.ts",
       "opencode.json",
@@ -96,6 +99,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
+      "opencomputer/agents/hello-world/opencomputer.toml",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "README.md",
