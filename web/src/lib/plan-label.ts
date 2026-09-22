@@ -1,25 +1,13 @@
-const CONCURRENCY_PLAN_LABELS: Record<string, string> = {
-  base: 'Base',
-  concurrency_pro: 'Pro',
-  concurrency_pro_plus: 'Pro+',
-  concurrency_pro_plus_plus: 'Pro++',
-}
-
 export function planLabel(plan: string): string {
-  return (
-    CONCURRENCY_PLAN_LABELS[plan] ??
-    plan
-      .replace(/^concurrency_/, '')
-      .split('_')
-      .filter(Boolean)
-      .map((part) => part[0]?.toUpperCase() + part.slice(1))
-      .join(' ')
-  )
+  return plan
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 type PlanSource = {
   plan: string
-  maxConcurrentSandboxes: number
 }
 
 type BillingPlanSource = PlanSource & {
@@ -28,25 +16,16 @@ type BillingPlanSource = PlanSource & {
 
 type AutumnPlanSource = {
   usagePlan: string
-  maxConcurrentSandboxes: number
 }
 
-export function organizationPlanDetails(
+export function organizationPlanLabel(
   org: PlanSource | undefined,
   billing: BillingPlanSource | undefined,
   autumn: AutumnPlanSource | undefined,
-): { label: string; maxConcurrentSandboxes: number | undefined } {
+): string {
   if (billing?.billingProvider === 'autumn') {
-    return {
-      label: planLabel(autumn?.usagePlan ?? 'base'),
-      maxConcurrentSandboxes:
-        autumn?.maxConcurrentSandboxes ?? org?.maxConcurrentSandboxes,
-    }
+    return planLabel(autumn?.usagePlan ?? 'base')
   }
 
-  return {
-    label: planLabel(billing?.plan ?? org?.plan ?? 'free'),
-    maxConcurrentSandboxes:
-      billing?.maxConcurrentSandboxes ?? org?.maxConcurrentSandboxes,
-  }
+  return planLabel(billing?.plan ?? org?.plan ?? 'free')
 }

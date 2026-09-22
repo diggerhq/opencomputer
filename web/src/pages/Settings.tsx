@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { useAuth } from '@/hooks/useAuth'
-import { organizationPlanDetails } from '@/lib/plan-label'
+import { organizationPlanLabel } from '@/lib/plan-label'
 import {
   deleteCustomDomain,
   getAutumnBilling,
@@ -146,7 +146,7 @@ export default function Settings() {
 
   const unchanged = name === (org?.name ?? '')
   const hasDomain = !!org?.customDomain && org.customDomain !== ''
-  const plan = organizationPlanDetails(org, billing, autumn)
+  const plan = organizationPlanLabel(org, billing, autumn)
 
   return (
     <div>
@@ -179,7 +179,7 @@ export default function Settings() {
           <div className="mb-5">
             <PanelTitle>Organization</PanelTitle>
             <PanelDescription className="mt-1">
-              Your organization&apos;s name and plan limits.
+              Your organization&apos;s name and plan.
             </PanelDescription>
           </div>
           <div className="space-y-5">
@@ -191,18 +191,7 @@ export default function Settings() {
               />
             </Field>
 
-            <ReadOnlyField label="Plan" value={plan.label} />
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <ReadOnlyField
-                label="Max concurrent sandboxes"
-                value={plan.maxConcurrentSandboxes}
-              />
-              <ReadOnlyField
-                label="Max timeout (sec)"
-                value={org?.maxSandboxTimeoutSec}
-              />
-            </div>
+            <ReadOnlyField label="Plan" value={plan} />
 
             <div className="flex items-center gap-3">
               <Button
