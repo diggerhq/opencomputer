@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
 import {
   Link,
@@ -17,7 +17,6 @@ import {
   Clipboard,
   GitCommitHorizontal,
   Loader2,
-  Pencil,
   Plus,
   Send,
   TerminalSquare,
@@ -40,13 +39,11 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { notifyError, notifySuccess } from '@/lib/errors'
+import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
   admitManagedAgentInput,
@@ -58,7 +55,6 @@ import {
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
-  renameManagedAgent,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -535,109 +531,6 @@ function PlaygroundChat({
   )
 }
 
-/**
- * Rename an agent from the project header. Only the display name changes: the
- * agent id is what its deployments, sessions and secrets are keyed by, and what
- * ties it to its project, so it is shown but not editable.
- *
- * A deploy that carries a name overwrites this, since the code is the source of
- * truth — the dialog says so rather than letting the rename look permanent.
- */
-function RenameAgentDialog({
-  agent,
-  projectId,
-}: {
-  agent: Pick<ManagedAgentSummary, 'id' | 'name'>
-  projectId: string
-}) {
-  const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
-  const [name, setName] = useState('')
-  const rename = useMutation({
-    mutationFn: renameManagedAgent,
-    onSuccess: async (renamed) => {
-      setOpen(false)
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['managed-agents'] }),
-        queryClient.invalidateQueries({ queryKey: ['managed-project', projectId] }),
-        queryClient.invalidateQueries({ queryKey: ['managed-projects'] }),
-      ])
-      notifySuccess(`Renamed to ${renamed.name}.`)
-    },
-    onError: (error) => notifyError("Couldn't rename the agent.", error),
-  })
-  const trimmed = name.trim()
-  const unchanged = trimmed === agent.name.trim()
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (rename.isPending) return
-        // Seed the field from the current name each time it opens, so a
-        // cancelled edit does not linger into the next one.
-        if (next) setName(displayManagedAgentName(agent))
-        setOpen(next)
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground hover:text-foreground size-8"
-          aria-label={`Rename ${displayManagedAgentName(agent)}`}
-        >
-          <Pencil className="size-3.5" aria-hidden />
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Rename agent</DialogTitle>
-          <DialogDescription>
-            This changes the name shown in the dashboard. Deploying with a name
-            in your code overwrites it.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!trimmed || unchanged) return
-            rename.mutate({ agentId: agent.id, name: trimmed })
-          }}
-        >
-          <Input
-            value={name}
-            maxLength={80}
-            aria-label="Agent name"
-            onChange={(event) => setName(event.target.value)}
-          />
-          <p className="text-muted-foreground font-mono text-xs">{agent.id}</p>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-              disabled={rename.isPending}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!trimmed || unchanged || rename.isPending}>
-              {rename.isPending ? (
-                <>
-                  <Loader2 className="animate-spin" /> Renaming
-                </>
-              ) : (
-                'Rename'
-              )}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 export default function ManagedAgentDetail({
   agentId: agentIdOverride,
   project,
@@ -980,12 +873,6 @@ export default function ManagedAgentDetail({
               </option>
             ))}
           </select>
-          {projectAgent ? (
-            <RenameAgentDialog
-              agent={projectAgent}
-              projectId={project.project.id}
-            />
-          ) : null}
         </div>
       ) : null}
 

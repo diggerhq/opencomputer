@@ -857,22 +857,6 @@ export async function getManagedAgents() {
   ).agents
 }
 
-/**
- * Rename an agent. Only the display name changes — the agent id is what its
- * deployments, sessions and secrets are keyed by, and what ties it to its
- * project, so it is not editable.
- */
-export async function renameManagedAgent(input: {
-  agentId: string
-  name: string
-}) {
-  return apiFetch(
-    `/managed-agents/agents/${encodeURIComponent(input.agentId)}`,
-    { method: 'PATCH', body: JSON.stringify({ name: input.name }) },
-    agentSchema,
-  )
-}
-
 export async function getManagedRuntimeProfile() {
   return apiFetch(
     '/managed-agents/account/runtime-profile',

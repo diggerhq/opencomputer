@@ -1463,10 +1463,6 @@ function publicSuccessBody(
       agents: Array.isArray(body.agents) ? body.agents.map(publicAgent) : [],
     };
   }
-  // A rename answers with the agent it renamed, shaped like one in the list.
-  if (method === "PATCH" && /^\/agents\/[^/]+$/.test(suffix)) {
-    return publicAgent(body);
-  }
   if (method === "GET" && suffix === "/projects") {
     return {
       projects: Array.isArray(body.projects)
@@ -2084,9 +2080,6 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && suffix === "/agents") return true;
-  // Renaming moves only the display name; the id every deployment, session and
-  // secret is keyed by is not editable.
-  if (method === "PATCH" && /^\/agents\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && suffix === "/me") return true;
   if ((method === "GET" || method === "POST") && suffix === "/projects") {
     return true;
