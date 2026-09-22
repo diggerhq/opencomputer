@@ -54,6 +54,60 @@ describe("managed agents proxy", () => {
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
   });
 
+  it("exposes only the safe organization runtime profile label", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        customized: true,
+        displayName: "Cypen pentesting",
+        profileId: "cypen-jxscout",
+        imageArn: "private-image-identifier",
+        imageVersion: "9.0",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/dashboard/managed-agents/account/runtime-profile",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/dashboard/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      customized: true,
+      displayName: "Cypen pentesting",
+    });
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://managedagents.test/v1/account/runtime-profile",
+    );
+  });
+
+  it("keeps runtime profile assignment operator-only", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/dashboard/managed-agents/account/runtime-profile",
+        { method: "POST", body: JSON.stringify({ profileId: "other" }) },
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/dashboard/managed-agents",
+    );
+
+    expect(response.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("forwards managed GitHub project connection requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
@@ -407,7 +461,9 @@ describe("managed agents proxy", () => {
       kind: "claude_subscription",
       status: "connected",
     });
-    expect(JSON.stringify(body)).not.toMatch(/credentialCiphertext|setup-token/);
+    expect(JSON.stringify(body)).not.toMatch(
+      /credentialCiphertext|setup-token/,
+    );
   });
 
   it("accepts an OpenAI-compatible connection and strips custody fields", async () => {
@@ -433,15 +489,18 @@ describe("managed agents proxy", () => {
       }),
     );
     const response = await proxyManagedAgents(
-      new Request("https://mo-oc-dev.com/api/managed-agents/model-access/connections", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider: "openai_compatible",
-          api_key: "write-only-key",
-          base_url: "https://api.scx.ai/v1",
-        }),
-      }),
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/model-access/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider: "openai_compatible",
+            api_key: "write-only-key",
+            base_url: "https://api.scx.ai/v1",
+          }),
+        },
+      ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
@@ -458,7 +517,9 @@ describe("managed agents proxy", () => {
       kind: "openai_compatible_api",
       baseUrl: "https://api.scx.ai/v1",
     });
-    expect(JSON.stringify(body)).not.toMatch(/write-only-key|credentialCiphertext|must-not-leak/);
+    expect(JSON.stringify(body)).not.toMatch(
+      /write-only-key|credentialCiphertext|must-not-leak/,
+    );
   });
 
   it("proxies project model routes without exposing private audit metadata", async () => {
@@ -479,15 +540,18 @@ describe("managed agents proxy", () => {
       ),
     );
     const response = await proxyManagedAgents(
-      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          connection_id: "mac_scx",
-          model: "GLM-5.3",
-          fallback: "fail",
-        }),
-      }),
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            connection_id: "mac_scx",
+            model: "GLM-5.3",
+            fallback: "fail",
+          }),
+        },
+      ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
@@ -509,19 +573,24 @@ describe("managed agents proxy", () => {
   });
 
   it("removes a project model route without deleting its connection", async () => {
-    const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(init?.method).toBe("DELETE");
-      expect(await new Response(init?.body).text()).toBe("{}");
-      return new Response(null, { status: 204 });
-    });
+    const fetchSpy = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.method).toBe("DELETE");
+        expect(await new Response(init?.body).text()).toBe("{}");
+        return new Response(null, { status: 204 });
+      },
+    );
     vi.stubGlobal("fetch", fetchSpy);
 
     const response = await proxyManagedAgents(
-      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      }),
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development",
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        },
+      ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
@@ -701,20 +770,23 @@ describe("managed agents proxy", () => {
         expect(headers.get("x-forwarded-for")).toBeNull();
         expect(headers.get("x-request-id")).not.toBe("spoofed");
         expect(await new Response(init?.body).json()).toEqual(sentryBody);
-        return Response.json({
-          request: {
-            id: "whr_request",
-            webhookId: "wh_0123456789abcdef0123456789abcdef",
-            projectId: "prj_test",
-            environment: "development",
-            agentId: "oncall",
-            sessionId: "session_pending",
-            outcome: "pending",
-            attempt: 0,
-            createdAt: "2026-09-08T00:00:00.000Z",
-            updatedAt: "2026-09-08T00:00:00.000Z",
+        return Response.json(
+          {
+            request: {
+              id: "whr_request",
+              webhookId: "wh_0123456789abcdef0123456789abcdef",
+              projectId: "prj_test",
+              environment: "development",
+              agentId: "oncall",
+              sessionId: "session_pending",
+              outcome: "pending",
+              attempt: 0,
+              createdAt: "2026-09-08T00:00:00.000Z",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+            },
           },
-        }, { status: 202 });
+          { status: 202 },
+        );
       },
     );
     vi.stubGlobal("fetch", fetchSpy);
@@ -755,7 +827,11 @@ describe("managed agents proxy", () => {
     const response = await handleAgentWebhookInvocation(
       new Request(
         "https://app.opencomputer.dev/api/agent-webhooks/wh_0123456789abcdef0123456789abcdef/bad%20token",
-        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        },
       ),
       {},
     );
@@ -987,28 +1063,33 @@ describe("managed agents proxy", () => {
   });
 
   it("proxies bounded project database queries without exposing backend fields", async () => {
-    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => Response.json({
-      environment: "development",
-      result: {
-        columns: ["id", "token"],
-        rows: [{ id: 1, token: "application-owned-value", private: "drop" }],
-        rowsAffected: 0,
-        truncated: false,
-        provider: "private",
-      },
-    }));
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
+      Response.json({
+        environment: "development",
+        result: {
+          columns: ["id", "token"],
+          rows: [{ id: 1, token: "application-owned-value", private: "drop" }],
+          rowsAffected: 0,
+          truncated: false,
+          provider: "private",
+        },
+      }),
+    );
     vi.stubGlobal("fetch", fetchSpy);
 
     const response = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/projects/prj_test/database/query", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          environment: "development",
-          sql: "SELECT id, token FROM records",
-          parameters: [],
-        }),
-      }),
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test/database/query",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            environment: "development",
+            sql: "SELECT id, token FROM records",
+            parameters: [],
+          }),
+        },
+      ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
@@ -1949,7 +2030,9 @@ describe("managed agents proxy", () => {
     });
 
     it("answers 404 for setup routes outside the contract without contacting the backend", async () => {
-      const fetchSpy = vi.fn(async () => Response.json({ setup: backendSetup }));
+      const fetchSpy = vi.fn(async () =>
+        Response.json({ setup: backendSetup }),
+      );
       vi.stubGlobal("fetch", fetchSpy);
 
       for (const [method, path] of [
@@ -1961,9 +2044,12 @@ describe("managed agents proxy", () => {
         ["GET", "/channels/slack/setups/setup_1/cancel/extra"],
       ]) {
         const response = await proxyManagedAgents(
-          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
-            method,
-          }),
+          new Request(
+            `https://app.opencomputer.dev/api/managed-agents${path}`,
+            {
+              method,
+            },
+          ),
           env,
           caller,
           "/api/managed-agents",
@@ -2164,7 +2250,10 @@ describe("managed agents proxy", () => {
           {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ agentId: "coder@development", name: "Patch" }),
+            body: JSON.stringify({
+              agentId: "coder@development",
+              name: "Patch",
+            }),
           },
         ),
         env,
@@ -3030,7 +3119,11 @@ describe("managed agents proxy", () => {
             activity: {
               activeTurnId: null,
               queued: 0,
-              lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+              lastSettledTurn: {
+                id: "turn-1",
+                status: "completed",
+                at: "2026-09-15T00:01:00.000Z",
+              },
             },
             result: null,
             accountId: "org_test",
@@ -3080,12 +3173,18 @@ describe("managed agents proxy", () => {
         activity: {
           activeTurnId: null,
           queued: 0,
-          lastSettledTurn: { id: "turn-1", status: "completed", at: "2026-09-15T00:01:00.000Z" },
+          lastSettledTurn: {
+            id: "turn-1",
+            status: "completed",
+            at: "2026-09-15T00:01:00.000Z",
+          },
         },
         result: null,
       },
     ]);
-    expect(JSON.stringify(body)).not.toMatch(/accountId|runtimeId|org_test|internal-runtime/);
+    expect(JSON.stringify(body)).not.toMatch(
+      /accountId|runtimeId|org_test|internal-runtime/,
+    );
   });
 
   it("patches session labels and returns the sanitized session with its labels", async () => {
@@ -3123,7 +3222,10 @@ describe("managed agents proxy", () => {
     );
 
     expect(response.status).toBe(200);
-    const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+      URL,
+      RequestInit,
+    ];
     expect(String(target)).toBe(
       "https://managedagents.test/v1/sessions/session-1/labels",
     );
@@ -3160,13 +3262,21 @@ describe("managed agents proxy", () => {
         "fetch",
         vi.fn(async () =>
           Response.json(
-            { error: { code, message: "Label key \"Bad\" must match /internal-pattern/" } },
+            {
+              error: {
+                code,
+                message: 'Label key "Bad" must match /internal-pattern/',
+              },
+            },
             { status: 400 },
           ),
         ),
       );
       const response = await proxyManagedAgents(
-        new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, init),
+        new Request(
+          `https://app.opencomputer.dev/api/managed-agents${path}`,
+          init,
+        ),
         { OC_MANAGED_AGENTS_SECRET: "test-secret" },
         { orgID: "org_test", userID: "user_test" },
         "/api/managed-agents",
@@ -3228,7 +3338,8 @@ describe("managed agents proxy", () => {
           {
             error: {
               code: "idempotency_conflict",
-              message: "idempotencyKey was already used with different input, payload, or mode",
+              message:
+                "idempotencyKey was already used with different input, payload, or mode",
             },
           },
           { status: 409 },
@@ -3260,7 +3371,12 @@ describe("managed agents proxy", () => {
       "fetch",
       vi.fn(async () =>
         Response.json(
-          { error: { code: "invalid_payload", message: "payload cannot exceed 32 KB of JSON" } },
+          {
+            error: {
+              code: "invalid_payload",
+              message: "payload cannot exceed 32 KB of JSON",
+            },
+          },
           { status: 400 },
         ),
       ),
@@ -3426,14 +3542,18 @@ describe("managed agents proxy", () => {
       "/api/managed-agents",
     );
     const detail = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/session-1"),
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+      ),
       env,
       caller,
       "/api/managed-agents",
     );
     expect(list.status).toBe(200);
     expect(detail.status).toBe(200);
-    const listBody = (await list.json()) as { sessions: Array<Record<string, unknown>> };
+    const listBody = (await list.json()) as {
+      sessions: Array<Record<string, unknown>>;
+    };
     const detailBody = (await detail.json()) as Record<string, unknown>;
 
     // Application data is opaque: the same value from both routes.
@@ -3444,7 +3564,9 @@ describe("managed agents proxy", () => {
     // replay; it is not part of the documented session.
     expect(detailBody).not.toHaveProperty("creation");
     expect(detailBody.labels).toEqual({ user_id: "u-42", topic: "t" });
-    expect((detailBody.turns as Array<Record<string, unknown>>)[0].payload).toEqual({
+    expect(
+      (detailBody.turns as Array<Record<string, unknown>>)[0].payload,
+    ).toEqual({
       userId: "u-42",
       repo: "acme/web",
     });
@@ -3480,7 +3602,11 @@ describe("managed agents proxy", () => {
                 tool: "report",
                 callId: "call-1",
                 title: "report",
-                output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+                output: {
+                  userId: "u-42",
+                  pr: { runtimeId: "r-9" },
+                  artifact: "build-12",
+                },
                 result: true,
                 runtimeId: "internal-runtime",
               },
@@ -3509,7 +3635,11 @@ describe("managed agents proxy", () => {
             tool: "report",
             callId: "call-1",
             title: "report",
-            output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+            output: {
+              userId: "u-42",
+              pr: { runtimeId: "r-9" },
+              artifact: "build-12",
+            },
             result: true,
           },
         }),
@@ -3620,24 +3750,32 @@ describe("managed agents proxy", () => {
       );
       expect(init.method).toBe("POST");
       expect(await new Response(init.body).json()).toEqual(body);
-      expect(await response.json()).toEqual({ subscription: publicSubscription });
+      expect(await response.json()).toEqual({
+        subscription: publicSubscription,
+      });
     });
 
     it("lists, reads and deletes subscriptions", async () => {
-      const fetchSpy = vi.fn(async (input: URL | string, init?: RequestInit) => {
-        const url = String(input);
-        if (init?.method === "DELETE") return new Response(null, { status: 204 });
-        if (url.endsWith("/event-subscriptions")) {
-          return Response.json({ subscriptions: [subscription] });
-        }
-        return Response.json({ subscription });
-      });
+      const fetchSpy = vi.fn(
+        async (input: URL | string, init?: RequestInit) => {
+          const url = String(input);
+          if (init?.method === "DELETE")
+            return new Response(null, { status: 204 });
+          if (url.endsWith("/event-subscriptions")) {
+            return Response.json({ subscriptions: [subscription] });
+          }
+          return Response.json({ subscription });
+        },
+      );
       vi.stubGlobal("fetch", fetchSpy);
       const call = (path: string, method = "GET") =>
         proxyManagedAgents(
-          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
-            method,
-          }),
+          new Request(
+            `https://app.opencomputer.dev/api/managed-agents${path}`,
+            {
+              method,
+            },
+          ),
           env,
           caller,
           "/api/managed-agents",
@@ -3693,9 +3831,9 @@ describe("managed agents proxy", () => {
         "/api/managed-agents",
       );
       expect(response.status).toBe(409);
-      expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
-        "destination_session_ended",
-      );
+      expect(
+        ((await response.json()) as { error: { code: string } }).error.code,
+      ).toBe("destination_session_ended");
     });
 
     it("does not admit other methods on subscription routes", async () => {
@@ -3707,9 +3845,12 @@ describe("managed agents proxy", () => {
         ["/projects/prj_1/event-subscriptions/evs_1", "POST"],
       ] as const) {
         const response = await proxyManagedAgents(
-          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
-            method,
-          }),
+          new Request(
+            `https://app.opencomputer.dev/api/managed-agents${path}`,
+            {
+              method,
+            },
+          ),
           env,
           caller,
           "/api/managed-agents",
@@ -3741,7 +3882,10 @@ describe("managed agents proxy", () => {
                     subscriptionId: "evs_1",
                     eventId: "event_9",
                     eventType: "turn.completed",
-                    destination: { type: "session", sessionId: "ses_coordinator" },
+                    destination: {
+                      type: "session",
+                      sessionId: "ses_coordinator",
+                    },
                     status: "delivered",
                     attempt: 1,
                     receipt: { sessionId: "ses_coordinator", turnId: "turn-7" },
@@ -4018,33 +4162,35 @@ describe("managed agents proxy", () => {
   });
 
   it("forwards memory conditional headers and returns the documented status codes", async () => {
-    const fetchSpy = vi.fn(async (_target: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      const headers = new Headers(init?.headers);
-      if (method === "PUT" && headers.get("if-none-match") === "*") {
-        expect(headers.get("if-match")).toBeNull();
-        expect(await new Response(init?.body).json()).toEqual({
-          title: "Workshop requirements",
-          text: "Exercises must run on Node.js 22.",
-        });
-        return Response.json(workshopDocument, {
-          status: 201,
-          headers: { etag: '"rev-7"' },
-        });
-      }
-      if (method === "PATCH") {
-        expect(headers.get("if-match")).toBe('"rev-7"');
-        return Response.json(
-          { ...workshopDocument, agentWrites: "disabled", revision: "rev-8" },
-          { headers: { etag: '"rev-8"' } },
-        );
-      }
-      if (method === "DELETE") {
-        expect(headers.get("if-match")).toBe('"rev-8"');
-        return new Response(null, { status: 204 });
-      }
-      throw new Error(`unexpected ${method}`);
-    });
+    const fetchSpy = vi.fn(
+      async (_target: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const headers = new Headers(init?.headers);
+        if (method === "PUT" && headers.get("if-none-match") === "*") {
+          expect(headers.get("if-match")).toBeNull();
+          expect(await new Response(init?.body).json()).toEqual({
+            title: "Workshop requirements",
+            text: "Exercises must run on Node.js 22.",
+          });
+          return Response.json(workshopDocument, {
+            status: 201,
+            headers: { etag: '"rev-7"' },
+          });
+        }
+        if (method === "PATCH") {
+          expect(headers.get("if-match")).toBe('"rev-7"');
+          return Response.json(
+            { ...workshopDocument, agentWrites: "disabled", revision: "rev-8" },
+            { headers: { etag: '"rev-8"' } },
+          );
+        }
+        if (method === "DELETE") {
+          expect(headers.get("if-match")).toBe('"rev-8"');
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    );
     vi.stubGlobal("fetch", fetchSpy);
     const path =
       "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents/workshop?environment=development";
@@ -4120,7 +4266,10 @@ describe("managed agents proxy", () => {
         "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/memory/requirements/documents/workshop?environment=development",
         {
           method: "PUT",
-          headers: { "content-type": "application/json", "if-match": '"rev-6"' },
+          headers: {
+            "content-type": "application/json",
+            "if-match": '"rev-6"',
+          },
           body: JSON.stringify({ text: "stale" }),
         },
       ),
@@ -4212,7 +4361,9 @@ describe("managed agents proxy", () => {
     );
 
     const response = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/ses_1"),
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/ses_1",
+      ),
       memoryEnv,
       memoryCaller,
       "/api/managed-agents",
@@ -4420,7 +4571,9 @@ describe("managed agents proxy", () => {
     });
     // A model id that is not a model id is not echoed.
     expect(
-      publicFailure({ message: "Model unavailable: sk-ant-api03-0123456789abcdefghijklmnop/x" }),
+      publicFailure({
+        message: "Model unavailable: sk-ant-api03-0123456789abcdefghijklmnop/x",
+      }),
     ).toEqual({
       code: "model_unavailable",
       message: "The requested model is not available to this agent.",
@@ -4465,25 +4618,36 @@ describe("managed agents proxy", () => {
     });
     // A call that bypassed the retry (compaction, titling) failed once: no
     // retry is claimed.
-    expect(publicFailure(providerFailure("internal", { status: 502 }))).toEqual({
-      code: "model_stream_failed",
-      message:
-        "The model call to anthropic/claude-sonnet-4.6 failed before it finished.",
-      model: "anthropic/claude-sonnet-4.6",
-    });
+    expect(publicFailure(providerFailure("internal", { status: 502 }))).toEqual(
+      {
+        code: "model_stream_failed",
+        message:
+          "The model call to anthropic/claude-sonnet-4.6 failed before it finished.",
+        model: "anthropic/claude-sonnet-4.6",
+      },
+    );
     expect(
       publicFailure({
         message: "socket hang up",
-        failure: { class: "provider", subtype: "invalid-output", retry: { attempts: 3, hostGranted: false } },
+        failure: {
+          class: "provider",
+          subtype: "invalid-output",
+          retry: { attempts: 3, hostGranted: false },
+        },
       }),
     ).toEqual({
       code: "model_stream_failed",
-      message: "The model call failed before it finished and its retry failed too.",
+      message:
+        "The model call failed before it finished and its retry failed too.",
     });
     // A model id with a variant suffix survives intact.
     expect(
       publicFailure(
-        providerFailure("unknown", { model: "meta-llama/llama-3.3-70b-instruct:free" }, 2),
+        providerFailure(
+          "unknown",
+          { model: "meta-llama/llama-3.3-70b-instruct:free" },
+          2,
+        ),
       ),
     ).toEqual({
       code: "model_stream_failed",
@@ -4497,7 +4661,9 @@ describe("managed agents proxy", () => {
         message: "The model provider rejected the request.",
       });
     }
-    expect(publicFailure(providerFailure("invalid-request", { status: 400 }))).toEqual({
+    expect(
+      publicFailure(providerFailure("invalid-request", { status: 400 })),
+    ).toEqual({
       code: "model_rejected",
       message: "The model provider rejected the request.",
     });
@@ -4505,47 +4671,69 @@ describe("managed agents proxy", () => {
     expect(
       publicFailure({
         ...providerFailure("invalid-request", { status: 400 }),
-        message: "prompt is too long: 214000 tokens > 200000 maximum context length",
+        message:
+          "prompt is too long: 214000 tokens > 200000 maximum context length",
       }),
     ).toEqual({
       code: "context_too_long",
       message: "The conversation is too long for the model's context window.",
     });
-    expect(publicFailure(providerFailure("no-route", { model: "openai/gpt-5" }))).toEqual({
+    expect(
+      publicFailure(providerFailure("no-route", { model: "openai/gpt-5" })),
+    ).toEqual({
       code: "model_unavailable",
       message: "The model openai/gpt-5 is not available to this agent.",
       model: "openai/gpt-5",
     });
     // A credential-shaped model id is dropped, never echoed.
     expect(
-      publicFailure(providerFailure("transport", { model: "sk-ant-api03-0123456789abcdefghijklmnop" }, 2)),
+      publicFailure(
+        providerFailure(
+          "transport",
+          { model: "sk-ant-api03-0123456789abcdefghijklmnop" },
+          2,
+        ),
+      ),
     ).toEqual({
       code: "model_stream_failed",
-      message: "The model call failed before it finished and its retry failed too.",
+      message:
+        "The model call failed before it finished and its retry failed too.",
     });
     // Fields of another class fall through to the text rules.
     expect(
       publicFailure({
         message: "Sandbox operation timed out",
-        failure: { class: "tool", subtype: "execution", retry: { attempts: 1, hostGranted: false } },
+        failure: {
+          class: "tool",
+          subtype: "execution",
+          retry: { attempts: 1, hostGranted: false },
+        },
       }),
-    ).toEqual({ code: "sandbox_timeout", message: "A sandbox command did not finish in time." });
+    ).toEqual({
+      code: "sandbox_timeout",
+      message: "A sandbox command did not finish in time.",
+    });
     expect(
       publicFailure({
-        message: "prompt is too long: 214000 tokens > 200000 maximum context length",
+        message:
+          "prompt is too long: 214000 tokens > 200000 maximum context length",
       }),
     ).toEqual({
       code: "context_too_long",
       message: "The conversation is too long for the model's context window.",
     });
     expect(
-      publicFailure({ message: "Tool module exported an unregistered tool: lookup_venue" }),
+      publicFailure({
+        message: "Tool module exported an unregistered tool: lookup_venue",
+      }),
     ).toEqual({
       code: "tool_failed",
       message: "Tool lookup_venue failed.",
       tool: "lookup_venue",
     });
-    expect(publicFailure({ message: "The tool has no edge implementation" })).toEqual({
+    expect(
+      publicFailure({ message: "The tool has no edge implementation" }),
+    ).toEqual({
       code: "tool_failed",
       message: "A tool failed.",
     });
@@ -4555,22 +4743,31 @@ describe("managed agents proxy", () => {
     });
     expect(
       publicFailure({
-        message: "Sandbox acquisition returned 503: {\"error\":\"no capacity in us-east\"}",
+        message:
+          'Sandbox acquisition returned 503: {"error":"no capacity in us-east"}',
       }),
     ).toEqual({
       code: "sandbox_failed",
       message: "The sandbox could not run this turn.",
     });
-    expect(publicFailure({ reason: "Runtime harness is not ready\u0007" })).toEqual({
-      code: "runtime_failed",
-      message: "The agent runtime failed before the turn finished.",
-    });
-    expect(publicFailure({ message: "The Workerd runtime stream ended before the turn did" })).toEqual({
+    expect(
+      publicFailure({ reason: "Runtime harness is not ready\u0007" }),
+    ).toEqual({
       code: "runtime_failed",
       message: "The agent runtime failed before the turn finished.",
     });
     expect(
-      publicFailure({ message: "The deployment is missing tool module \"tools/x.js\"" }),
+      publicFailure({
+        message: "The Workerd runtime stream ended before the turn did",
+      }),
+    ).toEqual({
+      code: "runtime_failed",
+      message: "The agent runtime failed before the turn finished.",
+    });
+    expect(
+      publicFailure({
+        message: 'The deployment is missing tool module "tools/x.js"',
+      }),
     ).toEqual({
       code: "deployment_invalid",
       message: "The deployment could not be loaded by the runtime.",
