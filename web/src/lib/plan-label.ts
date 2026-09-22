@@ -27,7 +27,7 @@ type BillingPlanSource = PlanSource & {
 }
 
 type AutumnPlanSource = {
-  concurrencyPlan: string
+  usagePlan: string
   maxConcurrentSandboxes: number
 }
 
@@ -38,7 +38,7 @@ export function organizationPlanDetails(
 ): { label: string; maxConcurrentSandboxes: number | undefined } {
   if (billing?.billingProvider === 'autumn') {
     return {
-      label: planLabel(autumn?.concurrencyPlan ?? 'base'),
+      label: planLabel(autumn?.usagePlan ?? 'base'),
       maxConcurrentSandboxes:
         autumn?.maxConcurrentSandboxes ?? org?.maxConcurrentSandboxes,
     }

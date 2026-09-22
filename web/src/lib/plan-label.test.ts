@@ -21,7 +21,7 @@ describe('planLabel', () => {
 describe('organizationPlanDetails', () => {
   const org = { plan: 'free', maxConcurrentSandboxes: 50 }
 
-  it('uses the Autumn concurrency subscription instead of the legacy org plan', () => {
+  it('uses the Autumn usage plan instead of the legacy org plan or concurrency tier', () => {
     expect(
       organizationPlanDetails(
         org,
@@ -31,11 +31,11 @@ describe('organizationPlanDetails', () => {
           billingProvider: 'autumn',
         },
         {
-          concurrencyPlan: 'concurrency_pro_plus',
-          maxConcurrentSandboxes: 600,
+          usagePlan: 'max',
+          maxConcurrentSandboxes: 50,
         },
       ),
-    ).toEqual({ label: 'Pro+', maxConcurrentSandboxes: 600 })
+    ).toEqual({ label: 'Max', maxConcurrentSandboxes: 50 })
   })
 
   it('uses the standard billing plan for legacy billing', () => {
