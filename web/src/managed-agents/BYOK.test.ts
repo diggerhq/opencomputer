@@ -1,95 +1,52 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_MODEL_ROUTE_PROVIDER,
   hasBYOKPlanAccess,
-  hasProjectCodexAccess,
-  modelAccessCLICommand,
-  projectCodexBindingUpdates,
-} from './BYOK'
+  MODEL_ROUTE_MODEL_SUGGESTIONS,
+  MODEL_ROUTE_PROVIDER_DEFAULTS,
+  modelConnectionLabel,
+  SUBSCRIPTION_ROUTE_AVAILABILITY,
+} from './byok-config'
 
 describe('project BYOK presentation', () => {
+  it('uses mainstream defaults and leaves custom providers explicit', () => {
+    expect(DEFAULT_MODEL_ROUTE_PROVIDER).toBe('openrouter')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.openrouter.model).toBe('openai/gpt-5')
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS.openai_compatible.model).toBe('')
+    expect(JSON.stringify(MODEL_ROUTE_PROVIDER_DEFAULTS)).not.toContain(
+      'scx.ai',
+    )
+    expect(MODEL_ROUTE_PROVIDER_DEFAULTS).not.toHaveProperty('claude')
+    expect(MODEL_ROUTE_MODEL_SUGGESTIONS.openrouter).toContain(
+      'anthropic/claude-sonnet-4.6',
+    )
+    expect(SUBSCRIPTION_ROUTE_AVAILABILITY).toEqual([
+      {
+        id: 'codex',
+        label: 'Codex subscription — Coming soon',
+        disabled: true,
+      },
+      {
+        id: 'claude',
+        label: 'Claude subscription — Coming soon',
+        disabled: true,
+      },
+    ])
+  })
+
+  it('shows a safe custom-provider origin instead of an opaque id', () => {
+    expect(
+      modelConnectionLabel({
+        id: 'mac_1',
+        label: 'OpenAI-compatible API',
+        baseUrl: 'https://api.example.com/v1',
+      }),
+    ).toBe('OpenAI-compatible API · api.example.com')
+  })
+
   it('limits BYOK to Pro and Max plans', () => {
     expect(hasBYOKPlanAccess('base')).toBe(false)
     expect(hasBYOKPlanAccess('pro')).toBe(true)
     expect(hasBYOKPlanAccess('max')).toBe(true)
-  })
-
-  it('uses an install-free production CLI command', () => {
-    expect(
-      modelAccessCLICommand('test', {
-        hostname: 'app.opencomputer.dev',
-        origin: 'https://app.opencomputer.dev',
-      }),
-    ).toBe(
-      'npx --yes --package=@opencomputer/cli@latest -- opencomputer model-access connect codex --project test',
-    )
-  })
-
-  it('targets the current API outside production', () => {
-    expect(
-      modelAccessCLICommand('test', {
-        hostname: 'mo-oc-dev.com',
-        origin: 'https://mo-oc-dev.com',
-      }),
-    ).toContain('opencomputer --api-url https://mo-oc-dev.com model-access')
-  })
-
-  it('requires enabled Codex bindings in both project environments', () => {
-    expect(
-      hasProjectCodexAccess([
-        {
-          provider: 'openai',
-          environment: 'development',
-          enabled: true,
-        },
-      ]),
-    ).toBe(false)
-    expect(
-      hasProjectCodexAccess([
-        {
-          provider: 'openai',
-          environment: 'development',
-          enabled: true,
-        },
-        {
-          provider: 'openai',
-          environment: 'production',
-          enabled: true,
-        },
-      ]),
-    ).toBe(true)
-  })
-
-  it('enables development and production together without reconnecting', () => {
-    expect(projectCodexBindingUpdates('prj_test', true)).toEqual([
-      {
-        projectId: 'prj_test',
-        provider: 'openai',
-        environment: 'development',
-        enabled: true,
-      },
-      {
-        projectId: 'prj_test',
-        provider: 'openai',
-        environment: 'production',
-        enabled: true,
-      },
-    ])
-  })
-
-  it('disables both environments without disconnecting the account', () => {
-    expect(projectCodexBindingUpdates('prj_test', false)).toEqual([
-      {
-        projectId: 'prj_test',
-        provider: 'openai',
-        environment: 'development',
-        enabled: false,
-      },
-      {
-        projectId: 'prj_test',
-        provider: 'openai',
-        environment: 'production',
-        enabled: false,
-      },
-    ])
   })
 })

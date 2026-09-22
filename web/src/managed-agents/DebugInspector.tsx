@@ -16,6 +16,32 @@ import {
   type ManagedAgentRenderDebug,
 } from './api'
 
+export function modelRouteForRender(
+  events: ManagedAgentEvent[],
+  renderEvent: ManagedAgentEvent,
+) {
+  const renderIndex = events.indexOf(renderEvent)
+  if (renderIndex < 0) return undefined
+  let previousRenderIndex = -1
+  for (let index = renderIndex - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === 'agent.rendered') {
+      previousRenderIndex = index
+      break
+    }
+  }
+  const nextRenderIndex = events.findIndex(
+    (event, index) => index > renderIndex && event.type === 'agent.rendered',
+  )
+  const routes = events
+    .slice(
+      previousRenderIndex + 1,
+      nextRenderIndex < 0 ? undefined : nextRenderIndex,
+    )
+    .map(managedAgentModelRoute)
+    .filter((route) => route !== undefined)
+  return routes[routes.length - 1]
+}
+
 function eventSummary(event: ManagedAgentEvent) {
   if (event.type === 'runtime.log') {
     return typeof event.data.message === 'string'
@@ -188,32 +214,21 @@ export function DebugInspector({
     : -1
   const previous =
     actualIndex > 0 ? renders[actualIndex - 1]?.render : undefined
-  const selectedEventIndex = selected ? events.indexOf(selected.event) : -1
-  const nextRenderIndex =
-    selectedEventIndex >= 0
-      ? events.findIndex(
-          (event, index) =>
-            index > selectedEventIndex && event.type === 'agent.rendered',
-        )
-      : -1
-  const route =
-    selectedEventIndex >= 0
-      ? events
-          .slice(
-            selectedEventIndex + 1,
-            nextRenderIndex < 0 ? undefined : nextRenderIndex,
-          )
-          .map(managedAgentModelRoute)
-          .find(Boolean)
-      : undefined
+  const route = selected
+    ? modelRouteForRender(events, selected.event)
+    : undefined
   const accessLabel =
     route?.access.type === 'external_subscription'
       ? route.access.connectionKind === 'codex_subscription'
         ? 'Codex account · BYOK'
         : 'Connected account · BYOK'
-      : route?.access.type === 'managed'
-        ? 'Managed · usage-based'
-        : 'Not resolved yet'
+      : route?.access.type === 'external_api_key'
+        ? route.access.connectionKind === 'openrouter_api_key'
+          ? 'OpenRouter API key · BYOK'
+          : 'OpenAI-compatible API · BYOK'
+        : route?.access.type === 'managed'
+          ? 'Managed · usage-based'
+          : 'Not resolved yet'
   const activity = events
     .filter(
       (event) =>
@@ -275,23 +290,40 @@ export function DebugInspector({
 
             <div className="bg-background grid grid-cols-2 gap-3 rounded-md border p-3 text-xs">
               <div>
-                <p className="text-muted-foreground">Model</p>
+                <p className="text-muted-foreground">Requested model</p>
                 <p className="mt-1 font-mono text-[10px] break-all">
-                  {selected.render.model
-                    ? `${selected.render.model.provider}/${selected.render.model.model}`
-                    : 'Default'}
+                  {route?.requested
+                    ? `${route.requested.provider}/${route.requested.model}`
+                    : selected.render.model
+                      ? `${selected.render.model.provider}/${selected.render.model.model}`
+                      : 'Default'}
                 </p>
-                <p className="text-muted-foreground mt-1 text-[10px]">
-                  {accessLabel}
+              </div>
+              <div>
+                <p className="text-muted-foreground">Effective model</p>
+                <p className="mt-1 font-mono text-[10px] break-all">
+                  {route?.effective
+                    ? `${route.effective.provider}/${route.effective.model}`
+                    : 'Not resolved yet'}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Access</p>
+                <p className="mt-1 text-[10px]">{accessLabel}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Route</p>
+                <p className="mt-1 text-[10px]">
+                  {route?.source
+                    ? `${route.source.replace(/_/g, ' ')}${route.routeRevision ? ` · r${route.routeRevision}` : ''}`
+                    : route?.routeId
+                      ? `Project override${route.routeRevision ? ` · r${route.routeRevision}` : ''}`
+                      : 'Code or platform default'}
                 </p>
               </div>
               <div>
                 <p className="text-muted-foreground">Provider turn</p>
                 <p className="mt-1 font-mono">{selected.render.providerTurn}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">State version</p>
-                <p className="mt-1 font-mono">{selected.render.stateVersion}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Rendered</p>

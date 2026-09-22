@@ -53,6 +53,13 @@ def load(env):
 def guest_hash():
     """A hash of everything that ends up in the guest image.
 
+    MICROVM_GUEST_HASH overrides it. The closure below comes from
+    `go list -deps`, which answers differently depending on the state of the
+    module cache, so a run that computes this more than once can get more than
+    one answer — which is how CI's drift check came to fail against a stamp it
+    had just caused to be written. A caller that needs the check and the stamp
+    to agree resolves it once and passes it down.
+
     Not a hash of the artifact zip: zip stores mtimes, so two builds of
     identical code differ. Not a path filter either — that was the first
     attempt, and it was already wrong: the guest binaries import ten packages
@@ -67,6 +74,9 @@ def guest_hash():
     """
     import hashlib
     import os
+    override = os.environ.get("MICROVM_GUEST_HASH")
+    if override:
+        return override
     root = os.path.abspath(f"{HERE}/../..")
     mod = subprocess.run(["go", "list", "-m"], cwd=root, capture_output=True,
                          text=True, check=True).stdout.strip()
@@ -91,16 +101,42 @@ def guest_hash():
     return h.hexdigest()[:16]
 
 
-def published_hash(region, acct, name):
-    """The guest hash stamped on an image, or None. The image API has no tags,
-    so the stamp rides in --description."""
+def latest_version(region, image_arn):
+    """The version an image currently serves, as its own record reports it.
+
+    Not the first entry of the version list: that list is ordered as STRINGS,
+    so "9.0" sorts above "20.0" and the head of it is whichever version has the
+    highest leading digit. Anything that treats it as "current" is reading an
+    arbitrary old build.
+    """
     out = subprocess.run(
         ["aws", "lambda-microvms", "get-microvm-image",
-         "--image-identifier", arn(region, acct, name), "--region", region,
-         "--query", "description", "--output", "text"],
+         "--image-identifier", image_arn, "--region", region,
+         "--query", "latestActiveImageVersion", "--output", "text"],
         capture_output=True, text=True)
-    desc = out.stdout.strip()
-    m = re.search(r"guest=([0-9a-f]{16})", desc or "")
+    version = out.stdout.strip()
+    return version if version and version != "None" else None
+
+
+def published_hash(region, acct, name):
+    """The guest hash stamped on the version an image is serving, or None.
+
+    The stamp rides in the description because the image API has no tags worth
+    using, and the description belongs to a VERSION — `get-microvm-image` does
+    not return one at all, so reading it there reports every image as unstamped
+    however many times it has been published.
+    """
+    image_arn = arn(region, acct, name)
+    version = latest_version(region, image_arn)
+    if not version:
+        return None
+    out = subprocess.run(
+        ["aws", "lambda-microvms", "list-microvm-image-versions",
+         "--image-identifier", image_arn, "--region", region,
+         "--query", f"items[?imageVersion=='{version}'].description",
+         "--output", "text"],
+        capture_output=True, text=True)
+    m = re.search(r"guest=([0-9a-f]{16})", out.stdout.strip() or "")
     return m.group(1) if m else None
 
 
@@ -149,11 +185,17 @@ def main():
         allow_resize = os.environ.get("MICROVM_ALLOW_RESIZE") == "1"
         acct, bad = account(), []
         for i in e["images"]:
+            image_arn = arn(region, acct, i["name"])
+            serving = latest_version(region, image_arn)
+            # By version, not by list position: that list sorts as strings, so
+            # "9.0" outranks "20.0" and items[0] is an arbitrary old build.
+            query = (f"items[?imageVersion=='{serving}'].resources[0].minimumMemoryInMiB | [0]"
+                     if serving else "items[0].resources[0].minimumMemoryInMiB")
             out = subprocess.run(
                 ["aws", "lambda-microvms", "list-microvm-image-versions",
-                 "--image-identifier", arn(region, acct, i["name"]),
+                 "--image-identifier", image_arn,
                  "--region", region,
-                 "--query", "items[0].resources[0].minimumMemoryInMiB",
+                 "--query", query,
                  "--output", "text"], capture_output=True, text=True)
             live = out.stdout.strip()
             if live in ("", "None", "null"):

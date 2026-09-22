@@ -1,18 +1,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  BrainCircuit,
-  Link2,
-  Link2Off,
-  LockKeyhole,
-  Loader2,
-  RefreshCw,
-  Unplug,
-} from 'lucide-react'
+import { BrainCircuit, Link2, LockKeyhole, Loader2, Trash2 } from 'lucide-react'
 import { getAutumnBilling, getBilling } from '@/api/client'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { CopyRow } from '@/components/copy-row'
 import { EmptyState } from '@/components/empty-state'
 import {
   Panel,
@@ -26,81 +17,38 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  disconnectManagedModelAccessConnection,
+  connectManagedModelApiKey,
+  deleteManagedModelRoute,
   getManagedModelAccessConnections,
-  getManagedModelAccessBindings,
-  putManagedModelAccessBinding,
-  validateManagedModelAccessConnection,
+  getManagedModelRoutes,
+  putManagedModelRoute,
 } from './api'
+import {
+  DEFAULT_MODEL_ROUTE_PROVIDER,
+  hasBYOKPlanAccess,
+  MODEL_ROUTE_MODEL_SUGGESTIONS,
+  MODEL_ROUTE_PROVIDER_DEFAULTS,
+  modelConnectionLabel,
+  SUBSCRIPTION_ROUTE_AVAILABILITY,
+  type ModelRouteProviderChoice,
+} from './byok-config'
 
-export const MODEL_ACCESS_RETURN_TO_KEY = 'opencomputer:model-access:return-to'
-export const MODEL_ACCESS_PROJECT_KEY = 'opencomputer:model-access:project'
-
-function connectionTone(status: string) {
-  if (status === 'connected') return 'running'
-  if (status === 'revoked' || status === 'unavailable') return 'stopped'
-  return 'pending'
-}
-
-export function modelAccessCLICommand(
-  projectSlug: string,
-  location: Pick<Location, 'hostname' | 'origin'>,
-) {
-  const apiArgument =
-    location.hostname === 'app.opencomputer.dev'
-      ? ''
-      : ` --api-url ${location.origin}`
-  return `npx --yes --package=@opencomputer/cli@latest -- opencomputer${apiArgument} model-access connect codex --project ${projectSlug}`
-}
-
-export function hasProjectCodexAccess(
-  bindings:
-    | Array<{
-        enabled: boolean
-        environment: string
-        provider: string
-      }>
-    | undefined,
-) {
-  const enabled = bindings?.filter(
-    (binding) => binding.provider === 'openai' && binding.enabled,
-  )
-  return (
-    enabled?.some((binding) => binding.environment === 'development') ===
-      true && enabled.some((binding) => binding.environment === 'production')
-  )
-}
-
-export function projectCodexBindingUpdates(
-  projectId: string,
-  enabled: boolean,
-) {
-  return (['development', 'production'] as const).map((environment) => ({
-    projectId,
-    provider: 'openai' as const,
-    environment,
-    enabled,
-  }))
-}
-
-export function hasBYOKPlanAccess(plan: string | undefined) {
-  return plan === 'pro' || plan === 'max'
-}
-
-export function ManagedProjectBYOK({
-  projectId,
-  projectSlug,
-}: {
-  projectId: string
-  projectSlug: string
-}) {
+export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
   const { user } = useAuth()
   const queryClient = useQueryClient()
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [confirmRemoveRoute, setConfirmRemoveRoute] = useState(false)
+  const [apiProvider, setApiProvider] = useState<ModelRouteProviderChoice>(
+    DEFAULT_MODEL_ROUTE_PROVIDER,
+  )
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [routeModel, setRouteModel] = useState(
+    MODEL_ROUTE_PROVIDER_DEFAULTS[DEFAULT_MODEL_ROUTE_PROVIDER].model,
+  )
+  const [routeFallback, setRouteFallback] = useState<'fail' | 'managed'>('fail')
   const canManageConnection = user?.capabilities?.manageMembers !== false
-  const cliCommand = modelAccessCLICommand(projectSlug, window.location)
   const connectionQueryKey = ['managed-model-access-connections']
-  const bindingQueryKey = ['managed-model-access-bindings', projectId]
+  const routeQueryKey = ['managed-model-routes', projectId]
   const billing = useQuery({
     queryKey: ['billing'],
     queryFn: getBilling,
@@ -126,63 +74,59 @@ export function ManagedProjectBYOK({
     queryFn: getManagedModelAccessConnections,
     enabled: planEligible,
   })
-  const bindings = useQuery({
-    queryKey: bindingQueryKey,
-    queryFn: () => getManagedModelAccessBindings(projectId),
+  const routes = useQuery({
+    queryKey: routeQueryKey,
+    queryFn: () => getManagedModelRoutes(projectId),
     enabled: planEligible,
   })
-  const codex = connections.data?.find(
-    (connection) => connection.provider === 'openai',
-  )
-  const projectEnabled = hasProjectCodexAccess(bindings.data)
-  const updateProjectAccess = useMutation({
-    mutationFn: (enabled: boolean) =>
+  const removeRoute = useMutation({
+    mutationFn: () =>
       Promise.all(
-        projectCodexBindingUpdates(projectId, enabled).map((binding) =>
-          putManagedModelAccessBinding(binding),
+        (['development', 'production'] as const).map((environment) =>
+          deleteManagedModelRoute({ projectId, environment }),
         ),
       ),
-    onSuccess: async (_bindings, enabled) => {
-      await queryClient.invalidateQueries({ queryKey: bindingQueryKey })
-      notifySuccess(
-        enabled
-          ? 'Codex enabled for this project.'
-          : 'Codex disabled for this project.',
+    onSuccess: async () => {
+      setConfirmRemoveRoute(false)
+      await queryClient.invalidateQueries({ queryKey: routeQueryKey })
+      notifySuccess('Project model route removed.')
+    },
+    onError: (error) =>
+      notifyError("Couldn't remove the project model route.", error),
+  })
+  const configureApiRoute = useMutation({
+    mutationFn: async () => {
+      const connection = await connectManagedModelApiKey({
+        provider: apiProvider,
+        apiKey,
+        ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
+      })
+      return Promise.all(
+        (['development', 'production'] as const).map((environment) =>
+          putManagedModelRoute({
+            projectId,
+            environment,
+            connectionId: connection.id,
+            model: routeModel,
+            fallback: routeFallback,
+          }),
+        ),
       )
     },
-    onError: (error, enabled) =>
-      notifyError(
-        enabled
-          ? "Couldn't enable Codex for this project."
-          : "Couldn't disable Codex for this project.",
-        error,
-      ),
-  })
-  const validateConnection = useMutation({
-    mutationFn: () => validateManagedModelAccessConnection(codex!.id),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: connectionQueryKey })
-      notifySuccess('Codex account revalidated.')
-    },
-    onError: (error) =>
-      notifyError("Couldn't revalidate the Codex account.", error),
-  })
-  const disconnectConnection = useMutation({
-    mutationFn: () => disconnectManagedModelAccessConnection(codex!.id),
-    onSuccess: async () => {
-      setConfirmDisconnect(false)
+      setApiKey('')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: connectionQueryKey }),
-        queryClient.invalidateQueries({ queryKey: bindingQueryKey }),
+        queryClient.invalidateQueries({ queryKey: routeQueryKey }),
       ])
-      notifySuccess('Codex account disconnected.')
+      notifySuccess('Model connection and project route configured.')
     },
     onError: (error) =>
-      notifyError("Couldn't disconnect the Codex account.", error),
+      notifyError("Couldn't configure the model route.", error),
   })
   if (
     billingLoading ||
-    (planEligible && (connections.isLoading || bindings.isLoading))
+    (planEligible && (connections.isLoading || routes.isLoading))
   ) {
     return (
       <Panel>
@@ -195,7 +139,7 @@ export function ManagedProjectBYOK({
 
   if (
     billingError ||
-    (planEligible && (connections.isError || bindings.isError))
+    (planEligible && (connections.isError || routes.isError))
   ) {
     return (
       <Panel>
@@ -228,7 +172,7 @@ export function ManagedProjectBYOK({
         <EmptyState
           icon={LockKeyhole}
           title="BYOK is available on Pro"
-          description="Upgrade to Pro to connect a Codex account and enable it for this project's development and production environments."
+          description="Upgrade to Pro to connect your model provider and configure a project model route."
           action={
             <Button asChild>
               <Link to="/billing">Upgrade to Pro</Link>
@@ -244,194 +188,178 @@ export function ManagedProjectBYOK({
       <Panel>
         <PanelHeader>
           <div>
-            <PanelTitle>BYOK</PanelTitle>
+            <PanelTitle>Bring your own model</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Connect one Codex account to your organization, then enable it for
-              the projects that should use it. Project enablement always covers
-              both development and production. Managed usage-based inference
-              remains the fallback. Runtime compute is still charged.
+              Send every new session through your OpenRouter or
+              OpenAI-compatible API key. This project route overrides useModel()
+              and also works when agent code selects no model.
             </PanelDescription>
           </div>
         </PanelHeader>
-        <PanelContent className="space-y-6">
-          <div>
-            <p className="text-muted-foreground text-xs font-medium uppercase">
-              Connected accounts
-            </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">Codex account</span>
-              {codex ? (
-                <StatusBadge
-                  status={connectionTone(codex.status)}
-                  label={codex.status.replace(/_/g, ' ')}
-                />
-              ) : (
-                <StatusBadge status="stopped" label="Not connected" />
-              )}
-            </div>
-            <p className="text-muted-foreground mt-2 text-sm">
-              {codex
-                ? `Connected to your organization${codex.checkedAt ? ` · checked ${new Date(codex.checkedAt).toLocaleString()}` : ''}`
-                : 'No Codex account is linked.'}
-            </p>
-            <div className="mt-4">
-              <p className="text-muted-foreground text-xs font-medium uppercase">
-                Project access
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <StatusBadge
-                  status={projectEnabled ? 'running' : 'stopped'}
-                  label={
-                    projectEnabled
-                      ? 'Enabled for development and production'
-                      : 'Not enabled for this project'
-                  }
-                />
-              </div>
-              {codex && !projectEnabled ? (
-                <div className="mt-3 space-y-3">
-                  <p className="text-muted-foreground text-sm">
-                    The organization account is connected, but this project will
-                    use Managed inference until it is enabled.
-                  </p>
-                  {canManageConnection && codex.status === 'connected' ? (
-                    <Button
-                      variant="outline"
-                      disabled={updateProjectAccess.isPending}
-                      onClick={() => updateProjectAccess.mutate(true)}
+        <PanelContent className="space-y-4">
+          {routes.data?.length ? (
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-2">
+                {routes.data.map((route) => {
+                  const connection = connections.data?.find(
+                    (candidate) => candidate.id === route.connectionId,
+                  )
+                  return (
+                    <div
+                      key={route.id}
+                      className="flex flex-wrap items-center gap-2 text-sm"
                     >
-                      {updateProjectAccess.isPending ? (
-                        <Loader2 className="animate-spin" />
-                      ) : (
-                        <Link2 />
-                      )}
-                      Enable for this project
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-              {canManageConnection && projectEnabled ? (
-                <div className="mt-3 space-y-3">
-                  <p className="text-muted-foreground text-sm">
-                    Disable Codex here to return this project to Managed
-                    inference without disconnecting the organization account.
-                  </p>
-                  <Button
-                    variant="outline"
-                    disabled={updateProjectAccess.isPending}
-                    onClick={() => updateProjectAccess.mutate(false)}
-                  >
-                    {updateProjectAccess.isPending ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <Link2Off />
-                    )}
-                    Disable for this project
-                  </Button>
-                </div>
+                      <StatusBadge status="running" label={route.environment} />
+                      <span>{route.model}</span>
+                      <span className="text-muted-foreground">
+                        via{' '}
+                        {connection
+                          ? modelConnectionLabel(connection)
+                          : route.connectionId}{' '}
+                        · {route.fallback} · r{route.revision}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+              {canManageConnection ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={removeRoute.isPending}
+                  onClick={() => setConfirmRemoveRoute(true)}
+                >
+                  {removeRoute.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                  Remove route
+                </Button>
               ) : null}
             </div>
-          </div>
-
-          {canManageConnection && codex ? (
-            <div className="flex flex-wrap gap-2 border-t pt-5">
-              <Button
-                variant="outline"
-                disabled={validateConnection.isPending}
-                onClick={() => validateConnection.mutate()}
-              >
-                {validateConnection.isPending ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <RefreshCw />
-                )}
-                Revalidate
-              </Button>
-              <Button
-                variant="outline"
-                disabled={disconnectConnection.isPending}
-                onClick={() => setConfirmDisconnect(true)}
-              >
-                <Unplug /> Disconnect
-              </Button>
-            </div>
-          ) : null}
-
-          {!canManageConnection && !codex ? (
+          ) : (
             <p className="text-muted-foreground text-sm">
-              Ask an organization admin to connect a model account.
+              No project override. Agent code and the platform default determine
+              the model.
             </p>
+          )}
+          {canManageConnection ? (
+            <div className="grid gap-3 border-t pt-4 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">Provider</span>
+                <select
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={apiProvider}
+                  onChange={(event) => {
+                    setApiKey('')
+                    setApiProvider(
+                      event.target.value as ModelRouteProviderChoice,
+                    )
+                    setRouteModel(
+                      MODEL_ROUTE_PROVIDER_DEFAULTS[
+                        event.target.value as ModelRouteProviderChoice
+                      ].model,
+                    )
+                  }}
+                >
+                  <option value="openrouter">OpenRouter API key</option>
+                  <option value="openai_compatible">
+                    Custom OpenAI-compatible API
+                  </option>
+                  {SUBSCRIPTION_ROUTE_AVAILABILITY.map((provider) => (
+                    <option
+                      key={provider.id}
+                      value={provider.id}
+                      disabled={provider.disabled}
+                    >
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-muted-foreground block text-xs">
+                  Codex and Claude subscription connections are coming soon.
+                </span>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">Provider model ID</span>
+                <input
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={routeModel}
+                  list={`model-route-${apiProvider}-models`}
+                  autoComplete="off"
+                  onChange={(event) => setRouteModel(event.target.value)}
+                />
+                <datalist id={`model-route-${apiProvider}-models`}>
+                  {MODEL_ROUTE_MODEL_SUGGESTIONS[apiProvider].map((model) => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+              </label>
+              {apiProvider === 'openai_compatible' ? (
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Base URL</span>
+                  <input
+                    className="border-input bg-background h-9 w-full rounded-md border px-3"
+                    type="url"
+                    value={baseUrl}
+                    placeholder="https://api.example.com/v1"
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">API key</span>
+                <input
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  type="password"
+                  autoComplete="off"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="font-medium">If unavailable</span>
+                <select
+                  className="border-input bg-background h-9 w-full rounded-md border px-3"
+                  value={routeFallback}
+                  onChange={(event) =>
+                    setRouteFallback(event.target.value as 'fail' | 'managed')
+                  }
+                >
+                  <option value="fail">Fail closed</option>
+                  <option value="managed">Use Managed</option>
+                </select>
+              </label>
+              <div className="flex items-end">
+                <Button
+                  disabled={
+                    !routeModel ||
+                    (apiProvider === 'openai_compatible' && !baseUrl) ||
+                    !apiKey ||
+                    configureApiRoute.isPending
+                  }
+                  onClick={() => configureApiRoute.mutate()}
+                >
+                  {configureApiRoute.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Link2 />
+                  )}
+                  Connect and save route
+                </Button>
+              </div>
+            </div>
           ) : null}
-        </PanelContent>
-      </Panel>
-
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Use the account in agent code</PanelTitle>
-            <PanelDescription className="mt-1 max-w-2xl">
-              Select the model-access provider explicitly. Connected accounts
-              use their native provider; Managed models use OpenRouter.
-            </PanelDescription>
-          </div>
-        </PanelHeader>
-        <PanelContent className="space-y-4">
-          <div>
-            <p className="mb-2 text-sm font-medium">Codex account eligible</p>
-            <CopyRow
-              value={'useModel({ provider: "openai", model: "gpt-5.6-sol" })'}
-            />
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">
-              Managed OpenRouter · OpenAI
-            </p>
-            <CopyRow
-              value={
-                'useModel({ provider: "openrouter", model: "openai/gpt-5" })'
-              }
-            />
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">
-              Managed OpenRouter · Anthropic
-            </p>
-            <CopyRow
-              value={
-                'useModel({ provider: "openrouter", model: "anthropic/claude-sonnet-4.6" })'
-              }
-            />
-          </div>
-        </PanelContent>
-      </Panel>
-
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>
-              {codex
-                ? 'Replace the organization account with the CLI'
-                : 'Connect an organization account with the CLI'}
-            </PanelTitle>
-            <PanelDescription className="mt-1 max-w-2xl">
-              The Codex command opens OAuth, links or replaces the organization
-              account, and enables it for this project. If the account is
-              already connected, use the button above to enable this project
-              without repeating OAuth.
-            </PanelDescription>
-          </div>
-        </PanelHeader>
-        <PanelContent className="space-y-4">
-          <CopyRow value={cliCommand} />
         </PanelContent>
       </Panel>
       <ConfirmDialog
-        open={confirmDisconnect}
-        onOpenChange={setConfirmDisconnect}
-        title="Disconnect the Codex account?"
-        description="Projects using this account will return to Managed inference."
-        confirmLabel="Disconnect account"
-        onConfirm={() => disconnectConnection.mutate()}
+        open={confirmRemoveRoute}
+        onOpenChange={setConfirmRemoveRoute}
+        title="Remove this project route?"
+        description="New sessions will use the model selected by agent code or the platform default. The provider connection remains available to other projects."
+        confirmLabel="Remove route"
+        onConfirm={() => removeRoute.mutate()}
       />
     </div>
   )

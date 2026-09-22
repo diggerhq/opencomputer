@@ -1,0 +1,149 @@
+---
+title: "Database"
+description: "A durable SQL database shared by every session in a project environment"
+---
+
+Every project environment has one durable SQL database. All agents and
+sessions in that environment share it, so an agent can save structured state
+in one session and read it in another. Development and Production databases
+are isolated.
+
+OpenComputer provisions the database when you deploy. You do not create a
+database account, copy credentials, or configure a connection string.
+
+## Define the schema
+
+Add ordered SQL migrations under `opencomputer/database/migrations`:
+
+```text
+opencomputer/
+└── database/
+    └── migrations/
+        ├── 001_initial.sql
+        └── 002_monitor_runs.sql
+```
+
+Migration names begin with at least three digits and use lowercase letters,
+numbers, underscores, or hyphens after the prefix. For example:
+
+```sql 001_initial.sql
+CREATE TABLE monitors (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  query TEXT NOT NULL,
+  last_checked_at TEXT
+);
+
+CREATE TABLE observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  monitor_id TEXT NOT NULL REFERENCES monitors(id),
+  observed_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  matched INTEGER NOT NULL DEFAULT 0,
+  summary TEXT
+);
+```
+
+Deploy normally:
+
+```bash
+npx --package @opencomputer/cli opencomputer deploy
+```
+
+Before activating the new deployment, OpenComputer applies every pending
+migration in filename order. Each migration is transactional and may contain
+multiple SQL statements. If a migration fails, the deployment is not
+activated.
+
+Applied migrations are immutable. Adding a new migration is safe; editing the
+contents of an already-applied filename causes deployment to fail. Use a new
+file for each schema change:
+
+```sql 002_monitor_runs.sql
+ALTER TABLE monitors ADD COLUMN schedule TEXT;
+```
+
+<Note>
+  Prefer additive, backward-compatible migrations. Existing sessions stay on the
+  deployment they started with and can overlap a newer deployment.
+</Note>
+
+## Use the database from an agent
+
+Every project session receives a `database` MCP server automatically. Its
+tools run at the OpenComputer edge and do not start or enter a sandbox:
+
+| Tool               | Accepted statements                                      | Use                         |
+| ------------------ | -------------------------------------------------------- | --------------------------- |
+| `database_query`   | One `SELECT`, `WITH`, or `EXPLAIN` statement             | Read rows and inspect data. |
+| `database_execute` | One `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` statement | Change application data.    |
+
+Both tools accept `sql` and an optional `parameters` array. Use placeholders
+instead of interpolating model-generated values:
+
+```json
+{
+  "sql": "INSERT INTO observations (monitor_id, observed_at, content_hash, matched, summary) VALUES (?, ?, ?, ?, ?)",
+  "parameters": [
+    "pricing",
+    "2026-09-17T19:00:00Z",
+    "8f7c…",
+    1,
+    "Enterprise plan appeared"
+  ]
+}
+```
+
+Schema changes and transaction-control statements are unavailable to tools;
+put them in migrations. A call returns columns, rows, rows affected, and a
+`truncated` flag. Results are bounded to 200 rows and 256 KiB, so add a `LIMIT`
+and paginate large reads.
+
+No hook is required. Describe when the agent should use the database in its
+instructions and create the tables it needs with migrations.
+
+## Query from the CLI
+
+Run a read-only query against the linked project's Development database:
+
+```bash
+opencomputer database query "SELECT * FROM monitors ORDER BY id"
+```
+
+Choose Production explicitly, select another project, or bind parameters:
+
+```bash
+opencomputer database query \
+  "SELECT * FROM observations WHERE monitor_id = ? LIMIT ?" \
+  --parameter '"pricing"' \
+  --parameter 20 \
+  --environment production \
+  --project <project-id-or-slug>
+```
+
+Each `--parameter` is a JSON scalar: a quoted JSON string, finite number,
+boolean, or `null`. Add `--json` for the complete machine-readable result.
+
+## Inspect data in the dashboard
+
+Open the project and choose **Database**. The page uses the project's global
+Development or Production selector and provides:
+
+- application tables, their schema, and paginated row previews;
+- applied migration history; and
+- a read-only SQL query box.
+
+The dashboard cannot modify rows or schema. Agent sessions write through
+`database_execute`; schema remains source-controlled in the migrations folder.
+
+## Limits
+
+- 100 migrations per deployment manifest
+- 256 KiB per migration and 1 MiB across all migrations
+- 32 KiB per tool SQL statement
+- 100 parameters totaling at most 64 KiB
+- 200 returned rows and 256 KiB per result
+
+The database belongs to the project environment, not to an individual agent
+or session. Include tenant or user identifiers in your schema when application
+data must be isolated within a shared environment.

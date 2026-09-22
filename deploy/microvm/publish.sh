@@ -100,9 +100,24 @@ LOGGING="{\"cloudWatch\":{\"logGroup\":\"/aws/lambda/microvms/${NAME}\"}}"
 # new sandbox would have booted with no route off the box, which looks like the
 # customer's code hanging rather than like a deploy. Read what the image already
 # has and pass it back; fall back to AWS's internet connector for a new image.
-EXISTING_EGRESS="$(aws lambda-microvms list-microvm-image-versions \
+#
+# Read it off the version the image is actually serving. items[0] is not that
+# version: the list is ordered as STRINGS, so "9.0" sorts above "20.0" and the
+# head of it is whichever version happens to lead with the highest digit. Today
+# every version carries the same connector, so items[0] has been returning the
+# right answer by luck — the first image whose egress ever changes would have
+# been silently reverted to an eleven-version-old value by a routine rebuild.
+SERVING_VERSION="$(aws lambda-microvms get-microvm-image \
   --image-identifier "$IMAGE_ARN" --region "$REGION" \
-  --query 'items[0].egressNetworkConnectors' --output json 2>/dev/null || echo 'null')"
+  --query 'latestActiveImageVersion' --output text 2>/dev/null || echo '')"
+if [[ -n "$SERVING_VERSION" && "$SERVING_VERSION" != "None" ]]; then
+  EXISTING_EGRESS="$(aws lambda-microvms list-microvm-image-versions \
+    --image-identifier "$IMAGE_ARN" --region "$REGION" \
+    --query "items[?imageVersion=='${SERVING_VERSION}'].egressNetworkConnectors | [0]" \
+    --output json 2>/dev/null || echo 'null')"
+else
+  EXISTING_EGRESS='null'
+fi
 if [[ -z "$EXISTING_EGRESS" || "$EXISTING_EGRESS" == "null" || "$EXISTING_EGRESS" == "[]" ]]; then
   EGRESS="${MICROVM_EGRESS_CONNECTORS:-arn:aws:lambda:${REGION}:aws:network-connector:aws-network-connector:INTERNET_EGRESS}"
 else

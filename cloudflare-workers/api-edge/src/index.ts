@@ -76,6 +76,7 @@ import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
 } from "./managed_agent_credit_gate";
+export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -85,6 +86,7 @@ import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
   handleAgentWebhookInvocation,
   handleManagedGitHubCallback,
+  handleManagedSlackCallback,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -5478,6 +5480,15 @@ export default {
       req.method === "GET"
     ) {
       return handleManagedGitHubCallback(req, env);
+    }
+    // Slack's OAuth redirect for apps created by the automated setup. This
+    // exact URL is registered on every generated app; the backend answers
+    // with a redirect into the project's Connections tab.
+    if (
+      path === "/api/managed-agents/slack/callback" &&
+      req.method === "GET"
+    ) {
+      return handleManagedSlackCallback(req, env);
     }
     if (path.startsWith("/api/agent-webhooks/")) {
       return handleAgentWebhookInvocation(req, env);

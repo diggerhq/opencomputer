@@ -153,6 +153,12 @@ export interface GatedToolManifest {
   toolId: string;
 }
 
+export interface DatabaseMigrationManifest {
+  name: string;
+  checksum: string;
+  sql: string;
+}
+
 export interface ProjectResourceManifest {
   version: 1;
   channels: ChannelDefinitionManifest[];
@@ -160,6 +166,8 @@ export interface ProjectResourceManifest {
   outboxes: OutboxDefinitionManifest[];
   outboxRegistrations: OutboxRegistrationManifest[];
   schedules: ScheduleDefinitionManifest[];
+  /** Ordered schema migrations for the environment's default database. */
+  database?: { migrations: DatabaseMigrationManifest[] };
   /**
    * Which tools wait for a human. Declared here as well as in the agent's own
    * manifest because the platform authorizes a proposal before any agent code
@@ -2224,10 +2232,51 @@ async function typescriptFiles(directory: string): Promise<string[]> {
     .sort();
 }
 
+const DATABASE_MIGRATION_NAME = /^\d{3,}_[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?\.sql$/;
+const MAX_DATABASE_MIGRATION_BYTES = 256 * 1024;
+const MAX_DATABASE_MIGRATIONS_BYTES = 1024 * 1024;
+
+async function databaseMigrations(
+  opencomputer: string,
+): Promise<DatabaseMigrationManifest[]> {
+  const directory = resolve(opencomputer, "database", "migrations");
+  if (!(await exists(directory))) return [];
+  const entries = (await readdir(directory, { withFileTypes: true })).sort(
+    (left, right) => left.name.localeCompare(right.name),
+  );
+  const migrations: DatabaseMigrationManifest[] = [];
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const path = resolve(directory, entry.name);
+    if (!entry.isFile() || !DATABASE_MIGRATION_NAME.test(entry.name)) {
+      throw new Error(
+        `${path} must be a migration file named like 001_initial.sql`,
+      );
+    }
+    const sql = await readFile(path, "utf8");
+    const bytes = Buffer.byteLength(sql);
+    if (!sql.trim()) throw new Error(`${path} must not be empty`);
+    if (bytes > MAX_DATABASE_MIGRATION_BYTES) {
+      throw new Error(`${path} cannot exceed 256 KiB`);
+    }
+    totalBytes += bytes;
+    if (totalBytes > MAX_DATABASE_MIGRATIONS_BYTES) {
+      throw new Error("Database migrations cannot exceed 1 MiB in total");
+    }
+    migrations.push({
+      name: entry.name,
+      checksum: createHash("sha256").update(sql).digest("hex"),
+      sql,
+    });
+  }
+  return migrations;
+}
+
 export async function readProjectResources(
   projectRoot: string,
 ): Promise<BuiltProjectResources> {
   const opencomputer = resolve(projectRoot, "opencomputer");
+  const migrations = await databaseMigrations(opencomputer);
   const channelDefinitions = await Promise.all(
     (await typescriptFiles(resolve(opencomputer, "channels"))).map(
       async (path) => channelDefinition(await readFile(path, "utf8"), path),
@@ -2319,6 +2368,7 @@ export async function readProjectResources(
         `${right.agentId}:${right.id}`,
       ),
     ),
+    ...(migrations.length ? { database: { migrations } } : {}),
     gatedTools: gatedTools.sort((left, right) =>
       `${left.agentId}:${left.toolId}`.localeCompare(
         `${right.agentId}:${right.toolId}`,

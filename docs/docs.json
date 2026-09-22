@@ -41,6 +41,7 @@
               "agents/reactive-agents",
               "agents/sessions",
               "agents/memory",
+              "agents/database",
               "agents/schedules",
               "agents/webhooks",
               "agents/capabilities",
@@ -90,6 +91,7 @@
               "agents/examples/gtm-engineer",
               "agents/examples/feature-flag-hygiene",
               "agents/examples/github-actions-triage",
+              "agents/examples/slack-coder",
               "agents/examples/pr-review",
               "agents/examples/test-coverage"
             ]

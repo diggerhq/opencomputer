@@ -1212,7 +1212,7 @@ type Handler = () => unknown
 // missing resource) — used for an agent with no deployment-source link.
 const NOT_FOUND = Symbol('not_found')
 
-let managedAgentItems: Array<{
+const managedAgentItems: Array<{
   id: string
   name: string
   activeAlias: string
@@ -1259,11 +1259,12 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ data: [], next_cursor: null }),
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
-  [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
   [
-    /^\/managed-agents\/model-access\/connections$/,
-    () => ({ data: [] }),
+    /^\/managed-agents\/account\/runtime-profile$/,
+    () => ({ customized: false, displayName: 'OpenComputer default' }),
   ],
+  [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
+  [/^\/managed-agents\/model-access\/connections$/, () => ({ data: [] })],
   [
     /^\/managed-agents\/projects\/[^/]+\/model-access\/bindings$/,
     () => ({ data: [] }),

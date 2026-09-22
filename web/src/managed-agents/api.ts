@@ -38,7 +38,25 @@ const deploymentSchema = z.object({
       id: z.string(),
       digest: z.string(),
       localAgentId: z.string(),
+      // Every agent in the project deployment, by its local id and the
+      // account-level agent id the dashboard addresses it by.
+      agents: z
+        .array(z.object({ localId: z.string(), agentId: z.string() }))
+        .optional()
+        .default([]),
       resources: z.object({
+        // Which agents opted into a channel's events; Project Connections
+        // lists them as the channel's consumers before a connection exists.
+        channelRegistrations: z
+          .array(
+            z.object({
+              agentId: z.string(),
+              channelId: z.string(),
+              triggers: z.array(z.string()).optional().default([]),
+            }),
+          )
+          .optional()
+          .default([]),
         channels: z.array(
           z.object({
             id: z.string(),
@@ -85,6 +103,11 @@ const agentsResponseSchema = z.object({
   agents: z.array(agentSchema),
 })
 
+const managedRuntimeProfileSchema = z.object({
+  customized: z.boolean(),
+  displayName: z.string(),
+})
+
 const projectSchema = z.object({
   id: z.string(),
   slug: z.string(),
@@ -103,6 +126,18 @@ const projectSchema = z.object({
 })
 
 const projectsResponseSchema = z.object({ projects: z.array(projectSchema) })
+
+const databaseValueSchema = z.union([z.string(), z.number(), z.null()])
+const databaseResultSchema = z.object({
+  columns: z.array(z.string()),
+  rows: z.array(z.record(z.string(), databaseValueSchema)),
+  rowsAffected: z.number(),
+  truncated: z.boolean(),
+})
+const databaseQueryResponseSchema = z.object({
+  environment: z.enum(['development', 'production']),
+  result: databaseResultSchema,
+})
 
 const templateInspectionSchema = z.object({
   id: z.string(),
@@ -193,9 +228,15 @@ const modelAccessConnectionSchema = z.object({
   id: z.string(),
   organizationId: z.string().optional(),
   connectedByUserId: z.string().optional(),
-  provider: z.enum(['anthropic', 'openai']),
-  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  provider: z.enum(['anthropic', 'openai', 'openrouter', 'openai_compatible']),
+  kind: z.enum([
+    'claude_subscription',
+    'codex_subscription',
+    'openrouter_api_key',
+    'openai_compatible_api',
+  ]),
   label: z.string(),
+  baseUrl: z.string().url().nullish(),
   externalAccountHint: z.string().nullish(),
   status: z.enum([
     'connecting',
@@ -234,6 +275,23 @@ const modelAccessBindingSchema = z.object({
 
 const modelAccessBindingsResponseSchema = z.object({
   data: z.array(modelAccessBindingSchema),
+})
+
+const projectModelRouteSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string().nullish(),
+  connectionId: z.string(),
+  model: z.string(),
+  fallback: z.enum(['fail', 'managed']),
+  revision: z.number(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+})
+
+const modelRoutesResponseSchema = z.object({
+  data: z.array(projectModelRouteSchema),
 })
 
 const runtimeVariableSchema = z.object({
@@ -309,6 +367,7 @@ const channelSchema = z.object({
   botUserId: z.string().nullish(),
   verifiedAt: z.string().nullish(),
   verificationError: z.enum(['signing_secret_mismatch']).nullish(),
+  lastEventAt: z.string().nullish(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -323,6 +382,63 @@ const channelSchema = z.object({
     )
     .optional()
     .default([]),
+  // The agents whose registrations consume this channel in its environment.
+  agents: z.array(z.string()).optional().default([]),
+})
+
+// Automated Slack setup (docs/agents/channels.mdx "Connect Slack"). The record
+// is redacted by the platform: it never carries the configuration token or
+// the generated app credentials, so nothing here needs to stay out of the
+// query cache.
+export const SLACK_SETUP_PHASES = [
+  'prepared',
+  'creating',
+  'creation_uncertain',
+  'app_created',
+  'exchanging',
+  'connected',
+  'cancelled',
+] as const
+export const SLACK_SETUP_ACTIONS = [
+  'create',
+  'authorize',
+  'manual',
+  'cancel',
+] as const
+
+const slackSetupSchema = z.object({
+  id: z.string(),
+  requestKey: z.string(),
+  projectId: z.string(),
+  agentId: z.string(),
+  alias: z.enum(['development', 'production']),
+  channelId: z.string(),
+  name: z.string(),
+  connectionId: z.string(),
+  phase: z.enum(SLACK_SETUP_PHASES),
+  app: z.object({ id: z.string(), name: z.string() }).optional(),
+  workspace: z.object({ id: z.string(), name: z.string() }).optional(),
+  botUserId: z.string().optional(),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      recoverable: z.boolean(),
+      retryAfterMs: z.number().optional(),
+      pointer: z.string().optional(),
+      at: z.string(),
+    })
+    .optional(),
+  actions: z.array(z.enum(SLACK_SETUP_ACTIONS)),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const slackSetupResponseSchema = z.object({ setup: slackSetupSchema })
+const slackSetupLookupSchema = z.object({ setup: slackSetupSchema.nullable() })
+const slackSetupAuthorizationSchema = z.object({
+  authorizationUrl: z.string().url(),
+  expiresAt: z.string(),
 })
 
 const connectionsResponseSchema = z.object({
@@ -506,10 +622,16 @@ const modelRouteSchema = z.object({
     .optional(),
   runtime: z.string(),
   access: z.object({
-    type: z.enum(['managed', 'external_subscription']),
+    type: z.enum(['managed', 'external_subscription', 'external_api_key']),
     connectionId: z.string().optional(),
     connectionKind: z.string().optional(),
   }),
+  source: z
+    .enum(['agent_route', 'project_route', 'use_model', 'platform_default'])
+    .optional(),
+  routeId: z.string().optional(),
+  routeRevision: z.number().optional(),
+  fallback: z.enum(['fail', 'managed']).optional(),
   openComputerModelChargeUsd: z.number().nullable(),
 })
 
@@ -678,6 +800,7 @@ const projectOverviewSchema = z.object({
 })
 
 export type ManagedAgentSummary = z.infer<typeof agentSchema>
+export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
@@ -705,11 +828,15 @@ export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
+export type ManagedSlackSetup = z.infer<typeof slackSetupSchema>
+export type ManagedSlackSetupPhase = ManagedSlackSetup['phase']
+export type ManagedSlackSetupAction = ManagedSlackSetup['actions'][number]
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
 >
 export type ManagedModelAccessBinding = z.infer<typeof modelAccessBindingSchema>
+export type ManagedProjectModelRoute = z.infer<typeof projectModelRouteSchema>
 export type TemplateInspection = z.infer<typeof templateInspectionSchema>
 export type TemplateInstallation = z.infer<typeof templateInstallationSchema>
 
@@ -742,6 +869,14 @@ export async function renameManagedAgent(input: {
     `/managed-agents/agents/${encodeURIComponent(input.agentId)}`,
     { method: 'PATCH', body: JSON.stringify({ name: input.name }) },
     agentSchema,
+  )
+}
+
+export async function getManagedRuntimeProfile() {
+  return apiFetch(
+    '/managed-agents/account/runtime-profile',
+    undefined,
+    managedRuntimeProfileSchema,
   )
 }
 
@@ -847,6 +982,31 @@ export async function getManagedProject(projectId: string) {
   )
 }
 
+export type ManagedDatabaseValue = z.infer<typeof databaseValueSchema>
+export type ManagedDatabaseResult = z.infer<typeof databaseResultSchema>
+
+export async function queryManagedProjectDatabase(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  sql: string
+  parameters?: Array<string | number | boolean | null>
+}) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          environment: input.environment,
+          sql: input.sql,
+          parameters: input.parameters ?? [],
+        }),
+      },
+      databaseQueryResponseSchema,
+    )
+  ).result
+}
+
 export async function getManagedGitHubStatus(projectId: string) {
   return apiFetch(
     `/managed-agents/projects/${encodeURIComponent(projectId)}/github`,
@@ -925,6 +1085,85 @@ export async function connectManagedModelAccess() {
     '/managed-agents/model-access/connections',
     { method: 'POST', body: JSON.stringify({ provider: 'openai' }) },
     modelAccessConnectResponseSchema,
+  )
+}
+
+export async function connectManagedModelApiKey(input: {
+  provider: 'openrouter' | 'openai_compatible'
+  apiKey: string
+  baseUrl?: string
+  label?: string
+}) {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: input.provider,
+        api_key: input.apiKey,
+        base_url: input.baseUrl,
+        label: input.label,
+      }),
+    },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function connectManagedClaudeSetupToken(token: string) {
+  return apiFetch(
+    '/managed-agents/model-access/connections',
+    {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'anthropic', token }),
+    },
+    modelAccessConnectionSchema,
+  )
+}
+
+export async function getManagedModelRoutes(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/model-routes`,
+      undefined,
+      modelRoutesResponseSchema,
+    )
+  ).data
+}
+
+export async function putManagedModelRoute(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  connectionId: string
+  model: string
+  fallback: 'fail' | 'managed'
+  agentId?: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        connection_id: input.connectionId,
+        model: input.model,
+        fallback: input.fallback,
+        agent_id: input.agentId,
+      }),
+    },
+    projectModelRouteSchema,
+  )
+}
+
+export async function deleteManagedModelRoute(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId?: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify(input.agentId ? { agent_id: input.agentId } : {}),
+    },
   )
 }
 
@@ -1325,6 +1564,79 @@ export async function completeManagedAgentSlack(
     { method: 'PUT', body: JSON.stringify(input) },
     channelSchema,
   )
+}
+
+export type ManagedSlackSetupTarget = {
+  agentId: string
+  alias: 'development' | 'production'
+  channelId?: string
+}
+
+/**
+ * Start automated Slack setup, or continue the one this request key already
+ * names. The same key with the same target and name returns the same record;
+ * with a configuration token it also submits the app to Slack. The token is
+ * request material: the platform uses it once and never stores it.
+ */
+export async function startManagedSlackSetup(
+  input: ManagedSlackSetupTarget & {
+    name: string
+    requestKey: string
+    configurationToken?: string
+  },
+) {
+  return (
+    await apiFetch(
+      '/managed-agents/channels/slack/setups',
+      { method: 'POST', body: JSON.stringify(input) },
+      slackSetupResponseSchema,
+    )
+  ).setup
+}
+
+/** The latest resumable setup for a target, so a reloaded page finds it. */
+export async function findManagedSlackSetup(target: ManagedSlackSetupTarget) {
+  const query = new URLSearchParams({
+    agentId: target.agentId,
+    alias: target.alias,
+    ...(target.channelId ? { channelId: target.channelId } : {}),
+  })
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups?${query.toString()}`,
+      undefined,
+      slackSetupLookupSchema,
+    )
+  ).setup
+}
+
+export async function getManagedSlackSetup(setupId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}`,
+      undefined,
+      slackSetupResponseSchema,
+    )
+  ).setup
+}
+
+/** A fresh authorization URL for the persisted app; earlier ones stop working. */
+export async function authorizeManagedSlackSetup(setupId: string) {
+  return apiFetch(
+    `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}/authorize`,
+    { method: 'POST' },
+    slackSetupAuthorizationSchema,
+  )
+}
+
+export async function cancelManagedSlackSetup(setupId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}/cancel`,
+      { method: 'POST' },
+      slackSetupResponseSchema,
+    )
+  ).setup
 }
 
 const twilioNumberSchema = z.object({

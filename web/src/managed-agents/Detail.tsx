@@ -77,12 +77,14 @@ import {
   sessionsForEnvironment,
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
+import { ManagedProjectSlack } from './Slack'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedTwilioWizard } from './TwilioWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
+import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
 import { AgentMarkdown } from './AgentMarkdown'
@@ -100,6 +102,7 @@ type DetailTab =
   | 'schedules'
   | 'webhooks'
   | 'memory'
+  | 'database'
   | 'secrets'
   | 'connections'
   | 'github'
@@ -114,6 +117,7 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'schedules',
   'webhooks',
   'memory',
+  'database',
   'secrets',
   'connections',
   'github',
@@ -771,6 +775,11 @@ export default function ManagedAgentDetail({
   const activeAliasChannel = activeAliasChannels[0]
   const declaredChannels =
     activeDeployment.data?.projectDeployment?.resources.channels ?? []
+  // Slack apps are set up on Connections; the wizard points there when a
+  // manual completion is blocked by an automated setup.
+  const connectionsHref = project
+    ? `/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`
+    : undefined
 
   const sessionColumns: Column<ManagedAgentSessionSummary>[] = [
     {
@@ -855,6 +864,7 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
+    ...(project ? ([{ id: 'database', label: 'Database' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
     ...(project
       ? ([{ id: 'connections', label: 'Connections' }] as const)
@@ -1117,7 +1127,9 @@ export default function ManagedAgentDetail({
                 chatId={`${environment}:${playgroundChatId}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={
-                  selectedPlaygroundId ? selectedPlaygroundSession.data : undefined
+                  selectedPlaygroundId
+                    ? selectedPlaygroundSession.data
+                    : undefined
                 }
                 events={
                   selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
@@ -1257,6 +1269,17 @@ export default function ManagedAgentDetail({
                 Messaging channels connected to this deployed agent.
               </PanelDescription>
             </div>
+            {project ? (
+              // Slack apps are created and installed from Connections; this
+              // tab keeps routing, destinations and delivery.
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={`/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`}
+                >
+                  Slack setup in Connections
+                </Link>
+              </Button>
+            ) : null}
           </PanelHeader>
           {agent && activeDeployment.data ? (
             declaredChannels.length ? (
@@ -1289,6 +1312,7 @@ export default function ManagedAgentDetail({
                     )}
                     channelId={declaredChannel.id}
                     destinations={Object.keys(declaredChannel.destinations)}
+                    connectionsHref={connectionsHref}
                   />
                 ),
               )
@@ -1298,6 +1322,7 @@ export default function ManagedAgentDetail({
                 alias={activeDeployment.data.alias}
                 agentName={displayManagedAgentName(agent)}
                 connection={activeAliasChannel}
+                connectionsHref={connectionsHref}
               />
             )
           ) : (
@@ -1357,6 +1382,15 @@ export default function ManagedAgentDetail({
         />
       ) : null}
 
+      {activeTab === 'database' && project ? (
+        <ManagedProjectDatabase
+          key={`${project.project.id}:${environment}`}
+          projectId={project.project.id}
+          environment={environment}
+          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
+        />
+      ) : null}
+
       {activeTab === 'secrets' && project ? (
         <ManagedProjectSecrets
           projectId={project.project.id}
@@ -1366,17 +1400,20 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'byok' && project ? (
-        <ManagedProjectBYOK
-          projectId={project.project.id}
-          projectSlug={project.project.slug}
-        />
+        <ManagedProjectBYOK projectId={project.project.id} />
       ) : null}
 
       {activeTab === 'connections' && project ? (
-        <ManagedProjectGitHub
-          projectId={project.project.id}
-          environment={environment}
-        />
+        <div className="space-y-5">
+          <ManagedProjectGitHub
+            projectId={project.project.id}
+            environment={environment}
+          />
+          <ManagedProjectSlack
+            projectId={project.project.id}
+            environment={environment}
+          />
+        </div>
       ) : null}
     </div>
   )

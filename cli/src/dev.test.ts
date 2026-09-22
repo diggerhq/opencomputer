@@ -147,6 +147,94 @@ test("development publish synchronizes every configured project agent", async ()
   }
 });
 
+test("project publish includes ordered default database migrations in deployment identity", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-database-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    const migrations = resolve(
+      initialized.root,
+      "opencomputer",
+      "database",
+      "migrations",
+    );
+    await mkdir(migrations, { recursive: true });
+    await writeFile(resolve(migrations, "002_notes.sql"), "ALTER TABLE notes ADD COLUMN body TEXT;\n");
+    await writeFile(resolve(migrations, "001_initial.sql"), "CREATE TABLE notes (id TEXT PRIMARY KEY);\n");
+    const published: Array<
+      NonNullable<
+        Parameters<
+          Parameters<typeof publishDevelopment>[0]["registerDeployment"]
+        >[0]["projectDeployment"]
+      >
+    > = [];
+    const client = {
+      async registerDeployment(
+        value: Parameters<
+          Parameters<typeof publishDevelopment>[0]["registerDeployment"]
+        >[0],
+      ) {
+        if (value.projectDeployment) published.push(value.projectDeployment);
+        return {
+          id: `${value.agentId}:${value.source.digest}`,
+          agentId: value.agentId,
+          alias: value.alias,
+          createdAt: new Date(0).toISOString(),
+        };
+      },
+    };
+    const binding = {
+      version: 1 as const,
+      apiUrl: "https://app.opencomputer.dev",
+      projectId: "prj_test",
+      projectName: "Test",
+      agentId: "test-agent",
+    };
+    await publishProjectDevelopment(client, initialized.root, binding);
+    assert.deepEqual(
+      published[0]?.resources.database?.migrations.map((migration) => migration.name),
+      ["001_initial.sql", "002_notes.sql"],
+    );
+    assert.match(
+      published[0]?.resources.database?.migrations[0]?.checksum ?? "",
+      /^[a-f0-9]{64}$/,
+    );
+
+    const firstDigest = published[0]?.digest;
+    published.length = 0;
+    await writeFile(resolve(migrations, "002_notes.sql"), "ALTER TABLE notes ADD COLUMN text TEXT;\n");
+    await publishProjectDevelopment(client, initialized.root, binding);
+    assert.notEqual(published[0]?.digest, firstDigest);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("project publish rejects invalid default database migration files", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-dev-database-invalid-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    const migrations = resolve(initialized.root, "opencomputer", "database", "migrations");
+    await mkdir(migrations, { recursive: true });
+    await writeFile(resolve(migrations, "notes.sql"), "CREATE TABLE notes (id TEXT);\n");
+    await assert.rejects(
+      publishProjectDevelopment(
+        { registerDeployment: async () => { throw new Error("must not register"); } },
+        initialized.root,
+        {
+          version: 1,
+          apiUrl: "https://app.opencomputer.dev",
+          projectId: "prj_test",
+          projectName: "Test",
+          agentId: "test-agent",
+        },
+      ),
+      /must be a migration file named like 001_initial\.sql/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 const WORKSHOP_MEMORY = (maxBytes: string) => `import { defineMemory, documentMemory } from "@opencomputer/agent";
 
 export const requirements = defineMemory({

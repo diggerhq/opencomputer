@@ -35,6 +35,15 @@ export interface ManagedProject {
   updatedAt: string;
 }
 
+export type DatabaseValue = string | number | null;
+
+export interface DatabaseResult {
+  columns: string[];
+  rows: Array<Record<string, DatabaseValue>>;
+  rowsAffected: number;
+  truncated: boolean;
+}
+
 export interface ManagedAgentDeployment {
   id: string;
   agentId: string;
@@ -100,9 +109,14 @@ export interface ModelAccessConnection {
   id: string;
   organizationId: string;
   connectedByUserId: string;
-  provider: "anthropic" | "openai";
-  kind: "claude_subscription" | "codex_subscription";
+  provider: "anthropic" | "openai" | "openrouter" | "openai_compatible";
+  kind:
+    | "claude_subscription"
+    | "codex_subscription"
+    | "openrouter_api_key"
+    | "openai_compatible_api";
   label: string;
+  baseUrl?: string;
   externalAccountHint?: string;
   status: string;
   checkedAt?: string;
@@ -118,6 +132,19 @@ export interface ModelAccessBinding {
   connectionId: string;
   enabled: boolean;
   enabledByUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ModelRoute {
+  id: string;
+  projectId: string;
+  environment: "development" | "production";
+  agentId?: string;
+  connectionId: string;
+  model: string;
+  fallback: "fail" | "managed";
+  revision: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -750,6 +777,61 @@ export class OpenComputerClient {
     });
   }
 
+  connectModelAccessApiKey(input: {
+    provider: "openrouter" | "openai_compatible";
+    api_key: string;
+    base_url?: string;
+    label?: string;
+  }) {
+    return this.request<ModelAccessConnection>(
+      "/api/managed-agents/model-access/connections",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  async modelRoutes(projectId: string): Promise<ModelRoute[]> {
+    const result = await this.request<{ data: ModelRoute[] }>(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/model-routes`,
+    );
+    return result.data;
+  }
+
+  putModelRoute(input: {
+    projectId: string;
+    environment: "development" | "production";
+    connectionId: string;
+    model: string;
+    agentId?: string;
+    fallback: "fail" | "managed";
+  }) {
+    return this.request<ModelRoute>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          connection_id: input.connectionId,
+          model: input.model,
+          fallback: input.fallback,
+          ...(input.agentId ? { agent_id: input.agentId } : {}),
+        }),
+      },
+    );
+  }
+
+  deleteModelRoute(input: {
+    projectId: string;
+    environment: "development" | "production";
+    agentId?: string;
+  }) {
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/model-routes/${input.environment}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify(input.agentId ? { agent_id: input.agentId } : {}),
+      },
+    );
+  }
+
   // Relays a credential the local CLI obtained through the authorized Codex
   // OAuth flow into a connected subscription (encrypted custody server-side).
   relayModelAccess(
@@ -934,6 +1016,26 @@ export class OpenComputerClient {
         }>;
       }
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
+  }
+
+  async databaseQuery(input: {
+    projectId: string;
+    environment: "development" | "production";
+    sql: string;
+    parameters?: Array<string | number | boolean | null>;
+  }): Promise<DatabaseResult> {
+    const response = await this.request<{
+      environment: "development" | "production";
+      result: DatabaseResult;
+    }>(`/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`, {
+      method: "POST",
+      body: JSON.stringify({
+        environment: input.environment,
+        sql: input.sql,
+        parameters: input.parameters ?? [],
+      }),
+    });
+    return response.result;
   }
 
   // Project memory (docs/agents/document-memory.mdx, "Management API").

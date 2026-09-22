@@ -913,9 +913,15 @@ export const ModelAccessConnectionSchema = z.object({
   id: z.string(),
   organization_id: z.string(),
   connected_by_user_id: z.string(),
-  provider: z.enum(['anthropic', 'openai']),
-  kind: z.enum(['claude_subscription', 'codex_subscription']),
+  provider: z.enum(['anthropic', 'openai', 'openrouter', 'openai_compatible']),
+  kind: z.enum([
+    'claude_subscription',
+    'codex_subscription',
+    'openrouter_api_key',
+    'openai_compatible_api',
+  ]),
   label: z.string(),
+  base_url: z.string().url().nullish(),
   external_account_hint: z.string().nullish(),
   status: z.enum([
     'connecting',
@@ -1002,14 +1008,19 @@ export const ModelAccessErrorSchema = z.object({
 
 // The immutable record of how one provider call was routed and billed.
 export const EffectiveModelRouteSchema = z.object({
-  requested: z.object({ provider: z.string(), model: z.string() }),
+  requested: z.object({ provider: z.string(), model: z.string() }).nullable(),
   effective: z.object({ provider: z.string(), model: z.string() }),
-  runtime: z.enum(['claude', 'codex']),
+  runtime: z.enum(['claude', 'codex', 'opencode']),
   access: z.object({
-    type: z.enum(['managed', 'external_subscription']),
+    type: z.enum(['managed', 'external_subscription', 'external_api_key']),
     connection_id: z.string().nullish(),
     connection_kind: z
-      .enum(['claude_subscription', 'codex_subscription'])
+      .enum([
+        'claude_subscription',
+        'codex_subscription',
+        'openrouter_api_key',
+        'openai_compatible_api',
+      ])
       .nullish(),
   }),
   fallback: z

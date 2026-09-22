@@ -5,6 +5,7 @@ import {
   Boxes,
   BrainCircuit,
   CalendarClock,
+  Database,
   FolderKanban,
   KeySquare,
   Layers,
@@ -89,6 +90,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/memory`,
             label: 'Memory',
             icon: BookOpen,
+          },
+          {
+            to: `${projectPath}/database`,
+            label: 'Database',
+            icon: Database,
           },
           {
             to: `${projectPath}/secrets`,

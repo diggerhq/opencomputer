@@ -16,6 +16,7 @@ my-agent/
 │   ├── .env.example
 │   ├── project.ts
 │   ├── channels/        # optional project messaging channels
+│   ├── database/        # optional default database migrations
 │   ├── outboxes/        # optional durable notification routes
 │   └── agents/
 │       └── hello-world/
@@ -32,6 +33,8 @@ my-agent/
 - `opencomputer/agents/<id>/agent.ts` defines one agent.
 - `opencomputer/channels/` and `opencomputer/outboxes/` define shared project
   resources; registrations under an agent authorize that agent to use them.
+- `opencomputer/database/migrations/` holds ordered SQL migrations for the
+  project's [default database](/agents/database).
 - `opencomputer/.env.local` optionally holds ignored development secrets.
 - `.opencomputer/project.json` records the linked cloud project; the CLI's
   build output is cached under `node_modules/.cache/opencomputer/` and never
@@ -107,6 +110,8 @@ The current project dashboard provides:
   binding
 - **Outboxes** for inspecting proactive notification delivery
 - **Memory** for reading, editing and exporting saved agent notes
+- **Database** for inspecting tables, rows and applied migrations, and running
+  read-only queries
 - **Secrets** for write-only project and agent credentials
 
 Project and agent behavior remains code-owned. The dashboard is for selection,

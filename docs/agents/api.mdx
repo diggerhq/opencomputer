@@ -457,6 +457,122 @@ The delivered event names identifiers and the outcome; a completed turn's
 final message is included, bounded to 16 KB. The receiving agent should
 treat that text as data about another agent's work, not as instructions.
 
+## Slack
+
+Automatic Slack setup creates a dedicated Slack app for one agent, environment
+and channel, then installs it. The dashboard's Connections tab uses these
+routes; call them from your own tooling to script the same flow.
+
+| Operation | Method and path | Body or query | Success |
+| --- | --- | --- | --- |
+| Start or continue | `POST /channels/slack/setups` | `{ agentId, alias, channelId?, name, requestKey, configurationToken? }` | `201` with `{ setup }` when created; `200` when the key names an existing setup |
+| Find by target | `GET /channels/slack/setups` | `?agentId=&alias=&channelId=` | `200` with `{ setup }`: the latest setup for the target that was not cancelled, a connected one included, or `null` |
+| Get | `GET /channels/slack/setups/<id>` | None | `200` with `{ setup }` |
+| Authorize | `POST /channels/slack/setups/<id>/authorize` | None | `200` with `{ authorizationUrl, expiresAt }` |
+| Cancel | `POST /channels/slack/setups/<id>/cancel` | None | `200` with `{ setup }` in phase `cancelled` |
+
+`alias` is `development` or `production`. `channelId` names a channel declared
+in code; omit it for an agent whose deployment declares none, and the setup
+then reports `channelId: "slack"`. `name` is the bot's display name, 1 to 35
+characters. `requestKey` is
+16 to 128 characters of letters, digits, `_` and `-` chosen by the caller: the
+same key with the same target and name returns the same setup, so a retried
+request never creates a second app, and a reused key with a different target
+or name is `409 slack_setup_conflict`. `configurationToken` is a Slack app
+configuration access token; it is used once to create the app and is never
+stored or echoed. Send it with the first request, or with a later request
+carrying the same key while the setup is `prepared`.
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/channels/slack/setups' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agentId": "coder",
+    "alias": "development",
+    "name": "Patch",
+    "requestKey": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a6b",
+    "configurationToken": "<configuration-access-token>"
+  }'
+```
+
+A setup is:
+
+```json
+{
+  "setup": {
+    "id": "<setup-id>",
+    "requestKey": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a6b",
+    "projectId": "<project-id>",
+    "agentId": "coder",
+    "alias": "development",
+    "channelId": "slack",
+    "name": "Patch",
+    "connectionId": "<connection-id>",
+    "phase": "app_created",
+    "app": { "id": "A0123456789", "name": "Patch" },
+    "actions": ["authorize", "cancel"],
+    "createdAt": "2026-09-17T10:00:00.000Z",
+    "updatedAt": "2026-09-17T10:00:04.000Z"
+  }
+}
+```
+
+`workspace` (`{ id, name }`) and `botUserId` appear once the app is installed.
+`error` carries `{ code, message, recoverable, retryAfterMs?, pointer?, at }`
+when the last step did not complete; `recoverable` says whether submitting
+again with corrected input can succeed. `actions` lists what the setup accepts
+next: `create` (submit a configuration token), `authorize`, `manual` (finish
+through manual setup) and `cancel`.
+
+| Phase | Meaning |
+| --- | --- |
+| `prepared` | The target is reserved; a configuration token creates the app |
+| `creating` | One creation attempt is in progress; a request with the same key joins it |
+| `creation_uncertain` | Slack may or may not have created the app; check the Slack app list, then finish manually or cancel |
+| `app_created` | The app exists; authorize to install it |
+| `exchanging` | Slack approved the installation; the bot is being verified |
+| `connected` | The connection is active |
+| `cancelled` | Cancelled by the caller; an app already created in Slack is not deleted |
+
+Error codes, as HTTP errors or as `error.code` on the setup:
+
+| Code | Meaning |
+| --- | --- |
+| `slack_setup_conflict` | The request key was already used with a different target or name |
+| `slack_setup_active` | Another setup is in progress for the target; `error.setupId` names it, and finding it by target returns the same record. Also answered by the manual create or reconnect (`POST /channels/slack/connections`) while an automated setup works on the target |
+| `slack_already_connected` | The target already has a connected app; disconnect it first |
+| `slack_setup_unavailable` | Automatic setup is not available; use manual setup |
+| `slack_setup_not_found` | `404`: no setup with that id in this project |
+| `slack_setup_not_authorizable` | `409` on authorize: the setup's phase does not allow it; read the setup for its next step |
+| `slack_setup_connected` | `409` on cancel: the setup is connected; disconnect the connection instead |
+| `slack_setup_busy` | `409` on cancel: the setup is creating or exchanging; wait for it to finish |
+| `slack_setup_cancelled` | Recorded on a setup cancelled after the app was created or its creation was uncertain: the Slack app may still appear in the workspace's app list and can be removed there |
+| `slack_manual_completion_blocked` | `409` on the manual credential save (`PUT /channels/slack/connections/<id>`): an automated setup owns the connection, or the pasted manifest is no longer current; cancel the setup, generate a new manifest, then enter credentials |
+| `slack_configuration_token_invalid`, `slack_configuration_token_expired` | The token was rejected; generate a new one and submit it with the same key |
+| `slack_manifest_rejected` | Slack rejected the generated app configuration; `pointer` names the field. Not recoverable in place: fix the declaration, redeploy, cancel the setup and start again |
+| `slack_app_limit_reached` | The workspace cannot hold another app |
+| `slack_rate_limited` | Wait `retryAfterMs` and submit again |
+| `slack_provider_unavailable` | Slack declined with an unexpected error when creating the app, or did not answer during installation; submit or authorize again |
+| `slack_creation_uncertain` | See phase `creation_uncertain` |
+| `slack_exchange_failed`, `slack_exchange_uncertain`, `slack_authorization_denied`, `slack_authorization_expired` | The installation did not complete; authorize again |
+| `slack_app_mismatch`, `slack_workspace_mismatch`, `slack_scope_missing`, `slack_enterprise_install_unsupported` | The installation did not match the created app, its established workspace or its declared scopes; authorize again and approve that app in a single workspace |
+| `slack_setup_superseded` | The setup lost ownership of its connection to a manual connection or reconnect; set up manually or start again |
+
+The authorization URL opens Slack's consent page for the created app and is
+valid for ten minutes; authorizing again issues a new one. Slack sends the
+outcome to `https://app.opencomputer.dev/api/managed-agents/slack/callback`,
+which is registered on every app created this way, and the browser is then
+redirected to the project's Connections tab with `environment=<alias>`,
+`slack=<result>` and `setup=<id>` in the query. `result` is `connected` or one of
+`authorization_denied`, `authorization_expired`, `exchange_failed`,
+`app_mismatch`, `workspace_mismatch`, `scope_missing`,
+`enterprise_install_unsupported`, `superseded` and `provider_unavailable`.
+API clients do not call the callback.
+
+`GET /channels` lists connections; each Slack connection carries `agents`, the
+agents that receive the channel's messages in its environment.
+
 ## Projects, agents and deployments
 
 | Operation | Method and path | Success |
