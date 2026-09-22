@@ -147,42 +147,45 @@ export default function ProjectsHome() {
       </section>
 
       {archivedItems.length > 0 && (
-        <section className="space-y-3">
-          <div>
-            <h2 className="text-sm font-medium">Archived</h2>
+        <details className="group space-y-3">
+          <summary className="text-muted-foreground hover:text-foreground flex w-fit cursor-pointer list-none items-center gap-1.5 text-sm font-medium transition-colors [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
+            Archived ({archivedItems.length})
+          </summary>
+          <div className="space-y-3 pt-1">
             <p className="text-muted-foreground text-xs">
               Archived projects keep their configuration and can be restored.
             </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {archivedItems.map((project) => (
+                <Panel key={project.id} className="bg-muted/20">
+                  <PanelContent className="flex items-center gap-3">
+                    <div className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-lg">
+                      <Archive className="size-4" aria-hidden />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {project.name}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 text-xs">
+                        Archived
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={restore.isPending}
+                      onClick={() => restore.mutate(project.id)}
+                    >
+                      <RotateCcw className="size-4" aria-hidden />
+                      Restore
+                    </Button>
+                  </PanelContent>
+                </Panel>
+              ))}
+            </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {archivedItems.map((project) => (
-              <Panel key={project.id} className="bg-muted/20">
-                <PanelContent className="flex items-center gap-3">
-                  <div className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-lg">
-                    <Archive className="size-4" aria-hidden />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {project.name}
-                    </p>
-                    <p className="text-muted-foreground mt-0.5 text-xs">
-                      Archived
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={restore.isPending}
-                    onClick={() => restore.mutate(project.id)}
-                  >
-                    <RotateCcw className="size-4" aria-hidden />
-                    Restore
-                  </Button>
-                </PanelContent>
-              </Panel>
-            ))}
-          </div>
-        </section>
+        </details>
       )}
 
       <ConfirmDialog

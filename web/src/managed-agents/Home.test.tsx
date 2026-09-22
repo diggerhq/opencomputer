@@ -75,7 +75,7 @@ describe('projects home onboarding', () => {
     expect(markup).not.toContain('Archive project')
   })
 
-  it('shows archived projects with a restore action', () => {
+  it('hides archived projects behind a collapsed restore section', () => {
     const now = new Date().toISOString()
     const markup = renderProjects(
       [],
@@ -93,7 +93,9 @@ describe('projects home onboarding', () => {
       ],
     )
 
-    expect(markup).toContain('Archived')
+    expect(markup).toContain('<details class="group space-y-3">')
+    expect(markup).not.toContain('<details open=""')
+    expect(markup).toContain('Archived (1)')
     expect(markup).toContain('Support')
     expect(markup).toContain('Restore')
   })
