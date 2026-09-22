@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { useAuth } from '@/hooks/useAuth'
+import { organizationPlanDetails } from '@/lib/plan-label'
 import {
   deleteCustomDomain,
+  getAutumnBilling,
+  getBilling,
   getInvitations,
   getOrg,
   getOrgMembers,
@@ -72,6 +75,16 @@ export default function Settings() {
     queryKey: ['org'],
     queryFn: getOrg,
   })
+  const { data: billing, isLoading: isBillingLoading } = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
+  const usesAutumnBilling = billing?.billingProvider === 'autumn'
+  const { data: autumn, isLoading: isAutumnLoading } = useQuery({
+    queryKey: ['autumn-billing'],
+    queryFn: getAutumnBilling,
+    enabled: usesAutumnBilling,
+  })
 
   // Local edits override the fetched name; null = "not edited" (avoids an
   // effect to sync the field with the query).
@@ -119,7 +132,7 @@ export default function Settings() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
-  if (isLoading) {
+  if (isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)) {
     return (
       <div>
         <PageHeader title="Settings" description="Organization configuration" />
@@ -133,6 +146,7 @@ export default function Settings() {
 
   const unchanged = name === (org?.name ?? '')
   const hasDomain = !!org?.customDomain && org.customDomain !== ''
+  const plan = organizationPlanDetails(org, billing, autumn)
 
   return (
     <div>
@@ -177,15 +191,12 @@ export default function Settings() {
               />
             </Field>
 
-            <ReadOnlyField
-              label="Plan"
-              value={<span className="capitalize">{org?.plan ?? 'free'}</span>}
-            />
+            <ReadOnlyField label="Plan" value={plan.label} />
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <ReadOnlyField
                 label="Max concurrent sandboxes"
-                value={org?.maxConcurrentSandboxes}
+                value={plan.maxConcurrentSandboxes}
               />
               <ReadOnlyField
                 label="Max timeout (sec)"
