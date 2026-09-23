@@ -52,9 +52,9 @@ For minting several links at once, `--no-wait` prints the link and exits.
 `--json` does the same and is the one to script against.
 
 Omitting the label connects it as `default`, which is what the examples below
-assume. **`default` is a literal name, not a fallback**: if you connect an
-account as `support`, a call that passes no `label` looks for one called
-`default` and gets a `404` even though `support` is the only account you have.
+assume. Calls do not need a label when exactly one eligible account is
+connected. When several accounts are eligible, pass the label to select one;
+otherwise the call returns `409 connection_alias_required` and lists them.
 
 The provider segment in the URL is the grant, not the service — `google` for
 gmail, calendar, drive and sheets; `github` for GitHub; and `linear` for Linear.
@@ -287,7 +287,7 @@ collections rather than asking for them in one call.
 
 | You see | It means | Do this |
 | --- | --- | --- |
-| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | `opencomputer connection list` to see the labels, then pass the matching one — or connect an account |
+| `404 connection_not_found` | No eligible connected account exists, or no account matches the requested `label` | `opencomputer connection list` to inspect the accounts, then connect one or correct the label |
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
