@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { GithubMark } from '@/components/github-mark'
 import { PageHeader } from '@/components/page-header'
+import { ServiceLogo } from '@/components/service-logo'
 import {
   Panel,
   PanelContent,
@@ -72,8 +73,9 @@ function connectionService(connection: { provider: string; scopes: string[] }) {
 
 function connectionServiceId(
   connection: ManagedAgentConnection,
-): 'gmail' | 'calendar' | 'drive' | 'sheets' | 'github' | undefined {
+): 'gmail' | 'calendar' | 'drive' | 'sheets' | 'github' | 'linear' | undefined {
   if (connection.provider === 'github') return 'github'
+  if (connection.provider === 'linear') return 'linear'
   if (connection.provider !== 'google') return undefined
   // Returning undefined here strands the connection: the page skips it when
   // reconciling and cannot disconnect it either.
@@ -91,7 +93,7 @@ async function loadManagedAgentConnections() {
       const service = connectionServiceId(connection)
       if (!service) return Promise.resolve()
       return refreshManagedAgentConnection(
-        service === 'github' ? 'github' : 'google',
+        service === 'github' || service === 'linear' ? service : 'google',
         service,
         connection.id,
       )
@@ -432,11 +434,16 @@ export default function ManagedAgentConnections() {
         <div className="grid gap-3 md:grid-cols-2">
           {connections.data.map((connection) => {
             const agentName = agentNames.get(connection.agentId)
+            const service = connectionServiceId(connection)
             return (
               <Panel key={connection.id}>
                 <PanelContent className="flex items-center gap-3">
                   <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
-                    <Plug className="size-4" aria-hidden />
+                    {service === 'github' ? (
+                      <GithubMark className="size-4" />
+                    ) : (
+                      <ServiceLogo service={service} className="size-4" />
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">
@@ -453,7 +460,7 @@ export default function ManagedAgentConnections() {
                     </p>
                   </div>
                   <StatusBadge status={connection.status} />
-                  {connectionServiceId(connection) ? (
+                  {service ? (
                     <Button
                       type="button"
                       variant="ghost"
@@ -477,7 +484,7 @@ export default function ManagedAgentConnections() {
             </div>
             <p className="text-sm font-medium">No connections yet</p>
             <p className="text-muted-foreground mt-1 max-w-sm text-sm">
-              Add Gmail or Google Calendar to make it available to your agents.
+              Add Google, GitHub, or Linear accounts for your agents.
             </p>
             <Button
               className="mt-4"
@@ -567,6 +574,7 @@ export default function ManagedAgentConnections() {
                 <option value="calendar">Google Calendar</option>
                 <option value="drive">Google Drive</option>
                 <option value="sheets">Google Sheets</option>
+                <option value="linear">Linear</option>
               </select>
             </div>
             <div className="grid gap-2">
@@ -634,7 +642,7 @@ export default function ManagedAgentConnections() {
           setRemovingConnection(true)
           setRemoveConnectionError(undefined)
           void disconnectManagedAgentConnection(
-            service === 'github' ? 'github' : 'google',
+            service === 'github' || service === 'linear' ? service : 'google',
             service,
             connectionToRemove.id,
           )

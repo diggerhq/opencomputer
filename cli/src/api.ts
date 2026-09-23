@@ -311,7 +311,12 @@ export interface ManagedSessionSummary {
     queued: number;
     lastSettledTurn: { id: string; status: string; at: string } | null;
   };
-  result: { turnId: string; callId: string; reportedAt: string; data: unknown } | null;
+  result: {
+    turnId: string;
+    callId: string;
+    reportedAt: string;
+    data: unknown;
+  } | null;
 }
 
 export interface ManagedSessionPage {
@@ -688,7 +693,7 @@ export class OpenComputerClient {
   // ── Connected services ───────────────────────────────────────────────────
   // Accounts the platform holds an OAuth credential for, reached from an agent
   // with callService(). The provider segment is the grant — google covers
-  // gmail, calendar, drive and sheets; github is its own.
+  // gmail, calendar, drive and sheets; github and linear are their own.
 
   async serviceConnections(): Promise<ServiceConnection[]> {
     const result = await this.request<{ connections: ServiceConnection[] }>(
@@ -703,7 +708,10 @@ export class OpenComputerClient {
    * signs in to OpenComputer.
    */
   linkServiceConnection(input: { service: string; label?: string }) {
-    const provider = input.service === "github" ? "github" : "google";
+    const provider =
+      input.service === "github" || input.service === "linear"
+        ? input.service
+        : "google";
     return this.request<{
       service: string;
       label: string;
@@ -729,7 +737,10 @@ export class OpenComputerClient {
    * actually authorized it.
    */
   serviceConnectionStatus(input: { service: string; label: string }) {
-    const provider = input.service === "github" ? "github" : "google";
+    const provider =
+      input.service === "github" || input.service === "linear"
+        ? input.service
+        : "google";
     const query = new URLSearchParams({
       service: input.service,
       label: input.label,
@@ -740,11 +751,19 @@ export class OpenComputerClient {
       status: string;
       connectionId?: string;
       scopes?: string[];
-    }>(`/api/managed-agents/connections/${provider}/status?${query.toString()}`);
+    }>(
+      `/api/managed-agents/connections/${provider}/status?${query.toString()}`,
+    );
   }
 
-  disconnectServiceConnection(input: { service: string; connectionId: string }) {
-    const provider = input.service === "github" ? "github" : "google";
+  disconnectServiceConnection(input: {
+    service: string;
+    connectionId: string;
+  }) {
+    const provider =
+      input.service === "github" || input.service === "linear"
+        ? input.service
+        : "google";
     const query = new URLSearchParams({
       service: input.service,
       connectionId: input.connectionId,
@@ -1027,14 +1046,17 @@ export class OpenComputerClient {
     const response = await this.request<{
       environment: "development" | "production";
       result: DatabaseResult;
-    }>(`/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`, {
-      method: "POST",
-      body: JSON.stringify({
-        environment: input.environment,
-        sql: input.sql,
-        parameters: input.parameters ?? [],
-      }),
-    });
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          environment: input.environment,
+          sql: input.sql,
+          parameters: input.parameters ?? [],
+        }),
+      },
+    );
     return response.result;
   }
 
@@ -1271,17 +1293,24 @@ export class OpenComputerClient {
           : {}),
       }),
     });
-    const body = (await response.json()) as Omit<CreateSessionResult, "created">;
+    const body = (await response.json()) as Omit<
+      CreateSessionResult,
+      "created"
+    >;
     return { created: response.status === 201, ...body };
   }
 
   /** One page of session rows, newest created first; pass `cursor` for the next page. */
-  async sessions(options: { cursor?: string; limit?: number } = {}): Promise<ManagedSessionPage> {
+  async sessions(
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<ManagedSessionPage> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
     const suffix = query.size ? `?${query.toString()}` : "";
-    return this.request<ManagedSessionPage>(`/api/managed-agents/sessions${suffix}`);
+    return this.request<ManagedSessionPage>(
+      `/api/managed-agents/sessions${suffix}`,
+    );
   }
 
   session(sessionId: string) {

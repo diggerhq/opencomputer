@@ -126,8 +126,13 @@ function environmentOption(
 function databaseParameter(value: string): string | number | boolean | null {
   try {
     const parsed: unknown = JSON.parse(value);
-    if (parsed === null || typeof parsed === "string" || typeof parsed === "boolean" ||
-      (typeof parsed === "number" && Number.isFinite(parsed))) return parsed;
+    if (
+      parsed === null ||
+      typeof parsed === "string" ||
+      typeof parsed === "boolean" ||
+      (typeof parsed === "number" && Number.isFinite(parsed))
+    )
+      return parsed;
   } catch {
     // The error below explains the accepted CLI form.
   }
@@ -147,12 +152,21 @@ function printDatabaseResult(result: {
   }
   process.stdout.write(`${result.columns.join("\t")}\n`);
   for (const row of result.rows) {
-    process.stdout.write(`${result.columns.map((column) => {
-      const value = row[column];
-      return value === null || value === undefined ? "NULL" : String(value).replace(/[\t\r\n]+/g, " ");
-    }).join("\t")}\n`);
+    process.stdout.write(
+      `${result.columns
+        .map((column) => {
+          const value = row[column];
+          return value === null || value === undefined
+            ? "NULL"
+            : String(value).replace(/[\t\r\n]+/g, " ");
+        })
+        .join("\t")}\n`,
+    );
   }
-  if (result.truncated) process.stdout.write("Result truncated; add LIMIT and paginate the query.\n");
+  if (result.truncated)
+    process.stdout.write(
+      "Result truncated; add LIMIT and paginate the query.\n",
+    );
 }
 
 function consumeModelAccessProvider(
@@ -179,7 +193,9 @@ async function readTemplateSecretValue(): Promise<string> {
     for await (const chunk of process.stdin) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+    const value = Buffer.concat(chunks)
+      .toString("utf8")
+      .replace(/\r?\n$/, "");
     if (!value) throw new Error("Secret value was empty");
     return value;
   }
@@ -221,14 +237,16 @@ async function readStdinValue(enabled: boolean): Promise<string> {
     throw new CLIError(
       "value_stdin_required",
       "--value-stdin requires piped standard input.",
-      "Use `printf %s \"$VALUE\" | opencomputer ... --value-stdin`.",
+      'Use `printf %s "$VALUE" | opencomputer ... --value-stdin`.',
     );
   }
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  const value = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  const value = Buffer.concat(chunks)
+    .toString("utf8")
+    .replace(/\r?\n$/, "");
   if (!value) throw new Error("Standard-input value was empty");
   return value;
 }
@@ -320,7 +338,9 @@ async function requireAgentRoot(): Promise<string> {
   return root;
 }
 
-function printSession(session: ManagedSessionSnapshot | ManagedSessionSummary): void {
+function printSession(
+  session: ManagedSessionSnapshot | ManagedSessionSummary,
+): void {
   const deployment = session.deploymentId
     ? session.deploymentId.slice(session.deploymentId.lastIndexOf(":") + 1)
     : "—";
@@ -692,7 +712,11 @@ async function runAgent(
     (event) => printSessionProgress(event, json, verbose),
     90_000,
   );
-  const turn = await client.createTurn(created.session.id, prompt, idempotencyKey);
+  const turn = await client.createTurn(
+    created.session.id,
+    prompt,
+    idempotencyKey,
+  );
   let streamed = false;
   let streamedText = "";
   let completedText = "";
@@ -752,9 +776,14 @@ function printMemoryBindings(
         return `Memory:     ${resource} (collection, read)\n`;
       }
       const ensured = documents.find(
-        (document) => document.resource === resource && document.id === binding.id,
+        (document) =>
+          document.resource === resource && document.id === binding.id,
       );
-      const state = ensured ? (ensured.created ? ", created" : ", existing") : "";
+      const state = ensured
+        ? ensured.created
+          ? ", created"
+          : ", existing"
+        : "";
       return `Memory:     ${resource}/${binding.id} (${binding.access ?? "read-write"}${state})\n`;
     })
     .join("");
@@ -826,9 +855,14 @@ export async function runCommand(
       response: await client.projectSourceArchive(project.id),
       directory: directory ?? project.slug,
     });
-    const binding = await ensureProjectBinding(client, config, checkout.directory, {
-      project: project.id,
-    });
+    const binding = await ensureProjectBinding(
+      client,
+      config,
+      checkout.directory,
+      {
+        project: project.id,
+      },
+    );
     if (globals.json) printJSON({ checkout, binding });
     else {
       process.stdout.write(
@@ -875,9 +909,7 @@ export async function runCommand(
       return;
     }
     if (action !== "deploy") {
-      throw new Error(
-        "Usage: opencomputer template <deploy|clone> ...",
-      );
+      throw new Error("Usage: opencomputer template <deploy|clone> ...");
     }
     const projectNameOption = option(args, "--project-name");
     const directoryOption = option(args, "--directory");
@@ -1016,9 +1048,14 @@ export async function runCommand(
         `Template installation is still ${current.state}; ${current.projectUrl}`,
       );
     }
-    const binding = await ensureProjectBinding(client, config, checkout.directory, {
-      project: current.projectId,
-    });
+    const binding = await ensureProjectBinding(
+      client,
+      config,
+      checkout.directory,
+      {
+        project: current.projectId,
+      },
+    );
     if (globals.json) printJSON({ installation: current, checkout, binding });
     else {
       process.stdout.write(
@@ -1272,15 +1309,10 @@ export async function runCommand(
         diagnosis,
       );
     }
-    await runCloudDevelopment(
-      client,
-      config,
-      root,
-      {
-        project,
-        createProjectName,
-      },
-    );
+    await runCloudDevelopment(client, config, root, {
+      project,
+      createProjectName,
+    });
     return;
   }
 
@@ -1289,11 +1321,7 @@ export async function runCommand(
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
     const environment = environmentOption(option(args, "--environment"));
-    const project = await selectedProject(
-      client,
-      config,
-      projectReference,
-    );
+    const project = await selectedProject(client, config, projectReference);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -1381,36 +1409,45 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
-/**
- * Which service a connected account is for.
- *
- * The listing reports the PROVIDER — `google` covers gmail, calendar, drive
- * and sheets — but the disconnect route wants the service. The grant's scopes
- * are what distinguish them.
- */
-function serviceOfConnection(connection: {
-  provider: string;
-  scopes?: string[];
-}): string {
-  if (connection.provider === "github") return "github";
-  const scopes = (connection.scopes ?? []).join(" ");
-  if (scopes.includes("/auth/calendar")) return "calendar";
-  if (scopes.includes("/auth/spreadsheets")) return "sheets";
-  if (scopes.includes("/auth/drive")) return "drive";
-  return "gmail";
-}
+  /**
+   * Which service a connected account is for.
+   *
+   * The listing reports the PROVIDER — `google` covers gmail, calendar, drive
+   * and sheets — but the disconnect route wants the service. The grant's scopes
+   * are what distinguish them.
+   */
+  function serviceOfConnection(connection: {
+    provider: string;
+    scopes?: string[];
+  }): string {
+    if (connection.provider === "github") return "github";
+    const scopes = (connection.scopes ?? []).join(" ");
+    if (scopes.includes("/auth/calendar")) return "calendar";
+    if (scopes.includes("/auth/spreadsheets")) return "sheets";
+    if (scopes.includes("/auth/drive")) return "drive";
+    return "gmail";
+  }
 
   if (command === "connection" || command === "connections") {
     // Accounts the platform holds an OAuth credential for. Nothing secret
     // passes through here: `add` returns a link for the account's owner to
     // open, and the token is minted and refreshed server-side.
-    const SERVICES = ["gmail", "calendar", "drive", "sheets", "github"];
+    const SERVICES = [
+      "gmail",
+      "calendar",
+      "drive",
+      "sheets",
+      "github",
+      "linear",
+    ];
     const action = args.shift();
 
     if (action === "add" || action === "connect") {
       const service = args.shift();
       if (!service || !SERVICES.includes(service)) {
-        throw new Error(`Use \`opencomputer connection add <${SERVICES.join("|")}>\``);
+        throw new Error(
+          `Use \`opencomputer connection add <${SERVICES.join("|")}>\``,
+        );
       }
       const label = option(args, "--alias") ?? option(args, "--label");
       const noWait = flag(args, "--no-wait");
@@ -1520,7 +1557,9 @@ function serviceOfConnection(connection: {
     if (action === "remove" || action === "disconnect") {
       const target = args.shift();
       if (!target) {
-        throw new Error("Use `opencomputer connection remove <alias|connection-id>`");
+        throw new Error(
+          "Use `opencomputer connection remove <alias|connection-id>`",
+        );
       }
       const service = option(args, "--service");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
@@ -1557,7 +1596,8 @@ function serviceOfConnection(connection: {
         service: resolved,
         connectionId: connection.id,
       });
-      if (globals.json) printJSON({ removed: connection.id, label: connection.label });
+      if (globals.json)
+        printJSON({ removed: connection.id, label: connection.label });
       else process.stdout.write(`Removed ${connection.label} (${resolved}).\n`);
       return;
     }
@@ -1591,14 +1631,17 @@ function serviceOfConnection(connection: {
           ? await readStdinValue(true)
           : await readTemplateSecretValue();
         const connection = await client.connectModelAccessApiKey({
-          provider: provider === "openrouter" ? "openrouter" : "openai_compatible",
+          provider:
+            provider === "openrouter" ? "openrouter" : "openai_compatible",
           api_key: apiKey,
           ...(baseUrl ? { base_url: baseUrl } : {}),
           ...(label ? { label } : {}),
         });
         if (globals.json) printJSON(connection);
         else {
-          process.stdout.write(`Connected ${connection.label}; status ${connection.status}.\n`);
+          process.stdout.write(
+            `Connected ${connection.label}; status ${connection.status}.\n`,
+          );
           if (projectReference) {
             process.stdout.write(
               `Next: opencomputer model-route set --project ${projectReference} --connection ${connection.id} --model <model>\n`,
@@ -1620,10 +1663,12 @@ function serviceOfConnection(connection: {
         );
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const currentAgentRoot = projectReference ? null : await findAgentRoot();
-      const project =
-        shouldBindModelAccessProject(projectReference, currentAgentRoot)
-          ? await selectedProject(client, config, projectReference)
-          : undefined;
+      const project = shouldBindModelAccessProject(
+        projectReference,
+        currentAgentRoot,
+      )
+        ? await selectedProject(client, config, projectReference)
+        : undefined;
       const environments = project
         ? (["development", "production"] as const)
         : [];
@@ -1716,11 +1761,12 @@ function serviceOfConnection(connection: {
       const routes = await client.modelRoutes(project.projectId);
       if (globals.json) printJSON(routes);
       else if (!routes.length) process.stdout.write("No model routes.\n");
-      else for (const route of routes) {
-        process.stdout.write(
-          `${route.environment.padEnd(11)} ${(route.agentId ?? "project").padEnd(20)} ${route.model} via ${route.connectionId} (${route.fallback}) r${route.revision}\n`,
-        );
-      }
+      else
+        for (const route of routes) {
+          process.stdout.write(
+            `${route.environment.padEnd(11)} ${(route.agentId ?? "project").padEnd(20)} ${route.model} via ${route.connectionId} (${route.fallback}) r${route.revision}\n`,
+          );
+        }
       return;
     }
     const agentId = option(args, "--agent");
@@ -1728,7 +1774,8 @@ function serviceOfConnection(connection: {
       const connectionId = option(args, "--connection");
       const model = option(args, "--model");
       const fallback = option(args, "--fallback") ?? "fail";
-      if (!connectionId || !model) throw new Error("--connection and --model are required");
+      if (!connectionId || !model)
+        throw new Error("--connection and --model are required");
       if (fallback !== "fail" && fallback !== "managed") {
         throw new Error("--fallback must be fail or managed");
       }
@@ -1746,7 +1793,10 @@ function serviceOfConnection(connection: {
         ),
       );
       if (globals.json) printJSON(routes);
-      else process.stdout.write(`Set ${agentId ? `agent ${agentId}` : "project"} route for development and production.\n`);
+      else
+        process.stdout.write(
+          `Set ${agentId ? `agent ${agentId}` : "project"} route for development and production.\n`,
+        );
       return;
     }
     if (action === "delete" || action === "remove") {
@@ -1761,7 +1811,10 @@ function serviceOfConnection(connection: {
         ),
       );
       if (globals.json) printJSON({ deleted: true });
-      else process.stdout.write("Removed model route from development and production.\n");
+      else
+        process.stdout.write(
+          "Removed model route from development and production.\n",
+        );
       return;
     }
     throw new Error("Use `opencomputer model-route set|list|delete`.");
@@ -1772,11 +1825,7 @@ function serviceOfConnection(connection: {
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
     const environment = environmentOption(option(args, "--environment"));
-    const project = await selectedProject(
-      client,
-      config,
-      projectReference,
-    );
+    const project = await selectedProject(client, config, projectReference);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -1846,11 +1895,7 @@ function serviceOfConnection(connection: {
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
     const environment = environmentOption(option(args, "--environment"));
-    const project = await selectedProject(
-      client,
-      config,
-      projectReference,
-    );
+    const project = await selectedProject(client, config, projectReference);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -1881,13 +1926,17 @@ function serviceOfConnection(connection: {
       const name = args.shift()?.trim();
       const identity = option(args, "--identity");
       if (!name || args.length) {
-        throw new Error("Use `opencomputer webhooks create <name> [--identity header:<name>|body:<json-pointer>]`.");
+        throw new Error(
+          "Use `opencomputer webhooks create <name> [--identity header:<name>|body:<json-pointer>]`.",
+        );
       }
-      const existing = (await client.webhooks({
-        projectId: project.projectId,
-        environment,
-        agentId,
-      })).find((candidate) => candidate.name === name);
+      const existing = (
+        await client.webhooks({
+          projectId: project.projectId,
+          environment,
+          agentId,
+        })
+      ).find((candidate) => candidate.name === name);
       const webhook =
         existing ??
         (await client.createWebhook({
@@ -1912,7 +1961,8 @@ function serviceOfConnection(connection: {
       return;
     }
     const webhookId = args.shift();
-    const identityOption = action === "update" ? option(args, "--identity") : undefined;
+    const identityOption =
+      action === "update" ? option(args, "--identity") : undefined;
     if (!webhookId || args.length) {
       throw new Error(
         "Use `opencomputer webhooks list|create|update|enable|disable|rotate-token|remove`.",
@@ -1920,7 +1970,9 @@ function serviceOfConnection(connection: {
     }
     if (action === "update") {
       if (identityOption === undefined) {
-        throw new Error("Use `opencomputer webhooks update <id> --identity header:<name>|body:<json-pointer>|none`.");
+        throw new Error(
+          "Use `opencomputer webhooks update <id> --identity header:<name>|body:<json-pointer>|none`.",
+        );
       }
       const webhook = await client.updateWebhook({
         projectId: project.projectId,
@@ -1983,7 +2035,9 @@ function serviceOfConnection(connection: {
     const parameters = options(args, "--parameter").map(databaseParameter);
     const sql = args.shift();
     if (action !== "query" || !sql || args.length) {
-      throw new Error("Use `opencomputer database query <sql> [--environment development|production] [--parameter <json>]... [--project <id|slug>]`.");
+      throw new Error(
+        "Use `opencomputer database query <sql> [--environment development|production] [--parameter <json>]... [--project <id|slug>]`.",
+      );
     }
     const project = await selectedProject(client, config, projectReference);
     const result = await client.databaseQuery({
@@ -2026,7 +2080,8 @@ function serviceOfConnection(connection: {
           "Pass --resource <id> for each resource to export, or deploy an agent that declares memory.",
         );
       }
-      const exported: Array<{ resource: string; id: string; path: string }> = [];
+      const exported: Array<{ resource: string; id: string; path: string }> =
+        [];
       for (const resource of resources) {
         const directory = resolvePath(out, resource);
         await mkdir(directory, { recursive: true });
@@ -2046,7 +2101,11 @@ function serviceOfConnection(connection: {
               environment,
             });
             const path = join(directory, `${document.id}.json`);
-            await writeFile(path, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+            await writeFile(
+              path,
+              `${JSON.stringify(document, null, 2)}\n`,
+              "utf8",
+            );
             exported.push({ resource, id: document.id, path });
           }
           cursor = page.nextCursor ?? undefined;
@@ -2161,7 +2220,9 @@ function serviceOfConnection(connection: {
       const supplied = await readMemoryText(args);
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const current = await client.memoryDocument(target);
-      let edited: Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
+      let edited:
+        | Awaited<ReturnType<typeof editMemoryTextInEditor>>
+        | undefined;
       const text =
         supplied ??
         (edited = await editMemoryTextInEditor(
@@ -2180,7 +2241,9 @@ function serviceOfConnection(connection: {
         etag: current.etag,
         text,
         ...(summary !== undefined ? { summary } : {}),
-        ...(edited ? { draft: { path: edited.path, discard: edited.discard } } : {}),
+        ...(edited
+          ? { draft: { path: edited.path, discard: edited.discard } }
+          : {}),
       });
       if (globals.json) printJSON(document);
       else {
@@ -2215,7 +2278,8 @@ function serviceOfConnection(connection: {
       const current = await client.memoryDocument(target);
       await client.deleteMemoryDocument({ ...target, etag: current.etag });
       if (globals.json) printJSON({ deleted: true, resource, id, environment });
-      else process.stdout.write(`Removed ${resource}/${id} (${environment}).\n`);
+      else
+        process.stdout.write(`Removed ${resource}/${id} (${environment}).\n`);
       return;
     }
     throw new Error(MEMORY_USAGE);
@@ -2243,9 +2307,7 @@ function serviceOfConnection(connection: {
         insideProject = false;
       }
       if (insideProject) {
-        agentId = (
-          await selectedProject(client, config)
-        ).agentId;
+        agentId = (await selectedProject(client, config)).agentId;
       }
     }
     let cursor = "";
@@ -2284,11 +2346,7 @@ function serviceOfConnection(connection: {
     const agentOption = option(args, "--agent");
     const environment = environmentOption(option(args, "--environment"));
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const project = await selectedProject(
-      client,
-      config,
-      projectReference,
-    );
+    const project = await selectedProject(client, config, projectReference);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -2297,7 +2355,8 @@ function serviceOfConnection(connection: {
     const channels = (await client.channels()).filter(
       (channel) => channel.agentId === agentId && channel.alias === environment,
     );
-    if (globals.json) printJSON({ projectId: project.projectId, environment, channels });
+    if (globals.json)
+      printJSON({ projectId: project.projectId, environment, channels });
     else if (!channels.length) process.stdout.write("No matching channels.\n");
     else {
       for (const channel of channels) {
@@ -2348,11 +2407,7 @@ function serviceOfConnection(connection: {
     }
     if (session.action === "create") {
       const prompt = sessionArgs.join(" ").trim();
-      const project = await selectedProject(
-        client,
-        config,
-        undefined,
-      );
+      const project = await selectedProject(client, config, undefined);
       const agentId = await selectedSessionAgent(
         client,
         project,
@@ -2360,13 +2415,14 @@ function serviceOfConnection(connection: {
       );
       const agent = developmentAgentReference(agentId);
       // Sessions from the CLI run on Development, so its memory is bound.
-      const documents = session.createDocuments && session.memory
-        ? await ensureMemoryDocuments(client, {
-            projectId: project.projectId,
-            environment: "development",
-            bindings: session.memory,
-          })
-        : [];
+      const documents =
+        session.createDocuments && session.memory
+          ? await ensureMemoryDocuments(client, {
+              projectId: project.projectId,
+              environment: "development",
+              bindings: session.memory,
+            })
+          : [];
       if (prompt) {
         const result = await runAgent(
           client,
