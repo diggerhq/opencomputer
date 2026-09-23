@@ -593,6 +593,8 @@ export default function ManagedAgentDetail({
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
+  // Sessions tab filter — '' shows every agent in the project.
+  const [sessionsAgentFilter, setSessionsAgentFilter] = useState('')
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -634,6 +636,12 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
+  const projectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', project?.project.id],
+    queryFn: () => getManagedAgentSessions(),
+    enabled: Boolean(project),
+    refetchInterval: 5_000,
+  })
   const channels = useQuery({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
@@ -649,9 +657,22 @@ export default function ManagedAgentDetail({
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
-  const externalSessions = environmentSessions.filter(
-    (session) => session.source !== 'playground',
-  )
+  const externalSessions = (
+    project
+      ? sessionsForEnvironment(
+          (projectSessions.data ?? []).filter(
+            (session) => session.projectId === project.project.id,
+          ),
+          project.deployments,
+          sessionsAgentFilter || undefined,
+          environment,
+        )
+      : environmentSessions
+  ).filter((session) => session.source !== 'playground')
+  const projectAgentName = (id: string) => {
+    const candidate = project?.project.agents.find((a) => a.id === id)
+    return candidate ? displayManagedAgentName(candidate) : id
+  }
   const selectedPlayground = playgroundSessions.find(
     (session) => session.id === requestedPlaygroundId,
   )
@@ -713,6 +734,19 @@ export default function ManagedAgentDetail({
         <span className="font-mono text-xs">{session.id}</span>
       ),
     },
+    ...(project
+      ? ([
+          {
+            key: 'agent',
+            header: 'Agent',
+            cell: (session) => (
+              <span className="text-xs">
+                {projectAgentName(session.agentId)}
+              </span>
+            ),
+          },
+        ] as Column<ManagedAgentSessionSummary>[])
+      : []),
     {
       key: 'source',
       header: 'Source',
@@ -1149,23 +1183,43 @@ export default function ManagedAgentDetail({
             <div>
               <PanelTitle>Sessions</PanelTitle>
               <PanelDescription className="mt-1">
-                Sessions started through channels and the API. Playground
-                sessions stay in the playground.
+                Sessions started through channels and the API
+                {project ? ' across every agent in this project' : ''}.
+                Playground sessions stay in the playground.
               </PanelDescription>
             </div>
-            <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
-              <Clock3 className="size-3.5" /> Refreshes automatically
+            <div className="flex items-center gap-4">
+              {project ? (
+                <select
+                  aria-label="Filter sessions by agent"
+                  value={sessionsAgentFilter}
+                  onChange={(event) =>
+                    setSessionsAgentFilter(event.target.value)
+                  }
+                  className="border-input bg-background h-8 min-w-40 rounded-md border px-2 text-xs outline-none"
+                >
+                  <option value="">All agents</option>
+                  {project.project.agents.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {displayManagedAgentName(candidate)}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <Clock3 className="size-3.5" /> Refreshes automatically
+              </div>
             </div>
           </PanelHeader>
           <ResourceTable
             columns={sessionColumns}
             rows={externalSessions}
             rowKey={(session) => session.id}
-            loading={sessions.isLoading}
+            loading={project ? projectSessions.isLoading : sessions.isLoading}
             onRowClick={(session) => {
               if (!project) return
               void navigate(
-                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}?${searchParams.toString()}`,
+                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}${projectContextSearch(location.search, session.agentId, environment)}`,
               )
             }}
             empty={
