@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   writeFile,
@@ -20,6 +21,7 @@ import {
   agentRuntimeDirectory,
   prepareAgent,
   readProjectResources,
+  resetRuntimeDirectory,
 } from "./project.js";
 
 test("init creates a multi-agent-ready hello-world agent by default", async () => {
@@ -2952,4 +2954,89 @@ test("prepareAgent builds into a cache under node_modules, never into the agent'
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("resetRuntimeDirectory retries when files appear during cleanup and leaves an empty directory", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-reset-"));
+  const runtime = resolve(root, "runtime");
+  try {
+    await mkdir(runtime, { recursive: true });
+    await writeFile(resolve(runtime, "agent.js"), "stale\n");
+    let attempts = 0;
+    await resetRuntimeDirectory(runtime, {
+      rm: async (path, options) => {
+        attempts++;
+        await rm(path, options);
+        if (attempts === 1) {
+          // A writer that raced the removal: the directory comes back with
+          // fresh output and the final rmdir reports ENOTEMPTY.
+          await mkdir(runtime, { recursive: true });
+          await writeFile(resolve(runtime, "late.js"), "late\n");
+          throw Object.assign(
+            new Error(`ENOTEMPTY: directory not empty, rmdir '${runtime}'`),
+            { code: "ENOTEMPTY" },
+          );
+        }
+      },
+      mkdir,
+      readdir,
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(await readdir(runtime), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resetRuntimeDirectory retries when files remain after cleanup", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-reset-"));
+  const runtime = resolve(root, "runtime");
+  try {
+    let attempts = 0;
+    await resetRuntimeDirectory(runtime, {
+      rm,
+      mkdir: async (path, options) => {
+        attempts++;
+        const created = await mkdir(path, options);
+        // Output written between the removal and the recreation survives the
+        // recreation; the reset must notice and start over.
+        if (attempts === 1) await writeFile(resolve(runtime, "left.js"), "");
+        return created;
+      },
+      readdir,
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(await readdir(runtime), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resetRuntimeDirectory names the generated-runtime cleanup phase when retries run out", async () => {
+  const runtime = resolve(tmpdir(), "opencomputer-never-created", "runtime");
+  let attempts = 0;
+  await assert.rejects(
+    resetRuntimeDirectory(
+      runtime,
+      {
+        rm: async () => {
+          attempts++;
+          throw Object.assign(
+            new Error(`ENOTEMPTY: directory not empty, rmdir '${runtime}'`),
+            { code: "ENOTEMPTY" },
+          );
+        },
+        mkdir,
+        readdir,
+      },
+      3,
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Cleaning generated runtime output failed after 3 attempts: ENOTEMPTY/);
+      assert.ok(error.message.includes(`Directory  ${runtime}`));
+      return true;
+    },
+  );
+  assert.equal(attempts, 3);
 });
