@@ -3,7 +3,8 @@
 // SPA) in the shared dev Cloudflare account, wired to the matching
 // managed-agents stack created by `blue/scripts/stack.mjs`.
 //
-//   node scripts/stack.mjs <devin-name> render|up|status|seed-key|destroy [--skip-dashboard]
+//   node scripts/stack.mjs <devin-name> render|up|status|seed-key|workos-redirect|destroy [--skip-dashboard]
+//   node scripts/stack.mjs <devin-name> add-member --email <email>
 //
 // Stack names must start with `devin-`. Only `opencomputer-api-edge-devin-*`
 // workers / `opencomputer-devin-*` databases are ever touched.
@@ -16,6 +17,10 @@
 // the blue script (OC_MANAGED_AGENTS_SECRET, OC_MANAGED_CRED_HMAC_SECRET and
 // BLUE_USAGE_HMAC_SECRET must match on both sides). `seed-key` writes the
 // CLI API key to $OC_STACK_HOME/<name>/api-key (mode 0600) — never to stdout.
+// `up` registers <apiEdgeUrl>/auth/callback as a redirect URI on the staging
+// WorkOS app (Management API) and `destroy` removes it. `add-member` pre-creates
+// a dashboard user by email as owner of the seeded org, so that WorkOS login
+// lands in the same org the CLI key deploys to.
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -51,7 +56,17 @@ const configFile = path.join(edgeRoot, `wrangler.${name}.generated.jsonc`);
 const cfToken =
   process.env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_DEVIN_API_TOKEN;
 
-const commands = { render, up, status, "seed-key": seedKey, destroy };
+const WORKOS_API = "https://api.workos.com";
+
+const commands = {
+  render,
+  up,
+  status,
+  "seed-key": seedKey,
+  "workos-redirect": workosRedirect,
+  "add-member": addMember,
+  destroy,
+};
 if (!commands[command]) usage();
 await commands[command]();
 
@@ -125,15 +140,13 @@ async function up() {
   stack.apiEdgeDeployedAt = new Date().toISOString();
   saveStack(stack);
   if (!fs.existsSync(apiKeyFile)) await seedKey();
+  await workosRedirect();
   console.log(
     JSON.stringify(
       { name, apiEdgeUrl: stack.apiEdgeUrl, d1: db, apiKeyFile, stackFile },
       null,
       2,
     ),
-  );
-  console.log(
-    `\nWorkOS: allowlist ${stack.apiEdgeUrl}/auth/callback on the staging app for dashboard login.`,
   );
   console.log(
     `Blue edge must point back here: node blue/scripts/stack.mjs ${name} up --api-edge-url ${stack.apiEdgeUrl}`,
@@ -179,6 +192,59 @@ async function seedKey() {
   console.log(`api key written to ${apiKeyFile} (org ${orgId})`);
 }
 
+async function workosRedirect() {
+  const stack = loadStack();
+  if (!stack.apiEdgeUrl) die("stack.json has no apiEdgeUrl — run `up` first");
+  const uri = `${stack.apiEdgeUrl}/auth/callback`;
+  const existing = await workosRedirectUris();
+  if (existing.some((r) => r.uri === uri)) {
+    console.log(`workos redirect uri already registered: ${uri}`);
+    return;
+  }
+  step(`workos redirect uri ${uri}`);
+  await workos("/user_management/redirect_uris", {
+    method: "POST",
+    body: JSON.stringify({ uri }),
+  });
+}
+
+async function addMember() {
+  requireToken();
+  const email = flags.email;
+  if (typeof email !== "string" || !/^[^\s'@]+@[^\s']+$/.test(email))
+    die("add-member requires --email <address>");
+  const stack = loadStack();
+  if (!stack.orgId) die("no seeded org — run `seed-key` first");
+  writeConfig(stack);
+  const now = Math.floor(Date.now() / 1000);
+  // The login handler upserts on email and keeps the existing user id, so a
+  // pre-created row inherits this membership on first WorkOS sign-in.
+  const sql = [
+    `INSERT OR IGNORE INTO users (id, email, name, created_at, durable_sessions_enabled, infrastructure_enabled)
+       VALUES ('${randomUUID()}', '${email}', '${email}', ${now}, 0, 0);`,
+    `INSERT OR IGNORE INTO org_memberships (org_id, user_id, role, created_at)
+       SELECT '${stack.orgId}', id, 'owner', ${now} FROM users WHERE email = '${email}';`,
+  ].join("\n");
+  const sqlFile = path.join(stackHome, ".member.sql");
+  fs.writeFileSync(sqlFile, sql, { mode: 0o600 });
+  try {
+    step(`add ${email} as owner of org ${stack.orgId}`);
+    wrangler([
+      "d1",
+      "execute",
+      d1Name,
+      "--remote",
+      "--config",
+      configFile,
+      "--file",
+      sqlFile,
+      "--yes",
+    ]);
+  } finally {
+    fs.rmSync(sqlFile, { force: true });
+  }
+}
+
 async function status() {
   requireToken();
   const stack = fs.existsSync(stackFile) ? loadStack() : null;
@@ -218,6 +284,16 @@ async function destroy() {
   fs.rmSync(apiKeyFile, { force: true });
   if (fs.existsSync(stackFile)) {
     const stack = loadStack();
+    if (stack.apiEdgeUrl && process.env.WORKOS_STAGING_API_KEY) {
+      const uri = `${stack.apiEdgeUrl}/auth/callback`;
+      for (const r of await workosRedirectUris()) {
+        if (r.uri !== uri) continue;
+        step(`remove workos redirect uri ${uri}`);
+        await workos(`/user_management/redirect_uris/${r.id}`, {
+          method: "DELETE",
+        });
+      }
+    }
     for (const key of [
       "apiEdgeUrl",
       "apiEdgeWorker",
@@ -384,6 +460,25 @@ function deploy(secrets) {
   }
 }
 
+async function workos(pathname, init = {}) {
+  const res = await fetch(`${WORKOS_API}${pathname}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${env("WORKOS_STAGING_API_KEY")}`,
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  if (!res.ok)
+    die(`workos ${init.method ?? "GET"} ${pathname} failed: ${res.status}`);
+  return res.status === 204 ? null : res.json();
+}
+
+async function workosRedirectUris() {
+  const body = await workos("/user_management/redirect_uris");
+  return body?.data ?? [];
+}
+
 function wrangler(args) {
   run("npx", ["wrangler", ...args], edgeRoot);
 }
@@ -458,9 +553,14 @@ function requireToken() {
 
 function parseFlags(args) {
   const out = {};
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (!arg.startsWith("--")) die(`unexpected argument ${arg}`);
-    out[arg.slice(2)] = true;
+    const next = args[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      out[arg.slice(2)] = next;
+      i++;
+    } else out[arg.slice(2)] = true;
   }
   return out;
 }
@@ -471,7 +571,8 @@ function step(label) {
 
 function usage() {
   console.error(
-    "usage: node scripts/stack.mjs <devin-name> render|up|status|seed-key|destroy [--skip-dashboard]",
+    "usage: node scripts/stack.mjs <devin-name> render|up|status|seed-key|workos-redirect|destroy [--skip-dashboard]\n" +
+      "       node scripts/stack.mjs <devin-name> add-member --email <email>",
   );
   process.exit(2);
 }
