@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
+import { Sha256, ZipWriter, openDownloadSink } from './workspace-download'
 
 const agentSchema = z.object({
   id: z.string(),
@@ -1831,32 +1832,105 @@ export function managedAgentWorkspaceArtifactContentPath(
 }
 
 /**
- * Streams a retained artifact and checks the bytes against the manifest
- * before handing them to the browser, so a download either matches the
- * runtime's size and SHA-256 or fails.
+ * Streams a retained artifact chunk by chunk into `write`, hashing and
+ * counting as it goes, and rejects once the stream ends unless the bytes
+ * match the manifest's size and SHA-256. Callers must discard what they
+ * wrote when this throws; nothing is buffered here, so a 1 GiB artifact
+ * costs one chunk of memory at a time.
  */
-export async function downloadManagedAgentWorkspaceArtifact(
+export async function streamManagedAgentWorkspaceArtifact(
   artifact: ManagedWorkspaceArtifact,
+  write: (chunk: Uint8Array) => Promise<void>,
+  signal?: AbortSignal,
 ) {
   const response = await apiFetchResponse(
     managedAgentWorkspaceArtifactContentPath(artifact),
+    { signal },
   )
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  if (bytes.byteLength !== artifact.size) {
+  if (!response.body) throw new Error('Artifact response had no body')
+  const hash = new Sha256()
+  let received = 0
+  const reader = response.body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > artifact.size) {
+        throw new Error(
+          `Download exceeded the manifest size of ${artifact.size} bytes`,
+        )
+      }
+      hash.update(value)
+      await write(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  if (received !== artifact.size) {
     throw new Error(
-      `Downloaded ${bytes.byteLength} bytes, manifest says ${artifact.size}`,
+      `Downloaded ${received} bytes, manifest says ${artifact.size}`,
     )
   }
-  const digest = Array.from(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
-    (b) => b.toString(16).padStart(2, '0'),
-  ).join('')
-  if (digest !== artifact.sha256) {
+  if (hash.hex() !== artifact.sha256) {
     throw new Error('Downloaded bytes do not match the manifest SHA-256')
   }
-  return new Blob([bytes], {
-    type: response.headers.get('content-type') ?? 'application/octet-stream',
-  })
+}
+
+/**
+ * Downloads a verified artifact to the browser under `name`; on any
+ * mismatch the partial output is discarded and nothing is saved. The sink
+ * is opened before `resolve` runs because the save dialog needs the click's
+ * user activation, which an export round-trip would outlive.
+ */
+export async function downloadManagedAgentWorkspaceArtifact(
+  name: string,
+  resolve: () => Promise<ManagedWorkspaceArtifact>,
+) {
+  const sink = await openDownloadSink(name)
+  let artifact: ManagedWorkspaceArtifact
+  try {
+    artifact = await resolve()
+    await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
+      sink.write(chunk),
+    )
+  } catch (error) {
+    await sink.abort(error)
+    throw error
+  }
+  await sink.close()
+  return artifact
+}
+
+/**
+ * Streams several verified artifacts into a single stored zip named `name`.
+ * Each entry is hashed while it is written; a mismatch aborts the whole
+ * archive rather than leaving an unverifiable file behind.
+ */
+export async function downloadManagedAgentWorkspaceArchive(
+  name: string,
+  resolve: () => Promise<ManagedWorkspaceArtifact[]>,
+  onProgress?: (done: number, total: number) => void,
+) {
+  const zip = new ZipWriter(await openDownloadSink(name))
+  let artifacts: ManagedWorkspaceArtifact[]
+  try {
+    artifacts = await resolve()
+    for (const [index, artifact] of artifacts.entries()) {
+      onProgress?.(index, artifacts.length)
+      await zip.beginEntry(artifact.path, new Date(artifact.exportedAt))
+      await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
+        zip.write(chunk),
+      )
+      await zip.endEntry()
+    }
+    onProgress?.(artifacts.length, artifacts.length)
+  } catch (error) {
+    await zip.abort(error)
+    throw error
+  }
+  await zip.finish()
+  return artifacts
 }
 
 export async function getManagedAgentSessionEvents(

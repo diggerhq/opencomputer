@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, FileCheck2, Loader2, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
+import {
+  Download,
+  FileCheck2,
+  FolderDown,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react'
 import {
   Panel,
   PanelDescription,
@@ -9,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  downloadManagedAgentWorkspaceArchive,
   downloadManagedAgentWorkspaceArtifact,
   exportManagedAgentWorkspaceFile,
   getManagedAgentWorkspaceArtifacts,
@@ -16,6 +24,7 @@ import {
   type ManagedWorkspaceArtifact,
   type ManagedWorkspaceFile,
 } from './api'
+import { DownloadCancelled } from './workspace-download'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -29,17 +38,13 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = name
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
-
 function fileName(path: string) {
   return path.split('/').pop() ?? path
+}
+
+function reportDownloadError(error: unknown) {
+  if (error instanceof DownloadCancelled) return
+  notifyError("Couldn't download that file.", error)
 }
 
 /**
@@ -81,27 +86,21 @@ export function SessionFiles({
   })
 
   const download = useMutation({
-    mutationFn: async (artifact: ManagedWorkspaceArtifact) => {
-      saveBlob(
-        await downloadManagedAgentWorkspaceArtifact(artifact),
-        fileName(artifact.path),
-      )
-      return artifact
-    },
-    onError: (error) => notifyError("Couldn't download that file.", error),
+    mutationFn: (artifact: ManagedWorkspaceArtifact) =>
+      downloadManagedAgentWorkspaceArtifact(fileName(artifact.path), () =>
+        Promise.resolve(artifact),
+      ),
+    onError: reportDownloadError,
   })
 
   const exportThenDownload = useMutation({
-    mutationFn: async (path: string) => {
-      const artifact = await exportManagedAgentWorkspaceFile(sessionId, path)
-      void queryClient.invalidateQueries({ queryKey: artifactsKey })
-      saveBlob(
-        await downloadManagedAgentWorkspaceArtifact(artifact),
-        fileName(artifact.path),
-      )
-      return artifact
-    },
-    onError: (error) => notifyError("Couldn't download that file.", error),
+    mutationFn: (path: string) =>
+      downloadManagedAgentWorkspaceArtifact(fileName(path), async () => {
+        const artifact = await exportManagedAgentWorkspaceFile(sessionId, path)
+        void queryClient.invalidateQueries({ queryKey: artifactsKey })
+        return artifact
+      }),
+    onError: reportDownloadError,
   })
 
   // An artifact only stands in for the current file when it was exported
@@ -114,8 +113,37 @@ export function SessionFiles({
             artifact.receipt.sourceEtag === file.etag,
         )
       : undefined
+
+  const [archiveProgress, setArchiveProgress] = useState<string | null>(null)
+  const downloadAll = useMutation({
+    mutationFn: (workspace: ManagedWorkspaceFile[]) =>
+      downloadManagedAgentWorkspaceArchive(
+        `${sessionId}-workspace.zip`,
+        async () => {
+          const retained: ManagedWorkspaceArtifact[] = []
+          for (const [index, file] of workspace.entries()) {
+            setArchiveProgress(`Retaining ${index + 1}/${workspace.length}`)
+            retained.push(
+              retainedFor(file) ??
+                (await exportManagedAgentWorkspaceFile(sessionId, file.path)),
+            )
+          }
+          void queryClient.invalidateQueries({ queryKey: artifactsKey })
+          return retained
+        },
+        (done, total) => setArchiveProgress(`Verifying ${done}/${total}`),
+      ),
+    onSuccess: (retained) =>
+      notifySuccess(`Downloaded ${retained.length} verified files.`),
+    onError: reportDownloadError,
+    onSettled: () => setArchiveProgress(null),
+  })
+
   const busy =
-    exportFile.isPending || download.isPending || exportThenDownload.isPending
+    exportFile.isPending ||
+    download.isPending ||
+    exportThenDownload.isPending ||
+    downloadAll.isPending
   const busyPath =
     exportFile.variables ??
     exportThenDownload.variables ??
@@ -132,19 +160,34 @@ export function SessionFiles({
               sandbox. Downloading retains a verified copy first.
             </PanelDescription>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void files.refetch()}
-            disabled={files.isFetching}
-            aria-label="Refresh workspace files"
-          >
-            <RefreshCw
-              className={
-                files.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'
-              }
-            />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || !files.data?.length}
+              onClick={() => downloadAll.mutate(files.data ?? [])}
+            >
+              {downloadAll.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <FolderDown className="size-3.5" />
+              )}
+              {archiveProgress ?? 'Download all'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void files.refetch()}
+              disabled={files.isFetching}
+              aria-label="Refresh workspace files"
+            >
+              <RefreshCw
+                className={
+                  files.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'
+                }
+              />
+            </Button>
+          </div>
         </PanelHeader>
         {files.isLoading ? (
           <div className="flex min-h-24 items-center justify-center">

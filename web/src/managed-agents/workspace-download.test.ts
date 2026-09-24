@@ -1,0 +1,142 @@
+import { describe, expect, it } from 'vitest'
+import {
+  Sha256,
+  ZipWriter,
+  crc32Update,
+  type ByteSink,
+} from './workspace-download'
+
+async function subtleHex(bytes: Uint8Array<ArrayBuffer>) {
+  return Array.from(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+}
+
+function memorySink() {
+  const chunks: Uint8Array[] = []
+  let closed = false
+  let aborted = false
+  const sink: ByteSink = {
+    write: (chunk) => {
+      chunks.push(chunk.slice())
+      return Promise.resolve()
+    },
+    close: () => {
+      closed = true
+      return Promise.resolve()
+    },
+    abort: () => {
+      aborted = true
+      chunks.length = 0
+      return Promise.resolve()
+    },
+  }
+  return {
+    sink,
+    bytes: () => {
+      const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
+      let at = 0
+      for (const c of chunks) {
+        out.set(c, at)
+        at += c.length
+      }
+      return out
+    },
+    closed: () => closed,
+    aborted: () => aborted,
+  }
+}
+
+describe('Sha256', () => {
+  it('matches known vectors', () => {
+    expect(new Sha256().hex()).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    )
+    const abc = new Sha256()
+    abc.update(new TextEncoder().encode('abc'))
+    expect(abc.hex()).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    )
+  })
+
+  it('agrees with crypto.subtle regardless of chunk boundaries', async () => {
+    const data = new Uint8Array(200_003)
+    for (let i = 0; i < data.length; i++) data[i] = (i * 31 + 7) & 0xff
+    const expected = await subtleHex(data)
+    for (const step of [1, 3, 55, 64, 65, 1000, 65_536]) {
+      const hash = new Sha256()
+      for (let at = 0; at < data.length; at += step) {
+        hash.update(data.subarray(at, at + step))
+      }
+      expect(hash.hex(), `chunk ${step}`).toBe(expected)
+    }
+  })
+})
+
+describe('crc32Update', () => {
+  it('matches the standard check value', () => {
+    expect(
+      crc32Update(0, new TextEncoder().encode('123456789')).toString(16),
+    ).toBe('cbf43926')
+    const a = crc32Update(0, new TextEncoder().encode('12345'))
+    expect(crc32Update(a, new TextEncoder().encode('6789')).toString(16)).toBe(
+      'cbf43926',
+    )
+  })
+})
+
+describe('ZipWriter', () => {
+  it('writes a stored archive with a readable central directory', async () => {
+    const mem = memorySink()
+    const zip = new ZipWriter(mem.sink)
+    const encoder = new TextEncoder()
+    await zip.beginEntry('a/report.txt', new Date(2026, 0, 2, 3, 4, 6))
+    await zip.write(encoder.encode('hello '))
+    await zip.write(encoder.encode('world'))
+    await zip.endEntry()
+    await zip.beginEntry('empty.bin')
+    await zip.endEntry()
+    await zip.finish()
+    expect(mem.closed()).toBe(true)
+
+    const bytes = mem.bytes()
+    const view = new DataView(bytes.buffer)
+    // local header + name + data + descriptor
+    expect(view.getUint32(0, true)).toBe(0x04034b50)
+    const nameLength = view.getUint16(26, true)
+    expect(new TextDecoder().decode(bytes.subarray(30, 30 + nameLength))).toBe(
+      'a/report.txt',
+    )
+    const dataStart = 30 + nameLength
+    expect(
+      new TextDecoder().decode(bytes.subarray(dataStart, dataStart + 11)),
+    ).toBe('hello world')
+    const descriptor = dataStart + 11
+    expect(view.getUint32(descriptor, true)).toBe(0x08074b50)
+    expect(view.getUint32(descriptor + 4, true)).toBe(
+      crc32Update(0, encoder.encode('hello world')),
+    )
+    expect(view.getBigUint64(descriptor + 8, true)).toBe(11n)
+
+    // end of central directory
+    const eocd = bytes.length - 22
+    expect(view.getUint32(eocd, true)).toBe(0x06054b50)
+    expect(view.getUint16(10 + eocd, true)).toBe(2)
+    const centralStart = view.getUint32(eocd + 16, true)
+    expect(view.getUint32(centralStart, true)).toBe(0x02014b50)
+    expect(view.getUint32(centralStart + 20, true)).toBe(11)
+    expect(view.getUint32(centralStart + 42, true)).toBe(0)
+  })
+
+  it('discards everything on abort', async () => {
+    const mem = memorySink()
+    const zip = new ZipWriter(mem.sink)
+    await zip.beginEntry('x')
+    await zip.write(new Uint8Array([1, 2, 3]))
+    await zip.abort(new Error('mismatch'))
+    expect(mem.aborted()).toBe(true)
+    expect(mem.bytes().length).toBe(0)
+    expect(mem.closed()).toBe(false)
+  })
+})
