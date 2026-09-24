@@ -1870,6 +1870,9 @@ export async function streamManagedAgentWorkspaceArtifact(
       hash.update(value)
       await write(value)
     }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
   } finally {
     reader.releaseLock()
   }
@@ -1903,11 +1906,11 @@ export async function downloadManagedAgentWorkspaceArtifact(
     await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
       sink.write(chunk),
     )
+    await sink.close()
   } catch (error) {
-    await sink.abort(error)
+    await sink.abort(error).catch(() => undefined)
     throw error
   }
-  await sink.close()
   return artifact
 }
 
@@ -1945,11 +1948,11 @@ export async function downloadManagedAgentWorkspaceArchive(
       await zip.endEntry()
     }
     onProgress?.(artifacts.length, artifacts.length)
+    await zip.finish()
   } catch (error) {
-    await zip.abort(error)
+    await zip.abort(error).catch(() => undefined)
     throw error
   }
-  await zip.finish()
   return artifacts
 }
 
