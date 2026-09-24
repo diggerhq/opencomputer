@@ -54,8 +54,10 @@ npx --package @opencomputer/cli opencomputer link --project <project-id-or-slug>
 npx --package @opencomputer/cli opencomputer link --create-project "Support agents"
 ```
 
-There is no project picker. If you skip linking, project-scoped commands return
-a structured `binding_required` error with the explicit command to run.
+If you skip linking, `opencomputer link` and `opencomputer deploy` ask you to
+pick an existing project or name a new one when run in an interactive
+terminal. Without a terminal (CI, pipes, `--json`), project-scoped commands
+return a structured `binding_required` error with the explicit command to run.
 
 You can also link as part of a watched deploy:
 
