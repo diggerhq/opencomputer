@@ -1130,7 +1130,7 @@ export async function runCommand(
       process.stdout.write(
         `Created the ${initialized.manifest.name} OpenComputer app\n` +
           `Directory: ${initialized.root}\n` +
-          `Project:   link explicitly with --project or --create-project\n` +
+          `Project:   not linked yet (see Next)\n` +
           `Agents:    opencomputer/\n` +
           (spa
             ? `Web app:   src/ (separate lifecycle)\n\n`
@@ -1138,6 +1138,7 @@ export async function runCommand(
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
+          `  npx opencomputer link --create-project ${JSON.stringify(initialized.manifest.name)}  # or --project <id|slug>\n` +
           `  npm run deploy -- --watch  # deploy changes to Development\n` +
           (spa
             ? `  npm run dev:web             # optional local web app\n`
