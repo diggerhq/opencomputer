@@ -595,6 +595,10 @@ export default function ManagedAgentDetail({
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
   // Sessions tab filter — '' shows every agent in the project.
   const [sessionsAgentFilter, setSessionsAgentFilter] = useState('')
+  const projectId = project?.project.id
+  useEffect(() => {
+    setSessionsAgentFilter('')
+  }, [projectId])
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -637,9 +641,9 @@ export default function ManagedAgentDetail({
     refetchInterval: 5_000,
   })
   const projectSessions = useQuery({
-    queryKey: ['managed-agent-sessions', 'project', project?.project.id],
-    queryFn: () => getManagedAgentSessions(),
-    enabled: Boolean(project),
+    queryKey: ['managed-agent-sessions', 'project', projectId],
+    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    enabled: Boolean(projectId),
     refetchInterval: 5_000,
   })
   const channels = useQuery({
@@ -660,9 +664,7 @@ export default function ManagedAgentDetail({
   const externalSessions = (
     project
       ? sessionsForEnvironment(
-          (projectSessions.data ?? []).filter(
-            (session) => session.projectId === project.project.id,
-          ),
+          projectSessions.data ?? [],
           project.deployments,
           sessionsAgentFilter || undefined,
           environment,

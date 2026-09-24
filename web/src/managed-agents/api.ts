@@ -1718,9 +1718,13 @@ export async function getManagedAgentDeployments(agentId: string) {
  * Rows are ordered by creation time; one page of a hundred is what the
  * agent view shows.
  */
-export async function getManagedAgentSessions(agentId?: string) {
+export async function getManagedAgentSessions(
+  agentId?: string,
+  options: { projectId?: string } = {},
+) {
   const query = new URLSearchParams({ limit: '100' })
   if (agentId) query.set('agent', agentId)
+  if (options.projectId) query.set('project', options.projectId)
   const { sessions } = await apiFetch(
     `/managed-agents/sessions?${query.toString()}`,
     undefined,
