@@ -1211,7 +1211,7 @@ export default function ManagedAgentDetail({
             onRowClick={(session) => {
               if (!project) return
               void navigate(
-                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}${projectContextSearch(location.search, session.agentId, environment)}`,
+                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}${projectContextSearch(location.search, sessionsAgentFilter, environment)}`,
               )
             }}
             empty={
