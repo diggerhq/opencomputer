@@ -302,7 +302,10 @@ export default function ManagedSessionDetail() {
           </PanelContent>
         </Panel>
       ) : activeTab === 'files' ? (
-        <SessionFiles sessionId={session.data.id} />
+        <SessionFiles
+          sessionId={session.data.id}
+          live={session.data.status !== 'ended'}
+        />
       ) : (
         <Panel>
           <PanelHeader>

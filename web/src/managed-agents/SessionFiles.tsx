@@ -47,13 +47,21 @@ function fileName(path: string) {
  * retained. "Export" asks the provider to copy and hash a file; "Download"
  * fetches the retained bytes and verifies them against the manifest.
  */
-export function SessionFiles({ sessionId }: { sessionId: string }) {
+export function SessionFiles({
+  sessionId,
+  live,
+}: {
+  sessionId: string
+  /** The agent may still be writing; keep the listing fresh. */
+  live: boolean
+}) {
   const queryClient = useQueryClient()
   const artifactsKey = ['managed-agent-session-artifacts', sessionId]
   const filesKey = ['managed-agent-session-workspace-files', sessionId]
   const files = useQuery({
     queryKey: filesKey,
     queryFn: () => getManagedAgentWorkspaceFiles(sessionId),
+    refetchInterval: live ? 5_000 : false,
   })
   const artifacts = useQuery({
     queryKey: artifactsKey,
@@ -96,12 +104,16 @@ export function SessionFiles({ sessionId }: { sessionId: string }) {
     onError: (error) => notifyError("Couldn't download that file.", error),
   })
 
-  const retainedByPath = new Map<string, ManagedWorkspaceArtifact>()
-  for (const artifact of artifacts.data ?? []) {
-    if (!retainedByPath.has(artifact.path)) {
-      retainedByPath.set(artifact.path, artifact)
-    }
-  }
+  // An artifact only stands in for the current file when it was exported
+  // from the very same S3 revision; a rewritten file needs a fresh export.
+  const retainedFor = (file: ManagedWorkspaceFile) =>
+    file.etag
+      ? (artifacts.data ?? []).find(
+          (artifact) =>
+            artifact.path === file.path &&
+            artifact.receipt.sourceEtag === file.etag,
+        )
+      : undefined
   const busy =
     exportFile.isPending || download.isPending || exportThenDownload.isPending
   const busyPath =
@@ -149,7 +161,7 @@ export function SessionFiles({ sessionId }: { sessionId: string }) {
         ) : (
           <div className="divide-y text-sm">
             {(files.data ?? []).map((file: ManagedWorkspaceFile) => {
-              const retained = retainedByPath.get(file.path)
+              const retained = retainedFor(file)
               const working = busy && busyPath === file.path
               return (
                 <div
@@ -217,6 +229,19 @@ export function SessionFiles({ sessionId }: { sessionId: string }) {
         {artifacts.isLoading ? (
           <div className="flex min-h-24 items-center justify-center">
             <Loader2 className="text-muted-foreground size-4 animate-spin" />
+          </div>
+        ) : artifacts.isError ? (
+          <div className="flex items-center gap-3 px-5 py-4 text-sm">
+            <p className="text-status-error">
+              Retained artifacts could not be loaded.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void artifacts.refetch()}
+            >
+              Retry
+            </Button>
           </div>
         ) : (artifacts.data ?? []).length === 0 ? (
           <p className="text-muted-foreground px-5 py-4 text-sm">
