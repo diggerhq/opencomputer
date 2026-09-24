@@ -22,13 +22,26 @@ export function selectedProjectAgentId(
   return agents.find((agent) => agent.id === requested)?.id ?? agents[0]?.id
 }
 
+/**
+ * The agent explicitly chosen in the URL, or undefined when none is — the
+ * project Sessions tab treats that as "every agent in the project".
+ */
+export function requestedProjectAgentId(
+  search: string,
+  agents: ReadonlyArray<{ id: string }>,
+) {
+  const requested = new URLSearchParams(search).get('agent')
+  return agents.find((agent) => agent.id === requested)?.id
+}
+
 export function projectContextSearch(
   search: string,
-  agentId: string,
+  agentId: string | undefined,
   environment: ProjectEnvironment,
 ) {
   const next = new URLSearchParams(search)
-  next.set('agent', agentId)
+  if (agentId) next.set('agent', agentId)
+  else next.delete('agent')
   if (environment === 'development') next.delete('environment')
   else next.set('environment', environment)
   return next.size ? `?${next.toString()}` : ''

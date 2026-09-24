@@ -13,9 +13,7 @@ import {
   Monitor,
   Package,
   Plug,
-  Radio,
   Rocket,
-  Send,
   Webhook,
   type LucideIcon,
 } from 'lucide-react'
@@ -67,16 +65,6 @@ export function managedAgentsNav(options: {
             icon: MessagesSquare,
           },
           {
-            to: `${projectPath}/channels`,
-            label: 'Channels',
-            icon: Radio,
-          },
-          {
-            to: `${projectPath}/outboxes`,
-            label: 'Outboxes',
-            icon: Send,
-          },
-          {
             to: `${projectPath}/schedules`,
             label: 'Schedules',
             icon: CalendarClock,
@@ -120,6 +108,8 @@ export function managedAgentsNav(options: {
         ],
       },
     )
+
+    return groups
   }
 
   if (!options.projectId) {

@@ -134,6 +134,63 @@ test("memory precondition failures surface the API's code", async (context) => {
   );
 });
 
+test("managed GitHub App requests use project-scoped status and connect routes", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "POST") {
+        return Response.json({
+          installUrl: "https://github.com/apps/opencomputer/installations/new",
+          authorizeUrl: "https://github.com/login/oauth/authorize",
+        });
+      }
+      return Response.json({ environments: [], connections: [], app: null });
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+
+  await client.githubStatus("project/one");
+  await client.connectGitHub({
+    projectId: "project/one",
+    environments: ["development", "production"],
+  });
+  await client.attachGitHub({
+    projectId: "project/one",
+    environment: "production",
+    connectionId: "ghi_one",
+  });
+
+  assert.equal(
+    requests[0]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/projects/project%2Fone/github",
+  );
+  assert.equal(requests[0]?.method, "GET");
+  assert.equal(
+    requests[1]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/projects/project%2Fone/github/connect",
+  );
+  assert.equal(requests[1]?.method, "POST");
+  assert.deepEqual(await requests[1]?.json(), {
+    environments: ["development", "production"],
+  });
+  assert.equal(
+    requests[2]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/projects/project%2Fone/github/attach",
+  );
+  assert.equal(requests[2]?.method, "POST");
+  assert.deepEqual(await requests[2]?.json(), {
+    environment: "production",
+    connectionId: "ghi_one",
+  });
+});
+
 test("model connections and routes use write-only connection input and project route endpoints", async (context) => {
   const requests: Request[] = [];
   context.mock.method(

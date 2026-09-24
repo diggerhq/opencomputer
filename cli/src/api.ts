@@ -72,21 +72,24 @@ export interface ManagedSecretMetadata {
   updatedAt: string;
 }
 
+export interface ManagedGitHubInstallation {
+  id: string;
+  githubInstallationId: number;
+  accountLogin: string;
+  accountType: string;
+  repositorySelection: "all" | "selected";
+  state: "active" | "suspended" | "deleted";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ManagedGitHubStatus {
   environments: Array<{
     environment: "development" | "production";
     state: "not_connected" | "active" | "suspended" | "deleted";
-    installation?: {
-      id: string;
-      githubInstallationId: number;
-      accountLogin: string;
-      accountType: string;
-      repositorySelection: "all" | "selected";
-      state: "active" | "suspended" | "deleted";
-      createdAt: string;
-      updatedAt: string;
-    };
+    installation?: ManagedGitHubInstallation;
   }>;
+  connections: ManagedGitHubInstallation[];
   app: { slug: string } | null;
 }
 
@@ -577,6 +580,23 @@ export class OpenComputerClient {
         body: JSON.stringify(
           input.environments ? { environments: input.environments } : {},
         ),
+      },
+    );
+  }
+
+  attachGitHub(input: {
+    projectId: string;
+    environment: "development" | "production";
+    connectionId: string;
+  }) {
+    return this.request<{ attached: boolean }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/attach`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          environment: input.environment,
+          connectionId: input.connectionId,
+        }),
       },
     );
   }

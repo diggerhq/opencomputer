@@ -1,0 +1,75 @@
+---
+title: "Slack connections"
+description: "Connect a deployed agent to Slack from the dashboard so people can talk to it in threads"
+---
+
+A Slack connection gives a deployed agent its own Slack app. Mention the app or
+send it a direct message and OpenComputer starts a session for that thread;
+follow-ups in the same thread continue the same session. There is no Slack
+client, message parser or reply code to write: the agent reads the message
+through [`useInput()`](/agents/inputs) and its output is posted back to the
+thread.
+
+Slack is connected per project and per environment from the dashboard.
+Development and Production never share Slack credentials or thread routing, so
+connecting an app in one environment does not connect it in the other.
+
+## Connect Slack
+
+After the project's deployment is synchronized:
+
+1. Open the project in the dashboard and select **Development** or
+   **Production**.
+2. Open **Connections**. The Slack panel shows the agent that will receive
+   messages.
+3. Choose **Create Slack bot** and enter the bot's name.
+4. Paste an **App configuration access token** from
+   [your Slack apps](https://api.slack.com/apps): under **Your App
+   Configuration Tokens**, choose **Generate Token**, choose the workspace the
+   bot will live in, and copy the **Access Token** (not the refresh token).
+5. Approve the installation in Slack. You are returned to the same project
+   and environment.
+6. Invite the bot to each conversation it will use and mention it.
+
+OpenComputer creates the app with the standard configuration (mentions and
+direct messages) and installs it into your workspace. The configuration token
+is used once, to create the app, and is never stored.
+
+The panel distinguishes **Connected**, meaning the installed credentials are
+stored, from **First message received**, meaning a real Slack message reached
+the agent. Slack's URL verification is not a message; mention the bot once to
+confirm delivery.
+
+If Slack's consent page is closed before approval, the created app is kept:
+open Connections again and choose **Authorize in Slack**. When the outcome of
+app creation is unknown, the panel says so and links to your Slack app list
+rather than creating a second app; finish with manual setup if the app exists,
+or cancel and start again if it does not. Cancelling a setup never deletes an
+app in Slack.
+
+### Set up manually
+
+Manual setup remains available for workspaces where you cannot generate a
+configuration token, or to connect an app you created yourself. In the Slack
+panel choose **Set up manually**:
+
+1. Create or update the Slack app from the generated manifest.
+2. Install the app to the intended Slack workspace.
+3. Enter the installed app's ID, signing secret and bot token when prompted.
+4. Invite the app to each Slack conversation it will use.
+
+Both paths produce the same app configuration and the same connection.
+Credentials and disconnecting are managed in the same place afterwards.
+
+## Current limits
+
+- A Slack app is installed into a single workspace; organization-wide
+  installations are not supported.
+- Direct Slack user mapping and outbound DMs are not available.
+- Proactive messages to a Slack conversation that did not start the session
+  are not part of the connection. Persist pending notifications in the
+  project's [database](/agents/database) and deliver them from a
+  [scheduled](/agents/schedules) worker instead.
+
+See [A coding agent in Slack](/agents/examples/slack-coder) for a complete
+deployed example.

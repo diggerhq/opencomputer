@@ -45,11 +45,10 @@
               "agents/schedules",
               "agents/webhooks",
               "agents/capabilities",
-              "agents/channels",
-              "agents/outboxes",
               "agents/secrets",
               "agents/services",
               "agents/github",
+              "agents/slack",
               "agents/byok",
               "agents/deployments"
             ]
@@ -90,7 +89,6 @@
             "pages": [
               "agents/examples/gtm-engineer",
               "agents/examples/feature-flag-hygiene",
-              "agents/examples/github-actions-triage",
               "agents/examples/slack-coder",
               "agents/examples/pr-review",
               "agents/examples/test-coverage"
@@ -396,6 +394,18 @@
     {
       "source": "/agents/examples/exa-research-session",
       "destination": "/agents/examples/gtm-engineer"
+    },
+    {
+      "source": "/agents/channels",
+      "destination": "/agents/slack"
+    },
+    {
+      "source": "/agents/outboxes",
+      "destination": "/agents/database"
+    },
+    {
+      "source": "/agents/examples/github-actions-triage",
+      "destination": "/agents/webhooks"
     }
   ],
   "appearance": {

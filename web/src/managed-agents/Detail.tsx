@@ -51,7 +51,6 @@ import {
   displayManagedAgentName,
   getManagedAgentDeployment,
   getManagedAgentDeployments,
-  getManagedAgentChannels,
   getManagedAgentSession,
   getManagedAgentSessionEvents,
   getManagedAgents,
@@ -67,7 +66,10 @@ import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
-import { projectContextSearch } from './project-context'
+import {
+  projectContextSearch,
+  requestedProjectAgentId,
+} from './project-context'
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
@@ -75,9 +77,6 @@ import {
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
 import { ManagedProjectSlack } from './Slack'
-import { ManagedSlackWizard } from './SlackWizard'
-import { ManagedTwilioWizard } from './TwilioWizard'
-import { ManagedAgentOutboxes } from './Outboxes'
 import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
@@ -94,8 +93,6 @@ type DetailTab =
   | 'playground'
   | 'deployments'
   | 'sessions'
-  | 'channels'
-  | 'outboxes'
   | 'schedules'
   | 'webhooks'
   | 'memory'
@@ -109,8 +106,6 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'playground',
   'deployments',
   'sessions',
-  'channels',
-  'outboxes',
   'schedules',
   'webhooks',
   'memory',
@@ -593,6 +588,13 @@ export default function ManagedAgentDetail({
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
+  const projectId = project?.project.id
+  // On the project Sessions tab the agent selector offers "All agents"; an
+  // explicit ?agent= narrows it. Every other tab needs a concrete agent.
+  const sessionsAgentFilter =
+    project && activeTab === 'sessions'
+      ? requestedProjectAgentId(location.search, project.project.agents)
+      : agentId
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -634,9 +636,11 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
-  const channels = useQuery({
-    queryKey: ['managed-agent-channels'],
-    queryFn: getManagedAgentChannels,
+  const projectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId],
+    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    enabled: Boolean(projectId),
+    refetchInterval: 5_000,
   })
   const environmentSessions = project
     ? sessionsForEnvironment(
@@ -649,9 +653,20 @@ export default function ManagedAgentDetail({
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
-  const externalSessions = environmentSessions.filter(
-    (session) => session.source !== 'playground',
-  )
+  const externalSessions = (
+    project
+      ? sessionsForEnvironment(
+          projectSessions.data ?? [],
+          project.deployments,
+          sessionsAgentFilter,
+          environment,
+        )
+      : environmentSessions
+  ).filter((session) => session.source !== 'playground')
+  const projectAgentName = (id: string) => {
+    const candidate = project?.project.agents.find((a) => a.id === id)
+    return candidate ? displayManagedAgentName(candidate) : id
+  }
   const selectedPlayground = playgroundSessions.find(
     (session) => session.id === requestedPlaygroundId,
   )
@@ -690,20 +705,6 @@ export default function ManagedAgentDetail({
     selectedPlaygroundId && selectedPlaygroundId !== adoptedPlaygroundId
       ? selectedPlaygroundId
       : newSessionKey
-  const activeAliasChannels = (channels.data ?? []).filter(
-    (channel) =>
-      channel.agentId === agentId &&
-      channel.alias === (activeDeployment.data?.alias ?? agent?.activeAlias) &&
-      channel.status !== 'disconnected',
-  )
-  const activeAliasChannel = activeAliasChannels[0]
-  const declaredChannels =
-    activeDeployment.data?.projectDeployment?.resources.channels ?? []
-  // Slack apps are set up on Connections; the wizard points there when a
-  // manual completion is blocked by an automated setup.
-  const connectionsHref = project
-    ? `/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`
-    : undefined
 
   const sessionColumns: Column<ManagedAgentSessionSummary>[] = [
     {
@@ -713,6 +714,19 @@ export default function ManagedAgentDetail({
         <span className="font-mono text-xs">{session.id}</span>
       ),
     },
+    ...(project
+      ? ([
+          {
+            key: 'agent',
+            header: 'Agent',
+            cell: (session) => (
+              <span className="text-xs">
+                {projectAgentName(session.agentId)}
+              </span>
+            ),
+          },
+        ] as Column<ManagedAgentSessionSummary>[])
+      : []),
     {
       key: 'source',
       header: 'Source',
@@ -783,8 +797,6 @@ export default function ManagedAgentDetail({
     { id: 'playground', label: project ? 'Debug playground' : 'Playground' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
-    { id: 'channels', label: 'Channels' },
-    ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
@@ -880,13 +892,13 @@ export default function ManagedAgentDetail({
           <select
             id="project-agent"
             aria-label="Project agent"
-            value={agentId}
+            value={sessionsAgentFilter ?? ''}
             onChange={(event) => {
               setNewSessionKey(crypto.randomUUID())
               const search = new URLSearchParams(
                 projectContextSearch(
                   location.search,
-                  event.target.value,
+                  event.target.value || undefined,
                   environment,
                 ),
               )
@@ -898,13 +910,18 @@ export default function ManagedAgentDetail({
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
           >
+            {activeTab === 'sessions' ? (
+              <option value="">All agents</option>
+            ) : null}
             {project.project.agents.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {displayManagedAgentName(candidate)}
               </option>
             ))}
           </select>
-          {projectAgent ? <AgentNameSourceDialog agent={projectAgent} /> : null}
+          {projectAgent && sessionsAgentFilter ? (
+            <AgentNameSourceDialog agent={projectAgent} />
+          ) : null}
         </div>
       ) : null}
 
@@ -929,14 +946,6 @@ export default function ManagedAgentDetail({
           </nav>
           <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
             <span>{agent?.deploymentCount ?? 0} deployments</span>
-            <span>
-              {
-                activeAliasChannels.filter(
-                  (channel) => channel.status === 'connected',
-                ).length
-              }{' '}
-              channels
-            </span>
           </div>
         </div>
       ) : null}
@@ -1149,8 +1158,9 @@ export default function ManagedAgentDetail({
             <div>
               <PanelTitle>Sessions</PanelTitle>
               <PanelDescription className="mt-1">
-                Sessions started through channels and the API. Playground
-                sessions stay in the playground.
+                Sessions started through channels and the API
+                {project ? ' across every agent in this project' : ''}.
+                Playground sessions stay in the playground.
               </PanelDescription>
             </div>
             <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
@@ -1161,11 +1171,11 @@ export default function ManagedAgentDetail({
             columns={sessionColumns}
             rows={externalSessions}
             rowKey={(session) => session.id}
-            loading={sessions.isLoading}
+            loading={project ? projectSessions.isLoading : sessions.isLoading}
             onRowClick={(session) => {
               if (!project) return
               void navigate(
-                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}?${searchParams.toString()}`,
+                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}${projectContextSearch(location.search, sessionsAgentFilter, environment)}`,
               )
             }}
             empty={
@@ -1177,88 +1187,6 @@ export default function ManagedAgentDetail({
             }
           />
         </Panel>
-      ) : null}
-
-      {activeTab === 'channels' ? (
-        <Panel className="overflow-hidden">
-          <PanelHeader>
-            <div>
-              <PanelTitle>Channels</PanelTitle>
-              <PanelDescription className="mt-1">
-                Messaging channels connected to this deployed agent.
-              </PanelDescription>
-            </div>
-            {project ? (
-              // Slack apps are created and installed from Connections; this
-              // tab keeps routing, destinations and delivery.
-              <Button asChild variant="outline" size="sm">
-                <Link
-                  to={`/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`}
-                >
-                  Slack setup in Connections
-                </Link>
-              </Button>
-            ) : null}
-          </PanelHeader>
-          {agent && activeDeployment.data ? (
-            declaredChannels.length ? (
-              // The wizard follows the channel's declared provider: Slack has
-              // an app to install, Twilio has credentials to paste and a
-              // number to point here. Nothing about connecting one resembles
-              // connecting the other.
-              declaredChannels.map((declaredChannel) =>
-                declaredChannel.type === 'twilio' ? (
-                  <ManagedTwilioWizard
-                    key={declaredChannel.id}
-                    agentId={agent.id}
-                    alias={activeDeployment.data.alias}
-                    connection={activeAliasChannels.find(
-                      (channel) => channel.channelId === declaredChannel.id,
-                    )}
-                    channelId={declaredChannel.id}
-                  />
-                ) : (
-                  <ManagedSlackWizard
-                    key={declaredChannel.id}
-                    agentId={agent.id}
-                    alias={activeDeployment.data.alias}
-                    agentName={displayManagedAgentName(agent)}
-                    channelName={
-                      declaredChannel.displayName ?? declaredChannel.id
-                    }
-                    connection={activeAliasChannels.find(
-                      (channel) => channel.channelId === declaredChannel.id,
-                    )}
-                    channelId={declaredChannel.id}
-                    destinations={Object.keys(declaredChannel.destinations)}
-                    connectionsHref={connectionsHref}
-                  />
-                ),
-              )
-            ) : (
-              <ManagedSlackWizard
-                agentId={agent.id}
-                alias={activeDeployment.data.alias}
-                agentName={displayManagedAgentName(agent)}
-                connection={activeAliasChannel}
-                connectionsHref={connectionsHref}
-              />
-            )
-          ) : (
-            <PanelContent className="text-muted-foreground text-sm">
-              Loading channels…
-            </PanelContent>
-          )}
-        </Panel>
-      ) : null}
-
-      {activeTab === 'outboxes' && project && agent ? (
-        <ManagedAgentOutboxes
-          projectId={project.project.id}
-          agentId={agent.id}
-          environment={environment}
-          deployed={Boolean(projectEnvironment?.activeDeploymentId)}
-        />
       ) : null}
 
       {activeTab === 'schedules' && project && agent ? (

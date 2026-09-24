@@ -75,9 +75,11 @@ Usage:
   opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer connection add <gmail|calendar|drive|sheets|github|linear> [--alias <name>] [--no-wait]
+  opencomputer connection add <gmail|calendar|drive|sheets|linear> [--alias <name>] [--no-wait]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id> [--service <name>]
+  opencomputer github status [--project <id|slug>]
+  opencomputer github connect [--new | --connection <id|account>] [--environment development|production] [--project <id|slug>] [--no-wait]
   opencomputer model-access connect codex [--project <id|slug>]
   opencomputer model-access connect openrouter [--api-key-stdin] [--project <id|slug>]
   opencomputer model-access connect openai-compatible --base-url <url> [--api-key-stdin] [--project <id|slug>]

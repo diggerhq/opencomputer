@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   projectContextSearch,
   projectEnvironmentSearch,
+  requestedProjectAgentId,
   selectedProjectAgentId,
 } from './project-context'
 
@@ -22,6 +23,18 @@ describe('managed project context', () => {
     expect(
       selectedProjectAgentId('/projects/prj_1/playground/support', '', agents),
     ).toBe('support')
+  })
+
+  it('only reports an agent the URL explicitly names', () => {
+    expect(requestedProjectAgentId('?agent=support', agents)).toBe('support')
+    expect(requestedProjectAgentId('', agents)).toBeUndefined()
+    expect(requestedProjectAgentId('?agent=gone', agents)).toBeUndefined()
+  })
+
+  it('drops the agent from the URL when none is chosen', () => {
+    expect(
+      projectContextSearch('?agent=support', undefined, 'development'),
+    ).toBe('')
   })
 
   it('stores agent and environment in one navigation state', () => {

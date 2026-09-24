@@ -1,9 +1,10 @@
 import { lazy } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
 import { managedAgentsExperimentEnabled } from './managed-agents/feature'
+import { templateDeployPathFromSearch } from './managed-agents/templates'
 
 // Route pages are code-split so the initial bundle stays small; the heaviest
 // deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
@@ -30,7 +31,6 @@ const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
-const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
 const ManagedAgentConnections = lazy(
   () => import('./managed-agents/Connections'),
 )
@@ -41,6 +41,13 @@ const ManagedTemplateNew = lazy(() => import('./managed-agents/TemplateNew'))
 const ModelAccessCallback = lazy(
   () => import('./managed-agents/ModelAccessCallback'),
 )
+
+function NewProject() {
+  const [searchParams] = useSearchParams()
+  const templatePath = templateDeployPathFromSearch(searchParams)
+  if (templatePath) return <Navigate to={templatePath} replace />
+  return <ManagedProjectOnboarding />
+}
 
 export default function App() {
   return (
@@ -72,10 +79,6 @@ export default function App() {
               }
             />
             <Route
-              path="managed-agents/channels"
-              element={<ManagedAgentChannels />}
-            />
-            <Route
               path="model-access/callback"
               element={<ModelAccessCallback />}
             />
@@ -87,7 +90,7 @@ export default function App() {
               path="managed-agents/new"
               element={<Navigate to="/new" replace />}
             />
-            <Route path="new" element={<ManagedProjectOnboarding />} />
+            <Route path="new" element={<NewProject />} />
             <Route path="template" element={<ManagedTemplateNew />} />
             <Route
               path="projects/:projectId"

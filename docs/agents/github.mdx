@@ -53,10 +53,46 @@ Effective authority is therefore the intersection of:
 
 ## Install the App
 
-Deploy the agent, open its project in the OpenComputer dashboard, select the
-environment and open **Connections**. Install the managed OpenComputer GitHub
-App into a user or organization account. GitHub lets the installer select all
+Deploy the agent, then connect the managed App from the project directory:
+
+```bash
+opencomputer github connect
+```
+
+Open the printed URL and install the App into a user or organization account.
+The CLI waits until GitHub completes the flow and, by default, attaches the
+installation to both development and production. Pass
+`--environment development` or `--environment production` to attach only one
+environment, or `--no-wait` when using the command in a non-interactive script.
+Check the result at any time with:
+
+```bash
+opencomputer github status
+```
+
+If the OpenComputer account already has one active GitHub App installation,
+the command attaches it directly without opening GitHub again. When multiple
+installations are available, select one with `--connection <id|account>`; the
+ids and account names are shown by `opencomputer github status --json`.
+
+To install the App on another user or organization account, force a new GitHub
+flow and select the target account in GitHub:
+
+```bash
+opencomputer github connect --new
+```
+
+`--new` and `--connection` are mutually exclusive. Completing the new flow
+attaches that installation to the requested project environment or, when no
+environment is specified, to both environments.
+
+You can also install or attach the App from the project's **Connections** page
+in the OpenComputer dashboard. GitHub lets the installer select all
 repositories or a specific set of repositories.
+
+GitHub App access is intentionally separate from managed service OAuth. Do not
+use `opencomputer connection add github`; the CLI directs that command to the
+GitHub App flow instead.
 
 That GitHub installation selection is the complete repository boundary. There
 is no second OpenComputer repository allowlist. If the installer selects all

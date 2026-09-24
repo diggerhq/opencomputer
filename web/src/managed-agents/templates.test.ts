@@ -3,6 +3,7 @@ import {
   CURATED_TEMPLATES,
   HELLO_WORLD_TEMPLATE_REPOSITORY,
   templateDeployPath,
+  templateDeployPathFromSearch,
 } from './templates'
 
 describe('project creation templates', () => {
@@ -12,11 +13,23 @@ describe('project creation templates', () => {
     )
   })
 
+  it('sends public /new?repository-url links to the template deploy form', () => {
+    expect(
+      templateDeployPathFromSearch(
+        new URLSearchParams(
+          'repository-url=https%3A%2F%2Fgithub.com%2Fdiggerhq%2Fshipvideo',
+        ),
+      ),
+    ).toBe(
+      '/template?repository-url=https%3A%2F%2Fgithub.com%2Fdiggerhq%2Fshipvideo',
+    )
+    expect(templateDeployPathFromSearch(new URLSearchParams())).toBeNull()
+  })
+
   it('includes each documented example once', () => {
     expect(CURATED_TEMPLATES.map((template) => template.name)).toEqual([
       'Pull Request Reviewer',
       'Test Coverage',
-      'GitHub Actions Triage',
       'Feature Flag Hygiene',
       'GTM Engineer',
     ])

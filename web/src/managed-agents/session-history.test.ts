@@ -79,6 +79,25 @@ describe('sessionsForEnvironment', () => {
       ),
     ).toEqual([])
   })
+
+  it('spans every agent in the environment when no agent is given', () => {
+    expect(
+      sessionsForEnvironment(
+        [
+          session('mine', 'dev-1'),
+          session('other', 'other-dev'),
+          session('prod', 'other-prod'),
+        ],
+        [
+          deployment('dev-1', 'development'),
+          deployment('other-dev', 'development', 'other-agent'),
+          deployment('other-prod', 'production', 'other-agent'),
+        ],
+        undefined,
+        'development',
+      ).map(({ id }) => id),
+    ).toEqual(['mine', 'other'])
+  })
 })
 
 describe('playground session URL state', () => {
