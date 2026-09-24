@@ -139,7 +139,6 @@ opencomputer logs --session <session-id> --json
 ```
 
 Use `opencomputer sessions tail <session-id> --json` for durable NDJSON session
-events and `opencomputer channels status --json` for the last accepted event,
-delivery outcome, and redacted error category. All commands accept `--json`;
-mutations accept `--idempotency-key <stable-retry-key>`. Run
+events. All commands accept `--json`; mutations accept
+`--idempotency-key <stable-retry-key>`. Run
 `opencomputer doctor --json` for the sub-second local pre-deploy scan.

@@ -16,7 +16,6 @@ describe('project creation templates', () => {
     expect(CURATED_TEMPLATES.map((template) => template.name)).toEqual([
       'Pull Request Reviewer',
       'Test Coverage',
-      'GitHub Actions Triage',
       'Feature Flag Hygiene',
       'GTM Engineer',
     ])

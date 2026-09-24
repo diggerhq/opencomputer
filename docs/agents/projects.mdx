@@ -15,14 +15,10 @@ my-agent/
 ├── opencomputer/
 │   ├── .env.example
 │   ├── project.ts
-│   ├── channels/        # optional project messaging channels
 │   ├── database/        # optional default database migrations
-│   ├── outboxes/        # optional durable notification routes
 │   └── agents/
 │       └── hello-world/
 │           ├── agent.ts
-│           ├── channels/    # optional inbound registrations
-│           ├── outboxes/    # optional publish registrations
 │           ├── tools/       # optional
 │           ├── skills/      # optional
 │           └── schedules/   # optional
@@ -31,8 +27,6 @@ my-agent/
 
 - `opencomputer/project.ts` declares project metadata and agent IDs.
 - `opencomputer/agents/<id>/agent.ts` defines one agent.
-- `opencomputer/channels/` and `opencomputer/outboxes/` define shared project
-  resources; registrations under an agent authorize that agent to use them.
 - `opencomputer/database/migrations/` holds ordered SQL migrations for the
   project's [default database](/agents/database).
 - `opencomputer/.env.local` optionally holds ignored development secrets.
@@ -106,9 +100,6 @@ The current project dashboard provides:
 - **Deployments** for immutable version history and active aliases
 - **Sessions** created through the dashboard, React client, or API
 - **Schedules** deployed from each agent's source directory
-- **Channels** for environment-specific Slack installation and destination
-  binding
-- **Outboxes** for inspecting proactive notification delivery
 - **Memory** for reading, editing and exporting saved agent notes
 - **Database** for inspecting tables, rows and applied migrations, and running
   read-only queries

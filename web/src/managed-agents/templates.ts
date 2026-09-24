@@ -15,12 +15,6 @@ export const CURATED_TEMPLATES = [
       'https://github.com/diggerhq/opencomputer-example-test-coverage',
   },
   {
-    name: 'GitHub Actions Triage',
-    description: 'Investigate failed CI runs and explain the likely fix.',
-    repositoryUrl:
-      'https://github.com/diggerhq/opencomputer-example-actions-triage',
-  },
-  {
     name: 'Feature Flag Hygiene',
     description: 'Audit stale feature flags across GitHub and Unleash.',
     repositoryUrl: 'https://github.com/diggerhq/opencomputer-example-unleash',

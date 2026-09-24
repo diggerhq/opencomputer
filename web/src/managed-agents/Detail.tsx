@@ -108,8 +108,6 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'playground',
   'deployments',
   'sessions',
-  'channels',
-  'outboxes',
   'schedules',
   'webhooks',
   'memory',
@@ -752,8 +750,6 @@ export default function ManagedAgentDetail({
     { id: 'playground', label: project ? 'Debug playground' : 'Playground' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'sessions', label: 'Sessions' },
-    { id: 'channels', label: 'Channels' },
-    ...(project ? ([{ id: 'outboxes', label: 'Outboxes' }] as const) : []),
     ...(project ? ([{ id: 'schedules', label: 'Schedules' }] as const) : []),
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
@@ -897,14 +893,6 @@ export default function ManagedAgentDetail({
           </nav>
           <div className="text-muted-foreground hidden gap-5 pb-3 text-xs lg:flex">
             <span>{agent?.deploymentCount ?? 0} deployments</span>
-            <span>
-              {
-                activeAliasChannels.filter(
-                  (channel) => channel.status === 'connected',
-                ).length
-              }{' '}
-              channels
-            </span>
           </div>
         </div>
       ) : null}
