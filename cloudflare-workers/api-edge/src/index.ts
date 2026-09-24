@@ -1128,6 +1128,52 @@ async function lookupCell(env: Env, cellID: string): Promise<CellRow | null> {
   return readCellRow(env, cellID);
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHECKPOINT_PROBE_TIMEOUT_MS = 5000;
+
+type LocatedCheckpoint =
+  | { status: "found"; cellID: string }
+  | { status: "forbidden" }
+  | { status: "not_found" };
+
+// locateCheckpointCell asks every active cell whether it owns a checkpoint,
+// for the case where checkpoints_index has no row yet. The probe is the
+// cell's owner-only GET /api/sandboxes/checkpoints/:id/patches: 200 means
+// this cell holds the row and the caller's org owns it, 403 means the cell
+// holds it but another org owns it, 404 means not here. Cells that time out
+// or error are treated as "not here" — the fallback can only ever turn a 404
+// into a correct route, never route a fork that D1 would have routed
+// differently.
+async function locateCheckpointCell(
+  env: Env,
+  caller: Caller,
+  cpID: string,
+  cells: CellRow[],
+  plan: string,
+  org: OrgPolicy,
+): Promise<LocatedCheckpoint> {
+  if (!UUID_RE.test(cpID) || cells.length === 0) return { status: "not_found" };
+  const results = await Promise.all(
+    cells.map(async (cell): Promise<{ cell: CellRow; status: number } | null> => {
+      try {
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, org.runtime ?? "", caller.userID);
+        const resp = await fetch(cell.base_url.replace(/\/$/, "") + `/api/sandboxes/checkpoints/${cpID}/patches`, {
+          method: "GET",
+          headers: { authorization: "Bearer " + token },
+          signal: AbortSignal.timeout(CHECKPOINT_PROBE_TIMEOUT_MS),
+        });
+        return { cell, status: resp.status };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const owner = results.find((r) => r && r.status === 200);
+  if (owner) return { status: "found", cellID: owner.cell.cell_id };
+  if (results.some((r) => r && r.status === 403)) return { status: "forbidden" };
+  return { status: "not_found" };
+}
+
 // Freshness window — the CP emits capacity events every ~30s; 120s is a
 // generous 4× margin that covers a missed sample without flapping.
 const CAPACITY_FRESH_SEC = 120;
@@ -5554,17 +5600,28 @@ export default {
         const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         const cpID = fc[1];
-        const cpRow = await env.OPENCOMPUTER_DB.prepare(
+        const { org, activeCount: fcActive, cells: fcCells } = await loadCreateContext(env, caller.orgID);
+        if (!org) return json({ error: "org not found" }, 401);
+        const plan = org.plan === "pro" ? "pro" : "free";
+        let cpRow = await env.OPENCOMPUTER_DB.prepare(
           `SELECT owner_cell_id, org_id FROM checkpoints_index WHERE id = ?1`,
         )
           .bind(cpID)
           .first<{ owner_cell_id: string; org_id: string }>();
-        if (!cpRow) return json({ error: "checkpoint not found" }, 404);
+        if (!cpRow) {
+          // checkpoints_index is populated by the best-effort checkpoint_ready
+          // event pipeline, so it lags cell PG (where readiness is committed
+          // first). A client that polls the sandbox-local checkpoint list and
+          // forks the moment it reads "ready" lands in that window. Ask the
+          // cells directly before declaring the checkpoint missing.
+          const located = await locateCheckpointCell(env, caller, cpID, fcCells, plan, org);
+          if (located.status === "forbidden") return json({ error: "checkpoint not in your org" }, 403);
+          if (located.status === "not_found") return json({ error: "checkpoint not found" }, 404);
+          cpRow = { owner_cell_id: located.cellID, org_id: caller.orgID };
+        }
         if (cpRow.org_id !== caller.orgID) return json({ error: "checkpoint not in your org" }, 403);
         const cell = await lookupCell(env, cpRow.owner_cell_id);
         if (!cell) return json({ error: `cell ${cpRow.owner_cell_id} not registered` }, 503);
-        const { org, activeCount: fcActive } = await loadCreateContext(env, caller.orgID);
-        if (!org) return json({ error: "org not found" }, 401);
         // Read the body so we can size-gate, forward it, and record cpu/mem to
         // register the forked sandbox in sandboxes_index — same as createSandbox.
         // Without the index row, forked sandboxes run on the cell but are
@@ -5587,7 +5644,6 @@ export default {
         // sandboxes — wrong once an org spans cells. Enforce from D1 here.
         const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
-        const plan = org.plan === "pro" ? "pro" : "free";
         // org.runtime, deliberately NOT the SDK-version routing createSandbox
         // uses. A fork restores a checkpoint, and only the QEMU fleet produces
         // checkpoints — routing a fork by the caller's SDK version would send it
