@@ -3523,10 +3523,72 @@ export async function agentRuntimeDirectory(
   );
 }
 
+export interface RuntimeDirectoryIO {
+  rm: (
+    path: string,
+    options: {
+      recursive: true;
+      force: true;
+      maxRetries: number;
+      retryDelay: number;
+    },
+  ) => Promise<void>;
+  mkdir: (path: string, options: { recursive: true }) => Promise<unknown>;
+  readdir: (path: string) => Promise<string[]>;
+}
+
+const RUNTIME_RESET_ATTEMPTS = 5;
+const RUNTIME_RESET_DELAY_MS = 50;
+
+/**
+ * Replaces the generated runtime directory with an empty one. Recursive
+ * removal races with anything still writing into the previous build's output
+ * (an editor indexer, a dev server reading the last bundle, a slow
+ * antivirus), and Node then reports ENOTEMPTY from the final rmdir. Each
+ * attempt removes, recreates and confirms the directory is empty; exhausting
+ * the attempts names the phase and the path so the failure is actionable.
+ */
+export async function resetRuntimeDirectory(
+  runtime: string,
+  io: RuntimeDirectoryIO = { rm, mkdir, readdir },
+  attempts = RUNTIME_RESET_ATTEMPTS,
+): Promise<void> {
+  let failure: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await io.rm(runtime, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: RUNTIME_RESET_DELAY_MS,
+      });
+      await io.mkdir(runtime, { recursive: true });
+      const leftover = await io.readdir(runtime);
+      if (leftover.length === 0) return;
+      failure = new Error(
+        `${leftover.length} entr${leftover.length === 1 ? "y" : "ies"} reappeared (${leftover
+          .slice(0, 3)
+          .join(", ")})`,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    if (attempt < attempts) {
+      await new Promise((done) =>
+        setTimeout(done, RUNTIME_RESET_DELAY_MS * attempt),
+      );
+    }
+  }
+  throw new Error(
+    `Cleaning generated runtime output failed after ${attempts} attempts: ${
+      failure instanceof Error ? failure.message : String(failure)
+    }\n  Directory  ${runtime}\n  Another process is writing into it; stop it or remove the directory and save again.`,
+  );
+}
+
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = await agentRuntimeDirectory(root);
-  await rm(runtime, { recursive: true, force: true });
-  await mkdir(runtime, { recursive: true });
+  await resetRuntimeDirectory(runtime);
   const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
   const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(
     agentSource,
