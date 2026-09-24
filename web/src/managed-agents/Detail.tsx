@@ -66,6 +66,12 @@ import {
 import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
+import {
+  messageStartupPhase,
+  startupPhaseHint,
+  startupPhaseLabel,
+  type StartupPhase,
+} from './startup-phase'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
 import {
@@ -240,6 +246,23 @@ function MessageActivity({
         ))}
       </div>
     </details>
+  )
+}
+
+function StartupLoader({ phase }: { phase: StartupPhase | undefined }) {
+  const hint = startupPhaseHint(phase)
+  return (
+    <div
+      className="text-muted-foreground text-sm"
+      role="status"
+      data-startup-phase={phase}
+    >
+      <div className="flex items-center gap-2">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        {startupPhaseLabel(phase)}
+      </div>
+      {hint ? <p className="mt-1 pl-6 text-xs">{hint}</p> : null}
+    </div>
   )
 }
 
@@ -453,10 +476,7 @@ function PlaygroundChat({
                       <AgentMarkdown>{text}</AgentMarkdown>
                     )
                   ) : messageRunning ? (
-                    <div className="text-muted-foreground flex items-center gap-2 text-sm">
-                      <Loader2 className="size-4 animate-spin" />
-                      Starting the agent…
-                    </div>
+                    <StartupLoader phase={messageStartupPhase(message)} />
                   ) : null}
                 </div>
               )

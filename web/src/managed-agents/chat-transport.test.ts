@@ -91,6 +91,7 @@ describe('ManagedAgentChatTransport', () => {
     expect(assigned).toEqual(['session-1'])
     expect(first.map((chunk) => chunk.type)).toEqual([
       'start',
+      'data-startup-phase',
       'reasoning-start',
       'reasoning-delta',
       'tool-input-available',
@@ -120,5 +121,54 @@ describe('ManagedAgentChatTransport', () => {
       undefined,
     )
     expect(runManagedAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports startup phases while a fresh microvm session boots', async () => {
+    runManagedAgent.mockImplementation(
+      (
+        _agentId: string,
+        _input: string,
+        onEvent: (event: unknown) => void,
+        options: { onSession: (sessionId: string) => void },
+      ) => {
+        options.onSession('session-2')
+        onEvent({ seq: 1, type: 'session.created', data: {} })
+        onEvent({
+          seq: 2,
+          type: 'session.status_changed',
+          data: { from: 'new', to: 'connecting' },
+        })
+        onEvent({ seq: 3, type: 'runtime.connected', data: {} })
+        onEvent({ seq: 4, type: 'turn.started', data: {} })
+        onEvent({ seq: 5, type: 'message.completed', data: { text: 'Hi' } })
+        return Promise.resolve()
+      },
+    )
+    const transport = new ManagedAgentChatTransport(
+      'agent-1',
+      undefined,
+      () => undefined,
+    )
+    const chunks = await readChunks(
+      await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-2',
+        messageId: undefined,
+        messages: messages('Hello'),
+        abortSignal: undefined,
+      }),
+    )
+    const phases = chunks.flatMap((chunk) =>
+      chunk.type === 'data-startup-phase'
+        ? [(chunk.data as { phase: string }).phase]
+        : [],
+    )
+    expect(phases).toEqual(['session', 'runtime', 'model'])
+    const ids = new Set(
+      chunks.flatMap((chunk) =>
+        chunk.type === 'data-startup-phase' ? [chunk.id] : [],
+      ),
+    )
+    expect(ids.size).toBe(1)
   })
 })
