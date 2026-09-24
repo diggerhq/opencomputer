@@ -85,6 +85,7 @@ test("development publish builds an immutable artifact under the development ali
       "hello-agent",
     );
     assert.equal(input?.agentId, "hello-agent");
+    assert.equal(input?.name, "Hello World");
     assert.equal(input?.alias, "development");
     assert.equal(input?.source.digest, result.built.digest);
     assert.deepEqual(input?.models, [

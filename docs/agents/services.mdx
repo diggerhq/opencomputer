@@ -1,6 +1,6 @@
 ---
 title: "Connected services"
-description: "Call Gmail, Calendar, Drive, Sheets and GitHub with a credential the platform holds and refreshes"
+description: "Call Google services, GitHub, and Linear with a credential the platform holds and refreshes"
 ---
 
 Some credentials cannot be a secret you set. An OAuth token is short-lived,
@@ -52,12 +52,12 @@ For minting several links at once, `--no-wait` prints the link and exits.
 `--json` does the same and is the one to script against.
 
 Omitting the label connects it as `default`, which is what the examples below
-assume. **`default` is a literal name, not a fallback**: if you connect an
-account as `support`, a call that passes no `label` looks for one called
-`default` and gets a `404` even though `support` is the only account you have.
+assume. Calls do not need a label when exactly one eligible account is
+connected. When several accounts are eligible, pass the label to select one;
+otherwise the call returns `409 connection_alias_required` and lists them.
 
 The provider segment in the URL is the grant, not the service — `google` for
-gmail, calendar, drive and sheets; `github` for github.
+gmail, calendar, drive and sheets; `github` for GitHub; and `linear` for Linear.
 
 **Listing what is connected:**
 
@@ -126,8 +126,9 @@ without it, `listServices()` returns nothing.
 | `drive` | `www.googleapis.com` | Google |
 | `sheets` | `www.googleapis.com` | Google |
 | `github` | GitHub's API | GitHub |
+| `linear` | `api.linear.app/graphql` | Linear |
 
-The Google services share one grant; GitHub is its own. A name outside that
+The Google services share one grant; GitHub and Linear each have their own. A name outside that
 list fails the build rather than the request.
 
 <Note>
@@ -189,6 +190,31 @@ await callService({
 });
 ```
 
+Linear uses one GraphQL endpoint. Send a JSON GraphQL document with `POST`:
+
+```tsx
+const response = await callService({
+  service: "linear",
+  method: "POST",
+  path: "/graphql",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    query: `query Viewer { viewer { id name email } }`,
+  }),
+});
+const result = (await response.json()) as {
+  data?: unknown;
+  errors?: Array<{ message: string }>;
+};
+if (!response.ok || result.errors?.length) {
+  throw new Error(result.errors?.[0]?.message ?? `linear: ${response.status}`);
+}
+```
+
+Linear may report GraphQL errors in a successful HTTP response, so check both
+`response.ok` and `errors`. The Linear connection accepts only `POST /graphql`;
+other paths and methods fail at the broker.
+
 ## 4. Several accounts
 
 Accounts are connected and disconnected long after the artifact is built, so
@@ -224,7 +250,7 @@ export const sweep = defineTool({
 | `id` | The connection's id, for the disconnect route |
 | `label` | The alias it was connected under. Pass this as `label`. |
 | `displayName` | Who the account belongs to, e.g. the mailbox address |
-| `provider` | `google` or `github` |
+| `provider` | `google`, `github`, or `linear` |
 | `scopes` | What was granted at consent |
 | `status` | `connected` accounts are usable |
 
@@ -239,7 +265,7 @@ A proxied request is not an unrestricted `fetch`.
 
 | | |
 | --- | --- |
-| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`; Linear is `POST` only |
 | Request headers | Only `accept`, `content-type`, `if-match`, `if-none-match` |
 | Request body | 4 MB |
 | Response body | 4 MB |
@@ -261,7 +287,7 @@ collections rather than asking for them in one call.
 
 | You see | It means | Do this |
 | --- | --- | --- |
-| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | `opencomputer connection list` to see the labels, then pass the matching one — or connect an account |
+| `404 connection_not_found` | No eligible connected account exists, or no account matches the requested `label` | `opencomputer connection list` to inspect the accounts, then connect one or correct the label |
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |

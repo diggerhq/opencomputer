@@ -281,7 +281,7 @@ export async function runDeploymentWatch(
   let timer: NodeJS.Timeout | undefined;
   let publishing = false;
   let pending = false;
-  const lastDigests = new Map<string, string>();
+  const lastPublished = new Map<string, { digest: string; name: string }>();
 
   const publish = async () => {
     if (publishing) {
@@ -301,13 +301,17 @@ export async function runDeploymentWatch(
           );
           let changed = false;
           for (const result of results) {
-            if (
-              result.built.digest !== lastDigests.get(result.deployment.agentId)
-            ) {
+            const previous = lastPublished.get(result.deployment.agentId);
+            const runtimeChanged = result.built.digest !== previous?.digest;
+            const nameChanged = result.built.name !== previous?.name;
+            if (runtimeChanged || nameChanged) {
               changed = true;
-              lastDigests.set(result.deployment.agentId, result.built.digest);
+              lastPublished.set(result.deployment.agentId, {
+                digest: result.built.digest,
+                name: result.built.name,
+              });
               process.stdout.write(
-                `✓ Deployed ${result.deployment.agentId}@development\n` +
+                `${runtimeChanged ? "✓ Deployed" : "✓ Updated name for"} ${result.deployment.agentId}@development\n` +
                   `  Deployment  ${result.deployment.id}\n`,
               );
             }
@@ -334,7 +338,10 @@ export async function runDeploymentWatch(
       binding,
     );
     for (const result of initial) {
-      lastDigests.set(result.deployment.agentId, result.built.digest);
+      lastPublished.set(result.deployment.agentId, {
+        digest: result.built.digest,
+        name: result.built.name,
+      });
     }
     const spa = await hasReactSpa(projectRoot);
     const startWebApp = behavior.startWebApp === true && spa;

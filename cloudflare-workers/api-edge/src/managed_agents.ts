@@ -210,7 +210,10 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     ? "template_manifest_missing"
     : backendCode;
   let message = "The agent request could not be completed.";
-  const slackSetupMessage = Object.hasOwn(SLACK_SETUP_ERROR_MESSAGES, backendCode)
+  const slackSetupMessage = Object.hasOwn(
+    SLACK_SETUP_ERROR_MESSAGES,
+    backendCode,
+  )
     ? SLACK_SETUP_ERROR_MESSAGES[backendCode]
     : undefined;
   if (slackSetupMessage) {
@@ -228,7 +231,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    if (backendCode === "invalid_model_selection") {
+    if (backendCode === "project_archived") {
+      message = "Restore this project before starting new work.";
+    } else if (backendCode === "invalid_model_selection") {
       message =
         backendMessage || "The deployment selects an unavailable model.";
     } else if (backendCode === "database_not_provisioned") {
@@ -472,6 +477,21 @@ function publicDeployment(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicAgent(value: unknown): Record<string, unknown> {
+  const agent = record(value) ?? {};
+  return {
+    id: agent.id,
+    // An agent that was never named falls back to its id, so the dashboard
+    // always has something to render.
+    name: typeof agent.name === "string" && agent.name ? agent.name : agent.id,
+    activeAlias: agent.activeAlias,
+    activeDeploymentId: agent.activeDeploymentId,
+    deploymentCount: agent.deploymentCount,
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt,
+  };
+}
+
 function publicProject(value: unknown): Record<string, unknown> {
   const project = record(value) ?? {};
   const agentId =
@@ -507,6 +527,9 @@ function publicProject(value: unknown): Record<string, unknown> {
       ? stripPrivateValues(project.environments)
       : [],
     agents,
+    ...(typeof project.archivedAt === "string"
+      ? { archivedAt: project.archivedAt }
+      : {}),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -629,10 +652,16 @@ function publicChannel(value: unknown): Record<string, unknown> {
   };
 }
 
-const SLACK_SETUP_ACTIONS = new Set(["create", "authorize", "manual", "cancel"]);
+const SLACK_SETUP_ACTIONS = new Set([
+  "create",
+  "authorize",
+  "manual",
+  "cancel",
+]);
 const SLACK_SETUPS_ROUTE = /^\/channels\/slack\/setups$/;
 const SLACK_SETUP_ROUTE = /^\/channels\/slack\/setups\/[^/]+$/;
-const SLACK_SETUP_AUTHORIZE_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/authorize$/;
+const SLACK_SETUP_AUTHORIZE_ROUTE =
+  /^\/channels\/slack\/setups\/[^/]+\/authorize$/;
 const SLACK_SETUP_CANCEL_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/cancel$/;
 
 /**
@@ -953,7 +982,11 @@ function publicSessionResult(value: unknown): unknown {
  * compares on an idempotent replay. Dropped by position, since the name
  * filter is for the fields it lists.
  */
-const PRIVATE_SESSION_FIELDS = new Set(["runtimeEpoch", "memoryObject", "creation"]);
+const PRIVATE_SESSION_FIELDS = new Set([
+  "runtimeEpoch",
+  "memoryObject",
+  "creation",
+]);
 
 /**
  * One turn of the snapshot. `payload` is the caller's own JSON and passes
@@ -967,7 +1000,9 @@ function publicTurn(entry: unknown): unknown {
     Object.entries(turn).flatMap(([key, child]): Array<[string, unknown]> => {
       if (key === "payload") return [[key, child]];
       if (key === "deliveries") {
-        return [[key, Array.isArray(child) ? child.map(publicDelivery) : child]];
+        return [
+          [key, Array.isArray(child) ? child.map(publicDelivery) : child],
+        ];
       }
       if (PRIVATE_EVENT_KEYS.has(key)) return [];
       return [[key, stripPrivateValues(child)]];
@@ -993,9 +1028,17 @@ function publicSessionSnapshot(value: unknown): unknown {
       if (key === "labels") return [[key, ownerLabels(source)]];
       if (key === "result") return [[key, publicSessionResult(child)]];
       if (key === "turns") {
-        return [[key, Array.isArray(child) ? child.map(publicTurn) : stripPrivateValues(child)]];
+        return [
+          [
+            key,
+            Array.isArray(child)
+              ? child.map(publicTurn)
+              : stripPrivateValues(child),
+          ],
+        ];
       }
-      if (PRIVATE_EVENT_KEYS.has(key) || PRIVATE_SESSION_FIELDS.has(key)) return [];
+      if (PRIVATE_EVENT_KEYS.has(key) || PRIVATE_SESSION_FIELDS.has(key))
+        return [];
       return [[key, stripPrivateValues(child)]];
     }),
   );
@@ -1237,8 +1280,7 @@ function structuredFailure(
   }
   if (code === "model_stream_failed") {
     const retry = record(failure.retry);
-    const retried =
-      typeof retry?.attempts === "number" && retry.attempts > 1;
+    const retried = typeof retry?.attempts === "number" && retry.attempts > 1;
     return {
       code,
       message: `The model call${model ? ` to ${model}` : ""} failed before it finished${retried ? " and its retry failed too" : ""}.`,
@@ -1407,25 +1449,18 @@ function publicSuccessBody(
   includeAdminMetadata = false,
 ): unknown {
   const body = record(value) ?? {};
+  if (method === "GET" && suffix === "/account/runtime-profile") {
+    return {
+      customized: body.customized === true,
+      displayName:
+        typeof body.displayName === "string" && body.displayName.trim()
+          ? body.displayName
+          : "OpenComputer default",
+    };
+  }
   if (method === "GET" && suffix === "/agents") {
     return {
-      agents: Array.isArray(body.agents)
-        ? body.agents.map((value) => {
-            const agent = record(value) ?? {};
-            return {
-              id: agent.id,
-              name:
-                typeof agent.name === "string" && agent.name
-                  ? agent.name
-                  : agent.id,
-              activeAlias: agent.activeAlias,
-              activeDeploymentId: agent.activeDeploymentId,
-              deploymentCount: agent.deploymentCount,
-              createdAt: agent.createdAt,
-              updatedAt: agent.updatedAt,
-            };
-          })
-        : [],
+      agents: Array.isArray(body.agents) ? body.agents.map(publicAgent) : [],
     };
   }
   if (method === "GET" && suffix === "/projects") {
@@ -1438,7 +1473,16 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
   }
-  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/(archive|restore)$/.test(suffix)
+  ) {
+    return publicProject(body);
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/database\/query$/.test(suffix)
+  ) {
     const result = record(body.result) ?? {};
     const columns = strings(result.columns);
     return {
@@ -1451,19 +1495,27 @@ function publicSuccessBody(
               return Object.fromEntries(
                 columns.map((column) => {
                   const cell = row[column];
-                  return [column, typeof cell === "string" || typeof cell === "number" ? cell : null];
+                  return [
+                    column,
+                    typeof cell === "string" || typeof cell === "number"
+                      ? cell
+                      : null,
+                  ];
                 }),
               );
             })
           : [],
-        rowsAffected: typeof result.rowsAffected === "number" ? result.rowsAffected : 0,
+        rowsAffected:
+          typeof result.rowsAffected === "number" ? result.rowsAffected : 0,
         truncated: result.truncated === true,
       },
     };
   }
   if (
     /^\/github(?:\/connect)?$/.test(suffix) ||
-    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(suffix)
+    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(
+      suffix,
+    )
   ) {
     return stripPrivateValues(body);
   }
@@ -1615,7 +1667,10 @@ function publicSuccessBody(
       data: Array.isArray(body.data) ? body.data.map(publicModelRoute) : [],
     };
   }
-  if (method === "PUT" && /^\/projects\/[^/]+\/model-routes\/[^/]+$/.test(suffix)) {
+  if (
+    method === "PUT" &&
+    /^\/projects\/[^/]+\/model-routes\/[^/]+$/.test(suffix)
+  ) {
     return publicModelRoute(body);
   }
   if (method === "POST" && suffix === "/deployments") {
@@ -2012,6 +2067,7 @@ async function deploySourceAgent(
 }
 
 function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
+  if (method === "GET" && suffix === "/account/runtime-profile") return true;
   if (method === "POST" && suffix === "/template-inspections") return true;
   if (method === "POST" && suffix === "/template-installations") return true;
   if (method === "GET" && /^\/template-installations\/[^/]+$/.test(suffix)) {
@@ -2031,7 +2087,16 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
-  if (method === "POST" && /^\/projects\/[^/]+\/database\/query$/.test(suffix)) {
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/(archive|restore)$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/database\/query$/.test(suffix)
+  ) {
     return true;
   }
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
@@ -2043,7 +2108,10 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   ) {
     return true;
   }
-  if (method === "GET" && /^\/projects\/[^/]+\/github\/repositories$/.test(suffix)) {
+  if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/github\/repositories$/.test(suffix)
+  ) {
     return true;
   }
   if (
@@ -2580,7 +2648,8 @@ export async function proxyManagedAgents(
         {
           error: {
             code: "unsupported_provider",
-            message: "Supported providers are Codex, Claude, OpenRouter, and OpenAI-compatible APIs.",
+            message:
+              "Supported providers are Codex, Claude, OpenRouter, and OpenAI-compatible APIs.",
           },
         },
         { status: 400 },
@@ -2604,7 +2673,11 @@ export async function proxyManagedAgents(
   const modelRouteWrite =
     (method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/model-routes\/[^/]+$/.test(suffix);
-  if (modelAccessConnectionWrite || modelAccessBindingEnable || modelRouteWrite) {
+  if (
+    modelAccessConnectionWrite ||
+    modelAccessBindingEnable ||
+    modelRouteWrite
+  ) {
     try {
       if (!(await hasBYOKPlanAccess(env, caller.orgID))) {
         return byokPlanRequired();

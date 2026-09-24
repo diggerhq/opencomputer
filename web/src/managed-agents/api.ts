@@ -4,7 +4,8 @@ import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 const agentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  activeAlias: z.string(),
+  // Both are null until the agent has been deployed at least once.
+  activeAlias: z.string().nullish(),
   activeDeploymentId: z.string().nullish(),
   deploymentCount: z.number(),
   createdAt: z.string(),
@@ -102,6 +103,11 @@ const agentsResponseSchema = z.object({
   agents: z.array(agentSchema),
 })
 
+const managedRuntimeProfileSchema = z.object({
+  customized: z.boolean(),
+  displayName: z.string(),
+})
+
 const projectSchema = z.object({
   id: z.string(),
   slug: z.string(),
@@ -115,6 +121,7 @@ const projectSchema = z.object({
     }),
   ),
   agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  archivedAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -794,6 +801,7 @@ const projectOverviewSchema = z.object({
 })
 
 export type ManagedAgentSummary = z.infer<typeof agentSchema>
+export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
@@ -849,10 +857,18 @@ export async function getManagedAgents() {
   ).agents
 }
 
-export async function getManagedProjects() {
+export async function getManagedRuntimeProfile() {
+  return apiFetch(
+    '/managed-agents/account/runtime-profile',
+    undefined,
+    managedRuntimeProfileSchema,
+  )
+}
+
+export async function getManagedProjects(options: { archived?: boolean } = {}) {
   return (
     await apiFetch(
-      '/managed-agents/projects',
+      `/managed-agents/projects${options.archived ? '?archived=true' : ''}`,
       undefined,
       projectsResponseSchema,
     )
@@ -863,6 +879,22 @@ export async function createManagedProject(name: string) {
   return apiFetch(
     '/managed-agents/projects',
     { method: 'POST', body: JSON.stringify({ name }) },
+    projectSchema,
+  )
+}
+
+export async function archiveManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/archive`,
+    { method: 'POST' },
+    projectSchema,
+  )
+}
+
+export async function restoreManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/restore`,
+    { method: 'POST' },
     projectSchema,
   )
 }
@@ -1300,7 +1332,7 @@ export async function linkManagedAgentConnection(
 }
 
 export async function refreshManagedAgentConnection(
-  provider: 'google' | 'github',
+  provider: 'google' | 'github' | 'linear',
   service: string,
   connectionId: string,
 ) {
@@ -1313,7 +1345,7 @@ export async function refreshManagedAgentConnection(
 }
 
 export async function disconnectManagedAgentConnection(
-  provider: 'google' | 'github',
+  provider: 'google' | 'github' | 'linear',
   service: string,
   connectionId: string,
 ) {

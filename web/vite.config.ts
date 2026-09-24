@@ -1,4 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
+import type { Connect } from 'vite'
 import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -19,6 +20,38 @@ const injectKey: ProxyOptions['configure'] = (proxy) => {
     if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
   })
 }
+// Dev-only managed-agents bypass. With OC_MANAGED_AGENTS_TOKEN set, Vite
+// forwards /api/managed-agents/* straight to a managed-agents backend
+// (OC_MANAGED_AGENTS_TARGET) and injects the agent token server-side — so the
+// projects UI works in `npm run dev` against a personal dev Worker, with no
+// api-edge deploy and no WorkOS session. The token lives only in the Node dev
+// server, never in the browser bundle (not a VITE_ var). Prod still goes
+// through the edge, which mints its own token per request; this shortcut is
+// local-only, and it bypasses the edge's route allowlist and response shaping.
+const managedAgentsToken = process.env.OC_MANAGED_AGENTS_TOKEN
+const managedAgentsTarget =
+  process.env.OC_MANAGED_AGENTS_TARGET || 'https://managedagents.opencomputer.dev'
+const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
+  ? {
+      // The dashboard's API base is /api/dashboard, so its managed-agents
+      // calls arrive under /api/dashboard/managed-agents — the same prefix
+      // dashboard.ts proxies from in the edge.
+      '/api/dashboard/managed-agents': {
+        target: managedAgentsTarget,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/dashboard\/managed-agents/, '/v1'),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader(
+              'x-opencomputer-agent-token',
+              managedAgentsToken,
+            )
+          })
+        },
+      },
+    }
+  : {}
+
 // Both must precede '/api/' below — first matching rule wins.
 const v3Proxy: Record<string, ProxyOptions> = v3Key
   ? {
@@ -40,8 +73,39 @@ const v3Proxy: Record<string, ProxyOptions> = v3Key
     }
   : {}
 
+// Paired with the bypass above: ProtectedRoute redirects to /auth/login unless
+// /me resolves, and /auth is the edge's own route, which a local dev server has
+// no way to satisfy. Single-tenant development mode is supposed to return a
+// local user from /me, so serve exactly that — gated on the same token, ahead
+// of the proxy, and only for this one path.
+const localUser = {
+  name: 'managed-agents-local-user',
+  configureServer(server: { middlewares: Connect.Server }) {
+    if (!managedAgentsToken) return
+    server.middlewares.use((req, res, next) => {
+      if (req.url !== '/api/dashboard/me') return next()
+      res.setHeader('content-type', 'application/json')
+      res.end(
+        JSON.stringify({
+          id: 'local-dev-user',
+          email: 'local@dev.invalid',
+          orgId: 'local-dev-org',
+          durableSessionsEnabled: false,
+          infrastructureEnabled: false,
+          authMode: 'development',
+          capabilities: {
+            signOut: false,
+            manageMembers: false,
+            switchOrganizations: false,
+          },
+        }),
+      )
+    })
+  },
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), localUser],
   base: '/',
   resolve: {
     alias: {
@@ -52,6 +116,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       ...v3Proxy,
+      ...managedAgentsProxy,
       '/auth': target,
       // Trailing slash so the SPA route `/api-keys` isn't proxied to the
       // backend; all real API paths live under `/api/dashboard/`.

@@ -29,7 +29,7 @@ export default function ManagedAgentChannels() {
   })
   const projects = useQuery({
     queryKey: ['managed-projects'],
-    queryFn: getManagedProjects,
+    queryFn: () => getManagedProjects(),
   })
   const agentNames = new Map(
     (agents.data ?? []).map((agent) => [

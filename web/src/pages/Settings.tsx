@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { useAuth } from '@/hooks/useAuth'
+import { organizationPlanLabel } from '@/lib/plan-label'
 import {
   deleteCustomDomain,
+  getAutumnBilling,
+  getBilling,
   getInvitations,
   getOrg,
   getOrgMembers,
@@ -32,6 +35,16 @@ import { Field, Input, Label } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Switch } from '@/components/ui/switch'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { getManagedRuntimeProfile } from '@/managed-agents/api'
 
 function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -72,6 +85,25 @@ export default function Settings() {
     queryKey: ['org'],
     queryFn: getOrg,
   })
+  const { data: billing, isLoading: isBillingLoading } = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
+  const usesAutumnBilling = billing?.billingProvider === 'autumn'
+  const { data: autumn, isLoading: isAutumnLoading } = useQuery({
+    queryKey: ['autumn-billing'],
+    queryFn: getAutumnBilling,
+    enabled: usesAutumnBilling,
+  })
+  const {
+    data: runtimeProfile,
+    isLoading: runtimeProfileLoading,
+    isError: runtimeProfileError,
+  } = useQuery({
+    queryKey: ['managed-runtime-profile'],
+    queryFn: getManagedRuntimeProfile,
+    retry: false,
+  })
 
   // Local edits override the fetched name; null = "not edited" (avoids an
   // effect to sync the field with the query).
@@ -79,6 +111,7 @@ export default function Settings() {
   const [saved, markSaved] = useTransientFlag(2000)
   const [domainInput, setDomainInput] = useState('')
   const [confirmRemoveDomain, setConfirmRemoveDomain] = useState(false)
+  const [showRuntimeProfileInfo, setShowRuntimeProfileInfo] = useState(false)
   const name = draftName ?? org?.name ?? ''
 
   const saveMutation = useMutation({
@@ -119,7 +152,7 @@ export default function Settings() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
-  if (isLoading) {
+  if (isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)) {
     return (
       <div>
         <PageHeader title="Settings" description="Organization configuration" />
@@ -133,6 +166,7 @@ export default function Settings() {
 
   const unchanged = name === (org?.name ?? '')
   const hasDomain = !!org?.customDomain && org.customDomain !== ''
+  const plan = organizationPlanLabel(org, billing, autumn)
 
   return (
     <div>
@@ -160,12 +194,44 @@ export default function Settings() {
           </div>
         </Panel>
 
+        <Panel className="p-6 lg:col-span-2">
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <PanelTitle>Customize VM packages</PanelTitle>
+              <PanelDescription className="mt-1">
+                Select the tools available to agents when they start a VM.
+              </PanelDescription>
+              <div className="mt-4">
+                <Label>Selected package image</Label>
+                <p className="text-foreground mt-1 text-sm font-medium">
+                  {runtimeProfileLoading
+                    ? 'Loading…'
+                    : runtimeProfileError
+                      ? 'Unavailable'
+                      : (runtimeProfile?.displayName ?? 'OpenComputer default')}
+                </p>
+                {runtimeProfile?.customized ? (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    A dedicated image is assigned to this organization.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setShowRuntimeProfileInfo(true)}
+            >
+              Edit
+            </Button>
+          </div>
+        </Panel>
+
         {/* Organization */}
         <Panel className="p-6">
           <div className="mb-5">
             <PanelTitle>Organization</PanelTitle>
             <PanelDescription className="mt-1">
-              Your organization&apos;s name and plan limits.
+              Your organization&apos;s name and plan.
             </PanelDescription>
           </div>
           <div className="space-y-5">
@@ -177,21 +243,7 @@ export default function Settings() {
               />
             </Field>
 
-            <ReadOnlyField
-              label="Plan"
-              value={<span className="capitalize">{org?.plan ?? 'free'}</span>}
-            />
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <ReadOnlyField
-                label="Max concurrent sandboxes"
-                value={org?.maxConcurrentSandboxes}
-              />
-              <ReadOnlyField
-                label="Max timeout (sec)"
-                value={org?.maxSandboxTimeoutSec}
-              />
-            </div>
+            <ReadOnlyField label="Plan" value={plan} />
 
             <div className="flex items-center gap-3">
               <Button
@@ -366,6 +418,36 @@ export default function Settings() {
           })
         }
       />
+
+      <Dialog
+        open={showRuntimeProfileInfo}
+        onOpenChange={setShowRuntimeProfileInfo}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Custom VM packages</DialogTitle>
+            <DialogDescription>
+              Custom package images are an Enterprise feature. The OpenComputer
+              team builds and validates a dedicated image, then assigns it to
+              your organization. Book a call with the team to get it set up.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Got it</Button>
+            </DialogClose>
+            <Button asChild>
+              <a
+                href="https://cal.com/team/digger/opencomputer-founder-chat"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Book a call
+              </a>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
