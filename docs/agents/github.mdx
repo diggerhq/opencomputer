@@ -75,6 +75,17 @@ the command attaches it directly without opening GitHub again. When multiple
 installations are available, select one with `--connection <id|account>`; the
 ids and account names are shown by `opencomputer github status --json`.
 
+To install the App on another user or organization account, force a new GitHub
+flow and select the target account in GitHub:
+
+```bash
+opencomputer github connect --new
+```
+
+`--new` and `--connection` are mutually exclusive. Completing the new flow
+attaches that installation to the requested project environment or, when no
+environment is specified, to both environments.
+
 You can also install or attach the App from the project's **Connections** page
 in the OpenComputer dashboard. GitHub lets the installer select all
 repositories or a specific set of repositories.

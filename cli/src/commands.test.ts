@@ -9,6 +9,7 @@ import {
   selectGitHubInstallation,
   SERVICE_CONNECTIONS,
   shouldBindModelAccessProject,
+  validateGitHubConnectionChoice,
 } from "./commands.js";
 
 test("agent event progress refreshes the inactivity deadline", () => {
@@ -90,5 +91,16 @@ test("GitHub App connection selection reuses one active account and disambiguate
   assert.equal(
     selectGitHubInstallation([{ ...digger, state: "suspended" }]),
     undefined,
+  );
+});
+
+test("a fresh GitHub App install cannot also select an existing connection", () => {
+  assert.doesNotThrow(() => validateGitHubConnectionChoice(true));
+  assert.doesNotThrow(() =>
+    validateGitHubConnectionChoice(false, "diggerhq"),
+  );
+  assert.throws(
+    () => validateGitHubConnectionChoice(true, "diggerhq"),
+    /either --new or --connection/,
   );
 });

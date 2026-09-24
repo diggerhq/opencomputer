@@ -139,6 +139,15 @@ export function selectGitHubInstallation(
   return undefined;
 }
 
+export function validateGitHubConnectionChoice(
+  forceNew: boolean,
+  connectionSelector?: string,
+): void {
+  if (forceNew && connectionSelector) {
+    throw new Error("Choose either --new or --connection, not both.");
+  }
+}
+
 function printJSON(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -1522,11 +1531,13 @@ export async function runCommand(
     if (action === "connect") {
       const environments = githubEnvironments(option(args, "--environment"));
       const connectionSelector = option(args, "--connection");
+      const forceNew = flag(args, "--new");
       const noWait = flag(args, "--no-wait");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      validateGitHubConnectionChoice(forceNew, connectionSelector);
 
       const current = await client.githubStatus(project.projectId);
-      if (githubEnvironmentsConnected(current, environments)) {
+      if (!forceNew && githubEnvironmentsConnected(current, environments)) {
         if (globals.json) printJSON(current);
         else {
           process.stdout.write(
@@ -1536,10 +1547,9 @@ export async function runCommand(
         return;
       }
 
-      const installation = selectGitHubInstallation(
-        current.connections,
-        connectionSelector,
-      );
+      const installation = forceNew
+        ? undefined
+        : selectGitHubInstallation(current.connections, connectionSelector);
       if (installation) {
         const missing = environments.filter(
           (environment) =>
