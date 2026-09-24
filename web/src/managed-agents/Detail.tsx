@@ -66,7 +66,7 @@ import {
 import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
-import { createStartCommand, starterCommands } from './onboarding'
+import { starterCommandBlock, starterCopyCommand } from './onboarding'
 import { projectContextSearch } from './project-context'
 import {
   playgroundSessionIdFromSearch,
@@ -953,7 +953,10 @@ export default function ManagedAgentDetail({
               <div className="flex max-w-xl flex-col items-center gap-3">
                 <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">
                   <code>
-                    {starterCommands(project.project.slug).join('\n')}
+                    {starterCommandBlock(
+                      project.project.slug,
+                      project.project.slug,
+                    )}
                   </code>
                 </pre>
                 <Button
@@ -961,7 +964,12 @@ export default function ManagedAgentDetail({
                   size="sm"
                   onClick={() => {
                     void navigator.clipboard
-                      .writeText(createStartCommand(project.project.slug))
+                      .writeText(
+                        starterCopyCommand(
+                          project.project.slug,
+                          project.project.slug,
+                        ),
+                      )
                       .then(() => setStarterCopied(true))
                       .catch((error) =>
                         notifyError("Couldn't copy the command.", error),
