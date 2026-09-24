@@ -67,7 +67,10 @@ import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
-import { projectContextSearch } from './project-context'
+import {
+  projectContextSearch,
+  requestedProjectAgentId,
+} from './project-context'
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
@@ -593,12 +596,13 @@ export default function ManagedAgentDetail({
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
-  // Sessions tab filter — '' shows every agent in the project.
-  const [sessionsAgentFilter, setSessionsAgentFilter] = useState('')
   const projectId = project?.project.id
-  useEffect(() => {
-    setSessionsAgentFilter('')
-  }, [projectId])
+  // On the project Sessions tab the agent selector offers "All agents"; an
+  // explicit ?agent= narrows it. Every other tab needs a concrete agent.
+  const sessionsAgentFilter =
+    project && activeTab === 'sessions'
+      ? requestedProjectAgentId(location.search, project.project.agents)
+      : agentId
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -666,7 +670,7 @@ export default function ManagedAgentDetail({
       ? sessionsForEnvironment(
           projectSessions.data ?? [],
           project.deployments,
-          sessionsAgentFilter || undefined,
+          sessionsAgentFilter,
           environment,
         )
       : environmentSessions
@@ -916,13 +920,13 @@ export default function ManagedAgentDetail({
           <select
             id="project-agent"
             aria-label="Project agent"
-            value={agentId}
+            value={sessionsAgentFilter ?? ''}
             onChange={(event) => {
               setNewSessionKey(crypto.randomUUID())
               const search = new URLSearchParams(
                 projectContextSearch(
                   location.search,
-                  event.target.value,
+                  event.target.value || undefined,
                   environment,
                 ),
               )
@@ -934,13 +938,18 @@ export default function ManagedAgentDetail({
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
           >
+            {activeTab === 'sessions' ? (
+              <option value="">All agents</option>
+            ) : null}
             {project.project.agents.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {displayManagedAgentName(candidate)}
               </option>
             ))}
           </select>
-          {projectAgent ? <AgentNameSourceDialog agent={projectAgent} /> : null}
+          {projectAgent && sessionsAgentFilter ? (
+            <AgentNameSourceDialog agent={projectAgent} />
+          ) : null}
         </div>
       ) : null}
 
@@ -1190,27 +1199,8 @@ export default function ManagedAgentDetail({
                 Playground sessions stay in the playground.
               </PanelDescription>
             </div>
-            <div className="flex items-center gap-4">
-              {project ? (
-                <select
-                  aria-label="Filter sessions by agent"
-                  value={sessionsAgentFilter}
-                  onChange={(event) =>
-                    setSessionsAgentFilter(event.target.value)
-                  }
-                  className="border-input bg-background h-8 min-w-40 rounded-md border px-2 text-xs outline-none"
-                >
-                  <option value="">All agents</option>
-                  {project.project.agents.map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {displayManagedAgentName(candidate)}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-              <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                <Clock3 className="size-3.5" /> Refreshes automatically
-              </div>
+            <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+              <Clock3 className="size-3.5" /> Refreshes automatically
             </div>
           </PanelHeader>
           <ResourceTable
