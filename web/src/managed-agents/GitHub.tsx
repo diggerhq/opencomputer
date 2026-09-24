@@ -42,7 +42,12 @@ export function ManagedProjectGitHub({
   const availableConnections = (status.data?.connections ?? []).filter(
     (connection) => connection.state === 'active',
   )
-  const connectionId = selectedConnectionId || availableConnections[0]?.id || ''
+  const connectionId =
+    availableConnections.find(
+      (connection) => connection.id === selectedConnectionId,
+    )?.id ??
+    availableConnections[0]?.id ??
+    ''
   const attach = useMutation({
     mutationFn: () =>
       attachManagedGitHub({ projectId, environment, connectionId }),
