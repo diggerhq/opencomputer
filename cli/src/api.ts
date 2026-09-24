@@ -87,6 +87,16 @@ export interface ManagedGitHubStatus {
       updatedAt: string;
     };
   }>;
+  connections: Array<{
+    id: string;
+    githubInstallationId: number;
+    accountLogin: string;
+    accountType: string;
+    repositorySelection: "all" | "selected";
+    state: "active" | "suspended" | "deleted";
+    createdAt: string;
+    updatedAt: string;
+  }>;
   app: { slug: string } | null;
 }
 
