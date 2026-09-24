@@ -215,34 +215,29 @@ async function addMember() {
     die("add-member requires --email <address>");
   const stack = loadStack();
   if (!stack.orgId) die("no seeded org — run `seed-key` first");
-  writeConfig(stack);
+  if (!stack.apiEdgeD1?.id) die("api-edge D1 not provisioned — run `up` first");
   const now = Math.floor(Date.now() / 1000);
+  step(`add ${email} as owner of org ${stack.orgId}`);
   // The login handler upserts on email and keeps the existing user id, so a
   // pre-created row inherits this membership on first WorkOS sign-in.
-  const sql = [
+  await d1Query(
+    stack.apiEdgeD1.id,
     `INSERT OR IGNORE INTO users (id, email, name, created_at, durable_sessions_enabled, infrastructure_enabled)
-       VALUES ('${randomUUID()}', '${email}', '${email}', ${now}, 0, 0);`,
+       VALUES (?1, ?2, ?2, ?3, 0, 0)`,
+    [randomUUID(), email, now],
+  );
+  await d1Query(
+    stack.apiEdgeD1.id,
     `INSERT OR IGNORE INTO org_memberships (org_id, user_id, role, created_at)
-       SELECT '${stack.orgId}', id, 'owner', ${now} FROM users WHERE email = '${email}';`,
-  ].join("\n");
-  const sqlFile = path.join(stackHome, ".member.sql");
-  fs.writeFileSync(sqlFile, sql, { mode: 0o600 });
-  try {
-    step(`add ${email} as owner of org ${stack.orgId}`);
-    wrangler([
-      "d1",
-      "execute",
-      d1Name,
-      "--remote",
-      "--config",
-      configFile,
-      "--file",
-      sqlFile,
-      "--yes",
-    ]);
-  } finally {
-    fs.rmSync(sqlFile, { force: true });
-  }
+       SELECT ?1, id, 'owner', ?2 FROM users WHERE email = ?3`,
+    [stack.orgId, now, email],
+  );
+  await d1Query(
+    stack.apiEdgeD1.id,
+    `UPDATE orgs SET owner_user_id = (SELECT id FROM users WHERE email = ?2), updated_at = ?3
+       WHERE id = ?1 AND owner_user_id IS NULL`,
+    [stack.orgId, email, now],
+  );
 }
 
 async function status() {
@@ -282,29 +277,40 @@ async function destroy() {
   }
   fs.rmSync(configFile, { force: true });
   fs.rmSync(apiKeyFile, { force: true });
+  let strandedCallback = null;
   if (fs.existsSync(stackFile)) {
     const stack = loadStack();
-    if (stack.apiEdgeUrl && process.env.WORKOS_STAGING_API_KEY) {
+    if (stack.apiEdgeUrl) {
       const uri = `${stack.apiEdgeUrl}/auth/callback`;
-      for (const r of await workosRedirectUris()) {
-        if (r.uri !== uri) continue;
-        step(`remove workos redirect uri ${uri}`);
-        await workos(`/user_management/redirect_uris/${r.id}`, {
-          method: "DELETE",
-        });
+      if (process.env.WORKOS_STAGING_API_KEY) {
+        for (const r of await workosRedirectUris()) {
+          if (r.uri !== uri) continue;
+          step(`remove workos redirect uri ${uri}`);
+          await workos(`/user_management/redirect_uris/${r.id}`, {
+            method: "DELETE",
+          });
+        }
+      } else {
+        strandedCallback = uri;
       }
     }
     for (const key of [
-      "apiEdgeUrl",
       "apiEdgeWorker",
       "apiEdgeD1",
       "apiEdgeDeployedAt",
       "orgId",
     ])
       delete stack[key];
+    // Keep apiEdgeUrl until the WorkOS callback is confirmed gone, so a retry
+    // with WORKOS_STAGING_API_KEY set can still find and delete it.
+    if (!strandedCallback) delete stack.apiEdgeUrl;
     saveStack(stack);
   }
   console.log(`destroyed ${name} (api-edge side)`);
+  if (strandedCallback)
+    console.warn(
+      `WORKOS_STAGING_API_KEY unset: redirect uri ${strandedCallback} still registered; rerun destroy with the key to remove it`,
+    );
 }
 
 // ── config rendering ─────────────────────────────────────────────────────
@@ -419,6 +425,13 @@ async function workerExists(worker) {
   return res.ok;
 }
 
+async function d1Query(databaseId, sql, params) {
+  return cf(`/d1/database/${databaseId}/query`, {
+    method: "POST",
+    body: JSON.stringify({ sql, params }),
+  });
+}
+
 async function findD1(dbName) {
   const list = await cf(`/d1/database?name=${encodeURIComponent(dbName)}`);
   return list.find((db) => db.name === dbName) ?? null;
@@ -475,8 +488,18 @@ async function workos(pathname, init = {}) {
 }
 
 async function workosRedirectUris() {
-  const body = await workos("/user_management/redirect_uris");
-  return body?.data ?? [];
+  const all = [];
+  let after = null;
+  for (;;) {
+    const qs = new URLSearchParams({ limit: "100" });
+    if (after) qs.set("after", after);
+    const body = await workos(`/user_management/redirect_uris?${qs}`);
+    const page = body?.data ?? [];
+    all.push(...page);
+    after = body?.list_metadata?.after ?? null;
+    if (!after || page.length === 0) break;
+  }
+  return all;
 }
 
 function wrangler(args) {
