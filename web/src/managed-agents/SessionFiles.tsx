@@ -87,19 +87,28 @@ export function SessionFiles({
 
   const download = useMutation({
     mutationFn: (artifact: ManagedWorkspaceArtifact) =>
-      downloadManagedAgentWorkspaceArtifact(fileName(artifact.path), () =>
-        Promise.resolve(artifact),
+      downloadManagedAgentWorkspaceArtifact(
+        fileName(artifact.path),
+        artifact.size,
+        () => Promise.resolve(artifact),
       ),
     onError: reportDownloadError,
   })
 
   const exportThenDownload = useMutation({
-    mutationFn: (path: string) =>
-      downloadManagedAgentWorkspaceArtifact(fileName(path), async () => {
-        const artifact = await exportManagedAgentWorkspaceFile(sessionId, path)
-        void queryClient.invalidateQueries({ queryKey: artifactsKey })
-        return artifact
-      }),
+    mutationFn: (file: ManagedWorkspaceFile) =>
+      downloadManagedAgentWorkspaceArtifact(
+        fileName(file.path),
+        file.size,
+        async () => {
+          const artifact = await exportManagedAgentWorkspaceFile(
+            sessionId,
+            file.path,
+          )
+          void queryClient.invalidateQueries({ queryKey: artifactsKey })
+          return artifact
+        },
+      ),
     onError: reportDownloadError,
   })
 
@@ -119,6 +128,7 @@ export function SessionFiles({
     mutationFn: (workspace: ManagedWorkspaceFile[]) =>
       downloadManagedAgentWorkspaceArchive(
         `${sessionId}-workspace.zip`,
+        workspace.reduce((sum, file) => sum + file.size, 0),
         async () => {
           const retained: ManagedWorkspaceArtifact[] = []
           for (const [index, file] of workspace.entries()) {
@@ -146,7 +156,7 @@ export function SessionFiles({
     downloadAll.isPending
   const busyPath =
     exportFile.variables ??
-    exportThenDownload.variables ??
+    exportThenDownload.variables?.path ??
     download.variables?.path
 
   return (
@@ -232,7 +242,7 @@ export function SessionFiles({
                     onClick={() =>
                       retained
                         ? download.mutate(retained)
-                        : exportThenDownload.mutate(file.path)
+                        : exportThenDownload.mutate(file)
                     }
                   >
                     {working ? (

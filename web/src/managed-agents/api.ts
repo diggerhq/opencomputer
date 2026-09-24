@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
-import { Sha256, ZipWriter, openDownloadSink } from './workspace-download'
+import {
+  Sha256,
+  ZipWriter,
+  assertSinkCapacity,
+  openDownloadSink,
+} from './workspace-download'
 
 const agentSchema = z.object({
   id: z.string(),
@@ -1885,12 +1890,15 @@ export async function streamManagedAgentWorkspaceArtifact(
  */
 export async function downloadManagedAgentWorkspaceArtifact(
   name: string,
+  expectedBytes: number,
   resolve: () => Promise<ManagedWorkspaceArtifact>,
 ) {
   const sink = await openDownloadSink(name)
   let artifact: ManagedWorkspaceArtifact
   try {
+    assertSinkCapacity(sink, expectedBytes)
     artifact = await resolve()
+    assertSinkCapacity(sink, artifact.size)
     await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
       sink.write(chunk),
     )
@@ -1909,13 +1917,20 @@ export async function downloadManagedAgentWorkspaceArtifact(
  */
 export async function downloadManagedAgentWorkspaceArchive(
   name: string,
+  expectedBytes: number,
   resolve: () => Promise<ManagedWorkspaceArtifact[]>,
   onProgress?: (done: number, total: number) => void,
 ) {
-  const zip = new ZipWriter(await openDownloadSink(name))
+  const sink = await openDownloadSink(name)
+  const zip = new ZipWriter(sink)
   let artifacts: ManagedWorkspaceArtifact[]
   try {
+    assertSinkCapacity(sink, expectedBytes)
     artifacts = await resolve()
+    assertSinkCapacity(
+      sink,
+      artifacts.reduce((sum, artifact) => sum + artifact.size, 0),
+    )
     for (const [index, artifact] of artifacts.entries()) {
       onProgress?.(index, artifacts.length)
       await zip.beginEntry(artifact.path, new Date(artifact.exportedAt))

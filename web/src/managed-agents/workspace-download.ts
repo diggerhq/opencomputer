@@ -139,8 +139,16 @@ export function crc32Update(crc: number, chunk: Uint8Array) {
   return ~c >>> 0
 }
 
+/**
+ * Most a memory-backed download may hold; beyond this the tab is likely to
+ * die before the Blob is built, so callers fail fast instead.
+ */
+export const IN_MEMORY_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
+
 /** Where verified bytes go: the user's disk when possible, else memory. */
 export interface ByteSink {
+  /** Upper bound on total bytes this sink can take, or null if unbounded. */
+  capacity: number | null
   write(chunk: Uint8Array): Promise<void>
   close(): Promise<void>
   /** Drop everything written so far; nothing is exposed to the user. */
@@ -173,14 +181,21 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
     const writable = await handle.createWritable()
     const writer = writable.getWriter()
     return {
+      capacity: null,
       write: (chunk) => writer.write(chunk),
       close: () => writer.close(),
       abort: (reason) => writer.abort(reason),
     }
   }
   const chunks: Uint8Array<ArrayBuffer>[] = []
+  let held = 0
   return {
+    capacity: IN_MEMORY_DOWNLOAD_MAX_BYTES,
     write: (chunk) => {
+      held += chunk.byteLength
+      if (held > IN_MEMORY_DOWNLOAD_MAX_BYTES) {
+        return Promise.reject(new DownloadTooLarge(held))
+      }
       chunks.push(chunk.slice())
       return Promise.resolve()
     },
@@ -190,14 +205,34 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
       anchor.href = url
       anchor.download = name
       anchor.click()
-      URL.revokeObjectURL(url)
       chunks.length = 0
+      // The click only schedules the download; give the browser time to
+      // open the Blob before its URL disappears.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
       return Promise.resolve()
     },
     abort: () => {
       chunks.length = 0
       return Promise.resolve()
     },
+  }
+}
+
+export class DownloadTooLarge extends Error {
+  constructor(bytes: number) {
+    super(
+      `This browser can only download up to ${Math.floor(
+        IN_MEMORY_DOWNLOAD_MAX_BYTES / (1024 * 1024),
+      )} MB at a time (${Math.ceil(bytes / (1024 * 1024))} MB requested). Use a Chromium-based browser to stream larger downloads to disk, or download files individually.`,
+    )
+    this.name = 'DownloadTooLarge'
+  }
+}
+
+/** Fails fast when `bytes` cannot fit the sink, before anything streams. */
+export function assertSinkCapacity(sink: ByteSink, bytes: number) {
+  if (sink.capacity !== null && bytes > sink.capacity) {
+    throw new DownloadTooLarge(bytes)
   }
 }
 

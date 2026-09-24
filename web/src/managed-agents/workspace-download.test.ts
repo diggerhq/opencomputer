@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DownloadTooLarge,
+  IN_MEMORY_DOWNLOAD_MAX_BYTES,
   Sha256,
   ZipWriter,
+  assertSinkCapacity,
   crc32Update,
   type ByteSink,
 } from './workspace-download'
@@ -18,6 +21,7 @@ function memorySink() {
   let closed = false
   let aborted = false
   const sink: ByteSink = {
+    capacity: null,
     write: (chunk) => {
       chunks.push(chunk.slice())
       return Promise.resolve()
@@ -83,6 +87,24 @@ describe('crc32Update', () => {
     expect(crc32Update(a, new TextEncoder().encode('6789')).toString(16)).toBe(
       'cbf43926',
     )
+  })
+})
+
+describe('assertSinkCapacity', () => {
+  it('rejects oversized downloads for bounded sinks only', () => {
+    const bounded = {
+      ...memorySink().sink,
+      capacity: IN_MEMORY_DOWNLOAD_MAX_BYTES,
+    }
+    expect(() =>
+      assertSinkCapacity(bounded, IN_MEMORY_DOWNLOAD_MAX_BYTES),
+    ).not.toThrow()
+    expect(() =>
+      assertSinkCapacity(bounded, IN_MEMORY_DOWNLOAD_MAX_BYTES + 1),
+    ).toThrow(DownloadTooLarge)
+    expect(() =>
+      assertSinkCapacity(memorySink().sink, Number.MAX_SAFE_INTEGER),
+    ).not.toThrow()
   })
 })
 
