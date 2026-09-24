@@ -467,7 +467,7 @@ export class OpenComputerClient {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+      signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
@@ -1370,4 +1370,88 @@ export class OpenComputerClient {
       { method: "POST" },
     );
   }
+
+  private workspacePath(sessionId: string, suffix: string) {
+    return `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace${suffix}`;
+  }
+
+  /** Every file under the session's /workspace, across all list pages. */
+  async workspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+    const files: WorkspaceFile[] = [];
+    let cursor: string | null = null;
+    do {
+      const query: string = cursor
+        ? `?cursor=${encodeURIComponent(cursor)}`
+        : "";
+      const page: WorkspaceFilePage = await this.request<WorkspaceFilePage>(
+        this.workspacePath(sessionId, `/files${query}`),
+      );
+      files.push(...page.files);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return files;
+  }
+
+  async workspaceArtifacts(sessionId: string): Promise<WorkspaceArtifact[]> {
+    const result = await this.request<{ artifacts: WorkspaceArtifact[] }>(
+      this.workspacePath(sessionId, "/exports"),
+    );
+    return result.artifacts;
+  }
+
+  /** Provider-side export: retains and hashes the file, returns its manifest. */
+  async exportWorkspaceFile(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceArtifact> {
+    const result = await this.request<{ artifact: WorkspaceArtifact }>(
+      this.workspacePath(sessionId, "/exports"),
+      { method: "POST", body: JSON.stringify({ path }) },
+    );
+    return result.artifact;
+  }
+
+  /** Raw bytes of a retained artifact; callers verify size and SHA-256. */
+  workspaceArtifactContent(
+    artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    return this.response(
+      this.workspacePath(
+        artifact.sessionId,
+        `/exports/${encodeURIComponent(artifact.id)}/content`,
+      ),
+      signal ? { signal } : { signal: AbortSignal.timeout(WORKSPACE_CONTENT_TIMEOUT_MS) },
+    );
+  }
 }
+
+/** Large artifacts stream for a while; the default 30 s budget is for JSON. */
+const WORKSPACE_CONTENT_TIMEOUT_MS = 60 * 60 * 1000;
+
+export type WorkspaceFile = {
+  path: string;
+  size: number;
+  lastModified: string | null;
+  etag: string | null;
+};
+
+type WorkspaceFilePage = {
+  files: WorkspaceFile[];
+  nextCursor: string | null;
+};
+
+export type WorkspaceArtifact = {
+  id: string;
+  sessionId: string;
+  path: string;
+  size: number;
+  sha256: string;
+  receipt: {
+    key: string;
+    etag: string | null;
+    sourceEtag: string | null;
+    sourceVersionId: string | null;
+  };
+  exportedAt: string;
+};
