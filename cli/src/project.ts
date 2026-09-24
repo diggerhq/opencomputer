@@ -1,10 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   access,
   cp,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -3523,10 +3525,164 @@ export async function agentRuntimeDirectory(
   );
 }
 
+const runtimeBuilds = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `task` after every earlier task for the same runtime directory in this
+ * process, so overlapping watch rebuilds never interleave on one directory.
+ */
+function serializeRuntime<T>(
+  runtime: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = runtimeBuilds.get(runtime) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  runtimeBuilds.set(runtime, next);
+  void next
+    .catch(() => undefined)
+    .then(() => {
+      if (runtimeBuilds.get(runtime) === next) runtimeBuilds.delete(runtime);
+    });
+  return next;
+}
+
+const RUNTIME_REPLACE_ATTEMPTS = 5;
+const RETRYABLE_RUNTIME_ERRORS = new Set([
+  "ENOTEMPTY",
+  "EEXIST",
+  "EBUSY",
+  "EPERM",
+]);
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+function runtimeCleanupError(runtime: string, error: unknown): Error {
+  return new Error(
+    `Generated agent runtime cleanup failed for ${runtime}: ` +
+      `${error instanceof Error ? error.message : String(error)}\n` +
+      "This directory is build output only; delete it and save again to rebuild.",
+    { cause: error },
+  );
+}
+
+async function removeBestEffort(path: string): Promise<void> {
+  await rm(path, {
+    recursive: true,
+    force: true,
+    maxRetries: 3,
+    retryDelay: 20,
+  }).catch(() => undefined);
+}
+
+/**
+ * Swaps a freshly built runtime into place. The previous runtime is renamed
+ * aside first, so files something else is still writing into it can never
+ * make the rebuild fail; the aside copy is then removed best-effort.
+ */
+async function replaceRuntime(
+  staging: string,
+  runtime: string,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    const stale =
+      `${runtime}.stale-${String(process.pid)}-` +
+      randomBytes(4).toString("hex");
+    try {
+      await rename(runtime, stale);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        if (
+          attempt < RUNTIME_REPLACE_ATTEMPTS &&
+          RETRYABLE_RUNTIME_ERRORS.has(errorCode(error) ?? "")
+        ) {
+          await new Promise((done) => setTimeout(done, 25 * attempt));
+          continue;
+        }
+        throw runtimeCleanupError(runtime, error);
+      }
+    }
+    try {
+      await rename(staging, runtime);
+    } catch (error) {
+      await removeBestEffort(stale);
+      if (
+        attempt < RUNTIME_REPLACE_ATTEMPTS &&
+        RETRYABLE_RUNTIME_ERRORS.has(errorCode(error) ?? "")
+      ) {
+        continue;
+      }
+      throw runtimeCleanupError(runtime, error);
+    }
+    await removeBestEffort(stale);
+    return;
+  }
+}
+
+async function removeStaleRuntimes(runtime: string): Promise<void> {
+  const parent = dirname(runtime);
+  const prefix = `${basename(runtime)}.stale-`;
+  const entries = await readdir(parent).catch(() => []);
+  await Promise.all(
+    entries
+      .filter((entry) => entry.startsWith(prefix))
+      .map((entry) => removeBestEffort(resolve(parent, entry))),
+  );
+}
+
+/**
+ * Compiles the agent into a private staging directory next to its runtime and
+ * only then replaces the runtime, so a rebuild never deletes a directory that
+ * is still being written and a failed build leaves the previous one intact.
+ * `inspect` reads the staged build before it goes live, so files other
+ * processes add to the live runtime never reach the artifact.
+ */
+async function buildAgentRuntime<T>(
+  root: string,
+  runtime: string,
+  inspect: (built: string) => Promise<T>,
+): Promise<T> {
+  await removeStaleRuntimes(runtime);
+  let staging: string;
+  try {
+    await mkdir(dirname(runtime), { recursive: true });
+    staging = await mkdtemp(`${runtime}.build-`);
+  } catch (error) {
+    throw new Error(
+      `Could not create a staging directory for the generated agent runtime ` +
+        `next to ${runtime}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  try {
+    await writeAgentRuntime(root, staging);
+    const inspected = await inspect(staging);
+    await replaceRuntime(staging, runtime);
+    return inspected;
+  } catch (error) {
+    await removeBestEffort(staging);
+    throw error;
+  }
+}
+
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = await agentRuntimeDirectory(root);
-  await rm(runtime, { recursive: true, force: true });
-  await mkdir(runtime, { recursive: true });
+  await serializeRuntime(runtime, () =>
+    buildAgentRuntime(root, runtime, async () => undefined),
+  );
+  return runtime;
+}
+
+async function writeAgentRuntime(
+  root: string,
+  runtime: string,
+): Promise<void> {
   const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
   const reactive = /export\s+default\s+(?:async\s+)?function\b/.test(
     agentSource,
@@ -3830,7 +3986,6 @@ the product or support surface presented to users.
       2,
     )}\n`,
   );
-  return runtime;
 }
 
 async function collectFiles(
@@ -3859,16 +4014,21 @@ export async function buildAgentArtifact(
 ): Promise<BuiltAgentArtifact> {
   const startedAt = performance.now();
   const manifest = await readManifest(root);
-  const runtime = await prepareAgent(root);
-  const reactive = JSON.parse(
-    await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
-  ) as {
-    connections?: string[];
-    httpConnections?: HttpConnectionManifest[];
-    githubConnections?: GitHubConnectionManifest[];
-    memory?: MemoryDeclaration[];
-    models?: Array<{ provider: string; model: string }>;
-  };
+  const runtime = await agentRuntimeDirectory(root);
+  const { reactive, files } = await serializeRuntime(runtime, () =>
+    buildAgentRuntime(root, runtime, async (built) => ({
+      reactive: JSON.parse(
+        await readFile(resolve(built, ".opencomputer", "reactive.json"), "utf8"),
+      ) as {
+        connections?: string[];
+        httpConnections?: HttpConnectionManifest[];
+        githubConnections?: GitHubConnectionManifest[];
+        memory?: MemoryDeclaration[];
+        models?: Array<{ provider: string; model: string }>;
+      },
+      files: await collectFiles(built),
+    })),
+  );
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const githubConnections = reactive.githubConnections ?? [];
@@ -3878,7 +4038,7 @@ export async function buildAgentArtifact(
     JSON.stringify({
       version: 1,
       channels: [],
-      files: await collectFiles(runtime),
+      files,
     }),
   );
   return {
