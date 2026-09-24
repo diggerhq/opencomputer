@@ -474,45 +474,6 @@ const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
 
-const outboxItemSchema = z.object({
-  id: z.string(),
-  outboxId: z.string(),
-  eventType: z.string(),
-  sessionId: z.string().optional(),
-  contentPreview: z.object({
-    title: z.string().optional(),
-    body: z.string().optional(),
-    url: z.string().optional(),
-  }),
-  status: z.string(),
-  destination: z.string().optional(),
-  attemptCount: z.number(),
-  error: z.string().optional(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-})
-
-const outboxSchema = z.object({
-  id: z.string(),
-  channelId: z.string(),
-  channelName: z.string(),
-  destination: z.string(),
-  readiness: z.enum([
-    'ready',
-    'channel_not_connected',
-    'destination_not_bound',
-  ]),
-  targetDisplayName: z.string().optional(),
-  items: z.array(outboxItemSchema),
-})
-
-const outboxesResponseSchema = z.object({
-  agentId: z.string(),
-  environment: z.enum(['development', 'production']),
-  deploymentId: z.string(),
-  outboxes: z.array(outboxSchema),
-})
-
 const scheduleSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -823,8 +784,6 @@ export type ManagedMemoryDocumentRead = {
 }
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
-export type ManagedAgentOutbox = z.infer<typeof outboxSchema>
-export type ManagedAgentOutboxItem = z.infer<typeof outboxItemSchema>
 export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
@@ -1367,18 +1326,6 @@ export async function getManagedAgentChannels() {
   ).channels
 }
 
-export async function getManagedAgentOutboxes(
-  agentId: string,
-  environment: 'development' | 'production',
-) {
-  const query = new URLSearchParams({ agentId, environment })
-  return apiFetch(
-    `/managed-agents/outboxes?${query.toString()}`,
-    undefined,
-    outboxesResponseSchema,
-  )
-}
-
 export async function getManagedAgentSchedules(
   projectId: string,
   agentId: string,
@@ -1617,74 +1564,6 @@ export async function cancelManagedSlackSetup(setupId: string) {
       slackSetupResponseSchema,
     )
   ).setup
-}
-
-const twilioNumberSchema = z.object({
-  sid: z.string(),
-  phoneNumber: z.string(),
-  friendlyName: z.string(),
-  capabilities: z.object({ sms: z.boolean(), voice: z.boolean() }),
-})
-
-const twilioSetupSchema = z.object({
-  connection: z.object({
-    id: z.string(),
-    provider: z.string(),
-    status: z.string(),
-  }),
-  account: z.object({ sid: z.string(), friendlyName: z.string() }),
-  numbers: z.array(twilioNumberSchema),
-  // Shown once, held only in the browser between the two steps, and never
-  // stored: it is half of what authenticates the webhook.
-  webhookToken: z.string(),
-})
-
-const twilioConnectionSchema = z.object({
-  connection: z.object({
-    id: z.string(),
-    provider: z.string().optional(),
-    status: z.string(),
-    phoneNumber: z.string().optional(),
-  }),
-})
-
-export type ManagedTwilioNumber = z.infer<typeof twilioNumberSchema>
-export type ManagedTwilioSetup = z.infer<typeof twilioSetupSchema>
-
-/**
- * Step one. The credentials are checked against Twilio before anything is
- * stored, so a mistyped SID comes back as a message rather than a broken
- * connection nobody can see is broken.
- */
-export async function startManagedAgentTwilio(
-  agentId: string,
-  input: { accountSid: string; authToken: string; channelId?: string },
-) {
-  return apiFetch(
-    '/managed-agents/channels/twilio/connections',
-    { method: 'POST', body: JSON.stringify({ agentId, ...input }) },
-    twilioSetupSchema,
-  )
-}
-
-/** Step two. Points the chosen number at OpenComputer and opens the line. */
-export async function completeManagedAgentTwilio(
-  connectionId: string,
-  input: { numberSid: string; phoneNumber: string; webhookToken: string },
-) {
-  return apiFetch(
-    `/managed-agents/channels/twilio/connections/${encodeURIComponent(connectionId)}`,
-    { method: 'PUT', body: JSON.stringify(input) },
-    twilioConnectionSchema,
-  )
-}
-
-export async function disconnectManagedAgentTwilio(connectionId: string) {
-  return apiFetch(
-    `/managed-agents/channels/twilio/connections/${encodeURIComponent(connectionId)}`,
-    { method: 'DELETE' },
-    twilioConnectionSchema,
-  )
 }
 
 export async function disconnectManagedAgentSlack(connectionId: string) {

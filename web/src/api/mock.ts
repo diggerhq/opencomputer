@@ -1342,10 +1342,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
       channels: [],
       connections: [],
       createdAt: new Date(BASE).toISOString(),
-      // Declaring one channel of each provider so the channels tab renders
-      // both connect flows in preview. They are genuinely different: Slack has
-      // an app to install, Twilio has credentials to paste and a number to
-      // point at us.
       projectDeployment: {
         id: 'research-assistant:preview',
         digest: 'p'.repeat(64),
@@ -1366,12 +1362,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
                   visibility: 'public',
                 },
               },
-            },
-            {
-              id: 'shop-sms',
-              type: 'twilio',
-              displayName: 'Customer texts',
-              destinations: { reply: { type: 'reply' } },
             },
           ],
           channelRegistrations: [],
