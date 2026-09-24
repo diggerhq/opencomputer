@@ -269,6 +269,10 @@ export function DebugInspector({
               <p className="text-muted-foreground text-[10px] font-semibold tracking-wide uppercase">
                 Renders
               </p>
+              <p className="text-muted-foreground text-xs">
+                Each render is one call of your agent function, made before a
+                model step. Select one to see what it returned for that step.
+              </p>
               <div className="flex flex-wrap gap-1.5">
                 {renders.map(({ render }, index) => (
                   <button

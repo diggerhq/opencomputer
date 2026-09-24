@@ -26,6 +26,18 @@ The inspector shows the information needed to explain a turn:
 - tools and MCP capabilities available to that render
 - tool activity and errors
 
+### Renders
+
+The **Renders** row lists every time your agent function was called during
+the session, numbered in order. A
+[render](/agents/mental-model#a-render-is-one-call-of-your-agent-function)
+happens before each model step, so a turn that made three model calls shows
+three renders. Select one to see the instructions, model and capabilities it
+returned for that step, and how they differ from the render before it, such
+as a tool that a conditional hook added or a changed prompt. If no render
+appears, the agent function was never called; check the runtime logs for the
+error that stopped the turn.
+
 OpenComputer's private platform instructions and credentials are intentionally
 not shown. The inspector describes your deployed agent configuration, not the
 internal execution implementation.

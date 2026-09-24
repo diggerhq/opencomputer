@@ -208,8 +208,10 @@ work continued or failed; see [Durability and recovery](/agents/sessions#durabil
 | --- | --- | --- |
 | `agent.rendered` | Your agent function was rendered for a model step | `renderId`, `instructions`, `model`, `enabledTools`, `enabledSubagents`, `enabledMcpServers`, `requiredConnections`, `input`, `tools`, `renderedAt` |
 
-One turn can carry several renders, one per model step. The debug inspector
-in the [playground](/agents/playground) shows the same data.
+A [render](/agents/mental-model#a-render-is-one-call-of-your-agent-function)
+is one call of your agent function. One turn can carry several renders, one
+per model step. The debug inspector in the [playground](/agents/playground)
+shows the same data.
 
 ## Reading the log
 
