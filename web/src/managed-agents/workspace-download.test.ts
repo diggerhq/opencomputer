@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment happy-dom
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  BLOB_URL_GRACE_MS,
   DownloadTooLarge,
   IN_MEMORY_DOWNLOAD_MAX_BYTES,
   Sha256,
   ZipWriter,
   assertSinkCapacity,
   crc32Update,
+  openDownloadSink,
   type ByteSink,
 } from './workspace-download'
 
@@ -105,6 +108,40 @@ describe('assertSinkCapacity', () => {
     expect(() =>
       assertSinkCapacity(memorySink().sink, Number.MAX_SAFE_INTEGER),
     ).not.toThrow()
+  })
+})
+
+describe('openDownloadSink fallback', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('counts live Blob URLs against the budget and releases them later', async () => {
+    vi.useFakeTimers()
+    const revoked: string[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:x')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation((url) => {
+      revoked.push(url)
+    })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    const first = await openDownloadSink('a.bin')
+    expect(first.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
+    await first.write(new Uint8Array(1000))
+    await first.close()
+    expect(revoked).toEqual([])
+
+    const second = await openDownloadSink('b.bin')
+    expect(second.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES - 1000)
+    await expect(
+      second.write(new Uint8Array(IN_MEMORY_DOWNLOAD_MAX_BYTES - 999)),
+    ).rejects.toBeInstanceOf(DownloadTooLarge)
+
+    vi.advanceTimersByTime(BLOB_URL_GRACE_MS)
+    expect(revoked).toEqual(['blob:x'])
+    const third = await openDownloadSink('c.bin')
+    expect(third.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
   })
 })
 

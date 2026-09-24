@@ -145,6 +145,35 @@ export function crc32Update(crc: number, chunk: Uint8Array) {
  */
 export const IN_MEMORY_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 
+/**
+ * How long a finished fallback download keeps its Blob URL alive. The
+ * anchor click only schedules the download, so the URL must outlive the
+ * click briefly; browsers pick the Blob up well within this window.
+ */
+export const BLOB_URL_GRACE_MS = 5_000
+
+interface LiveBlobUrl {
+  url: string
+  bytes: number
+  timer: ReturnType<typeof setTimeout>
+}
+
+// Blob URLs still within their grace period. Their bytes count against the
+// in-memory budget so back-to-back downloads cannot stack up gigabytes.
+const liveBlobUrls = new Set<LiveBlobUrl>()
+
+function releaseBlobUrl(live: LiveBlobUrl) {
+  clearTimeout(live.timer)
+  liveBlobUrls.delete(live)
+  URL.revokeObjectURL(live.url)
+}
+
+function liveBlobBytes() {
+  let total = 0
+  for (const live of liveBlobUrls) total += live.bytes
+  return total
+}
+
 /** Where verified bytes go: the user's disk when possible, else memory. */
 export interface ByteSink {
   /** Upper bound on total bytes this sink can take, or null if unbounded. */
@@ -188,27 +217,31 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
     }
   }
   const chunks: Uint8Array<ArrayBuffer>[] = []
+  const capacity = IN_MEMORY_DOWNLOAD_MAX_BYTES - liveBlobBytes()
   let held = 0
   return {
-    capacity: IN_MEMORY_DOWNLOAD_MAX_BYTES,
+    capacity,
     write: (chunk) => {
       held += chunk.byteLength
-      if (held > IN_MEMORY_DOWNLOAD_MAX_BYTES) {
-        return Promise.reject(new DownloadTooLarge(held))
+      if (held > capacity) {
+        return Promise.reject(new DownloadTooLarge(held, capacity))
       }
       chunks.push(chunk.slice())
       return Promise.resolve()
     },
     close: () => {
       const url = URL.createObjectURL(new Blob(chunks))
+      chunks.length = 0
+      const live: LiveBlobUrl = {
+        url,
+        bytes: held,
+        timer: setTimeout(() => releaseBlobUrl(live), BLOB_URL_GRACE_MS),
+      }
+      liveBlobUrls.add(live)
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = name
       anchor.click()
-      chunks.length = 0
-      // The click only schedules the download; give the browser time to
-      // open the Blob before its URL disappears.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000)
       return Promise.resolve()
     },
     abort: () => {
@@ -219,11 +252,10 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
 }
 
 export class DownloadTooLarge extends Error {
-  constructor(bytes: number) {
+  constructor(bytes: number, capacity: number) {
+    const mb = (n: number) => Math.ceil(n / (1024 * 1024))
     super(
-      `This browser can only download up to ${Math.floor(
-        IN_MEMORY_DOWNLOAD_MAX_BYTES / (1024 * 1024),
-      )} MB at a time (${Math.ceil(bytes / (1024 * 1024))} MB requested). Use a Chromium-based browser to stream larger downloads to disk, or download files individually.`,
+      `This browser can only download up to ${mb(capacity)} MB right now (${mb(bytes)} MB requested). Use a Chromium-based browser to stream larger downloads to disk, wait a few seconds after a previous download, or download files individually.`,
     )
     this.name = 'DownloadTooLarge'
   }
@@ -232,7 +264,7 @@ export class DownloadTooLarge extends Error {
 /** Fails fast when `bytes` cannot fit the sink, before anything streams. */
 export function assertSinkCapacity(sink: ByteSink, bytes: number) {
   if (sink.capacity !== null && bytes > sink.capacity) {
-    throw new DownloadTooLarge(bytes)
+    throw new DownloadTooLarge(bytes, sink.capacity)
   }
 }
 
