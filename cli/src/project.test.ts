@@ -2978,7 +2978,18 @@ test("prepareAgent rebuilds while another process keeps writing into the generat
     })();
     try {
       for (let index = 0; index < 20; index += 1) {
-        await prepareAgent(initialized.agentRoot);
+        if (index % 2) {
+          await prepareAgent(initialized.agentRoot);
+        } else {
+          const built = await buildAgentArtifact(initialized.agentRoot);
+          const artifact = JSON.parse(built.body.toString("utf8")) as {
+            files: Array<{ path: string }>;
+          };
+          assert.equal(
+            artifact.files.some((file) => file.path.startsWith(".opencode/state/")),
+            false,
+          );
+        }
         assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
       }
     } finally {

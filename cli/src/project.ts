@@ -3639,11 +3639,14 @@ async function removeStaleRuntimes(runtime: string): Promise<void> {
  * Compiles the agent into a private staging directory next to its runtime and
  * only then replaces the runtime, so a rebuild never deletes a directory that
  * is still being written and a failed build leaves the previous one intact.
+ * `inspect` reads the staged build before it goes live, so files other
+ * processes add to the live runtime never reach the artifact.
  */
-async function buildAgentRuntime(
+async function buildAgentRuntime<T>(
   root: string,
   runtime: string,
-): Promise<void> {
+  inspect: (built: string) => Promise<T>,
+): Promise<T> {
   await removeStaleRuntimes(runtime);
   let staging: string;
   try {
@@ -3659,7 +3662,9 @@ async function buildAgentRuntime(
   }
   try {
     await writeAgentRuntime(root, staging);
+    const inspected = await inspect(staging);
     await replaceRuntime(staging, runtime);
+    return inspected;
   } catch (error) {
     await removeBestEffort(staging);
     throw error;
@@ -3668,7 +3673,9 @@ async function buildAgentRuntime(
 
 export async function prepareAgent(root: string): Promise<string> {
   const runtime = await agentRuntimeDirectory(root);
-  await serializeRuntime(runtime, () => buildAgentRuntime(root, runtime));
+  await serializeRuntime(runtime, () =>
+    buildAgentRuntime(root, runtime, async () => undefined),
+  );
   return runtime;
 }
 
@@ -4008,14 +4015,10 @@ export async function buildAgentArtifact(
   const startedAt = performance.now();
   const manifest = await readManifest(root);
   const runtime = await agentRuntimeDirectory(root);
-  const { reactive, files } = await serializeRuntime(runtime, async () => {
-    await buildAgentRuntime(root, runtime);
-    return {
+  const { reactive, files } = await serializeRuntime(runtime, () =>
+    buildAgentRuntime(root, runtime, async (built) => ({
       reactive: JSON.parse(
-        await readFile(
-          resolve(runtime, ".opencomputer", "reactive.json"),
-          "utf8",
-        ),
+        await readFile(resolve(built, ".opencomputer", "reactive.json"), "utf8"),
       ) as {
         connections?: string[];
         httpConnections?: HttpConnectionManifest[];
@@ -4023,9 +4026,9 @@ export async function buildAgentArtifact(
         memory?: MemoryDeclaration[];
         models?: Array<{ provider: string; model: string }>;
       },
-      files: await collectFiles(runtime),
-    };
-  });
+      files: await collectFiles(built),
+    })),
+  );
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const githubConnections = reactive.githubConnections ?? [];
