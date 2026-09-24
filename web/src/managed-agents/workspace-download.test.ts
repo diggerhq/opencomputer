@@ -9,6 +9,7 @@ import {
   assertSinkCapacity,
   crc32Update,
   openDownloadSink,
+  zipOverheadBytes,
   type ByteSink,
 } from './workspace-download'
 
@@ -151,6 +152,43 @@ describe('openDownloadSink fallback', () => {
     expect(revoked).toEqual(['blob:x'])
     const third = await openDownloadSink('e.bin')
     expect(third.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
+  })
+
+  it('enforces the shared budget across sinks opened concurrently', async () => {
+    const a = await openDownloadSink('a.bin')
+    const b = await openDownloadSink('b.bin')
+    expect(a.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
+    expect(b.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
+    const half = IN_MEMORY_DOWNLOAD_MAX_BYTES / 2
+    await a.write(new Uint8Array(half))
+    await b.write(new Uint8Array(half))
+    // Each sink is within its own snapshot, but together they are full.
+    await expect(a.write(new Uint8Array(1))).rejects.toBeInstanceOf(
+      DownloadTooLarge,
+    )
+    await a.abort()
+    await b.abort()
+  })
+})
+
+describe('zipOverheadBytes', () => {
+  it('is at least what ZipWriter actually emits', async () => {
+    const entries = [
+      { path: 'a.txt', size: 3 },
+      { path: 'nested/dir/ünïcode.bin', size: 5 },
+    ]
+    const mem = memorySink()
+    const zip = new ZipWriter(mem.sink)
+    for (const entry of entries) {
+      await zip.beginEntry(entry.path)
+      await zip.write(new Uint8Array(entry.size))
+      await zip.endEntry()
+    }
+    await zip.finish()
+    const content = entries.reduce((sum, entry) => sum + entry.size, 0)
+    expect(mem.bytes().length - content).toBeLessThanOrEqual(
+      zipOverheadBytes(entries),
+    )
   })
 })
 

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
@@ -34,7 +34,7 @@ export class VerificationError extends Error {}
  * expects, rejecting anything that could point outside the workspace.
  */
 export function normalizeWorkspacePath(input: string): string {
-  let value = input.trim().replace(/\\/g, "/");
+  let value = input.replace(/\\/g, "/");
   if (value.startsWith("/workspace/"))
     value = value.slice("/workspace/".length);
   else if (value === "/workspace") value = "";
@@ -62,7 +62,6 @@ export function localPathFor(root: string, workspacePath: string): string {
   const relative = path.relative(resolvedRoot, target);
   if (
     !relative ||
-    relative.startsWith("..") ||
     path.isAbsolute(relative) ||
     relative.split(path.sep).includes("..")
   ) {
@@ -91,17 +90,37 @@ export async function downloadWorkspaceFile(
   sessionId: string,
   workspacePath: string,
   destination: string,
+  root?: string,
 ): Promise<DownloadResult> {
   const artifact = await client.exportWorkspaceFile(sessionId, workspacePath);
-  return downloadArtifact(client, artifact, destination);
+  return downloadArtifact(client, artifact, destination, root);
+}
+
+/**
+ * After the destination's directories exist, confirms that following any
+ * symlinks among them still lands inside `root`.
+ */
+async function assertResolvedWithin(root: string, destination: string) {
+  const resolvedRoot = await realpath(root);
+  const resolvedParent = await realpath(path.dirname(destination));
+  if (
+    resolvedParent !== resolvedRoot &&
+    !resolvedParent.startsWith(resolvedRoot + path.sep)
+  ) {
+    throw new Error(
+      `Refusing to write outside ${resolvedRoot}: ${destination} resolves to ${resolvedParent}`,
+    );
+  }
 }
 
 export async function downloadArtifact(
   client: WorkspaceClient,
   artifact: WorkspaceArtifact,
   destination: string,
+  root?: string,
 ): Promise<DownloadResult> {
   await mkdir(path.dirname(destination), { recursive: true });
+  if (root !== undefined) await assertResolvedWithin(root, destination);
   const temporary = `${destination}.${randomBytes(6).toString("hex")}.part`;
   try {
     const response = await client.workspaceArtifactContent(artifact);
@@ -163,6 +182,7 @@ export async function downloadWorkspace(
   onFile?: (result: DownloadResult) => void,
 ): Promise<DownloadResult[]> {
   const files = await listWorkspaceFiles(client, sessionId);
+  await mkdir(root, { recursive: true });
   const results: DownloadResult[] = [];
   for (const file of files) {
     const destination = localPathFor(root, file.path);
@@ -171,6 +191,7 @@ export async function downloadWorkspace(
       sessionId,
       file.path,
       destination,
+      root,
     );
     results.push(result);
     onFile?.(result);

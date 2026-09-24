@@ -249,6 +249,22 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
           new DownloadTooLarge(held + chunk.byteLength, capacity),
         )
       }
+      // Another sink may have consumed the shared budget since this one was
+      // opened; the cap is on total memory, not per sink.
+      if (
+        reservedFallbackBytes + chunk.byteLength >
+        IN_MEMORY_DOWNLOAD_MAX_BYTES
+      ) {
+        return Promise.reject(
+          new DownloadTooLarge(
+            held + chunk.byteLength,
+            Math.max(
+              0,
+              IN_MEMORY_DOWNLOAD_MAX_BYTES - (reservedFallbackBytes - held),
+            ),
+          ),
+        )
+      }
       held += chunk.byteLength
       reservedFallbackBytes += chunk.byteLength
       chunks.push(chunk.slice())
@@ -300,6 +316,21 @@ export class DownloadCancelled extends Error {
     super('Download cancelled')
     this.name = 'DownloadCancelled'
   }
+}
+
+/**
+ * Upper bound on the bytes `ZipWriter` adds around the file contents of
+ * `entries` (local headers, data descriptors, central directory with zip64
+ * extras, end records), so capacity preflights cover the whole archive.
+ */
+export function zipOverheadBytes(entries: Array<{ path: string }>) {
+  const encoder = new TextEncoder()
+  let total = 22 + 76 // end of central directory (+ zip64 end + locator)
+  for (const entry of entries) {
+    const name = encoder.encode(entry.path).length
+    total += 30 + name + 24 + 46 + name + 28
+  }
+  return total
 }
 
 interface ZipEntry {

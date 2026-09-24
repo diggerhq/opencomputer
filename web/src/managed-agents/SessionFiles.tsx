@@ -128,7 +128,7 @@ export function SessionFiles({
     mutationFn: (workspace: ManagedWorkspaceFile[]) =>
       downloadManagedAgentWorkspaceArchive(
         `${sessionId}-workspace.zip`,
-        workspace.reduce((sum, file) => sum + file.size, 0),
+        workspace,
         async () => {
           const retained: ManagedWorkspaceArtifact[] = []
           for (const [index, file] of workspace.entries()) {

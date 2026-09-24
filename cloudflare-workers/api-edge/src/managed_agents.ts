@@ -1855,7 +1855,7 @@ function publicSuccessBody(
   ) {
     return {
       files: Array.isArray(body.files)
-        ? body.files.map(stripPrivateValues)
+        ? body.files.map(publicWorkspaceFile)
         : [],
       nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
     };
@@ -1879,6 +1879,16 @@ function publicSuccessBody(
     return { artifact: publicWorkspaceArtifact(body.artifact) };
   }
   throw new Error("Unsupported managed agents response");
+}
+
+function publicWorkspaceFile(value: unknown): Record<string, unknown> {
+  const file = record(value) ?? {};
+  return {
+    path: file.path,
+    size: file.size,
+    lastModified: file.lastModified ?? null,
+    etag: file.etag ?? null,
+  };
 }
 
 /** The manifest a caller verifies against: id, path, size, sha256 and the

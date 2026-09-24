@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -86,6 +93,7 @@ test("normalizeWorkspacePath accepts /workspace-prefixed and relative paths", ()
   );
   assert.equal(normalizeWorkspacePath("out/report.pdf"), "out/report.pdf");
   assert.equal(normalizeWorkspacePath("/my file.txt"), "my file.txt");
+  assert.equal(normalizeWorkspacePath(" padded .txt "), " padded .txt ");
   for (const bad of [
     "../etc/passwd",
     "a/../b",
@@ -101,6 +109,7 @@ test("normalizeWorkspacePath accepts /workspace-prefixed and relative paths", ()
 test("localPathFor never escapes the destination root", () => {
   const root = path.resolve("dest");
   assert.equal(localPathFor(root, "a/b.txt"), path.join(root, "a", "b.txt"));
+  assert.equal(localPathFor(root, "..settings"), path.join(root, "..settings"));
   assert.throws(() => localPathFor(root, "../x"), /outside/);
   assert.throws(() => localPathFor(root, "a/../../x"), /outside/);
 });
@@ -159,6 +168,21 @@ test("--all mirrors the workspace layout under the destination", async () => {
       Buffer.from([1, 2, 3]),
     );
     assert.equal(await readFile(path.join(dir, "one.txt"), "utf8"), "one");
+  });
+});
+
+test("--all refuses to follow a symlinked directory out of the root", async () => {
+  const client = fakeClient([
+    { path: "link/escaped.txt", bytes: new TextEncoder().encode("x") },
+  ]);
+  await withDirectory(async (dir) => {
+    const root = path.join(dir, "root");
+    const outside = path.join(dir, "outside");
+    await mkdir(root);
+    await mkdir(outside);
+    await symlink(outside, path.join(root, "link"));
+    await assert.rejects(downloadWorkspace(client, sessionId, root), /outside/);
+    assert.deepEqual(await readdir(outside), []);
   });
 });
 

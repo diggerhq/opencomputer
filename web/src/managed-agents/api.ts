@@ -4,6 +4,7 @@ import {
   Sha256,
   ZipWriter,
   assertSinkCapacity,
+  zipOverheadBytes,
   openDownloadSink,
 } from './workspace-download'
 
@@ -1910,6 +1911,13 @@ export async function downloadManagedAgentWorkspaceArtifact(
   return artifact
 }
 
+function archiveBytes(entries: Array<{ path: string; size: number }>) {
+  return (
+    entries.reduce((sum, entry) => sum + entry.size, 0) +
+    zipOverheadBytes(entries)
+  )
+}
+
 /**
  * Streams several verified artifacts into a single stored zip named `name`.
  * Each entry is hashed while it is written; a mismatch aborts the whole
@@ -1917,7 +1925,7 @@ export async function downloadManagedAgentWorkspaceArtifact(
  */
 export async function downloadManagedAgentWorkspaceArchive(
   name: string,
-  expectedBytes: number,
+  expected: Array<{ path: string; size: number }>,
   resolve: () => Promise<ManagedWorkspaceArtifact[]>,
   onProgress?: (done: number, total: number) => void,
 ) {
@@ -1925,12 +1933,9 @@ export async function downloadManagedAgentWorkspaceArchive(
   const zip = new ZipWriter(sink)
   let artifacts: ManagedWorkspaceArtifact[]
   try {
-    assertSinkCapacity(sink, expectedBytes)
+    assertSinkCapacity(sink, archiveBytes(expected))
     artifacts = await resolve()
-    assertSinkCapacity(
-      sink,
-      artifacts.reduce((sum, artifact) => sum + artifact.size, 0),
-    )
+    assertSinkCapacity(sink, archiveBytes(artifacts))
     for (const [index, artifact] of artifacts.entries()) {
       onProgress?.(index, artifacts.length)
       await zip.beginEntry(artifact.path, new Date(artifact.exportedAt))
