@@ -14,11 +14,12 @@ import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { cn } from '@/lib/utils'
+import { sandboxStatusLabel } from '@/lib/sandbox-status'
 
 const STATUS_FILTERS = [
   { value: '', label: 'All' },
   { value: 'running', label: 'Running' },
-  { value: 'stopped', label: 'Stopped' },
+  { value: 'stopped', label: 'Deleted' },
   { value: 'hibernated', label: 'Hibernated' },
   { value: 'error', label: 'Error' },
 ] as const
@@ -97,7 +98,9 @@ export default function Sandboxes() {
     {
       key: 'status',
       header: 'Status',
-      cell: (s) => <StatusBadge status={s.status} />,
+      cell: (s) => (
+        <StatusBadge status={s.status} label={sandboxStatusLabel(s.status)} />
+      ),
     },
     {
       key: 'started',
@@ -110,7 +113,7 @@ export default function Sandboxes() {
     },
     {
       key: 'stopped',
-      header: 'Stopped',
+      header: 'Deleted',
       cell: (s) => (
         <span className="text-muted-foreground font-mono text-xs">
           {s.stoppedAt ? new Date(s.stoppedAt).toLocaleString() : '—'}
@@ -192,7 +195,7 @@ export default function Sandboxes() {
         open={toDelete !== null}
         onOpenChange={(open) => !open && setToDelete(null)}
         title={`Delete sandbox ${toDelete?.sandboxId ?? ''}?`}
-        description="The sandbox will be stopped and its preview URLs removed."
+        description="The sandbox will be destroyed and its preview URLs removed. This cannot be undone."
         confirmLabel="Delete sandbox"
         destructive
         pending={deleteMutation.isPending}
