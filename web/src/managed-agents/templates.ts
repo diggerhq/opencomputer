@@ -32,6 +32,13 @@ export const CURATED_TEMPLATES = [
   },
 ] as const
 
+// Public "Deploy with OpenComputer" links (READMEs, docs) point at
+// `/new?repository-url=...`; the template deploy form lives at `/template`.
+export function templateDeployPathFromSearch(search: URLSearchParams) {
+  if (!search.has('repository-url')) return null
+  return `/template?${search.toString()}`
+}
+
 export function templateDeployPath(repositoryUrl: string, quickStart = false) {
   const query = new URLSearchParams({ 'repository-url': repositoryUrl })
   if (quickStart) query.set('quick-start', '1')

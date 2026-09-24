@@ -67,7 +67,10 @@ import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
-import { projectContextSearch } from './project-context'
+import {
+  projectContextSearch,
+  requestedProjectAgentId,
+} from './project-context'
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
@@ -593,6 +596,13 @@ export default function ManagedAgentDetail({
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
+  const projectId = project?.project.id
+  // On the project Sessions tab the agent selector offers "All agents"; an
+  // explicit ?agent= narrows it. Every other tab needs a concrete agent.
+  const sessionsAgentFilter =
+    project && activeTab === 'sessions'
+      ? requestedProjectAgentId(location.search, project.project.agents)
+      : agentId
 
   const agents = useQuery({
     queryKey: ['managed-agents'],
@@ -634,6 +644,12 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
+  const projectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId],
+    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    enabled: Boolean(projectId),
+    refetchInterval: 5_000,
+  })
   const channels = useQuery({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
@@ -649,9 +665,20 @@ export default function ManagedAgentDetail({
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',
   )
-  const externalSessions = environmentSessions.filter(
-    (session) => session.source !== 'playground',
-  )
+  const externalSessions = (
+    project
+      ? sessionsForEnvironment(
+          projectSessions.data ?? [],
+          project.deployments,
+          sessionsAgentFilter,
+          environment,
+        )
+      : environmentSessions
+  ).filter((session) => session.source !== 'playground')
+  const projectAgentName = (id: string) => {
+    const candidate = project?.project.agents.find((a) => a.id === id)
+    return candidate ? displayManagedAgentName(candidate) : id
+  }
   const selectedPlayground = playgroundSessions.find(
     (session) => session.id === requestedPlaygroundId,
   )
@@ -713,6 +740,19 @@ export default function ManagedAgentDetail({
         <span className="font-mono text-xs">{session.id}</span>
       ),
     },
+    ...(project
+      ? ([
+          {
+            key: 'agent',
+            header: 'Agent',
+            cell: (session) => (
+              <span className="text-xs">
+                {projectAgentName(session.agentId)}
+              </span>
+            ),
+          },
+        ] as Column<ManagedAgentSessionSummary>[])
+      : []),
     {
       key: 'source',
       header: 'Source',
@@ -880,13 +920,13 @@ export default function ManagedAgentDetail({
           <select
             id="project-agent"
             aria-label="Project agent"
-            value={agentId}
+            value={sessionsAgentFilter ?? ''}
             onChange={(event) => {
               setNewSessionKey(crypto.randomUUID())
               const search = new URLSearchParams(
                 projectContextSearch(
                   location.search,
-                  event.target.value,
+                  event.target.value || undefined,
                   environment,
                 ),
               )
@@ -898,13 +938,18 @@ export default function ManagedAgentDetail({
             }}
             className="border-input bg-background h-9 min-w-52 rounded-md border px-3 text-sm outline-none"
           >
+            {activeTab === 'sessions' ? (
+              <option value="">All agents</option>
+            ) : null}
             {project.project.agents.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {displayManagedAgentName(candidate)}
               </option>
             ))}
           </select>
-          {projectAgent ? <AgentNameSourceDialog agent={projectAgent} /> : null}
+          {projectAgent && sessionsAgentFilter ? (
+            <AgentNameSourceDialog agent={projectAgent} />
+          ) : null}
         </div>
       ) : null}
 
@@ -1149,8 +1194,9 @@ export default function ManagedAgentDetail({
             <div>
               <PanelTitle>Sessions</PanelTitle>
               <PanelDescription className="mt-1">
-                Sessions started through channels and the API. Playground
-                sessions stay in the playground.
+                Sessions started through channels and the API
+                {project ? ' across every agent in this project' : ''}.
+                Playground sessions stay in the playground.
               </PanelDescription>
             </div>
             <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
@@ -1161,11 +1207,11 @@ export default function ManagedAgentDetail({
             columns={sessionColumns}
             rows={externalSessions}
             rowKey={(session) => session.id}
-            loading={sessions.isLoading}
+            loading={project ? projectSessions.isLoading : sessions.isLoading}
             onRowClick={(session) => {
               if (!project) return
               void navigate(
-                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}?${searchParams.toString()}`,
+                `/projects/${encodeURIComponent(project.project.id)}/sessions/${encodeURIComponent(session.id)}${projectContextSearch(location.search, sessionsAgentFilter, environment)}`,
               )
             }}
             empty={
