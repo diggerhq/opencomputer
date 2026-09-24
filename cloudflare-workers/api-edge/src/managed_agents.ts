@@ -1849,8 +1849,62 @@ function publicSuccessBody(
   ) {
     return publicSessionSnapshot(body);
   }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return {
+      files: Array.isArray(body.files)
+        ? body.files.map(stripPrivateValues)
+        : [],
+      nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
+    };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return {
+      artifacts: Array.isArray(body.artifacts)
+        ? body.artifacts.map(publicWorkspaceArtifact)
+        : [],
+    };
+  }
+  if (
+    (method === "POST" &&
+      /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)) ||
+    (method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+$/.test(suffix))
+  ) {
+    return { artifact: publicWorkspaceArtifact(body.artifact) };
+  }
   throw new Error("Unsupported managed agents response");
 }
+
+/** The manifest a caller verifies against: id, path, size, sha256 and the
+ * retained object's etags. The bucket the provider retains into is not
+ * part of the public contract. */
+function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
+  const artifact = record(value) ?? {};
+  const receipt = record(artifact.receipt) ?? {};
+  return {
+    id: artifact.id,
+    sessionId: artifact.sessionId,
+    path: artifact.path,
+    size: artifact.size,
+    sha256: artifact.sha256,
+    receipt: {
+      key: receipt.key,
+      etag: receipt.etag ?? null,
+      sourceEtag: receipt.sourceEtag ?? null,
+      sourceVersionId: receipt.sourceVersionId ?? null,
+    },
+    exportedAt: artifact.exportedAt,
+  };
+}
+
+const WORKSPACE_ARTIFACT_CONTENT_ROUTE =
+  /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/content$/;
 
 async function publicSuccessResponse(
   upstream: Response,
@@ -2218,6 +2272,24 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+  ) {
     return true;
   }
   return (
@@ -2754,13 +2826,19 @@ export async function proxyManagedAgents(
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
-    if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    if (
+      /^\/projects\/[^/]+\/source-archive$/.test(suffix) ||
+      WORKSPACE_ARTIFACT_CONTENT_ROUTE.test(suffix)
+    ) {
       const responseHeaders = new Headers();
       for (const name of [
         "content-type",
         "content-length",
         "content-disposition",
         "etag",
+        "x-workspace-artifact-id",
+        "x-workspace-artifact-sha256",
+        "x-workspace-artifact-size",
       ]) {
         const value = upstream.headers.get(name);
         if (value) responseHeaders.set(name, value);

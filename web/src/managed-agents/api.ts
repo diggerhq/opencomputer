@@ -1749,6 +1749,116 @@ export async function collectManagedAgentEventPages(
   }
 }
 
+const workspaceFileSchema = z.object({
+  path: z.string(),
+  size: z.number(),
+  lastModified: z.string().nullable(),
+  etag: z.string().nullable(),
+})
+const workspaceFilesResponseSchema = z.object({
+  files: z.array(workspaceFileSchema),
+  nextCursor: z.string().nullable(),
+})
+const workspaceArtifactSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  path: z.string(),
+  size: z.number(),
+  sha256: z.string(),
+  receipt: z.object({
+    key: z.string(),
+    etag: z.string().nullable(),
+    sourceEtag: z.string().nullable(),
+    sourceVersionId: z.string().nullable(),
+  }),
+  exportedAt: z.string(),
+})
+const workspaceArtifactsResponseSchema = z.object({
+  artifacts: z.array(workspaceArtifactSchema),
+})
+const workspaceArtifactResponseSchema = z.object({
+  artifact: workspaceArtifactSchema,
+})
+
+export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
+export type ManagedWorkspaceArtifact = z.infer<typeof workspaceArtifactSchema>
+
+/** Every file the agent wrote under /workspace, across all list pages. */
+export async function getManagedAgentWorkspaceFiles(sessionId: string) {
+  const files: ManagedWorkspaceFile[] = []
+  let cursor: string | null = null
+  do {
+    const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+    const page: z.infer<typeof workspaceFilesResponseSchema> = await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/files${query}`,
+      undefined,
+      workspaceFilesResponseSchema,
+    )
+    files.push(...page.files)
+    cursor = page.nextCursor
+  } while (cursor)
+  return files
+}
+
+export async function getManagedAgentWorkspaceArtifacts(sessionId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
+      undefined,
+      workspaceArtifactsResponseSchema,
+    )
+  ).artifacts
+}
+
+/** Provider-side export: retains and hashes the file, returns its manifest. */
+export async function exportManagedAgentWorkspaceFile(
+  sessionId: string,
+  path: string,
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
+      { method: 'POST', body: JSON.stringify({ path }) },
+      workspaceArtifactResponseSchema,
+    )
+  ).artifact
+}
+
+export function managedAgentWorkspaceArtifactContentPath(
+  artifact: Pick<ManagedWorkspaceArtifact, 'sessionId' | 'id'>,
+) {
+  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/content`
+}
+
+/**
+ * Streams a retained artifact and checks the bytes against the manifest
+ * before handing them to the browser, so a download either matches the
+ * runtime's size and SHA-256 or fails.
+ */
+export async function downloadManagedAgentWorkspaceArtifact(
+  artifact: ManagedWorkspaceArtifact,
+) {
+  const response = await apiFetchResponse(
+    managedAgentWorkspaceArtifactContentPath(artifact),
+  )
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (bytes.byteLength !== artifact.size) {
+    throw new Error(
+      `Downloaded ${bytes.byteLength} bytes, manifest says ${artifact.size}`,
+    )
+  }
+  const digest = Array.from(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+  if (digest !== artifact.sha256) {
+    throw new Error('Downloaded bytes do not match the manifest SHA-256')
+  }
+  return new Blob([bytes], {
+    type: response.headers.get('content-type') ?? 'application/octet-stream',
+  })
+}
+
 export async function getManagedAgentSessionEvents(
   sessionId: string,
   after = 0,

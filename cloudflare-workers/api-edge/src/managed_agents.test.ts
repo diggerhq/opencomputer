@@ -357,6 +357,110 @@ describe("managed agents proxy", () => {
     expect(response.headers.get("x-storage-provider")).toBeNull();
   });
 
+  it("shapes workspace artifact manifests and streams their bytes with the verification headers", async () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test", role: "admin" };
+    const artifact = {
+      id: "wsart_1",
+      sessionId: "sess_1",
+      path: "evidence/capture.har",
+      size: 12,
+      sha256: "a".repeat(64),
+      receipt: {
+        bucket: "private-bucket",
+        key: "accounts/org_test/sessions/sess_1/workspace-artifacts/x",
+        etag: '"e"',
+        sourceEtag: '"s"',
+        sourceVersionId: null,
+      },
+      exportedAt: "2026-01-01T00:00:00.000Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (target: RequestInfo | URL) => {
+        const url = String(target);
+        if (url.endsWith("/workspace/exports")) {
+          return Response.json({ artifact }, { status: 201 });
+        }
+        if (url.endsWith("/workspace/exports/wsart_1/content")) {
+          return new Response("har contents", {
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-disposition": "attachment; filename*=UTF-8''capture.har",
+              "x-workspace-artifact-id": "wsart_1",
+              "x-workspace-artifact-sha256": artifact.sha256,
+              "x-workspace-artifact-size": "12",
+              "x-storage-provider": "private",
+            },
+          });
+        }
+        throw new Error(`unexpected upstream ${url}`);
+      }),
+    );
+
+    const exported = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "evidence/capture.har" }),
+        },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(exported.status).toBe(201);
+    expect(await exported.json()).toEqual({
+      artifact: {
+        id: "wsart_1",
+        sessionId: "sess_1",
+        path: "evidence/capture.har",
+        size: 12,
+        sha256: artifact.sha256,
+        receipt: {
+          key: artifact.receipt.key,
+          etag: '"e"',
+          sourceEtag: '"s"',
+          sourceVersionId: null,
+        },
+        exportedAt: artifact.exportedAt,
+      },
+    });
+
+    const content = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/content",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(content.status).toBe(200);
+    expect(await content.text()).toBe("har contents");
+    expect(content.headers.get("x-workspace-artifact-sha256")).toBe(
+      artifact.sha256,
+    );
+    expect(content.headers.get("x-workspace-artifact-size")).toBe("12");
+    expect(content.headers.get("cache-control")).toBe("private, no-store");
+    expect(content.headers.get("x-storage-provider")).toBeNull();
+
+    const blocked = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/content",
+        { method: "DELETE" },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(blocked.status).toBe(404);
+  });
+
   it("reads BYOK eligibility from an active Autumn subscription", async () => {
     vi.stubGlobal(
       "fetch",
