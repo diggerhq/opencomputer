@@ -154,7 +154,11 @@ export function ManagedProjectGitHub({
                         </option>
                       ))}
                     </select>
-                  ) : null}
+                  ) : (
+                    <span className="text-sm font-medium">
+                      {availableConnections[0].accountLogin}
+                    </span>
+                  )}
                   <Button
                     disabled={!connectionId || attach.isPending}
                     onClick={() => attach.mutate()}
