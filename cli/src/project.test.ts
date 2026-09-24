@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
@@ -2953,3 +2955,90 @@ test("prepareAgent builds into a cache under node_modules, never into the agent'
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("prepareAgent rebuilds while another process keeps writing into the generated runtime", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-race-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
+    await prepareAgent(initialized.agentRoot);
+    let writing = true;
+    let written = 0;
+    const writer = (async () => {
+      while (writing) {
+        try {
+          const state = resolve(runtime, ".opencode", "state");
+          await mkdir(state, { recursive: true });
+          await writeFile(resolve(state, `file-${String(written++)}`), "x");
+        } catch {
+          // The directory can be swapped between mkdir and writeFile.
+        }
+        await new Promise((done) => setImmediate(done));
+      }
+    })();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        await prepareAgent(initialized.agentRoot);
+        assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
+      }
+    } finally {
+      writing = false;
+      await writer;
+    }
+    assert.ok(written > 0);
+    await prepareAgent(initialized.agentRoot);
+    assert.deepEqual(await readdir(dirname(runtime)), ["runtime"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("overlapping rebuilds of one agent serialize and produce the same artifact", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-overlap-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const results = await Promise.all([
+      buildAgentArtifact(initialized.agentRoot),
+      prepareAgent(initialized.agentRoot),
+      buildAgentArtifact(initialized.agentRoot),
+      prepareAgent(initialized.agentRoot),
+      buildAgentArtifact(initialized.agentRoot),
+    ]);
+    const digests = new Set(
+      results.flatMap((result) =>
+        typeof result === "string" ? [] : [result.digest],
+      ),
+    );
+    assert.equal(digests.size, 1);
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
+    assert.deepEqual(await readdir(dirname(runtime)), ["runtime"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a generated-runtime cleanup failure names the runtime phase and keeps the previous build",
+  { skip: process.platform === "win32" || process.getuid?.() === 0 },
+  async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-fail-"));
+    const initialized = await initializeAgentProject(root);
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
+    try {
+      await prepareAgent(initialized.agentRoot);
+      await chmod(dirname(runtime), 0o555);
+      await assert.rejects(
+        prepareAgent(initialized.agentRoot),
+        (error: Error) => {
+          assert.match(error.message, /generated agent runtime/);
+          assert.ok(error.message.includes(runtime));
+          return true;
+        },
+      );
+      assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
+    } finally {
+      await chmod(dirname(runtime), 0o755).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
