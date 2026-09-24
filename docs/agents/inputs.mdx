@@ -32,7 +32,7 @@ interface AgentInput {
 
 | Field | Meaning |
 | --- | --- |
-| `source` | How the work entered the session: `user`, `schedule`, `webhook`, `subagent`, `system` or `event` |
+| `source` | How the work entered the session: `user`, `channel`, `schedule`, `webhook`, `subagent`, `system` or `event` |
 | `text` | Optional human-readable message |
 | `payload` | Optional structured JSON value supplied by the source |
 
@@ -45,6 +45,13 @@ the [turns route](/agents/api#turns) next to the text, and the agent reads it
 with `source: "user"`; a [webhook](/agents/webhooks) delivers its body as the
 payload; a [schedule](/agents/schedules) dispatches the payload it was
 configured with. The agent reads all of them the same way.
+
+A message from a connected [Slack app](/agents/slack) arrives with
+`source: "channel"` and a `channel` object naming the `provider` (`slack`),
+the `connectionId`, and the Slack `workspaceId`, `conversationId` and `userId`
+when Slack supplies them. An agent serving one workspace can ignore all of
+this; an agent behind a shared Slack app uses it to decide whose records to
+read.
 
 ## Adapt to the source
 

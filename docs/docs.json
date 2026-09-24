@@ -48,6 +48,7 @@
               "agents/secrets",
               "agents/services",
               "agents/github",
+              "agents/slack",
               "agents/byok",
               "agents/deployments"
             ]
@@ -396,7 +397,7 @@
     },
     {
       "source": "/agents/channels",
-      "destination": "/agents/services"
+      "destination": "/agents/slack"
     },
     {
       "source": "/agents/outboxes",
