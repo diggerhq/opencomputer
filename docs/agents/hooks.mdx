@@ -23,9 +23,11 @@ export default function Agent() {
 
 ## How hooks work
 
-OpenComputer renders the exported function before each model step. Every hook
-called during that render contributes to the next step's configuration. Hooks
-describe capabilities; they do not call the model or run a tool themselves.
+OpenComputer renders the exported function before each model step. A
+[render](/agents/mental-model#a-render-is-one-call-of-your-agent-function) is
+one call of that function. Every hook called during that render contributes to
+the next step's configuration. Hooks describe capabilities; they do not call
+the model or run a tool themselves.
 
 Unlike React component hooks, OpenComputer resource hooks can be conditional.
 The example above exposes `web-search` only when the current input asks for
