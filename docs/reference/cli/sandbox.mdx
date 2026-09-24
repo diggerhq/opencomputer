@@ -106,13 +106,17 @@ For commands that resize a sandbox or freeze its size — `scale`, `autoscale`, 
 
 ## `oc sandbox allowed-hosts <id>`
 
-Show the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/sandboxes/secrets) config separately.
+Show which [secret store](/sandboxes/secrets) is attached to a sandbox, the names of the secret environment variables it injects (values are never returned), and the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the store config separately. The same information is shown on the sandbox detail page in the dashboard.
 
 Sandboxes created without `--secret-store` return an empty allowlist — the sandbox has no per-store egress restriction.
 
 ```bash
 oc sandbox allowed-hosts sb-abc123
 # Sandbox sb-abc123 (secret store: my-store)
+#
+# Secret env vars (names only):
+#   • ANTHROPIC_API_KEY
+#   • OPENAI_API_KEY
 #
 # Egress allowlist:
 #   • api.openai.com
@@ -133,6 +137,7 @@ oc sandbox allowed-hosts sb-abc123 --json
 {
   "sandboxID": "sb-abc123",
   "secretStore": "my-store",
+  "secretEnvNames": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
   "egressAllowlist": ["api.openai.com", "api.anthropic.com"],
   "perSecretAllowedHosts": {
     "OPENAI_API_KEY": ["api.openai.com"]

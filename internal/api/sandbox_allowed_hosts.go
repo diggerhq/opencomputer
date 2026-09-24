@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/db"
@@ -24,12 +26,25 @@ import (
 // BaseSecretStoreName is the inherited parent store from the fork chain;
 // populated only when there's actual layering. Both empty = sandbox created
 // without a secretStore (no per-store egress restriction enforced).
+//
+// SecretEnvNames lists the environment variable names the attached store(s)
+// inject into the sandbox. Names only — values are never returned.
 type AllowedHostsResponse struct {
 	SandboxID             string              `json:"sandboxID"`
 	SecretStoreName       string              `json:"secretStore,omitempty"`
 	BaseSecretStoreName   string              `json:"baseSecretStore,omitempty"`
+	SecretEnvNames        []string            `json:"secretEnvNames"`
 	EgressAllowlist       []string            `json:"egressAllowlist"`
 	PerSecretAllowedHosts map[string][]string `json:"perSecretAllowedHosts"`
+}
+
+func newAllowedHostsResponse(sandboxID string) *AllowedHostsResponse {
+	return &AllowedHostsResponse{
+		SandboxID:             sandboxID,
+		SecretEnvNames:        []string{},
+		EgressAllowlist:       []string{},
+		PerSecretAllowedHosts: map[string][]string{},
+	}
 }
 
 // getSandboxAllowedHosts handles GET /api/sandboxes/:id/allowed-hosts.
@@ -56,81 +71,85 @@ func (s *Server) getSandboxAllowedHosts(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "auth required"})
 	}
 
-	sandboxID := c.Param("id")
-	ctx := c.Request().Context()
+	resp, status, err := s.sandboxSecretsView(c.Request().Context(), orgID, c.Param("id"))
+	if err != nil {
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, resp)
+}
 
+// sandboxSecretsView builds the org-scoped, value-free view of what secret
+// store(s) a sandbox has attached: store names, the env var names they
+// inject, and the host restrictions the proxy enforces. Shared by the public
+// allowed-hosts route and the dashboard session detail. On error the returned
+// status is the HTTP status the caller should respond with.
+func (s *Server) sandboxSecretsView(ctx context.Context, orgID uuid.UUID, sandboxID string) (*AllowedHostsResponse, int, error) {
 	primaryID, primaryName, baseStoreName, err := s.store.GetSandboxStoreRefs(ctx, orgID, sandboxID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+		return nil, http.StatusNotFound, errors.New("sandbox not found")
 	}
+
+	resp := newAllowedHostsResponse(sandboxID)
 
 	// Sandbox has neither a primary store nor an inherited base. Return an
 	// empty (well-formed) response so callers always see the same shape.
 	if primaryID == nil && primaryName == "" && baseStoreName == "" {
-		return c.JSON(http.StatusOK, AllowedHostsResponse{
-			SandboxID:             sandboxID,
-			EgressAllowlist:       []string{},
-			PerSecretAllowedHosts: map[string][]string{},
-		})
+		return resp, http.StatusOK, nil
 	}
 
-	resp := AllowedHostsResponse{
-		SandboxID:             sandboxID,
-		EgressAllowlist:       []string{},
-		PerSecretAllowedHosts: map[string][]string{},
-	}
+	useEdge := s.edge != nil && s.store.Encryptor() != nil
 
 	// Fetch base store first so primary's per-secret entries can shadow on
 	// name collision (matches the runtime proxy: later layer wins for envs).
 	if baseStoreName != "" {
-		if s.edge != nil && s.store.Encryptor() != nil {
+		if useEdge {
 			base, err := s.edge.LookupSecretStore(ctx, orgID, baseStoreName, s.store.Encryptor())
 			if err == nil {
 				resp.BaseSecretStoreName = base.Store.Name
-				mergeSecretBundleInto(base, &resp)
+				mergeSecretBundleInto(base, resp)
 			} else if !errors.Is(err, edgeclient.ErrNotFound) {
-				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return nil, http.StatusBadGateway, err
 			}
 		} else {
 			base, err := s.store.GetSecretStoreByName(ctx, orgID, baseStoreName)
 			if err == nil {
 				resp.BaseSecretStoreName = base.Name
-				mergeStoreInto(ctx, s.store, base, &resp)
+				mergeStoreInto(ctx, s.store, base, resp)
 			}
 		}
 		// Base store missing (deleted under us) is treated as a soft no-op
 		// rather than 500 — proxy already snapshotted whatever it needs.
 	}
 
-	if s.edge != nil && s.store.Encryptor() != nil {
+	if useEdge {
 		if primaryID != nil {
 			primary, err := s.edge.LookupSecretStoreByID(ctx, *primaryID, s.store.Encryptor())
 			if err == nil {
 				resp.SecretStoreName = primary.Store.Name
-				mergeSecretBundleInto(primary, &resp)
-				return c.JSON(http.StatusOK, resp)
+				mergeSecretBundleInto(primary, resp)
+				return resp, http.StatusOK, nil
 			} else if !errors.Is(err, edgeclient.ErrNotFound) {
-				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return nil, http.StatusBadGateway, err
 			}
 		}
 		if primaryName != "" {
 			primary, err := s.edge.LookupSecretStore(ctx, orgID, primaryName, s.store.Encryptor())
 			if err == nil {
 				resp.SecretStoreName = primary.Store.Name
-				mergeSecretBundleInto(primary, &resp)
+				mergeSecretBundleInto(primary, resp)
 			} else if !errors.Is(err, edgeclient.ErrNotFound) {
-				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return nil, http.StatusBadGateway, err
 			}
 		}
 	} else if primaryID != nil {
 		primary, err := s.store.GetSecretStore(ctx, orgID, *primaryID)
 		if err == nil {
 			resp.SecretStoreName = primary.Name
-			mergeStoreInto(ctx, s.store, primary, &resp)
+			mergeStoreInto(ctx, s.store, primary, resp)
 		}
 	}
 
-	return c.JSON(http.StatusOK, resp)
+	return resp, http.StatusOK, nil
 }
 
 // mergeStoreInto folds one store's allowlist + per-secret restrictions into
@@ -141,45 +160,48 @@ func (s *Server) getSandboxAllowedHosts(c echo.Context) error {
 // for this secret." Per-secret name collisions are last-write-wins, so the
 // primary store (called second) shadows the base.
 func mergeStoreInto(ctx context.Context, store *db.Store, ss *db.SecretStore, resp *AllowedHostsResponse) {
-	// Build a set view of existing egress hosts so we can dedupe in O(1).
-	existing := make(map[string]bool, len(resp.EgressAllowlist))
-	for _, h := range resp.EgressAllowlist {
-		existing[h] = true
-	}
-	for _, h := range ss.EgressAllowlist {
-		if !existing[h] {
-			existing[h] = true
-			resp.EgressAllowlist = append(resp.EgressAllowlist, h)
-		}
-	}
+	mergeEgressHosts(ss.EgressAllowlist, resp)
 
 	entries, err := store.ListSecretEntries(ctx, ss.ID)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if len(e.AllowedHosts) == 0 {
-			continue
-		}
-		resp.PerSecretAllowedHosts[e.Name] = e.AllowedHosts
+		mergeSecretEntry(e.Name, e.AllowedHosts, resp)
 	}
 }
 
 func mergeSecretBundleInto(bundle *edgeclient.SecretStoreBundle, resp *AllowedHostsResponse) {
+	mergeEgressHosts(bundle.Store.EgressAllowlist, resp)
+	for _, e := range bundle.Entries {
+		mergeSecretEntry(e.Name, e.AllowedHosts, resp)
+	}
+}
+
+func mergeEgressHosts(hosts []string, resp *AllowedHostsResponse) {
 	existing := make(map[string]bool, len(resp.EgressAllowlist))
 	for _, h := range resp.EgressAllowlist {
 		existing[h] = true
 	}
-	for _, h := range bundle.Store.EgressAllowlist {
+	for _, h := range hosts {
 		if !existing[h] {
 			existing[h] = true
 			resp.EgressAllowlist = append(resp.EgressAllowlist, h)
 		}
 	}
-	for _, e := range bundle.Entries {
-		if len(e.AllowedHosts) == 0 {
-			continue
-		}
-		resp.PerSecretAllowedHosts[e.Name] = e.AllowedHosts
+}
+
+// mergeSecretEntry records the env name (deduped, kept sorted) and, when the
+// entry carries its own host restriction, its allowed hosts.
+func mergeSecretEntry(name string, allowedHosts []string, resp *AllowedHostsResponse) {
+	i := sort.SearchStrings(resp.SecretEnvNames, name)
+	if i == len(resp.SecretEnvNames) || resp.SecretEnvNames[i] != name {
+		resp.SecretEnvNames = append(resp.SecretEnvNames, "")
+		copy(resp.SecretEnvNames[i+1:], resp.SecretEnvNames[i:])
+		resp.SecretEnvNames[i] = name
 	}
+	if len(allowedHosts) == 0 {
+		return
+	}
+	resp.PerSecretAllowedHosts[name] = allowedHosts
 }

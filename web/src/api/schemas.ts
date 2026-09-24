@@ -58,6 +58,18 @@ export const PreviewURLSchema = z.object({
   createdAt: z.string(),
 })
 
+// Value-free view of the secret store(s) attached to a sandbox. Only names
+// and host restrictions ever cross this boundary — never secret values.
+export const SandboxSecretsSchema = z.object({
+  sandboxID: z.string(),
+  secretStore: z.string().optional(),
+  baseSecretStore: z.string().optional(),
+  secretEnvNames: z.array(z.string()),
+  egressAllowlist: z.array(z.string()),
+  perSecretAllowedHosts: z.record(z.string(), z.array(z.string())),
+})
+export type SandboxSecrets = z.infer<typeof SandboxSecretsSchema>
+
 export const SandboxDetailSchema = z.object({
   id: z.string(),
   sandboxId: z.string(),
@@ -72,9 +84,10 @@ export const SandboxDetailSchema = z.object({
       cpuCount: z.number().optional(),
       memoryMB: z.number().optional(),
       networkEnabled: z.boolean().optional(),
-      envs: z.record(z.string(), z.string()).optional(),
+      envNames: z.array(z.string()).optional(),
     })
     .optional(),
+  secrets: SandboxSecretsSchema.optional(),
   checkpoint: z
     .object({
       checkpointKey: z.string(),

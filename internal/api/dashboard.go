@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -552,8 +553,14 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 	if len(session.Config) > 0 {
 		var cfg map[string]interface{}
 		if json.Unmarshal(session.Config, &cfg) == nil {
-			resp["config"] = cfg
+			resp["config"] = redactDashboardConfig(cfg)
 		}
+	}
+
+	// Value-free view of the attached secret store(s) and the env names they
+	// expose. Best-effort: a lookup failure must not break the detail page.
+	if secrets, _, err := s.sandboxSecretsView(c.Request().Context(), orgID, sandboxID); err == nil {
+		resp["secrets"] = secrets
 	}
 
 	// If hibernated, include hibernation info
@@ -604,6 +611,24 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// redactDashboardConfig strips user-supplied env var values from a persisted
+// sandbox config before it leaves the API, replacing `envs` with a sorted
+// `envNames` list. The dashboard only needs to know which names are set.
+func redactDashboardConfig(cfg map[string]interface{}) map[string]interface{} {
+	envs, ok := cfg["envs"].(map[string]interface{})
+	delete(cfg, "envs")
+	if !ok {
+		return cfg
+	}
+	names := make([]string, 0, len(envs))
+	for k := range envs {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	cfg["envNames"] = names
+	return cfg
 }
 
 // dashboardGetSessionStats returns live CPU/memory stats for a running sandbox.

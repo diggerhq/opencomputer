@@ -693,6 +693,12 @@ const { stdout } = await sandbox.exec.run("echo hello from code");`,
         </dl>
       </Panel>
 
+      {/* Secrets & environment — names only, never values */}
+      <SecretsPanel
+        secrets={session.secrets}
+        envNames={session.config?.envNames ?? []}
+      />
+
       {/* Checkpoint */}
       {session.checkpoint ? (
         <Panel className="p-6">
@@ -805,6 +811,104 @@ function PreviewUrlRow({
           {removing ? '…' : 'Remove'}
         </Button>
       ) : null}
+    </div>
+  )
+}
+
+function SecretsPanel({
+  secrets,
+  envNames,
+}: {
+  secrets: SessionDetailData['secrets']
+  envNames: string[]
+}) {
+  const secretEnvNames = secrets?.secretEnvNames ?? []
+  const perSecretHosts = secrets?.perSecretAllowedHosts ?? {}
+  const egress = secrets?.egressAllowlist ?? []
+
+  return (
+    <Panel className="mb-4 p-6" data-testid="secrets-panel">
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <h2 className="text-sm font-semibold">Secrets &amp; environment</h2>
+        <span className="text-muted-foreground text-xs">
+          Names only — values are never shown
+        </span>
+      </div>
+      <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+        <Detail
+          label="Secret store"
+          value={secrets?.secretStore || 'None attached'}
+        />
+        {secrets?.baseSecretStore ? (
+          <Detail
+            label="Inherited store (fork base)"
+            value={secrets.baseSecretStore}
+          />
+        ) : null}
+        <NameList
+          label={`Secret env vars (${secretEnvNames.length})`}
+          names={secretEnvNames}
+          empty="No secrets injected"
+          detail={(name) => perSecretHosts[name]?.join(', ')}
+        />
+        <NameList
+          label={`Env vars (${envNames.length})`}
+          names={envNames}
+          empty="No env vars set"
+        />
+        <NameList
+          label="Egress allowlist"
+          names={egress}
+          empty={
+            secrets?.secretStore
+              ? 'Empty — platform egress policy applies'
+              : 'No per-store egress restriction'
+          }
+        />
+      </dl>
+    </Panel>
+  )
+}
+
+function NameList({
+  label,
+  names,
+  empty,
+  detail,
+}: {
+  label: string
+  names: string[]
+  empty: string
+  detail?: (name: string) => string | undefined
+}) {
+  return (
+    <div className="sm:col-span-2">
+      <dt className="text-muted-foreground text-xs">{label}</dt>
+      <dd className="mt-1">
+        {names.length === 0 ? (
+          <span className="text-muted-foreground font-mono text-[13px]">
+            {empty}
+          </span>
+        ) : (
+          <ul className="flex flex-wrap gap-1.5">
+            {names.map((name) => {
+              const extra = detail?.(name)
+              return (
+                <li
+                  key={name}
+                  className="bg-muted rounded px-2 py-0.5 font-mono text-[13px] break-all"
+                  title={extra ? `Allowed hosts: ${extra}` : undefined}
+                >
+                  {name}
+                  {extra ? (
+                    <span className="text-muted-foreground"> → {extra}</span>
+                  ) : null}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </dd>
     </div>
   )
 }

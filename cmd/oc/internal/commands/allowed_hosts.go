@@ -24,6 +24,8 @@ restriction; this command reports an empty list for those.`,
 		var resp struct {
 			SandboxID             string              `json:"sandboxID"`
 			SecretStore           string              `json:"secretStore"`
+			BaseSecretStore       string              `json:"baseSecretStore,omitempty"`
+			SecretEnvNames        []string            `json:"secretEnvNames"`
 			EgressAllowlist       []string            `json:"egressAllowlist"`
 			PerSecretAllowedHosts map[string][]string `json:"perSecretAllowedHosts"`
 		}
@@ -37,6 +39,19 @@ restriction; this command reports an empty list for those.`,
 				return
 			}
 			fmt.Printf("Sandbox %s (secret store: %s)\n", resp.SandboxID, resp.SecretStore)
+			if resp.BaseSecretStore != "" {
+				fmt.Printf("Inherited store (fork base): %s\n", resp.BaseSecretStore)
+			}
+
+			fmt.Println()
+			fmt.Println("Secret env vars (names only):")
+			if len(resp.SecretEnvNames) == 0 {
+				fmt.Println("  (none)")
+			} else {
+				for _, n := range resp.SecretEnvNames {
+					fmt.Printf("  • %s\n", n)
+				}
+			}
 
 			fmt.Println()
 			fmt.Println("Egress allowlist:")
