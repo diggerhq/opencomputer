@@ -9,7 +9,7 @@
 // workers / `opencomputer-devin-*` databases are ever touched.
 //
 // Env: CLOUDFLARE_API_TOKEN (falls back to CLOUDFLARE_DEVIN_API_TOKEN),
-//      WORKOS_API_KEY/WORKOS_CLIENT_ID (fall back to WORKOS_STAGING_*),
+//      WORKOS_STAGING_API_KEY/WORKOS_STAGING_CLIENT_ID (staging app only),
 //      OPENROUTER_PROVISIONING_KEY, OC_STACK_HOME (default ~/.oc-stacks).
 //
 // Reads/writes $OC_STACK_HOME/<name>/stack.json and secrets.json shared with
@@ -108,8 +108,8 @@ async function up() {
 
   step("api-edge worker");
   deploy({
-    WORKOS_API_KEY: env("WORKOS_API_KEY", "WORKOS_STAGING_API_KEY"),
-    WORKOS_CLIENT_ID: env("WORKOS_CLIENT_ID", "WORKOS_STAGING_CLIENT_ID"),
+    WORKOS_API_KEY: env("WORKOS_STAGING_API_KEY"),
+    WORKOS_CLIENT_ID: env("WORKOS_STAGING_CLIENT_ID"),
     OPENROUTER_PROVISIONING_KEY: env("OPENROUTER_PROVISIONING_KEY"),
     OC_MANAGED_AGENTS_SECRET: secrets.OC_MANAGED_AGENTS_SECRET,
     OC_MANAGED_CRED_HMAC_SECRET: secrets.OC_MANAGED_CRED_HMAC_SECRET,
@@ -284,6 +284,7 @@ function writeConfig(stack) {
       WORKER_ENV: name,
       BURST_CELL_ID: "",
       MANAGED_AGENTS_API_URL: stack.edgeUrl ?? "",
+      SESSIONS_API_URL: stack.edgeUrl ?? "",
       MANAGED_DEFAULT_BUDGET_USD: "5",
     },
     observability: { enabled: true, head_sampling_rate: 1 },
@@ -348,15 +349,27 @@ async function findD1(dbName) {
 }
 
 async function ensureD1(dbName) {
-  const existing = await findD1(dbName);
-  if (existing)
-    return { db: { name: existing.name, id: existing.uuid }, fresh: false };
-  step(`create d1 ${dbName}`);
-  const created = await cf("/d1/database", {
+  let existing = await findD1(dbName);
+  if (!existing) {
+    step(`create d1 ${dbName}`);
+    existing = await cf("/d1/database", {
+      method: "POST",
+      body: JSON.stringify({ name: dbName, primary_location_hint: "apac" }),
+    });
+  }
+  const db = { name: existing.name, id: existing.uuid };
+  return { db, fresh: !(await d1HasTable(db.id, "orgs")) };
+}
+
+async function d1HasTable(dbId, table) {
+  const result = await cf(`/d1/database/${dbId}/query`, {
     method: "POST",
-    body: JSON.stringify({ name: dbName, primary_location_hint: "apac" }),
+    body: JSON.stringify({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+      params: [table],
+    }),
   });
-  return { db: { name: created.name, id: created.uuid }, fresh: true };
+  return (result[0]?.results?.length ?? 0) > 0;
 }
 
 // ── wrangler ─────────────────────────────────────────────────────────────
