@@ -4,6 +4,12 @@ import {
   runManagedAgent,
   type ManagedAgentEvent,
 } from './api'
+import {
+  initialStartupPhase,
+  nextStartupPhase,
+  STARTUP_PHASE_PART_TYPE,
+  type StartupPhase,
+} from './startup-phase'
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
@@ -50,6 +56,7 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
     const messageId = crypto.randomUUID()
     const textId = `${messageId}:text`
     const reasoningId = `${messageId}:reasoning`
+    const startupPhaseId = `${messageId}:startup-phase`
 
     return Promise.resolve(
       new ReadableStream<UIMessageChunk>({
@@ -58,16 +65,30 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
           let textStarted = false
           let reasoningStarted = false
           const startedTools = new Set<string>()
+          let startupPhase: StartupPhase = initialStartupPhase(
+            Boolean(this.sessionId),
+          )
 
           const enqueue = (chunk: UIMessageChunk) => {
             if (!closed && !abortSignal?.aborted) controller.enqueue(chunk)
           }
+          const emitStartupPhase = () =>
+            enqueue({
+              type: STARTUP_PHASE_PART_TYPE,
+              id: startupPhaseId,
+              data: { phase: startupPhase },
+            })
           const finishParts = () => {
             if (reasoningStarted)
               enqueue({ type: 'reasoning-end', id: reasoningId })
             if (textStarted) enqueue({ type: 'text-end', id: textId })
           }
           const onEvent = (event: ManagedAgentEvent) => {
+            const phase = nextStartupPhase(startupPhase, event)
+            if (phase !== startupPhase) {
+              startupPhase = phase
+              emitStartupPhase()
+            }
             if (event.type === 'reasoning.delta') {
               if (!reasoningStarted) {
                 enqueue({ type: 'reasoning-start', id: reasoningId })
@@ -142,6 +163,7 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
           }
 
           enqueue({ type: 'start', messageId })
+          emitStartupPhase()
           void (
             this.sessionId
               ? continueManagedAgentSession(
