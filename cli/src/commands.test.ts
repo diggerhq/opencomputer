@@ -34,7 +34,7 @@ test("init prints the full first-run sequence with login and link", () => {
     "cd my-agent",
     "npm install",
     "npx opencomputer login",
-    'npx opencomputer link --create-project "my-agent"',
+    "npx opencomputer link --create-project my-agent",
     "npm run deploy -- --watch",
   ]);
   assert.match(out, /Project:\s+not linked yet/);
@@ -47,8 +47,17 @@ test("init prints the full first-run sequence with login and link", () => {
     spa: true,
   });
   assert.doesNotMatch(inPlace, /cd \./);
-  assert.match(inPlace, /link --create-project "here"/);
+  assert.match(inPlace, /link --create-project here\n/);
   assert.match(inPlace, /npm run dev:web/);
+
+  const unsafe = initSummary({
+    directory: "my $(agent)",
+    root: "/tmp/my $(agent)",
+    name: "x",
+    spa: false,
+  });
+  assert.match(unsafe, /cd 'my \$\(agent\)'\n/);
+  assert.match(unsafe, /link --create-project 'my \$\(agent\)'\n/);
 });
 
 test("model access binds the explicit or current linked project", () => {

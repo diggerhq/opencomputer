@@ -73,6 +73,12 @@ export function deploymentAlias(requestedAlias?: string): string {
   return requestedAlias ?? "development";
 }
 
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export function initSummary(options: {
   directory: string;
   root: string;
@@ -80,12 +86,12 @@ export function initSummary(options: {
   spa: boolean;
 }): string {
   const { directory, root, name, spa } = options;
-  const projectName = basename(root) || name;
+  const projectName = shellQuote(basename(root) || name);
   const steps = [
-    ...(directory === "." ? [] : [`cd ${directory}`]),
+    ...(directory === "." ? [] : [`cd ${shellQuote(directory)}`]),
     "npm install",
     "npx opencomputer login",
-    `npx opencomputer link --create-project "${projectName}"`,
+    `npx opencomputer link --create-project ${projectName}`,
     "npm run deploy -- --watch",
     ...(spa ? ["npm run dev:web"] : []),
   ];
@@ -215,10 +221,7 @@ function consumeModelAccessProvider(
     args[0] === "openai-compatible"
   ) {
     return args.shift() as
-      | "claude"
-      | "codex"
-      | "openrouter"
-      | "openai-compatible";
+      "claude" | "codex" | "openrouter" | "openai-compatible";
   }
   return "codex";
 }
@@ -2248,8 +2251,7 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const current = await client.memoryDocument(target);
       let edited:
-        | Awaited<ReturnType<typeof editMemoryTextInEditor>>
-        | undefined;
+        Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
       const text =
         supplied ??
         (edited = await editMemoryTextInEditor(
