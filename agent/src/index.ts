@@ -494,7 +494,9 @@ export interface GatedToolDefinition<
   readonly description: string;
   readonly input?: ToolInputSchema;
   readonly output?: ToolInputSchema;
-  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  preview(
+    context: ToolExecutionContext,
+  ): ApprovalPreview | Promise<ApprovalPreview>;
   apply(context: GatedToolApplyContext): Output | Promise<Output>;
   /**
    * What the model calls. It does not write: it builds the preview, records
@@ -558,7 +560,9 @@ export async function publishApproval(
   );
   const idempotencyKey = input.idempotencyKey.trim();
   if (!idempotencyKey || idempotencyKey.length > 256) {
-    throw new Error("Approval idempotency keys must contain 1 to 256 characters");
+    throw new Error(
+      "Approval idempotency keys must contain 1 to 256 characters",
+    );
   }
   const runtime = globalThis as typeof globalThis & {
     process?: { env?: Record<string, string | undefined> };
@@ -758,7 +762,8 @@ export type ManagedService =
   | "calendar"
   | "drive"
   | "sheets"
-  | "github";
+  | "github"
+  | "linear";
 
 export interface ServiceRequest {
   /** Which service. `google` is accepted as an alias for `gmail`. */
@@ -809,8 +814,9 @@ export async function callService(request: ServiceRequest): Promise<Response> {
   if (!service) throw new Error("A service request needs a service");
   // The provider segment routes the supervisor; the service in the body is what
   // the platform resolves a credential for. GitHub and Google are separate
-  // providers with separate grants, so the two cannot be collapsed.
-  const provider = service === "github" ? "github" : "google";
+  // providers with separate grants, so they cannot be collapsed.
+  const provider =
+    service === "github" || service === "linear" ? service : "google";
   const response = await fetch(`${base.replace(/\/$/, "")}/${provider}/fetch`, {
     method: "POST",
     headers: {
@@ -868,7 +874,7 @@ async function unwrapServiceResponse(response: Response): Promise<Response> {
 /** A service account the platform holds a credential for, as listed. */
 export interface ConnectedService {
   readonly id: string;
-  /** `google` or `github` — the grant, not the API being called. */
+  /** `google`, `github`, or `linear` — the grant, not the API being called. */
   readonly provider: string;
   /** The alias this account was connected under. Pass it as `label`. */
   readonly label: string;
@@ -1479,7 +1485,9 @@ export interface GatedToolInput<Output extends DataValue = DataValue> {
    * Runs when the model calls the tool. Reads; never writes. What this returns
    * is what a person sees and agrees to.
    */
-  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  preview(
+    context: ToolExecutionContext,
+  ): ApprovalPreview | Promise<ApprovalPreview>;
   /** Runs only after somebody approves, from the arguments previewed above. */
   apply(context: GatedToolApplyContext): Output | Promise<Output>;
 }

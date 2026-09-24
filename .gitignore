@@ -97,3 +97,4 @@ cloudflare-workers/api-edge/wrangler.ci.toml
 
 .dev.vars*
 !.dev.vars.example
+cloudflare-workers/api-edge/wrangler.*.generated.jsonc

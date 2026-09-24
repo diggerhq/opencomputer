@@ -833,6 +833,7 @@ const MANAGED_SERVICE_PROVIDERS: Readonly<Record<string, string>> = {
   drive: "google",
   sheets: "google",
   github: "github",
+  linear: "linear",
 };
 
 function declaredServiceProviders(agentSource: string): string[] {
@@ -1122,7 +1123,11 @@ class MemorySourceResolver {
    * re-export is refused with the module to import from). Every other form
    * fails with the form named, so the fix is one edit.
    */
-  staticObjectBinding(path: string, name: string, label: string): ts.Expression {
+  staticObjectBinding(
+    path: string,
+    name: string,
+    label: string,
+  ): ts.Expression {
     const file = this.file(path);
     const local = localVariable(file, name);
     if (local) {
@@ -1136,7 +1141,8 @@ class MemorySourceResolver {
       if (!ts.isImportDeclaration(statement)) continue;
       const clause = statement.importClause;
       const specifier = statement.moduleSpecifier;
-      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(specifier)) continue;
+      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(specifier))
+        continue;
       if (clause.name?.text === name) {
         throw new Error(
           `${label} references ${name}, the default import of ${specifier.text}; import a named const from a module inside the agent directory`,
@@ -1177,10 +1183,13 @@ class MemorySourceResolver {
     for (const statement of file.statements) {
       if (
         ts.isVariableStatement(statement) &&
-        statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+        statement.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        )
       ) {
         const declaration = statement.declarationList.declarations.find(
-          (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === exported,
+          (candidate) =>
+            ts.isIdentifier(candidate.name) && candidate.name.text === exported,
         );
         if (declaration) {
           return staticObjectInitializer(
@@ -1194,7 +1203,8 @@ class MemorySourceResolver {
       const clause = statement.exportClause;
       if (!clause || !ts.isNamedExports(clause)) continue;
       const element = clause.elements.find(
-        (candidate) => !candidate.isTypeOnly && candidate.name.text === exported,
+        (candidate) =>
+          !candidate.isTypeOnly && candidate.name.text === exported,
       );
       if (!element) continue;
       if (statement.moduleSpecifier) {
@@ -1210,7 +1220,9 @@ class MemorySourceResolver {
         );
       }
       const where =
-        localName === exported ? `exported by ${target}` : `exported by ${target} (declared there as ${localName})`;
+        localName === exported
+          ? `exported by ${target}`
+          : `exported by ${target} (declared there as ${localName})`;
       return staticObjectInitializer(
         local,
         `${label} references ${name}, ${where}, which is`,
@@ -2234,7 +2246,8 @@ async function typescriptFiles(directory: string): Promise<string[]> {
     .sort();
 }
 
-const DATABASE_MIGRATION_NAME = /^\d{3,}_[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?\.sql$/;
+const DATABASE_MIGRATION_NAME =
+  /^\d{3,}_[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?\.sql$/;
 const MAX_DATABASE_MIGRATION_BYTES = 256 * 1024;
 const MAX_DATABASE_MIGRATIONS_BYTES = 1024 * 1024;
 
@@ -2827,7 +2840,8 @@ function unwrapStatic(expression: ts.Expression): ts.Expression {
     if (ts.isParenthesizedExpression(current)) current = current.expression;
     else if (ts.isAsExpression(current)) current = current.expression;
     else if (ts.isSatisfiesExpression(current)) current = current.expression;
-    else if (ts.isTypeAssertionExpression(current)) current = current.expression;
+    else if (ts.isTypeAssertionExpression(current))
+      current = current.expression;
     else if (ts.isNonNullExpression(current)) current = current.expression;
     else return current;
   }
@@ -2839,11 +2853,15 @@ interface LocalVariable {
 }
 
 /** The top-level variable statement that declares `name` in `file`, if any. */
-function localVariable(file: ts.SourceFile, name: string): LocalVariable | undefined {
+function localVariable(
+  file: ts.SourceFile,
+  name: string,
+): LocalVariable | undefined {
   for (const statement of file.statements) {
     if (!ts.isVariableStatement(statement)) continue;
     const declaration = statement.declarationList.declarations.find(
-      (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === name,
+      (candidate) =>
+        ts.isIdentifier(candidate.name) && candidate.name.text === name,
     );
     if (declaration) return { statement, declaration };
   }
@@ -2862,15 +2880,21 @@ function staticObjectInitializer(
   valuePrefix: string,
 ): ts.Expression {
   if (!(variable.statement.declarationList.flags & ts.NodeFlags.Const)) {
-    throw new Error(`${declaredPrefix} declared with let or var; declare it as a const object literal`);
+    throw new Error(
+      `${declaredPrefix} declared with let or var; declare it as a const object literal`,
+    );
   }
   const initializer = variable.declaration.initializer;
   if (!initializer) {
-    throw new Error(`${declaredPrefix} declared without a value; declare it as a const object literal`);
+    throw new Error(
+      `${declaredPrefix} declared without a value; declare it as a const object literal`,
+    );
   }
   const value = unwrapStatic(initializer);
   if (!ts.isObjectLiteralExpression(value)) {
-    throw new Error(`${valuePrefix} value is not a static object literal: ${initializer.getText()}`);
+    throw new Error(
+      `${valuePrefix} value is not a static object literal: ${initializer.getText()}`,
+    );
   }
   return value;
 }
@@ -2891,7 +2915,9 @@ function declaredSchema(
   resolver: MemorySourceResolver | undefined,
 ): Record<string, unknown> | undefined {
   if (!member) {
-    throw new Error(`${label.replace(/ output$/, "")} is the result tool and must declare output as ${SCHEMA_FORMS}`);
+    throw new Error(
+      `${label.replace(/ output$/, "")} is the result tool and must declare output as ${SCHEMA_FORMS}`,
+    );
   }
   const expression = ts.isShorthandPropertyAssignment(member)
     ? member.name
@@ -2899,16 +2925,23 @@ function declaredSchema(
       ? unwrapStatic(member.initializer)
       : undefined;
   if (!expression) {
-    throw new Error(`${label} must be ${SCHEMA_FORMS}, not a method or accessor`);
+    throw new Error(
+      `${label} must be ${SCHEMA_FORMS}, not a method or accessor`,
+    );
   }
   if (ts.isObjectLiteralExpression(expression)) {
     return staticJsonValue(expression, label) as Record<string, unknown>;
   }
   if (ts.isIdentifier(expression)) {
     if (!resolver) return undefined;
-    return staticJsonValue(resolver.staticObjectBinding(path, expression.text, label), label) as Record<string, unknown>;
+    return staticJsonValue(
+      resolver.staticObjectBinding(path, expression.text, label),
+      label,
+    ) as Record<string, unknown>;
   }
-  throw new Error(`${label} must be ${SCHEMA_FORMS}, not ${expression.getText()}`);
+  throw new Error(
+    `${label} must be ${SCHEMA_FORMS}, not ${expression.getText()}`,
+  );
 }
 
 const DEFINE_TOOL_FORM_HINT =
@@ -2977,21 +3010,30 @@ function definedTools(
         const reason = ts.isShorthandPropertyAssignment(resultMember)
           ? "the shorthand property result"
           : ts.isPropertyAssignment(resultMember)
-            ? unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.TrueKeyword
+            ? unwrapStatic(resultMember.initializer).kind ===
+              ts.SyntaxKind.TrueKeyword
               ? undefined
-              : unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.FalseKeyword
+              : unwrapStatic(resultMember.initializer).kind ===
+                  ts.SyntaxKind.FalseKeyword
                 ? undefined
                 : resultMember.initializer.getText()
             : "a method or accessor";
         if (reason !== undefined) {
-          throw new Error(`${label} result must be the literal true or false, not ${reason}`);
+          throw new Error(
+            `${label} result must be the literal true or false, not ${reason}`,
+          );
         }
         result =
-          unwrapStatic((resultMember as ts.PropertyAssignment).initializer).kind ===
-          ts.SyntaxKind.TrueKeyword;
+          unwrapStatic((resultMember as ts.PropertyAssignment).initializer)
+            .kind === ts.SyntaxKind.TrueKeyword;
       }
       const output = result
-        ? declaredSchema(objectMember(argument, "output"), path, `${label} output`, resolver)
+        ? declaredSchema(
+            objectMember(argument, "output"),
+            path,
+            `${label} output`,
+            resolver,
+          )
         : undefined;
       tools.push({
         id,
@@ -3155,7 +3197,7 @@ export const callService = async (request) => {
   if (!request?.path?.startsWith("/")) throw new Error("Service requests require an absolute path");
   const service = String(request.service ?? "").trim().toLowerCase();
   if (!service) throw new Error("A service request needs a service");
-  const provider = service === "github" ? "github" : "google";
+  const provider = service === "github" || service === "linear" ? service : "google";
   const root = base.endsWith("/") ? base.slice(0, -1) : base;
   const response = await fetch(root + "/" + provider + "/fetch", {
     method: "POST",
@@ -3455,7 +3497,9 @@ function compiledModulePath(path: string): string {
  * An agent outside an app (no `opencomputer/project.ts` above it) caches
  * under its own directory.
  */
-export async function agentRuntimeDirectory(agentRoot: string): Promise<string> {
+export async function agentRuntimeDirectory(
+  agentRoot: string,
+): Promise<string> {
   const root = resolve(agentRoot);
   let directory = root;
   let projectRoot: string | undefined;
@@ -3614,7 +3658,11 @@ the product or support surface presented to users.
   for (const candidate of toolSources) {
     // literalStringValue throws on a computed name, which is what used to be
     // caught by counting calls against extracted ids.
-    const defined = definedTools(candidate.source, candidate.path, sourceResolver);
+    const defined = definedTools(
+      candidate.source,
+      candidate.path,
+      sourceResolver,
+    );
     if (defined.length > 0) {
       reactiveTools.push(...defined.map((tool) => tool.id));
       gatedTools.push(
@@ -3624,7 +3672,11 @@ the product or support surface presented to users.
       resultTools.push(
         ...defined
           .filter((tool) => tool.result)
-          .map((tool) => ({ id: tool.id, output: tool.output!, path: candidate.path })),
+          .map((tool) => ({
+            id: tool.id,
+            output: tool.output!,
+            path: candidate.path,
+          })),
       );
     }
   }
@@ -3648,7 +3700,9 @@ the product or support surface presented to users.
   }
   // A gated tool's run() is written by the platform and returns its sentence;
   // there is no output of its own to commit as the session's result.
-  const gatedResultTool = resultTools.find((tool) => gatedTools.includes(tool.id));
+  const gatedResultTool = resultTools.find((tool) =>
+    gatedTools.includes(tool.id),
+  );
   if (gatedResultTool) {
     throw new Error(
       `${gatedResultTool.path} defineTool(${JSON.stringify(gatedResultTool.id)}) waits for approval and cannot be the result tool`,

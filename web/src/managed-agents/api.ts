@@ -1332,7 +1332,7 @@ export async function linkManagedAgentConnection(
 }
 
 export async function refreshManagedAgentConnection(
-  provider: 'google' | 'github',
+  provider: 'google' | 'github' | 'linear',
   service: string,
   connectionId: string,
 ) {
@@ -1345,7 +1345,7 @@ export async function refreshManagedAgentConnection(
 }
 
 export async function disconnectManagedAgentConnection(
-  provider: 'google' | 'github',
+  provider: 'google' | 'github' | 'linear',
   service: string,
   connectionId: string,
 ) {

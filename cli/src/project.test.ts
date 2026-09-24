@@ -120,8 +120,12 @@ test("the compiler normalizes project channels, registrations, and outboxes", as
     const opencomputer = resolve(root, "opencomputer");
     await mkdir(resolve(opencomputer, "channels"), { recursive: true });
     await mkdir(resolve(opencomputer, "outboxes"), { recursive: true });
-    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
-    await mkdir(resolve(initialized.agentRoot, "outboxes"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), {
+      recursive: true,
+    });
+    await mkdir(resolve(initialized.agentRoot, "outboxes"), {
+      recursive: true,
+    });
     await writeFile(
       resolve(opencomputer, "channels", "team-slack.ts"),
       `import { defineChannel } from "@opencomputer/agent";
@@ -213,8 +217,12 @@ test("the compiler normalizes code-defined agent schedules", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-schedules-"));
   const root = resolve(parent, "app");
   try {
-    const initialized = await initializeAgentProject(root, undefined, { spa: false });
-    await mkdir(resolve(initialized.agentRoot, "schedules"), { recursive: true });
+    const initialized = await initializeAgentProject(root, undefined, {
+      spa: false,
+    });
+    await mkdir(resolve(initialized.agentRoot, "schedules"), {
+      recursive: true,
+    });
     await writeFile(
       resolve(initialized.agentRoot, "schedules", "weekday-hygiene.ts"),
       `import { defineSchedule } from "@opencomputer/agent";
@@ -373,9 +381,7 @@ export default function Agent() {
       httpConnections: [],
       githubConnections: [],
       mcpServers: ["docs"],
-      mcpServerDefinitions: [
-        { id: "docs", url: "https://mcp.example.com/" },
-      ],
+      mcpServerDefinitions: [{ id: "docs", url: "https://mcp.example.com/" }],
       memory: [],
       models: [
         {
@@ -438,7 +444,9 @@ export default function Agent() {
 });
 
 test("the compiler enumerates literal model selections in a conditional", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-conditional-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-model-conditional-"),
+  );
   try {
     const initialized = await initializeAgentProject(resolve(parent, "app"));
     await writeFile(
@@ -456,7 +464,10 @@ export default function Agent() {
 
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { models: Array<{ provider: string; model: string }> };
     assert.deepEqual(manifest.models, [
       { provider: "openrouter", model: "anthropic/claude-haiku-4.5" },
@@ -468,7 +479,9 @@ export default function Agent() {
 });
 
 test("the compiler rejects a model selection it cannot register", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-model-dynamic-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-model-dynamic-"),
+  );
   try {
     const initialized = await initializeAgentProject(resolve(parent, "app"));
     await writeFile(
@@ -541,13 +554,17 @@ export default function Agent() {
     // Without the platform's env there is no connection to call, and the
     // failure must say so rather than fetching something arbitrary.
     await assert.rejects(
-      runtime.callService({ service: "gmail", path: "/gmail/v1/users/me/profile" }),
+      runtime.callService({
+        service: "gmail",
+        path: "/gmail/v1/users/me/profile",
+      }),
       /managed connections are unavailable/,
     );
 
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const realFetch = globalThis.fetch;
-    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL = "https://edge.test/conn/";
+    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL =
+      "https://edge.test/conn/";
     globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN = "rt-token";
     // What a managed connection actually answers: the service's status and
     // body inside an envelope, wrapped in a 200. A caller reading `ok` off the
@@ -559,12 +576,15 @@ export default function Agent() {
         JSON.stringify({
           status: 403,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ error: { message: "Insufficient Permission" } }),
+          body: JSON.stringify({
+            error: { message: "Insufficient Permission" },
+          }),
         }),
         { status: 200 },
       );
     }) as unknown as typeof globalThis.fetch;
     let unwrapped: Response | undefined;
+    let linearResponse: Response | undefined;
     try {
       unwrapped = await runtime.callService({
         service: "google",
@@ -573,17 +593,27 @@ export default function Agent() {
         path: "/gmail/v1/users/me/messages/send",
         body: "{}",
       });
+      linearResponse = await runtime.callService({
+        service: "linear",
+        method: "POST",
+        path: "/graphql",
+        body: JSON.stringify({ query: "query { viewer { id } }" }),
+      });
     } finally {
       globalThis.fetch = realFetch;
       delete globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL;
       delete globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN;
     }
 
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     // A trailing slash on the base must not produce a doubled one — the fix for
     // the comment bug replaced a regex trim, so the behaviour needs pinning.
     assert.equal(calls[0]!.url, "https://edge.test/conn/google/fetch");
-    const sent = JSON.parse(String(calls[0]!.init.body)) as Record<string, unknown>;
+    assert.equal(calls[1]!.url, "https://edge.test/conn/linear/fetch");
+    const sent = JSON.parse(String(calls[0]!.init.body)) as Record<
+      string,
+      unknown
+    >;
     // `google` is an alias the platform resolves to gmail; the SDK passes the
     // caller's word through and only decides the PROVIDER segment itself.
     assert.equal(sent.service, "google");
@@ -597,22 +627,35 @@ export default function Agent() {
     assert.deepEqual(await unwrapped!.json(), {
       error: { message: "Insufficient Permission" },
     });
+    assert.equal(linearResponse!.status, 403);
 
     // listServices routes to the reserved `opencomputer` provider segment and
     // must send NO method and NO path — that body shape is the only thing
     // distinguishing a platform action from managed egress on the same route.
     assert.equal(typeof runtime.listServices, "function");
     calls.length = 0;
-    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL = "https://edge.test/conn";
+    globalThis.process.env.OPENCOMPUTER_CONNECTIONS_URL =
+      "https://edge.test/conn";
     globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN = "rt-token";
     globalThis.fetch = (async (url: string, init: RequestInit) => {
       calls.push({ url: String(url), init });
       return new Response(
         JSON.stringify({
           connections: [
-            { id: "1", provider: "google", label: "alice", displayName: "a@x.com", status: "connected" },
+            {
+              id: "1",
+              provider: "google",
+              label: "alice",
+              displayName: "a@x.com",
+              status: "connected",
+            },
             { id: "2", provider: "google", label: "bob", status: "pending" },
-            { id: "3", provider: "github", label: "default", status: "connected" },
+            {
+              id: "3",
+              provider: "github",
+              label: "default",
+              status: "connected",
+            },
           ],
         }),
         { status: 200 },
@@ -627,13 +670,43 @@ export default function Agent() {
       delete globalThis.process.env.OPENCOMPUTER_CONNECTION_TOKEN;
     }
     assert.equal(calls[0]!.url, "https://edge.test/conn/opencomputer/fetch");
-    assert.deepEqual(JSON.parse(String(calls[0]!.init.body)), { action: "list" });
+    assert.deepEqual(JSON.parse(String(calls[0]!.init.body)), {
+      action: "list",
+    });
     // Pending accounts are unusable and the github row is a different grant;
     // a sweep that tried either would fail on a mailbox that does not exist.
     assert.deepEqual(
       listed.map((connection: { label: string }) => connection.label),
       ["alice"],
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler records Linear as its own managed service provider", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-linear-service-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useService } from "@opencomputer/agent";
+export default function Agent() {
+  useService("linear");
+  return "Work with Linear issues when asked.";
+}
+`,
+    );
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { connections: string[] };
+    assert.deepEqual(manifest.connections, ["linear"]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -682,7 +755,10 @@ export default function Agent() {
 
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { tools: string[]; gatedTools: string[] };
     assert.deepEqual(manifest.tools, ["draft"]);
     assert.deepEqual(manifest.gatedTools, []);
@@ -727,7 +803,10 @@ export default function Agent() {
     // wait — so the module load is where the incomplete pair is caught.
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { gatedTools: string[] };
     assert.deepEqual(manifest.gatedTools, ["cancel"]);
     await assert.rejects(
@@ -876,7 +955,11 @@ export default function Agent() {
     ]);
     const manifest = JSON.parse(
       await readFile(
-        resolve(await agentRuntimeDirectory(initialized.agentRoot), ".opencomputer", "reactive.json"),
+        resolve(
+          await agentRuntimeDirectory(initialized.agentRoot),
+          ".opencomputer",
+          "reactive.json",
+        ),
         "utf8",
       ),
     ) as { githubConnections: unknown[] };
@@ -887,7 +970,9 @@ export default function Agent() {
 });
 
 test("the compiler rejects dynamic or unsupported GitHub permissions", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-invalid-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-github-invalid-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
@@ -966,7 +1051,10 @@ export default function Agent() {
     );
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { mcpServerDefinitions: unknown[] };
     assert.deepEqual(manifest.mcpServerDefinitions, [
       {
@@ -981,7 +1069,9 @@ export default function Agent() {
 });
 
 test("packaged tools can publish to a registered outbox by id", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-outbox-publish-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-outbox-publish-"),
+  );
   const root = resolve(parent, "app");
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.OPENCOMPUTER_OUTBOX_URL;
@@ -1015,31 +1105,47 @@ export default function Agent() { useTool(notify); return "Notify reviewers."; }
 
     const runtimeRoot = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtimeRoot, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtimeRoot, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { tools: string[] };
     assert.ok(manifest.tools.includes("notify_reviewer"));
     process.env.OPENCOMPUTER_OUTBOX_URL = "http://outbox.test/outboxes";
     process.env.OPENCOMPUTER_OUTBOX_TOKEN = "runtime-token";
     let request: { url: string; init?: RequestInit } | undefined;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       request = { url: String(url), init };
-      return Response.json({ id: "item-1", status: "pending", duplicate: false }, { status: 202 });
+      return Response.json(
+        { id: "item-1", status: "pending", duplicate: false },
+        { status: 202 },
+      );
     }) as typeof fetch;
-    const runtime = await import(
+    const runtime = (await import(
       `${pathToFileURL(resolve(runtimeRoot, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
-    ) as { publishOutbox(id: string, input: unknown): Promise<unknown> };
+    )) as { publishOutbox(id: string, input: unknown): Promise<unknown> };
     await runtime.publishOutbox("review-requests", {
       type: "pull-request.ready",
       idempotencyKey: "example/repo#42",
       content: { title: "Review requested" },
     });
-    assert.equal(request?.url, "http://outbox.test/outboxes/review-requests/items");
-    assert.equal(new Headers(request?.init?.headers).get("authorization"), "Bearer runtime-token");
+    assert.equal(
+      request?.url,
+      "http://outbox.test/outboxes/review-requests/items",
+    );
+    assert.equal(
+      new Headers(request?.init?.headers).get("authorization"),
+      "Bearer runtime-token",
+    );
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl === undefined) delete process.env.OPENCOMPUTER_OUTBOX_URL;
     else process.env.OPENCOMPUTER_OUTBOX_URL = originalUrl;
-    if (originalToken === undefined) delete process.env.OPENCOMPUTER_OUTBOX_TOKEN;
+    if (originalToken === undefined)
+      delete process.env.OPENCOMPUTER_OUTBOX_TOKEN;
     else process.env.OPENCOMPUTER_OUTBOX_TOKEN = originalToken;
     await rm(parent, { recursive: true, force: true });
   }
@@ -1122,9 +1228,9 @@ export default function Agent() {
     ) as { tools: string[]; toolModules: string[] };
     assert.ok(manifest.tools.includes("hacker_news"));
     assert.ok(manifest.toolModules.includes("../tools/hacker-news.js"));
-    const tools = await import(
+    const tools = (await import(
       `${pathToFileURL(resolve(runtime, "tools", "hacker-news.js")).href}?test=${crypto.randomUUID()}`
-    ) as { hackerNews: { id: string } };
+    )) as { hackerNews: { id: string } };
     assert.equal(tools.hackerNews.id, "hacker_news");
   } finally {
     await rm(parent, { recursive: true, force: true });
@@ -1191,12 +1297,21 @@ export default function Agent() {
 
     const posted: Array<{ url: string; body: Record<string, unknown> }> = [];
     const realFetch = globalThis.fetch;
-    process.env.OPENCOMPUTER_APPROVAL_URL = "https://edge.test/v1/sessions/s1/approvals";
+    process.env.OPENCOMPUTER_APPROVAL_URL =
+      "https://edge.test/v1/sessions/s1/approvals";
     process.env.OPENCOMPUTER_APPROVAL_TOKEN = "runtime-token";
     globalThis.fetch = (async (url: string, init: { body: string }) => {
-      posted.push({ url: String(url), body: JSON.parse(init.body) as Record<string, unknown> });
+      posted.push({
+        url: String(url),
+        body: JSON.parse(init.body) as Record<string, unknown>,
+      });
       return new Response(
-        JSON.stringify({ id: "apr_1", status: "pending", duplicate: false, message: "Recorded for approval." }),
+        JSON.stringify({
+          id: "apr_1",
+          status: "pending",
+          duplicate: false,
+          message: "Recorded for approval.",
+        }),
         { headers: { "content-type": "application/json" } },
       );
     }) as unknown as typeof globalThis.fetch;
@@ -1225,7 +1340,8 @@ export default function Agent() {
           JSON.stringify({
             error: {
               code: "approval_needs_a_conversation",
-              message: "This tool can only be used in a conversation where somebody can approve it.",
+              message:
+                "This tool can only be used in a conversation where somebody can approve it.",
             },
           }),
           { status: 409, headers: { "content-type": "application/json" } },
@@ -1326,15 +1442,22 @@ export default function Agent() {
         type: "object",
         properties: {
           branch: { type: "string" },
-          pr: { type: "object", properties: { number: { type: "integer" } }, required: ["number"] },
+          pr: {
+            type: "object",
+            properties: { number: { type: "integer" } },
+            required: ["number"],
+          },
         },
         required: ["branch"],
         additionalProperties: false,
       },
     });
-    const tools = await import(
+    const tools = (await import(
       `${pathToFileURL(resolve(runtime, "tools", "report.js")).href}?test=${crypto.randomUUID()}`
-    ) as { report: { id: string; result?: boolean }; lookup: { result?: boolean } };
+    )) as {
+      report: { id: string; result?: boolean };
+      lookup: { result?: boolean };
+    };
     assert.equal(tools.report.result, true);
     assert.equal("result" in tools.lookup, false);
   } finally {
@@ -1443,7 +1566,9 @@ export const report = defineTool({
 test("the compiler refuses a defineTool() form it cannot read instead of compiling an ordinary tool", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-tool-"));
   const root = resolve(parent, "app");
-  const tool = (declaration: string) => `import { defineTool } from "@opencomputer/agent";
+  const tool = (
+    declaration: string,
+  ) => `import { defineTool } from "@opencomputer/agent";
 const marks = { result: true } as const;
 const flag = true;
 export const report = defineTool({
@@ -1460,21 +1585,49 @@ export const report = defineTool({
     const initialized = await initializeAgentProject(root);
     await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
     const cases: Array<[string, RegExp]> = [
-      ["...marks,", /tools\/report\.ts defineTool\("report"\) cannot spread \.\.\.marks/],
-      ["result: flag,", /tools\/report\.ts defineTool\("report"\) result must be the literal true or false, not flag/],
-      ["result: marks.result,", /result must be the literal true or false, not marks\.result/],
-      ["result,", /result must be the literal true or false, not the shorthand property result/],
-      ['["result"]: true,', /tools\/report\.ts defineTool\("report"\) cannot use the computed property name \["result"\]/],
+      [
+        "...marks,",
+        /tools\/report\.ts defineTool\("report"\) cannot spread \.\.\.marks/,
+      ],
+      [
+        "result: flag,",
+        /tools\/report\.ts defineTool\("report"\) result must be the literal true or false, not flag/,
+      ],
+      [
+        "result: marks.result,",
+        /result must be the literal true or false, not marks\.result/,
+      ],
+      [
+        "result,",
+        /result must be the literal true or false, not the shorthand property result/,
+      ],
+      [
+        '["result"]: true,',
+        /tools\/report\.ts defineTool\("report"\) cannot use the computed property name \["result"\]/,
+      ],
     ];
     for (const [declaration, expected] of cases) {
-      await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool(declaration));
-      await assert.rejects(prepareAgent(initialized.agentRoot), expected, declaration);
+      await writeFile(
+        resolve(initialized.agentRoot, "tools", "report.ts"),
+        tool(declaration),
+      );
+      await assert.rejects(
+        prepareAgent(initialized.agentRoot),
+        expected,
+        declaration,
+      );
     }
     // The literal keyword, wrapped in the idiomatic `as const`, still reads.
-    await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool("result: true as const,"));
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "report.ts"),
+      tool("result: true as const,"),
+    );
     const runtime = await prepareAgent(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { resultTool?: { id: string } };
     assert.equal(manifest.resultTool?.id, "report");
   } finally {
@@ -1492,29 +1645,68 @@ test("the runtime shim refuses a tool module whose result metadata disagrees wit
     const load = async (resultTool: string | null) => {
       const path = resolve(parent, `shim-${resultTool ?? "none"}.js`);
       await writeFile(path, agentApiRuntimeSource({ resultTool }));
-      return (await import(`${pathToFileURL(path).href}?test=${crypto.randomUUID()}`)) as {
+      return (await import(
+        `${pathToFileURL(path).href}?test=${crypto.randomUUID()}`
+      )) as {
         defineTool: (input: Record<string, unknown>) => { result?: boolean };
       };
     };
     const output = { type: "object" };
     const run = async () => ({});
     const withReport = await load("report");
-    assert.equal(withReport.defineTool({ name: "report", description: "d", output, result: true, run }).result, true);
-    assert.equal("result" in withReport.defineTool({ name: "lookup", description: "d", run }), false);
+    assert.equal(
+      withReport.defineTool({
+        name: "report",
+        description: "d",
+        output,
+        result: true,
+        run,
+      }).result,
+      true,
+    );
+    assert.equal(
+      "result" in
+        withReport.defineTool({ name: "lookup", description: "d", run }),
+      false,
+    );
     assert.throws(
-      () => withReport.defineTool({ name: "lookup", description: "d", output, result: true, run }),
+      () =>
+        withReport.defineTool({
+          name: "lookup",
+          description: "d",
+          output,
+          result: true,
+          run,
+        }),
       /Tool lookup declares result: true, but the deployment records report as its result tool/,
     );
     assert.throws(
-      () => withReport.defineTool({ name: "report", description: "d", output, run }),
+      () =>
+        withReport.defineTool({
+          name: "report",
+          description: "d",
+          output,
+          run,
+        }),
       /Tool report is the deployment's result tool, but the module does not declare result: true/,
     );
     const withoutResult = await load(null);
     assert.throws(
-      () => withoutResult.defineTool({ name: "report", description: "d", output, result: true, run }),
+      () =>
+        withoutResult.defineTool({
+          name: "report",
+          description: "d",
+          output,
+          result: true,
+          run,
+        }),
       /Tool report declares result: true, but the deployment records no result tool/,
     );
-    assert.equal("result" in withoutResult.defineTool({ name: "report", description: "d", run }), false);
+    assert.equal(
+      "result" in
+        withoutResult.defineTool({ name: "report", description: "d", run }),
+      false,
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -1526,17 +1718,29 @@ test("the runtime shim refuses a tool module whose result metadata disagrees wit
 // named import of one from a module inside the agent directory, is read
 // without evaluation and pinned exactly as written.
 test("the compiler reads the result tool's output schema from a const in the module or an imported const", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-schema-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-result-schema-"),
+  );
   const root = resolve(parent, "app");
   const schema = {
     type: "object",
-    properties: { branch: { type: "string" }, checks: { type: "array", items: { type: "string" } } },
+    properties: {
+      branch: { type: "string" },
+      checks: { type: "array", items: { type: "string" } },
+    },
     required: ["branch"],
     additionalProperties: false,
   };
   const manifestOf = async (agentRoot: string) =>
     JSON.parse(
-      await readFile(resolve(await agentRuntimeDirectory(agentRoot), ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(
+          await agentRuntimeDirectory(agentRoot),
+          ".opencomputer",
+          "reactive.json",
+        ),
+        "utf8",
+      ),
     ) as { resultTool?: { id: string; output: Record<string, unknown> } };
   try {
     const initialized = await initializeAgentProject(root);
@@ -1561,7 +1765,10 @@ export const report = defineTool({
 `,
     );
     await prepareAgent(initialized.agentRoot);
-    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, {
+      id: "report",
+      output: schema,
+    });
 
     // Imported from a module of the agent's own, under a different local name.
     await writeFile(
@@ -1586,7 +1793,10 @@ export const report = defineTool({
 `,
     );
     await prepareAgent(initialized.agentRoot);
-    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, {
+      id: "report",
+      output: schema,
+    });
 
     // A const exported under another name, read through the export list.
     await writeFile(
@@ -1594,16 +1804,24 @@ export const report = defineTool({
       `const base = ${JSON.stringify(schema)} as const;\nexport { base as reportSchema };\n`,
     );
     await prepareAgent(initialized.agentRoot);
-    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, {
+      id: "report",
+      output: schema,
+    });
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
 });
 
 test("the compiler names the unsupported schema form instead of guessing", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-schema-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-result-schema-"),
+  );
   const root = resolve(parent, "app");
-  const tool = (imports: string, output: string) => `import { defineTool } from "@opencomputer/agent";
+  const tool = (
+    imports: string,
+    output: string,
+  ) => `import { defineTool } from "@opencomputer/agent";
 ${imports}
 export const report = defineTool({
   name: "report",
@@ -1628,19 +1846,62 @@ export { defineTool as reexported } from "@opencomputer/agent";
 `,
     );
     const cases: Array<[string, string, RegExp]> = [
-      ["", "build()", /defineTool\("report"\) output must be an inline object literal, a const object literal declared in the same module, or a named import of such a const from a module inside the agent directory, not build\(\)/],
-      ["let mutable = { type: \"object\" };", "mutable", /output references mutable, which is declared with let or var; declare it as a const object literal/],
-      ["const computed = build();\nfunction build() { return {}; }", "computed", /output references computed, whose value is not a static object literal: build\(\)/],
-      ["import { built } from \"../schemas.js\";", "built", /output references built, exported by schemas\.ts, whose value is not a static object literal: build\(\)/],
-      ["import { renamed } from \"../schemas.js\";", "renamed", /output references renamed, exported by schemas\.ts \(declared there as local\), whose value is not a static object literal: build\(\)/],
-      ["import { reexported } from \"../schemas.js\";", "reexported", /output references reexported, which schemas\.ts re-exports from another module; import it from the module that declares it/],
-      ["import { useTool } from \"@opencomputer/agent\";", "useTool", /output references useTool, imported from @opencomputer\/agent; a schema must be a const declared in a module inside the agent directory/],
-      ["import * as schemas from \"../schemas.js\";", "schemas.local", /output must be an inline object literal, .* not schemas\.local/],
-      ["", "missing", /output references missing, which is neither a const declared in this module nor a named import from a module inside the agent directory/],
+      [
+        "",
+        "build()",
+        /defineTool\("report"\) output must be an inline object literal, a const object literal declared in the same module, or a named import of such a const from a module inside the agent directory, not build\(\)/,
+      ],
+      [
+        'let mutable = { type: "object" };',
+        "mutable",
+        /output references mutable, which is declared with let or var; declare it as a const object literal/,
+      ],
+      [
+        "const computed = build();\nfunction build() { return {}; }",
+        "computed",
+        /output references computed, whose value is not a static object literal: build\(\)/,
+      ],
+      [
+        'import { built } from "../schemas.js";',
+        "built",
+        /output references built, exported by schemas\.ts, whose value is not a static object literal: build\(\)/,
+      ],
+      [
+        'import { renamed } from "../schemas.js";',
+        "renamed",
+        /output references renamed, exported by schemas\.ts \(declared there as local\), whose value is not a static object literal: build\(\)/,
+      ],
+      [
+        'import { reexported } from "../schemas.js";',
+        "reexported",
+        /output references reexported, which schemas\.ts re-exports from another module; import it from the module that declares it/,
+      ],
+      [
+        'import { useTool } from "@opencomputer/agent";',
+        "useTool",
+        /output references useTool, imported from @opencomputer\/agent; a schema must be a const declared in a module inside the agent directory/,
+      ],
+      [
+        'import * as schemas from "../schemas.js";',
+        "schemas.local",
+        /output must be an inline object literal, .* not schemas\.local/,
+      ],
+      [
+        "",
+        "missing",
+        /output references missing, which is neither a const declared in this module nor a named import from a module inside the agent directory/,
+      ],
     ];
     for (const [imports, output, expected] of cases) {
-      await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool(imports, output));
-      await assert.rejects(prepareAgent(initialized.agentRoot), expected, output);
+      await writeFile(
+        resolve(initialized.agentRoot, "tools", "report.ts"),
+        tool(imports, output),
+      );
+      await assert.rejects(
+        prepareAgent(initialized.agentRoot),
+        expected,
+        output,
+      );
     }
   } finally {
     await rm(parent, { recursive: true, force: true });
@@ -1648,7 +1909,9 @@ export { defineTool as reexported } from "@opencomputer/agent";
 });
 
 test("the compiler packages agent source modules outside the tools directory", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-source-modules-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-source-modules-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
@@ -1688,9 +1951,9 @@ export default function Agent() {
     assert.ok(!artifact.files.some((file) => file.path === "settings.json"));
     assert.ok(artifact.files.some((file) => file.path === "agent.js"));
     assert.ok(built.connections.includes("fixture-github"));
-    const packaged = await import(
+    const packaged = (await import(
       `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "agent.js")).href}?test=${crypto.randomUUID()}`
-    ) as { default(): string };
+    )) as { default(): string };
     assert.equal(
       packaged.default(),
       "Review missing tests in opencomputer/example.",
@@ -1735,7 +1998,9 @@ test("the compiler accepts Twilio and email channels alongside Slack", async () 
   try {
     const initialized = await initializeAgentProject(root);
     await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
-    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), {
+      recursive: true,
+    });
 
     await writeFile(
       resolve(root, "opencomputer", "channels", "shop-sms.ts"),
@@ -1796,7 +2061,9 @@ test("the compiler rejects a trigger the provider cannot deliver", async () => {
   try {
     const initialized = await initializeAgentProject(root);
     await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
-    await mkdir(resolve(initialized.agentRoot, "channels"), { recursive: true });
+    await mkdir(resolve(initialized.agentRoot, "channels"), {
+      recursive: true,
+    });
     await writeFile(
       resolve(root, "opencomputer", "channels", "shop-sms.ts"),
       `import { defineChannel } from "@opencomputer/agent";
@@ -1923,8 +2190,14 @@ test("the compiler registers memory declarations in the artifact manifest", asyn
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
-    await writeFile(resolve(initialized.agentRoot, "memory.ts"), REQUIREMENTS_MEMORY);
-    await writeFile(resolve(initialized.agentRoot, "knowledge.ts"), KNOWLEDGE_MEMORY);
+    await writeFile(
+      resolve(initialized.agentRoot, "memory.ts"),
+      REQUIREMENTS_MEMORY,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "knowledge.ts"),
+      KNOWLEDGE_MEMORY,
+    );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
       `import { useInput, useMemory, useModel } from "@opencomputer/agent";
@@ -1942,11 +2215,17 @@ export default function Agent() {
     );
 
     const built = await buildAgentArtifact(initialized.agentRoot);
-    assert.deepEqual(built.memory, [KNOWLEDGE_DECLARATION, REQUIREMENTS_DECLARATION]);
+    assert.deepEqual(built.memory, [
+      KNOWLEDGE_DECLARATION,
+      REQUIREMENTS_DECLARATION,
+    ]);
     assert.ok(built.connections.includes("memory-service"));
     const runtime = await agentRuntimeDirectory(initialized.agentRoot);
     const manifest = JSON.parse(
-      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
     ) as { memory: unknown; tools: string[] };
     assert.deepEqual(manifest.memory, built.memory);
     assert.deepEqual(manifest.tools, []);
@@ -1955,17 +2234,29 @@ export default function Agent() {
     // resolves one projection per session binding into scope.memory and
     // records which ids the render selected.
     const scope = {
-      input: { source: "user", text: "hello" } as { source: string; text: string },
+      input: { source: "user", text: "hello" } as {
+        source: string;
+        text: string;
+      },
       memory: {
         requirements: {
           text: "Node.js 22, no paid services.",
-          sources: [{ id: "workshop", title: "Workshop requirements", revision: "r1", updatedAt: "2026-09-10T12:00:00.000Z" }],
+          sources: [
+            {
+              id: "workshop",
+              title: "Workshop requirements",
+              revision: "r1",
+              updatedAt: "2026-09-10T12:00:00.000Z",
+            },
+          ],
           writable: true,
         },
       } as Record<string, unknown>,
       selectedMemory: new Set<string>(),
     };
-    (globalThis as Record<PropertyKey, unknown>)[Symbol.for("opencomputer.agent-hooks")] = {
+    (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("opencomputer.agent-hooks")
+    ] = {
       useInput: () => scope.input,
       useModel: () => undefined,
       useMemory(id: string) {
@@ -1989,7 +2280,9 @@ export default function Agent() {
         /Memory "knowledge" is not bound to this session/,
       );
     } finally {
-      delete (globalThis as Record<PropertyKey, unknown>)[Symbol.for("opencomputer.agent-hooks")];
+      delete (globalThis as Record<PropertyKey, unknown>)[
+        Symbol.for("opencomputer.agent-hooks")
+      ];
     }
 
     // The runtime shim normalizes a definition to its manifest entry.
@@ -2000,8 +2293,18 @@ export default function Agent() {
       documentMemory: () => unknown;
     };
     assert.deepEqual(
-      JSON.parse(JSON.stringify(shim.defineMemory({ id: "notes", description: " Notes. " }))),
-      { kind: "memory", version: 1, id: "notes", description: "Notes.", provider: { kind: "document", maxBytes: 8192 } },
+      JSON.parse(
+        JSON.stringify(
+          shim.defineMemory({ id: "notes", description: " Notes. " }),
+        ),
+      ),
+      {
+        kind: "memory",
+        version: 1,
+        id: "notes",
+        description: "Notes.",
+        provider: { kind: "document", maxBytes: 8192 },
+      },
     );
   } finally {
     await rm(parent, { recursive: true, force: true });
@@ -2013,10 +2316,16 @@ test("the compiler deduplicates identical memory declarations and rejects confli
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
-    await writeFile(resolve(initialized.agentRoot, "memory.ts"), REQUIREMENTS_MEMORY);
+    await writeFile(
+      resolve(initialized.agentRoot, "memory.ts"),
+      REQUIREMENTS_MEMORY,
+    );
     await writeFile(
       resolve(initialized.agentRoot, "memory-again.ts"),
-      REQUIREMENTS_MEMORY.replace("export const requirements", "export const again"),
+      REQUIREMENTS_MEMORY.replace(
+        "export const requirements",
+        "export const again",
+      ),
     );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
@@ -2034,10 +2343,10 @@ export default function Agent() {
 
     await writeFile(
       resolve(initialized.agentRoot, "memory-again.ts"),
-      REQUIREMENTS_MEMORY.replace("export const requirements", "export const again").replace(
-        "maxBytes: 8_192",
-        "maxBytes: 4_096",
-      ),
+      REQUIREMENTS_MEMORY.replace(
+        "export const requirements",
+        "export const again",
+      ).replace("maxBytes: 8_192", "maxBytes: 4_096"),
     );
     await assert.rejects(
       buildAgentArtifact(initialized.agentRoot),
@@ -2049,12 +2358,17 @@ export default function Agent() {
 });
 
 test("the compiler validates memory declarations", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-memory-invalid-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-memory-invalid-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
     const build = async (memorySource: string, agentSource?: string) => {
-      await writeFile(resolve(initialized.agentRoot, "memory.ts"), memorySource);
+      await writeFile(
+        resolve(initialized.agentRoot, "memory.ts"),
+        memorySource,
+      );
       await writeFile(
         resolve(initialized.agentRoot, "agent.ts"),
         agentSource ??
@@ -2080,23 +2394,43 @@ export default function Agent() {
       /tool remember input cannot declare the reserved memory argument/,
     );
     await assert.rejects(
-      build(http(`[{ name: "remember", description: "Save.", access: "write", input: { type: "object", required: ["memory"] } }]`)),
+      build(
+        http(
+          `[{ name: "remember", description: "Save.", access: "write", input: { type: "object", required: ["memory"] } }]`,
+        ),
+      ),
       /tool remember input cannot declare the reserved memory argument/,
     );
     await assert.rejects(
-      build(http(`[{ name: "Remember", description: "Save.", access: "write", input: { type: "object" } }]`)),
+      build(
+        http(
+          `[{ name: "Remember", description: "Save.", access: "write", input: { type: "object" } }]`,
+        ),
+      ),
       /tool names must use 1 to 32 lowercase letters, numbers, and underscores/,
     );
     await assert.rejects(
-      build(http(`[{ name: "remember", description: "Save.", access: "admin", input: { type: "object" } }]`)),
+      build(
+        http(
+          `[{ name: "remember", description: "Save.", access: "admin", input: { type: "object" } }]`,
+        ),
+      ),
       /access must be "read" or "write"/,
     );
     await assert.rejects(
-      build(http(`[{ name: "remember", description: "Save.", access: "read", input: { type: "object", properties: { a: { $ref: "#/x" } } } }]`)),
+      build(
+        http(
+          `[{ name: "remember", description: "Save.", access: "read", input: { type: "object", properties: { a: { $ref: "#/x" } } } }]`,
+        ),
+      ),
       /input cannot use \$ref/,
     );
     await assert.rejects(
-      build(http(`[${Array.from({ length: 9 }, (_, i) => `{ name: "t${i}", description: "T.", access: "read", input: { type: "object" } }`).join(", ")}]`)),
+      build(
+        http(
+          `[${Array.from({ length: 9 }, (_, i) => `{ name: "t${i}", description: "T.", access: "read", input: { type: "object" } }`).join(", ")}]`,
+        ),
+      ),
       /at most 8 tools/,
     );
     await assert.rejects(
@@ -2116,15 +2450,33 @@ export default function Agent() {
       /references unknown connection elsewhere/,
     );
     await assert.rejects(
-      build(REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory").replace("8_192", "16_385")),
+      build(
+        REQUIREMENTS_MEMORY.replace(
+          "export const requirements",
+          "export const memory",
+        ).replace("8_192", "16_385"),
+      ),
       /maxBytes must be a whole number between 1 and 16384/,
     );
     await assert.rejects(
-      build(REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory").replace('"requirements"', '"Requirements"')),
+      build(
+        REQUIREMENTS_MEMORY.replace(
+          "export const requirements",
+          "export const memory",
+        ).replace('"requirements"', '"Requirements"'),
+      ),
       /must use lowercase letters, numbers, and single hyphens/,
     );
     await assert.rejects(
-      build(REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory").replace("provider: documentMemory({ maxBytes: 8_192 })", "provider: custom")),
+      build(
+        REQUIREMENTS_MEMORY.replace(
+          "export const requirements",
+          "export const memory",
+        ).replace(
+          "provider: documentMemory({ maxBytes: 8_192 })",
+          "provider: custom",
+        ),
+      ),
       /provider must be an inline documentMemory\(\) or httpMemory\(\) call/,
     );
 
@@ -2132,7 +2484,10 @@ export default function Agent() {
     // cannot take a memory tool's fixed name.
     await assert.rejects(
       build(
-        REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory"),
+        REQUIREMENTS_MEMORY.replace(
+          "export const requirements",
+          "export const memory",
+        ),
         `import { useMemory } from "@opencomputer/agent";
 
 export default function Agent() {
@@ -2144,7 +2499,10 @@ export default function Agent() {
     );
     await assert.rejects(
       build(
-        REQUIREMENTS_MEMORY.replace("export const requirements", "export const memory"),
+        REQUIREMENTS_MEMORY.replace(
+          "export const requirements",
+          "export const memory",
+        ),
         `import { useMemory, useTool } from "@opencomputer/agent";
 import { memory } from "./memory";
 
@@ -2162,7 +2520,9 @@ export default function Agent() {
 });
 
 test("the compiler rejects memory declarations it cannot register as written", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-memory-literal-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-memory-literal-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
@@ -2177,8 +2537,12 @@ export default function Agent() {
 `,
     );
     const build = async (memorySource: string, extra?: [string, string]) => {
-      await writeFile(resolve(initialized.agentRoot, "memory.ts"), memorySource);
-      if (extra) await writeFile(resolve(initialized.agentRoot, extra[0]), extra[1]);
+      await writeFile(
+        resolve(initialized.agentRoot, "memory.ts"),
+        memorySource,
+      );
+      if (extra)
+        await writeFile(resolve(initialized.agentRoot, extra[0]), extra[1]);
       return buildAgentArtifact(initialized.agentRoot);
     };
     const declaration = (provider: string) =>
@@ -2201,7 +2565,10 @@ ${declaration("documentMemory({ maxBytes: 4_096 })")}});
 export const memory = declareMemory({
 ${declaration("undefined")}});
 `,
-        ["lib.ts", 'export { defineMemory as declareMemory } from "@opencomputer/agent";\n'],
+        [
+          "lib.ts",
+          'export { defineMemory as declareMemory } from "@opencomputer/agent";\n',
+        ],
       ),
       /lib\.ts exports defineMemory as declareMemory; the compiler registers memory only from a direct defineMemory\(\) call/,
     );
@@ -2358,7 +2725,8 @@ export const memory = lib.defineMemory({ id: "notes", description: "Notes." });
       resolve(initialized.agentRoot, "lib.ts"),
       'export { defineMemory, documentMemory } from "@opencomputer/agent";\n',
     );
-    const built = await build(`import type { MemoryDefinition } from "@opencomputer/agent";
+    const built =
+      await build(`import type { MemoryDefinition } from "@opencomputer/agent";
 import { defineMemory, documentMemory } from "./lib";
 
 type Declared = typeof defineMemory;
@@ -2410,7 +2778,8 @@ export default function Agent() {
 }
 `,
     );
-    const unrelated = await build(`export const labels = { defineMemory: "Memory settings" };
+    const unrelated =
+      await build(`export const labels = { defineMemory: "Memory settings" };
 
 function defineMemory(input: { id: string }) {
   return { ...input, defineMemory: true };
@@ -2425,11 +2794,16 @@ export const spelled = "defineMemory";
 });
 
 test("a registered memory declaration is the definition the artifact executes", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-memory-parity-"));
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-memory-parity-"),
+  );
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
-    await writeFile(resolve(initialized.agentRoot, "knowledge.ts"), KNOWLEDGE_MEMORY);
+    await writeFile(
+      resolve(initialized.agentRoot, "knowledge.ts"),
+      KNOWLEDGE_MEMORY,
+    );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
       `import { defineMemory, documentMemory, useMemory } from "@opencomputer/agent";
@@ -2451,7 +2825,16 @@ export default function Agent() {
     const runtime = await agentRuntimeDirectory(initialized.agentRoot);
     const module = (await import(
       `${pathToFileURL(resolve(runtime, "agent.js")).href}?test=${crypto.randomUUID()}`
-    )) as Record<string, { kind: string; version: number; id: string; description: string; provider: unknown }>;
+    )) as Record<
+      string,
+      {
+        kind: string;
+        version: number;
+        id: string;
+        description: string;
+        provider: unknown;
+      }
+    >;
     const executed = ["knowledge", "notes", "requirements"].map((name) => {
       const definition = module[name]!;
       assert.equal(definition.kind, "memory");
@@ -2469,7 +2852,11 @@ export default function Agent() {
     assert.deepEqual(built.memory, executed);
     assert.deepEqual(built.memory, [
       KNOWLEDGE_DECLARATION,
-      { id: "notes", description: "Notes.", provider: { kind: "document", maxBytes: 8192 } },
+      {
+        id: "notes",
+        description: "Notes.",
+        provider: { kind: "document", maxBytes: 8192 },
+      },
       REQUIREMENTS_DECLARATION,
     ]);
 
@@ -2478,7 +2865,9 @@ export default function Agent() {
     const shim = (await import(
       `${pathToFileURL(resolve(runtime, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
     )) as {
-      defineMemory: (input: unknown) => { provider: { tools?: Array<{ input: Record<string, unknown> }> } };
+      defineMemory: (input: unknown) => {
+        provider: { tools?: Array<{ input: Record<string, unknown> }> };
+      };
       documentMemory: (input?: unknown) => unknown;
       httpMemory: (input: unknown) => unknown;
     };
@@ -2493,7 +2882,11 @@ export default function Agent() {
     assert.throws(
       () =>
         shim.httpMemory({
-          connection: { kind: "connection", id: "memory-service", methods: ["GET"] },
+          connection: {
+            kind: "connection",
+            id: "memory-service",
+            methods: ["GET"],
+          },
         }),
       /httpMemory requires connection memory-service to allow POST/,
     );
@@ -2515,7 +2908,9 @@ export default function Agent() {
     const schema = definition.provider.tools![0]!.input;
     assert.ok(Object.isFrozen(schema));
     assert.ok(Object.isFrozen(schema.properties));
-    assert.ok(Object.isFrozen((schema.properties as Record<string, unknown>).fact));
+    assert.ok(
+      Object.isFrozen((schema.properties as Record<string, unknown>).fact),
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -2539,9 +2934,20 @@ test("prepareAgent builds into a cache under node_modules, never into the agent'
     const runtime = await prepareAgent(initialized.agentRoot);
     assert.equal(
       runtime,
-      resolve(root, "node_modules", ".cache", "opencomputer", "agents", "hello-world", "runtime"),
+      resolve(
+        root,
+        "node_modules",
+        ".cache",
+        "opencomputer",
+        "agents",
+        "hello-world",
+        "runtime",
+      ),
     );
-    assert.equal(existsSync(resolve(initialized.agentRoot, ".opencomputer")), false);
+    assert.equal(
+      existsSync(resolve(initialized.agentRoot, ".opencomputer")),
+      false,
+    );
     assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
   } finally {
     await rm(root, { recursive: true, force: true });
