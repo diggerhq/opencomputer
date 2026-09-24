@@ -137,10 +137,19 @@ describe('openDownloadSink fallback', () => {
     await expect(
       second.write(new Uint8Array(IN_MEMORY_DOWNLOAD_MAX_BYTES - 999)),
     ).rejects.toBeInstanceOf(DownloadTooLarge)
+    await second.write(new Uint8Array(500))
+
+    // An open sink's buffered bytes are reserved too.
+    const overlapping = await openDownloadSink('c.bin')
+    expect(overlapping.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES - 1500)
+    await second.abort()
+    expect((await openDownloadSink('d.bin')).capacity).toBe(
+      IN_MEMORY_DOWNLOAD_MAX_BYTES - 1000,
+    )
 
     vi.advanceTimersByTime(BLOB_URL_GRACE_MS)
     expect(revoked).toEqual(['blob:x'])
-    const third = await openDownloadSink('c.bin')
+    const third = await openDownloadSink('e.bin')
     expect(third.capacity).toBe(IN_MEMORY_DOWNLOAD_MAX_BYTES)
   })
 })

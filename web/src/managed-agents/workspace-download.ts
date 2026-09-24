@@ -158,20 +158,17 @@ interface LiveBlobUrl {
   timer: ReturnType<typeof setTimeout>
 }
 
-// Blob URLs still within their grace period. Their bytes count against the
-// in-memory budget so back-to-back downloads cannot stack up gigabytes.
+// Bytes held in memory by fallback sinks: buffered by open sinks plus the
+// Blobs behind URLs still in their grace period. Shared across all sinks so
+// overlapping or back-to-back downloads cannot stack up gigabytes.
+let reservedFallbackBytes = 0
 const liveBlobUrls = new Set<LiveBlobUrl>()
 
 function releaseBlobUrl(live: LiveBlobUrl) {
   clearTimeout(live.timer)
   liveBlobUrls.delete(live)
+  reservedFallbackBytes -= live.bytes
   URL.revokeObjectURL(live.url)
-}
-
-function liveBlobBytes() {
-  let total = 0
-  for (const live of liveBlobUrls) total += live.bytes
-  return total
 }
 
 /** Where verified bytes go: the user's disk when possible, else memory. */
@@ -187,7 +184,13 @@ export interface ByteSink {
 interface SaveFilePickerWindow {
   showSaveFilePicker?: (options: {
     suggestedName?: string
-  }) => Promise<{ createWritable(): Promise<WritableStream<Uint8Array>> }>
+  }) => Promise<SaveFileHandle>
+}
+
+interface SaveFileHandle {
+  createWritable(): Promise<WritableStream<Uint8Array>>
+  /** Chromium-only; deletes the file the picker created or truncated. */
+  remove?: () => Promise<void>
 }
 
 /**
@@ -213,31 +216,48 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
       capacity: null,
       write: (chunk) => writer.write(chunk),
       close: () => writer.close(),
-      abort: (reason) => writer.abort(reason),
+      // The picker already truncated the chosen file to zero bytes, so the
+      // best we can do after discarding the swap file is remove the shell.
+      abort: async (reason) => {
+        await writer.abort(reason)
+        await handle.remove?.().catch(() => undefined)
+      },
     }
   }
   const chunks: Uint8Array<ArrayBuffer>[] = []
-  const capacity = IN_MEMORY_DOWNLOAD_MAX_BYTES - liveBlobBytes()
+  const capacity = IN_MEMORY_DOWNLOAD_MAX_BYTES - reservedFallbackBytes
   let held = 0
+  let settled = false
+  const release = () => {
+    if (settled) return
+    settled = true
+    reservedFallbackBytes -= held
+    chunks.length = 0
+  }
   return {
     capacity,
     write: (chunk) => {
-      held += chunk.byteLength
-      if (held > capacity) {
-        return Promise.reject(new DownloadTooLarge(held, capacity))
+      if (held + chunk.byteLength > capacity) {
+        return Promise.reject(
+          new DownloadTooLarge(held + chunk.byteLength, capacity),
+        )
       }
+      held += chunk.byteLength
+      reservedFallbackBytes += chunk.byteLength
       chunks.push(chunk.slice())
       return Promise.resolve()
     },
     close: () => {
+      if (settled) return Promise.resolve()
       const url = URL.createObjectURL(new Blob(chunks))
-      chunks.length = 0
       const live: LiveBlobUrl = {
         url,
         bytes: held,
         timer: setTimeout(() => releaseBlobUrl(live), BLOB_URL_GRACE_MS),
       }
       liveBlobUrls.add(live)
+      settled = true
+      chunks.length = 0
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = name
@@ -245,7 +265,7 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
       return Promise.resolve()
     },
     abort: () => {
-      chunks.length = 0
+      release()
       return Promise.resolve()
     },
   }
