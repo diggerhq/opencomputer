@@ -161,6 +161,11 @@ test("managed GitHub App requests use project-scoped status and connect routes",
     projectId: "project/one",
     environments: ["development", "production"],
   });
+  await client.attachGitHub({
+    projectId: "project/one",
+    environment: "production",
+    connectionId: "ghi_one",
+  });
 
   assert.equal(
     requests[0]?.url,
@@ -174,6 +179,15 @@ test("managed GitHub App requests use project-scoped status and connect routes",
   assert.equal(requests[1]?.method, "POST");
   assert.deepEqual(await requests[1]?.json(), {
     environments: ["development", "production"],
+  });
+  assert.equal(
+    requests[2]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/projects/project%2Fone/github/attach",
+  );
+  assert.equal(requests[2]?.method, "POST");
+  assert.deepEqual(await requests[2]?.json(), {
+    environment: "production",
+    connectionId: "ghi_one",
   });
 });
 

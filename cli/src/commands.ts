@@ -2,6 +2,7 @@ import {
   OpenComputerClient,
   type ManagedAgentEvent,
   type ManagedAgentLog,
+  type ManagedGitHubInstallation,
   type ManagedGitHubStatus,
   type ManagedSessionSnapshot,
   type ManagedSessionSummary,
@@ -104,6 +105,38 @@ export function githubEnvironmentsConnected(
       (entry) => entry.environment === environment && entry.state === "active",
     ),
   );
+}
+
+export function selectGitHubInstallation(
+  connections: ManagedGitHubInstallation[],
+  selector?: string,
+): ManagedGitHubInstallation | undefined {
+  const active = connections.filter((connection) => connection.state === "active");
+  if (selector) {
+    const matches = active.filter(
+      (connection) =>
+        connection.id === selector || connection.accountLogin === selector,
+    );
+    if (matches.length === 1) return matches[0];
+    if (!matches.length) {
+      throw new Error(
+        `No active GitHub App connection matches ${JSON.stringify(selector)}.`,
+      );
+    }
+    throw new Error(
+      `More than one GitHub App connection belongs to @${selector}; use its connection id.`,
+    );
+  }
+  if (active.length === 1) return active[0];
+  if (active.length > 1) {
+    throw new Error(
+      "More than one GitHub App connection is available. Pass --connection <id|account>.\n" +
+        active
+          .map((connection) => `  ${connection.id}  @${connection.accountLogin}`)
+          .join("\n"),
+    );
+  }
+  return undefined;
 }
 
 function printJSON(value: unknown): void {
@@ -1488,6 +1521,7 @@ export async function runCommand(
 
     if (action === "connect") {
       const environments = githubEnvironments(option(args, "--environment"));
+      const connectionSelector = option(args, "--connection");
       const noWait = flag(args, "--no-wait");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
 
@@ -1497,6 +1531,35 @@ export async function runCommand(
         else {
           process.stdout.write(
             `The managed GitHub App is already connected for ${environments.join(" and ")}.\n`,
+          );
+        }
+        return;
+      }
+
+      const installation = selectGitHubInstallation(
+        current.connections,
+        connectionSelector,
+      );
+      if (installation) {
+        const missing = environments.filter(
+          (environment) =>
+            !current.environments.some(
+              (entry) =>
+                entry.environment === environment && entry.state === "active",
+            ),
+        );
+        for (const environment of missing) {
+          await client.attachGitHub({
+            projectId: project.projectId,
+            environment,
+            connectionId: installation.id,
+          });
+        }
+        const attached = await client.githubStatus(project.projectId);
+        if (globals.json) printJSON(attached);
+        else {
+          process.stdout.write(
+            `Attached @${installation.accountLogin} to ${missing.join(" and ")}.\n`,
           );
         }
         return;

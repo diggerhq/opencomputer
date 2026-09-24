@@ -6,6 +6,7 @@ import {
   githubEnvironments,
   githubEnvironmentsConnected,
   nextAgentEventDeadline,
+  selectGitHubInstallation,
   SERVICE_CONNECTIONS,
   shouldBindModelAccessProject,
 } from "./commands.js";
@@ -60,5 +61,34 @@ test("GitHub App connection readiness requires every requested environment", () 
   assert.equal(
     githubEnvironmentsConnected(status, ["development", "production"]),
     false,
+  );
+});
+
+test("GitHub App connection selection reuses one active account and disambiguates many", () => {
+  const installation = (id: string, accountLogin: string) => ({
+    id,
+    githubInstallationId: 1,
+    accountLogin,
+    accountType: "Organization",
+    repositorySelection: "selected" as const,
+    state: "active" as const,
+    createdAt: "2026-09-24T00:00:00.000Z",
+    updatedAt: "2026-09-24T00:00:00.000Z",
+  });
+  const digger = installation("ghi_digger", "diggerhq");
+  const personal = installation("ghi_personal", "mohamed");
+
+  assert.equal(selectGitHubInstallation([digger]), digger);
+  assert.equal(
+    selectGitHubInstallation([digger, personal], "diggerhq"),
+    digger,
+  );
+  assert.throws(
+    () => selectGitHubInstallation([digger, personal]),
+    /--connection/,
+  );
+  assert.equal(
+    selectGitHubInstallation([{ ...digger, state: "suspended" }]),
+    undefined,
   );
 });

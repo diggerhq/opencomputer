@@ -79,7 +79,7 @@ Usage:
   opencomputer connection list
   opencomputer connection remove <alias|connection-id> [--service <name>]
   opencomputer github status [--project <id|slug>]
-  opencomputer github connect [--environment development|production] [--project <id|slug>] [--no-wait]
+  opencomputer github connect [--environment development|production] [--connection <id|account>] [--project <id|slug>] [--no-wait]
   opencomputer model-access connect codex [--project <id|slug>]
   opencomputer model-access connect openrouter [--api-key-stdin] [--project <id|slug>]
   opencomputer model-access connect openai-compatible --base-url <url> [--api-key-stdin] [--project <id|slug>]
