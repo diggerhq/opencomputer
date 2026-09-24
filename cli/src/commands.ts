@@ -49,7 +49,7 @@ import { materializeProjectArchive } from "./project-local.js";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
@@ -73,6 +73,48 @@ export interface GlobalOptions {
 
 export function deploymentAlias(requestedAlias?: string): string {
   return requestedAlias ?? "development";
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function initSummary(options: {
+  directory: string;
+  root: string;
+  name: string;
+  spa: boolean;
+}): string {
+  const { directory, root, name, spa } = options;
+  const projectName = shellQuote(basename(root) || name);
+  const steps = [
+    ...(directory === "." ? [] : [`cd ${shellQuote(directory)}`]),
+    "npm install",
+    "npx opencomputer login",
+    `npx opencomputer link --create-project ${projectName}`,
+    "npm run deploy -- --watch",
+    ...(spa ? ["npm run dev:web"] : []),
+  ];
+  return (
+    `Created the ${name} OpenComputer app\n` +
+    `Directory: ${root}\n` +
+    `Project:   not linked yet\n` +
+    `Agents:    opencomputer/\n` +
+    (spa
+      ? `Web app:   src/ (separate lifecycle)\n\n`
+      : `App:       agent only\n\n`) +
+    `Next:\n` +
+    steps.map((step) => `  ${step}\n`).join("") +
+    `\n` +
+    `login signs this machine in. link creates the cloud project and connects\n` +
+    `this directory to it (use --project <id|slug> for an existing project).\n` +
+    `deploy --watch publishes every save to Development and prints the\n` +
+    `dashboard URL.` +
+    (spa ? ` dev:web runs the local web app separately.` : "") +
+    `\n`
+  );
 }
 
 export function shouldBindModelAccessProject(
@@ -247,10 +289,7 @@ function consumeModelAccessProvider(
     args[0] === "openai-compatible"
   ) {
     return args.shift() as
-      | "claude"
-      | "codex"
-      | "openrouter"
-      | "openai-compatible";
+      "claude" | "codex" | "openrouter" | "openai-compatible";
   }
   return "codex";
 }
@@ -1194,22 +1233,13 @@ export async function runCommand(
     });
     if (globals.json) printJSON(initialized);
     else {
-      const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
-        `Created the ${initialized.manifest.name} OpenComputer app\n` +
-          `Directory: ${initialized.root}\n` +
-          `Project:   link explicitly with --project or --create-project\n` +
-          `Agents:    opencomputer/\n` +
-          (spa
-            ? `Web app:   src/ (separate lifecycle)\n\n`
-            : `App:       agent only\n\n`) +
-          `Next:\n` +
-          enterDirectory +
-          `  npm install\n` +
-          `  npm run deploy -- --watch  # deploy changes to Development\n` +
-          (spa
-            ? `  npm run dev:web             # optional local web app\n`
-            : ""),
+        initSummary({
+          directory,
+          root: initialized.root,
+          name: initialized.manifest.name,
+          spa,
+        }),
       );
     }
     return;
@@ -2417,8 +2447,7 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const current = await client.memoryDocument(target);
       let edited:
-        | Awaited<ReturnType<typeof editMemoryTextInEditor>>
-        | undefined;
+        Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
       const text =
         supplied ??
         (edited = await editMemoryTextInEditor(
