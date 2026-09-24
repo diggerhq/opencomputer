@@ -65,6 +65,12 @@ import {
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
 import { DebugInspector } from './DebugInspector'
+import { FirstSessionGuide } from './FirstSessionGuide'
+import {
+  firstSessionGuideVisible,
+  firstSessionSteps,
+  type FirstSessionStep,
+} from './first-session-guide'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import { projectContextSearch } from './project-context'
@@ -251,6 +257,7 @@ function PlaygroundChat({
   initialPrompt,
   onInitialPromptConsumed,
   onSessionFinished,
+  firstSessionGuide,
 }: {
   chatId: string
   agentId: string
@@ -259,6 +266,8 @@ function PlaygroundChat({
   initialPrompt?: string
   onInitialPromptConsumed?: () => void
   onSessionFinished?: (sessionId: string) => void
+  /** Steps to show once the project's only session has its first answer. */
+  firstSessionGuide?: { sessionCount: number; steps: FirstSessionStep[] }
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
@@ -318,6 +327,13 @@ function PlaygroundChat({
     running ||
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
+  const showFirstSessionGuide =
+    firstSessionGuide !== undefined &&
+    firstSessionGuideVisible({
+      sessionCount: firstSessionGuide.sessionCount,
+      hasResponse: messages.some((message) => message.role === 'assistant'),
+      agentWorking,
+    })
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -462,6 +478,9 @@ function PlaygroundChat({
               )
             })
           )}
+          {showFirstSessionGuide ? (
+            <FirstSessionGuide steps={firstSessionGuide.steps} />
+          ) : null}
         </div>
 
         <div className="bg-panel shrink-0 border-t p-4">
@@ -1054,6 +1073,17 @@ export default function ManagedAgentDetail({
                   selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
                 }
                 initialPrompt={firstRunPrompt}
+                firstSessionGuide={
+                  project && !sessions.isLoading
+                    ? {
+                        sessionCount: (sessions.data ?? []).length,
+                        steps: firstSessionSteps(
+                          project.project.id,
+                          environment,
+                        ),
+                      }
+                    : undefined
+                }
                 onInitialPromptConsumed={() => {
                   void navigate(
                     { pathname: location.pathname, search: location.search },
