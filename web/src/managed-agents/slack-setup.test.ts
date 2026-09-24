@@ -102,7 +102,7 @@ function setup(overrides: Partial<ManagedSlackSetup> = {}): ManagedSlackSetup {
 }
 
 describe('slack setup slots', () => {
-  it('offers a dedicated app for an agent whose deployment declares no channel', () => {
+  it('offers a project app by default when no channel is declared', () => {
     const slots = slackSlotsForEnvironment({
       project,
       deployments: [deployment('coder', {})],
@@ -111,13 +111,34 @@ describe('slack setup slots', () => {
     })
     expect(slots).toEqual([
       expect.objectContaining({
-        key: 'dedicated:coder',
-        dedicated: true,
+        key: 'project',
+        dedicated: false,
+        routingMode: 'project',
+        projectId: 'prj_1',
         agentId: 'coder',
         consumers: ['coder'],
       }),
     ])
     expect(slots[0]?.channelId).toBeUndefined()
+  })
+
+  it('offers dedicated agent apps when per-agent mode is selected', () => {
+    const slots = slackSlotsForEnvironment({
+      project,
+      deployments: [deployment('coder', {})],
+      channels: [],
+      environment: 'development',
+      includeAgentSlots: true,
+    })
+    expect(slots).toEqual([
+      expect.objectContaining({
+        key: 'agent:coder',
+        dedicated: true,
+        routingMode: 'agent',
+        agentId: 'coder',
+        consumers: ['coder'],
+      }),
+    ])
   })
 
   it('lists the agents registered on a declared channel, mapped to account ids', () => {

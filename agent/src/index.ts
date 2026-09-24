@@ -296,6 +296,12 @@ export interface ChannelRegistrationDefinition extends ResourceReference {
   readonly version: 1;
   readonly channelId: string;
   readonly triggers: readonly ChannelTrigger[];
+  /**
+   * Bounded, deployment-owned context used only to choose among agents that
+   * registered the same inbound trigger. It is not appended to either
+   * agent's instructions.
+   */
+  readonly routingDescription?: string;
 }
 
 export interface OutboxPublishInput {
@@ -1384,7 +1390,7 @@ export function defineChannel(input: ChannelInput): ChannelDefinition {
 
 export function registerChannel(
   channel: ChannelDefinition,
-  input: { on: readonly ChannelTrigger[] },
+  input: { on: readonly ChannelTrigger[]; description?: string },
 ): ChannelRegistrationDefinition {
   const triggers = [...new Set(input.on)];
   if (!triggers.length) {
@@ -1407,12 +1413,22 @@ export function registerChannel(
       );
     }
   }
+  const routingDescription = input.description?.trim();
+  if (routingDescription !== undefined && !routingDescription) {
+    throw new Error("registerChannel description cannot be empty");
+  }
+  if (routingDescription && routingDescription.length > 2_000) {
+    throw new Error(
+      "registerChannel description cannot exceed 2,000 characters",
+    );
+  }
   return Object.freeze({
     kind: "channel-registration" as const,
     version: 1 as const,
     id: channel.id,
     channelId: channel.id,
     triggers: Object.freeze(triggers),
+    ...(routingDescription ? { routingDescription } : {}),
   });
 }
 

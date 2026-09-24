@@ -122,6 +122,7 @@ export interface ChannelRegistrationManifest {
   agentId: string;
   channelId: string;
   triggers: Array<"mention" | "direct-message" | "message">;
+  routingDescription?: string;
 }
 
 export interface OutboxDefinitionManifest {
@@ -2034,10 +2035,23 @@ function channelRegistration(
       );
     }
   }
+  const descriptionNode = objectProperty(input, "description");
+  const routingDescription = descriptionNode
+    ? literalStringValue(descriptionNode, `${path} routing description`).trim()
+    : undefined;
+  if (routingDescription !== undefined && !routingDescription) {
+    throw new Error(`${path} routing description cannot be empty`);
+  }
+  if (routingDescription && routingDescription.length > 2_000) {
+    throw new Error(
+      `${path} routing description cannot exceed 2,000 characters`,
+    );
+  }
   return {
     agentId,
     channelId,
     triggers: triggers as ChannelRegistrationManifest["triggers"],
+    ...(routingDescription ? { routingDescription } : {}),
   };
 }
 
@@ -2359,6 +2373,19 @@ export async function readProjectResources(
   const scheduleKeys = schedules.map(({ agentId, id }) => `${agentId}:${id}`);
   if (new Set(scheduleKeys).size !== scheduleKeys.length) {
     throw new Error("Agent schedule IDs must be unique within each agent");
+  }
+  for (const channel of channelDefinitions) {
+    const registrations = channelRegistrations.filter(
+      (registration) => registration.channelId === channel.id,
+    );
+    // Slack static-select menus accept at most 100 options. Keeping the graph
+    // inside that limit guarantees the safe fallback remains available even
+    // when semantic routing is unavailable or uncertain.
+    if (registrations.length > 100) {
+      throw new Error(
+        `Channel ${channel.id} cannot register more than 100 agents`,
+      );
+    }
   }
   const manifest: ProjectResourceManifest = {
     version: 1,

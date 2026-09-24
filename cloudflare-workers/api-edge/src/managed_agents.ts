@@ -627,6 +627,12 @@ function publicChannel(value: unknown): Record<string, unknown> {
     channel: "slack",
     channelId: channel.channelId,
     agentId: channel.agentId,
+    ...(typeof channel.projectId === "string"
+      ? { projectId: channel.projectId }
+      : {}),
+    ...(channel.routingMode === "project" || channel.routingMode === "agent"
+      ? { routingMode: channel.routingMode }
+      : {}),
     alias: channel.alias,
     appName: channel.appName,
     appId: channel.appId,
@@ -690,6 +696,9 @@ function publicSlackSetup(value: unknown): Record<string, unknown> {
     requestKey: setup.requestKey,
     projectId: setup.projectId,
     agentId: setup.agentId,
+    ...(setup.routingMode === "project" || setup.routingMode === "agent"
+      ? { routingMode: setup.routingMode }
+      : {}),
     alias: setup.alias,
     channelId: setup.channelId,
     name: setup.name,

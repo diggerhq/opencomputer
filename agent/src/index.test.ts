@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   bearer,
+  defineChannel,
   defineConnection,
   defineMemory,
   defineTool,
   documentMemory,
   githubApp,
   httpMemory,
+  registerChannel,
   useConnection,
   useInput,
   useMemory,
@@ -18,6 +20,45 @@ import {
 } from "./index.js";
 
 const HOOKS = Symbol.for("opencomputer.agent-hooks");
+
+test("channel registrations carry a bounded semantic routing description", () => {
+  const channel = defineChannel({
+    id: "team-slack",
+    type: "slack",
+    scopes: { bot: ["app_mentions:read"] },
+    events: ["app_mention"],
+  });
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        registerChannel(channel, {
+          on: ["mention"],
+          description: "  Builds and repairs sales pipelines.  ",
+        }),
+      ),
+    ),
+    {
+      kind: "channel-registration",
+      version: 1,
+      id: "team-slack",
+      channelId: "team-slack",
+      triggers: ["mention"],
+      routingDescription: "Builds and repairs sales pipelines.",
+    },
+  );
+  assert.throws(
+    () => registerChannel(channel, { on: ["mention"], description: " " }),
+    /description cannot be empty/,
+  );
+  assert.throws(
+    () =>
+      registerChannel(channel, {
+        on: ["mention"],
+        description: "x".repeat(2_001),
+      }),
+    /cannot exceed 2,000 characters/,
+  );
+});
 
 test("githubApp defines a frozen managed connection permission subset", () => {
   const provider = githubApp({

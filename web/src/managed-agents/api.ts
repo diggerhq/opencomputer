@@ -53,6 +53,7 @@ const deploymentSchema = z.object({
               agentId: z.string(),
               channelId: z.string(),
               triggers: z.array(z.string()).optional().default([]),
+              routingDescription: z.string().optional(),
             }),
           )
           .optional()
@@ -360,6 +361,8 @@ const channelSchema = z.object({
   channel: z.string(),
   channelId: z.string().optional().default('slack'),
   agentId: z.string(),
+  projectId: z.string().optional(),
+  routingMode: z.enum(['project', 'agent']).optional(),
   alias: z.string(),
   appName: z.string().nullish(),
   teamName: z.string().nullish(),
@@ -412,6 +415,7 @@ const slackSetupSchema = z.object({
   requestKey: z.string(),
   projectId: z.string(),
   agentId: z.string(),
+  routingMode: z.enum(['project', 'agent']).optional(),
   alias: z.enum(['development', 'production']),
   channelId: z.string(),
   name: z.string(),
@@ -1547,7 +1551,9 @@ export async function completeManagedAgentSlack(
 }
 
 export type ManagedSlackSetupTarget = {
+  projectId: string
   agentId: string
+  routingMode: 'project' | 'agent'
   alias: 'development' | 'production'
   channelId?: string
 }
@@ -1577,7 +1583,9 @@ export async function startManagedSlackSetup(
 /** The latest resumable setup for a target, so a reloaded page finds it. */
 export async function findManagedSlackSetup(target: ManagedSlackSetupTarget) {
   const query = new URLSearchParams({
+    projectId: target.projectId,
     agentId: target.agentId,
+    routingMode: target.routingMode,
     alias: target.alias,
     ...(target.channelId ? { channelId: target.channelId } : {}),
   })

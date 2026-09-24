@@ -78,11 +78,11 @@ conversation that waits hours for an answer should not bill for those hours.
 
 ## Define a Slack channel
 
-Declaring a channel is optional. An agent whose deployment declares none gets a
-dedicated Slack app with the standard configuration: mentions and direct
-messages go to that one agent. Declare a channel to narrow or extend what the
-app can do, to share one app between several agents, or to publish through
-[outboxes](/agents/outboxes).
+Declaring a channel is optional. By default, a project uses one Slack app per
+environment and OpenComputer routes each new conversation to an eligible
+agent. You can instead choose per-agent apps when each agent should have its
+own Slack identity. Declare a channel to narrow or extend what a project app
+can do, or to publish through [outboxes](/agents/outboxes).
 
 Create a project-level channel under `opencomputer/channels/`:
 
@@ -130,6 +130,7 @@ import teamSlack from "../../../channels/team-slack.js";
 
 export default registerChannel(teamSlack, {
   on: ["mention"],
+  description: "Reviews pull requests and explains requested code changes.",
 });
 ```
 
@@ -137,24 +138,31 @@ export default registerChannel(teamSlack, {
 `app_mentions:read` scope. `direct-message` requires `message.im` and
 `im:history`.
 
-Several agents may register the same channel. An existing Slack thread stays
-with its selected agent. If a new thread has several eligible agents,
-OpenComputer asks the user which agent should handle it instead of guessing.
+Several agents may register the same channel. `description` tells the router
+which requests are a good fit for that agent. On the first message in a new
+conversation, OpenComputer compares the request with those descriptions. A
+confident match is routed automatically; otherwise Slack shows an agent
+selector. The selection is made once, and later messages from that person in
+the thread stay with the selected agent.
 
 ## Connect Slack
 
-Each declared channel gets its own Slack app per environment, and so does an
-agent whose deployment declares none. OpenComputer creates the app from the
-capabilities declared in code and installs it into your workspace; you paste
-one short-lived token and approve the installation in Slack.
+The default is one project Slack app per environment. It can route among every
+agent registered for a declared channel, or among every deployed agent when no
+channel is declared. The Slack panel also offers **Use per-agent apps** for a
+dedicated app pinned to each agent. OpenComputer creates either kind of app
+from the capabilities declared in code and installs it into your workspace;
+you paste one short-lived token and approve the installation in Slack.
 
 After the deployment is synchronized:
 
 1. Open the project in the dashboard and select **Development** or
    **Production**.
-2. Open **Connections**. The Slack panel lists each declared channel with the
-   agents that receive its messages, or the agent's dedicated app when the
-   deployment declares no channel.
+2. Open **Connections**. The Slack panel starts in project-app mode and lists
+   each declared channel with the agents eligible to receive its messages. If
+   no channel is declared, it shows one project app for all deployed agents.
+   Choose **Use per-agent apps** only when you want one app pinned to each
+   agent.
 3. Choose **Create Slack bot** and enter the bot's name.
 4. Paste an **App configuration access token** from
    [your Slack apps](https://api.slack.com/apps): under **Your App

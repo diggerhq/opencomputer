@@ -155,7 +155,10 @@ export default defineOutbox({
       resolve(initialized.agentRoot, "channels", "team-slack.ts"),
       `import { registerChannel } from "@opencomputer/agent";
 import teamSlack from "../../../channels/team-slack.js";
-export default registerChannel(teamSlack, { on: ["mention"] });
+export default registerChannel(teamSlack, {
+  on: ["mention"],
+  description: "Reviews pull requests and release readiness.",
+});
 `,
     );
     await writeFile(
@@ -194,6 +197,7 @@ export default registerOutbox(reviewRequests);
           agentId: "hello-world",
           channelId: "team-slack",
           triggers: ["mention"],
+          routingDescription: "Reviews pull requests and release readiness.",
         },
       ],
       outboxes: [

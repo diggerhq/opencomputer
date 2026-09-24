@@ -221,16 +221,18 @@ describe('ManagedProjectSlack', () => {
 
   const text = () => container.textContent ?? ''
 
-  it('offers automatic setup for the dedicated app and names the receiving agent', async () => {
+  it('offers automatic setup for the project app and names the eligible agents', async () => {
     render()
     await settle(() => text().includes('Create Slack bot'), 'the slot')
 
-    expect(text()).toContain('Mentions and direct messages go to Coder')
+    expect(text()).toContain('Automatically routes among Coder')
     expect(buttons(container)).toContain('Set up manually')
     expect(api.findManagedSlackSetup).toHaveBeenCalledWith({
+      projectId: 'prj_1',
       agentId: 'coder',
       alias: 'development',
       channelId: undefined,
+      routingMode: 'project',
     })
   })
 

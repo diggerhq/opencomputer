@@ -83,6 +83,8 @@ async function openSlackAuthorization(setupId: string) {
 
 const setupQueryKey = (target: ManagedSlackSetupTarget) => [
   'managed-slack-setup',
+  target.projectId,
+  target.routingMode,
   target.agentId,
   target.alias,
   target.channelId ?? DEDICATED_SLACK_CHANNEL_ID,
@@ -103,6 +105,8 @@ export function ManagedProjectSlack({
   environment: Environment
 }) {
   const queryClient = useQueryClient()
+  const [perAgentMode, setPerAgentMode] = useState(false)
+  const modeInitialized = useRef(false)
   const [searchParams, setSearchParams] = useSearchParams()
   // The outcome Slack's consent page brought us back with. Read once, then
   // removed from the URL so a reload does not announce it again.
@@ -143,6 +147,28 @@ export function ManagedProjectSlack({
     queryKey: ['managed-agent-channels'],
     queryFn: getManagedAgentChannels,
   })
+  useEffect(() => {
+    if (modeInitialized.current || !channels.data || !project.data) return
+    modeInitialized.current = true
+    const projectAgentIds = new Set(
+      project.data.project.agents.map((agent) => agent.id),
+    )
+    const relevant = channels.data.filter(
+      (connection) =>
+        connection.alias === environment &&
+        projectAgentIds.has(connection.agentId),
+    )
+    const hasProjectConnection = relevant.some(
+      (connection) => connection.routingMode === 'project',
+    )
+    const hasAgentConnection = relevant.some(
+      (connection) => (connection.routingMode ?? 'agent') === 'agent',
+    )
+    // Existing installations predate the explicit mode field and were
+    // dedicated to an agent. Open that view for them so the connection never
+    // appears to have vanished; new projects still start in project mode.
+    if (hasAgentConnection && !hasProjectConnection) setPerAgentMode(true)
+  }, [channels.data, environment, project.data])
   const loading =
     project.isLoading ||
     channels.isLoading ||
@@ -165,6 +191,7 @@ export function ManagedProjectSlack({
         ),
         channels: channels.data ?? [],
         environment,
+        includeAgentSlots: perAgentMode,
       })
     : []
 
@@ -174,11 +201,19 @@ export function ManagedProjectSlack({
         <div>
           <PanelTitle>Slack</PanelTitle>
           <PanelDescription className="mt-1 max-w-2xl">
-            A dedicated Slack app per channel and environment. OpenComputer
-            creates and installs it from the capabilities declared in code; you
-            approve the installation in Slack.
+            Connect one project Slack app with automatic agent routing, or use
+            a dedicated app for an individual agent. Connections stay isolated
+            by environment.
           </PanelDescription>
         </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setPerAgentMode((current) => !current)}
+        >
+          {perAgentMode ? 'Use project app' : 'Use per-agent apps'}
+        </Button>
       </PanelHeader>
       {returned ? (
         <ReturnBanner
@@ -298,9 +333,9 @@ function SlackSlotRow({
       connection={slot.connection}
       destinations={slot.destinations}
       consumers={
-        slot.dedicated
+        slot.routingMode === 'agent'
           ? `Mentions and direct messages go to ${consumerNames.join(', ')}`
-          : `Consumed by ${consumerNames.join(', ')}`
+          : `Automatically routes among ${consumerNames.join(', ')}`
       }
       setup={
         <SlackAutomaticSetup
@@ -332,7 +367,9 @@ function SlackAutomaticSetup({
 }) {
   const queryClient = useQueryClient()
   const target: ManagedSlackSetupTarget = {
+    projectId: slot.projectId,
     agentId: slot.agentId,
+    routingMode: slot.routingMode,
     alias: environment,
     channelId: slot.channelId,
   }

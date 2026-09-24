@@ -428,6 +428,8 @@ export type SlackSlot = {
   channelId?: string
   name: string
   dedicated: boolean
+  projectId: string
+  routingMode: 'project' | 'agent'
   /** The agent the connection and setup are keyed by. */
   agentId: string
   /** Agents whose registrations consume this channel. */
@@ -455,6 +457,8 @@ export function slackSlotsForEnvironment(input: {
   deployments: ManagedAgentDeployment[]
   channels: ManagedAgentChannel[]
   environment: 'development' | 'production'
+  /** Show the explicit per-agent alternative instead of the project default. */
+  includeAgentSlots?: boolean
 }): SlackSlot[] {
   const projectAgentIds = new Set(input.project.agents.map((agent) => agent.id))
   const live = input.channels.filter(
@@ -480,23 +484,24 @@ export function slackSlotsForEnvironment(input: {
       reference?.resources.channels.filter(
         (channel) => channel.type === 'slack',
       ) ?? []
-    if (!reference || slackChannels.length === 0) {
-      const connection = live.find(
-        (channel) =>
-          channel.agentId === deployment.agentId &&
-          channel.channelId === DEDICATED_SLACK_CHANNEL_ID,
-      )
-      dedicated.push({
-        key: `dedicated:${deployment.agentId}`,
-        name: 'Dedicated Slack app',
-        dedicated: true,
-        agentId: deployment.agentId,
-        consumers: [deployment.agentId],
-        destinations: [],
-        connection,
-      })
-      continue
-    }
+    const connection = live.find(
+      (channel) =>
+        (channel.routingMode ?? 'agent') === 'agent' &&
+        channel.agentId === deployment.agentId &&
+        channel.channelId === DEDICATED_SLACK_CHANNEL_ID,
+    )
+    dedicated.push({
+      key: `agent:${deployment.agentId}`,
+      name: 'Agent Slack app',
+      dedicated: true,
+      projectId: input.project.id,
+      routingMode: 'agent',
+      agentId: deployment.agentId,
+      consumers: [deployment.agentId],
+      destinations: [],
+      connection,
+    })
+    if (!reference || slackChannels.length === 0) continue
     const localToAgent = new Map(
       reference.agents.map((agent) => [agent.localId, agent.agentId]),
     )
@@ -520,7 +525,13 @@ export function slackSlotsForEnvironment(input: {
 
   const slots: SlackSlot[] = [...declared.entries()].map(
     ([channelId, entry]) => {
-      const connection = live.find((channel) => channel.channelId === channelId)
+      const connection = live.find(
+        (channel) =>
+          (channel.routingMode === 'project' ||
+            (!channel.routingMode && channel.channelId !== DEDICATED_SLACK_CHANNEL_ID)) &&
+          (!channel.projectId || channel.projectId === input.project.id) &&
+          channel.channelId === channelId,
+      )
       const fromConnection = connection?.agents ?? []
       const consumers = unique(
         fromConnection.length
@@ -534,6 +545,8 @@ export function slackSlotsForEnvironment(input: {
         channelId,
         name: entry.name,
         dedicated: false,
+        projectId: input.project.id,
+        routingMode: 'project',
         // The connection and its setup are keyed by one agent. With a
         // connection that is its owner; without one, the first consumer in
         // sorted order, so the slot is the same whichever deployment the
@@ -548,7 +561,27 @@ export function slackSlotsForEnvironment(input: {
       }
     },
   )
-  return [...slots, ...dedicated]
+  if (slots.length === 0 && input.deployments.length > 0) {
+    const agents = unique(input.deployments.map((deployment) => deployment.agentId)).sort()
+    const connection = live.find(
+      (channel) =>
+        channel.routingMode === 'project' &&
+        channel.projectId === input.project.id &&
+        channel.channelId === DEDICATED_SLACK_CHANNEL_ID,
+    )
+    slots.push({
+      key: 'project',
+      name: 'Project Slack app',
+      dedicated: false,
+      projectId: input.project.id,
+      routingMode: 'project',
+      agentId: connection?.agentId ?? agents[0]!,
+      consumers: agents,
+      destinations: [],
+      connection,
+    })
+  }
+  return input.includeAgentSlots ? dedicated : slots
 }
 
 function unique(values: string[]): string[] {
