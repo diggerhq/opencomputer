@@ -189,6 +189,7 @@ interface SaveFilePickerWindow {
 
 interface SaveFileHandle {
   createWritable(): Promise<WritableStream<Uint8Array>>
+  getFile(): Promise<{ size: number }>
   /** Chromium-only; deletes the file the picker created or truncated. */
   remove?: () => Promise<void>
 }
@@ -216,11 +217,17 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
       capacity: null,
       write: (chunk) => writer.write(chunk),
       close: () => writer.close(),
-      // The picker already truncated the chosen file to zero bytes, so the
-      // best we can do after discarding the swap file is remove the shell.
+      // Chromium truncates the picked file to zero bytes as soon as the
+      // picker resolves; after discarding the swap file, drop that empty
+      // shell. A file that still has content (another engine preserved it)
+      // is left alone.
       abort: async (reason) => {
         await writer.abort(reason)
-        await handle.remove?.().catch(() => undefined)
+        try {
+          if ((await handle.getFile()).size === 0) await handle.remove?.()
+        } catch {
+          // Cleanup is best effort; the verification error is what matters.
+        }
       },
     }
   }
