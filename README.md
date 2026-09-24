@@ -8,6 +8,7 @@ npx @opencomputer/cli init my-agent
 cd my-agent
 npm install
 npx --package @opencomputer/cli opencomputer login
+npx --package @opencomputer/cli opencomputer link --create-project "my-agent"
 ```
 
 Watch agent code and deploy changes to Development (Cloud):
@@ -15,6 +16,11 @@ Watch agent code and deploy changes to Development (Cloud):
 ```bash
 npm run deploy -- --watch
 ```
+
+Each step does one thing: `init` writes the project, `login` signs this
+machine in, `link` creates the cloud project and connects the directory to it,
+and `deploy --watch` publishes every save to the project's `development`
+environment and prints its dashboard URL.
 
 [Documentation](https://docs.opencomputer.dev/agents/overview) · [Quickstart](https://docs.opencomputer.dev/agents/quickstart) · [Dashboard](https://app.opencomputer.dev)
 
@@ -38,10 +44,14 @@ the same repository, but it has its own development and deployment lifecycle.
 
 ## Develop and deploy
 
-On the first `npm run deploy -- --watch`, choose an existing project from your account or
-create a new one. That binding is reused on later runs. The CLI uses
-`https://app.opencomputer.dev` by default; pass `--api-url` or set
-`OPENCOMPUTER_API_URL` only when intentionally targeting another service.
+A directory must be linked to a cloud project before project-scoped commands
+run. `opencomputer link --create-project <name>` creates and links one;
+`opencomputer link --project <id|slug>` links an existing project. There is
+no interactive picker: an unlinked command fails with the exact `link` command
+to run. The link is stored in `.opencomputer/project.json` and reused on
+later runs. The CLI uses `https://app.opencomputer.dev` by default; pass
+`--api-url` or set `OPENCOMPUTER_API_URL` only when intentionally targeting
+another service.
 
 Edit the agent function, tools, connections, and routing while watched cloud
 deployment is running. Test it from the dashboard or CLI.

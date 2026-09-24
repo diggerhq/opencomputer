@@ -748,20 +748,23 @@ form button:disabled { cursor: default; opacity: .45; }
 This project keeps agent definitions in \`opencomputer/\` and the React app in
 \`src/\`.
 
-Deploy agent changes to Development (Cloud):
+First run, in order:
 
 \`\`\`bash
-npm run deploy -- --watch
+npm install
+npx opencomputer login                          # sign this machine in
+npx opencomputer link --create-project <name>   # or: link --project <id|slug>
+npm run deploy -- --watch                       # deploy every save to Development
 \`\`\`
+
+Linking is explicit and happens once; later commands reuse the binding stored
+in \`.opencomputer/project.json\`. \`deploy --watch\` prints the dashboard URL.
 
 Start the web app separately:
 
 \`\`\`bash
 npm run dev:web
 \`\`\`
-
-Link once with \`opencomputer link --project <id|slug>\` or
-\`opencomputer link --create-project <name>\`. Later commands reuse that binding.
 
 Declare required names in \`opencomputer/.env.example\` and set values with
 \`opencomputer secrets set <name> --value-stdin\`. Allowed origins are inferred
@@ -771,14 +774,17 @@ from \`defineConnection()\` declarations.
 
 This project keeps agent definitions in \`opencomputer/\`.
 
-Deploy agent changes to Development (Cloud):
+First run, in order:
 
 \`\`\`bash
-npm run deploy -- --watch
+npm install
+npx opencomputer login                          # sign this machine in
+npx opencomputer link --create-project <name>   # or: link --project <id|slug>
+npm run deploy -- --watch                       # deploy every save to Development
 \`\`\`
 
-Link once with \`opencomputer link --project <id|slug>\` or
-\`opencomputer link --create-project <name>\`. Later commands reuse that binding.
+Linking is explicit and happens once; later commands reuse the binding stored
+in \`.opencomputer/project.json\`. \`deploy --watch\` prints the dashboard URL.
 
 Declare required names in \`opencomputer/.env.example\` and set values with
 \`opencomputer secrets set <name> --value-stdin\`. Allowed origins are inferred

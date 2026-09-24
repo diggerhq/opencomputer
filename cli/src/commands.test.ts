@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   deploymentAlias,
+  initSummary,
   nextAgentEventDeadline,
   shouldBindModelAccessProject,
 } from "./commands.js";
@@ -16,6 +17,38 @@ test("one-shot deploy defaults to development and production stays explicit", ()
   assert.equal(deploymentAlias(), "development");
   assert.equal(deploymentAlias("development"), "development");
   assert.equal(deploymentAlias("production"), "production");
+});
+
+test("init prints the full first-run sequence with login and link", () => {
+  const out = initSummary({
+    directory: "my-agent",
+    root: "/tmp/my-agent",
+    name: "my-agent",
+    spa: false,
+  });
+  const steps = (out.split("Next:\n")[1] ?? "")
+    .split("\n\n")[0]!
+    .split("\n")
+    .map((line) => line.trim());
+  assert.deepEqual(steps, [
+    "cd my-agent",
+    "npm install",
+    "npx opencomputer login",
+    'npx opencomputer link --create-project "my-agent"',
+    "npm run deploy -- --watch",
+  ]);
+  assert.match(out, /Project:\s+not linked yet/);
+  assert.match(out, /login signs this machine in/);
+
+  const inPlace = initSummary({
+    directory: ".",
+    root: "/tmp/here",
+    name: "here",
+    spa: true,
+  });
+  assert.doesNotMatch(inPlace, /cd \./);
+  assert.match(inPlace, /link --create-project "here"/);
+  assert.match(inPlace, /npm run dev:web/);
 });
 
 test("model access binds the explicit or current linked project", () => {
