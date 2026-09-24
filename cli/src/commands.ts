@@ -20,6 +20,7 @@ import {
   describeResolution,
   ensureProjectBinding,
   findOpenComputerProjectRoot,
+  interactiveProjectChooser,
 } from "./binding.js";
 import {
   assertStarterTarget,
@@ -1193,6 +1194,7 @@ export async function runCommand(
     const binding = await ensureProjectBinding(client, config, root, {
       project,
       createProjectName,
+      choose: globals.json ? undefined : interactiveProjectChooser(),
     });
     if (globals.json) printJSON(binding);
     else {
@@ -1233,6 +1235,7 @@ export async function runCommand(
       await runDeploymentWatch(client, config, root, {
         project,
         createProjectName,
+        choose: globals.json ? undefined : interactiveProjectChooser(),
       });
       return;
     }
@@ -1240,7 +1243,9 @@ export async function runCommand(
       throw new Error("--project and --create-project require --watch");
     }
     const alias = deploymentAlias(requestedAlias);
-    const binding = await ensureProjectBinding(client, config, root);
+    const binding = await ensureProjectBinding(client, config, root, {
+      choose: globals.json ? undefined : interactiveProjectChooser(),
+    });
     process.stderr.write(
       describeResolution({
         binding,

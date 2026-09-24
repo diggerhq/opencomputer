@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import test from "node:test";
 
 import type { ManagedProject } from "./api.js";
@@ -140,4 +140,67 @@ test("cloud agent ids and the resolution a command prints", async () => {
       "Agent:   reviewer -> workbench--reviewer\n",
   );
   assert.match(describeResolution({ binding: null, localIds: ["worker"] }), /not linked/);
+});
+
+test("an unlinked app asks the chooser and binds the project it picks", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    let offered: string[] = [];
+    let suggested = "";
+    const binding = await ensureProjectBinding(
+      {
+        async projects() {
+          return [project()];
+        },
+        async createProject() {
+          throw new Error("should not create");
+        },
+      },
+      { apiUrl: "https://app.opencomputer.dev" },
+      initialized.agentRoot,
+      {
+        choose: async ({ projects, suggestedName }) => {
+          offered = projects.map((candidate) => candidate.id);
+          suggested = suggestedName;
+          return { project: projects[0]! };
+        },
+      },
+    );
+    assert.deepEqual(offered, ["prj_existing"]);
+    assert.equal(suggested, basename(root));
+    assert.equal(binding.projectId, "prj_existing");
+    assert.deepEqual(
+      JSON.parse(await readFile(resolve(root, ".opencomputer", "project.json"), "utf8")),
+      binding,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unlinked app creates the project the chooser names", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const created: Array<[string, string]> = [];
+    const binding = await ensureProjectBinding(
+      {
+        async projects() {
+          return [];
+        },
+        async createProject(name: string, agentId: string) {
+          created.push([name, agentId]);
+          return { ...project(), id: "prj_new", slug: "support-agents", name };
+        },
+      },
+      { apiUrl: "https://app.opencomputer.dev" },
+      initialized.agentRoot,
+      { choose: async () => ({ createProjectName: "Support Agents" }) },
+    );
+    assert.deepEqual(created, [["Support Agents", "support-agents"]]);
+    assert.equal(binding.projectId, "prj_new");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
