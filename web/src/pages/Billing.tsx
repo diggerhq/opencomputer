@@ -318,20 +318,33 @@ function PrepaidPlan() {
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
   const [confirmUsagePlanId, setConfirmUsagePlanId] = useState<
     'pro' | 'max' | null
-  >(deepLinkedPlan)
+  >(null)
+  // While `?plan=` is in the URL it drives the dialog; closing it clears the
+  // param so the same link can reopen it later.
+  const openUsagePlanId =
+    confirmUsagePlanId ??
+    (deepLinkedPlan && autumn && autumn.usagePlan !== deepLinkedPlan
+      ? deepLinkedPlan
+      : null)
+  const clearDeepLink = () => {
+    if (!searchParams.has('plan')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('plan')
+    setSearchParams(next, { replace: true })
+  }
+  const closeUsagePlanDialog = () => {
+    setConfirmUsagePlanId(null)
+    clearDeepLink()
+  }
 
   useEffect(() => {
-    if (!deepLinkedPlan || !autumn || autumn.usagePlan === deepLinkedPlan)
-      return
+    if (!deepLinkedPlan || !autumn) return
     trackUpsellShown({
       surface: 'billing_deeplink',
       plan: deepLinkedPlan,
       usagePlan: autumn.usagePlan,
       creditsRemainingCents: autumn.creditsRemainingCents,
     })
-    const next = new URLSearchParams(searchParams)
-    next.delete('plan')
-    setSearchParams(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deepLinkedPlan, autumn?.usagePlan])
   const [usageProduct, setUsageProduct] = useState<
@@ -383,7 +396,7 @@ function PrepaidPlan() {
   const usagePlanMutation = useMutation({
     mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
     onSuccess: (d, plan) => {
-      setConfirmUsagePlanId(null)
+      closeUsagePlanDialog()
       trackCheckoutStarted({ plan, usagePlan: autumn?.usagePlan })
       if (!d.url) {
         const label = plan === 'pro' ? 'Pro' : 'Max'
@@ -419,7 +432,7 @@ function PrepaidPlan() {
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
   const selectedUsagePlan = USAGE_PLANS.find(
-    (plan) => plan.id === confirmUsagePlanId,
+    (plan) => plan.id === openUsagePlanId,
   )
   const hasCard =
     (billing?.hasPaymentMethod ?? false) ||
@@ -658,7 +671,7 @@ function PrepaidPlan() {
       />
       <ConfirmDialog
         open={!!selectedUsagePlan}
-        onOpenChange={(open) => !open && setConfirmUsagePlanId(null)}
+        onOpenChange={(open) => !open && closeUsagePlanDialog()}
         title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
         description={
           selectedUsagePlan
