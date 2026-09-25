@@ -428,6 +428,26 @@ export class OpenComputerClient {
     private readonly idempotencyKey?: string,
   ) {}
 
+  /**
+   * The caller's key scoped to one operation. Extra `parts` distinguish
+   * operations that share a URL but target different resources (one export
+   * per workspace path), so a stable key still retries each of them.
+   */
+  private derivedIdempotencyKey(
+    method: string,
+    path: string,
+    ...parts: string[]
+  ): string {
+    const hash = createHash("sha256")
+      .update(this.idempotencyKey ?? "")
+      .update("\0")
+      .update(method)
+      .update("\0")
+      .update(path);
+    for (const part of parts) hash.update("\0").update(part);
+    return hash.digest("hex");
+  }
+
   private async response(
     path: string,
     init: RequestInit = {},
@@ -450,17 +470,13 @@ export class OpenComputerClient {
     // backend compares under that key. Hashing the body in would make a
     // retry with different inputs a new operation instead of the conflict
     // the key promises.
-    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
-      headers.set(
-        "idempotency-key",
-        createHash("sha256")
-          .update(this.idempotencyKey)
-          .update("\0")
-          .update(method)
-          .update("\0")
-          .update(path)
-          .digest("hex"),
-      );
+    if (
+      this.idempotencyKey &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !headers.has("idempotency-key")
+    ) {
+      headers.set("idempotency-key", this.derivedIdempotencyKey(method, path));
     }
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
@@ -1409,6 +1425,17 @@ export class OpenComputerClient {
     }>(this.workspacePath(sessionId, "/exports"), {
       method: "POST",
       body: JSON.stringify({ path }),
+      ...(this.idempotencyKey
+        ? {
+            headers: {
+              "idempotency-key": this.derivedIdempotencyKey(
+                "POST",
+                this.workspacePath(sessionId, "/exports"),
+                path,
+              ),
+            },
+          }
+        : {}),
     });
     if (!result.artifact) {
       throw new APIError(

@@ -181,6 +181,31 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This setup no longer owns the connection. Use Set up manually or start again.",
 };
 
+/** Fixed public wording per workspace export code; upstream messages may
+ * name buckets or object keys and are never forwarded. */
+const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
+  artifact_path_invalid: "The workspace path is not exportable.",
+  artifact_not_found: "The workspace file was not found.",
+  artifact_symlink_rejected: "Symbolic links are not exported.",
+  artifact_not_regular_file: "Only regular files can be exported.",
+  artifact_too_large: "The workspace file is too large to export.",
+  artifact_changed_during_snapshot:
+    "The workspace file changed during export; retry.",
+  artifact_size_mismatch:
+    "The workspace file size differs from the expected byte count.",
+  artifact_digest_mismatch:
+    "The workspace file digest differs from the expected SHA-256.",
+  artifact_media_type_mismatch:
+    "The workspace file media type differs from the expected one.",
+  export_idempotency_conflict:
+    "The Idempotency-Key was already used for a different export request.",
+  export_in_progress: "An export with this Idempotency-Key is still running.",
+  export_expired:
+    "The export expired before completing; use a new Idempotency-Key.",
+  workspace_unavailable: "The session workspace is not available.",
+  workspace_export_failed: "The workspace export failed.",
+};
+
 async function publicErrorResponse(upstream: Response): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
@@ -296,7 +321,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     ) {
       exportOutcome.exportId = backendError.exportId;
     }
-    if (backendMessage) message = backendMessage;
+    message =
+      WORKSPACE_EXPORT_ERROR_MESSAGES[backendCode] ??
+      "The workspace export could not be completed.";
   }
   return new Response(
     JSON.stringify({

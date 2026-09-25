@@ -524,7 +524,7 @@ describe("managed agents proxy", () => {
             error: {
               code: "artifact_digest_mismatch",
               message:
-                "Retained snapshot does not match what the caller expected",
+                "s3://managed-agents-artifacts/accounts/acc/pending/x does not match",
               retrySafe: false,
               exportId: `wsexp_${"0".repeat(32)}`,
               bucket: "leaked",
@@ -554,7 +554,7 @@ describe("managed agents proxy", () => {
     expect(await response.json()).toEqual({
       error: {
         code: "artifact_digest_mismatch",
-        message: "Retained snapshot does not match what the caller expected",
+        message: "The workspace file digest differs from the expected SHA-256.",
         retrySafe: false,
         exportId: `wsexp_${"0".repeat(32)}`,
       },

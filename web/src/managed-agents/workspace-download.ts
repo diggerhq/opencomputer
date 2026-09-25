@@ -347,6 +347,29 @@ interface ZipEntry {
  * where offsets or sizes need it). Entries are written as they arrive so
  * nothing is buffered beyond the current chunk.
  */
+/**
+ * Entry names are relative, forward-slash paths with no `.`/`..` segments,
+ * so an extractor cannot be steered outside its target directory.
+ */
+export function safeZipEntryName(path: string): string {
+  const segments = path.replace(/\\/g, '/').split('/')
+  if (
+    segments.length === 0 ||
+    segments.some(
+      (segment) =>
+        segment === '' ||
+        segment === '.' ||
+        segment === '..' ||
+        // eslint-disable-next-line no-control-regex
+        /[\0-\x1f\x7f]/.test(segment) ||
+        /^[A-Za-z]:/.test(segment),
+    )
+  ) {
+    throw new Error(`Unsafe archive entry name: ${path}`)
+  }
+  return segments.join('/')
+}
+
 export class ZipWriter {
   private readonly entries: ZipEntry[] = []
   private offset = 0
@@ -356,7 +379,7 @@ export class ZipWriter {
 
   async beginEntry(path: string, modified?: Date) {
     if (this.current) throw new Error('Previous zip entry still open')
-    const name = new TextEncoder().encode(path)
+    const name = new TextEncoder().encode(safeZipEntryName(path))
     const [dosTime, dosDate] = dosDateTime(modified ?? new Date())
     const entry: ZipEntry = {
       name,

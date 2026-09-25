@@ -1768,13 +1768,13 @@ const workspaceFilesResponseSchema = z.object({
 })
 const workspaceArtifactSchema = z.object({
   id: z.string(),
-  exportId: z.string().optional(),
+  exportId: z.string().nullish(),
   sessionId: z.string(),
   path: z.string(),
   size: z.number(),
   sha256: z.string(),
-  mediaType: z.string().optional(),
-  snapshotId: z.string().optional(),
+  mediaType: z.string().nullish(),
+  snapshotId: z.string().nullish(),
   receipt: z.object({
     key: z.string(),
     etag: z.string().nullable(),

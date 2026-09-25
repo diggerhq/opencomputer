@@ -34,6 +34,35 @@ test("mutations derive idempotency headers from the caller's key and the target 
   assert.equal(keys[0]?.includes("retry-42"), false);
 });
 
+test("workspace exports derive one idempotency key per workspace path", async (context) => {
+  const requests: Request[] = [];
+  const artifact = {
+    id: "wsart_1",
+    sessionId: "ses",
+    path: "a.txt",
+    size: 1,
+    sha256: "0".repeat(64),
+    receipt: { key: "k", etag: null, sourceEtag: null, sourceVersionId: null },
+    exportedAt: "2026-09-10T12:00:00.000Z",
+  };
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    return Response.json({ export: null, artifact });
+  });
+  const client = new OpenComputerClient(
+    { apiUrl: "https://app.opencomputer.dev", apiKey: "test" },
+    "retry-42",
+  );
+  await client.exportWorkspaceFile("ses", "a.txt");
+  await client.exportWorkspaceFile("ses", "a.txt");
+  await client.exportWorkspaceFile("ses", "b.txt");
+  const keys = requests.map((request) => request.headers.get("idempotency-key"));
+  assert.ok(keys[0]);
+  assert.equal(keys[0], keys[1], "same path retries under the same key");
+  assert.notEqual(keys[0], keys[2], "each path is its own export operation");
+});
+
 test("memory documents travel with their ETag and send it back as a precondition", async (context) => {
   const requests: Request[] = [];
   const document = {

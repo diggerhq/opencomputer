@@ -158,14 +158,12 @@ export async function downloadArtifact(
     try {
       await streamVerified(client, artifact, temporary, signal);
       signal.throwIfAborted();
+      // Commit point: once renamed, the verified file stays even if an
+      // interrupt lands during the rename itself.
       await rename(temporary, destination);
     } catch (error) {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;
-    }
-    if (signal.aborted) {
-      await rm(destination, { force: true }).catch(() => undefined);
-      signal.throwIfAborted();
     }
   });
   return {
