@@ -56,11 +56,13 @@ export function sessionOutcome(
 
 const TURN_CONFLICT_CODE = "turn_idempotency_conflict";
 
+/** The API's own code when it gave one (`invalid_turn`, `runtime_unavailable`, …); a turn-key conflict gets its own name. */
 export function turnFailureCode(error: unknown): string {
-  if (error instanceof APIError && error.status === 409) {
-    return error.code === "idempotency_conflict"
-      ? TURN_CONFLICT_CODE
-      : (error.code ?? "conflict");
+  if (error instanceof APIError) {
+    if (error.status === 409 && error.code === "idempotency_conflict") {
+      return TURN_CONFLICT_CODE;
+    }
+    return error.code ?? structuredError(error).code;
   }
   return structuredError(error).code;
 }

@@ -247,7 +247,7 @@ test("acceptance 4: a turn refused before commit reports the existing idle sessi
   const failure = await partialFailure(createAndRun(api, { idempotencyKey: "cypen-cmd-9" }));
   assert.deepEqual(failure.details, {
     session: { id: "ses_01", created: true, duplicate: false, status: "idle" },
-    turn: { id: null, admitted: false, error: { code: "api_request_failed", message: "Expected input" } },
+    turn: { id: null, admitted: false, error: { code: "invalid_turn", message: "Expected input" } },
     complete: false,
   });
   assert.match(failure.message, /ses_01/);
