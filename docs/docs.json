@@ -40,6 +40,7 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
+              "agents/lifecycle",
               "agents/memory",
               "agents/database",
               "agents/schedules",

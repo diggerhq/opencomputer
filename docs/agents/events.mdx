@@ -194,7 +194,11 @@ reconnecting and completing work. See
 | --- | --- | --- |
 | `runtime.connected` | An agent runtime attached to the session | none |
 | `runtime.disconnected` | The runtime connection closed; running turns return to the queue to await a runtime | none |
-| `runtime.suspended` | The runtime was suspended between turns | none |
+| `runtime.started` | A computer generation became ready to serve the session | `generation`, `expiresAt`; `previousGeneration` when it replaces one |
+| `runtime.suspended` | The session's computer was released between turns | `generation`, `reason` (`idle` or `requested`); none for a hibernated `microvm` session |
+| `runtime.expired` | The computer reached its maximum lifetime and was released between commands | `generation`, `reason: "lifetime"` |
+| `runtime.released` | The computer was released for another reason | `generation`, `reason`: `session_ended`, `operation_unsettled`, `unresponsive`, `unverifiable` or `unknown` |
+| `runtime.replaced` | A new generation took over the session; the previous one's processes are gone, its workspace is not | `generation`, `previousGeneration`, `reason` the previous generation was released |
 | `runtime.resumed` | The runtime was resumed | none |
 | `runtime.log` | A line of runtime output or a platform milestone | `level`, `stream`, `message` for output; `phase` and `message` for milestones such as the runtime starting |
 

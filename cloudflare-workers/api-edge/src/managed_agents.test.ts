@@ -3007,6 +3007,136 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("platformInstructions");
   });
 
+  it("forwards the generation and bounded reason of runtime lifecycle events and nothing else about the computer", async () => {
+    const event = (seq: number, type: string, data: Record<string, unknown>) => ({
+      id: `event_${seq}`,
+      seq,
+      timestamp: "2026-09-25T00:00:00.000Z",
+      sessionId: "session-1",
+      type,
+      data,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            event(1, "runtime.started", {
+              generation: 1,
+              expiresAt: "2026-09-25T01:00:00.000Z",
+              microvmId: "mvm-secret",
+            }),
+            event(2, "runtime.expired", { generation: 1, reason: "lifetime" }),
+            event(3, "runtime.started", {
+              generation: 2,
+              previousGeneration: 1,
+              expiresAt: null,
+            }),
+            event(4, "runtime.replaced", {
+              generation: 2,
+              previousGeneration: 1,
+              reason: "host 10.0.0.1 drained",
+            }),
+            event(5, "runtime.suspended", {}),
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { events: Array<{ type: string; data: unknown }> };
+    expect(body.events.map((e) => [e.type, e.data])).toEqual([
+      ["runtime.started", { generation: 1, expiresAt: "2026-09-25T01:00:00.000Z" }],
+      ["runtime.expired", { generation: 1, reason: "lifetime" }],
+      ["runtime.started", { generation: 2, previousGeneration: 1, expiresAt: null }],
+      ["runtime.replaced", { generation: 2, previousGeneration: 1, reason: "unknown" }],
+      ["runtime.suspended", {}],
+    ]);
+    expect(JSON.stringify(body)).not.toContain("mvm-secret");
+    expect(JSON.stringify(body)).not.toContain("10.0.0.1");
+  });
+
+  it("returns the session's runtime and retention on inspect and the released compute on suspend", async () => {
+    const runtime = {
+      generation: 2,
+      state: "released",
+      startedAt: "2026-09-25T00:00:00.000Z",
+      expiresAt: null,
+      releasedAt: "2026-09-25T00:10:00.000Z",
+      releaseReason: "requested",
+      replacedAt: "2026-09-25T00:00:00.000Z",
+      replacementReason: "idle",
+      lifetimeSeconds: 3600,
+      idleReleaseSeconds: 180,
+    };
+    const retention = {
+      sessionExpiresAt: null,
+      workspaceExpiresAt: null,
+      eventHistoryExpiresAt: null,
+      policyVersion: "2026-09-25",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "session-1",
+          agentId: "agent-1",
+          deploymentId: "dep-1",
+          status: "idle",
+          turns: [],
+          runtime,
+          retention,
+          compute: { released: true, generation: 2 },
+          runtimeEpoch: 7,
+          createdAt: "2026-09-25T00:00:00.000Z",
+          updatedAt: "2026-09-25T00:10:00.000Z",
+        }),
+      ),
+    );
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const inspected = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/session-1"),
+      env,
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(inspected.status).toBe(200);
+    const snapshot = (await inspected.json()) as Record<string, unknown>;
+    expect(snapshot.runtime).toEqual(runtime);
+    expect(snapshot.retention).toEqual(retention);
+    expect(snapshot).not.toHaveProperty("runtimeEpoch");
+
+    const suspended = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/session-1/suspend", {
+        method: "POST",
+      }),
+      env,
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(suspended.status).toBe(200);
+    expect(await suspended.json()).toEqual({
+      id: "session-1",
+      status: "idle",
+      updatedAt: "2026-09-25T00:10:00.000Z",
+      runtime,
+      compute: { released: true, generation: 2 },
+    });
+  });
+
   it("redacts backend implementation errors", async () => {
     vi.stubGlobal(
       "fetch",

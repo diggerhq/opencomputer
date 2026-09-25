@@ -1,0 +1,188 @@
+---
+title: "Session lifecycle and computers"
+description: "What survives when a session's computer is suspended or replaced, and what does not"
+---
+
+A session is the durable object: its id, its pinned deployment, its turns,
+its event history, its memory bindings and its `/workspace` files. The
+computer that runs the agent's commands is not. OpenComputer acquires a
+computer when a turn needs one, releases it when the session goes quiet, and
+replaces it when it reaches its maximum lifetime or can no longer be trusted
+to serve the session. A session can pause for days between turns without
+keeping a computer, and can run for weeks across many computers.
+
+Each computer a session uses is a **generation**. The first is generation 1;
+every replacement increments it. The session id, the deployment and the
+workspace never change across generations.
+
+## What survives a replacement
+
+| Survives | Does not survive |
+| --- | --- |
+| The session id, status, labels and result | Operating-system processes and their memory |
+| Conversation history: every turn and every event | Background commands and servers started by a previous turn |
+| The pinned deployment, with its declared tools and memory resources | Open sockets and browser sessions |
+| `/workspace`: every file, byte for byte | Files outside `/workspace`, including `/tmp` and installed packages |
+| Memory bindings and the documents they name | Environment changes made by commands, such as exported variables |
+
+Design long-running work to checkpoint into `/workspace`. A file a command
+finished writing and closed before its computer went away is there for the
+next computer, byte for byte. A file still being written when a computer is
+lost may be incomplete. Write output under a temporary name, rename it into
+place once complete, and record its digest beside it so the next turn can
+tell a complete checkpoint from a partial one without trusting the name.
+
+Advancing Development or promoting to Production before a session resumes
+does not change the session: the replacement computer runs the deployment
+the session was created on, with that deployment's tools. See
+[Sessions and turns](/agents/sessions).
+
+## When a computer is released or replaced
+
+| Cause | `reason` | When |
+| --- | --- | --- |
+| Idle | `idle` | No command has run for the idle window, three minutes by default. |
+| Requested | `requested` | An application called `POST /sessions/<id>/suspend`. |
+| Maximum lifetime | `lifetime` | A computer has been running for its maximum lifetime, **one hour**. It is replaced between commands, never during one; see below. |
+| Session ended | `session_ended` | `POST /sessions/<id>/end` released the computer. |
+| Unsettled command | `operation_unsettled` | A command could not be confirmed stopped, so its outcome is unknown and the computer is replaced before any other command runs. |
+| Unresponsive | `unresponsive` | The computer stopped answering health checks. |
+| Unverifiable | `unverifiable` | The computer's state could not be verified after a fault. |
+| Unknown | `unknown` | The platform could not classify the cause. |
+
+Idle release and lifetime replacement are normal. Neither changes the
+session's status, ends it, or affects its retention. The next turn acquires
+a new computer over the same workspace automatically; there is no resume
+call to make.
+
+<Note>
+  The maximum running time of one computer is **one hour**, not eight. A
+  session is not limited by it: a turn that outlasts a computer continues
+  on the next one, and a session may use as many generations as it needs.
+</Note>
+
+### An active turn at the lifetime boundary
+
+A computer is never taken away in the middle of a command. Before each
+command, OpenComputer checks that the command's timeout fits within the
+computer's remaining lifetime, reserving the final two minutes for a clean
+shutdown. If it does not fit, the current computer is released with reason
+`lifetime`, a new generation is acquired over the same workspace, and the
+command runs there. The turn continues; no turn fails or is cancelled
+because of the lifetime boundary, and no command is repeated.
+
+This means the boundary always falls between commands, and a command that
+completed on the previous computer is never re-run on the next one. The
+agent is told that its computer was replaced and that process state from
+the earlier one is gone, so a turn that started a server or set an
+environment variable must redo that work before relying on it.
+
+Because a single command is bounded by its timeout (thirty minutes at most),
+a command cannot itself outlive a computer. Work longer than that must be
+split across commands and checkpointed into `/workspace`.
+
+### Uncertain outcomes are never replayed
+
+If a computer is lost or replaced while a command's outcome is unknown, for
+instance a command that could not be confirmed stopped, OpenComputer does
+not re-run the command on the new computer and does not roll back its
+effects. The command's result tells the agent that the outcome is unknown
+and that the workspace should be checked before retrying; the turn's
+cancellation event records the [settlement details](/agents/events#turns).
+Retrying is the application's decision, not the platform's.
+
+## Observing the computer
+
+`GET /sessions/<id>` returns `runtime`:
+
+```json
+{
+  "runtime": {
+    "generation": 2,
+    "state": "released",
+    "startedAt": "2026-09-25T09:00:00.000Z",
+    "expiresAt": null,
+    "releasedAt": "2026-09-25T09:12:00.000Z",
+    "releaseReason": "idle",
+    "replacedAt": "2026-09-25T09:00:00.000Z",
+    "replacementReason": "lifetime",
+    "lifetimeSeconds": 3600,
+    "idleReleaseSeconds": 180
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `generation` | The current computer's generation; `0` before the first is acquired |
+| `state` | `none`, `running` or `released` |
+| `startedAt` | When this generation became ready |
+| `expiresAt` | When the running computer reaches its maximum lifetime; `null` once released |
+| `releasedAt`, `releaseReason` | When and why this generation went away, or `null` while it runs |
+| `replacedAt`, `replacementReason` | When this generation replaced the previous one and why the previous one went; `null` for the first |
+| `lifetimeSeconds`, `idleReleaseSeconds` | The effective limits applied to this generation |
+
+Reasons are drawn from the bounded set above. The response never names
+hosts, addresses or other infrastructure.
+
+<Note>
+  `runtime` and `retention` are returned for sessions whose computer is
+  acquired per turn, which is every session unless it was created with
+  `executionMode: "microvm"`. Check the creation response's `executionMode`
+  when your application depends on them.
+</Note>
+
+The same transitions are durable [session events](/agents/events#runtime),
+ordered by `seq` with every other event, so a client that stores its cursor
+can replay them later without gaps:
+
+| Event | `data` |
+| --- | --- |
+| `runtime.started` | `generation`, `expiresAt`, and `previousGeneration` when this generation replaces one |
+| `runtime.suspended` | `generation`, `reason` (`idle` or `requested`) |
+| `runtime.expired` | `generation`, `reason: "lifetime"` |
+| `runtime.released` | `generation`, `reason` for any other cause |
+| `runtime.replaced` | `generation`, `previousGeneration`, `reason` the previous generation went |
+
+## Releasing a computer explicitly
+
+`POST /sessions/<id>/suspend` releases the session's computer now, between
+turns. The session stays resumable; its next turn acquires a new generation.
+The response is the session with `runtime` and `compute: { released,
+generation }`. While a turn is running or queued the call is
+`409 turn_in_progress`, because the computer belongs to that turn:
+[interrupt](/agents/api#end-and-interrupt) it first. An ended session is
+`409 session_ended`.
+
+There is no request to keep a computer alive past the idle window or the
+one-hour maximum. Resumption is automatic and the workspace is durable, so
+holding a computer buys nothing for a paused session; a turn that needs the
+same process state across a pause should checkpoint instead.
+
+## Retention
+
+`GET /sessions/<id>` returns `retention`:
+
+```json
+{
+  "retention": {
+    "sessionExpiresAt": null,
+    "workspaceExpiresAt": null,
+    "eventHistoryExpiresAt": null,
+    "policyVersion": "2026-09-25"
+  }
+}
+```
+
+`null` means no time-based expiry while the project exists. Idle sessions do
+not expire: a session that has not received a turn in days is `idle` with a
+released computer, and its next turn continues it. Ending a session refuses
+future turns and releases its computer; the session, its events and its
+`/workspace` remain under the same retention. Archiving a project ends its
+live sessions and refuses new work until it is restored; restoring it does
+not resume the sessions it ended.
+
+OpenComputer applies no time-based deletion to sessions, events or
+workspaces today. `policyVersion` identifies the policy these fields
+describe; a policy that adds a limit will carry a later version and a field
+for that limit, so read the fields rather than assuming `null`.

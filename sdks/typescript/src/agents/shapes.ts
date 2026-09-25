@@ -34,6 +34,8 @@ import type {
   SessionEvent,
   SessionPage,
   SessionResult,
+  SessionRetention,
+  SessionRuntime,
   SessionStatus,
   SessionSummary,
   Turn,
@@ -244,6 +246,26 @@ const sessionMemoryBinding: Shape<SessionMemoryBinding> = (value, path) => {
   return { resource: binding.resource, scope: "collection", access: "read", writable: binding.writable };
 };
 
+export const sessionRuntime: Shape<SessionRuntime> = object({
+  generation: number,
+  state: oneOf("none", "running", "released"),
+  startedAt: nullable(string),
+  expiresAt: nullable(string),
+  releasedAt: nullable(string),
+  releaseReason: nullable(stringAs<SessionRuntime["releaseReason"] & string>()),
+  replacedAt: nullable(string),
+  replacementReason: nullable(stringAs<SessionRuntime["replacementReason"] & string>()),
+  lifetimeSeconds: nullable(number),
+  idleReleaseSeconds: nullable(number),
+});
+
+export const sessionRetention: Shape<SessionRetention> = object({
+  sessionExpiresAt: nullable(string),
+  workspaceExpiresAt: nullable(string),
+  eventHistoryExpiresAt: nullable(string),
+  policyVersion: string,
+});
+
 export const session: Shape<Session> = object({
   id: string,
   projectId: optional(string),
@@ -259,6 +281,8 @@ export const session: Shape<Session> = object({
   labelsUpdatedAt: optional(string),
   revision: optional(number),
   result: optional(nullable(sessionResult)),
+  runtime: optional(sessionRuntime),
+  retention: optional(sessionRetention),
   createdAt: string,
   updatedAt: string,
 }) as Shape<Session>;

@@ -1327,10 +1327,57 @@ export function publicFailure(value: unknown): PublicFailure {
   return { code: "agent_failed", message: GENERIC_FAILURE_MESSAGE };
 }
 
+/**
+ * The runtime lifecycle events carry the computer generation and a bounded
+ * reason code; nothing else about the computer is public.
+ */
+const RUNTIME_LIFECYCLE_EVENT_TYPES = new Set([
+  "runtime.started",
+  "runtime.suspended",
+  "runtime.replaced",
+  "runtime.expired",
+  "runtime.released",
+]);
+const RUNTIME_RELEASE_REASONS = new Set([
+  "idle",
+  "lifetime",
+  "requested",
+  "session_ended",
+  "operation_unsettled",
+  "unresponsive",
+  "unverifiable",
+  "unknown",
+]);
+
+function publicRuntimeLifecycleData(value: unknown): Record<string, unknown> {
+  const data = record(value) ?? {};
+  const out: Record<string, unknown> = {};
+  for (const key of ["generation", "previousGeneration"]) {
+    const n = data[key];
+    if (typeof n === "number" && Number.isInteger(n) && n > 0) out[key] = n;
+  }
+  if (typeof data.reason === "string") {
+    out.reason = RUNTIME_RELEASE_REASONS.has(data.reason)
+      ? data.reason
+      : "unknown";
+  }
+  if (data.expiresAt === null) out.expiresAt = null;
+  else if (
+    typeof data.expiresAt === "string" &&
+    Number.isFinite(Date.parse(data.expiresAt))
+  ) {
+    out.expiresAt = data.expiresAt;
+  }
+  return out;
+}
+
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
+  if (RUNTIME_LIFECYCLE_EVENT_TYPES.has(type)) {
+    return publicRuntimeLifecycleData(value);
+  }
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
     return { ...publicFailure(value) };
@@ -1831,6 +1878,8 @@ function publicSuccessBody(
       id: body.id,
       status: body.status,
       updatedAt: body.updatedAt,
+      ...(record(body.runtime) ? { runtime: stripPrivateValues(body.runtime) } : {}),
+      ...(record(body.compute) ? { compute: stripPrivateValues(body.compute) } : {}),
     };
   }
   if (method === "GET" && suffix === "/sessions") {
