@@ -24,6 +24,7 @@ import type {
   DataValue,
   Deployment,
   Environment,
+  NetworkPolicy,
   NetworkPolicyReceipt,
   NetworkPolicyRevocation,
   Project,
@@ -246,6 +247,31 @@ const sessionMemoryBinding: Shape<SessionMemoryBinding> = (value, path) => {
   return { resource: binding.resource, scope: "collection", access: "read", writable: binding.writable };
 };
 
+const networkPolicyVersion: Shape<1> = (value, path) => {
+  if (value !== 1) throw new ShapeError(path, "1");
+  return 1;
+};
+
+const networkPolicy: Shape<NetworkPolicy> = object({
+  version: networkPolicyVersion,
+  mode: oneOf("deny_by_default"),
+  destinations: array(
+    object({
+      type: oneOf("origin"),
+      scheme: oneOf("http", "https"),
+      hostname: nonEmptyString,
+      port: number,
+      addressFamilies: array(oneOf("ipv4", "ipv6")),
+    }),
+  ),
+  exclusions: array(object({ type: oneOf("ip"), address: nonEmptyString })),
+  dns: object({ mode: oneOf("provider_resolver_only") }),
+  limits: optional(
+    object({ newConnectionsPerSecond: optional(number), concurrentConnections: optional(number) }),
+  ),
+  expiresAt: optional(string),
+});
+
 export const networkPolicyReceipt: Shape<NetworkPolicyReceipt> = object({
   policyId: string,
   policyDigest: string,
@@ -267,8 +293,8 @@ export const networkPolicyReceipt: Shape<NetworkPolicyReceipt> = object({
     bytesIn: number,
     bytesOut: number,
   }),
-  policy: anyRecord,
-}) as unknown as Shape<NetworkPolicyReceipt>;
+  policy: networkPolicy,
+});
 
 export const networkPolicyRevocation: Shape<NetworkPolicyRevocation> = object({
   networkPolicy: networkPolicyReceipt,

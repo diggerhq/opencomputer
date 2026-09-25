@@ -76,19 +76,31 @@ export type SessionLabels = Record<string, string>;
 
 // ── Network egress policy ─────────────────────────────────────────────────────
 
-/** One exact HTTP or HTTPS origin the session's processes may reach. */
-export interface NetworkPolicyOriginInput {
-  type: "origin";
-  /** `https://host` or `http://host:8080`: scheme, host and optional port; no path. */
-  origin?: string;
-  /** Alternative to `origin`: the parts. */
-  scheme?: "http" | "https";
-  hostname?: string;
-  /** Defaults to the scheme's port. */
-  port?: number;
-  /** Which resolved address families may be dialled; default `["ipv4"]`. Neither implies the other. */
-  addressFamilies?: Array<"ipv4" | "ipv6">;
-}
+/**
+ * One exact HTTP or HTTPS origin the session's processes may reach, given
+ * either as an `origin` URL or as its `scheme` and `hostname`.
+ */
+export type NetworkPolicyOriginInput =
+  | {
+      type: "origin";
+      /** `https://host` or `http://host:8080`: scheme, host and optional port; no path. */
+      origin: string;
+      scheme?: undefined;
+      hostname?: undefined;
+      port?: undefined;
+      /** Which resolved address families may be dialled; default `["ipv4"]`. Neither implies the other. */
+      addressFamilies?: Array<"ipv4" | "ipv6">;
+    }
+  | {
+      type: "origin";
+      origin?: undefined;
+      scheme: "http" | "https";
+      hostname: string;
+      /** Defaults to the scheme's port. */
+      port?: number;
+      /** Which resolved address families may be dialled; default `["ipv4"]`. Neither implies the other. */
+      addressFamilies?: Array<"ipv4" | "ipv6">;
+    };
 
 /** An address the session may never reach, even when an allowed hostname resolves to it. */
 export interface NetworkPolicyIpExclusion {

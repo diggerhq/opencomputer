@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { OpenComputer } from "./client.js";
 import { OpenComputerError } from "./errors.js";
-import type { NetworkPolicyReceipt, NetworkPolicyRevocation, SessionEvent } from "./types.js";
+import type { NetworkPolicyOriginInput, NetworkPolicyReceipt, NetworkPolicyRevocation, SessionEvent } from "./types.js";
 
 interface Call { method: string; path: string; headers: Record<string, string>; body?: unknown }
 
@@ -80,6 +80,35 @@ describe("network policy", () => {
       "GET /api/managed-agents/sessions/ses_1": () => Response.json({ ...session, networkPolicy: broken }),
     });
     await expect(oc(api).sessions.get("ses_1")).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("rejects a receipt whose canonical policy is incomplete, on read and on revoke", async () => {
+    const malformed = [
+      {},
+      { ...receipt.policy, destinations: [{ type: "origin", scheme: "https" }] },
+      { ...receipt.policy, version: 2 },
+      { ...receipt.policy, dns: {} },
+    ];
+    for (const policy of malformed) {
+      const api = fakeApi({
+        "GET /api/managed-agents/sessions/ses_1": () =>
+          Response.json({ ...session, networkPolicy: { ...receipt, policy } }),
+        "POST /api/managed-agents/sessions/ses_1/network-policy/revoke": () =>
+          Response.json({ networkPolicy: { ...receipt, policy }, changed: true, enforcement: { closed: true, method: "gateway" } }),
+      });
+      await expect(oc(api).sessions.get("ses_1")).rejects.toMatchObject({ code: "invalid_response" });
+      await expect(oc(api).sessions.revokeNetworkPolicy("ses_1")).rejects.toMatchObject({ code: "invalid_response" });
+    }
+  });
+
+  it("requires either an origin URL or scheme and hostname on each destination", () => {
+    // @ts-expect-error neither representation given
+    const incomplete: NetworkPolicyOriginInput = { type: "origin" };
+    // @ts-expect-error hostname without scheme
+    const partial: NetworkPolicyOriginInput = { type: "origin", hostname: "owned-target.example" };
+    const asUrl: NetworkPolicyOriginInput = { type: "origin", origin: "https://owned-target.example" };
+    const asParts: NetworkPolicyOriginInput = { type: "origin", scheme: "https", hostname: "owned-target.example", port: 8443 };
+    expect([incomplete, partial, asUrl, asParts]).toHaveLength(4);
   });
 
   it("revokes on the documented route and returns the closure confirmation", async () => {
