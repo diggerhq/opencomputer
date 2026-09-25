@@ -322,6 +322,7 @@ describe("deployment capability routes", () => {
   });
 
   it("relays where a refused capability declaration lives, never what it held", async () => {
+    const leaked = "sk-live-4f8a9c2e7b1d3f6a0c5e8b2d4f7a9c1e";
     const source = artifact([
       { path: ".opencomputer/reactive.json", content: JSON.stringify(reactive) },
     ]);
@@ -347,8 +348,9 @@ describe("deployment capability routes", () => {
             {
               error: {
                 code: "invalid_capabilities",
-                message:
-                  "capabilities.resultSchemas[].schema.default is shaped like a credential; declarations are published with the deployment and may not carry secrets",
+                // A backend message that (against its own contract) echoes
+                // the rejected value: the edge repeats only the location.
+                message: `capabilities.resultSchemas[0].schema.properties.${leaked}.default is shaped like a credential (${leaked}); declarations are published with the deployment and may not carry secrets`,
               },
             },
             { status: 400 },
@@ -375,12 +377,12 @@ describe("deployment capability routes", () => {
       "/api/managed-agents",
     );
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: {
-        code: "invalid_capabilities",
-        message: expect.stringContaining("capabilities.resultSchemas[].schema.default"),
-      },
-    });
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_capabilities");
+    expect(body.error.message).toContain("at capabilities.resultSchemas[0].schema ");
+    expect(body.error.message).toContain("shaped like a credential");
+    expect(body.error.message).not.toContain(leaked);
+    expect(body.error.message).not.toContain("properties");
   });
 
   it("runs readiness through the public receipt shape only", async () => {

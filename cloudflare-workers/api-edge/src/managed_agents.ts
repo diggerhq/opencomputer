@@ -115,6 +115,30 @@ export async function mintManagedAgentsAssertion(
   return `${signingInput}.${b64url(signature)}`;
 }
 
+/**
+ * The only part of a capability-declaration refusal the edge repeats: the
+ * declaration's location, matched against a fixed grammar. The rest of the
+ * message is composed here, so nothing the backend (or a rejected value that
+ * leaked into its message) says reaches the caller verbatim.
+ */
+const CAPABILITY_LOCATION =
+  /^capabilities\.((?:tools|resultSchemas|skills|mcpServers|subagents)(?:\[\d*\])?(?:\.(?:id|toolId|name|path|connection|origin|schema))?)(?![A-Za-z0-9_])/;
+
+function capabilityDeclarationMessage(
+  code: string,
+  backendMessage: string,
+): string {
+  const location = CAPABILITY_LOCATION.exec(backendMessage)?.[1];
+  const where = location ? ` at capabilities.${location}` : "";
+  if (code === "capabilities_too_large") {
+    return `A capability declaration${where} exceeds the platform's declaration bounds.`;
+  }
+  if (backendMessage.includes("shaped like a credential")) {
+    return `A capability declaration${where} is shaped like a credential; declarations are published with the deployment and may not carry secrets.`;
+  }
+  return `A capability declaration${where} is not a valid identifier, path or origin.`;
+}
+
 function copyRequestHeaders(request: Request): Headers {
   const headers = new Headers();
   for (const name of [
@@ -230,15 +254,12 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
   } else if (upstream.status === 400) {
-    // Capability declaration refusals name the offending declaration's
-    // location (never its value) so the author can find it in the source.
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : (backendCode === "invalid_capabilities" ||
-              backendCode === "capabilities_too_large") &&
-            backendMessage
-          ? backendMessage
+        : backendCode === "invalid_capabilities" ||
+            backendCode === "capabilities_too_large"
+          ? capabilityDeclarationMessage(backendCode, backendMessage)
           : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
