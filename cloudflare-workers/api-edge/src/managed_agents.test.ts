@@ -357,6 +357,250 @@ describe("managed agents proxy", () => {
     expect(response.headers.get("x-storage-provider")).toBeNull();
   });
 
+  it("shapes workspace artifact manifests and streams their bytes with the verification headers", async () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test", role: "admin" };
+    const artifact = {
+      id: "wsart_1",
+      exportId: "wsexp_1",
+      sessionId: "sess_1",
+      projectId: "proj_1",
+      agentId: "acme/evidence",
+      deploymentId: "dep_1",
+      environment: "production",
+      path: "evidence/capture.har",
+      size: 12,
+      sha256: "a".repeat(64),
+      mediaType: "application/json",
+      snapshotId: '"s"',
+      receipt: {
+        bucket: "private-bucket",
+        key: "accounts/org_test/sessions/sess_1/workspace-artifacts/x",
+        etag: '"e"',
+        sourceEtag: '"s"',
+        sourceVersionId: null,
+      },
+      retention: { policy: "until_deleted", expiresAt: null },
+      exportedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const exportRecord = {
+      id: "wsexp_1",
+      sessionId: "sess_1",
+      projectId: "proj_1",
+      agentId: "acme/evidence",
+      deploymentId: "dep_1",
+      environment: "production",
+      path: "evidence/capture.har",
+      state: "delivered",
+      idempotencyKey: "k-1",
+      requestDigest: "f".repeat(64),
+      expected: { bytes: 12 },
+      artifactId: "wsart_1",
+      error: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:01.000Z",
+    };
+    const upstreamHeaders: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (target: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(target);
+        if (url.endsWith("/workspace/exports")) {
+          upstreamHeaders.push(
+            Object.fromEntries(new Headers(init?.headers).entries()),
+          );
+          return Response.json(
+            { export: exportRecord, artifact },
+            { status: 201 },
+          );
+        }
+        if (url.endsWith("/workspace/exports/wsart_1/content")) {
+          return new Response("har contents", {
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-disposition": "attachment; filename*=UTF-8''capture.har",
+              "x-workspace-artifact-id": "wsart_1",
+              "x-workspace-artifact-sha256": artifact.sha256,
+              "x-workspace-artifact-size": "12",
+              "x-storage-provider": "private",
+            },
+          });
+        }
+        throw new Error(`unexpected upstream ${url}`);
+      }),
+    );
+
+    const exported = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": "k-1",
+          },
+          body: JSON.stringify({
+            path: "evidence/capture.har",
+            expected: { bytes: 12 },
+          }),
+        },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(exported.status).toBe(201);
+    expect(upstreamHeaders[0]?.["idempotency-key"]).toBe("k-1");
+    const { requestDigest: _digest, ...publicExport } = exportRecord;
+    expect(await exported.json()).toEqual({
+      export: publicExport,
+      artifact: {
+        id: "wsart_1",
+        exportId: "wsexp_1",
+        sessionId: "sess_1",
+        projectId: "proj_1",
+        agentId: "acme/evidence",
+        deploymentId: "dep_1",
+        environment: "production",
+        path: "evidence/capture.har",
+        size: 12,
+        sha256: artifact.sha256,
+        mediaType: "application/json",
+        snapshotId: '"s"',
+        receipt: {
+          etag: '"e"',
+          sourceEtag: '"s"',
+          sourceVersionId: null,
+        },
+        retention: { policy: "until_deleted", expiresAt: null },
+        exportedAt: artifact.exportedAt,
+      },
+    });
+
+    const content = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/content",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(content.status).toBe(200);
+    expect(await content.text()).toBe("har contents");
+    expect(content.headers.get("x-workspace-artifact-sha256")).toBe(
+      artifact.sha256,
+    );
+    expect(content.headers.get("x-workspace-artifact-size")).toBe("12");
+    expect(content.headers.get("cache-control")).toBe("private, no-store");
+    expect(content.headers.get("x-storage-provider")).toBeNull();
+
+    const blocked = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/content",
+        { method: "DELETE" },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(blocked.status).toBe(404);
+  });
+
+  it("passes workspace export refusals through with their code, retry safety and export id", async () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test", role: "admin" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "artifact_digest_mismatch",
+              message:
+                "s3://managed-agents-artifacts/accounts/acc/pending/x does not match",
+              retrySafe: false,
+              exportId: `wsexp_${"0".repeat(32)}`,
+              bucket: "leaked",
+            },
+          },
+          { status: 412 },
+        ),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            path: "evidence/capture.har",
+            expected: { sha256: "b".repeat(64) },
+          }),
+        },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "artifact_digest_mismatch",
+        message: "The workspace file digest differs from the expected SHA-256.",
+        retrySafe: false,
+        exportId: `wsexp_${"0".repeat(32)}`,
+      },
+    });
+  });
+
+  it("collapses unrecognized workspace export codes to the generic one", async () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test", role: "admin" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "artifact_pending_acc_sess_1_x_rejected",
+              message: "s3://managed-agents-artifacts/accounts/acc/x",
+              retrySafe: true,
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "x" }),
+        },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: Record<string, unknown> }>();
+    expect(body.error.code).toBe("workspace_export_failed");
+    expect(body.error.retrySafe).toBe(true);
+    expect(JSON.stringify(body)).not.toMatch(/acc_sess_1|accounts\/acc|s3:/);
+  });
+
   it("reads BYOK eligibility from an active Autumn subscription", async () => {
     vi.stubGlobal(
       "fetch",

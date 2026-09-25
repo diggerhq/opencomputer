@@ -181,6 +181,31 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This setup no longer owns the connection. Use Set up manually or start again.",
 };
 
+/** Fixed public wording per workspace export code; upstream messages may
+ * name buckets or object keys and are never forwarded. */
+const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
+  artifact_path_invalid: "The workspace path is not exportable.",
+  artifact_not_found: "The workspace file was not found.",
+  artifact_symlink_rejected: "Symbolic links are not exported.",
+  artifact_not_regular_file: "Only regular files can be exported.",
+  artifact_too_large: "The workspace file is too large to export.",
+  artifact_changed_during_snapshot:
+    "The workspace file changed during export; retry.",
+  artifact_size_mismatch:
+    "The workspace file size differs from the expected byte count.",
+  artifact_digest_mismatch:
+    "The workspace file digest differs from the expected SHA-256.",
+  artifact_media_type_mismatch:
+    "The workspace file media type differs from the expected one.",
+  export_idempotency_conflict:
+    "The Idempotency-Key was already used for a different export request.",
+  export_in_progress: "An export with this Idempotency-Key is still running.",
+  export_expired:
+    "The export expired before completing; use a new Idempotency-Key.",
+  workspace_unavailable: "The session workspace is not available.",
+  workspace_export_failed: "The workspace export failed.",
+};
+
 async function publicErrorResponse(upstream: Response): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
@@ -206,9 +231,18 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     backendCode === "template_sync_failed" &&
     backendMessage.includes("oc-template.toml") &&
     backendMessage.includes("expected a regular file");
+  const workspaceExportError =
+    backendCode.startsWith("artifact_") ||
+    backendCode.startsWith("export_") ||
+    backendCode.startsWith("workspace_");
+  // Only the documented export codes pass through; anything else from that
+  // family collapses to the generic code so no upstream detail leaks.
   const publicCode = missingTemplateManifest
     ? "template_manifest_missing"
-    : backendCode;
+    : workspaceExportError &&
+        !Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, backendCode)
+      ? "workspace_export_failed"
+      : backendCode;
   let message = "The agent request could not be completed.";
   const slackSetupMessage = Object.hasOwn(
     SLACK_SETUP_ERROR_MESSAGES,
@@ -279,8 +313,25 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
       ? { setupId: backendError.setupId }
       : {};
+  // Workspace export refusals say whether the same Idempotency-Key may be
+  // retried and which export record the refusal was written to.
+  const exportOutcome: Record<string, unknown> = {};
+  if (workspaceExportError) {
+    if (typeof backendError?.retrySafe === "boolean") {
+      exportOutcome.retrySafe = backendError.retrySafe;
+    }
+    if (
+      typeof backendError?.exportId === "string" &&
+      /^wsexp_[a-f0-9]{32}$/.test(backendError.exportId)
+    ) {
+      exportOutcome.exportId = backendError.exportId;
+    }
+    message = WORKSPACE_EXPORT_ERROR_MESSAGES[publicCode];
+  }
   return new Response(
-    JSON.stringify({ error: { code: publicCode, message, ...setupId } }),
+    JSON.stringify({
+      error: { code: publicCode, message, ...setupId, ...exportOutcome },
+    }),
     { status: upstream.status, headers },
   );
 }
@@ -1849,8 +1900,139 @@ function publicSuccessBody(
   ) {
     return publicSessionSnapshot(body);
   }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return {
+      files: Array.isArray(body.files)
+        ? body.files.map(publicWorkspaceFile)
+        : [],
+      nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
+    };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return {
+      artifacts: Array.isArray(body.artifacts)
+        ? body.artifacts.map(publicWorkspaceArtifact)
+        : [],
+      exports: Array.isArray(body.exports)
+        ? body.exports.map(publicWorkspaceExport)
+        : [],
+    };
+  }
+  if (
+    (method === "POST" &&
+      /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)) ||
+    (method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+$/.test(suffix))
+  ) {
+    return {
+      ...(body.export !== undefined
+        ? { export: publicWorkspaceExport(body.export) }
+        : {}),
+      artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
+    };
+  }
   throw new Error("Unsupported managed agents response");
 }
+
+function publicWorkspaceFile(value: unknown): Record<string, unknown> {
+  const file = record(value) ?? {};
+  return {
+    path: file.path,
+    size: file.size,
+    lastModified: file.lastModified ?? null,
+    etag: file.etag ?? null,
+  };
+}
+
+/** The manifest a caller verifies against: id, path, size, sha256 and the
+ * retained object's etags. Where the provider retains it (bucket and object
+ * key) is not part of the public contract. */
+function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
+  const artifact = record(value) ?? {};
+  const receipt = record(artifact.receipt) ?? {};
+  const retention = record(artifact.retention);
+  return {
+    id: artifact.id,
+    exportId: artifact.exportId ?? null,
+    sessionId: artifact.sessionId,
+    projectId: artifact.projectId ?? null,
+    agentId: artifact.agentId ?? null,
+    deploymentId: artifact.deploymentId ?? null,
+    environment: artifact.environment ?? null,
+    path: artifact.path,
+    size: artifact.size,
+    sha256: artifact.sha256,
+    mediaType: artifact.mediaType ?? "application/octet-stream",
+    snapshotId:
+      artifact.snapshotId ??
+      receipt.sourceVersionId ??
+      receipt.sourceEtag ??
+      null,
+    receipt: {
+      etag: receipt.etag ?? null,
+      sourceEtag: receipt.sourceEtag ?? null,
+      sourceVersionId: receipt.sourceVersionId ?? null,
+    },
+    retention: retention
+      ? { policy: retention.policy, expiresAt: retention.expiresAt ?? null }
+      : { policy: "until_deleted", expiresAt: null },
+    exportedAt: artifact.exportedAt,
+  };
+}
+
+/** One export attempt: its state, what the caller expected, the artifact it
+ * produced or the error it ended in. The request digest is internal. */
+function publicWorkspaceExport(value: unknown): Record<string, unknown> {
+  const exported = record(value) ?? {};
+  const error = record(exported.error);
+  const expected = record(exported.expected);
+  return {
+    id: exported.id,
+    sessionId: exported.sessionId,
+    projectId: exported.projectId ?? null,
+    agentId: exported.agentId ?? null,
+    deploymentId: exported.deploymentId ?? null,
+    environment: exported.environment ?? null,
+    path: exported.path,
+    state: exported.state,
+    idempotencyKey: exported.idempotencyKey ?? null,
+    expected: expected
+      ? {
+          ...(expected.bytes !== undefined ? { bytes: expected.bytes } : {}),
+          ...(expected.sha256 !== undefined ? { sha256: expected.sha256 } : {}),
+          ...(expected.mediaType !== undefined
+            ? { mediaType: expected.mediaType }
+            : {}),
+        }
+      : null,
+    artifactId: exported.artifactId ?? null,
+    error: error
+      ? {
+          code:
+            typeof error.code === "string" &&
+            Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, error.code)
+              ? error.code
+              : "workspace_export_failed",
+          message:
+            (typeof error.code === "string" &&
+              WORKSPACE_EXPORT_ERROR_MESSAGES[error.code]) ||
+            WORKSPACE_EXPORT_ERROR_MESSAGES.workspace_export_failed,
+          retrySafe: error.retrySafe === true,
+        }
+      : null,
+    createdAt: exported.createdAt,
+    completedAt: exported.completedAt ?? null,
+  };
+}
+
+const WORKSPACE_ARTIFACT_CONTENT_ROUTE =
+  /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/content$/;
 
 async function publicSuccessResponse(
   upstream: Response,
@@ -2218,6 +2400,24 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+  ) {
     return true;
   }
   return (
@@ -2754,13 +2954,19 @@ export async function proxyManagedAgents(
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
-    if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    if (
+      /^\/projects\/[^/]+\/source-archive$/.test(suffix) ||
+      WORKSPACE_ARTIFACT_CONTENT_ROUTE.test(suffix)
+    ) {
       const responseHeaders = new Headers();
       for (const name of [
         "content-type",
         "content-length",
         "content-disposition",
         "etag",
+        "x-workspace-artifact-id",
+        "x-workspace-artifact-sha256",
+        "x-workspace-artifact-size",
       ]) {
         const value = upstream.headers.get(name);
         if (value) responseHeaders.set(name, value);
