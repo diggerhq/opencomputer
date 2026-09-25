@@ -16,6 +16,7 @@ import {
   Clock3,
   Clipboard,
   GitCommitHorizontal,
+  GitPullRequest,
   Loader2,
   Pencil,
   Plus,
@@ -83,6 +84,7 @@ import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
+import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
   projectCloneCommand,
@@ -101,6 +103,7 @@ type DetailTab =
   | 'connections'
   | 'github'
   | 'byok'
+  | 'settings'
 
 export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'playground',
@@ -114,7 +117,10 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'connections',
   'github',
   'byok',
+  'settings',
 ])
+
+const PREVIEW_ALIAS = /^pr-[1-9][0-9]{0,8}$/
 
 const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
 
@@ -580,10 +586,16 @@ export default function ManagedAgentDetail({
       ? routeTab
       : 'playground'
     : standaloneTab
+  const requestedEnvironment = searchParams.get('environment') ?? ''
   const environment =
-    searchParams.get('environment') === 'production'
-      ? 'production'
-      : 'development'
+    requestedEnvironment === 'production' ? 'production' : 'development'
+  // A pull request preview (`pr-<n>`) is a deployment alias, not an
+  // environment: only the playground targets it, everything else stays on
+  // development.
+  const previewAlias = PREVIEW_ALIAS.test(requestedEnvironment)
+    ? requestedEnvironment
+    : undefined
+  const playgroundAlias = previewAlias ?? environment
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
@@ -647,7 +659,7 @@ export default function ManagedAgentDetail({
         sessions.data ?? [],
         project.deployments,
         agentId,
-        environment,
+        playgroundAlias,
       )
     : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
@@ -806,7 +818,16 @@ export default function ManagedAgentDetail({
       ? ([{ id: 'connections', label: 'Connections' }] as const)
       : []),
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
+    ...(project ? ([{ id: 'settings', label: 'Settings' }] as const) : []),
   ]
+  const previewDeployed =
+    previewAlias !== undefined &&
+    Boolean(
+      project?.deployments.some(
+        (deployment) =>
+          deployment.alias === previewAlias && deployment.agentId === agentId,
+      ),
+    )
 
   return (
     <div
@@ -950,8 +971,23 @@ export default function ManagedAgentDetail({
         </div>
       ) : null}
 
+      {activeTab === 'playground' && project && previewAlias ? (
+        <p className="text-muted-foreground flex shrink-0 items-center gap-2 text-sm">
+          <GitPullRequest className="size-4" />
+          Testing preview <code className="text-xs">{previewAlias}</code>
+          {previewDeployed ? '' : ' · not deployed yet'}
+          <Link
+            to={`/projects/${encodeURIComponent(project.project.id)}/settings`}
+            className="underline"
+          >
+            Manage previews
+          </Link>
+        </p>
+      ) : null}
+
       {activeTab === 'playground' &&
       project &&
+      !previewAlias &&
       !projectEnvironment?.activeDeploymentId ? (
         <Panel>
           <EmptyState
@@ -1051,9 +1087,9 @@ export default function ManagedAgentDetail({
               </div>
             ) : (
               <PlaygroundChat
-                key={`${environment}:${playgroundChatId}`}
-                chatId={`${environment}:${playgroundChatId}`}
-                agentId={project ? `${agentId}@${environment}` : agentId}
+                key={`${playgroundAlias}:${playgroundChatId}`}
+                chatId={`${playgroundAlias}:${playgroundChatId}`}
+                agentId={project ? `${agentId}@${playgroundAlias}` : agentId}
                 session={
                   selectedPlaygroundId
                     ? selectedPlaygroundSession.data
@@ -1248,6 +1284,10 @@ export default function ManagedAgentDetail({
 
       {activeTab === 'byok' && project ? (
         <ManagedProjectBYOK projectId={project.project.id} />
+      ) : null}
+
+      {activeTab === 'settings' && project ? (
+        <ManagedProjectSettings projectId={project.project.id} />
       ) : null}
 
       {activeTab === 'connections' && project ? (
