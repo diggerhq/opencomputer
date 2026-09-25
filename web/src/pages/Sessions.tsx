@@ -209,10 +209,12 @@ export default function Sessions() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
         }}
         actions={
-          <Button onClick={openStart} disabled={halted} title={haltedTitle}>
-            <Plus className="size-4" />
-            Start session
-          </Button>
+          <span title={haltedTitle} className="inline-flex">
+            <Button onClick={openStart} disabled={halted}>
+              <Plus className="size-4" />
+              Start session
+            </Button>
+          </span>
         }
       />
 
@@ -228,15 +230,12 @@ export default function Sessions() {
               title="No sessions yet"
               description="Start a session from an agent to give it a task; it runs durably and streams events here."
               action={
-                <Button
-                  size="sm"
-                  onClick={openStart}
-                  disabled={halted}
-                  title={haltedTitle}
-                >
-                  <Plus className="size-4" />
-                  Start session
-                </Button>
+                <span title={haltedTitle} className="inline-flex">
+                  <Button size="sm" onClick={openStart} disabled={halted}>
+                    <Plus className="size-4" />
+                    Start session
+                  </Button>
+                </span>
               }
             />
           }
