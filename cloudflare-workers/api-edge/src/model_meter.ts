@@ -37,6 +37,10 @@ const MODEL_SPEND_FEATURE = "model_spend";
 const CAP_EPSILON_USD = 0.01;
 // Only PATCH a cap when it moves by more than this (avoid churn / rate limits).
 const CAP_MIN_DELTA_USD = 0.01;
+// How long one settlement may own an org's caps before a crashed holder is
+// presumed gone. Well above a normal run (a few provider round-trips), well below
+// the cron period so a crash costs at most one tick.
+const SETTLE_LEASE_SEC = 60;
 
 interface OrgMeterRow {
   id: string;
@@ -117,7 +121,11 @@ async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKey
 
 // settleOrg = debit new spend + push caps for one org. Returns the post-debit
 // balance so the caller can decide about halting, or null when the org is not
-// metered.
+// metered — or when another settlement (the cron, an inline sync) holds the org
+// right now. Settlements read usage and balance as a snapshot and write an
+// absolute cap, so only one may run per org at a time or an older snapshot could
+// land last; a run that cannot take the lease leaves the org to the holder and
+// to the next trigger.
 async function settleOrg(
   env: ModelCapSyncEnv,
   orgId: string,
@@ -136,6 +144,36 @@ async function settleOrg(
   // no Autumn customer, `remaining` below would read 0 and wrongly halt the org
   // (hibernate its boxes). Top-up = move the org to autumn + grant credits.
   if (org.billing_provider !== "autumn") return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const leaseUntil = now + SETTLE_LEASE_SEC;
+  const lease = await env.OPENCOMPUTER_DB.prepare(
+    "UPDATE orgs SET model_settle_lease_until=?1 WHERE id=?2 AND model_settle_lease_until < ?3",
+  )
+    .bind(leaseUntil, orgId, now)
+    .run();
+  if (lease.meta.changes === 0) {
+    console.log(`model-meter: org ${orgId} is being settled elsewhere; skipping`);
+    return null;
+  }
+  try {
+    return await settleOrgHeld(env, org, keys);
+  } finally {
+    await env.OPENCOMPUTER_DB.prepare(
+      "UPDATE orgs SET model_settle_lease_until=0 WHERE id=?1 AND model_settle_lease_until=?2",
+    )
+      .bind(orgId, leaseUntil)
+      .run()
+      .catch((e) => console.error(`model-meter: release lease for org ${orgId} failed`, e));
+  }
+}
+
+async function settleOrgHeld(
+  env: ModelCapSyncEnv,
+  org: OrgMeterRow,
+  keys: ManagedModelKeyRow[],
+): Promise<{ debited: boolean; remaining: number }> {
+  const orgId = org.id;
   const bps = markupBps(env, org);
 
   // Read each key's current OpenRouter usage once (reused for debit + cap).

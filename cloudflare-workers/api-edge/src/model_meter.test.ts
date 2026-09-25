@@ -21,7 +21,7 @@ const gProject = projectOrg as unknown as ReturnType<typeof vi.fn>;
 
 // ── in-memory D1 for orgs + managed_model_keys ──────────────────────────────
 class FakeDb {
-  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string }>();
+  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string; model_settle_lease_until?: number }>();
   keys: ManagedModelKeyRow[] = [];
   prepare(sql: string) {
     return new Stmt(this, sql);
@@ -47,6 +47,20 @@ class Stmt {
   }
   async run(): Promise<{ meta: { changes: number } }> {
     const s = this.sql;
+    if (s.includes("SET model_settle_lease_until=?1")) {
+      const [until, id, now] = this.args as [number, string, number];
+      const o = this.db.orgs.get(id);
+      if (!o || (o.model_settle_lease_until ?? 0) >= now) return { meta: { changes: 0 } };
+      o.model_settle_lease_until = until;
+      return { meta: { changes: 1 } };
+    }
+    if (s.includes("SET model_settle_lease_until=0")) {
+      const [id, until] = this.args as [string, number];
+      const o = this.db.orgs.get(id);
+      if (!o || o.model_settle_lease_until !== until) return { meta: { changes: 0 } };
+      o.model_settle_lease_until = 0;
+      return { meta: { changes: 1 } };
+    }
     if (s.includes("SET pending_from_micro")) {
       const [from, to, idem, id] = this.args as [number, number, string, string];
       const r = this.db.keys.find((k) => k.id === id && k.committed_micro === from && k.pending_idem == null);
@@ -142,18 +156,63 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     expect(db.keys[0].committed_micro).toBe(500000); // advances to the pending `to`, not 1000000
   });
 
-  it("a concurrent settlement that lost the watermark claim tracks nothing", async () => {
+  it("a concurrent settlement of the same org skips: one track, one cap write, lease released", async () => {
     const db = new FakeDb();
     db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ committed_micro: 0 }));
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
-    // Two runs read the row at committed 0; the provider reports 0.5 to one and 0.6 to the other.
+    // Both runs start from committed 0; the provider would report 0.5 to one and 0.6 to the other.
     let calls = 0;
     gOrKey.mockImplementation(async () => orKey(++calls === 1 ? 0.5 : 0.6));
     await Promise.all([runModelMeter(env(db), 0), syncManagedModelCaps(env(db), "org1")]);
 
     expect(gTrack).toHaveBeenCalledTimes(1);
     expect(gTrack.mock.calls[0][1].value).toBe(500000);
+    expect(db.keys[0].committed_micro).toBe(500000);
+    expect(gPatch).toHaveBeenCalledTimes(1);
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBe(0);
+  });
+
+  it("a settlement whose lease is still held by a live run is skipped; an expired lease is taken over", async () => {
+    const db = new FakeDb();
+    const now = Math.floor(Date.now() / 1000);
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn", model_settle_lease_until: now + 30 });
+    db.keys.push(key({ committed_micro: 0 }));
+    gOrKey.mockResolvedValue(orKey(0.5));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gTrack).not.toHaveBeenCalled();
+    expect(gPatch).not.toHaveBeenCalled();
+
+    db.orgs.get("org1")!.model_settle_lease_until = now - 1; // the holder crashed
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(db.keys[0].committed_micro).toBe(500000);
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBe(0);
+  });
+
+  it("a stale key row that loses the watermark claim tracks nothing", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 500000 })); // another run already settled to 0.5
+    gOrKey.mockResolvedValue(orKey(0.6));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+    // The row this run read is older than the store.
+    const stale = new FakeDb();
+    stale.orgs = db.orgs;
+    stale.keys = db.keys;
+    const origAll = stale.prepare.bind(stale);
+    stale.prepare = (sql: string) => {
+      const stmt = origAll(sql);
+      if (sql.includes("FROM managed_model_keys")) {
+        stmt.all = async <T>() => ({ results: [key({ committed_micro: 0 }) as T] });
+      }
+      return stmt;
+    };
+
+    await syncManagedModelCaps(env(stale), "org1");
+    expect(gTrack).not.toHaveBeenCalled();
     expect(db.keys[0].committed_micro).toBe(500000);
   });
 
