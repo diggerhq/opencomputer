@@ -187,12 +187,17 @@ async function debitKey(
     to = usageMicro;
     idem = `${MODEL_SPEND_FEATURE}:${orgId}:${from}:${to}`;
     // Persist the interval FIRST (durable before any Autumn call) so a crash replays
-    // the exact same key+interval — a true dup, never a widened key (§7).
-    await env.OPENCOMPUTER_DB.prepare(
-      "UPDATE managed_model_keys SET pending_from_micro=?1, pending_to_micro=?2, pending_idem=?3 WHERE id=?4",
+    // the exact same key+interval — a true dup, never a widened key (§7). The
+    // claim is conditional on the row being as we read it: the cron and an inline
+    // sync (webhook, billing page) can settle the same org at once, and only the
+    // one that wins the claim may track — a loser leaves the spend to the winner.
+    const claim = await env.OPENCOMPUTER_DB.prepare(
+      `UPDATE managed_model_keys SET pending_from_micro=?1, pending_to_micro=?2, pending_idem=?3
+        WHERE id=?4 AND committed_micro=?1 AND pending_idem IS NULL`,
     )
       .bind(from, to, idem, row.id)
       .run();
+    if (claim.meta.changes === 0) return false;
   } else {
     return false; // no new spend
   }
@@ -201,11 +206,13 @@ async function debitKey(
   const value = Math.round((to - from) * (1 + bps / 10000));
   await trackAutumnUsage(env, { customerID: orgId, featureID: MODEL_SPEND_FEATURE, value, idempotencyKey: idem });
 
-  // Track succeeded (or 409 dup) → advance the watermark + clear pending.
+  // Track succeeded (or 409 dup) → advance the watermark + clear pending. Keyed on
+  // the idem so a concurrent replay of the same pending interval settles it once.
   await env.OPENCOMPUTER_DB.prepare(
-    "UPDATE managed_model_keys SET committed_micro=?1, pending_from_micro=NULL, pending_to_micro=NULL, pending_idem=NULL WHERE id=?2",
+    `UPDATE managed_model_keys SET committed_micro=?1, pending_from_micro=NULL, pending_to_micro=NULL, pending_idem=NULL
+      WHERE id=?2 AND pending_idem=?3`,
   )
-    .bind(to, row.id)
+    .bind(to, row.id, idem)
     .run();
   return true;
 }

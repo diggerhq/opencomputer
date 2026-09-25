@@ -1247,14 +1247,47 @@ const PROVIDER_FAILURE_CODES: Record<string, PublicFailureCode> = {
   unknown: "model_stream_failed",
 };
 
+/**
+ * What the caller's org knows about its own billing, for shaping failures.
+ * `managedSpendIsCredit` is true when the org's generated model key is capped
+ * by its OpenComputer (Autumn) balance; a fixed-budget key on a non-Autumn org
+ * is not, so running it dry is not a balance to top up.
+ */
+export interface PublicFailureContext {
+  managedSpendIsCredit: boolean;
+}
+
 // The provider refused the call for want of funds: its quota class, or a 402
 // (OpenRouter's answer when a request's worst-case cost exceeds the generated
-// key's remaining cap). On a managed route the funds are the org's OpenComputer
-// balance, so the failure is `balance_exhausted`; on a customer's own key it
-// stays a plain rejection.
-function balanceExhausted(failure: Record<string, unknown>, subtype: string): boolean {
-  if (failure.access !== "managed") return false;
+// key's remaining cap). On a managed route whose cap is the org's OpenComputer
+// balance the failure is `balance_exhausted`; on a customer's own key, or a
+// fixed-budget managed key, it stays a plain rejection.
+function balanceExhausted(
+  failure: Record<string, unknown>,
+  subtype: string,
+  context: PublicFailureContext,
+): boolean {
+  if (failure.access !== "managed" || !context.managedSpendIsCredit) return false;
   return subtype === "quota" || failure.status === 402;
+}
+
+const EVENTS_ROUTE = /^\/sessions\/[^/]+\/events$/;
+
+const NO_FAILURE_CONTEXT: PublicFailureContext = { managedSpendIsCredit: false };
+
+// managedSpendIsCredit answers whether the org's managed model spend draws on
+// its Autumn credit balance (see model_billing budgetFor).
+async function managedSpendIsCredit(
+  env: ManagedAgentsEnv,
+  orgID: string,
+): Promise<boolean> {
+  if (!env.OPENCOMPUTER_DB) return false;
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT billing_provider FROM orgs WHERE id = ?1",
+  )
+    .bind(orgID)
+    .first<{ billing_provider: string }>();
+  return org?.billing_provider === "autumn";
 }
 
 /**
@@ -1269,11 +1302,12 @@ function balanceExhausted(failure: Record<string, unknown>, subtype: string): bo
 function structuredFailure(
   data: Record<string, unknown>,
   firstLine: string,
+  context: PublicFailureContext,
 ): PublicFailure | undefined {
   const failure = record(data.failure);
   if (!failure || failure.class !== "provider") return undefined;
   const subtype = typeof failure.subtype === "string" ? failure.subtype : "";
-  if (balanceExhausted(failure, subtype)) {
+  if (balanceExhausted(failure, subtype, context)) {
     return {
       code: "balance_exhausted",
       message: PUBLIC_FAILURE_MESSAGES.balance_exhausted,
@@ -1310,7 +1344,10 @@ function structuredFailure(
   return { code, message: PUBLIC_FAILURE_MESSAGES[code] };
 }
 
-export function publicFailure(value: unknown): PublicFailure {
+export function publicFailure(
+  value: unknown,
+  context: PublicFailureContext = NO_FAILURE_CONTEXT,
+): PublicFailure {
   const data = record(value) ?? {};
   const reason = typeof data.reason === "string" ? data.reason : "";
   const known = FAILURE_REASON_CODES[reason];
@@ -1321,7 +1358,7 @@ export function publicFailure(value: unknown): PublicFailure {
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
   // The runtime's typed fields come first; the text rules serve runtimes
   // that recorded none.
-  const structured = structuredFailure(data, firstLine);
+  const structured = structuredFailure(data, firstLine, context);
   if (structured) return structured;
   for (const rule of FAILURE_MESSAGE_RULES) {
     const match = firstLine.match(rule.pattern);
@@ -1350,10 +1387,11 @@ export function publicFailure(value: unknown): PublicFailure {
 function publicEventData(
   type: string,
   value: unknown,
+  context: PublicFailureContext,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
-    return { ...publicFailure(value) };
+    return { ...publicFailure(value, context) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(
@@ -1467,6 +1505,7 @@ function publicSuccessBody(
   value: unknown,
   publicOrigin?: string,
   includeAdminMetadata = false,
+  failureContext: PublicFailureContext = NO_FAILURE_CONTEXT,
 ): unknown {
   const body = record(value) ?? {};
   if (method === "GET" && suffix === "/account/runtime-profile") {
@@ -1817,7 +1856,7 @@ function publicSuccessBody(
         : undefined,
     };
   }
-  if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
+  if (method === "GET" && EVENTS_ROUTE.test(suffix)) {
     return {
       events: Array.isArray(body.events)
         ? body.events.map((value) => {
@@ -1830,7 +1869,7 @@ function publicSuccessBody(
               sessionId: event.sessionId,
               turnId: event.turnId,
               type,
-              data: publicEventData(type, event.data),
+              data: publicEventData(type, event.data, failureContext),
             };
           })
         : [],
@@ -1878,6 +1917,7 @@ async function publicSuccessResponse(
   suffix: string,
   publicOrigin?: string,
   includeAdminMetadata = false,
+  failureContext: PublicFailureContext = NO_FAILURE_CONTEXT,
 ): Promise<Response> {
   const value: unknown = await upstream.json();
   const headers = new Headers({ "content-type": "application/json" });
@@ -1898,6 +1938,7 @@ async function publicSuccessResponse(
         value,
         publicOrigin,
         includeAdminMetadata,
+        failureContext,
       ),
     ),
     {
@@ -2795,12 +2836,17 @@ export async function proxyManagedAgents(
     if (suffix.startsWith("/openrouter/")) {
       return upstream;
     }
+    const failureContext: PublicFailureContext =
+      request.method.toUpperCase() === "GET" && EVENTS_ROUTE.test(suffix)
+        ? { managedSpendIsCredit: await managedSpendIsCredit(env, caller.orgID) }
+        : NO_FAILURE_CONTEXT;
     return publicSuccessResponse(
       upstream,
       request.method.toUpperCase(),
       suffix,
       requestURL.origin,
       caller.role === "admin",
+      failureContext,
     );
   } catch (error) {
     console.error(

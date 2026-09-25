@@ -40,23 +40,26 @@ class Stmt {
   }
   async all<T>(): Promise<{ results: T[] }> {
     if (this.sql.includes("FROM managed_model_keys")) {
-      return { results: this.db.keys.filter((k) => ["active", "superseded", "deleting"].includes(k.status) && k.or_key_hash) as T[] };
+      // Rows are copies, as D1 returns them: a reader holds a snapshot, not the store.
+      return { results: this.db.keys.filter((k) => ["active", "superseded", "deleting"].includes(k.status) && k.or_key_hash).map((k) => ({ ...k })) as T[] };
     }
     return { results: [] };
   }
-  async run(): Promise<void> {
+  async run(): Promise<{ meta: { changes: number } }> {
     const s = this.sql;
     if (s.includes("SET pending_from_micro")) {
       const [from, to, idem, id] = this.args as [number, number, string, string];
-      const r = this.db.keys.find((k) => k.id === id);
-      if (r) { r.pending_from_micro = from; r.pending_to_micro = to; r.pending_idem = idem; }
-      return;
+      const r = this.db.keys.find((k) => k.id === id && k.committed_micro === from && k.pending_idem == null);
+      if (!r) return { meta: { changes: 0 } };
+      r.pending_from_micro = from; r.pending_to_micro = to; r.pending_idem = idem;
+      return { meta: { changes: 1 } };
     }
     if (s.includes("SET committed_micro")) {
-      const [committed, id] = this.args as [number, string];
-      const r = this.db.keys.find((k) => k.id === id);
-      if (r) { r.committed_micro = committed; r.pending_from_micro = null; r.pending_to_micro = null; r.pending_idem = null; }
-      return;
+      const [committed, id, idem] = this.args as [number, string, string];
+      const r = this.db.keys.find((k) => k.id === id && k.pending_idem === idem);
+      if (!r) return { meta: { changes: 0 } };
+      r.committed_micro = committed; r.pending_from_micro = null; r.pending_to_micro = null; r.pending_idem = null;
+      return { meta: { changes: 1 } };
     }
     throw new Error("unhandled run: " + s);
   }
@@ -137,6 +140,21 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     // MUST re-send the original interval/key (500000), NOT the widened 1000000.
     expect(gTrack.mock.calls[0][1]).toMatchObject({ value: 500000, idempotencyKey: "model_spend:org1:0:500000" });
     expect(db.keys[0].committed_micro).toBe(500000); // advances to the pending `to`, not 1000000
+  });
+
+  it("a concurrent settlement that lost the watermark claim tracks nothing", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 0 }));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+    // Two runs read the row at committed 0; the provider reports 0.5 to one and 0.6 to the other.
+    let calls = 0;
+    gOrKey.mockImplementation(async () => orKey(++calls === 1 ? 0.5 : 0.6));
+    await Promise.all([runModelMeter(env(db), 0), syncManagedModelCaps(env(db), "org1")]);
+
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(gTrack.mock.calls[0][1].value).toBe(500000);
+    expect(db.keys[0].committed_micro).toBe(500000);
   });
 
   it("no track when usage hasn't advanced past the watermark", async () => {
