@@ -230,10 +230,16 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
   } else if (upstream.status === 400) {
+    // Capability declaration refusals name the offending declaration's
+    // location (never its value) so the author can find it in the source.
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : "The agent request was invalid.";
+        : (backendCode === "invalid_capabilities" ||
+              backendCode === "capabilities_too_large") &&
+            backendMessage
+          ? backendMessage
+          : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -274,7 +280,10 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
         ? "Insufficient prepaid credits. Top up or enable automatic top-up."
         : "The agent request requires additional prepaid credits.";
   } else if (upstream.status >= 500) {
-    message = "The agent service is temporarily unavailable.";
+    message =
+      backendCode === "capabilities_unavailable"
+        ? "The deployment's capability manifest is not available yet. Retry shortly."
+        : "The agent service is temporarily unavailable.";
   }
   const headers = new Headers({ "content-type": "application/json" });
   const retryAfter = upstream.headers.get("retry-after");

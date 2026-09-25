@@ -137,7 +137,16 @@ const pinned = await oc.deployments.capabilities(deploymentId, { digest: event.m
 ```
 
 An unknown digest answers `404 manifest_not_found`. Deployments created before
-manifests existed derive theirs from the deployed artifact on first request.
+manifests existed derive theirs from the deployed artifact on first request;
+until that succeeds, both routes answer `503 capabilities_unavailable` with a
+`retry-after` header, and sessions started meanwhile carry no
+`manifestDigest`.
+
+Declarations are published with the deployment, so a deploy is refused with
+`400 invalid_capabilities` when a tool, skill, MCP server or result schema
+declaration carries something shaped like a credential (a bearer token, an
+API key, a signed URL, a URL with a password). The error names the location
+of the declaration, never its value.
 
 ## Readiness receipt
 
@@ -176,9 +185,9 @@ if (!receipt.ready) console.log(receipt.checks.filter((check) => check.status ==
 | Check | What passes |
 | --- | --- |
 | `manifest.integrity` | The stored manifest still hashes to `manifestDigest` |
-| `platform.storage` | A bounded write, read and delete under an account-owned path of the platform's storage succeeded |
-| `artifact.packaged` | The deployed artifact is present, matches `sourceDigest`, and packages every declared tool, result schema and skill |
-| `model.route` | Every declared model resolves to available access for the environment: a project or agent route, a bound subscription connection, or managed access, speaking the protocol sessions would use with it; a fail-closed route to unavailable access fails. An agent that declares no model is checked against the platform default. `detail.models` names the access of each model |
+| `platform.storage` | A bounded write and read-back under an account-owned path of the platform's storage succeeded |
+| `artifact.packaged` | The deployed artifact is present, matches `sourceDigest`, and packages exactly what the manifest declares: every tool and whether it is gated, every skill and its path, every MCP server with its origin and connection, every subagent, and every result schema in full. `detail.differences` lists, per section, what the manifest records that the artifact lacks and what the artifact packages that the manifest does not record |
+| `model.route` | Every declared model resolves to available access for the environment: a project or agent route, a bound subscription connection of the provider's own kind, or managed access, speaking the protocol sessions would use with it; a binding whose connection cannot serve that provider is `external_unavailable` and fails; a fail-closed route to unavailable access fails. An agent that declares no model is checked against the platform default. `detail.models` names the access of each model |
 | `model.catalog` | Every model that routes through managed access exists in the current model catalog; models on external connections are listed in `detail.external` and not checked here |
 | `workspace` | The workspace sessions on this deployment would receive is backed by configured storage, on the runtime they would actually start on |
 | `connections` | Every declared connection is configured: its secrets exist, its GitHub App installation is active, its provider account is connected for the user running the probe or bound to the agent. Provider grants are per user; when the probe cannot attribute a user, they are reported as `skip` |

@@ -281,6 +281,108 @@ describe("deployment capability routes", () => {
     expect(text).not.toMatch(/arn:aws|accountId/);
   });
 
+  it("passes a retryable unavailable manifest through with its retry hint and no synthesised digest", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "capabilities_unavailable",
+              message: "internal wording",
+              reason: "platform_unavailable",
+              platformHost: "should-not-leak",
+            },
+          },
+          { status: 503, headers: { "retry-after": "30" } },
+        ),
+      ),
+    );
+    for (const [path, init] of [
+      ["/capabilities", undefined],
+      ["/readiness", { method: "POST" }],
+    ] as const) {
+      const response = await proxyManagedAgents(
+        new Request(
+          `https://app.opencomputer.dev/api/managed-agents/deployments/hello-world%3Aabc${path}`,
+          init,
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("30");
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({
+        error: { code: "capabilities_unavailable", message: expect.stringMatching(/Retry/) },
+      });
+      expect(text).not.toMatch(/manifestDigest|should-not-leak|internal wording/);
+    }
+  });
+
+  it("relays where a refused capability declaration lives, never what it held", async () => {
+    const source = artifact([
+      { path: ".opencomputer/reactive.json", content: JSON.stringify(reactive) },
+    ]);
+    const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+    const digest = Array.from(new Uint8Array(digestBytes))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            uploadUrl: "https://uploads.test/signed",
+            method: "PUT",
+            headers: {},
+            artifact: { bucket: "b", key: "k", digest, size: source.length },
+          }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              error: {
+                code: "invalid_capabilities",
+                message:
+                  "capabilities.resultSchemas[].schema.default is shaped like a credential; declarations are published with the deployment and may not carry secrets",
+              },
+            },
+            { status: 400 },
+          ),
+        ),
+    );
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/deployments", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agentId: "hello-world",
+          alias: "development",
+          source: {
+            digest,
+            size: source.length,
+            contentType: "application/vnd.opencomputer.agent+json",
+            body: source,
+          },
+        }),
+      }),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_capabilities",
+        message: expect.stringContaining("capabilities.resultSchemas[].schema.default"),
+      },
+    });
+  });
+
   it("runs readiness through the public receipt shape only", async () => {
     const fetchSpy = vi.fn(async () =>
       Response.json({
