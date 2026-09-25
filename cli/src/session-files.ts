@@ -16,8 +16,36 @@ export type WorkspaceClient = {
   ): Promise<WorkspaceArtifact>;
   workspaceArtifactContent(
     artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
+    signal?: AbortSignal,
   ): Promise<Response>;
 };
+
+const INTERRUPT_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+
+/**
+ * Turns SIGINT/SIGTERM into an abort for the duration of `run` so the
+ * in-flight stream rejects and its cleanup runs before the process exits.
+ */
+async function withInterruptAbort<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let interrupted: (typeof INTERRUPT_SIGNALS)[number] | undefined;
+  const onSignal = (signal: (typeof INTERRUPT_SIGNALS)[number]) => {
+    interrupted = signal;
+    controller.abort(new Error(`Interrupted by ${signal}.`));
+  };
+  const handlers = INTERRUPT_SIGNALS.map(
+    (signal) => [signal, () => onSignal(signal)] as const,
+  );
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  try {
+    return await run(controller.signal);
+  } finally {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    if (interrupted) process.kill(process.pid, interrupted);
+  }
+}
 
 export type DownloadResult = {
   path: string;
@@ -122,49 +150,15 @@ export async function downloadArtifact(
   await mkdir(path.dirname(destination), { recursive: true });
   if (root !== undefined) await assertResolvedWithin(root, destination);
   const temporary = `${destination}.${randomBytes(6).toString("hex")}.part`;
-  try {
-    const response = await client.workspaceArtifactContent(artifact);
-    if (!response.body) throw new VerificationError("Empty artifact response.");
-    const hash = createHash("sha256");
-    let received = 0;
-    const verify = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        received += chunk.length;
-        if (received > artifact.size) {
-          callback(
-            new VerificationError(
-              `Received more than the manifest size of ${artifact.size} bytes.`,
-            ),
-          );
-          return;
-        }
-        hash.update(chunk);
-        callback(null, chunk);
-      },
-    });
-    await pipeline(
-      Readable.fromWeb(
-        response.body as import("node:stream/web").ReadableStream,
-      ),
-      verify,
-      createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
-    );
-    if (received !== artifact.size) {
-      throw new VerificationError(
-        `Received ${received} bytes but the manifest says ${artifact.size}.`,
-      );
+  await withInterruptAbort(async (signal) => {
+    try {
+      await streamVerified(client, artifact, temporary, signal);
+      await rename(temporary, destination);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
     }
-    const digest = hash.digest("hex");
-    if (digest !== artifact.sha256.toLowerCase()) {
-      throw new VerificationError(
-        "Downloaded bytes do not match the manifest SHA-256.",
-      );
-    }
-    await rename(temporary, destination);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  });
   return {
     path: artifact.path,
     destination,
@@ -172,6 +166,50 @@ export async function downloadArtifact(
     size: artifact.size,
     sha256: artifact.sha256,
   };
+}
+
+async function streamVerified(
+  client: WorkspaceClient,
+  artifact: WorkspaceArtifact,
+  temporary: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await client.workspaceArtifactContent(artifact, signal);
+  if (!response.body) throw new VerificationError("Empty artifact response.");
+  const hash = createHash("sha256");
+  let received = 0;
+  const verify = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.length;
+      if (received > artifact.size) {
+        callback(
+          new VerificationError(
+            `Received more than the manifest size of ${artifact.size} bytes.`,
+          ),
+        );
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  await pipeline(
+    Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+    verify,
+    createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
+    { signal },
+  );
+  if (received !== artifact.size) {
+    throw new VerificationError(
+      `Received ${received} bytes but the manifest says ${artifact.size}.`,
+    );
+  }
+  const digest = hash.digest("hex");
+  if (digest !== artifact.sha256.toLowerCase()) {
+    throw new VerificationError(
+      "Downloaded bytes do not match the manifest SHA-256.",
+    );
+  }
 }
 
 /** Downloads every workspace file into `root`, mirroring the workspace layout. */
