@@ -58,6 +58,9 @@ class FakeStatement {
   }
 
   async all<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes("FROM invitations")) {
+      return { results: this.db.pendingInvitations as T[] };
+    }
     if (this.sql.includes("JOIN org_memberships")) {
       return { results: this.db.memberships as T[] };
     }
@@ -88,6 +91,7 @@ class FakeStatement {
 class FakeDB {
   executed: CapturedStatement[] = [];
   memberships: FakeMembership[];
+  pendingInvitations: { id: string; org_id: string; role: string }[] = [];
   user: { id: string; email: string; name: string } | null;
 
   constructor(
@@ -112,6 +116,10 @@ class FakeDB {
 
   prepare(sql: string): FakeStatement {
     return new FakeStatement(this, sql);
+  }
+
+  async batch(stmts: FakeStatement[]): Promise<Record<string, never>[]> {
+    return Promise.all(stmts.map((s) => s.run()));
   }
 }
 
@@ -507,6 +515,36 @@ describe("CLI device authorization edge contract", () => {
     expect(body.org).toEqual({ id: mappedOrgID, name: "Digger" });
     const insert = db.executed.find((entry) => entry.sql.includes("INSERT INTO api_keys"));
     expect(insert?.args[1]).toBe(mappedOrgID);
+  });
+
+  it("accepts pending invitations for the login email and lands in the invited org", async () => {
+    const teamOrgID = "44444444-4444-4444-8444-444444444444";
+    const db = new FakeDB([
+      {
+        id: orgID,
+        name: "Personal",
+        plan: "free",
+        is_personal: 1,
+        workos_org_id: null,
+        membership_created_at: 1,
+        org_created_at: 1,
+      },
+    ]);
+    db.pendingInvitations = [{ id: "inv-1", org_id: teamOrgID, role: "admin" }];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "Igor@Example.com", first_name: "Igor" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+
+    const membershipInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO org_memberships"));
+    expect(membershipInsert?.args.slice(0, 3)).toEqual([teamOrgID, userID, "admin"]);
+    const accepted = db.executed.find((entry) => entry.sql.includes("SET status = 'accepted'"));
+    expect(accepted?.args[1]).toBe("inv-1");
   });
 
   it("provisions a first-login user, personal org, owner membership, and key", async () => {
