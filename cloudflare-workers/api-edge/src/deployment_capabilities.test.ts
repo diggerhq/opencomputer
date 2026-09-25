@@ -108,6 +108,23 @@ describe("deployment capability declarations", () => {
     expect(capabilityDeclarationsFromArtifact("not json")).toBeNull();
   });
 
+  it("names a skill after its SKILL.md frontmatter when it has one, as the runtime does", () => {
+    const source = artifact([
+      { path: ".opencomputer/reactive.json", content: JSON.stringify(reactive) },
+      {
+        path: ".opencode/skills/triage-dir/SKILL.md",
+        content: "---\nname: customer-triage\ndescription: Sort tickets\n---\n# Triage",
+      },
+      { path: ".opencode/skills/blank/SKILL.md", content: "---\nname:   \n---\n# Blank" },
+      { path: ".opencode/skills/plain/SKILL.md", content: "# no frontmatter" },
+    ]);
+    expect(capabilityDeclarationsFromArtifact(source)?.skills).toEqual([
+      { name: "blank", path: ".opencode/skills/blank" },
+      { name: "plain", path: ".opencode/skills/plain" },
+      { name: "customer-triage", path: ".opencode/skills/triage-dir" },
+    ]);
+  });
+
   it("decodes compiler metadata as UTF-8", () => {
     const source = artifact([
       {

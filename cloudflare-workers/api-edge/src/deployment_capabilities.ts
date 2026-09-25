@@ -20,6 +20,16 @@ export interface CapabilityDeclarations {
 
 const SKILL_PATH = /^\.opencode\/skills\/([^/]+)\/SKILL\.md$/;
 
+/**
+ * The name the runtime exposes a packaged skill under: the `SKILL.md`
+ * frontmatter `name` when it has one, otherwise the skill's directory.
+ */
+function skillName(directory: string, source: string): string {
+  const match = /^---\n([\s\S]*?)\n---\n?/.exec(source);
+  const named = /^name:\s*(.+)$/m.exec(match?.[1] ?? "");
+  return named?.[1]?.trim() || directory;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -78,7 +88,14 @@ export function capabilityDeclarationsFromArtifact(
     if (!file || typeof file.path !== "string") continue;
     const skill = SKILL_PATH.exec(file.path);
     if (skill) {
-      skills.set(skill[1], `.opencode/skills/${skill[1]}`);
+      if (typeof file.content !== "string") return null;
+      let source: string;
+      try {
+        source = decodeBase64Utf8(file.content);
+      } catch {
+        return null;
+      }
+      skills.set(skill[1], skillName(skill[1], source));
       continue;
     }
     if (file.path === ".opencomputer/reactive.json") {
@@ -142,7 +159,7 @@ export function capabilityDeclarationsFromArtifact(
     resultSchemas,
     skills: [...skills.entries()]
       .sort(([a], [b]) => byString(a, b))
-      .map(([name, path]) => ({ name, path })),
+      .map(([directory, name]) => ({ name, path: `.opencode/skills/${directory}` })),
     mcpServers,
     subagents: [...new Set(strings(reactive?.subagents))].sort(byString),
   };
