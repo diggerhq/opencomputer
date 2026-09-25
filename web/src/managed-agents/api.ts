@@ -1016,6 +1016,153 @@ export async function disconnectManagedGitHub(input: {
   )
 }
 
+const deploymentSourceSchema = z.object({
+  projectId: z.string(),
+  connectionId: z.string(),
+  repository: z.object({
+    id: z.number(),
+    fullName: z.string(),
+    url: z.string(),
+  }),
+  branch: z.string(),
+  previewsEnabled: z.boolean(),
+  connection: z
+    .object({
+      id: z.string(),
+      accountLogin: z.string(),
+      state: z.enum(['active', 'suspended', 'deleted']),
+    })
+    .nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const gitBuildSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  kind: z.enum(['branch', 'preview']),
+  alias: z.string(),
+  ref: z.string(),
+  commitSha: z.string(),
+  pullRequest: z
+    .object({ number: z.number(), title: z.string(), url: z.string() })
+    .optional(),
+  state: z.enum(['queued', 'building', 'ready', 'failed', 'removed']),
+  error: z.string().optional(),
+  previewUrl: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const deploymentSourceStatusSchema = z.object({
+  source: deploymentSourceSchema.nullable(),
+  builds: z.array(gitBuildSchema),
+  previews: z.array(gitBuildSchema),
+})
+
+export type ManagedDeploymentSource = z.infer<typeof deploymentSourceSchema>
+export type ManagedGitBuild = z.infer<typeof gitBuildSchema>
+export type ManagedDeploymentSourceStatus = z.infer<
+  typeof deploymentSourceStatusSchema
+>
+
+export async function getManagedDeploymentSource(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    undefined,
+    deploymentSourceStatusSchema,
+  )
+}
+
+export async function setManagedDeploymentSource(input: {
+  projectId: string
+  connectionId: string
+  repository: { id: number; fullName: string }
+  branch: string
+  previewsEnabled: boolean
+}) {
+  const { projectId, ...body } = input
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    deploymentSourceStatusSchema,
+  )
+}
+
+export async function removeManagedDeploymentSource(projectId: string) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function deployManagedDeploymentSource(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source/deploy`,
+    { method: 'POST' },
+    z.object({ build: gitBuildSchema }),
+  )
+}
+
+export async function removeManagedPreview(input: {
+  projectId: string
+  alias: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/previews/${encodeURIComponent(input.alias)}`,
+    { method: 'DELETE' },
+  )
+}
+
+const deploymentSourceRepositoriesSchema = z.object({
+  repositories: z.array(
+    z.object({
+      id: z.number(),
+      fullName: z.string(),
+      private: z.boolean(),
+      defaultBranch: z.string(),
+      archived: z.boolean(),
+    }),
+  ),
+  nextCursor: z.string().nullable(),
+})
+
+export type ManagedDeploymentSourceRepository = z.infer<
+  typeof deploymentSourceRepositoriesSchema
+>['repositories'][number]
+
+export async function listManagedDeploymentSourceRepositories(input: {
+  projectId: string
+  connectionId: string
+  cursor?: string | null
+}) {
+  const query = new URLSearchParams({ connectionId: input.connectionId })
+  if (input.cursor) query.set('cursor', input.cursor)
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/repositories?${query.toString()}`,
+    undefined,
+    deploymentSourceRepositoriesSchema,
+  )
+}
+
+export async function listManagedDeploymentSourceBranches(input: {
+  projectId: string
+  connectionId: string
+  repository: string
+}) {
+  const query = new URLSearchParams({
+    connectionId: input.connectionId,
+    repository: input.repository,
+  })
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/branches?${query.toString()}`,
+    undefined,
+    z.object({
+      branches: z.array(z.object({ name: z.string(), commitSha: z.string() })),
+    }),
+  )
+}
+
 export async function getManagedModelAccessConnections() {
   return (
     await apiFetch(

@@ -39,9 +39,13 @@ describe('managed agents navigation', () => {
       'Connections',
       'BYOK',
       'Debug playground',
+      'Settings',
     ])
+    expect(
+      nav[1]?.items.find((item) => item.label === 'Debug playground')?.to,
+    ).toBe('/projects/project%20one')
     expect(nav[1]?.items[nav[1].items.length - 1]?.to).toBe(
-      '/projects/project%20one',
+      '/projects/project%20one/settings',
     )
     expect(nav[1]?.items.find((item) => item.label === 'Secrets')?.icon).toBe(
       KeySquare,
