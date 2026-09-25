@@ -506,7 +506,10 @@ function SlackConnectPanel() {
         channelName: invite.channelName,
         invitedAt: invite.invitedAt,
       }),
-    onError: (e) => notifyError("Couldn't send the Slack invitation.", e),
+    onError: (e) => {
+      notifyError("Couldn't send the Slack invitation.", e)
+      void queryClient.invalidateQueries({ queryKey: ['slack-connect'] })
+    },
   })
 
   if (!status?.available) return null

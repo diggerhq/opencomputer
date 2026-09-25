@@ -68,8 +68,9 @@ function cooldownKey(caller: SlackConnectCaller): string {
 interface OrgChannel {
   id: string;
   name: string;
-  // False until the team has been added; retried on the next invite.
-  teamInvited?: boolean;
+  // Team user IDs already added; anyone in SLACK_CONNECT_TEAM_USER_IDS but not
+  // here is invited on the next call (covers failed invites and team changes).
+  team?: string[];
 }
 
 async function userEmail(
@@ -202,17 +203,33 @@ async function createOrgChannel(
   return channel;
 }
 
-async function inviteTeam(env: SlackConnectEnv, channel: OrgChannel) {
+async function inviteTeam(
+  env: SlackConnectEnv,
+  channel: OrgChannel,
+  users: string[],
+) {
   try {
     await slack<InviteResponse>(env, "conversations.invite", {
       channel: channel.id,
-      users: teamUserIDs(env).join(","),
+      users: users.join(","),
     });
   } catch (error) {
     if (!(error instanceof SlackError && error.code === "already_in_channel")) {
       throw error;
     }
   }
+}
+
+async function isOrgMember(
+  env: SlackConnectEnv,
+  caller: SlackConnectCaller,
+): Promise<boolean> {
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT 1 AS ok FROM org_memberships WHERE user_id = ?1 AND org_id = ?2",
+  )
+    .bind(caller.userID, caller.orgID)
+    .first<{ ok: number }>();
+  return !!row;
 }
 
 async function saveOrgChannel(
@@ -233,13 +250,15 @@ async function ensureOrgChannel(
   let channel: OrgChannel;
   if (cached) {
     channel = JSON.parse(cached) as OrgChannel;
-    if (channel.teamInvited !== false) return channel;
   } else {
-    channel = { ...(await createOrgChannel(env, orgID)), teamInvited: false };
+    channel = { ...(await createOrgChannel(env, orgID)), team: [] };
     await saveOrgChannel(env, orgID, channel);
   }
-  await inviteTeam(env, channel);
-  channel = { ...channel, teamInvited: true };
+  const team = channel.team ?? [];
+  const missing = teamUserIDs(env).filter((id) => !team.includes(id));
+  if (missing.length === 0) return channel;
+  await inviteTeam(env, channel, missing);
+  channel = { ...channel, team: [...team, ...missing] };
   await saveOrgChannel(env, orgID, channel);
   return channel;
 }
@@ -432,6 +451,9 @@ export async function handleSlackConnectInvite(
       },
       403,
     );
+  }
+  if (!(await isOrgMember(env, caller))) {
+    return json({ error: "not a member of this organization" }, 403);
   }
   const email = await userEmail(env, caller.userID);
   if (!email) return json({ error: "user not found" }, 404);

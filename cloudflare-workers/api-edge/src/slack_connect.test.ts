@@ -8,6 +8,8 @@ import {
 
 const caller = { orgID: "org_1", userID: "user_1" };
 
+const members = new Set(["user_1", "user_2"]);
+
 function testEnv(
   plan: string,
   overrides: Partial<SlackConnectEnv> = {},
@@ -15,8 +17,11 @@ function testEnv(
   const kv = new Map<string, string>();
   const db = {
     prepare: (sql: string) => ({
-      bind: () => ({
+      bind: (...args: string[]) => ({
         first: async () => {
+          if (sql.includes("FROM org_memberships")) {
+            return members.has(args[0]) ? { ok: 1 } : null;
+          }
           if (sql.includes("FROM orgs")) {
             return { plan, billing_provider: "stripe", name: "Acme Corp" };
           }
@@ -186,7 +191,7 @@ describe("slack connect invite", () => {
     expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toEqual({
       id: "C_NEW",
       name: "oc-acme-corp-org1",
-      teamInvited: true,
+      team: ["U1", "U2"],
     });
 
     const again = await handleSlackConnectInvite(env, caller);
@@ -255,7 +260,7 @@ describe("slack connect invite", () => {
     expect(first.status).toBe(502);
     expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toMatchObject({
       id: "C_NEW",
-      teamInvited: false,
+      team: [],
     });
     kv.delete("slack_connect_cooldown:org_1:user_1");
 
@@ -268,8 +273,29 @@ describe("slack connect invite", () => {
       "conversations.inviteShared",
     ]);
     expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toMatchObject({
-      teamInvited: true,
+      team: ["U1", "U2"],
     });
+  });
+
+  it("adds newly configured team members to existing channels", async () => {
+    const calls = stubSlack(happySlack);
+    const { env } = testEnv("pro");
+    await handleSlackConnectInvite(env, caller);
+    env.SLACK_CONNECT_TEAM_USER_IDS = "U1,U2,U3";
+    await handleSlackConnectInvite(env, { orgID: "org_1", userID: "user_2" });
+    const invites = calls.filter((c) => c.method === "conversations.invite");
+    expect(invites.map((c) => c.body.users)).toEqual(["U1,U2", "U3"]);
+  });
+
+  it("rejects callers who are no longer members of the org", async () => {
+    const calls = stubSlack(happySlack);
+    const { env } = testEnv("pro");
+    const res = await handleSlackConnectInvite(env, {
+      orgID: "org_1",
+      userID: "user_gone",
+    });
+    expect(res.status).toBe(403);
+    expect(calls).toEqual([]);
   });
 
   it("applies a cooldown after a Slack failure", async () => {
