@@ -28,13 +28,28 @@ import {
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
+  readProjectAgents,
 } from "./project.js";
+import {
+  projectAgentMembers,
+  selectProjectAgent,
+  type AgentSelector,
+  type ProjectAgentMember,
+} from "./agent-selection.js";
 import {
   developmentAgentReference,
   parseSessionCommand,
   resolveProjectAgent,
 } from "./session-command.js";
 import { formatSessionEvent } from "./session-prompt.js";
+import {
+  sessionCreateIdempotencyKeys,
+  sessionCreatedTurnFailed,
+  sessionOutcome,
+  turnFailureCode,
+  type SessionCreateIdempotencyKeys,
+  type SessionCreateOutcome,
+} from "./session-create.js";
 import {
   buildTemplateProject,
   normalizeTemplateRepositoryUrl,
@@ -49,8 +64,9 @@ import { materializeProjectArchive } from "./project-local.js";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { compilerErrorCode } from "./compiler-error.js";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
 import {
@@ -322,12 +338,16 @@ async function readStdinValue(enabled: boolean): Promise<string> {
 function printDoctor(result: DoctorResult, json: boolean): void {
   if (json) return printJSON(result);
   for (const item of result.diagnostics) {
+    const position = item.line
+      ? `:${item.line}${item.column ? `:${item.column}` : ""}`
+      : "";
     process.stdout.write(
-      `${item.severity.toUpperCase()} ${item.code} ${item.file}${item.line ? `:${item.line}` : ""}\n` +
+      `${item.severity.toUpperCase()} ${item.code} ${item.file}${position}` +
+        `${item.agent ? ` (agent ${item.agent.localId})` : ""}\n` +
         `  ${item.message}\n  fix: ${item.hint}\n`,
     );
   }
-  const { project, agents } = result.resolution;
+  const { project, agents, selected } = result.resolution;
   process.stdout.write(
     project
       ? `Project: ${project.name} (${project.id}) at ${project.apiUrl}\n`
@@ -337,6 +357,9 @@ function printDoctor(result: DoctorResult, json: boolean): void {
     process.stdout.write(
       `Agent:   ${agent.localId}${agent.agentId ? ` -> ${agent.agentId}` : ""}\n`,
     );
+  }
+  if (selected) {
+    process.stdout.write(`Checked: ${selected.localId} only\n`);
   }
   process.stdout.write(
     `${result.ok ? "Doctor passed" : "Doctor failed"}: ${result.summary.errors} errors, ` +
@@ -361,6 +384,44 @@ async function selectedProject(
   const root = await findOpenComputerProjectRoot(process.cwd());
   const binding = await ensureProjectBinding(client, config, root);
   return { projectId: binding.projectId, agentId: binding.agentId };
+}
+
+/**
+ * The local project member a command works on, mapped to its cloud agent
+ * through the bound project. Every command that needs one agent's source
+ * (secret origin inference, `--local-agent`) selects it here, so a
+ * multi-agent checkout never falls back to the first agent.
+ */
+async function selectedLocalAgent(
+  project: { agentId: string },
+  selector: AgentSelector,
+): Promise<ProjectAgentMember> {
+  const root = await findOpenComputerProjectRoot(process.cwd());
+  const members = projectAgentMembers(await readProjectAgents(root), project);
+  if (!selector.agent && !selector.localAgent) {
+    // Standing inside one agent's directory names it as plainly as a flag.
+    const cwd = resolvePath(process.cwd());
+    const current = members.find(
+      (member) => cwd === member.root || cwd.startsWith(`${member.root}${sep}`),
+    );
+    if (current) return current;
+  }
+  return selectProjectAgent(members, selector);
+}
+
+/** `--agent`/`--local-agent` of a cloud-scoped command: the cloud agent id, resolved through the local member when one is named. */
+async function selectedScopeAgent(
+  project: { agentId: string },
+  agentOption: string | undefined,
+  localAgentOption: string | undefined,
+): Promise<{ agentId?: string; member?: ProjectAgentMember }> {
+  const agent = agentOption === "current" ? project.agentId : agentOption;
+  if (!localAgentOption) return agent ? { agentId: agent } : {};
+  const member = await selectedLocalAgent(project, {
+    agent,
+    localAgent: localAgentOption,
+  });
+  return { agentId: member.agentId ?? agent, member };
 }
 
 async function selectedSessionAgent(
@@ -394,16 +455,6 @@ function printLog(entry: ManagedAgentLog, json: boolean): void {
       `${entry.agentId} ${entry.sessionId} ${entry.event}` +
       `${message ? ` ${message}` : ""}\n`,
   );
-}
-
-async function requireAgentRoot(): Promise<string> {
-  const root = await findAgentRoot();
-  if (!root) {
-    throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <directory>` first.",
-    );
-  }
-  return root;
 }
 
 function printSession(
@@ -760,37 +811,75 @@ async function waitForEvent(
   throw new Error("Timed out waiting for the agent.");
 }
 
-async function runAgent(
+/**
+ * `session create "<prompt>"`: two mutations under two idempotency keys.
+ * Once the session is committed, any later failure is reported with the
+ * session ID and the turn's state (`session_created_turn_failed`) rather
+ * than as if nothing had been created.
+ */
+export async function runAgent(
   client: OpenComputerClient,
   agent: string,
   prompt: string,
   keep: boolean,
   json: boolean,
   verbose: boolean,
-  idempotencyKey?: string,
+  keys: SessionCreateIdempotencyKeys = {},
   memory?: MemoryBindings,
-): Promise<unknown> {
-  const created = await createSessionWithMemory(client, agent, memory);
+): Promise<Record<string, unknown> & SessionCreateOutcome> {
+  if (verbose) {
+    process.stderr.write(
+      `Idempotency: session ${keys.session ? `key ${keys.session}` : "unkeyed"}, turn ${keys.turn ? `key ${keys.turn}` : "unkeyed"}\n`,
+    );
+  }
+  const created = await createSessionWithMemory(
+    client.withIdempotencyKey(keys.session),
+    agent,
+    memory,
+  );
+  const session = sessionOutcome(created);
+  const sessionId = created.session.id;
+  const failed = async (
+    turn: SessionCreateOutcome["turn"],
+  ): Promise<never> => {
+    const current = await client.session(sessionId).catch(() => undefined);
+    throw sessionCreatedTurnFailed(
+      current?.status ? { ...session, status: current.status } : session,
+      turn,
+    );
+  };
+  const notAdmitted = (error: unknown) =>
+    failed({
+      id: null,
+      admitted: false,
+      error: {
+        code: turnFailureCode(error),
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
   process.stderr.write(`Starting ${agent}…\n`);
   const connected = await waitForEvent(
     client,
-    created.session.id,
+    sessionId,
     0,
     (event) => event.type === "runtime.connected",
     (event) => printSessionProgress(event, json, verbose),
     90_000,
-  );
-  const turn = await client.createTurn(
-    created.session.id,
-    prompt,
-    idempotencyKey,
-  );
+  ).catch(notAdmitted);
+  const turn = await client
+    .createTurn(sessionId, prompt, keys.turn)
+    .catch(notAdmitted);
+  const admitted: SessionCreateOutcome["turn"] = {
+    id: turn.turnId,
+    admitted: true,
+    duplicate: turn.duplicate,
+  };
   let streamed = false;
   let streamedText = "";
   let completedText = "";
   const completed = await waitForEvent(
     client,
-    created.session.id,
+    sessionId,
     connected.cursor,
     (event) => event.type === "turn.completed" || event.type === "turn.failed",
     (event) => {
@@ -809,27 +898,43 @@ async function runAgent(
       }
     },
     180_000,
+  ).catch((error: unknown) =>
+    failed({
+      ...admitted,
+      error: {
+        code: turnFailureCode(error),
+        message: error instanceof Error ? error.message : String(error),
+      },
+    }),
   );
   if (!json && !streamed && completedText) process.stdout.write(completedText);
   if (!json && (!process.stdout.isTTY || streamed || completedText)) {
     process.stdout.write("\n");
   }
   if (completed.event.type === "turn.failed") {
-    throw new Error(
-      String(completed.event.data.message ?? "Agent turn failed"),
-    );
+    await failed({
+      ...admitted,
+      status: "failed",
+      error: {
+        code: "turn_failed",
+        message: String(completed.event.data.message ?? "Agent turn failed"),
+      },
+    });
   }
   if (!keep) {
-    await client.suspendSession(created.session.id).catch(() => undefined);
+    await client.suspendSession(sessionId).catch(() => undefined);
   }
   return {
-    sessionId: created.session.id,
+    sessionId,
     turnId: turn.turnId,
     agentId: created.deployment?.agentId ?? agent,
     deploymentId: created.deployment?.id,
     ...(memory ? { memory } : {}),
     status: "completed",
     output: streamedText || completedText || undefined,
+    session,
+    turn: { ...admitted, status: "completed" },
+    complete: true,
   };
 }
 
@@ -1237,9 +1342,20 @@ export async function runCommand(
   }
 
   if (command === "doctor") {
+    const agent = option(args, "--agent");
+    const localAgent = option(args, "--local-agent");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const root = await findOpenComputerProjectRoot(process.cwd());
-    const result = await doctorProject(root);
+    const result = await doctorProject(root, {
+      ...(agent || localAgent
+        ? {
+            selector: {
+              ...(agent ? { agent } : {}),
+              ...(localAgent ? { localAgent } : {}),
+            },
+          }
+        : {}),
+    });
     if (!result.ok) {
       if (!globals.json) printDoctor(result, false);
       throw new CLIError(
@@ -1276,6 +1392,11 @@ export async function runCommand(
     const requestedAlias = option(args, "--alias");
     const project = option(args, "--project");
     const createProjectName = option(args, "--create-project");
+    if (option(args, "--agent") || option(args, "--local-agent")) {
+      throw new Error(
+        "Deployments publish every agent of the project together; `--agent`/`--local-agent` select one agent on `session`, `secrets`, `env`, and `doctor`.",
+      );
+    }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const root = await findOpenComputerProjectRoot(process.cwd());
     if (!root) {
@@ -1354,7 +1475,7 @@ export async function runCommand(
       keep,
       globals.json,
       globals.verbose === true,
-      globals.idempotencyKey,
+      sessionCreateIdempotencyKeys({ idempotencyKey: globals.idempotencyKey }),
     );
     if (globals.json) printJSON(result);
     return;
@@ -1388,13 +1509,15 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
+    const localAgentOption = option(args, "--local-agent");
     const environment = environmentOption(option(args, "--environment"));
     const project = await selectedProject(client, config, projectReference);
-    const agentId = agentOption
-      ? agentOption === "current"
-        ? project.agentId
-        : agentOption
-      : undefined;
+    const scope = await selectedScopeAgent(
+      project,
+      agentOption,
+      localAgentOption,
+    );
+    const agentId = scope.agentId;
     if (action === "list") {
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const secrets = await client.secrets({
@@ -1424,8 +1547,23 @@ export async function runCommand(
       const valueStdin = flag(args, "--value-stdin");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       let allowedOrigins = explicitOrigins;
+      let source = scope.member;
       if (!allowedOrigins.length) {
-        const built = await buildAgentArtifact(await requireAgentRoot());
+        // Origins come from the selected member's connections only, so
+        // another agent's connection never widens this secret.
+        const member = (source ??= await selectedLocalAgent(project, {
+          ...(agentId ? { agent: agentId } : {}),
+        }));
+        const built = await buildAgentArtifact(member.root).catch(
+          (error: unknown) => {
+            throw new CLIError(
+              compilerErrorCode(error),
+              error instanceof Error ? error.message : String(error),
+              `Nothing was changed in the cloud. Run \`opencomputer doctor --local-agent ${member.localId} --json\` for the source location, fix it, and retry.`,
+              { agent: { localId: member.localId, agentId: member.agentId } },
+            );
+          },
+        );
         allowedOrigins = built.httpConnections
           .filter((connection) =>
             Object.values(connection.headers).some(
@@ -1453,11 +1591,15 @@ export async function runCommand(
         ...(agentId ? { agentId } : {}),
         allowedOrigins,
       });
-      if (globals.json) printJSON(secret);
+      const preflight = source
+        ? { agent: { localId: source.localId, agentId: source.agentId } }
+        : undefined;
+      if (globals.json) printJSON(preflight ? { ...secret, preflight } : secret);
       else {
         process.stdout.write(
           `Set ${secret.name} for ${secret.agentId ?? "project"} ` +
-            `(${secret.environment}); allowed for ${secret.allowedOrigins.join(", ")}.\n`,
+            `(${secret.environment}); allowed for ${secret.allowedOrigins.join(", ")}.\n` +
+            (source ? `Origins inferred from local agent ${source.localId}.\n` : ""),
         );
       }
       return;
@@ -2020,13 +2162,14 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
+    const localAgentOption = option(args, "--local-agent");
     const environment = environmentOption(option(args, "--environment"));
     const project = await selectedProject(client, config, projectReference);
-    const agentId = agentOption
-      ? agentOption === "current"
-        ? project.agentId
-        : agentOption
-      : undefined;
+    const { agentId } = await selectedScopeAgent(
+      project,
+      agentOption,
+      localAgentOption,
+    );
     if (action === "list") {
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const variables = await client.runtimeVariables({
@@ -2604,10 +2747,15 @@ export async function runCommand(
     if (session.action === "create") {
       const prompt = sessionArgs.join(" ").trim();
       const project = await selectedProject(client, config, undefined);
+      const scope = await selectedScopeAgent(
+        project,
+        session.agent,
+        session.localAgent,
+      );
       const agentId = await selectedSessionAgent(
         client,
         project,
-        session.agent,
+        scope.agentId,
       );
       const agent = developmentAgentReference(agentId);
       // Sessions from the CLI run on Development, so its memory is bound.
@@ -2619,6 +2767,11 @@ export async function runCommand(
               bindings: session.memory,
             })
           : [];
+      const keys = sessionCreateIdempotencyKeys({
+        idempotencyKey: globals.idempotencyKey,
+        sessionIdempotencyKey: session.sessionIdempotencyKey,
+        turnIdempotencyKey: session.turnIdempotencyKey,
+      });
       if (prompt) {
         const result = await runAgent(
           client,
@@ -2627,20 +2780,16 @@ export async function runCommand(
           session.keep,
           globals.json,
           globals.verbose === true,
-          globals.idempotencyKey,
+          keys,
           session.memory,
         );
         if (globals.json) {
-          printJSON(
-            documents.length
-              ? { ...(result as Record<string, unknown>), documents }
-              : result,
-          );
+          printJSON(documents.length ? { ...result, documents } : result);
         }
         return;
       }
       const created = await createSessionWithMemory(
-        client,
+        client.withIdempotencyKey(keys.session),
         agent,
         session.memory,
       );

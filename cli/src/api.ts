@@ -432,6 +432,29 @@ export class OpenComputerClient {
     private readonly idempotencyKey?: string,
   ) {}
 
+  /** The same connection under another caller key (one mutation domain each). */
+  withIdempotencyKey(idempotencyKey: string | undefined): OpenComputerClient {
+    return new OpenComputerClient(this.config, idempotencyKey);
+  }
+
+  // The caller's key names an operation on a target; the body is what the
+  // backend compares under that key. Hashing the body in would make a
+  // retry with different inputs a new operation instead of the conflict
+  // the key promises.
+  private derivedIdempotencyKey(
+    method: string,
+    path: string,
+  ): string | undefined {
+    if (!this.idempotencyKey) return undefined;
+    return createHash("sha256")
+      .update(this.idempotencyKey)
+      .update("\0")
+      .update(method)
+      .update("\0")
+      .update(path)
+      .digest("hex");
+  }
+
   private async response(
     path: string,
     init: RequestInit = {},
@@ -450,22 +473,11 @@ export class OpenComputerClient {
       headers.set("x-api-key", this.config.apiKey);
     }
     const method = (init.method ?? "GET").toUpperCase();
-    // The caller's key names an operation on a target; the body is what the
-    // backend compares under that key. Hashing the body in would make a
-    // retry with different inputs a new operation instead of the conflict
-    // the key promises.
-    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
-      headers.set(
-        "idempotency-key",
-        createHash("sha256")
-          .update(this.idempotencyKey)
-          .update("\0")
-          .update(method)
-          .update("\0")
-          .update(path)
-          .digest("hex"),
-      );
-    }
+    const idempotencyKey =
+      method === "GET" || method === "HEAD"
+        ? undefined
+        : this.derivedIdempotencyKey(method, path);
+    if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
       headers,
@@ -1339,21 +1351,22 @@ export class OpenComputerClient {
     );
   }
 
-  createTurn(
-    sessionId: string,
-    input: string,
-    idempotencyKey: string = crypto.randomUUID(),
-  ) {
-    return this.request<{ turnId: string; duplicate: boolean }>(
-      `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          input,
-          idempotencyKey,
-        }),
-      },
-    );
+  /**
+   * Admits one turn. An explicit `idempotencyKey` replaces the client's key
+   * for this call. The API requires the `Idempotency-Key` header and the
+   * `idempotencyKey` body field to agree, so both carry the derived value.
+   */
+  createTurn(sessionId: string, input: string, idempotencyKey?: string) {
+    const path = `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`;
+    const client = idempotencyKey ? this.withIdempotencyKey(idempotencyKey) : this;
+    return client.request<{ turnId: string; duplicate: boolean }>(path, {
+      method: "POST",
+      body: JSON.stringify({
+        input,
+        idempotencyKey:
+          client.derivedIdempotencyKey("POST", path) ?? crypto.randomUUID(),
+      }),
+    });
   }
 
   async events(sessionId: string, after: number) {

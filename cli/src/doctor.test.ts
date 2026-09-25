@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
+import { CompilerError } from "./compiler-error.js";
 import { doctorProject } from "./doctor.js";
-import { initializeAgentProject } from "./project.js";
+import { CLIError } from "./errors.js";
+import { buildAgentArtifact, initializeAgentProject } from "./project.js";
 
 test("doctor reports deterministic local authoring errors in under one second", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
@@ -157,6 +159,131 @@ export const ${name} = defineTool({ name: "${name}", description: "Echo", async 
       project: { id: "prj_1", name: "Workbench", apiUrl: "https://app.opencomputer.dev" },
       agents: [{ localId: "hello-world", agentId: "workbench" }],
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// OCFR-18: `doctor --json` passed a project whose connection took its
+// `pathPrefix` from a constant, and the next secret upload rejected it. Doctor
+// now compiles every member the way deploy and secret upload do.
+
+const CONNECTION_AGENT = (id: string, pathPrefix: string) =>
+  `import { bearer, defineConnection, useConnection, useSecret } from "@opencomputer/agent";
+const prefix = "/v1";
+const api = defineConnection({
+  id: "${id}-api",
+  origin: "https://${id}.example.com",
+  pathPrefix: ${pathPrefix},
+  headers: { Authorization: bearer(useSecret("API_TOKEN")) },
+});
+export default function Agent() { useConnection(api); return "${id}"; }
+`;
+
+async function projectWithAgents(
+  root: string,
+  agents: Record<string, string>,
+): Promise<void> {
+  await initializeAgentProject(root);
+  for (const [id, source] of Object.entries(agents)) {
+    const agentRoot = resolve(root, "opencomputer", "agents", id);
+    await mkdir(agentRoot, { recursive: true });
+    await writeFile(resolve(agentRoot, "agent.ts"), source);
+  }
+  await writeFile(
+    resolve(root, "opencomputer", "project.ts"),
+    `export default { name: "app", agents: ${JSON.stringify(["hello-world", ...Object.keys(agents)])} };\n`,
+  );
+  await writeFile(resolve(root, "opencomputer", ".env.example"), "API_TOKEN=\n");
+  await writeFile(resolve(root, "opencomputer", ".env.local"), "API_TOKEN=x\n");
+}
+
+test("acceptance 4, 5 and 8: doctor reports the compiler's requirements per agent, with source positions", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
+  try {
+    await projectWithAgents(root, {
+      billing: CONNECTION_AGENT("billing", "prefix"),
+      support: CONNECTION_AGENT("support", '"/v2"'),
+      search: CONNECTION_AGENT("search", "`/v${3}`"),
+    });
+    const result = await doctorProject(root);
+    assert.equal(result.ok, false);
+    const compiled = result.diagnostics.filter((diagnostic) => diagnostic.agent);
+    assert.deepEqual(compiled, [
+      {
+        code: "literal_required",
+        severity: "error",
+        file: "opencomputer/agents/billing/agent.ts",
+        line: 6,
+        column: 15,
+        agent: { localId: "billing", agentId: null },
+        message: "connection billing-api pathPrefix must be a string literal",
+        hint: compiled[0]!.hint,
+      },
+      {
+        code: "literal_required",
+        severity: "error",
+        file: "opencomputer/agents/search/agent.ts",
+        line: 6,
+        column: 15,
+        agent: { localId: "search", agentId: null },
+        message: "connection search-api pathPrefix must be a string literal",
+        hint: compiled[1]!.hint,
+      },
+    ]);
+    assert.match(compiled[0]!.hint, /literal/);
+
+    // The same requirement, worded the same, is what deploy and secret upload raise.
+    await assert.rejects(
+      buildAgentArtifact(resolve(root, "opencomputer", "agents", "billing")),
+      (error: unknown) =>
+        error instanceof CompilerError &&
+        error.code === "literal_required" &&
+        error.message === compiled[0]!.message &&
+        error.position?.line === 6,
+    );
+
+    await writeFile(
+      resolve(root, "opencomputer", "agents", "billing", "agent.ts"),
+      CONNECTION_AGENT("billing", '"/v1"'),
+    );
+    await writeFile(
+      resolve(root, "opencomputer", "agents", "search", "agent.ts"),
+      CONNECTION_AGENT("search", '"/v3"'),
+    );
+    const fixed = await doctorProject(root);
+    assert.equal(fixed.ok, true, JSON.stringify(fixed.diagnostics));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("acceptance 6: agent-level doctor checks the selected member only", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
+  try {
+    await projectWithAgents(root, {
+      billing: CONNECTION_AGENT("billing", "prefix"),
+      support: CONNECTION_AGENT("support", '"/v2"'),
+    });
+    const support = await doctorProject(root, { selector: { localAgent: "support" } });
+    assert.equal(support.ok, true, JSON.stringify(support.diagnostics));
+    assert.deepEqual(support.resolution.selected, { localId: "support", agentId: null });
+    assert.equal(support.resolution.agents.length, 3);
+
+    const billing = await doctorProject(root, { selector: { agent: "billing" } });
+    assert.equal(billing.ok, false);
+    assert.deepEqual(
+      billing.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.agent?.localId]),
+      [["literal_required", "billing"]],
+    );
+
+    await assert.rejects(
+      doctorProject(root, { selector: { agent: "payments" } }),
+      (error: unknown) =>
+        error instanceof CLIError &&
+        error.code === "local_agent_not_found" &&
+        /hello-world, billing, support/.test(error.message),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

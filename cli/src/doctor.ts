@@ -2,8 +2,21 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import ts from "typescript";
 
-import { cloudAgentId, readLinkedProject } from "./binding.js";
-import { readProjectAgents, readProjectResources } from "./project.js";
+import {
+  projectAgentMembers,
+  selectProjectAgent,
+  type AgentSelector,
+  type ProjectAgentMember,
+} from "./agent-selection.js";
+import { readLinkedProject } from "./binding.js";
+import { CompilerError, compilerErrorCode } from "./compiler-error.js";
+import {
+  buildAgentArtifact,
+  mergeMemoryDeclarations,
+  readProjectAgents,
+  readProjectResources,
+  type ProjectAgentSource,
+} from "./project.js";
 
 /** Directories that are never source: the CLI's own state and build output, dependencies, workspaces. */
 const NOT_SOURCE = new Set([".opencomputer", "node_modules", "workspace", ".git", "dist"]);
@@ -13,6 +26,9 @@ export interface DoctorDiagnostic {
   severity: "error" | "warning";
   file: string;
   line?: number;
+  column?: number;
+  /** The project member whose compilation the diagnostic comes from, when it is about one agent. */
+  agent?: { localId: string; agentId: string | null };
   message: string;
   hint: string;
 }
@@ -21,6 +37,13 @@ export interface DoctorDiagnostic {
 export interface DoctorResolution {
   project: { id: string; name: string; apiUrl: string } | null;
   agents: Array<{ localId: string; agentId: string | null }>;
+  /** The one member an agent-level run was narrowed to. */
+  selected?: { localId: string; agentId: string | null };
+}
+
+export interface DoctorOptions {
+  /** Narrow compilation to one project member; every member is compiled otherwise. */
+  selector?: AgentSelector;
 }
 
 export interface DoctorResult {
@@ -90,7 +113,72 @@ function callName(node: ts.CallExpression): string | undefined {
   return ts.isIdentifier(node.expression) ? node.expression.text : undefined;
 }
 
-export async function doctorProject(projectRoot: string): Promise<DoctorResult> {
+/** The compiler names the module in messages it has no node for: `tools/echo.ts defineTool(...)`. */
+const MODULE_PREFIX = /^((?:[\w.-]+\/)*[\w.-]+\.[cm]?[jt]sx?)\s/;
+
+function compilerHint(code: string): string {
+  return code === "literal_required"
+    ? "Write the value as a literal in the declaration; the compiler reads IDs, origins, methods, and path prefixes without running the module."
+    : "Fix the declaration; `opencomputer deploy` and `opencomputer secrets set` compile the agent the same way.";
+}
+
+function compilerDiagnostic(
+  member: ProjectAgentMember,
+  error: unknown,
+): DoctorDiagnostic {
+  const message = error instanceof Error ? error.message : String(error);
+  const position = error instanceof CompilerError ? error.position : undefined;
+  const module = position?.file ?? MODULE_PREFIX.exec(message)?.[1] ?? "agent.ts";
+  const code = compilerErrorCode(error);
+  return {
+    code,
+    severity: "error",
+    file: `opencomputer/agents/${member.localId}/${module}`,
+    ...(position ? { line: position.line, column: position.column } : {}),
+    agent: { localId: member.localId, agentId: member.agentId },
+    message,
+    hint: compilerHint(code),
+  };
+}
+
+/**
+ * Compiles each member in scope the way deployment and secret upload do, so
+ * every source-shape requirement they enforce is reported here first.
+ */
+async function compileMembers(
+  members: readonly ProjectAgentMember[],
+  wholeProject: boolean,
+): Promise<DoctorDiagnostic[]> {
+  const diagnostics: DoctorDiagnostic[] = [];
+  const built: Array<{ origin: string; memory: Awaited<ReturnType<typeof buildAgentArtifact>>["memory"] }> = [];
+  for (const member of members) {
+    try {
+      const artifact = await buildAgentArtifact(member.root, member.agentId ?? undefined);
+      built.push({ origin: `agent ${member.localId}`, memory: artifact.memory });
+    } catch (error) {
+      diagnostics.push(compilerDiagnostic(member, error));
+    }
+  }
+  if (wholeProject && built.length === members.length) {
+    try {
+      mergeMemoryDeclarations(built);
+    } catch (error) {
+      diagnostics.push({
+        code: "memory_declaration_conflict",
+        severity: "error",
+        file: "opencomputer/agents/",
+        message: error instanceof Error ? error.message : String(error),
+        hint: "Agents of one project share memory by id; make the declarations agree.",
+      });
+    }
+  }
+  return diagnostics;
+}
+
+export async function doctorProject(
+  projectRoot: string,
+  options: DoctorOptions = {},
+): Promise<DoctorResult> {
   const started = performance.now();
   const diagnostics: DoctorDiagnostic[] = [];
   const files = await sourceFiles(resolve(projectRoot, "opencomputer"));
@@ -221,10 +309,12 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
       hint: "Give every tool in the project a unique literal name.",
     });
   }
-  let localIds: string[] = [];
+  let agents: ProjectAgentSource[] = [];
+  let contractValid = false;
   try {
-    localIds = (await readProjectAgents(projectRoot)).map((agent) => agent.localId);
+    agents = await readProjectAgents(projectRoot);
     await readProjectResources(projectRoot);
+    contractValid = true;
   } catch (error) {
     diagnostics.push({
       code: "project_contract_invalid",
@@ -265,14 +355,21 @@ export async function doctorProject(projectRoot: string): Promise<DoctorResult> 
     }
   }
   const linked = await readLinkedProject(projectRoot);
+  const members = projectAgentMembers(agents, linked);
+  const selected = options.selector ? selectProjectAgent(members, options.selector) : undefined;
+  if (contractValid) {
+    diagnostics.push(
+      ...(await compileMembers(selected ? [selected] : members, !selected)),
+    );
+  }
   const resolution: DoctorResolution = {
     project: linked
       ? { id: linked.projectId, name: linked.projectName, apiUrl: linked.apiUrl }
       : null,
-    agents: localIds.map((localId, index) => ({
-      localId,
-      agentId: linked ? cloudAgentId(linked, localId, index) : null,
-    })),
+    agents: members.map(({ localId, agentId }) => ({ localId, agentId })),
+    ...(selected
+      ? { selected: { localId: selected.localId, agentId: selected.agentId } }
+      : {}),
   };
   const errors = diagnostics.filter((item) => item.severity === "error").length;
   const warnings = diagnostics.length - errors;
