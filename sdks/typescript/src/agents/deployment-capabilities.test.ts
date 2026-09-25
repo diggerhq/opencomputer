@@ -75,6 +75,19 @@ describe("deployments.capabilities / deployments.readiness", () => {
     expect(api.last()).toMatchObject({ method: "POST", path: "/api/managed-agents/deployments/worker%3Aabc/readiness" });
   });
 
+  it("fetches a pinned manifest by digest", async () => {
+    const api = fakeApi({
+      "GET /api/managed-agents/deployments/worker%3Aabc/capabilities": () =>
+        Response.json({ manifest, manifestDigest }),
+    });
+    const oc = new OpenComputer({ apiKey: "osb_test", fetch: api.fetch });
+
+    await oc.deployments.capabilities("worker:abc", { digest: manifestDigest });
+    expect(api.last().path).toBe(
+      `/api/managed-agents/deployments/worker%3Aabc/capabilities?digest=${encodeURIComponent(manifestDigest)}`,
+    );
+  });
+
   it("rejects a manifest or receipt that does not match the documented shape", async () => {
     const badManifests: Array<Record<string, unknown>> = [
       { ...manifest, tools: "lookup_customer" },

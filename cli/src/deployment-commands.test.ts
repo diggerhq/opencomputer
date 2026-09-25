@@ -107,7 +107,7 @@ test("deployments commands call the documented routes and fail on a not-ready re
     "fetch",
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
-      calls.push({ path: url.pathname, method: init?.method ?? "GET" });
+      calls.push({ path: `${url.pathname}${url.search}`, method: init?.method ?? "GET" });
       if (url.pathname.endsWith("/capabilities")) return Response.json(capabilities);
       if (url.pathname.endsWith("/readiness")) return Response.json(receipt);
       throw new Error(`unexpected request ${url.pathname}`);
@@ -119,6 +119,11 @@ test("deployments commands call the documented routes and fail on a not-ready re
   try {
     await runDeploymentsCommand(client, ["capabilities", "hello-world:abc"], true);
     assert.deepEqual(JSON.parse(stdout.output()), capabilities);
+    await runDeploymentsCommand(
+      client,
+      ["capabilities", "hello-world:abc", "--digest", "sha256:0123"],
+      true,
+    );
     await assert.rejects(
       runDeploymentsCommand(client, ["readiness", "hello-world:abc"], true),
       (error: unknown) =>
@@ -129,9 +134,17 @@ test("deployments commands call the documented routes and fail on a not-ready re
   }
   assert.deepEqual(calls, [
     { path: "/api/managed-agents/deployments/hello-world%3Aabc/capabilities", method: "GET" },
+    {
+      path: "/api/managed-agents/deployments/hello-world%3Aabc/capabilities?digest=sha256%3A0123",
+      method: "GET",
+    },
     { path: "/api/managed-agents/deployments/hello-world%3Aabc/readiness", method: "POST" },
   ]);
   await assert.rejects(runDeploymentsCommand(client, ["capabilities"], true), /Usage/);
+  await assert.rejects(
+    runDeploymentsCommand(client, ["capabilities", "hello-world:abc", "--digest"], true),
+    /--digest requires a value/,
+  );
   await assert.rejects(
     runDeploymentsCommand(client, ["inspect", "hello-world:abc"], true),
     /Usage/,

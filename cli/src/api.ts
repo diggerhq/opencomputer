@@ -1113,10 +1113,14 @@ export class OpenComputerClient {
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
   }
 
-  /** The immutable capability manifest of a deployment and its digest. */
-  deploymentCapabilities(deploymentId: string) {
+  /**
+   * The immutable capability manifest of a deployment and its digest; with
+   * `digest`, the manifest that digest pinned (kept across redeploys).
+   */
+  deploymentCapabilities(deploymentId: string, digest?: string) {
+    const query = digest === undefined ? "" : `?digest=${encodeURIComponent(digest)}`;
     return this.request<DeploymentCapabilities>(
-      `/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}/capabilities`,
+      `/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}/capabilities${query}`,
     );
   }
 

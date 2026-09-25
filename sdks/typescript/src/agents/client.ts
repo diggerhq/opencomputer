@@ -493,13 +493,23 @@ export class Deployments {
     return page.deployments;
   }
 
-  /** `GET /deployments/<id>/capabilities`: the immutable capability manifest and its digest. */
-  capabilities(deploymentId: string, options: CallOptions = {}): Promise<DeploymentCapabilities> {
+  /**
+   * `GET /deployments/<id>/capabilities`: the immutable capability manifest
+   * and its digest. Pass `digest` to fetch the manifest a session or event
+   * pinned, which stays retrievable after the deployment id is redeployed.
+   */
+  capabilities(
+    deploymentId: string,
+    options: CallOptions & { digest?: string } = {},
+  ): Promise<DeploymentCapabilities> {
     return this.http.request(
       "GET",
       `/deployments/${segment(deploymentId)}/capabilities`,
       deploymentCapabilitiesShape,
-      { signal: options.signal },
+      {
+        ...(options.digest === undefined ? {} : { query: { digest: options.digest } }),
+        signal: options.signal,
+      },
     );
   }
 

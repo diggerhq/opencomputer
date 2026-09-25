@@ -10,8 +10,24 @@ import { CLIError } from "./errors.js";
 
 export const DEPLOYMENTS_USAGE =
   "Usage:\n" +
-  "  opencomputer deployments capabilities <deployment-id> [--json]\n" +
+  "  opencomputer deployments capabilities <deployment-id> [--digest sha256:...] [--json]\n" +
   "  opencomputer deployments readiness <deployment-id> [--json]";
+
+function takeDigestOption(args: string[]): string | undefined {
+  const equalsIndex = args.findIndex((argument) => argument.startsWith("--digest="));
+  if (equalsIndex >= 0) {
+    const value = args[equalsIndex]!.slice("--digest=".length);
+    if (!value) throw new Error("--digest requires a value");
+    args.splice(equalsIndex, 1);
+    return value;
+  }
+  const index = args.indexOf("--digest");
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) throw new Error("--digest requires a value");
+  args.splice(index, 2);
+  return value;
+}
 
 function list(label: string, values: string[]): string {
   return `  ${label.padEnd(13)}${values.length ? values.join(", ") : "—"}\n`;
@@ -86,11 +102,12 @@ export async function runDeploymentsCommand(
   json: boolean,
 ): Promise<void> {
   const action = args.shift();
+  const digest = action === "capabilities" ? takeDigestOption(args) : undefined;
   const deploymentId = args.shift();
   if (!action || !deploymentId) throw new Error(DEPLOYMENTS_USAGE);
   if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
   if (action === "capabilities") {
-    const result = await client.deploymentCapabilities(deploymentId);
+    const result = await client.deploymentCapabilities(deploymentId, digest);
     process.stdout.write(
       json ? `${JSON.stringify(result, null, 2)}\n` : formatCapabilities(result),
     );
