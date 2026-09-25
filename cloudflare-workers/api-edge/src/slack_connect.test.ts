@@ -91,6 +91,12 @@ describe("slackChannelName", () => {
     expect(
       slackChannelName("oc-", "x".repeat(200), "org_1").length,
     ).toBeLessThanOrEqual(80);
+    // A prefix that fills the limit must still leave room for retry suffixes.
+    const long = "p".repeat(90);
+    expect(slackChannelName(long, "acme", "org_1", 3)).toHaveLength(80);
+    expect(slackChannelName(long, "acme", "org_1", 3).endsWith("-org1-3")).toBe(
+      true,
+    );
   });
 });
 
@@ -180,6 +186,7 @@ describe("slack connect invite", () => {
     expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toEqual({
       id: "C_NEW",
       name: "oc-acme-corp-org1",
+      teamInvited: true,
     });
 
     const again = await handleSlackConnectInvite(env, caller);
@@ -233,6 +240,71 @@ describe("slack connect invite", () => {
     ]);
   });
 
+  it("keeps the channel and retries the team invite when adding the team fails", async () => {
+    let teamInvites = 0;
+    const calls = stubSlack({
+      ...happySlack,
+      "conversations.invite": () =>
+        teamInvites++ === 0
+          ? { ok: false, error: "internal_error" }
+          : { ok: true },
+    });
+    const { env, kv } = testEnv("pro");
+
+    const first = await handleSlackConnectInvite(env, caller);
+    expect(first.status).toBe(502);
+    expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toMatchObject({
+      id: "C_NEW",
+      teamInvited: false,
+    });
+    kv.delete("slack_connect_cooldown:org_1:user_1");
+
+    const second = await handleSlackConnectInvite(env, caller);
+    expect(second.status).toBe(200);
+    expect(calls.map((c) => c.method)).toEqual([
+      "conversations.create",
+      "conversations.invite",
+      "conversations.invite",
+      "conversations.inviteShared",
+    ]);
+    expect(JSON.parse(kv.get("slack_connect_channel:org_1")!)).toMatchObject({
+      teamInvited: true,
+    });
+  });
+
+  it("applies a cooldown after a Slack failure", async () => {
+    const calls = stubSlack({
+      ...happySlack,
+      "conversations.inviteShared": () => ({
+        ok: false,
+        error: "internal_error",
+      }),
+    });
+    const { env } = testEnv("pro");
+    expect((await handleSlackConnectInvite(env, caller)).status).toBe(502);
+    const again = await handleSlackConnectInvite(env, caller);
+    expect(again.status).toBe(429);
+    expect(await again.json()).toMatchObject({
+      error: { code: "slack_connect_rate_limited" },
+    });
+    expect(
+      calls.filter((c) => c.method === "conversations.inviteShared"),
+    ).toHaveLength(1);
+  });
+
+  it("still reports success when the invite bookkeeping write fails", async () => {
+    stubSlack(happySlack);
+    const { env } = testEnv("pro");
+    const put = env.SESSIONS_KV.put.bind(env.SESSIONS_KV);
+    env.SESSIONS_KV.put = (async (key: string, ...rest: unknown[]) => {
+      if (key.startsWith("slack_connect_invite:")) throw new Error("kv down");
+      return (put as (...a: unknown[]) => Promise<void>)(key, ...rest);
+    }) as KVNamespace["put"];
+    const res = await handleSlackConnectInvite(env, caller);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ alreadyInvited: false });
+  });
+
   it("maps Slack's already-invited errors without leaking provider text", async () => {
     stubSlack({
       ...happySlack,
@@ -250,9 +322,14 @@ describe("slack connect invite", () => {
         message: "You're already a member of your shared channel.",
       },
     });
-    // Channel is kept for the org; the user invite is not recorded.
+    // Channel is kept for the org and Slack's view (already invited) is
+    // mirrored so Settings stops offering the button.
     expect(kv.has("slack_connect_channel:org_1")).toBe(true);
-    expect(kv.has("slack_connect_invite:org_1:user_1")).toBe(false);
+    expect(kv.has("slack_connect_invite:org_1:user_1")).toBe(true);
+    const status = await handleSlackConnectStatus(env, caller);
+    expect(await status.json()).toMatchObject({
+      invitedAt: expect.any(String),
+    });
   });
 
   it("returns 502 with a generic message for unknown Slack errors", async () => {
@@ -266,6 +343,6 @@ describe("slack connect invite", () => {
     expect(await res.json()).toMatchObject({
       error: { code: "slack_connect_invite_failed" },
     });
-    expect(kv.size).toBe(0);
+    expect([...kv.keys()]).toEqual(["slack_connect_cooldown:org_1:user_1"]);
   });
 });

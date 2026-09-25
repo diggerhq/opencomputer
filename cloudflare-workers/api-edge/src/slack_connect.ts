@@ -28,7 +28,9 @@ interface SlackConnectCaller {
   userID: string;
 }
 
-const INVITE_TTL_SEC = 7 * 24 * 60 * 60;
+const INVITE_TTL_SEC = 30 * 24 * 60 * 60;
+// Cooldown after a rejected Slack call so a stuck user can't hammer Slack.
+const FAILURE_COOLDOWN_SEC = 60;
 const SLACK_API = "https://slack.com/api";
 const DEFAULT_CHANNEL_PREFIX = "oc-";
 const SLACK_CHANNEL_NAME_MAX = 80;
@@ -59,9 +61,15 @@ function channelKey(orgID: string): string {
   return `slack_connect_channel:${orgID}`;
 }
 
+function cooldownKey(caller: SlackConnectCaller): string {
+  return `slack_connect_cooldown:${caller.orgID}:${caller.userID}`;
+}
+
 interface OrgChannel {
   id: string;
   name: string;
+  // False until the team has been added; retried on the next invite.
+  teamInvited?: boolean;
 }
 
 async function userEmail(
@@ -106,8 +114,12 @@ export function slackChannelName(
     .replace(/[^a-z0-9]/gi, "")
     .toLowerCase()
     .slice(-6);
-  const suffix = attempt > 0 ? `-${attempt}` : "";
-  return `${prefix}${slug}-${idPart}${suffix}`.slice(0, SLACK_CHANNEL_NAME_MAX);
+  const tail = `-${idPart}${attempt > 0 ? `-${attempt}` : ""}`;
+  const head = `${prefix}${slug}`.slice(
+    0,
+    SLACK_CHANNEL_NAME_MAX - tail.length,
+  );
+  return `${head}${tail}`;
 }
 
 class SlackError extends Error {
@@ -187,9 +199,10 @@ async function createOrgChannel(
     }
   }
   if (!channel) throw new SlackError("name_taken", "conversations.create");
+  return channel;
+}
 
-  // Team members who are already in the channel don't make the whole call
-  // fail in practice, but tolerate it explicitly in case Slack changes that.
+async function inviteTeam(env: SlackConnectEnv, channel: OrgChannel) {
   try {
     await slack<InviteResponse>(env, "conversations.invite", {
       channel: channel.id,
@@ -200,17 +213,34 @@ async function createOrgChannel(
       throw error;
     }
   }
-  return channel;
 }
 
+async function saveOrgChannel(
+  env: SlackConnectEnv,
+  orgID: string,
+  channel: OrgChannel,
+) {
+  await env.SESSIONS_KV.put(channelKey(orgID), JSON.stringify(channel));
+}
+
+// The channel is persisted as soon as Slack creates it so a failed team invite
+// never orphans it; the team invite is retried on the next call instead.
 async function ensureOrgChannel(
   env: SlackConnectEnv,
   orgID: string,
 ): Promise<OrgChannel> {
   const cached = await env.SESSIONS_KV.get(channelKey(orgID));
-  if (cached) return JSON.parse(cached) as OrgChannel;
-  const channel = await createOrgChannel(env, orgID);
-  await env.SESSIONS_KV.put(channelKey(orgID), JSON.stringify(channel));
+  let channel: OrgChannel;
+  if (cached) {
+    channel = JSON.parse(cached) as OrgChannel;
+    if (channel.teamInvited !== false) return channel;
+  } else {
+    channel = { ...(await createOrgChannel(env, orgID)), teamInvited: false };
+    await saveOrgChannel(env, orgID, channel);
+  }
+  await inviteTeam(env, channel);
+  channel = { ...channel, teamInvited: true };
+  await saveOrgChannel(env, orgID, channel);
   return channel;
 }
 
@@ -294,7 +324,37 @@ const ALREADY_MEMBER_CODES = new Set([
   "invite_already_sent",
 ]);
 
-function slackFailure(caller: SlackConnectCaller, error: unknown): Response {
+async function rememberInvite(
+  env: SlackConnectEnv,
+  caller: SlackConnectCaller,
+  invitedAt: string,
+): Promise<void> {
+  try {
+    await env.SESSIONS_KV.put(inviteKey(caller), invitedAt, {
+      expirationTtl: INVITE_TTL_SEC,
+    });
+  } catch (error) {
+    // Slack already delivered the invite; a lost bookkeeping write must not
+    // turn that into a user-visible failure.
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "slack_connect.kv_write_failed",
+        orgId: caller.orgID,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+async function slackFailure(
+  env: SlackConnectEnv,
+  caller: SlackConnectCaller,
+  error: unknown,
+): Promise<Response> {
+  await env.SESSIONS_KV.put(cooldownKey(caller), "1", {
+    expirationTtl: FAILURE_COOLDOWN_SEC,
+  });
   if (error instanceof SlackUnreachable) {
     console.error(
       JSON.stringify({
@@ -325,6 +385,11 @@ function slackFailure(caller: SlackConnectCaller, error: unknown): Response {
     }),
   );
   const alreadyMember = ALREADY_MEMBER_CODES.has(code);
+  if (alreadyMember) {
+    // Slack considers this user invited/joined; mirror that so Settings stops
+    // offering the button instead of re-hitting Slack.
+    await rememberInvite(env, caller, new Date().toISOString());
+  }
   return json(
     {
       error: {
@@ -371,9 +436,11 @@ export async function handleSlackConnectInvite(
   const email = await userEmail(env, caller.userID);
   if (!email) return json({ error: "user not found" }, 404);
 
-  const key = inviteKey(caller);
-  const existing = await env.SESSIONS_KV.get(key);
-  const cachedChannel = await env.SESSIONS_KV.get(channelKey(caller.orgID));
+  const [existing, cachedChannel, coolingDown] = await Promise.all([
+    env.SESSIONS_KV.get(inviteKey(caller)),
+    env.SESSIONS_KV.get(channelKey(caller.orgID)),
+    env.SESSIONS_KV.get(cooldownKey(caller)),
+  ]);
   if (existing && cachedChannel) {
     return json({
       email,
@@ -381,6 +448,17 @@ export async function handleSlackConnectInvite(
       invitedAt: existing,
       alreadyInvited: true,
     });
+  }
+  if (coolingDown) {
+    return json(
+      {
+        error: {
+          code: "slack_connect_rate_limited",
+          message: "Please wait a minute before trying again.",
+        },
+      },
+      429,
+    );
   }
 
   let channel: OrgChannel;
@@ -392,13 +470,11 @@ export async function handleSlackConnectInvite(
       external_limited: true,
     });
   } catch (error) {
-    return slackFailure(caller, error);
+    return slackFailure(env, caller, error);
   }
 
   const invitedAt = new Date().toISOString();
-  await env.SESSIONS_KV.put(key, invitedAt, {
-    expirationTtl: INVITE_TTL_SEC,
-  });
+  await rememberInvite(env, caller, invitedAt);
   return json({
     email,
     channelName: channel.name,
