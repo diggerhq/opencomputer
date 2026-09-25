@@ -546,15 +546,30 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   if (!email) return json({ error: "email required" }, 400);
   if (!["owner", "admin", "member"].includes(role)) return json({ error: "invalid role" }, 400);
 
+  const now = Math.floor(Date.now() / 1000);
   // WorkOS invitation send. Returns the WorkOS invitation ID we mirror in D1.
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+  // Orgs provisioned at the edge have no WorkOS org yet; create one lazily so
+  // WorkOS can deliver the invitation email.
+  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT name, workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ name: string; workos_org_id: string | null }>();
+  let workosOrgID = org?.workos_org_id ?? null;
+  if (org && !workosOrgID) {
+    const created = await workosCreateOrg(env, org.name);
+    if (created) {
+      await env.OPENCOMPUTER_DB.prepare(`UPDATE orgs SET workos_org_id = ?1, updated_at = ?2 WHERE id = ?3 AND workos_org_id IS NULL`)
+        .bind(created, now, caller.orgID).run();
+      // A concurrent invite may have won the conditional update; always invite
+      // into whichever WorkOS org is actually recorded.
+      const stored = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+      workosOrgID = stored?.workos_org_id ?? created;
+    }
+  }
   let workosInviteID: string | null = null;
-  if (org?.workos_org_id) {
+  if (workosOrgID) {
     try {
       const r = await fetch("https://api.workos.com/user_management/invitations", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
-        body: JSON.stringify({ email, organization_id: org.workos_org_id, expires_in_days: 7, role_slug: role }),
+        body: JSON.stringify({ email, organization_id: workosOrgID, expires_in_days: 7, role_slug: role }),
       });
       if (r.ok) {
         const data = await r.json<{ id: string }>();
@@ -568,7 +583,6 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   }
 
   const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
   await env.OPENCOMPUTER_DB.prepare(
     `INSERT INTO invitations (id, org_id, email, role, invited_by, workos_invitation_id, status, expires_at, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)`,
@@ -863,6 +877,25 @@ async function handleListAgentSubscriptions(_req: Request, env: DashboardEnv, ca
 }
 
 // ── WorkOS helpers ───────────────────────────────────────────────────────
+
+async function workosCreateOrg(env: DashboardEnv, name: string): Promise<string | null> {
+  try {
+    const r = await fetch("https://api.workos.com/organizations", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) {
+      console.error(`workos org create returned ${r.status}: ${await r.text()}`);
+      return null;
+    }
+    const data = await r.json<{ id?: string }>();
+    return data.id ?? null;
+  } catch (e) {
+    console.error("workos org create threw", e);
+    return null;
+  }
+}
 
 async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: string): Promise<void> {
   await fetch(`https://api.workos.com/organizations/${workosOrgID}`, {
