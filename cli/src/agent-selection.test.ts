@@ -140,11 +140,13 @@ async function threeAgentProject(billingPathPrefix = '"/v1"'): Promise<string> {
 
 interface Cloud {
   puts: Array<{ path: string; body: Record<string, unknown> }>;
+  /** Cloud agents of `prj_1`; mutable so a test can retire the linked one. */
+  agents: Array<{ id: string; name: string }>;
 }
 
 function fakeCloud(context: test.TestContext): Cloud {
-  const cloud: Cloud = { puts: [] };
   const agents = ["app", "app--billing", "app--support"].map((id) => ({ id, name: id }));
+  const cloud: Cloud = { puts: [], agents };
   context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
@@ -277,6 +279,35 @@ test("acceptance 1 and 3: from a three-agent root, `secrets set --agent` infers 
     assert.ok(unlinked.error instanceof CLIError);
     assert.equal(unlinked.error.code, "local_agent_unavailable");
     assert.equal(cloud.puts.length, 3);
+
+    // Naming the linked project explicitly is the same as not naming it.
+    const linked = await runFrom(context, resolve(parent, "app"), "secrets", [
+      "set",
+      "API_TOKEN",
+      "--project",
+      "app",
+      "--agent",
+      "billing",
+      "--value-stdin",
+    ]);
+    assert.equal(linked.error, undefined, linked.error?.message);
+    assert.equal(cloud.puts[3]!.body.agentId, "app--billing");
+
+    // A link whose agent the project no longer has is stale: no aliases, literal id.
+    cloud.agents.splice(0, cloud.agents.length, { id: "billing", name: "billing" });
+    const stale = await runFrom(context, resolve(parent, "app"), "secrets", [
+      "set",
+      "API_TOKEN",
+      "--project",
+      "app",
+      "--agent",
+      "billing",
+      "--allow-origin",
+      "https://billing.example.com",
+      "--value-stdin",
+    ]);
+    assert.equal(stale.error, undefined, stale.error?.message);
+    assert.equal(cloud.puts[4]!.body.agentId, "billing");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

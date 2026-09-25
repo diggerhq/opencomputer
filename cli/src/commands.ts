@@ -392,7 +392,9 @@ async function selectedProject(
       .then((root) => readLinkedProject(root))
       .catch(() => null);
     const checkout =
-      linked?.projectId === project.id && linked.apiUrl === config.apiUrl;
+      linked?.projectId === project.id &&
+      linked.apiUrl === config.apiUrl &&
+      project.agents.some((candidate) => candidate.id === linked.agentId);
     return {
       projectId: project.id,
       agentId: checkout ? linked.agentId : agent.id,
