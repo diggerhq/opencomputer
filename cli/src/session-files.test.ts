@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { WorkspaceArtifact, WorkspaceFile } from "./api.js";
+import { APIError, type WorkspaceArtifact, type WorkspaceFile } from "./api.js";
 import {
   VerificationError,
   downloadWorkspace,
@@ -168,6 +168,49 @@ test("--all mirrors the workspace layout under the destination", async () => {
       Buffer.from([1, 2, 3]),
     );
     assert.equal(await readFile(path.join(dir, "one.txt"), "utf8"), "one");
+  });
+});
+
+test("an ended session falls back to its retained artifacts", async () => {
+  const bytes = new TextEncoder().encode("kept");
+  const base = fakeClient([{ path: "kept.txt", bytes }]);
+  const gone = () =>
+    Promise.reject(
+      new APIError("workspace gone", 410, "workspace_unavailable"),
+    );
+  const client: WorkspaceClient = {
+    ...base,
+    workspaceFiles: gone,
+    exportWorkspaceFile: gone,
+  };
+  await withDirectory(async (dir) => {
+    const single = await downloadWorkspaceFile(
+      client,
+      sessionId,
+      "kept.txt",
+      path.join(dir, "single.txt"),
+    );
+    assert.equal(single.artifactId, "art-kept.txt");
+    assert.equal(await readFile(path.join(dir, "single.txt"), "utf8"), "kept");
+    const all = await downloadWorkspace(
+      client,
+      sessionId,
+      path.join(dir, "all"),
+    );
+    assert.deepEqual(
+      all.map((result) => result.path),
+      ["kept.txt"],
+    );
+    await assert.rejects(
+      downloadWorkspaceFile(
+        client,
+        sessionId,
+        "never.txt",
+        path.join(dir, "n"),
+      ),
+      (error: unknown) =>
+        error instanceof APIError && error.code === "workspace_unavailable",
+    );
   });
 });
 

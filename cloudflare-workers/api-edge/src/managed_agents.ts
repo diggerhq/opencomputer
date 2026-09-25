@@ -231,9 +231,18 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     backendCode === "template_sync_failed" &&
     backendMessage.includes("oc-template.toml") &&
     backendMessage.includes("expected a regular file");
+  const workspaceExportError =
+    backendCode.startsWith("artifact_") ||
+    backendCode.startsWith("export_") ||
+    backendCode.startsWith("workspace_");
+  // Only the documented export codes pass through; anything else from that
+  // family collapses to the generic code so no upstream detail leaks.
   const publicCode = missingTemplateManifest
     ? "template_manifest_missing"
-    : backendCode;
+    : workspaceExportError &&
+        !Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, backendCode)
+      ? "workspace_export_failed"
+      : backendCode;
   let message = "The agent request could not be completed.";
   const slackSetupMessage = Object.hasOwn(
     SLACK_SETUP_ERROR_MESSAGES,
@@ -307,11 +316,7 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   // Workspace export refusals say whether the same Idempotency-Key may be
   // retried and which export record the refusal was written to.
   const exportOutcome: Record<string, unknown> = {};
-  if (
-    backendCode.startsWith("artifact_") ||
-    backendCode.startsWith("export_") ||
-    backendCode.startsWith("workspace_")
-  ) {
+  if (workspaceExportError) {
     if (typeof backendError?.retrySafe === "boolean") {
       exportOutcome.retrySafe = backendError.retrySafe;
     }
@@ -321,9 +326,7 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     ) {
       exportOutcome.exportId = backendError.exportId;
     }
-    message =
-      WORKSPACE_EXPORT_ERROR_MESSAGES[backendCode] ??
-      "The workspace export could not be completed.";
+    message = WORKSPACE_EXPORT_ERROR_MESSAGES[publicCode];
   }
   return new Response(
     JSON.stringify({
@@ -2011,11 +2014,15 @@ function publicWorkspaceExport(value: unknown): Record<string, unknown> {
     artifactId: exported.artifactId ?? null,
     error: error
       ? {
-          code: error.code,
+          code:
+            typeof error.code === "string" &&
+            Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, error.code)
+              ? error.code
+              : "workspace_export_failed",
           message:
             (typeof error.code === "string" &&
               WORKSPACE_EXPORT_ERROR_MESSAGES[error.code]) ||
-            "The workspace export could not be completed.",
+            WORKSPACE_EXPORT_ERROR_MESSAGES.workspace_export_failed,
           retrySafe: error.retrySafe === true,
         }
       : null,

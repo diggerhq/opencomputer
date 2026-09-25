@@ -5,6 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import {
+  APIError,
   workspaceContentSignal,
   type WorkspaceArtifact,
   type WorkspaceFile,
@@ -124,8 +125,44 @@ export async function downloadWorkspaceFile(
   destination: string,
   root?: string,
 ): Promise<DownloadResult> {
-  const artifact = await client.exportWorkspaceFile(sessionId, workspacePath);
+  let artifact: WorkspaceArtifact;
+  try {
+    artifact = await client.exportWorkspaceFile(sessionId, workspacePath);
+  } catch (error) {
+    if (!isWorkspaceGone(error)) throw error;
+    const retained = await latestRetainedArtifacts(client, sessionId);
+    const fallback = retained.get(workspacePath);
+    if (!fallback) throw error;
+    artifact = fallback;
+  }
   return downloadArtifact(client, artifact, destination, root);
+}
+
+/**
+ * Once a session's workspace is gone (ended session, storage released) the
+ * live listing and fresh exports fail, but retained artifacts stay
+ * downloadable. Fall back to those in that case only.
+ */
+function isWorkspaceGone(error: unknown): boolean {
+  return (
+    error instanceof APIError &&
+    (error.code === "workspace_unavailable" ||
+      error.code === "artifact_not_found")
+  );
+}
+
+async function latestRetainedArtifacts(
+  client: WorkspaceClient,
+  sessionId: string,
+): Promise<Map<string, WorkspaceArtifact>> {
+  const latest = new Map<string, WorkspaceArtifact>();
+  for (const artifact of await client.workspaceArtifacts(sessionId)) {
+    const current = latest.get(artifact.path);
+    if (!current || current.exportedAt < artifact.exportedAt) {
+      latest.set(artifact.path, artifact);
+    }
+  }
+  return latest;
 }
 
 /**
@@ -227,18 +264,29 @@ export async function downloadWorkspace(
   root: string,
   onFile?: (result: DownloadResult) => void,
 ): Promise<DownloadResult[]> {
-  const files = await listWorkspaceFiles(client, sessionId);
+  let paths: string[];
+  let retained: Map<string, WorkspaceArtifact> | undefined;
+  try {
+    paths = (await listWorkspaceFiles(client, sessionId)).map((f) => f.path);
+  } catch (error) {
+    if (!isWorkspaceGone(error)) throw error;
+    retained = await latestRetainedArtifacts(client, sessionId);
+    paths = [...retained.keys()].sort((a, b) => a.localeCompare(b));
+  }
   await mkdir(root, { recursive: true });
   const results: DownloadResult[] = [];
-  for (const file of files) {
-    const destination = localPathFor(root, file.path);
-    const result = await downloadWorkspaceFile(
-      client,
-      sessionId,
-      file.path,
-      destination,
-      root,
-    );
+  for (const filePath of paths) {
+    const destination = localPathFor(root, filePath);
+    const artifact = retained?.get(filePath);
+    const result = artifact
+      ? await downloadArtifact(client, artifact, destination, root)
+      : await downloadWorkspaceFile(
+          client,
+          sessionId,
+          filePath,
+          destination,
+          root,
+        );
     results.push(result);
     onFile?.(result);
   }

@@ -560,6 +560,47 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("collapses unrecognized workspace export codes to the generic one", async () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test", role: "admin" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "artifact_pending_acc_sess_1_x_rejected",
+              message: "s3://managed-agents-artifacts/accounts/acc/x",
+              retrySafe: true,
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "x" }),
+        },
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(409);
+    const body = await response.json<{ error: Record<string, unknown> }>();
+    expect(body.error.code).toBe("workspace_export_failed");
+    expect(body.error.retrySafe).toBe(true);
+    expect(JSON.stringify(body)).not.toMatch(/acc_sess_1|accounts\/acc|s3:/);
+  });
+
   it("reads BYOK eligibility from an active Autumn subscription", async () => {
     vi.stubGlobal(
       "fetch",
