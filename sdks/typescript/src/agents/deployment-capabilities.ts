@@ -5,7 +5,21 @@
 // `--json` output (`opencomputer deployments capabilities|readiness`).
 
 import type { Environment } from "./types.js";
-import { anyRecord, array, boolean, nullable, number, object, string, type Shape } from "./shapes.js";
+import {
+  anyRecord,
+  array,
+  boolean,
+  environment,
+  jsonValue,
+  nullable,
+  number,
+  object,
+  oneOf,
+  optional,
+  string,
+  ShapeError,
+  type Shape,
+} from "./shapes.js";
 
 /**
  * The immutable capability manifest of a deployment: what the compiler and
@@ -85,39 +99,64 @@ export interface ReadinessReceipt {
   ready: boolean;
 }
 
+const digest: Shape<string> = (value, path) => {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new ShapeError(path, "a sha256: digest");
+  }
+  return value;
+};
+
+const modelDeclaration = object({ provider: string, model: string });
+
+export const capabilityManifest: Shape<CapabilityManifest> = object({
+  schema: oneOf("opencomputer.deployment-capabilities/v1"),
+  projectId: nullable(string),
+  agentId: string,
+  deploymentId: string,
+  alias: optional(string),
+  sourceDigest: digest,
+  runtimeImageDigest: digest,
+  runtimeImageVersion: optional(string),
+  runtimeMode: optional(string),
+  models: array(modelDeclaration),
+  defaultModel: optional(nullable(modelDeclaration)),
+  tools: array(object({ id: string })),
+  resultSchemas: array(object({ toolId: string, schema: anyRecord })),
+  skills: array(object({ name: string })),
+  mcpServers: array(object({ id: string })),
+  subagents: optional(array(string)),
+  connections: array(object({ id: string, kind: string, policy: anyRecord })),
+  memory: array(object({ id: string })),
+  regions: array(object({ scope: string, region: string })),
+  lifecycleCapabilities: anyRecord,
+  egressCapabilities: anyRecord,
+  createdAt: string,
+}) as Shape<CapabilityManifest>;
+
 export const deploymentCapabilities: Shape<DeploymentCapabilities> = object({
-  manifest: (value, path) => {
-    const manifest = anyRecord(value, path);
-    for (const key of ["schema", "agentId", "deploymentId", "sourceDigest", "runtimeImageDigest", "createdAt"]) {
-      string(manifest[key], `${path}.${key}`);
-    }
-    for (const key of ["models", "tools", "resultSchemas", "skills", "mcpServers", "connections", "memory", "regions"]) {
-      array(anyRecord)(manifest[key], `${path}.${key}`);
-    }
-    return manifest as unknown as CapabilityManifest;
-  },
-  manifestDigest: string,
+  manifest: capabilityManifest,
+  manifestDigest: digest,
 });
 
 export const readinessCheck: Shape<ReadinessCheck> = object({
   id: string,
-  status: string as Shape<ReadinessCheckStatus>,
+  status: oneOf<ReadinessCheckStatus>("pass", "fail", "skip"),
   required: boolean,
   summary: string,
-  detail: anyRecord,
+  detail: (value, path) => jsonValue(anyRecord(value, path), path) as Record<string, unknown>,
   checkedAt: string,
   durationMs: number,
 });
 
 export const readinessReceipt: Shape<ReadinessReceipt> = object({
-  schema: string as Shape<"opencomputer.deployment-readiness/v1">,
+  schema: oneOf("opencomputer.deployment-readiness/v1"),
   projectId: nullable(string),
   agentId: string,
   deploymentId: string,
   sessionId: nullable(string),
-  environment: string as Shape<Environment>,
+  environment,
   checkedAt: string,
-  manifestDigest: string,
+  manifestDigest: digest,
   probe: object({ mode: string, executesAgentCode: boolean, contactsCustomerTargets: boolean }),
   checks: array(readinessCheck),
   ready: boolean,

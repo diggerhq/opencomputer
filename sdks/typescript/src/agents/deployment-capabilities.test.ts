@@ -18,13 +18,16 @@ function fakeApi(routes: Record<string, (call: Call) => Response>) {
   return { calls, fetch, last: () => calls[calls.length - 1] };
 }
 
+const sha = (fill: string) => `sha256:${fill.repeat(64)}`;
+const manifestDigest = sha("0");
+
 const manifest = {
   schema: "opencomputer.deployment-capabilities/v1",
   projectId: "prj_1",
   agentId: "worker",
   deploymentId: "worker:abc",
-  sourceDigest: "sha256:abc",
-  runtimeImageDigest: "sha256:def",
+  sourceDigest: sha("a"),
+  runtimeImageDigest: sha("d"),
   models: [{ provider: "openrouter", model: "anthropic/claude-sonnet-5" }],
   tools: [{ id: "lookup_customer" }],
   resultSchemas: [],
@@ -46,7 +49,7 @@ const receipt = {
   sessionId: null,
   environment: "development",
   checkedAt: "t",
-  manifestDigest: "sha256:0123",
+  manifestDigest,
   probe: { mode: "platform", executesAgentCode: false, contactsCustomerTargets: false },
   checks: [
     { id: "model.route", status: "pass", required: true, summary: "ok", detail: {}, checkedAt: "t", durationMs: 1 },
@@ -58,13 +61,13 @@ describe("deployments.capabilities / deployments.readiness", () => {
   it("fetches the manifest with its digest and posts a readiness probe", async () => {
     const api = fakeApi({
       "GET /api/managed-agents/deployments/worker%3Aabc/capabilities": () =>
-        Response.json({ manifest, manifestDigest: "sha256:0123" }),
+        Response.json({ manifest, manifestDigest }),
       "POST /api/managed-agents/deployments/worker%3Aabc/readiness": () => Response.json(receipt),
     });
     const oc = new OpenComputer({ apiKey: "osb_test", fetch: api.fetch });
 
     const capabilities = await oc.deployments.capabilities("worker:abc");
-    expect(capabilities).toEqual({ manifest, manifestDigest: "sha256:0123" });
+    expect(capabilities).toEqual({ manifest, manifestDigest });
     expect(api.last().path).toBe("/api/managed-agents/deployments/worker%3Aabc/capabilities");
 
     const readiness = await oc.deployments.readiness("worker:abc");
@@ -73,13 +76,47 @@ describe("deployments.capabilities / deployments.readiness", () => {
   });
 
   it("rejects a manifest or receipt that does not match the documented shape", async () => {
+    const badManifests: Array<Record<string, unknown>> = [
+      { ...manifest, tools: "lookup_customer" },
+      { ...manifest, tools: [{ name: "no id" }] },
+      { ...manifest, models: [{ provider: "openrouter" }] },
+      { ...manifest, resultSchemas: [{ toolId: "report" }] },
+      { ...manifest, skills: [{}] },
+      { ...manifest, mcpServers: [{ origin: "https://mcp.example.com" }] },
+      { ...manifest, connections: [{ id: "github", kind: "github-app" }] },
+      { ...manifest, memory: [{ description: "no id" }] },
+      { ...manifest, regions: [{ scope: "runtime" }] },
+      { ...manifest, sourceDigest: "sha256:abc" },
+      { ...manifest, schema: "opencomputer.deployment-capabilities/v2" },
+    ];
+    const badReceipts: Array<Record<string, unknown>> = [
+      { ...receipt, checks: undefined },
+      { ...receipt, checks: [{ ...receipt.checks[0], status: "maybe" }] },
+      { ...receipt, checks: [{ ...receipt.checks[0], detail: "free text" }] },
+      { ...receipt, probe: { mode: "platform" } },
+      { ...receipt, environment: "staging" },
+      { ...receipt, manifestDigest: "sha256:0123" },
+    ];
+    let manifestAt = 0;
+    let receiptAt = 0;
     const api = fakeApi({
       "GET /api/managed-agents/deployments/dep_1/capabilities": () =>
-        Response.json({ manifest: { ...manifest, tools: "lookup_customer" }, manifestDigest: "sha256:0123" }),
-      "POST /api/managed-agents/deployments/dep_1/readiness": () => Response.json({ ...receipt, checks: undefined }),
+        Response.json({ manifest: badManifests[manifestAt++], manifestDigest }),
+      "GET /api/managed-agents/deployments/dep_2/capabilities": () =>
+        Response.json({ manifest, manifestDigest: "sha256:0123" }),
+      "POST /api/managed-agents/deployments/dep_1/readiness": () => Response.json(badReceipts[receiptAt++]),
     });
     const oc = new OpenComputer({ apiKey: "osb_test", fetch: api.fetch });
-    await expect(oc.deployments.capabilities("dep_1")).rejects.toBeInstanceOf(OpenComputerError);
-    await expect(oc.deployments.readiness("dep_1")).rejects.toBeInstanceOf(OpenComputerError);
+    for (let index = 0; index < badManifests.length; index += 1) {
+      await expect(oc.deployments.capabilities("dep_1"), JSON.stringify(badManifests[index])).rejects.toBeInstanceOf(
+        OpenComputerError,
+      );
+    }
+    await expect(oc.deployments.capabilities("dep_2")).rejects.toBeInstanceOf(OpenComputerError);
+    for (let index = 0; index < badReceipts.length; index += 1) {
+      await expect(oc.deployments.readiness("dep_1"), JSON.stringify(badReceipts[index])).rejects.toBeInstanceOf(
+        OpenComputerError,
+      );
+    }
   });
 });

@@ -45,6 +45,16 @@ function byString(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Base64 to text, decoding the bytes as UTF-8 rather than one code unit per byte. */
+function decodeBase64Utf8(text: string): string {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
 /**
  * Compiler-known declarations from an artifact bundle, or `null` when the
  * bundle is not a well-formed agent artifact. An artifact without compiler
@@ -75,7 +85,7 @@ export function capabilityDeclarationsFromArtifact(
     if (file.path === ".opencomputer/reactive.json") {
       if (typeof file.content !== "string") return null;
       try {
-        reactive = record(JSON.parse(atob(file.content)));
+        reactive = record(JSON.parse(decodeBase64Utf8(file.content)));
       } catch {
         return null;
       }
@@ -186,30 +196,119 @@ export function publicCapabilityManifest(
   };
 }
 
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  const object = record(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort(byString)
+      .map((key) => [key, sortKeys(object[key])]),
+  );
+}
+
+/**
+ * The canonical form a manifest digest is computed over: object keys sorted
+ * at every level, array order preserved, no whitespace.
+ */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortKeys(value));
+}
+
+export async function manifestDigestOf(manifest: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(manifest));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return `sha256:${Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+/**
+ * Whether the digest the service reports is the digest of the manifest
+ * customers receive. It is not when the projection above had to drop a
+ * field, in which case the digest must not be served as verifiable.
+ */
+export async function publicManifestDigestVerifies(
+  projected: Record<string, unknown>,
+): Promise<boolean> {
+  return (
+    typeof projected.manifestDigest === "string" &&
+    (await manifestDigestOf(projected.manifest)) === projected.manifestDigest
+  );
+}
+
+const MAX_DETAIL_DEPTH = 4;
+const MAX_DETAIL_ENTRIES = 200;
+
+/**
+ * A readiness check's detail is check-specific structured data (declared
+ * versus packaged tool IDs, per-connection configured state, regions). Only
+ * JSON scalars, arrays and plain objects pass, to a bounded depth and size.
+ */
+function publicDetail(value: unknown, depth = 0): unknown {
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (depth >= MAX_DETAIL_DEPTH) return undefined;
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_DETAIL_ENTRIES)
+      .map((entry) => publicDetail(entry, depth + 1))
+      .filter((entry) => entry !== undefined);
+  }
+  const object = record(value);
+  if (!object) return undefined;
+  const entries: Array<[string, unknown]> = [];
+  for (const key of Object.keys(object).slice(0, MAX_DETAIL_ENTRIES)) {
+    const entry = publicDetail(object[key], depth + 1);
+    if (entry !== undefined) entries.push([key, entry]);
+  }
+  return Object.fromEntries(entries);
+}
+
+const CHECK_STATUSES = new Set(["pass", "fail", "skip"]);
+
 export function publicReadinessReceipt(value: unknown): Record<string, unknown> {
   const receipt = record(value) ?? {};
+  const probe = record(receipt.probe) ?? {};
   return {
     schema: receipt.schema,
-    projectId: receipt.projectId ?? null,
+    projectId: typeof receipt.projectId === "string" ? receipt.projectId : null,
     agentId: receipt.agentId,
     deploymentId: receipt.deploymentId,
-    sessionId: receipt.sessionId ?? null,
+    sessionId: typeof receipt.sessionId === "string" ? receipt.sessionId : null,
     environment: receipt.environment,
     checkedAt: receipt.checkedAt,
     manifestDigest: receipt.manifestDigest,
-    probe: receipt.probe,
+    probe: {
+      mode: probe.mode,
+      executesAgentCode: probe.executesAgentCode === true,
+      contactsCustomerTargets: probe.contactsCustomerTargets === true,
+    },
     checks: Array.isArray(receipt.checks)
-      ? receipt.checks.map((value) => {
-          const check = record(value) ?? {};
-          return {
-            id: check.id,
-            status: check.status,
-            required: check.required === true,
-            summary: check.summary,
-            detail: record(check.detail) ?? {},
-            checkedAt: check.checkedAt,
-            durationMs: check.durationMs,
-          };
+      ? receipt.checks.flatMap((value) => {
+          const check = record(value);
+          if (
+            !check ||
+            typeof check.id !== "string" ||
+            typeof check.status !== "string" ||
+            !CHECK_STATUSES.has(check.status)
+          ) {
+            return [];
+          }
+          return [
+            {
+              id: check.id,
+              status: check.status,
+              required: check.required === true,
+              summary: typeof check.summary === "string" ? check.summary : "",
+              detail: publicDetail(record(check.detail) ?? {}) ?? {},
+              checkedAt: check.checkedAt,
+              durationMs:
+                typeof check.durationMs === "number" ? check.durationMs : 0,
+            },
+          ];
         })
       : [],
     ready: receipt.ready === true,

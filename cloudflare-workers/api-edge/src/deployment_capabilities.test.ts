@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { capabilityDeclarationsFromArtifact } from "./deployment_capabilities";
+import {
+  canonicalJson,
+  capabilityDeclarationsFromArtifact,
+  manifestDigestOf,
+} from "./deployment_capabilities";
 import { proxyManagedAgents } from "./managed_agents";
 
 const env = {
@@ -9,12 +13,20 @@ const env = {
 };
 const caller = { orgID: "org_test", userID: "user_test" };
 
+function base64Utf8(text: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(text)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
 function artifact(files: Array<{ path: string; content?: string }>): string {
   return JSON.stringify({
     version: 1,
     files: files.map((file) => ({
       path: file.path,
-      content: btoa(file.content ?? ""),
+      content: base64Utf8(file.content ?? ""),
     })),
   });
 }
@@ -96,6 +108,25 @@ describe("deployment capability declarations", () => {
     expect(capabilityDeclarationsFromArtifact("not json")).toBeNull();
   });
 
+  it("decodes compiler metadata as UTF-8", () => {
+    const source = artifact([
+      {
+        path: ".opencomputer/reactive.json",
+        content: JSON.stringify({
+          ...reactive,
+          tools: ["résumé_lookup", "送信"],
+          gatedTools: ["送信"],
+          resultTool: { id: "report", output: { type: "object", title: "Résumé — ✓" } },
+        }),
+      },
+    ]);
+    const declarations = capabilityDeclarationsFromArtifact(source);
+    expect(declarations?.tools).toEqual([{ id: "résumé_lookup" }, { id: "送信", gated: true }]);
+    expect(declarations?.resultSchemas).toEqual([
+      { toolId: "report", schema: { type: "object", title: "Résumé — ✓" } },
+    ]);
+  });
+
   it("forwards the declarations with the deployment registration", async () => {
     const source = artifact([
       { path: ".opencomputer/reactive.json", content: JSON.stringify(reactive) },
@@ -172,20 +203,18 @@ describe("deployment capability declarations", () => {
 });
 
 describe("deployment capability routes", () => {
-  it("serves the manifest with its digest and forwards the digest headers", async () => {
+  it("serves the manifest with a digest that verifies over the served manifest", async () => {
+    const manifestDigest = await manifestDigestOf(manifest);
+    expect(manifestDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(canonicalJson({ b: [ { z: 1, a: undefined } ], a: "x" })).toBe('{"a":"x","b":[{"z":1}]}');
     const fetchSpy = vi.fn(async () =>
-      Response.json(
-        {
-          manifest: { ...manifest, imageArn: "arn:aws:private", accountId: "acct" },
-          manifestDigest: "sha256:0123",
+      new Response(`{"manifest":${canonicalJson(manifest)},"manifestDigest":${JSON.stringify(manifestDigest)}}`, {
+        headers: {
+          "content-type": "application/json",
+          etag: `"${manifestDigest}"`,
+          "x-opencomputer-manifest-digest": manifestDigest,
         },
-        {
-          headers: {
-            etag: '"sha256:0123"',
-            "x-opencomputer-manifest-digest": "sha256:0123",
-          },
-        },
-      ),
+      }),
     );
     vi.stubGlobal("fetch", fetchSpy);
 
@@ -198,15 +227,44 @@ describe("deployment capability routes", () => {
       "/api/managed-agents",
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get("etag")).toBe('"sha256:0123"');
-    expect(response.headers.get("x-opencomputer-manifest-digest")).toBe("sha256:0123");
+    expect(response.headers.get("etag")).toBe(`"${manifestDigest}"`);
+    expect(response.headers.get("x-opencomputer-manifest-digest")).toBe(manifestDigest);
     const [target] = fetchSpy.mock.calls[0] as unknown as [URL];
     expect(String(target)).toBe(
       "https://managedagents.test/v1/deployments/hello-world%3Aabc/capabilities",
     );
-    const body = await response.json();
-    expect(body).toEqual({ manifest, manifestDigest: "sha256:0123" });
-    expect(JSON.stringify(body)).not.toMatch(/arn:aws|accountId/);
+    const body = (await response.json()) as { manifest: unknown; manifestDigest: string };
+    expect(body).toEqual({ manifest, manifestDigest });
+    expect(await manifestDigestOf(body.manifest)).toBe(body.manifestDigest);
+  });
+
+  it("refuses to serve a digest that only verifies over fields the public projection dropped", async () => {
+    const withPrivate = { ...manifest, imageArn: "arn:aws:private", accountId: "acct" };
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        manifest: withPrivate,
+        manifestDigest: await manifestDigestOf(withPrivate),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/deployments/hello-world%3Aabc/capabilities",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(502);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      error: {
+        code: "capability_manifest_unverifiable",
+        message: expect.any(String),
+      },
+    });
+    expect(text).not.toMatch(/arn:aws|accountId/);
   });
 
   it("runs readiness through the public receipt shape only", async () => {
@@ -220,18 +278,30 @@ describe("deployment capability routes", () => {
         environment: "development",
         checkedAt: "2026-09-25T01:00:00.000Z",
         manifestDigest: "sha256:0123",
-        probe: { mode: "platform", executesAgentCode: false, contactsCustomerTargets: false },
+        probe: {
+          mode: "platform",
+          executesAgentCode: false,
+          contactsCustomerTargets: false,
+          runnerHost: "should-not-leak",
+        },
         checks: [
           {
             id: "model.route",
             status: "pass",
             required: true,
             summary: "Managed model access is configured",
-            detail: { access: "managed" },
+            detail: {
+              access: "managed",
+              nested: { deep: { deeper: { deepest: { tooDeep: true } } } },
+              fn: "kept",
+              nan: Number.NaN,
+            },
             checkedAt: "2026-09-25T01:00:00.000Z",
             durationMs: 3,
             internalTrace: "should-not-leak",
           },
+          { id: "malformed", status: "weird" },
+          "not a check",
         ],
         ready: true,
         accountId: "acct",
@@ -268,13 +338,19 @@ describe("deployment capability routes", () => {
           status: "pass",
           required: true,
           summary: "Managed model access is configured",
-          detail: { access: "managed" },
+          detail: {
+            access: "managed",
+            nested: { deep: { deeper: {} } },
+            fn: "kept",
+            nan: null,
+          },
           checkedAt: "2026-09-25T01:00:00.000Z",
           durationMs: 3,
         },
       ],
       ready: true,
     });
+    expect(JSON.stringify(body)).not.toContain("should-not-leak");
   });
 
   it("rejects readiness on GET and capabilities on POST", async () => {

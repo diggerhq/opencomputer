@@ -4,6 +4,7 @@ import {
   READINESS_ROUTE,
   capabilityDeclarationsFromArtifact,
   publicCapabilityManifest,
+  publicManifestDigestVerifies,
   publicReadinessReceipt,
 } from "./deployment_capabilities";
 
@@ -1877,6 +1878,21 @@ async function publicSuccessResponse(
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
   if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) {
+    // The digest customers verify against must be the digest of the manifest
+    // they receive. Refuse to serve one that no longer verifies after the
+    // public projection rather than hand out an unverifiable pair.
+    if (!(await publicManifestDigestVerifies(publicCapabilityManifest(value)))) {
+      return Response.json(
+        {
+          error: {
+            code: "capability_manifest_unverifiable",
+            message:
+              "The deployment's capability manifest could not be verified against its digest.",
+          },
+        },
+        { status: 502, headers: { "cache-control": "no-store" } },
+      );
+    }
     const etag = upstream.headers.get("etag");
     if (etag) headers.set("etag", etag);
     const digest = upstream.headers.get("x-opencomputer-manifest-digest");
