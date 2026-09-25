@@ -1338,6 +1338,11 @@ export async function runCommand(
       );
     }
     if (watch) {
+      if (requestedAlias && requestedAlias !== "development") {
+        throw new Error(
+          "--watch deploys only to development; omit --alias or use --alias development",
+        );
+      }
       await runDeploymentWatch(
         client,
         config,
@@ -2582,17 +2587,25 @@ export async function runCommand(
     } catch {
       insideProject = false;
     }
-    if (insideProject && !sessionId) {
-      const project = await selectedProject(client, config);
-      // A --agent selector may point outside the linked project; its mode
-      // governs only its own agent. Sessions are validated by the server.
-      if (!agentId || agentId === project.agentId) {
-        agentId = project.agentId;
+    if (agentId) {
+      // An explicit agent needs no local binding; its own project's mode
+      // decides the environment filter. Sessions are validated by the server.
+      const owner = (await client.projects()).find((candidate) =>
+        candidate.agents.some((agent) => agent.id === agentId),
+      );
+      if (owner) {
         environment = resolveEnvironmentFilter(
-          project.environmentMode,
+          projectEnvironmentMode(owner),
           environmentValue,
         );
       }
+    } else if (insideProject && !sessionId) {
+      const project = await selectedProject(client, config);
+      agentId = project.agentId;
+      environment = resolveEnvironmentFilter(
+        project.environmentMode,
+        environmentValue,
+      );
     }
     let cursor = "";
     let stopped = false;

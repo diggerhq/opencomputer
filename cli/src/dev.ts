@@ -261,15 +261,11 @@ export async function runDeploymentWatch(
     projectRoot,
     options,
   );
-  if (behavior.requestedAlias !== undefined) {
-    if (binding.environmentMode === "single") {
-      throw singleEnvironmentError("--alias");
-    }
-    if (behavior.requestedAlias !== "development") {
-      throw new Error(
-        "--watch deploys only to development; omit --alias or use --alias development",
-      );
-    }
+  if (
+    behavior.requestedAlias !== undefined &&
+    binding.environmentMode === "single"
+  ) {
+    throw singleEnvironmentError("--alias");
   }
   const environment = workingEnvironment(binding.environmentMode);
   const label = environmentLabel(environment);
