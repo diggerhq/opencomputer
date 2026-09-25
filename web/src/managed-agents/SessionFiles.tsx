@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
+  ChevronRight,
   Download,
   FileCheck2,
   FolderDown,
@@ -48,18 +49,10 @@ function reportDownloadError(error: unknown) {
 }
 
 /**
- * Files the agent wrote under /workspace and the ones the provider has
- * retained. "Export" asks the provider to copy and hash a file; "Download"
- * fetches the retained bytes and verifies them against the manifest.
+ * Workspace listing, retained manifests and the verified download actions
+ * shared by the session Files tab and the playground debug inspector.
  */
-export function SessionFiles({
-  sessionId,
-  live,
-}: {
-  sessionId: string
-  /** The agent may still be writing; keep the listing fresh. */
-  live: boolean
-}) {
+function useWorkspaceFiles(sessionId: string, live: boolean) {
   const queryClient = useQueryClient()
   const artifactsKey = ['managed-agent-session-artifacts', sessionId]
   const filesKey = ['managed-agent-session-workspace-files', sessionId]
@@ -158,6 +151,46 @@ export function SessionFiles({
     exportFile.variables ??
     exportThenDownload.variables?.path ??
     download.variables?.path
+
+  return {
+    files,
+    artifacts,
+    retainedFor,
+    exportFile,
+    download,
+    exportThenDownload,
+    downloadAll,
+    archiveProgress,
+    busy,
+    busyPath,
+  }
+}
+
+/**
+ * Files the agent wrote under /workspace and the ones the provider has
+ * retained. "Export" asks the provider to copy and hash a file; "Download"
+ * fetches the retained bytes and verifies them against the manifest.
+ */
+export function SessionFiles({
+  sessionId,
+  live,
+}: {
+  sessionId: string
+  /** The agent may still be writing; keep the listing fresh. */
+  live: boolean
+}) {
+  const {
+    files,
+    artifacts,
+    retainedFor,
+    exportFile,
+    download,
+    exportThenDownload,
+    downloadAll,
+    archiveProgress,
+    busy,
+    busyPath,
+  } = useWorkspaceFiles(sessionId, live)
 
   return (
     <div className="space-y-5">
@@ -339,5 +372,129 @@ export function SessionFiles({
         )}
       </Panel>
     </div>
+  )
+}
+
+/**
+ * Compact workspace listing for the playground debug inspector: the same
+ * verified export-then-download path as the Files tab, one row per file.
+ */
+export function WorkspaceFilesInspector({
+  sessionId,
+  live,
+}: {
+  sessionId: string
+  live: boolean
+}) {
+  const {
+    files,
+    retainedFor,
+    download,
+    exportThenDownload,
+    downloadAll,
+    archiveProgress,
+    busy,
+    busyPath,
+  } = useWorkspaceFiles(sessionId, live)
+  const list = files.data ?? []
+
+  return (
+    <details open className="group bg-background rounded-md border">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-medium [&::-webkit-details-marker]:hidden">
+        <FolderDown className="size-3.5" /> Workspace files
+        <span className="text-muted-foreground font-mono text-[9px]">
+          {list.length}
+        </span>
+        <ChevronRight className="ml-auto size-3.5 transition-transform group-open:rotate-90" />
+      </summary>
+      <div className="border-t">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || !list.length}
+            onClick={() => downloadAll.mutate(list)}
+          >
+            {downloadAll.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <FolderDown className="size-3.5" />
+            )}
+            {archiveProgress ?? 'Download all'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void files.refetch()}
+            disabled={files.isFetching}
+            aria-label="Refresh workspace files"
+          >
+            <RefreshCw
+              className={
+                files.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'
+              }
+            />
+          </Button>
+        </div>
+        <div className="max-h-72 overflow-y-auto border-t">
+          {files.isLoading ? (
+            <div className="flex min-h-16 items-center justify-center">
+              <Loader2 className="text-muted-foreground size-4 animate-spin" />
+            </div>
+          ) : files.isError ? (
+            <p className="text-status-error px-3 py-2 text-xs">
+              Workspace listing is unavailable.
+            </p>
+          ) : list.length === 0 ? (
+            <p className="text-muted-foreground px-3 py-2 text-xs">
+              The agent has not written any files yet.
+            </p>
+          ) : (
+            <div className="divide-y">
+              {list.map((file: ManagedWorkspaceFile) => {
+                const retained = retainedFor(file)
+                const working = busy && busyPath === file.path
+                return (
+                  <div
+                    key={file.path}
+                    className="flex items-center gap-2 px-3 py-1.5"
+                  >
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[10px]"
+                      title={retained ? `sha256 ${retained.sha256}` : file.path}
+                    >
+                      {file.path}
+                    </span>
+                    {retained ? (
+                      <FileCheck2 className="text-muted-foreground size-3" />
+                    ) : null}
+                    <span className="text-muted-foreground text-[10px] tabular-nums">
+                      {formatBytes(file.size)}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      aria-label={`Download ${file.path}`}
+                      onClick={() =>
+                        retained
+                          ? download.mutate(retained)
+                          : exportThenDownload.mutate(file)
+                      }
+                    >
+                      {working ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Download className="size-3.5" />
+                      )}
+                    </Button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
   )
 }
