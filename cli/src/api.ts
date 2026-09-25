@@ -1403,10 +1403,20 @@ export class OpenComputerClient {
     sessionId: string,
     path: string,
   ): Promise<WorkspaceArtifact> {
-    const result = await this.request<{ artifact: WorkspaceArtifact }>(
-      this.workspacePath(sessionId, "/exports"),
-      { method: "POST", body: JSON.stringify({ path }) },
-    );
+    const result = await this.request<{
+      export?: WorkspaceExport;
+      artifact: WorkspaceArtifact | null;
+    }>(this.workspacePath(sessionId, "/exports"), {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    if (!result.artifact) {
+      throw new APIError(
+        `Export of ${path} is still in progress (${result.export?.id ?? "unknown export"}); retry shortly`,
+        202,
+        "export_in_progress",
+      );
+    }
     return result.artifact;
   }
 
@@ -1449,12 +1459,27 @@ type WorkspaceFilePage = {
   nextCursor: string | null;
 };
 
+export type WorkspaceExport = {
+  id: string;
+  sessionId: string;
+  path: string;
+  state: "snapshotting" | "delivered" | "failed" | "expired";
+  idempotencyKey: string | null;
+  artifactId: string | null;
+  error: { code: string; message: string; retrySafe: boolean } | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
 export type WorkspaceArtifact = {
   id: string;
+  exportId?: string;
   sessionId: string;
   path: string;
   size: number;
   sha256: string;
+  mediaType?: string;
+  snapshotId?: string;
   receipt: {
     key: string;
     etag: string | null;

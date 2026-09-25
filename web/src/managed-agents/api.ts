@@ -1768,10 +1768,13 @@ const workspaceFilesResponseSchema = z.object({
 })
 const workspaceArtifactSchema = z.object({
   id: z.string(),
+  exportId: z.string().optional(),
   sessionId: z.string(),
   path: z.string(),
   size: z.number(),
   sha256: z.string(),
+  mediaType: z.string().optional(),
+  snapshotId: z.string().optional(),
   receipt: z.object({
     key: z.string(),
     etag: z.string().nullable(),
@@ -1783,8 +1786,9 @@ const workspaceArtifactSchema = z.object({
 const workspaceArtifactsResponseSchema = z.object({
   artifacts: z.array(workspaceArtifactSchema),
 })
-const workspaceArtifactResponseSchema = z.object({
-  artifact: workspaceArtifactSchema,
+const workspaceExportResponseSchema = z.object({
+  export: z.object({ id: z.string(), state: z.string() }).optional(),
+  artifact: workspaceArtifactSchema.nullable(),
 })
 
 export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
@@ -1822,13 +1826,15 @@ export async function exportManagedAgentWorkspaceFile(
   sessionId: string,
   path: string,
 ) {
-  return (
-    await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
-      { method: 'POST', body: JSON.stringify({ path }) },
-      workspaceArtifactResponseSchema,
-    )
-  ).artifact
+  const result = await apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+    workspaceExportResponseSchema,
+  )
+  if (!result.artifact) {
+    throw new Error(`Export of ${path} is still in progress; try again shortly`)
+  }
+  return result.artifact
 }
 
 export function managedAgentWorkspaceArtifactContentPath(

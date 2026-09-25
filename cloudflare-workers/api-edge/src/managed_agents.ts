@@ -279,8 +279,29 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
       ? { setupId: backendError.setupId }
       : {};
+  // Workspace export refusals say whether the same Idempotency-Key may be
+  // retried and which export record the refusal was written to.
+  const exportOutcome: Record<string, unknown> = {};
+  if (
+    backendCode.startsWith("artifact_") ||
+    backendCode.startsWith("export_") ||
+    backendCode.startsWith("workspace_")
+  ) {
+    if (typeof backendError?.retrySafe === "boolean") {
+      exportOutcome.retrySafe = backendError.retrySafe;
+    }
+    if (
+      typeof backendError?.exportId === "string" &&
+      /^wsexp_[a-f0-9]{32}$/.test(backendError.exportId)
+    ) {
+      exportOutcome.exportId = backendError.exportId;
+    }
+    if (backendMessage) message = backendMessage;
+  }
   return new Response(
-    JSON.stringify({ error: { code: publicCode, message, ...setupId } }),
+    JSON.stringify({
+      error: { code: publicCode, message, ...setupId, ...exportOutcome },
+    }),
     { status: upstream.status, headers },
   );
 }
@@ -1868,6 +1889,9 @@ function publicSuccessBody(
       artifacts: Array.isArray(body.artifacts)
         ? body.artifacts.map(publicWorkspaceArtifact)
         : [],
+      exports: Array.isArray(body.exports)
+        ? body.exports.map(publicWorkspaceExport)
+        : [],
     };
   }
   if (
@@ -1876,7 +1900,12 @@ function publicSuccessBody(
     (method === "GET" &&
       /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+$/.test(suffix))
   ) {
-    return { artifact: publicWorkspaceArtifact(body.artifact) };
+    return {
+      ...(body.export !== undefined
+        ? { export: publicWorkspaceExport(body.export) }
+        : {}),
+      artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
+    };
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -1897,19 +1926,72 @@ function publicWorkspaceFile(value: unknown): Record<string, unknown> {
 function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
   const artifact = record(value) ?? {};
   const receipt = record(artifact.receipt) ?? {};
+  const retention = record(artifact.retention);
   return {
     id: artifact.id,
+    exportId: artifact.exportId ?? null,
     sessionId: artifact.sessionId,
+    projectId: artifact.projectId ?? null,
+    agentId: artifact.agentId ?? null,
+    deploymentId: artifact.deploymentId ?? null,
+    environment: artifact.environment ?? null,
     path: artifact.path,
     size: artifact.size,
     sha256: artifact.sha256,
+    mediaType: artifact.mediaType ?? "application/octet-stream",
+    snapshotId:
+      artifact.snapshotId ??
+      receipt.sourceVersionId ??
+      receipt.sourceEtag ??
+      null,
     receipt: {
       key: receipt.key,
       etag: receipt.etag ?? null,
       sourceEtag: receipt.sourceEtag ?? null,
       sourceVersionId: receipt.sourceVersionId ?? null,
     },
+    retention: retention
+      ? { policy: retention.policy, expiresAt: retention.expiresAt ?? null }
+      : { policy: "until_deleted", expiresAt: null },
     exportedAt: artifact.exportedAt,
+  };
+}
+
+/** One export attempt: its state, what the caller expected, the artifact it
+ * produced or the error it ended in. The request digest is internal. */
+function publicWorkspaceExport(value: unknown): Record<string, unknown> {
+  const exported = record(value) ?? {};
+  const error = record(exported.error);
+  const expected = record(exported.expected);
+  return {
+    id: exported.id,
+    sessionId: exported.sessionId,
+    projectId: exported.projectId ?? null,
+    agentId: exported.agentId ?? null,
+    deploymentId: exported.deploymentId ?? null,
+    environment: exported.environment ?? null,
+    path: exported.path,
+    state: exported.state,
+    idempotencyKey: exported.idempotencyKey ?? null,
+    expected: expected
+      ? {
+          ...(expected.bytes !== undefined ? { bytes: expected.bytes } : {}),
+          ...(expected.sha256 !== undefined ? { sha256: expected.sha256 } : {}),
+          ...(expected.mediaType !== undefined
+            ? { mediaType: expected.mediaType }
+            : {}),
+        }
+      : null,
+    artifactId: exported.artifactId ?? null,
+    error: error
+      ? {
+          code: error.code,
+          message: error.message,
+          retrySafe: error.retrySafe === true,
+        }
+      : null,
+    createdAt: exported.createdAt,
+    completedAt: exported.completedAt ?? null,
   };
 }
 
