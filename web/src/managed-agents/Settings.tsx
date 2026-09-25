@@ -103,8 +103,13 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
 
   const source = status.data?.source ?? null
   const configuring = editing || (status.isSuccess && !source)
+  const savedConnectionId = activeConnections.some(
+    (connection) => connection.id === source?.connectionId,
+  )
+    ? source?.connectionId
+    : undefined
   const connectionId =
-    pickedConnectionId || source?.connectionId || activeConnections[0]?.id || ''
+    pickedConnectionId || savedConnectionId || activeConnections[0]?.id || ''
 
   const repositories = useQuery({
     queryKey: ['managed-deployment-source-repos', projectId, connectionId],
