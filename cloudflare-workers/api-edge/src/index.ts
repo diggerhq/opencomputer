@@ -3770,9 +3770,58 @@ async function authLogin(req: Request, env: Env): Promise<Response> {
   return Response.redirect(authURL.toString(), 302);
 }
 
+// WorkOS owns invitation acceptance: accepting an invitation creates the
+// membership in WorkOS only. Nothing mirrored that into D1, so the invitee had
+// no local org_memberships row and login fell through to (or created) their
+// personal org while the invitation stayed "pending" forever. WorkOS reports
+// the organization of the authenticated membership on every org-scoped login,
+// so reconcile against it here.
+async function syncWorkOSOrgMembership(
+  env: Env,
+  userID: string,
+  email: string,
+  workosOrgID: string | undefined,
+  nowSec: number,
+): Promise<void> {
+  if (!workosOrgID) return;
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id FROM orgs WHERE workos_org_id = ?1`,
+  )
+    .bind(workosOrgID)
+    .first<{ id: string }>();
+  if (!org) return;
+
+  const invite = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, role FROM invitations
+      WHERE org_id = ?1 AND lower(email) = ?2 AND status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+  )
+    .bind(org.id, email.toLowerCase())
+    .first<{ id: string; role: string }>();
+
+  await env.OPENCOMPUTER_DB.prepare(
+    `INSERT INTO org_memberships (org_id, user_id, role, created_at)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(org_id, user_id) DO NOTHING`,
+  )
+    .bind(org.id, userID, invite?.role ?? "member", nowSec)
+    .run();
+
+  if (invite) {
+    await env.OPENCOMPUTER_DB.prepare(
+      `UPDATE invitations SET status = 'accepted', accepted_at = ?1
+        WHERE id = ?2 AND status = 'pending'`,
+    )
+      .bind(nowSec, invite.id)
+      .run();
+  }
+}
+
 /**
  * Upserts the WorkOS user and guarantees at least one local membership.
- * Browser login deliberately preserves its historical "first membership"
+ * An org-scoped WorkOS login (invitation acceptance, SSO into an org) selects
+ * that org. Otherwise browser login preserves its historical "first membership"
  * selection; CLI login uses the deterministic policy in work 031 §3.2.
  */
 async function provisionWorkOSIdentity(
@@ -3819,6 +3868,8 @@ async function provisionWorkOSIdentity(
   }
 
   const userID = userRow.id;
+  await syncWorkOSOrgMembership(env, userID, profile.email, workosOrgID, nowSec);
+
   type MembershipRow = {
     id: string;
     name: string;
@@ -3863,9 +3914,23 @@ async function provisionWorkOSIdentity(
     return memberships[0] ?? null;
   };
 
+  const selectMappedMembership = async (): Promise<MembershipRow | null> => {
+    if (!workosOrgID) return null;
+    return env.OPENCOMPUTER_DB.prepare(
+      `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
+              m.created_at AS membership_created_at, o.created_at AS org_created_at
+         FROM orgs o
+         JOIN org_memberships m ON m.org_id = o.id
+        WHERE m.user_id = ?1 AND o.workos_org_id = ?2
+        LIMIT 1`,
+    )
+      .bind(userID, workosOrgID)
+      .first<MembershipRow>();
+  };
+
   let orgRow =
     selection === "browser"
-      ? await selectBrowserMembership()
+      ? (await selectMappedMembership()) ?? (await selectBrowserMembership())
       : await selectCLIMembership();
 
   if (!orgRow) {
