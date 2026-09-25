@@ -182,11 +182,11 @@ export async function doctorProject(
   const started = performance.now();
   const diagnostics: DoctorDiagnostic[] = [];
   let agents: ProjectAgentSource[] = [];
-  let contractValid = false;
+  let rosterValid = false;
   try {
     agents = await readProjectAgents(projectRoot);
+    rosterValid = true;
     await readProjectResources(projectRoot);
-    contractValid = true;
   } catch (error) {
     diagnostics.push({
       code: "project_contract_invalid",
@@ -198,10 +198,10 @@ export async function doctorProject(
   }
   const linked = await readLinkedProject(projectRoot);
   const members = projectAgentMembers(agents, linked);
-  // With an unreadable contract the roster is empty; selecting against it
-  // would throw and hide the contract diagnostic.
+  // With an unreadable roster there is nothing to select; selecting against
+  // it would throw and hide the contract diagnostic.
   const selected =
-    options.selector && contractValid ? selectProjectAgent(members, options.selector) : undefined;
+    options.selector && rosterValid ? selectProjectAgent(members, options.selector) : undefined;
   // A selected member is checked alone: other agents' sources are left out of
   // the scan, while project-level files stay in.
   const excluded = selected
@@ -367,7 +367,7 @@ export async function doctorProject(
       });
     }
   }
-  if (contractValid) {
+  if (rosterValid) {
     diagnostics.push(
       ...(await compileMembers(selected ? [selected] : members, !selected)),
     );

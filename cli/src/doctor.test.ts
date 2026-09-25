@@ -296,6 +296,21 @@ test("acceptance 6: agent-level doctor checks the selected member only", async (
         /hello-world, billing, support/.test(error.message),
     );
 
+    // A broken project resource does not switch off the selected member's
+    // checks: the roster still loaded, so selection and compilation run.
+    await mkdir(resolve(root, "opencomputer", "channels"), { recursive: true });
+    await writeFile(
+      resolve(root, "opencomputer", "channels", "slack.ts"),
+      'import { defineChannel } from "@opencomputer/agent";\nexport default defineChannel(channel);\n',
+    );
+    const resourceBroken = await doctorProject(root, { selector: { agent: "billing" } });
+    assert.deepEqual(
+      resourceBroken.diagnostics.map((diagnostic) => diagnostic.code).sort(),
+      ["compiler_error", "connection_origin_not_literal", "project_contract_invalid"],
+    );
+    assert.deepEqual(resourceBroken.resolution.selected, { localId: "billing", agentId: null });
+    await rm(resolve(root, "opencomputer", "channels"), { recursive: true, force: true });
+
     // An unreadable project contract is reported even with a selector,
     // instead of the selection failing against an empty roster.
     await writeFile(
