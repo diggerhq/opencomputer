@@ -7,6 +7,7 @@ import test from "node:test";
 import { parseSessionCommand } from "./session-command.js";
 import {
   parseResultsCommand,
+  payloadIsEmpty,
   readPayloadFile,
   readSessionDataFile,
   STRUCTURED_INPUT_LIMIT,
@@ -41,24 +42,36 @@ test("session create takes --session-data-file and --payload-file; send takes --
   assert.throws(() => parseSessionCommand(["create", "--payload-file"]), /--payload-file requires a value/);
 });
 
-test("--payload-file reads any non-empty JSON value within the limit", () => {
+test("--payload-file reads any JSON value whose compact form is within the limit", () => {
   const payload = { schema: "example.execution-envelope/v1", generation: 3, inputs: {} };
   assert.deepEqual(readPayloadFile(file("payload.json", JSON.stringify(payload))), payload);
   assert.deepEqual(readPayloadFile(file("list.json", "[1, 2]")), [1, 2]);
-  assert.throws(() => readPayloadFile(file("empty.json", "{}")), /payload must not be empty/);
-  assert.throws(() => readPayloadFile(file("null.json", "null")), /payload must not be empty/);
+  // Empty values are read; whether they may stand alone is decided with the prompt.
+  assert.deepEqual(readPayloadFile(file("empty.json", "{}")), {});
+  assert.equal(readPayloadFile(file("null.json", "null")), null);
   assert.throws(() => readPayloadFile(file("bad.json", "{ not json")), /must name a file holding JSON/);
   assert.throws(() => readPayloadFile(join(dir, "missing.json")), /cannot read/);
   const big = JSON.stringify({ blob: "x".repeat(STRUCTURED_INPUT_LIMIT) });
   assert.throws(() => readPayloadFile(file("big.json", big)), /exceeds 32 KiB/);
+  // Formatting whitespace does not count: the compact value is what is sent.
+  const compact = { blob: "x".repeat(STRUCTURED_INPUT_LIMIT - 64) };
+  const padded = JSON.stringify(compact, null, 2) + "\n".repeat(4096);
+  assert.ok(Buffer.byteLength(padded, "utf8") > STRUCTURED_INPUT_LIMIT);
+  assert.deepEqual(readPayloadFile(file("padded.json", padded)), compact);
 });
 
-test("--session-data-file reads a non-empty JSON object", () => {
+test("payloadIsEmpty mirrors what the platform refuses for a payload-only turn", () => {
+  for (const empty of [undefined, null, "", [], {}]) assert.equal(payloadIsEmpty(empty), true, JSON.stringify(empty));
+  for (const full of [0, false, "x", [0], { a: null }]) assert.equal(payloadIsEmpty(full), false, JSON.stringify(full));
+});
+
+test("--session-data-file reads a JSON object, including an empty one", () => {
   const data = { schema: "example.session-context/v1", externalReference: "ref-1" };
   assert.deepEqual(readSessionDataFile(file("ctx.json", JSON.stringify(data))), data);
+  assert.deepEqual(readSessionDataFile(file("empty-ctx.json", "{}")), {});
   assert.throws(() => readSessionDataFile(file("array.json", "[1]")), /must be a JSON object/);
   assert.throws(() => readSessionDataFile(file("string.json", '"x"')), /must be a JSON object/);
-  assert.throws(() => readSessionDataFile(file("empty-ctx.json", "{}")), /must not be empty/);
+  assert.throws(() => readSessionDataFile(file("null-ctx.json", "null")), /must be a JSON object/);
 });
 
 test("results list and get parse their arguments", () => {
@@ -73,7 +86,13 @@ test("results list and get parse their arguments", () => {
     resultId: "result_1",
   });
   assert.throws(() => parseResultsCommand(["list"]), /session ID is required/);
-  assert.throws(() => parseResultsCommand(["list", "ses_1", "--limit", "0"]), /--limit must be an integer from 1 to 200/);
+  for (const bad of ["0", "201", "25oops", "1.5", "-1", "0x10", ""]) {
+    assert.throws(
+      () => parseResultsCommand(["list", "ses_1", "--limit", bad]),
+      /--limit must be an integer from 1 to 200|--limit requires a value/,
+      bad,
+    );
+  }
   assert.throws(() => parseResultsCommand(["list", "ses_1", "extra"]), /Unexpected argument: extra/);
   assert.throws(() => parseResultsCommand(["get", "ses_1"]), /Usage: opencomputer results get/);
   assert.throws(() => parseResultsCommand(["drop", "ses_1"]), /Usage: opencomputer results list/);

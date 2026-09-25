@@ -36,6 +36,7 @@ import {
 } from "./session-command.js";
 import {
   parseResultsCommand,
+  payloadIsEmpty,
   readPayloadFile,
   readSessionDataFile,
 } from "./structured-input.js";
@@ -2646,6 +2647,11 @@ export async function runCommand(
       const sessionData = session.sessionDataFile
         ? readSessionDataFile(session.sessionDataFile)
         : undefined;
+      if (!prompt && payload !== undefined && payloadIsEmpty(payload)) {
+        throw new Error(
+          "--payload-file: the payload must not be empty when no prompt is given.",
+        );
+      }
       const project = await selectedProject(client, config, undefined);
       const agentId = await selectedSessionAgent(
         client,
@@ -2749,6 +2755,11 @@ export async function runCommand(
         : undefined;
       if (!prompt && payload === undefined) {
         throw new Error("A prompt or --payload-file <path> is required.");
+      }
+      if (!prompt && payloadIsEmpty(payload)) {
+        throw new Error(
+          "--payload-file: the payload must not be empty when no prompt is given.",
+        );
       }
       const result = await sendAgentTurn(
         client,

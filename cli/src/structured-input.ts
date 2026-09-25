@@ -44,46 +44,47 @@ function parseJson(text: string, flag: string): JsonValue {
   return value as JsonValue;
 }
 
-function readBounded(path: string, flag: string): string {
+/**
+ * Reads and parses a JSON file. The limit applies to the value as it is
+ * sent (compact JSON), so formatting whitespace in the file does not count.
+ */
+function readBoundedJson(path: string, flag: string): JsonValue {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
     throw new Error(`${flag}: cannot read ${path}: ${(error as Error).message}`);
   }
-  if (Buffer.byteLength(text, "utf8") > STRUCTURED_INPUT_LIMIT) {
+  const value = parseJson(text, flag);
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > STRUCTURED_INPUT_LIMIT) {
     throw new Error(`${flag}: ${path} exceeds ${STRUCTURED_INPUT_LIMIT / 1024} KiB of JSON`);
   }
-  return text;
+  return value;
+}
+
+/** `null`, `""`, `[]` and `{}` cannot carry a turn on their own. */
+export function payloadIsEmpty(value: JsonValue | undefined): boolean {
+  if (value === undefined || value === null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
 }
 
 /**
  * The turn payload from `--payload-file`: any JSON value, at most 32 KiB.
- * `null` and empty objects or arrays are refused because the platform does
- * not admit a payload-only turn with an empty payload.
+ * Whether an empty value is acceptable depends on whether a prompt goes
+ * with it, so that is checked by the command.
  */
 export function readPayloadFile(path: string): JsonValue {
-  const flag = "--payload-file";
-  const value = parseJson(readBounded(path, flag), flag);
-  if (
-    value === null ||
-    (Array.isArray(value) && value.length === 0) ||
-    (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0)
-  ) {
-    throw new Error(`${flag}: the payload must not be empty`);
-  }
-  return value;
+  return readBoundedJson(path, "--payload-file");
 }
 
 /** The session data from `--session-data-file`: a JSON object, at most 32 KiB. */
 export function readSessionDataFile(path: string): SessionData {
   const flag = "--session-data-file";
-  const value = parseJson(readBounded(path, flag), flag);
+  const value = readBoundedJson(path, flag);
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${flag}: session data must be a JSON object`);
-  }
-  if (Object.keys(value).length === 0) {
-    throw new Error(`${flag}: session data must not be empty`);
   }
   return value;
 }
@@ -108,7 +109,7 @@ export function parseResultsCommand(rawArgs: string[]): ResultsCommand {
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     let limit: number | undefined;
     if (limitValue !== undefined) {
-      limit = Number.parseInt(limitValue, 10);
+      limit = /^\d+$/.test(limitValue) ? Number(limitValue) : Number.NaN;
       if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
         throw new Error("--limit must be an integer from 1 to 200");
       }
