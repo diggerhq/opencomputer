@@ -151,8 +151,8 @@ export function artifactExportFailure(record: WorkspaceArtifactExport): CLIError
     ? `Export ${record.id} ${record.state}: ${record.error.message}`
     : `Export ${record.id} ended ${record.state}.`;
   const hint = record.error?.retrySafe
-    ? "Retrying with the same --idempotency-key is safe once the cause is fixed."
-    : "Request a new export with a new --idempotency-key once the cause is fixed.";
+    ? "The failure was transient: request the export again with a new --idempotency-key (the same key returns this failed record)."
+    : "Fix the request or the file, then request the export again with a new --idempotency-key.";
   return new CLIError(code, message, hint, { export: record });
 }
 
@@ -168,12 +168,14 @@ export interface ArtifactDownloadResult {
  * Streams the export's bytes into `sink`, hashing them on the way, and
  * checks the count and digest against what the response announced. A
  * mismatch is an error after the sink has been written; the caller owns
- * what happens to those bytes.
+ * what happens to those bytes. A sink given as a function is opened only
+ * once the content response has arrived, so its errors are always
+ * observed by the pipeline.
  */
 export async function streamArtifactExport(
   client: OpenComputerClient,
   exportId: string,
-  sink: Writable,
+  sink: Writable | (() => Writable),
   options: { end?: boolean } = {},
 ): Promise<ArtifactDownloadResult> {
   const content = await client.workspaceArtifactContent(exportId);
@@ -188,7 +190,7 @@ export async function streamArtifactExport(
         callback(null, chunk);
       },
     }),
-    sink,
+    typeof sink === "function" ? sink() : sink,
     { end: options.end ?? true },
   );
   const actual = hash.digest("hex");
@@ -231,9 +233,7 @@ export async function downloadArtifactExportToFile(
 ): Promise<ArtifactDownloadResult> {
   const partial = `${outputPath}.${randomUUID()}.part`;
   try {
-    const result = await streamArtifactExport(
-      client,
-      exportId,
+    const result = await streamArtifactExport(client, exportId, () =>
       createWriteStream(partial, { flags: "wx", mode: 0o600 }),
     );
     await rename(partial, outputPath);

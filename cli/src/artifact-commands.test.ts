@@ -218,6 +218,13 @@ test("a failed export becomes an error carrying its own code", () => {
   assert.equal(failed.code, "artifact_too_large");
   assert.match(failed.message, /512 MiB limit/);
   assert.match(failed.hint, /new --idempotency-key/);
+  const transient = artifactExportFailure({
+    ...record,
+    state: "failed",
+    error: { code: "destination_unavailable", message: "storage down", retrySafe: true },
+  });
+  assert.match(transient.hint, /new --idempotency-key/);
+  assert.doesNotMatch(transient.hint, /same --idempotency-key is safe/);
   const cancelled = artifactExportFailure({ ...record, state: "cancelled" });
   assert.equal(cancelled.code, "export_cancelled");
 });
@@ -271,6 +278,21 @@ test("download leaves no file behind when the digest or size does not match", as
       (error: unknown) => error instanceof CLIError && error.code === "artifact_size_mismatch",
     );
     await assert.rejects(access(output));
+    assert.deepEqual(await readdir(directory), []);
+
+    // A missing output directory is an ordinary rejection, even when the
+    // content response takes longer to arrive than the file takes to fail
+    // to open.
+    response = contentResponse();
+    context.mock.method(
+      globalThis,
+      "fetch",
+      () => new Promise<Response>((resolve) => setTimeout(() => resolve(response), 20)),
+    );
+    await assert.rejects(
+      downloadArtifactExportToFile(new OpenComputerClient(config), "aexp_1", join(directory, "missing", "capture.json")),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "ENOENT",
+    );
     assert.deepEqual(await readdir(directory), []);
   } finally {
     await rm(directory, { recursive: true, force: true });

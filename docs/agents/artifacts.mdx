@@ -47,7 +47,7 @@ queued | snapshotting | delivering -> failed | cancelled | expired
 | `snapshotting` | The file is being resolved, checked and copied into an immutable snapshot |
 | `delivering` | The snapshot is being hashed and committed; `artifactId` and `snapshotId` are assigned by now |
 | `delivered` | The snapshot is hashed and downloadable from `/content` |
-| `failed` | The export stopped; `error` says why and whether the same key may be retried |
+| `failed` | The export stopped; `error` says why and whether requesting it again can succeed |
 | `cancelled` | Cancelled before it was delivered |
 | `expired` | Not delivered before the export's deadline |
 
@@ -119,10 +119,11 @@ has reached; nothing is snapshotted or hashed twice. Reusing the key with any
 of those fields changed answers `409 export_idempotency_conflict`. To export
 the same file again, or after it has changed, use a new key.
 
-When an export fails, `error.retrySafe` tells you whether repeating the same
-key can succeed. `true` means the failure was transient and the same request
-may be retried; `false` means the request itself, or the file, has to change,
-which means a new key.
+A failed export is terminal, so repeating its key only returns the failed
+record. `error.retrySafe` tells you whether requesting the same export again
+under a new key can succeed: `true` means the failure was transient and the
+unchanged request may simply be resubmitted; `false` means the request
+itself, or the file, has to change first.
 
 ### The export record
 
