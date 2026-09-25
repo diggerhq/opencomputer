@@ -471,7 +471,6 @@ describe("managed agents proxy", () => {
         mediaType: "application/json",
         snapshotId: '"s"',
         receipt: {
-          key: artifact.receipt.key,
           etag: '"e"',
           sourceEtag: '"s"',
           sourceVersionId: null,

@@ -1948,8 +1948,8 @@ function publicWorkspaceFile(value: unknown): Record<string, unknown> {
 }
 
 /** The manifest a caller verifies against: id, path, size, sha256 and the
- * retained object's etags. The bucket the provider retains into is not
- * part of the public contract. */
+ * retained object's etags. Where the provider retains it (bucket and object
+ * key) is not part of the public contract. */
 function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
   const artifact = record(value) ?? {};
   const receipt = record(artifact.receipt) ?? {};
@@ -1972,7 +1972,6 @@ function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
       receipt.sourceEtag ??
       null,
     receipt: {
-      key: receipt.key,
       etag: receipt.etag ?? null,
       sourceEtag: receipt.sourceEtag ?? null,
       sourceVersionId: receipt.sourceVersionId ?? null,
@@ -2013,7 +2012,10 @@ function publicWorkspaceExport(value: unknown): Record<string, unknown> {
     error: error
       ? {
           code: error.code,
-          message: error.message,
+          message:
+            (typeof error.code === "string" &&
+              WORKSPACE_EXPORT_ERROR_MESSAGES[error.code]) ||
+            "The workspace export could not be completed.",
           retrySafe: error.retrySafe === true,
         }
       : null,

@@ -1776,7 +1776,6 @@ const workspaceArtifactSchema = z.object({
   mediaType: z.string().nullish(),
   snapshotId: z.string().nullish(),
   receipt: z.object({
-    key: z.string(),
     etag: z.string().nullable(),
     sourceEtag: z.string().nullable(),
     sourceVersionId: z.string().nullable(),

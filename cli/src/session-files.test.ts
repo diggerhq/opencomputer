@@ -49,7 +49,7 @@ function fakeClient(fixtures: Fixture[]): WorkspaceClient & {
     path: fixture.path,
     size: fixture.bytes.length,
     sha256: sha256(fixture.bytes),
-    receipt: { key: "k", etag: null, sourceEtag: null, sourceVersionId: null },
+    receipt: { etag: null, sourceEtag: null, sourceVersionId: null },
     exportedAt: "2026-01-01T00:00:00.000Z",
   });
   return {

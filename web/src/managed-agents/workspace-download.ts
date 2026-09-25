@@ -211,7 +211,18 @@ export async function openDownloadSink(name: string): Promise<ByteSink> {
       }
       throw error
     }
-    const writable = await handle.createWritable()
+    let writable: WritableStream<Uint8Array>
+    try {
+      writable = await handle.createWritable()
+    } catch (error) {
+      // The picker may already have truncated the file; drop the empty shell.
+      try {
+        if ((await handle.getFile()).size === 0) await handle.remove?.()
+      } catch {
+        // Best effort.
+      }
+      throw error
+    }
     const writer = writable.getWriter()
     return {
       capacity: null,

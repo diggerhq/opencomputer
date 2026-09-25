@@ -1508,7 +1508,6 @@ export type WorkspaceArtifact = {
   mediaType?: string;
   snapshotId?: string;
   receipt: {
-    key: string;
     etag: string | null;
     sourceEtag: string | null;
     sourceVersionId: string | null;
