@@ -137,7 +137,7 @@ export interface CreateSessionParams {
   labels?: SessionLabels;
   /**
    * Your opaque reference to the session (an order id, a ticket key): at most
-   * 256 characters, no control characters, stored as given and never shown
+   * 256 bytes of UTF-8, no control characters, stored as given and never shown
    * to the agent. Returned on the session, its list row and its `session.*`
    * events, and filterable by exact match with `list({ externalReference })`.
    * Part of the creation identity: a replay of the same `idempotencyKey`

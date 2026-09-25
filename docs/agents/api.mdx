@@ -84,7 +84,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground` or `webhook`. The dashboard groups sessions by it. |
 | `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
-| `externalReference` | Your own reference for the session, such as the id of the record it works for: a string of 1 to 256 characters without control characters. Stored as given and never interpreted; it is not shown to the agent, grants nothing and does not replace the session id or the `Idempotency-Key`. Returned on the session, its list row and every `session.*` event; see [External references](#external-references). |
+| `externalReference` | Your own reference for the session, such as the id of the record it works for: a string of 1 to 256 bytes of UTF-8 without control characters. Stored as given and never interpreted; it is not shown to the agent, grants nothing and does not replace the session id or the `Idempotency-Key`. Returned on the session, its list row and every `session.*` event; see [External references](#external-references). |
 
 The response is `{ session: { id, executionMode, status, createdAt, externalReference? }, deployment }`.
 The session starts without a turn; send one with the turns route.
@@ -203,7 +203,7 @@ listed.
 
 `externalReference` is one opaque string your application chooses when it
 creates a session, for example the id of the order, ticket or job the
-session works for. It is 1 to 256 characters with no control characters;
+session works for. It is 1 to 256 bytes of UTF-8 with no control characters;
 anything else is `400 invalid_external_reference`. Omitting it, or sending
 `null`, creates a session without one; it cannot be changed afterwards, and
 it is not required to be unique.

@@ -226,7 +226,7 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
         : backendCode === "invalid_external_reference"
-          ? "externalReference must be a non-empty string of at most 256 characters without control characters."
+          ? "externalReference must be a non-empty string of at most 256 bytes of UTF-8 without control characters."
           : backendCode === "invalid_cursor"
             ? "The cursor is invalid or was issued for different filters. Start again from the first page."
             : "The agent request was invalid.";
