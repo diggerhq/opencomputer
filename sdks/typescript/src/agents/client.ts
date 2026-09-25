@@ -33,6 +33,7 @@ import type {
   ListDeploymentsQuery,
   ListEventsQuery,
   ListRepositoriesQuery,
+  ListResultsQuery,
   ListSessionsQuery,
   ListWebhooksQuery,
   Project,
@@ -43,6 +44,8 @@ import type {
   SessionCreated,
   SessionEvent,
   SessionPage,
+  SessionResultPage,
+  SessionResultRecord,
   SetLabelsParams,
   TurnReceipt,
   UpdateWebhookParams,
@@ -94,7 +97,8 @@ export class Turns {
    * send proxied through the application's own server uses.
    */
   async send(sessionId: string, params: SendTurnParams, options: CallOptions = {}): Promise<TurnReceipt> {
-    const body: Record<string, unknown> = { input: params.input };
+    const body: Record<string, unknown> = {};
+    if (params.input !== undefined) body.input = params.input;
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
     const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
@@ -129,13 +133,46 @@ export class Events {
   }
 }
 
+export class Results {
+  constructor(private readonly http: Http) {}
+
+  /**
+   * `GET /sessions/<id>/results`, or `GET /sessions/<id>/turns/<turnId>/results`
+   * when `turnId` is given: every committed result, oldest first, with
+   * `nextCursor` for the next page. A turn that committed none lists empty.
+   */
+  list(sessionId: string, query: ListResultsQuery = {}, options: CallOptions = {}): Promise<SessionResultPage> {
+    const { turnId, cursor, limit } = query;
+    const path =
+      turnId === undefined
+        ? `/sessions/${segment(sessionId)}/results`
+        : `/sessions/${segment(sessionId)}/turns/${segment(turnId)}/results`;
+    return this.http.request("GET", path, shapes.sessionResultPage, {
+      query: { cursor, limit },
+      signal: options.signal,
+    });
+  }
+
+  /** `GET /sessions/<id>/results/<resultId>`; `404 result_not_found` when the session holds no such result. */
+  get(sessionId: string, resultId: string, options: CallOptions = {}): Promise<SessionResultRecord> {
+    return this.http.request(
+      "GET",
+      `/sessions/${segment(sessionId)}/results/${segment(resultId)}`,
+      shapes.sessionResultRecord,
+      { signal: options.signal },
+    );
+  }
+}
+
 export class Sessions {
   readonly turns: Turns;
   readonly events: Events;
+  readonly results: Results;
 
   constructor(private readonly http: Http) {
     this.turns = new Turns(http);
     this.events = new Events(http);
+    this.results = new Results(http);
   }
 
   /** `POST /sessions`: creates a session without a turn. `created` is false when the key had already created it. */

@@ -10,6 +10,7 @@ export {
   Sessions,
   Turns,
   Events,
+  Results,
   Projects,
   Memory,
   MemoryDocuments,

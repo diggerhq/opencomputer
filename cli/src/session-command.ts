@@ -7,6 +7,7 @@ export type SessionAction =
   | "end";
 
 import type { MemoryBindings } from "./api.js";
+import { takeValueOption } from "./structured-input.js";
 
 export type SessionCommand = {
   action: SessionAction;
@@ -17,6 +18,10 @@ export type SessionCommand = {
   memory?: MemoryBindings;
   /** `--create-document`: create each bound document that does not exist yet. */
   createDocuments?: boolean;
+  /** `--payload-file`: a JSON file sent as the turn's `payload` on `create` and `send`. */
+  payloadFile?: string;
+  /** `--session-data-file`: a JSON object file sent as `sessionData` on `create`. */
+  sessionDataFile?: string;
 };
 
 const RESOURCE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -155,6 +160,8 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   const args = [...rawArgs];
   const agent = takeAgentOption(args);
   const memory = takeMemoryOptions(args);
+  const payloadFile = takeValueOption(args, "--payload-file");
+  const sessionDataFile = takeValueOption(args, "--session-data-file");
   const createDocumentsIndex = args.indexOf("--create-document");
   const createDocuments = createDocumentsIndex >= 0;
   if (createDocuments) args.splice(createDocumentsIndex, 1);
@@ -173,6 +180,12 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   if (memory && action !== "create") {
     throw new Error("--memory is only supported when creating a session.");
   }
+  if (sessionDataFile && action !== "create") {
+    throw new Error("--session-data-file is only supported when creating a session.");
+  }
+  if (payloadFile && action !== "create" && action !== "send") {
+    throw new Error("--payload-file is only supported when creating a session or sending a turn.");
+  }
   if (createDocuments && !memory) {
     throw new Error("--create-document needs at least one --memory <resource>=<documentId>.");
   }
@@ -189,5 +202,7 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
     ...(agent ? { agent } : {}),
     ...(memory ? { memory } : {}),
     ...(createDocuments ? { createDocuments } : {}),
+    ...(payloadFile ? { payloadFile } : {}),
+    ...(sessionDataFile ? { sessionDataFile } : {}),
   };
 }

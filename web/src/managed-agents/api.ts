@@ -632,6 +632,7 @@ const sessionSchema = z.object({
           .optional()
           .default('queue'),
         status: z.string(),
+        payload: z.unknown().optional(),
         createdAt: z.string(),
         updatedAt: z.string(),
       }),

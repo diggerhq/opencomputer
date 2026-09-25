@@ -226,7 +226,10 @@ export default function ManagedSessionDetail() {
                   turn.status === 'failed'
                     ? turnFailureReason(events.data ?? [], turn.id)
                     : undefined
-                const payload = turnPayload(events.data ?? [], turn.id)
+                const payload =
+                  turn.payload !== undefined
+                    ? turn.payload
+                    : turnPayload(events.data ?? [], turn.id)
                 const running = !['completed', 'failed'].includes(turn.status)
                 return (
                   <div key={turn.id} className="space-y-6">
