@@ -65,7 +65,9 @@ Durable history does not make every command resumable. A lost computer can
 leave a command's outcome unknown; OpenComputer does not automatically
 replay that command or roll back its effects. The turn can continue with a
 tool error or fail. Inspect the recorded outcome and verify external
-effects before asking the agent to retry.
+effects before asking the agent to retry. What survives a computer being
+released or replaced, and what does not, is on
+[Session lifecycle](/agents/lifecycle).
 
 [Interrupt](/agents/api#end-and-interrupt) stops the current turn while
 keeping the session available for more work. End closes the session and

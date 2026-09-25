@@ -1078,6 +1078,8 @@ function publicSessionSnapshot(value: unknown): unknown {
     Object.entries(source).flatMap(([key, child]): Array<[string, unknown]> => {
       if (key === "labels") return [[key, ownerLabels(source)]];
       if (key === "result") return [[key, publicSessionResult(child)]];
+      if (key === "runtime") return [[key, publicSessionRuntime(child)]];
+      if (key === "retention") return [[key, publicSessionRetention(child)]];
       if (key === "turns") {
         return [
           [
@@ -1378,10 +1380,124 @@ export function publicFailure(value: unknown): PublicFailure {
   return { code: "agent_failed", message: GENERIC_FAILURE_MESSAGE };
 }
 
+/**
+ * The runtime lifecycle events carry the computer generation and a bounded
+ * reason code; nothing else about the computer is public.
+ */
+const RUNTIME_LIFECYCLE_EVENT_TYPES = new Set([
+  "runtime.started",
+  "runtime.suspended",
+  "runtime.replaced",
+  "runtime.expired",
+  "runtime.released",
+]);
+const RUNTIME_RELEASE_REASONS = new Set([
+  "idle",
+  "lifetime",
+  "requested",
+  "session_ended",
+  "operation_unsettled",
+  "unresponsive",
+  "unverifiable",
+  "unknown",
+]);
+
+function publicRuntimeLifecycleData(value: unknown): Record<string, unknown> {
+  const data = record(value) ?? {};
+  const out: Record<string, unknown> = {};
+  for (const key of ["generation", "previousGeneration"]) {
+    const n = data[key];
+    if (typeof n === "number" && Number.isInteger(n) && n > 0) out[key] = n;
+  }
+  if (typeof data.reason === "string") {
+    out.reason = RUNTIME_RELEASE_REASONS.has(data.reason)
+      ? data.reason
+      : "unknown";
+  }
+  if (data.expiresAt === null) out.expiresAt = null;
+  else if (
+    typeof data.expiresAt === "string" &&
+    Number.isFinite(Date.parse(data.expiresAt))
+  ) {
+    out.expiresAt = data.expiresAt;
+  }
+  return out;
+}
+
+const RUNTIME_STATES = new Set(["none", "running", "released"]);
+
+function publicReleaseReason(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" && RUNTIME_RELEASE_REASONS.has(value)
+    ? value
+    : "unknown";
+}
+
+function publicInstant(value: unknown): string | null {
+  return typeof value === "string" && Number.isFinite(Date.parse(value))
+    ? value
+    : null;
+}
+
+function publicCount(value: unknown, minimum: number): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum
+    ? value
+    : null;
+}
+
+/**
+ * The session's computer as documented on inspect and suspend: the
+ * generation counter, a bounded state and reason vocabulary, timestamps and
+ * the two limits. Built field by field; nothing else the control plane
+ * records about the computer is public.
+ */
+function publicSessionRuntime(value: unknown): Record<string, unknown> {
+  const runtime = record(value) ?? {};
+  return {
+    generation: publicCount(runtime.generation, 0) ?? 0,
+    state:
+      typeof runtime.state === "string" && RUNTIME_STATES.has(runtime.state)
+        ? runtime.state
+        : "none",
+    startedAt: publicInstant(runtime.startedAt),
+    expiresAt: publicInstant(runtime.expiresAt),
+    releasedAt: publicInstant(runtime.releasedAt),
+    releaseReason: publicReleaseReason(runtime.releaseReason),
+    replacedAt: publicInstant(runtime.replacedAt),
+    replacementReason: publicReleaseReason(runtime.replacementReason),
+    lifetimeSeconds: publicCount(runtime.lifetimeSeconds, 1),
+    idleReleaseSeconds: publicCount(runtime.idleReleaseSeconds, 1),
+  };
+}
+
+/** The effective retention policy: three expiries (`null` is documented as none) and the policy version. */
+function publicSessionRetention(value: unknown): Record<string, unknown> {
+  const retention = record(value) ?? {};
+  return {
+    sessionExpiresAt: publicInstant(retention.sessionExpiresAt),
+    workspaceExpiresAt: publicInstant(retention.workspaceExpiresAt),
+    eventHistoryExpiresAt: publicInstant(retention.eventHistoryExpiresAt),
+    policyVersion:
+      typeof retention.policyVersion === "string" ? retention.policyVersion : "",
+  };
+}
+
+/** What a suspend released: whether a computer went away, and which generation. */
+function publicSessionCompute(value: unknown): Record<string, unknown> {
+  const compute = record(value) ?? {};
+  return {
+    released: compute.released === true,
+    generation: publicCount(compute.generation, 0) ?? 0,
+  };
+}
+
 function publicEventData(
   type: string,
   value: unknown,
 ): Record<string, unknown> {
+  if (RUNTIME_LIFECYCLE_EVENT_TYPES.has(type)) {
+    return publicRuntimeLifecycleData(value);
+  }
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
   if (type === "session.failed" || type === "turn.failed") {
     return { ...publicFailure(value) };
@@ -1882,6 +1998,8 @@ function publicSuccessBody(
       id: body.id,
       status: body.status,
       updatedAt: body.updatedAt,
+      ...(record(body.runtime) ? { runtime: publicSessionRuntime(body.runtime) } : {}),
+      ...(record(body.compute) ? { compute: publicSessionCompute(body.compute) } : {}),
     };
   }
   if (method === "GET" && suffix === "/sessions") {
