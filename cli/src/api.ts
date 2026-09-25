@@ -285,6 +285,8 @@ export interface ManagedSessionSnapshot {
   agentId?: string;
   deploymentId?: string;
   microvmState?: string;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt?: string;
   updatedAt?: string;
   turns?: Array<{
@@ -306,6 +308,8 @@ export interface ManagedSessionSummary {
   source: string;
   status: string;
   labels: Record<string, string>;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt: string;
   updatedAt: string;
   revision: number;
@@ -325,6 +329,18 @@ export interface ManagedSessionSummary {
 export interface ManagedSessionPage {
   sessions: ManagedSessionSummary[];
   nextCursor: string | null;
+}
+
+/** Exact-match filters and paging of `GET /sessions` (docs/agents/api.mdx, "Get and list"). */
+export interface ManagedSessionListOptions {
+  status?: string;
+  /** The agent's id. */
+  agent?: string;
+  externalReference?: string;
+  /** `nextCursor` of the previous page; only valid with the same filters. */
+  cursor?: string;
+  /** Page size, default 50, at most 100. */
+  limit?: number;
 }
 
 export type MemoryEnvironment = "development" | "production";
@@ -1322,9 +1338,14 @@ export class OpenComputerClient {
 
   /** One page of session rows, newest created first; pass `cursor` for the next page. */
   async sessions(
-    options: { cursor?: string; limit?: number } = {},
+    options: ManagedSessionListOptions = {},
   ): Promise<ManagedSessionPage> {
     const query = new URLSearchParams();
+    if (options.status) query.set("status", options.status);
+    if (options.agent) query.set("agentId", options.agent);
+    if (options.externalReference !== undefined) {
+      query.set("externalReference", options.externalReference);
+    }
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
     const suffix = query.size ? `?${query.toString()}` : "";

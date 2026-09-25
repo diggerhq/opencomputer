@@ -111,7 +111,8 @@ its contents affect application correctness or access.
 | --- | --- | --- |
 | `sessions.create(params, { idempotencyKey? })` | `POST /sessions` | `{ session, deployment, created }`; `created` is `false` when the key had already created the session |
 | `sessions.get(id)` | `GET /sessions/<id>` | The session with its `turns` and `memory` |
-| `sessions.list(query?)` | `GET /sessions` | `{ sessions, nextCursor }` |
+| `sessions.list(query?)` | `GET /sessions` | `{ sessions, nextCursor }`: one page |
+| `sessions.iterate(query?)` | `GET /sessions`, page by page | An async iterator over every matching row |
 | `sessions.end(id)` | `POST /sessions/<id>/end` | The ended session |
 | `sessions.interrupt(id)` | `POST /sessions/<id>/interrupt` | The session |
 | `sessions.setLabels(id, { set?, unset? })` | `PATCH /sessions/<id>/labels` | The session |
@@ -119,16 +120,29 @@ its contents affect application correctness or access.
 | `sessions.events.list(id, { after? })` | `GET /sessions/<id>/events` | The events with `seq` greater than `after`, up to 500 |
 | `sessions.startOnDocument(params)` | `PUT` the document, then `POST /sessions` | `{ document, session }` with `created` on each |
 
-`create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`
-and `labels` as [documented](/agents/api#create). `turns.send` takes `input`,
+`create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`,
+`labels` and `externalReference` as [documented](/agents/api#create). `turns.send` takes `input`,
 `idempotencyKey`, `mode` and `payload`; both `create` and `turns.send` send
 the key as the `Idempotency-Key` header. The receipt carries the turn's
 persisted `status`: `queued` or `running` for a new turn, and for a repeated
 key the existing turn's status, `completed`, `failed` or `cancelled` once it
 has settled, with `duplicate: true`. The client maps nothing, so a retry
-after a lost reply learns what became of the turn. `list` takes `project`,
-`environment`, `agent`, `status`, `labels` (up to three, sent as
-`label.<key>=<value>`), `cursor` and `limit`.
+after a lost reply learns what became of the turn. `list` takes the exact
+filters of [`GET /sessions`](/agents/api#get-and-list): `project` or
+`projectId`, `environment`, `agent` or `agentId`, `status`, `deploymentId`,
+`externalReference`, `createdAfter`, `createdBefore`, `updatedAfter`,
+`labels` (up to three, sent as `label.<key>=<value>`), plus `cursor` and
+`limit` (1 to 100, default 50). `iterate` takes the same query and requests
+the next page whenever the previous one is consumed, stopping when
+`nextCursor` is `null`; it reads live rows, so a session created while you
+iterate may or may not be seen.
+
+```typescript
+const recovered = await oc.sessions.list({ externalReference: orderId });
+for await (const row of oc.sessions.iterate({ status: "suspended", limit: 100 })) {
+  console.log(row.id, row.externalReference);
+}
+```
 
 ### Create and submit
 

@@ -64,7 +64,8 @@ Usage:
       --memory binds a document (read-write by default) or a collection; --create-document
       creates each bound document that does not exist yet; with --idempotency-key a retry
       returns the same session
-  opencomputer session list
+  opencomputer session list [--status <status>] [--agent <agent-id>] [--external-reference <ref>]
+      [--limit <1-100>] [--cursor <next-cursor>]
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]

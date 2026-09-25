@@ -84,8 +84,9 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground` or `webhook`. The dashboard groups sessions by it. |
 | `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
+| `externalReference` | Your own reference for the session, such as the id of the record it works for: a string of 1 to 256 characters without control characters. Stored as given and never interpreted; it is not shown to the agent, grants nothing and does not replace the session id or the `Idempotency-Key`. Returned on the session, its list row and every `session.*` event; see [External references](#external-references). |
 
-The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
+The response is `{ session: { id, executionMode, status, createdAt, externalReference? }, deployment }`.
 The session starts without a turn; send one with the turns route.
 
 `Idempotency-Key` (at most 256 characters) makes a retry safe. The key
@@ -99,7 +100,8 @@ identifies the session within your organization:
   need to know which one that was. A new session under a new key gets the
   deployment active at that time.
 - Anything else under that key is `409 idempotency_conflict`: another
-  agent, environment or pinned deployment, or different memory bindings.
+  agent, environment or pinned deployment, different memory bindings, or a
+  different `externalReference` (including adding or dropping one).
   Pinning the deployment the session already holds counts as the same
   request.
 - Two identical requests under one key that arrive together create one
@@ -117,9 +119,9 @@ identifies the session within your organization:
   way.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
-`400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
-(a pinned deployment is not active in the named environment), `402
-insufficient_credits`.
+`400 invalid_labels`, `400 invalid_external_reference`, `404
+deployment_not_found`, `409 deployment_not_promoted` (a pinned deployment is
+not active in the named environment), `402 insufficient_credits`.
 
 ### Get and list
 
@@ -133,6 +135,7 @@ insufficient_credits`.
 | `status` | `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
 | `source` | The `source` given at creation |
 | `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
+| `externalReference` | The reference given at creation; absent when none was given |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
@@ -149,27 +152,45 @@ curl 'https://app.opencomputer.dev/api/managed-agents/sessions?project=<project-
 
 | Parameter | Meaning |
 | --- | --- |
-| `project` | A project id or slug |
+| `project` or `projectId` | A project id or slug |
 | `environment` | `development` or `production` |
-| `agent` | An agent id |
+| `agent` or `agentId` | An agent id |
 | `status` | One session status |
+| `deploymentId` | A deployment id |
+| `externalReference` | Sessions created with exactly this [external reference](#external-references) |
+| `createdAfter`, `createdBefore` | RFC 3339 timestamps: sessions with `createdAt >= createdAfter` and `createdAt < createdBefore` |
+| `updatedAfter` | An RFC 3339 timestamp: sessions with `updatedAt >= updatedAfter` |
 | `label.<key>=<value>` | Sessions whose label `<key>` equals `<value>` exactly; at most three |
 | `limit` | Rows per page, 1 to 100; default 50 |
 | `cursor` | The `nextCursor` of the previous page |
 
-Any other parameter is `400 invalid_query`, as is a malformed value.
+Every filter is an exact match; there is no prefix, substring or wildcard
+search. Filters combine with AND. Naming both spellings of a parameter
+(`project` and `projectId`, `agent` and `agentId`), any other parameter or a
+malformed value is `400 invalid_query`.
+
+Filters select among the sessions the API key can already see: an
+organization key sees the organization's sessions, a project-scoped key
+only its project's, and a filter naming another project is `403
+project_scope_violation`. A `development` filter never returns Production
+sessions, and a reference created in one project is not found from another.
 
 A row is `id`, `projectId`, `agentId`, `deploymentId`, `environment` (`null`
-when the session has none), `source`, `status`, `labels`, `createdAt`,
-`updatedAt`, `revision`, `activity` and `result`. `activity` is
+when the session has none), `source`, `status`, `labels`,
+`externalReference` (when one was given), `createdAt`, `updatedAt`,
+`revision`, `activity` and `result`. `activity` is
 `{ activeTurnId, queued, lastSettledTurn }`: the running turn's id or `null`,
 how many turns wait behind it, and the most recently finished turn as
-`{ id, status, at }` or `null`. Rows carry no `turns` and no `memory`; read
-`GET /sessions/<id>` for those.
+`{ id, status, at }` or `null`. Rows carry no `turns`, no `memory` and no
+prompt or message text; read `GET /sessions/<id>` for those.
 
-Rows are ordered by `createdAt`, newest first, then by `id`. Updates do not
-move rows. Keep the same filters while following `nextCursor`; `null` means
-there are no more matches after that cursor.
+Rows are ordered by `createdAt`, newest first, then by `id`, so sessions
+created in the same millisecond have a fixed order and none is skipped.
+Updates do not move rows. `nextCursor` is an opaque string, valid only with
+the filters of the page that returned it: sending it with different filters
+is `400 invalid_cursor`, and so is a cursor that cannot be read. `limit` may
+change between pages. `null` means there are no more matches after that
+cursor.
 
 Pagination is not a snapshot: each request applies the filters to the
 current rows. New sessions and sessions that newly match a status or label
@@ -177,6 +198,37 @@ filter can fall before your cursor. Refresh from the first page to see
 them. Sorting fetched rows by `updatedAt` orders only those rows, not all
 matching sessions. A successful create response confirms the session is
 listed.
+
+### External references
+
+`externalReference` is one opaque string your application chooses when it
+creates a session, for example the id of the order, ticket or job the
+session works for. It is 1 to 256 characters with no control characters;
+anything else is `400 invalid_external_reference`. Omitting it, or sending
+`null`, creates a session without one; it cannot be changed afterwards, and
+it is not required to be unique.
+
+The platform stores the reference as given. It is not sent to the agent or
+the model, does not grant access, and does not replace the session id or the
+`Idempotency-Key`. Keep your own mapping from reference to session id as the
+authoritative record; the reference is there for recovery and audit when
+that record is incomplete:
+
+- If a create response was lost, retry with the same `Idempotency-Key`
+  first; it returns the same session with `200`. The reference makes
+  a second recovery path available: `GET /sessions?externalReference=<ref>`
+  finds the session however many unrelated sessions were created since.
+- A retry of the key with a different reference is `409
+  idempotency_conflict`, so two records can never share one session by
+  accident.
+- The reference is returned on the session, on its list row and in the
+  `data` of every `session.*` [event](/agents/events), so a consumer of the
+  event log can route each event to the record it belongs to without
+  another lookup.
+
+A reference is metadata, not a credential: do not put secrets, tokens or
+signed URLs in it. It is visible to every API key that can read the
+session.
 
 ### Labels
 
