@@ -31,8 +31,6 @@ describe('managed agents navigation', () => {
     expect(nav[1]?.items.map((item) => item.label)).toEqual([
       'Deployments',
       'Sessions',
-      'Channels',
-      'Outboxes',
       'Schedules',
       'Webhooks',
       'Memory',
@@ -75,19 +73,13 @@ describe('managed agents navigation', () => {
     ).toEqual([undefined, 'Account', 'Infrastructure'])
   })
 
-  it('keeps enabled advanced areas below project navigation', () => {
+  it('shows only project-scoped navigation inside a project', () => {
     expect(
       managedAgentsNav({
         projectId: 'project-one',
         durableSessionsEnabled: true,
         infrastructureEnabled: true,
       }).map((group) => group.label),
-    ).toEqual([
-      undefined,
-      undefined,
-      'Account',
-      'Durable sessions',
-      'Infrastructure',
-    ])
+    ).toEqual([undefined, undefined])
   })
 })

@@ -2,6 +2,8 @@ import {
   OpenComputerClient,
   type ManagedAgentEvent,
   type ManagedAgentLog,
+  type ManagedGitHubInstallation,
+  type ManagedGitHubStatus,
   type ManagedSessionSnapshot,
   type ManagedSessionSummary,
   type MemoryBindings,
@@ -87,6 +89,72 @@ export function shouldBindModelAccessProject(
   currentAgentRoot: string | null | undefined,
 ): boolean {
   return Boolean(projectReference || currentAgentRoot);
+}
+
+export const SERVICE_CONNECTIONS = [
+  "gmail",
+  "calendar",
+  "drive",
+  "sheets",
+  "linear",
+] as const;
+
+export function githubEnvironments(
+  value?: string,
+): Array<"development" | "production"> {
+  return value ? [environmentOption(value)] : ["development", "production"];
+}
+
+export function githubEnvironmentsConnected(
+  status: ManagedGitHubStatus,
+  environments: Array<"development" | "production">,
+): boolean {
+  return environments.every((environment) =>
+    status.environments.some(
+      (entry) => entry.environment === environment && entry.state === "active",
+    ),
+  );
+}
+
+export function selectGitHubInstallation(
+  connections: ManagedGitHubInstallation[],
+  selector?: string,
+): ManagedGitHubInstallation | undefined {
+  const active = connections.filter((connection) => connection.state === "active");
+  if (selector) {
+    const matches = active.filter(
+      (connection) =>
+        connection.id === selector || connection.accountLogin === selector,
+    );
+    if (matches.length === 1) return matches[0];
+    if (!matches.length) {
+      throw new Error(
+        `No active GitHub App connection matches ${JSON.stringify(selector)}.`,
+      );
+    }
+    throw new Error(
+      `More than one GitHub App connection belongs to @${selector}; use its connection id.`,
+    );
+  }
+  if (active.length === 1) return active[0];
+  if (active.length > 1) {
+    throw new Error(
+      "More than one GitHub App connection is available. Pass --connection <id|account>.\n" +
+        active
+          .map((connection) => `  ${connection.id}  @${connection.accountLogin}`)
+          .join("\n"),
+    );
+  }
+  return undefined;
+}
+
+export function validateGitHubConnectionChoice(
+  forceNew: boolean,
+  connectionSelector?: string,
+): void {
+  if (forceNew && connectionSelector) {
+    throw new Error("Choose either --new or --connection, not both.");
+  }
 }
 
 function printJSON(value: unknown): void {
@@ -1434,25 +1502,153 @@ export async function runCommand(
     return "gmail";
   }
 
+  if (command === "github") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const project = await selectedProject(client, config, projectReference);
+
+    if (action === "status" || action === undefined) {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const status = await client.githubStatus(project.projectId);
+      if (globals.json) {
+        printJSON(status);
+        return;
+      }
+      for (const entry of status.environments) {
+        const installation = entry.installation;
+        process.stdout.write(
+          `${entry.environment.padEnd(12)} ${entry.state.padEnd(14)}` +
+            (installation
+              ? ` @${installation.accountLogin} (${installation.repositorySelection} repositories)`
+              : "") +
+            "\n",
+        );
+      }
+      if (
+        status.environments.every((entry) => entry.state === "not_connected")
+      ) {
+        process.stdout.write(
+          "Connect the managed GitHub App with `opencomputer github connect`.\n",
+        );
+      }
+      return;
+    }
+
+    if (action === "connect") {
+      const environments = githubEnvironments(option(args, "--environment"));
+      const connectionSelector = option(args, "--connection");
+      const forceNew = flag(args, "--new");
+      const noWait = flag(args, "--no-wait");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      validateGitHubConnectionChoice(forceNew, connectionSelector);
+
+      const current = await client.githubStatus(project.projectId);
+      if (!forceNew && githubEnvironmentsConnected(current, environments)) {
+        if (globals.json) printJSON(current);
+        else {
+          process.stdout.write(
+            `The managed GitHub App is already connected for ${environments.join(" and ")}.\n`,
+          );
+        }
+        return;
+      }
+
+      const installation = forceNew
+        ? undefined
+        : selectGitHubInstallation(current.connections, connectionSelector);
+      if (installation) {
+        const missing = environments.filter(
+          (environment) =>
+            !current.environments.some(
+              (entry) =>
+                entry.environment === environment && entry.state === "active",
+            ),
+        );
+        for (const environment of missing) {
+          await client.attachGitHub({
+            projectId: project.projectId,
+            environment,
+            connectionId: installation.id,
+          });
+        }
+        const attached = await client.githubStatus(project.projectId);
+        if (globals.json) printJSON(attached);
+        else {
+          process.stdout.write(
+            `Attached @${installation.accountLogin} to ${missing.join(" and ")}.\n`,
+          );
+        }
+        return;
+      }
+
+      const result = await client.connectGitHub({
+        projectId: project.projectId,
+        environments,
+      });
+      if (globals.json) {
+        printJSON(result);
+        return;
+      }
+      process.stdout.write(
+        "Install or configure the managed OpenComputer GitHub App by opening:\n\n" +
+          `  ${result.installUrl}\n\n` +
+          `It will be attached to ${environments.join(" and ")} for this project.\n`,
+      );
+      if (noWait) {
+        process.stdout.write(
+          "Run `opencomputer github status` after completing the GitHub flow.\n",
+        );
+        return;
+      }
+
+      const deadline = Date.now() + 10 * 60_000;
+      process.stdout.write("Waiting for GitHub… (Ctrl-C to stop)\n");
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        try {
+          const status = await client.githubStatus(project.projectId);
+          if (githubEnvironmentsConnected(status, environments)) {
+            process.stdout.write(
+              `Connected the managed GitHub App for ${environments.join(" and ")}.\n`,
+            );
+            return;
+          }
+        } catch {
+          // Keep waiting across transient status failures.
+        }
+      }
+      process.stdout.write(
+        "GitHub is not connected yet. Complete the browser flow, then run `opencomputer github status`.\n",
+      );
+      return;
+    }
+
+    throw new Error(
+      "Use `opencomputer github status` or `opencomputer github connect`.",
+    );
+  }
+
   if (command === "connection" || command === "connections") {
     // Accounts the platform holds an OAuth credential for. Nothing secret
     // passes through here: `add` returns a link for the account's owner to
     // open, and the token is minted and refreshed server-side.
-    const SERVICES = [
-      "gmail",
-      "calendar",
-      "drive",
-      "sheets",
-      "github",
-      "linear",
-    ];
     const action = args.shift();
 
     if (action === "add" || action === "connect") {
       const service = args.shift();
-      if (!service || !SERVICES.includes(service)) {
+      if (service === "github") {
         throw new Error(
-          `Use \`opencomputer connection add <${SERVICES.join("|")}>\``,
+          "GitHub agent access uses the managed GitHub App. Run `opencomputer github connect`.",
+        );
+      }
+      if (
+        !service ||
+        !SERVICE_CONNECTIONS.includes(
+          service as (typeof SERVICE_CONNECTIONS)[number],
+        )
+      ) {
+        throw new Error(
+          `Use \`opencomputer connection add <${SERVICE_CONNECTIONS.join("|")}>\``,
         );
       }
       const label = option(args, "--alias") ?? option(args, "--label");

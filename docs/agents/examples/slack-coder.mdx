@@ -33,10 +33,8 @@ and report their actual results, push the branch and open a draft pull
 request, continue follow-ups on that branch, never merge, and never print
 credentials or put them in files or Git URLs.
 
-The example declares no Slack channel, so the agent gets a dedicated Slack app
-with the standard configuration: mentions and direct messages go to this one
-agent. To narrow or extend what the app can do, declare a channel under
-`opencomputer/channels/` as described in [Channels](/agents/channels).
+The agent uses a dedicated Slack app: mentions and direct messages go to this
+one agent.
 
 ## Deploy it
 
@@ -73,8 +71,8 @@ access token from [your Slack apps](https://api.slack.com/apps), and approve
 the installation in Slack. You are returned to the same project and
 environment. Invite the bot to a channel and mention it once; the panel
 reports the first message received.
-[Connect Slack](/agents/channels#connect-slack) covers the token and the
-manual alternative.
+The Connections panel also offers the manual setup alternative; see
+[Slack connections](/agents/slack) for the full flow.
 
 ## Give it a task
 

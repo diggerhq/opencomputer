@@ -10,7 +10,7 @@ session.
 
 ```mermaid
 flowchart LR
-    Trigger[Message, schedule,<br/>webhook, or channel]
+    Trigger[Message, schedule,<br/>webhook, or event]
     Session[Durable session]
     Harness[Managed harness]
     Function[Your agent function]
@@ -149,8 +149,8 @@ flowchart LR
 ```
 
 Development and Production point to different deployments and keep operational
-configuration—such as secrets, schedule state, webhook tokens, and channel
-bindings—separate. Read
+configuration—such as secrets, schedule state, and webhook tokens—separate.
+Read
 [Deployments and environments](/agents/deployments) for that lifecycle.
 
 ## Remember this
@@ -177,7 +177,7 @@ bindings—separate. Read
   <Card title="Webhooks" icon="webhook" href="/agents/webhooks">
     Start sessions from authenticated external services.
   </Card>
-  <Card title="Channels and outboxes" icon="message" href="/agents/channels">
-    Receive conversational events and publish durable notifications.
+  <Card title="Database" icon="database" href="/agents/database">
+    Store application state and durable work for application-owned workers.
   </Card>
 </CardGroup>

@@ -52,9 +52,10 @@ When the project is ready, publish an immutable deployment:
 npm run deploy -- --alias production
 ```
 
-Deployments are versioned. The dashboard project view exposes Agent playground,
-Sessions, Files, Connections, Channels, Schedules, and Agent schema while
-keeping infrastructure details behind the OpenComputer API.
+Deployments are versioned. The dashboard project view exposes the debug
+playground, deployments, sessions, schedules, webhooks, memory, database,
+secrets, and connections while keeping infrastructure details behind the
+OpenComputer API.
 
 ## CLI
 

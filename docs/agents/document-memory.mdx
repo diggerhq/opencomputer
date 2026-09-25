@@ -69,7 +69,7 @@ Set `memory.<resource>` when creating a session:
   to `read`; collection writes are unsupported.
 - Resources must be declared by the deployment and bound documents must exist.
   Invalid bindings fail admission.
-- Bindings stay fixed. Schedules, channels and webhooks do not configure them.
+- Bindings stay fixed. Schedules and webhooks do not configure them.
 - One store per project and environment. An application with many users
   keeps their data apart with document bindings and application-chosen
   document IDs; a collection binding sees every document of the resource, so
