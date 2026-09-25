@@ -3,8 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { MessagesSquare, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { useCreditState } from '@/hooks/useCreditState'
-import { billingOnrampV2Enabled } from '@/lib/billing-onramp'
+import { useHalted } from '@/hooks/useHalted'
 import { getSessions, getAgents, createSession, ApiError } from '@/api/client'
 import type { Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -39,13 +38,7 @@ import {
 export default function Sessions() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  // out of credits → gate starting a session (out-of-credits doc, B3)
-  const { isHalted: halted } = useCreditState()
-  const haltedTitle = halted
-    ? billingOnrampV2Enabled
-      ? 'Out of credits — upgrade to Pro or top up to resume'
-      : 'Out of credits — top up to resume'
-    : undefined
+  const halted = useHalted() // out of credits → gate starting a session (out-of-credits doc, B3)
   const { data, isLoading } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => getSessions(),
@@ -209,12 +202,14 @@ export default function Sessions() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
         }}
         actions={
-          <span title={haltedTitle} className="inline-flex">
-            <Button onClick={openStart} disabled={halted}>
-              <Plus className="size-4" />
-              Start session
-            </Button>
-          </span>
+          <Button
+            onClick={openStart}
+            disabled={halted}
+            title={halted ? 'Out of credits — top up to resume' : undefined}
+          >
+            <Plus className="size-4" />
+            Start session
+          </Button>
         }
       />
 
@@ -230,12 +225,17 @@ export default function Sessions() {
               title="No sessions yet"
               description="Start a session from an agent to give it a task; it runs durably and streams events here."
               action={
-                <span title={haltedTitle} className="inline-flex">
-                  <Button size="sm" onClick={openStart} disabled={halted}>
-                    <Plus className="size-4" />
-                    Start session
-                  </Button>
-                </span>
+                <Button
+                  size="sm"
+                  onClick={openStart}
+                  disabled={halted}
+                  title={
+                    halted ? 'Out of credits — top up to resume' : undefined
+                  }
+                >
+                  <Plus className="size-4" />
+                  Start session
+                </Button>
               }
             />
           }

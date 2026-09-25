@@ -4,10 +4,11 @@ import { Sparkles } from 'lucide-react'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { useCreditState } from '@/hooks/useCreditState'
-import { formatUsd, usageCostUsd, type UsageLike } from '@/lib/usage'
 import {
+  BASE_GRANT_CENTS,
   PLAN_OFFERS,
   billingOnrampV2Enabled,
+  formatUsd,
   trackFirstSessionCompleted,
   trackUpsellClicked,
   trackUpsellShown,
@@ -16,7 +17,6 @@ import {
 
 const SEEN_KEY = 'oc.billing.upsell_sessions'
 const MAX_SESSIONS = 3
-const ACTIVE_STATUSES = new Set(['queued', 'running'])
 
 // Sessions this browser has already shown the card for. The card is only
 // worth showing on the first few sessions — after that the value is proven
@@ -38,25 +38,30 @@ function rememberSession(sessionId: string): { index: number; show: boolean } {
   }
 }
 
+// Shown under a serverless-agent session once it has finished a turn. Sessions
+// don't expose per-session cost, so the card speaks in terms of the org's free
+// credit grant instead.
 export function PostSessionUpsell({
   sessionId,
-  status,
-  usage,
+  completed,
+  className,
 }: {
   sessionId: string
-  status: string
-  usage: UsageLike
+  completed: boolean
+  className?: string
 }) {
   const { usagePlan, isHalted, creditsRemainingCents } = useCreditState()
-  const costUsd = usageCostUsd(usage)
+  const spentCents =
+    creditsRemainingCents === undefined
+      ? null
+      : Math.max(0, BASE_GRANT_CENTS - creditsRemainingCents)
   const eligible =
     billingOnrampV2Enabled &&
+    completed &&
     usagePlan === 'base' &&
     !isHalted &&
-    !ACTIVE_STATUSES.has(status) &&
-    status !== 'archived' &&
-    costUsd !== null &&
-    costUsd > 0
+    spentCents !== null &&
+    spentCents > 0
   const seen = eligible ? rememberSession(sessionId) : null
   const show = seen?.show ?? false
 
@@ -65,7 +70,7 @@ export function PostSessionUpsell({
     if (seen?.index === 0)
       trackFirstSessionCompleted({
         sessionId,
-        costCents: Math.round((costUsd ?? 0) * 100),
+        costCents: spentCents ?? 0,
         usagePlan,
       })
     trackUpsellShown({
@@ -77,25 +82,24 @@ export function PostSessionUpsell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, sessionId])
 
-  if (!show || costUsd === null) return null
+  if (!show || spentCents === null) return null
   const pro = PLAN_OFFERS.pro
-  const sessionsPerMonth = Math.floor(pro.creditsUsd / Math.max(costUsd, 0.01))
   return (
-    <Panel className="mb-4 flex flex-wrap items-center justify-between gap-4 p-4">
+    <Panel
+      className={`flex flex-wrap items-center justify-between gap-4 p-4 ${className ?? ''}`}
+    >
       <div className="flex min-w-0 items-start gap-3">
         <Sparkles className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <div className="text-sm">
           <p className="font-medium">
-            This session cost {formatUsd(costUsd)} of your free credits
-            {creditsRemainingCents !== undefined
-              ? ` — $${(creditsRemainingCents / 100).toFixed(2)} left`
-              : ''}
-            .
+            You&apos;ve used {formatUsd(spentCents)} of your{' '}
+            {formatUsd(BASE_GRANT_CENTS)} free credits —{' '}
+            {formatUsd(creditsRemainingCents ?? 0)} left.
           </p>
           <p className="text-muted-foreground mt-0.5">
-            Pro is ${pro.priceUsd}/mo for ${pro.creditsUsd} in credits — about{' '}
-            {sessionsPerMonth.toLocaleString()} sessions like this one every
-            month, and sessions never pause.
+            Pro is ${pro.priceUsd}/mo for ${pro.creditsUsd} in credits —{' '}
+            {Math.round(pro.creditsUsd / (BASE_GRANT_CENTS / 100))}× your free
+            grant every month, and your agents never pause.
           </p>
         </div>
       </div>

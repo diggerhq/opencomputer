@@ -47,7 +47,6 @@ export type UpsellSurface =
   | 'low_credit_banner'
   | 'halt_banner'
   | 'session_composer'
-  | 'sessions_list'
   | 'post_session_card'
   | 'byok_gate'
   | 'billing_page'

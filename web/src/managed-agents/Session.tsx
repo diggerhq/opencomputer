@@ -11,6 +11,7 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
 import {
   Panel,
   PanelContent,
@@ -119,6 +120,11 @@ export default function ManagedSessionDetail() {
             </Link>
           </Button>
         }
+      />
+
+      <PostSessionUpsell
+        sessionId={session.data.id}
+        completed={session.data.status === 'completed'}
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -255,7 +261,7 @@ export default function ManagedSessionDetail() {
                         {turn.input}
                       </p>
                       {payload !== undefined ? (
-                        <details className="ml-auto mt-2 max-w-2xl">
+                        <details className="mt-2 ml-auto max-w-2xl">
                           <summary className="text-muted-foreground cursor-pointer text-xs">
                             Payload
                           </summary>
