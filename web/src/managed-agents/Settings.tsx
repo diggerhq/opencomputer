@@ -42,22 +42,22 @@ import { launchAuthorizationWindow } from './authorization-window'
 const selectClassName =
   'border-input bg-background h-9 min-w-48 rounded-md border px-3 text-sm disabled:opacity-50'
 
-const REPOSITORY_PAGE_LIMIT = 20
-
 async function listAllRepositories(input: {
   projectId: string
   connectionId: string
 }): Promise<{ repositories: ManagedDeploymentSourceRepository[] }> {
   const repositories: ManagedDeploymentSourceRepository[] = []
+  const seen = new Set<string>()
   let cursor: string | null = null
-  for (let page = 0; page < REPOSITORY_PAGE_LIMIT; page++) {
+  while (true) {
     const result = await listManagedDeploymentSourceRepositories({
       ...input,
       cursor,
     })
     repositories.push(...result.repositories)
     cursor = result.nextCursor
-    if (!cursor) break
+    if (!cursor || seen.has(cursor)) break
+    seen.add(cursor)
   }
   return { repositories }
 }
