@@ -214,6 +214,24 @@ test("an ended session falls back to its retained artifacts", async () => {
   });
 });
 
+test("a file deleted from a live workspace is not replaced by its retained copy", async () => {
+  const base = fakeClient([
+    { path: "gone.txt", bytes: new TextEncoder().encode("old") },
+  ]);
+  const client: WorkspaceClient = {
+    ...base,
+    exportWorkspaceFile: () =>
+      Promise.reject(new APIError("no such file", 404, "artifact_not_found")),
+  };
+  await withDirectory(async (dir) => {
+    await assert.rejects(
+      downloadWorkspaceFile(client, sessionId, "gone.txt", path.join(dir, "g")),
+      (error: unknown) =>
+        error instanceof APIError && error.code === "artifact_not_found",
+    );
+  });
+});
+
 test("--all refuses to follow a symlinked directory out of the root", async () => {
   const client = fakeClient([
     { path: "link/escaped.txt", bytes: new TextEncoder().encode("x") },
