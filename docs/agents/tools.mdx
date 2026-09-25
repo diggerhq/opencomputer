@@ -73,15 +73,16 @@ appropriate, and any important precondition.
 
 The `run` function receives:
 
-| Value                      | Purpose                                          |
-| -------------------------- | ------------------------------------------------ |
-| `input`                    | Arguments created for the tool call              |
-| `sessionId`                | Current session ID                               |
-| `messageId`                | Message containing the tool call                 |
-| `toolCallId`               | ID of this invocation, unique within the session |
-| `agentId`                  | Agent executing the call                         |
-| `signal`                   | Optional cancellation signal for abortable work  |
-| `reportProgress(metadata)` | Emits JSON-compatible progress metadata          |
+| Value                      | Purpose                                                                  |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `input`                    | Arguments created for the tool call                                      |
+| `identity`                 | Where this call runs, assigned by OpenComputer; see [below](#invocation-identity) |
+| `sessionId`                | Current session ID; the same as `identity.sessionId`                     |
+| `messageId`                | Message containing the tool call; the same as `identity.messageId`       |
+| `toolCallId`               | ID of this invocation, unique within the session; `identity.toolCallId`  |
+| `agentId`                  | The cloud agent executing the call; the same as `identity.agentId`       |
+| `signal`                   | Optional cancellation signal for abortable work                          |
+| `reportProgress(metadata)` | Emits JSON-compatible progress metadata                                  |
 
 Use the cancellation signal with `fetch()` and report progress before slow
 steps:
@@ -107,6 +108,63 @@ For an external write, `${sessionId}:${toolCallId}` can identify the invocation
 in a downstream idempotency key. It stays the same when that invocation is
 retried. A new call from the model has a new ID, even if it requests the same
 action; use a business-level key when those calls must also converge.
+
+### Invocation identity
+
+`identity` names the exact execution a call belongs to, using the same IDs
+the Management API and the [event log](/agents/events#tools) use:
+
+| Field          | Value                                                                    |
+| -------------- | ------------------------------------------------------------------------ |
+| `projectId`    | The project the agent belongs to                                         |
+| `environment`  | `development` or `production`                                            |
+| `agentId`      | The cloud agent, as the Management API identifies it                     |
+| `deploymentId` | The deployment pinned to the session when it was created                 |
+| `sessionId`    | The session                                                              |
+| `turnId`       | The turn OpenComputer admitted that this call belongs to                 |
+| `messageId`    | The assistant message that emitted the call                              |
+| `toolCallId`   | This call; the `callId` of its `tool.*` events                           |
+
+OpenComputer fills every field from its own record of the session and turn
+when it dispatches the call. Nothing in it comes from the prompt, the
+session's input or the model's arguments, and the object is frozen for the
+whole call: a write to it throws. A model that puts a `turnId`, a
+`deploymentId` or a whole `identity` into the tool's arguments only adds
+data to `input`; it cannot change or shadow `identity`. Treat such values as
+application data at most, and bind your own records to `identity`.
+
+A session keeps its `deploymentId` and `environment` for its lifetime, so an
+old session continues to report its pinned deployment after the
+`development` alias moves to a newer one. Each turn has a new `turnId`, each
+assistant message a new `messageId`, and each call a new `toolCallId`; the
+same tuple is on the call's [`tool.started`, `tool.progress`, `tool.completed`
+and `tool.failed`](/agents/events#tools) events and, for the result tool, on
+the session's [`result`](#the-session-result). The tuple identifies the
+logical call: an invocation the platform retries keeps it, exactly as
+`toolCallId` is kept above.
+
+```tsx
+export const submitProgress = defineTool({
+  name: "submit_progress",
+  description: "Record progress on the job",
+  input: {
+    type: "object",
+    properties: { note: { type: "string" } },
+    required: ["note"],
+    additionalProperties: false,
+  },
+  async run({ input, identity, signal }) {
+    // identity is the platform's; input is the model's.
+    await fetch("https://example.com/progress", {
+      method: "POST",
+      headers: { "Idempotency-Key": `${identity.sessionId}:${identity.toolCallId}` },
+      body: JSON.stringify({ note: input.note, provenance: identity }),
+      signal,
+    });
+    return { recorded: true };
+  },
+});
+```
 
 ## The session result
 
@@ -159,8 +217,9 @@ the session:
 
 - The value `run()` returns is validated against `output` and committed
   before the model is told the call succeeded. The session's `result`
-  becomes `{ turnId, callId, reportedAt, data }`, and the call's
-  `tool.completed` event carries `result: true`
+  becomes `{ turnId, callId, reportedAt, data, identity }`, where `identity`
+  is the committing call's [invocation identity](#invocation-identity), and
+  the call's `tool.completed` event carries `result: true`
   ([Session events](/agents/events#tools)).
 - A value that does not match `output`, or exceeds 8 KiB of JSON, fails the
   call; the model sees the reason and can call again. The previous result

@@ -126,10 +126,10 @@ only when one happened.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input`: the arguments as a JSON value |
-| `tool.progress` | The tool reported progress | runtime-defined |
-| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output`: what the tool returned as a JSON value; `result: true` when the output became the session's result |
-| `tool.failed` | The tool raised an error, or its turn ended before it completed | `tool`, `callId`, `title`, `message`; `settledBy` when the turn's end settled the call: `turn.completed`, `turn.failed` or `turn.cancelled` |
+| `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input`: the arguments as a JSON value; `identity` |
+| `tool.progress` | The tool reported progress | `callId`, `identity`, and the metadata the tool reported |
+| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output`: what the tool returned as a JSON value; `result: true` when the output became the session's result; `identity` |
+| `tool.failed` | The tool raised an error, or its turn ended before it completed | `tool`, `callId`, `title`, `message`, `identity`; `settledBy` when the turn's end settled the call: `turn.completed`, `turn.failed` or `turn.cancelled` |
 
 The exact fields come from the runtime's tool record; read them as optional
 and key a tool call on `callId` when it is present. The memory tools
@@ -147,6 +147,45 @@ is recorded with `result: true`; its `output` is the validated value, the
 same JSON value `GET /sessions/<id>` returns as `result.data`. The session
 writes this event when it commits the result, before the model sees the call
 succeed, and there is one per call.
+
+#### Tool call identity
+
+Every `tool.*` event carries `identity`: the same eight fields the tool
+itself received as its [invocation identity](/agents/tools#invocation-identity),
+assigned by OpenComputer from the session and turn it admitted:
+
+```json
+{
+  "type": "tool.completed",
+  "turnId": "turn_01…",
+  "data": {
+    "tool": "submit_progress",
+    "callId": "call_01…",
+    "title": "submit_progress",
+    "output": { "recorded": true },
+    "identity": {
+      "projectId": "prj_01…",
+      "environment": "development",
+      "agentId": "agent_01…",
+      "deploymentId": "dep_01…",
+      "sessionId": "ses_01…",
+      "turnId": "turn_01…",
+      "messageId": "msg_01…",
+      "toolCallId": "call_01…"
+    }
+  }
+}
+```
+
+The four events of one call carry the same tuple, `identity.toolCallId` is
+the event's `callId`, and `identity.turnId` is the event's `turnId`. The
+session stamps it when it records the event; a value the tool or the model
+placed in `input` under the same name stays in `input`, as data, and never
+replaces it. A `tool.failed` the session records for a call still open when
+its turn ended carries the identity of the `tool.started` it settles. The
+tuple stays in the log after the session ends, and the same tuple is on the
+session's `result` for the call that committed it. Tool events recorded
+before `identity` was introduced do not have it; read it as optional.
 
 Every tool call ends in the log. The runtime reports a `tool.completed` or
 `tool.failed` per call; when a turn ends with a call still open, whether
