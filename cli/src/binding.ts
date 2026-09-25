@@ -1,7 +1,11 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import type { ManagedProject, OpenComputerClient } from "./api.js";
+import type {
+  ManagedProject,
+  OpenComputerClient,
+  ProjectEnvironmentMode,
+} from "./api.js";
 import type { ResolvedConfig } from "./config.js";
 import {
   agentIdFromName,
@@ -15,9 +19,28 @@ export interface ProjectBinding {
   agentId: string;
 }
 
+/**
+ * A binding plus the project's current lifecycle mode. The mode is read from
+ * the project record on every resolution and never written to disk: the saved
+ * binding names the project, the server says what kind of project it is.
+ */
+export interface ResolvedProject extends ProjectBinding {
+  environmentMode: ProjectEnvironmentMode;
+}
+
 export interface ProjectBindingOptions {
+  /** Use this project (id or slug) for one command; the saved binding is untouched unless `persist`. */
   project?: string;
+  /** Create (or reuse by slug) a project and save it as this checkout's binding. */
   createProjectName?: string;
+  /** Save the selected project as the checkout's binding (`opencomputer link`). */
+  persist?: boolean;
+}
+
+export function projectEnvironmentMode(
+  project: Pick<ManagedProject, "environmentMode">,
+): ProjectEnvironmentMode {
+  return project.environmentMode === "single" ? "single" : "legacy";
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -125,20 +148,25 @@ async function readBinding(
   }
 }
 
-async function persistBinding(
-  projectRoot: string,
+function bindingFor(
   config: ResolvedConfig,
   project: ManagedProject,
-): Promise<ProjectBinding> {
+): ProjectBinding {
   const agent = project.agents[0];
   if (!agent) throw new Error(`Project ${project.name} has no agent to bind.`);
-  const binding: ProjectBinding = {
+  return {
     version: 1,
     apiUrl: config.apiUrl,
     projectId: project.id,
     projectName: project.name,
     agentId: agent.id,
   };
+}
+
+async function persistBinding(
+  projectRoot: string,
+  binding: ProjectBinding,
+): Promise<ProjectBinding> {
   const directory = dirname(bindingPath(projectRoot));
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(
@@ -149,12 +177,19 @@ async function persistBinding(
   return binding;
 }
 
+/**
+ * Resolve the project a command acts on. Precedence: an explicit `--project`
+ * for this command only, then the checkout's saved binding, then a typed
+ * error pointing at `opencomputer link`. Only `link` (`persist`) and project
+ * creation write `.opencomputer/project.json`; an explicit `--project` on any
+ * other command never rewrites what `link` chose.
+ */
 export async function ensureProjectBinding(
   client: Pick<OpenComputerClient, "projects" | "createProject">,
   config: ResolvedConfig,
   agentRoot: string,
   options: ProjectBindingOptions = {},
-): Promise<ProjectBinding> {
+): Promise<ResolvedProject> {
   if (options.project && options.createProjectName) {
     throw new Error("--project and --create-project cannot be combined.");
   }
@@ -162,16 +197,19 @@ export async function ensureProjectBinding(
   const projects = await client.projects();
   if (!options.project && !options.createProjectName) {
     const existing = await readBinding(projectRoot, config.apiUrl);
-    if (
-      existing &&
-      projects.some(
-        (project) =>
-          project.id === existing.projectId &&
-          project.agents.some((agent) => agent.id === existing.agentId),
-      )
-    ) {
-      return existing;
+    const current = existing
+      ? projects.find(
+          (project) =>
+            project.id === existing.projectId &&
+            project.agents.some((agent) => agent.id === existing.agentId),
+        )
+      : undefined;
+    if (existing && current) {
+      return { ...existing, environmentMode: projectEnvironmentMode(current) };
     }
+    throw new Error(
+      "This app is not connected to a cloud project. Run `opencomputer link --project <id|slug>` or `opencomputer link --create-project <name>`.",
+    );
   }
 
   let project = options.project
@@ -183,19 +221,21 @@ export async function ensureProjectBinding(
   if (options.project && !project) {
     throw new Error(`Project ${options.project} was not found in this account.`);
   }
-  let createName = options.createProjectName;
+  let persist = options.persist === true;
+  const createName = options.createProjectName;
   if (!project && createName) {
+    persist = true;
     const slug = agentIdFromName(createName);
-    project = projects.find((candidate) => candidate.slug === slug);
+    project =
+      projects.find((candidate) => candidate.slug === slug) ??
+      (await client.createProject(createName, slug));
   }
-  if (!project && !createName) {
+  if (!project) {
     throw new Error(
       "This app is not connected to a cloud project. Run `opencomputer link --project <id|slug>` or `opencomputer link --create-project <name>`.",
     );
   }
-  project ??= await client.createProject(
-    createName!,
-    agentIdFromName(createName!),
-  );
-  return persistBinding(projectRoot, config, project);
+  const binding = bindingFor(config, project);
+  if (persist) await persistBinding(projectRoot, binding);
+  return { ...binding, environmentMode: projectEnvironmentMode(project) };
 }

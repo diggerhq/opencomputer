@@ -80,7 +80,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | --- | --- |
 | `agentId` | `<agent-id>@development` or `<agent-id>@production`. The alias selects the environment and the deployment active in it. A bare agent ID means `production`. This is how applications address an agent; which deployment runs the session is the platform's choice, recorded on the session. |
 | `deploymentId` | Advanced: pin one deployment instead of resolving an alias, for reproducibility or testing. Send `environment` with it; it may be omitted only when the deployment is promoted to exactly one environment. |
-| `environment` | `development` or `production`. Optional with `agentId`; it must agree with the alias. |
+| `environment` | `development` or `production` for legacy projects; `default` for single-environment projects. Optional with `agentId`; it must agree with the alias. |
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground` or `webhook`. The dashboard groups sessions by it. |
 | `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
@@ -462,15 +462,17 @@ treat that text as data about another agent's work, not as instructions.
 | Operation | Method and path | Success |
 | --- | --- | --- |
 | List projects | `GET /projects` | `200` with `{ projects }` |
-| Create project | `POST /projects` with `{ name, slug? }` | `201` with the project |
+| Create project | `POST /projects` with `{ name, slug?, environmentMode? }` | `201` with the project. `environmentMode` is `single` (one `default` environment) or `legacy` (Development and Production) |
 | Get project | `GET /projects/<p>` | `200` with `{ project, deployments, sessions, connections, schedules }` |
 | List agents | `GET /agents` | `200` with `{ agents }`: `id`, `name`, `activeAlias`, `activeDeploymentId`, `deploymentCount`; `activeAlias` and `activeDeploymentId` are `null` while the agent has no active deployment |
 | List deployments | `GET /deployments?agentId=<agent-id>` | `200` with `{ deployments }` |
 | Get deployment | `GET /deployments/<id>` | `200` with `id`, `agentId`, `alias`, `memory` declarations, `createdAt` |
 | List GitHub repositories | `GET /projects/<p>/github/repositories?environment=<env>` | `200` with `{ repositories, nextCursor }`; see [GitHub App connections](/agents/github#list-the-repositories-an-environment-can-reach) |
 
-A project is `{ id, slug, name, environments, agents, createdAt, updatedAt }`;
-`agents` carries each agent's `id` and `name`. See
+A project is `{ id, slug, name, environmentMode, environments, agents, createdAt, updatedAt }`;
+`agents` carries each agent's `id` and `name`. Single-environment projects have one
+environment named `default`; requests that name `development` resolve to it,
+and requests that name `production` fail with `409 single_environment_project`. See
 [Projects and agents](/agents/projects) for how projects are created and
 linked from the CLI.
 

@@ -68,7 +68,9 @@ import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import {
   projectContextSearch,
+  projectEnvironmentMode,
   requestedProjectAgentId,
+  resolveProjectEnvironment,
 } from './project-context'
 import {
   playgroundSessionIdFromSearch,
@@ -580,10 +582,14 @@ export default function ManagedAgentDetail({
       ? routeTab
       : 'playground'
     : standaloneTab
-  const environment =
-    searchParams.get('environment') === 'production'
-      ? 'production'
-      : 'development'
+  const environmentMode = projectEnvironmentMode(project?.project)
+  const resolvedEnvironment = resolveProjectEnvironment(
+    environmentMode,
+    searchParams.toString(),
+  )
+  const environment = resolvedEnvironment.ok
+    ? resolvedEnvironment.environment
+    : 'default'
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
@@ -808,6 +814,43 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
   ]
 
+  if (project && !resolvedEnvironment.ok) {
+    return (
+      <div className="space-y-5">
+        <PageHeader
+          title={project.project.name}
+          description="Single environment"
+        />
+        <Panel>
+          <EmptyState
+            icon={Bot}
+            title="This project has a single environment"
+            description={`“${resolvedEnvironment.requested}” is not an environment of this project (single_environment_project). Use a separate project for a distinct ${resolvedEnvironment.requested} target.`}
+            action={
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={{
+                    pathname: location.pathname,
+                    search: projectContextSearch(
+                      location.search,
+                      requestedProjectAgentId(
+                        location.search,
+                        project.project.agents,
+                      ),
+                      'default',
+                    ),
+                  }}
+                >
+                  Open the project
+                </Link>
+              </Button>
+            }
+          />
+        </Panel>
+      </div>
+    )
+  }
+
   return (
     <div
       className={cn(
@@ -823,7 +866,7 @@ export default function ManagedAgentDetail({
         }
         description={
           project
-            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'} · development and production environments`
+            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'}${environmentMode === 'legacy' ? ' · development and production environments' : ''}`
             : activeDeployment.data
               ? `Active deployment · ${activeDeployment.data.alias}`
               : 'Loading active deployment…'
@@ -957,7 +1000,11 @@ export default function ManagedAgentDetail({
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Debug playground"
-            description={`Create the starter locally, then sync it directly to ${environment}.`}
+            description={
+              environmentMode === 'single'
+                ? 'Create the starter locally, then sync it to this project.'
+                : `Create the starter locally, then sync it directly to ${environment}.`
+            }
             action={
               <div className="flex max-w-xl flex-col items-center gap-3">
                 <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">
@@ -1247,7 +1294,10 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'byok' && project ? (
-        <ManagedProjectBYOK projectId={project.project.id} />
+        <ManagedProjectBYOK
+          projectId={project.project.id}
+          environmentMode={environmentMode}
+        />
       ) : null}
 
       {activeTab === 'connections' && project ? (

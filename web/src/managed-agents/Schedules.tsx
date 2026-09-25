@@ -41,7 +41,7 @@ export function ManagedAgentSchedules({
 }: {
   projectId: string
   agentId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   deployed: boolean
 }) {
   const queryClient = useQueryClient()
@@ -186,7 +186,9 @@ export function ManagedAgentSchedules({
             <PanelDescription>
               {environment === 'development'
                 ? 'Development schedules run only when you choose Run now.'
-                : 'Production schedules run automatically. Each run starts a fresh session.'}
+                : environment === 'default'
+                  ? 'Enabled schedules run automatically. Each run starts a fresh session.'
+                  : 'Production schedules run automatically. Each run starts a fresh session.'}
             </PanelDescription>
           </div>
         </PanelHeader>

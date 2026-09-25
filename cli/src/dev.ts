@@ -13,6 +13,7 @@ import {
   findOpenComputerProjectRoot,
   type ProjectBinding,
   type ProjectBindingOptions,
+  type ResolvedProject,
 } from "./binding.js";
 import { startGateway } from "./local.js";
 import {
@@ -23,6 +24,7 @@ import {
   type BuiltAgentArtifact,
   type ProjectResourceManifest,
 } from "./project.js";
+import { environmentLabel, workingEnvironment } from "./scope.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
@@ -83,16 +85,17 @@ async function registerBuiltDeployment(
 
 export { cloudAgentId };
 
+/** Publish to the project's working scope: Development for legacy projects, the single scope otherwise. */
 export async function publishProjectDevelopment(
   client: Pick<OpenComputerClient, "registerDeployment">,
   projectRoot: string,
-  binding: ProjectBinding,
+  binding: ProjectBinding & Partial<Pick<ResolvedProject, "environmentMode">>,
 ) {
   return publishProjectDeployment(
     client,
     projectRoot,
     binding,
-    DEVELOPMENT_ALIAS,
+    workingEnvironment(binding.environmentMode ?? "legacy"),
   );
 }
 
@@ -196,9 +199,12 @@ export function developmentWatchReadyMessage(input: {
   deployments: string[];
   watchedDirectory: string;
   startWebApp?: boolean;
+  /** Empty for a single-mode project, which has no environment to name. */
+  environmentLabel?: string;
 }): string {
+  const label = input.environmentLabel ?? "Development";
   return (
-    `\nOpenComputer Development\n\n` +
+    `\nOpenComputer${label ? ` ${label}` : ""}\n\n` +
     `✓ Deployment ready\n` +
     `  Project      ${input.projectName} (${input.projectId})\n` +
     `  Agents       ${input.agents.join(", ")}\n` +
@@ -251,13 +257,16 @@ export async function runDeploymentWatch(
     projectRoot,
     options,
   );
+  const environment = workingEnvironment(binding.environmentMode);
+  const label = environmentLabel(environment);
+  const agentReference = (agentId: string) => `${agentId}@${environment}`;
   process.stdout.write(
     describeResolution({
       binding,
       localIds: (await readProjectAgents(projectRoot)).map(
         (agent) => agent.localId,
       ),
-      alias: DEVELOPMENT_ALIAS,
+      ...(label ? { alias: environment } : {}),
     }),
   );
   const gateway = await startGateway(config);
@@ -271,7 +280,7 @@ export async function runDeploymentWatch(
       url: gateway.url,
       token: gateway.token,
       projectId: binding.projectId,
-      agent: `${binding.agentId}@development`,
+      agent: agentReference(binding.agentId),
     })}\n`,
     { mode: 0o600 },
   );
@@ -293,7 +302,9 @@ export async function runDeploymentWatch(
       do {
         pending = false;
         try {
-          process.stdout.write("\nChange detected. Deploying to Development...\n");
+          process.stdout.write(
+            `\nChange detected. Deploying${label ? ` to ${label}` : ""}...\n`,
+          );
           const results = await publishProjectDevelopment(
             client,
             projectRoot,
@@ -311,13 +322,15 @@ export async function runDeploymentWatch(
                 name: result.built.name,
               });
               process.stdout.write(
-                `${runtimeChanged ? "✓ Deployed" : "✓ Updated name for"} ${result.deployment.agentId}@development\n` +
+                `${runtimeChanged ? "✓ Deployed" : "✓ Updated name for"} ${agentReference(result.deployment.agentId)}\n` +
                   `  Deployment  ${result.deployment.id}\n`,
               );
             }
           }
           if (!changed) {
-            process.stdout.write("✓ Development is already up to date.\n");
+            process.stdout.write(
+              `✓ ${label || "Deployment"} is already up to date.\n`,
+            );
           }
         } catch (error) {
           process.stderr.write(
@@ -350,12 +363,13 @@ export async function runDeploymentWatch(
         projectName: binding.projectName,
         projectId: binding.projectId,
         dashboardUrl: projectDashboardURL(config.apiUrl, binding.projectId),
-        agents: initial.map(
-          (result) => `${result.deployment.agentId}@development`,
+        agents: initial.map((result) =>
+          agentReference(result.deployment.agentId),
         ),
         deployments: initial.map((result) => result.deployment.id),
         watchedDirectory: resolve(projectRoot, "opencomputer"),
         startWebApp,
+        environmentLabel: label,
       }),
     );
     if (startWebApp) web = await startReactDevServer(projectRoot);

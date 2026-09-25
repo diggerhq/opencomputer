@@ -188,7 +188,7 @@ export const none: Shape<void> = (value, path) => {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
-export const environment: Shape<Environment> = oneOf("development", "production");
+export const environment: Shape<Environment> = oneOf("default", "development", "production");
 
 const labels = record(string);
 
@@ -335,6 +335,7 @@ export const project: Shape<Project> = object({
   id: string,
   slug: string,
   name: string,
+  environmentMode: optional(oneOf("single", "legacy")),
   environments: array(projectEnvironment),
   agents: array(object({ id: string, name: string })),
   createdAt: string,

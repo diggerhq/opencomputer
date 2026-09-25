@@ -8,8 +8,14 @@
 import type { MemoryBindings, SessionMemoryBinding } from "./memory.js";
 import type { TurnOutcomeDelivery } from "./event-subscriptions.js";
 
-/** Development and Production are separate environments of a project. */
-export type Environment = "development" | "production";
+/**
+ * A project's environment scopes. A single-environment project has one
+ * `default` scope; a legacy project has separate Development and Production.
+ */
+export type Environment = "default" | "development" | "production";
+
+/** How a project scopes its environments; missing on older responses means `legacy`. */
+export type ProjectEnvironmentMode = "single" | "legacy";
 
 /**
  * A JSON value: what a turn payload, a tool input or output, and a result
@@ -373,6 +379,7 @@ export interface Project {
   id: string;
   slug: string;
   name: string;
+  environmentMode?: ProjectEnvironmentMode;
   environments: ProjectEnvironment[];
   agents: Array<{ id: string; name: string }>;
   createdAt: string;
@@ -382,6 +389,7 @@ export interface Project {
 export interface CreateProjectParams {
   name: string;
   slug?: string;
+  environmentMode?: ProjectEnvironmentMode;
 }
 
 /** What `GET /projects/<p>` returns. */

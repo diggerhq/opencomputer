@@ -9,6 +9,8 @@ import {
   type MemoryBindings,
   type MemoryDocument,
   type MemoryDocumentMeta,
+  type ProjectEnvironment,
+  type ProjectEnvironmentMode,
 } from "./api.js";
 import { login, logout } from "./auth.js";
 import { codexLogin } from "./codex-oauth.js";
@@ -22,7 +24,15 @@ import {
   describeResolution,
   ensureProjectBinding,
   findOpenComputerProjectRoot,
+  projectEnvironmentMode,
 } from "./binding.js";
+import {
+  projectEnvironments,
+  resolveDeployAlias,
+  resolveEnvironment,
+  resolveEnvironmentFilter,
+  workingEnvironment,
+} from "./scope.js";
 import {
   assertStarterTarget,
   buildAgentArtifact,
@@ -71,8 +81,11 @@ export interface GlobalOptions {
   idempotencyKey?: string;
 }
 
-export function deploymentAlias(requestedAlias?: string): string {
-  return requestedAlias ?? "development";
+export function deploymentAlias(
+  requestedAlias?: string,
+  mode: ProjectEnvironmentMode = "legacy",
+): string {
+  return resolveDeployAlias(mode, requestedAlias);
 }
 
 export function shouldBindModelAccessProject(
@@ -92,13 +105,15 @@ export const SERVICE_CONNECTIONS = [
 
 export function githubEnvironments(
   value?: string,
-): Array<"development" | "production"> {
-  return value ? [environmentOption(value)] : ["development", "production"];
+  mode: ProjectEnvironmentMode = "legacy",
+): ProjectEnvironment[] {
+  const filter = resolveEnvironmentFilter(mode, value);
+  return filter ? [filter] : [...projectEnvironments(mode)];
 }
 
 export function githubEnvironmentsConnected(
   status: ManagedGitHubStatus,
-  environments: Array<"development" | "production">,
+  environments: readonly ProjectEnvironment[],
 ): boolean {
   return environments.every((environment) =>
     status.environments.some(
@@ -185,10 +200,17 @@ function options(args: string[], name: string): string[] {
 
 function environmentOption(
   value: string | undefined,
-): "development" | "production" {
-  if (!value || value === "development") return "development";
-  if (value === "production") return "production";
-  throw new Error("--environment must be development or production");
+  mode: ProjectEnvironmentMode,
+): ProjectEnvironment {
+  return resolveEnvironment(mode, value);
+}
+
+/** An `--environment` filter with no project to say what mode applies: any canonical name. */
+function legacyEnvironmentFilter(value: string): ProjectEnvironment {
+  if (value === "default" || value === "development" || value === "production") {
+    return value;
+  }
+  throw new Error("--environment must be default, development, or production");
 }
 
 function databaseParameter(value: string): string | number | boolean | null {
@@ -348,7 +370,7 @@ async function selectedProject(
   client: OpenComputerClient,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   reference?: string,
-): Promise<{ projectId: string; agentId: string }> {
+): Promise<SelectedProject> {
   if (reference) {
     const project = (await client.projects()).find(
       (candidate) => candidate.id === reference || candidate.slug === reference,
@@ -356,11 +378,26 @@ async function selectedProject(
     if (!project) throw new Error(`Project ${reference} was not found.`);
     const agent = project.agents[0];
     if (!agent) throw new Error(`Project ${project.name} has no agents.`);
-    return { projectId: project.id, agentId: agent.id };
+    return {
+      projectId: project.id,
+      agentId: agent.id,
+      environmentMode: projectEnvironmentMode(project),
+    };
   }
   const root = await findOpenComputerProjectRoot(process.cwd());
   const binding = await ensureProjectBinding(client, config, root);
-  return { projectId: binding.projectId, agentId: binding.agentId };
+  return {
+    projectId: binding.projectId,
+    agentId: binding.agentId,
+    environmentMode: binding.environmentMode,
+  };
+}
+
+/** A project a command acts on; `--project` selects it for this command only. */
+interface SelectedProject {
+  projectId: string;
+  agentId: string;
+  environmentMode: ProjectEnvironmentMode;
 }
 
 async function selectedSessionAgent(
@@ -927,9 +964,7 @@ export async function runCommand(
       client,
       config,
       checkout.directory,
-      {
-        project: project.id,
-      },
+      { project: project.id, persist: true },
     );
     if (globals.json) printJSON({ checkout, binding });
     else {
@@ -964,7 +999,7 @@ export async function runCommand(
         client,
         config,
         checkout.directory,
-        { project },
+        { project, persist: true },
       );
       if (globals.json) printJSON({ checkout, binding });
       else {
@@ -994,8 +1029,7 @@ export async function runCommand(
       process.stdout.write(
         `\n${inspection.template.name}\n${inspection.template.description}\n` +
           `Source: ${inspection.repository.fullName}@${inspection.repository.commitSha.slice(0, 12)}\n` +
-          `Agents: ${inspection.agents.map((agent) => agent.name).join(", ")}\n` +
-          `Target: Development\n\n`,
+          `Agents: ${inspection.agents.map((agent) => agent.name).join(", ")}\n\n`,
       );
     }
     if (inspection.requirements.connections.length) {
@@ -1029,7 +1063,7 @@ export async function runCommand(
     }
     if (terminal && !confirmed) {
       const answer = (
-        await terminal.question("Create this Development project? [y/N] ")
+        await terminal.question("Create this project? [y/N] ")
       )
         .trim()
         .toLowerCase();
@@ -1070,6 +1104,12 @@ export async function runCommand(
       projectName,
       idempotencyKey: crypto.randomUUID(),
     });
+    const installedProject = (await client.projects()).find(
+      (candidate) => candidate.id === installation.projectId,
+    );
+    const installedEnvironment = workingEnvironment(
+      installedProject ? projectEnvironmentMode(installedProject) : "legacy",
+    );
     const installationAgentId = (localAgentId?: string) =>
       !localAgentId || localAgentId === inspection.agents[0]?.id
         ? installation.projectAgentId
@@ -1081,7 +1121,7 @@ export async function runCommand(
         projectId: installation.projectId,
         name: requirement.name,
         value,
-        environment: "development",
+        environment: installedEnvironment,
         agentId: installationAgentId(requirement.agentId),
         allowedOrigins: requirement.allowedOrigins,
       });
@@ -1093,7 +1133,7 @@ export async function runCommand(
         projectId: installation.projectId,
         name: requirement.name,
         value,
-        environment: "development",
+        environment: installedEnvironment,
         agentId: installationAgentId(requirement.agentId),
       });
     }
@@ -1120,9 +1160,7 @@ export async function runCommand(
       client,
       config,
       checkout.directory,
-      {
-        project: current.projectId,
-      },
+      { project: current.projectId, persist: true },
     );
     if (globals.json) printJSON({ installation: current, checkout, binding });
     else {
@@ -1206,7 +1244,7 @@ export async function runCommand(
           `Next:\n` +
           enterDirectory +
           `  npm install\n` +
-          `  npm run deploy -- --watch  # deploy changes to Development\n` +
+          `  npm run deploy -- --watch  # deploy on every change\n` +
           (spa
             ? `  npm run dev:web             # optional local web app\n`
             : ""),
@@ -1261,11 +1299,15 @@ export async function runCommand(
     const binding = await ensureProjectBinding(client, config, root, {
       project,
       createProjectName,
+      persist: true,
     });
     if (globals.json) printJSON(binding);
     else {
       process.stdout.write(
-        `Linked this app to ${binding.projectName} (${binding.projectId}).\n`,
+        `Linked this app to ${binding.projectName} (${binding.projectId})` +
+          (binding.environmentMode === "single"
+            ? ".\n"
+            : " (legacy Development/Production project).\n"),
       );
     }
     return;
@@ -1295,7 +1337,7 @@ export async function runCommand(
     if (watch) {
       if (requestedAlias && requestedAlias !== "development") {
         throw new Error(
-          "--watch deploys only to development; omit --alias or use --alias development",
+          "--watch deploys to the project's working environment; omit --alias",
         );
       }
       await runDeploymentWatch(client, config, root, {
@@ -1304,16 +1346,18 @@ export async function runCommand(
       });
       return;
     }
-    if (project || createProjectName) {
-      throw new Error("--project and --create-project require --watch");
+    if (createProjectName) {
+      throw new Error("--create-project requires --watch or `opencomputer link`");
     }
-    const alias = deploymentAlias(requestedAlias);
-    const binding = await ensureProjectBinding(client, config, root);
+    const binding = await ensureProjectBinding(client, config, root, {
+      project,
+    });
+    const alias = deploymentAlias(requestedAlias, binding.environmentMode);
     process.stderr.write(
       describeResolution({
         binding,
         localIds: diagnosis.resolution.agents.map((agent) => agent.localId),
-        alias,
+        ...(binding.environmentMode === "legacy" ? { alias } : {}),
       }),
     );
     const results = await publishProjectDeployment(
@@ -1388,8 +1432,9 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -1529,7 +1574,10 @@ export async function runCommand(
     }
 
     if (action === "connect") {
-      const environments = githubEnvironments(option(args, "--environment"));
+      const environments = githubEnvironments(
+        option(args, "--environment"),
+        project.environmentMode,
+      );
       const connectionSelector = option(args, "--connection");
       const forceNew = flag(args, "--new");
       const noWait = flag(args, "--no-wait");
@@ -1866,7 +1914,7 @@ export async function runCommand(
         ? await selectedProject(client, config, projectReference)
         : undefined;
       const environments = project
-        ? (["development", "production"] as const)
+        ? projectEnvironments(project.environmentMode)
         : [];
       const receipt = await client.connectModelAccess({ provider: "openai" });
       process.stdout.write(
@@ -1903,7 +1951,11 @@ export async function runCommand(
         );
         if (project) {
           process.stdout.write(
-            `Enabled Codex for ${project.projectId} (development and production).\n`,
+            `Enabled Codex for ${project.projectId}${
+              project.environmentMode === "legacy"
+                ? " (development and production)"
+                : ""
+            }.\n`,
           );
         }
       }
@@ -1977,7 +2029,7 @@ export async function runCommand(
       }
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const routes = await Promise.all(
-        (["development", "production"] as const).map((environment) =>
+        projectEnvironments(project.environmentMode).map((environment) =>
           client.putModelRoute({
             projectId: project.projectId,
             environment,
@@ -1991,14 +2043,18 @@ export async function runCommand(
       if (globals.json) printJSON(routes);
       else
         process.stdout.write(
-          `Set ${agentId ? `agent ${agentId}` : "project"} route for development and production.\n`,
+          `Set ${agentId ? `agent ${agentId}` : "project"} route${
+            project.environmentMode === "legacy"
+              ? " for development and production"
+              : ""
+          }.\n`,
         );
       return;
     }
     if (action === "delete" || action === "remove") {
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       await Promise.all(
-        (["development", "production"] as const).map((environment) =>
+        projectEnvironments(project.environmentMode).map((environment) =>
           client.deleteModelRoute({
             projectId: project.projectId,
             environment,
@@ -2009,7 +2065,11 @@ export async function runCommand(
       if (globals.json) printJSON({ deleted: true });
       else
         process.stdout.write(
-          "Removed model route from development and production.\n",
+          `Removed model route${
+            project.environmentMode === "legacy"
+              ? " from development and production"
+              : ""
+          }.\n`,
         );
       return;
     }
@@ -2020,8 +2080,9 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -2090,8 +2151,9 @@ export async function runCommand(
     const action = args.shift();
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -2227,7 +2289,7 @@ export async function runCommand(
   if (command === "database") {
     const action = args.shift();
     const projectReference = option(args, "--project");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     const parameters = options(args, "--parameter").map(databaseParameter);
     const sql = args.shift();
     if (action !== "query" || !sql || args.length) {
@@ -2236,6 +2298,7 @@ export async function runCommand(
       );
     }
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const result = await client.databaseQuery({
       projectId: project.projectId,
       environment,
@@ -2250,9 +2313,10 @@ export async function runCommand(
   if (command === "memory") {
     const action = args.shift();
     const projectReference = option(args, "--project");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     if (!action) throw new Error(MEMORY_USAGE);
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const projectId = project.projectId;
 
     if (action === "export") {
@@ -2486,8 +2550,8 @@ export async function runCommand(
     let agentId = option(args, "--agent");
     const sessionId = option(args, "--session");
     const environmentValue = option(args, "--environment");
-    const environment = environmentValue
-      ? environmentOption(environmentValue)
+    let environment: ProjectEnvironment | undefined = environmentValue
+      ? legacyEnvironmentFilter(environmentValue)
       : undefined;
     const limitValue = option(args, "--limit");
     const limit = limitValue ? Number.parseInt(limitValue, 10) : 200;
@@ -2503,7 +2567,12 @@ export async function runCommand(
         insideProject = false;
       }
       if (insideProject) {
-        agentId = (await selectedProject(client, config)).agentId;
+        const project = await selectedProject(client, config);
+        agentId = project.agentId;
+        environment = resolveEnvironmentFilter(
+          project.environmentMode,
+          environmentValue,
+        );
       }
     }
     let cursor = "";
@@ -2540,9 +2609,10 @@ export async function runCommand(
     }
     const projectReference = option(args, "--project");
     const agentOption = option(args, "--agent");
-    const environment = environmentOption(option(args, "--environment"));
+    const environmentValue = option(args, "--environment");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const project = await selectedProject(client, config, projectReference);
+    const environment = environmentOption(environmentValue, project.environmentMode);
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -2609,13 +2679,13 @@ export async function runCommand(
         project,
         session.agent,
       );
-      const agent = developmentAgentReference(agentId);
-      // Sessions from the CLI run on Development, so its memory is bound.
+      const agent = developmentAgentReference(agentId, project.environmentMode);
+      // Sessions from the CLI run on the working environment, so its memory is bound.
       const documents =
         session.createDocuments && session.memory
           ? await ensureMemoryDocuments(client, {
               projectId: project.projectId,
-              environment: "development",
+              environment: workingEnvironment(project.environmentMode),
               bindings: session.memory,
             })
           : [];

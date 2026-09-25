@@ -1068,7 +1068,7 @@ export const getModelAccessBindings = (projectId: string) =>
 export const putModelAccessBinding = (
   projectId: string,
   provider: 'anthropic' | 'openai',
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
   enabled: boolean,
 ) =>
   apiFetch(
@@ -1080,7 +1080,7 @@ export const putModelAccessBinding = (
 export const deleteModelAccessBinding = (
   projectId: string,
   provider: 'anthropic' | 'openai',
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) =>
   apiFetch<void>(
     `/v3/projects/${encodeURIComponent(projectId)}/model-access/bindings/${provider}/${environment}`,

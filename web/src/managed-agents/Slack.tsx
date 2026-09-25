@@ -68,7 +68,7 @@ import {
 } from './slack-setup'
 import { ManagedSlackWizard } from './SlackWizard'
 
-type Environment = 'development' | 'production'
+type Environment = 'default' | 'development' | 'production'
 
 /**
  * Slack's consent page opens in this tab. The platform brings the browser
