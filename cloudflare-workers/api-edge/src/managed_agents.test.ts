@@ -3509,6 +3509,16 @@ describe("managed agents proxy", () => {
         artifact: "build-12",
         checks: [{ name: "lint", userId: "x" }],
       },
+      identity: {
+        projectId: "prj_test",
+        environment: "development",
+        agentId: "worker",
+        deploymentId: "worker:digest",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        messageId: "msg-1",
+        toolCallId: "call-1",
+      },
     };
     const row = {
       id: "session-1",

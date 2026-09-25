@@ -135,7 +135,7 @@ insufficient_credits`.
 | `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
-| `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
+| `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data, identity }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting; `identity` is that call's full [invocation identity](/agents/tools#invocation-identity) (project, environment, agent, deployment, session, turn, message and call), absent only on a result committed before it was recorded. A failed or cancelled turn never clears it. |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 

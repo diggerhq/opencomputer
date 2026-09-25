@@ -397,13 +397,48 @@ export type ModelSelection =
 
 export type ToolInputSchema = Readonly<Record<string, unknown>>;
 
+/**
+ * Where a tool call ran, as OpenComputer recorded it. Every field is assigned
+ * by the platform from its own state when the call is dispatched, never read
+ * from the model's arguments, the prompt, or session input, and the object is
+ * frozen for the whole call. The same tuple is on the call's `tool.*` events
+ * and, for the result tool, on the session's `result`, so a receiver can bind
+ * an effect to exactly one project, environment, agent, deployment, session,
+ * turn, message and tool call. A field of the same name inside `input` is
+ * whatever the model wrote: data, not identity.
+ */
+export interface ToolInvocationIdentity {
+  /** The project the agent belongs to. */
+  readonly projectId: string;
+  /** The environment the session runs in. */
+  readonly environment: "development" | "production";
+  /** The cloud agent, the same id the Management API uses. */
+  readonly agentId: string;
+  /** The immutable deployment pinned to the session when it was created. */
+  readonly deploymentId: string;
+  readonly sessionId: string;
+  /** The turn admitted by the platform that this call belongs to. */
+  readonly turnId: string;
+  /** The assistant message that emitted this call. */
+  readonly messageId: string;
+  /** This tool call, the `callId` of its events. */
+  readonly toolCallId: string;
+}
+
 export interface ToolExecutionContext {
   readonly input: Record<string, unknown>;
+  /**
+   * The platform-assigned identity of this call. The top-level `sessionId`,
+   * `messageId`, `toolCallId` and `agentId` below are the same values, kept
+   * for tools written before `identity` existed.
+   */
+  readonly identity: ToolInvocationIdentity;
   readonly sessionId: string;
   /** The assistant message that emitted this call. */
   readonly messageId: string;
   /** The host-assigned id of this tool call, unique within the session. */
   readonly toolCallId: string;
+  /** The cloud agent; the same as `identity.agentId`. */
   readonly agentId: string;
   readonly signal?: AbortSignal;
   reportProgress(metadata: Readonly<Record<string, DataValue>>): Promise<void>;
