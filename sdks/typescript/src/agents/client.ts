@@ -241,6 +241,9 @@ export class WorkspaceArtifacts {
    */
   async download(exportId: string, options: DownloadWorkspaceArtifactOptions = {}): Promise<WorkspaceArtifactDownload> {
     const response = await this.http.open("GET", `/workspace-artifact-exports/${segment(exportId)}/content`, "*/*", {
+      // The bytes are hashed as served; a transparently re-encoded body would
+      // lose Content-Length. Browsers ignore this header, which is harmless.
+      headers: { "accept-encoding": "identity" },
       signal: options.signal,
     });
     const sha256 = header(response, "x-opencomputer-artifact-sha256").toLowerCase();

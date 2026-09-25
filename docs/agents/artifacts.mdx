@@ -182,8 +182,10 @@ curl 'https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports
 ```
 
 The response body is the snapshot, byte for byte, streamed as it is read:
-no transformation, no compression you did not ask for and no redirect to
-another URL. The API key on the request is the only credential involved; the
+no transformation, no compression and no redirect to another URL. The
+response is marked `Cache-Control: no-transform`, so `Content-Length` and the
+digest always describe the bytes you receive, whatever `Accept-Encoding` your
+client sends. The API key on the request is the only credential involved; the
 platform never hands out a URL that can be opened without it.
 
 | Header | |

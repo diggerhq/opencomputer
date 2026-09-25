@@ -233,7 +233,9 @@ test("download writes the exact bytes to the file only after the digest checks o
   const paths: string[] = [];
   context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     paths.push(route(input));
-    assert.equal(new Headers(init?.headers).get("x-api-key"), "test");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("x-api-key"), "test");
+    assert.equal(headers.get("accept-encoding"), "identity");
     return contentResponse();
   });
   const directory = await mkdtemp(join(tmpdir(), "opencomputer-artifact-"));

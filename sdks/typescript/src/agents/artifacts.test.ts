@@ -197,6 +197,7 @@ describe("oc.sessions.artifacts", () => {
     expect(download).toMatchObject({ bytes: content.byteLength, sha256, mediaType: "application/json", artifactId: "art_1", exportId: "aexp_1" });
     expect(await readAll(download.stream)).toEqual(content);
     expect(api.last().headers.accept).toBe("*/*");
+    expect(api.last().headers["accept-encoding"]).toBe("identity");
     expect(api.last().headers["x-api-key"]).toBe("osb_test");
   });
 

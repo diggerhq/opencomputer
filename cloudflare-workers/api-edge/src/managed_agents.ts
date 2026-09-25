@@ -558,7 +558,12 @@ async function artifactExportResponse(
 ): Promise<Response> {
   if (!upstream.ok) return artifactExportErrorResponse(upstream);
   if (isArtifactExportContentRoute(method, suffix)) {
-    const headers = new Headers({ "cache-control": "private, no-store" });
+    // no-transform keeps intermediaries (including Cloudflare's own
+    // compression) from re-encoding the bytes and dropping Content-Length,
+    // which clients verify against the digest.
+    const headers = new Headers({
+      "cache-control": "private, no-store, no-transform",
+    });
     for (const name of ARTIFACT_CONTENT_RESPONSE_HEADERS) {
       const value = upstream.headers.get(name);
       if (value) headers.set(name, value);

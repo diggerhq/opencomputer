@@ -1544,7 +1544,10 @@ export class OpenComputerClient {
     try {
       response = await this.response(
         `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}/content`,
-        { headers: { accept: "*/*" }, signal: controller.signal },
+        {
+          headers: { accept: "*/*", "accept-encoding": "identity" },
+          signal: controller.signal,
+        },
       );
     } finally {
       clearTimeout(headersTimeout);

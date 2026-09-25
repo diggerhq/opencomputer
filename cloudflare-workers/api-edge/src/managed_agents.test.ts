@@ -5081,7 +5081,12 @@ describe("managed agents proxy", () => {
       );
       expect(response.headers.get("x-opencomputer-artifact-id")).toBe("art_1");
       expect(response.headers.get("x-opencomputer-export-id")).toBe("aexp_1");
-      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      // no-transform: the CDN must not re-encode the body, which would drop
+      // Content-Length and break the client's size/digest verification.
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-store, no-transform",
+      );
+      expect(response.headers.get("content-encoding")).toBeNull();
       expect(response.headers.get("location")).toBeNull();
       expect(response.headers.get("x-upstream-storage")).toBeNull();
       expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
