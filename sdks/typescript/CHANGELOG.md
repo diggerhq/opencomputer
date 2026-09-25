@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0
+
+- `@opencomputer/sdk/agents`: `sessions.events.page(id, { after, wait, limit, turn })` returns the event page with `cursor` (`requestedAfter`, `nextAfter`, `highWatermark`), `session` and `turn` terminal state and `waitExpired`; `wait` holds the read open for up to 30 seconds for a newer event. `sessions.events.list` accepts the same query and still returns the events array.
+- `@opencomputer/sdk/agents`: event subscriptions accept an HTTPS destination, `{ type: "https", url }`; `create` and the new `rotateSecret` return `signingSecret` once; `pause` and `resume` are new. `projects.eventDeliveries.list`, `.get` and `.replay` read and replay delivery records. `verifyEventDelivery`, `signEventDelivery`, `eventSigningInput`, `parseEventDelivery` and `EVENT_DELIVERY_HEADERS` implement the documented receiver-side verification. `TurnOutcomeDelivery` gains `deliveryId` for an HTTPS destination.
+
 ## 2.1.2
 
 - `@opencomputer/sdk/agents`: the transport called `fetch` as a method of the client, which a native fetch refuses with `Illegal invocation` in workerd; it is now called as a plain function. Found by the Development proof of a Worker without Node compatibility. No API change.

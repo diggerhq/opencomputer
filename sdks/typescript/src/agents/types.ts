@@ -358,6 +358,39 @@ export type SessionEventType = SessionEvent["type"];
 export interface ListEventsQuery {
   /** Return events with a greater `seq`; start at 0. */
   after?: number;
+  /**
+   * Seconds to hold the request open for an event newer than `after`, at
+   * most 30. Default 0: answer at once. An empty page after the wait is a
+   * normal answer with `waitExpired: true`.
+   */
+  wait?: number;
+  /** Events per page, 1 to 1000; default 500. */
+  limit?: number;
+  /** The turn `EventPage.turn` describes; default the running or most recent turn. */
+  turn?: string;
+}
+
+/**
+ * One page of a session's event log with where it stands: `events` ascending
+ * by `seq`, the cursor to continue from, and whether the session and turn
+ * have reached a terminal state — so a reader knows when to stop without a
+ * separate session read.
+ */
+export interface EventPage {
+  events: SessionEvent[];
+  cursor?: {
+    /** The `after` the page was read with. */
+    requestedAfter: number;
+    /** Pass as the next `after`: the last `seq` of the page, or `requestedAfter` when empty. */
+    nextAfter: number;
+    /** The highest `seq` committed when the page was formed. */
+    highWatermark: number;
+  };
+  session?: { status: SessionStatus; terminal: boolean };
+  /** The turn the page is about; `null` when the session has none. */
+  turn?: { id: string; status: TurnStatus; terminal: boolean } | null;
+  /** True when `wait` elapsed without a newer event. */
+  waitExpired?: boolean;
 }
 
 // ── Projects, agents and deployments ──────────────────────────────────────────

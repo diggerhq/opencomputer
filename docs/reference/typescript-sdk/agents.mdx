@@ -116,7 +116,8 @@ its contents affect application correctness or access.
 | `sessions.interrupt(id)` | `POST /sessions/<id>/interrupt` | The session |
 | `sessions.setLabels(id, { set?, unset? })` | `PATCH /sessions/<id>/labels` | The session |
 | `sessions.turns.send(id, params)` | `POST /sessions/<id>/turns` | `{ turnId, status, duplicate }` |
-| `sessions.events.list(id, { after? })` | `GET /sessions/<id>/events` | The events with `seq` greater than `after`, up to 500 |
+| `sessions.events.list(id, { after?, wait?, limit?, turn? })` | `GET /sessions/<id>/events` | The events with `seq` greater than `after`, up to 500 |
+| `sessions.events.page(id, { after?, wait?, limit?, turn? })` | `GET /sessions/<id>/events` | `{ events, cursor, session, turn, waitExpired }`: the same events with the page's cursor and the terminal state of the session and turn |
 | `sessions.startOnDocument(params)` | `PUT` the document, then `POST /sessions` | `{ document, session }` with `created` on each |
 
 `create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`
@@ -169,6 +170,24 @@ Each read returns up to 500 events. Continue immediately while catching up;
 when a read is empty, wait before polling again. A cursor skips earlier
 events; it does not reconstruct state you have discarded. See
 [Session events](/agents/events) for payloads and replay.
+
+`events.page` returns the page with its metadata, and `wait` holds the read
+open for up to 30 seconds until a newer event arrives, so a loop needs no
+sleep and no separate session read to know when the turn is over:
+
+```typescript
+let after = 0;
+for (;;) {
+  const page = await oc.sessions.events.page(session.id, { after, wait: 30 });
+  for (const event of page.events) apply(event);
+  after = page.cursor?.nextAfter ?? after;
+  if (page.turn?.terminal) break;
+}
+```
+
+An expired wait is an empty page with `waitExpired: true`, not an error;
+read `after` from `cursor.nextAfter` and continue. See
+[Waiting for the next event](/agents/events#waiting-for-the-next-event).
 
 `sessions.get(id)` returns the latest typed result, if the agent has reported
 one. Results retain their turn provenance and can outlive later work; see
@@ -295,8 +314,19 @@ Bodies, the document object and the error codes are on
 | `projects.eventSubscriptions.list(p)` | `GET /projects/<p>/event-subscriptions` |
 | `projects.eventSubscriptions.get(p, id)` | `GET /projects/<p>/event-subscriptions/<id>` |
 | `projects.eventSubscriptions.delete(p, id)` | `DELETE /projects/<p>/event-subscriptions/<id>` |
+| `projects.eventSubscriptions.pause(p, id)`, `.resume(p, id)` | `POST /projects/<p>/event-subscriptions/<id>/pause`, `.../resume` |
+| `projects.eventSubscriptions.rotateSecret(p, id)` | `POST /projects/<p>/event-subscriptions/<id>/rotate-secret` |
+| `projects.eventDeliveries.list(p, id, { status?, sessionId?, after?, limit? })` | `GET /projects/<p>/event-subscriptions/<id>/deliveries` |
+| `projects.eventDeliveries.get(p, id, deliveryId)` | `GET /projects/<p>/event-subscriptions/<id>/deliveries/<deliveryId>` |
+| `projects.eventDeliveries.replay(p, id, selection)` | `POST /projects/<p>/event-subscriptions/<id>/replay` |
 
-The shapes are on [Event subscriptions](/agents/api#event-subscriptions).
+`destination` is `{ type: "session", sessionId }` or
+`{ type: "https", url }`. `create` and `rotateSecret` return the
+subscription with `signingSecret` for an HTTPS destination, shown on that
+call only. The subpath also exports `verifyEventDelivery` and
+`parseEventDelivery` for the receiving side; see
+[Event delivery](/agents/event-delivery). The shapes are on
+[Event subscriptions](/agents/api#event-subscriptions).
 
 ### GitHub repositories
 
@@ -324,5 +354,8 @@ and results. The memory types (`MemoryDocument`, `MemoryBindings`,
 `SessionMemoryBinding`, `MemoryResourceInventory`, the document bodies,
 `MemorySavedEvent`, `MemoryErrorCode`) and the event subscription types
 (`EventSubscription`, `CreateEventSubscriptionBody`, `OutcomeEvent`,
-`EventInput`, `TurnOutcomeDelivery`, `EventSubscriptionErrorCode`) are
-exported from the same place.
+`EventInput`, `TurnOutcomeDelivery`, `EventSubscriptionErrorCode`), the
+event page (`EventPage`) and the delivery types (`HttpsDestination`,
+`EventDelivery`, `EventDeliveryPage`, `EventDeliveryEnvelope`,
+`EventDeliveryStatus`, `ListEventDeliveriesQuery`,
+`ReplayEventDeliveriesSelection`) are exported from the same place.

@@ -324,17 +324,28 @@ curl 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/even
   -H 'x-api-key: <api-key>'
 ```
 
-`GET /sessions/<id>/events?after=<seq>` returns `{ events }`: up to 500
-events with `seq` greater than `after`, in ascending order. Each event is
+`GET /sessions/<id>/events?after=<seq>` returns `{ events, cursor,
+session, turn, waitExpired }`: up to 500 events with `seq` greater than
+`after`, in ascending order, with the page's position and the terminal
+state of the session and its current turn. Each event is
 `{ id, seq, timestamp, sessionId, turnId, type, data }`; `turnId` is absent
 on session-level events.
 
-To read a whole log, start at `after=0` and repeat with the last `seq` you
-received until a page is empty. A full page means more may follow; read on
-without waiting. To follow a live session, keep polling from the last
-`seq`; the CLI's `sessions tail` and `useAgent` do exactly this. The log is
-durable, so a consumer that stops can resume from its cursor and miss nothing.
-Event types and their `data` are listed on [Session events](/agents/events).
+| Query | Meaning |
+| --- | --- |
+| `after` | Return events with a greater `seq`; default `0` |
+| `wait` | Seconds to hold the request for an event newer than `after`, at most `30`; default `0`. An expired wait is `200` with `waitExpired: true` |
+| `limit` | Events per page, `1` to `1000`; default `500` |
+| `turn` | The turn `turn` describes; default the running turn, else the most recent |
+
+To read a whole log, start at `after=0` and repeat with `cursor.nextAfter`
+until it equals `cursor.highWatermark`. To follow a live session, read with
+`wait` from the last cursor and stop when `session.terminal` (or the turn
+you follow) is true; the CLI's `sessions tail` and `useAgent` follow the
+log this way. The log is durable, so a consumer that stops can resume from
+its cursor and miss nothing. At most 32 requests may wait on one session
+at once; a further one is `429 too_many_waiters`. Field meanings and
+event types are on [Session events](/agents/events#waiting-for-the-next-event).
 
 ## Memory
 
@@ -392,18 +403,25 @@ curl 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/webh
 ## Event subscriptions
 
 An event subscription delivers the recorded outcome of turns run by agents
-in a project to a session in the same project, as a new turn of that
-session. It is how one agent learns that another finished: a coordinator
-subscribes to its workers' outcomes and reasons about them when they arrive.
-Destinations are sessions only; there is no public HTTPS destination, and
-this is not the [outbound webhooks](/agents/webhooks) feature.
+in a project to a destination: a session in the same project, as a new turn
+of that session, or an HTTPS endpoint of your application, as a signed
+request. The first is how one agent learns that another finished: a
+coordinator subscribes to its workers' outcomes and reasons about them when
+they arrive. The second is described on
+[Event delivery](/agents/event-delivery); this is not the
+[agent webhooks](/agents/webhooks) feature, which is inbound.
 
 | Operation | Method and path | Success |
 | --- | --- | --- |
-| Create | `POST /projects/<p>/event-subscriptions` | `201` with `{ subscription }` |
+| Create | `POST /projects/<p>/event-subscriptions` | `201` with `{ subscription }`, plus `signingSecret` once for an HTTPS destination |
 | List | `GET /projects/<p>/event-subscriptions` | `200` with `{ subscriptions }` |
 | Get | `GET /projects/<p>/event-subscriptions/<id>` | `200` with `{ subscription }` |
 | Delete | `DELETE /projects/<p>/event-subscriptions/<id>` | `204`; pending deliveries stop |
+| Pause, resume | `POST /projects/<p>/event-subscriptions/<id>/pause`, `.../resume` | `200` with `{ subscription }`; HTTPS destinations only |
+| Rotate secret | `POST /projects/<p>/event-subscriptions/<id>/rotate-secret` | `200` with `{ subscription, signingSecret }`; HTTPS destinations only |
+| Deliveries | `GET /projects/<p>/event-subscriptions/<id>/deliveries` | `200` with `{ deliveries, nextCursor? }`; HTTPS destinations only |
+| Delivery | `GET /projects/<p>/event-subscriptions/<id>/deliveries/<deliveryId>` | `200` with `{ delivery }` |
+| Replay | `POST /projects/<p>/event-subscriptions/<id>/replay` | `202` with `{ deliveries }` |
 
 ```bash
 curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project-id>/event-subscriptions' \
@@ -421,16 +439,19 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project-
 | --- | --- |
 | `agentId` | Optional. Outcomes of this agent only; omitted, every agent in the project. |
 | `events` | One or more of `turn.completed`, `turn.failed`, `turn.cancelled`. Turn outcomes, not session ends. |
-| `destination` | `{ type: "session", sessionId }`: a session of an agent in this project that can still take turns. |
-| `environment` | `development` or `production`. A subscription is scoped to one environment: it selects outcomes recorded there and its destination session runs there. |
+| `destination` | `{ type: "session", sessionId }`: a session of an agent in this project that can still take turns. Or `{ type: "https", url }`: an absolute `https://` URL without credentials or fragment; see [Event delivery](/agents/event-delivery). |
+| `environment` | `development` or `production`. A subscription is scoped to one environment: it selects outcomes recorded there, and its destination receives only those. |
 
-A subscription is immutable; `{ subscription }` carries `id`, `projectId`,
-the fields above and `createdAt`. Codes: `400 invalid_event_subscription`,
+A subscription's selection and destination are immutable; `{ subscription }`
+carries `id`, `projectId`, the fields above, `createdAt` and, for an HTTPS
+destination, `status` (`active` or `paused`), `updatedAt` and
+`secretRotatedAt`. Codes: `400 invalid_event_subscription`,
 `403 project_scope_violation` (the agent is outside the project),
 `404 destination_session_not_found`, `409 destination_session_ended`,
-`404 event_subscription_not_found`.
+`404 event_subscription_not_found`, `404 event_delivery_not_found`,
+`400 invalid_deliveries_query`, `400 invalid_replay`.
 
-### Delivery and receipts
+### Delivery to a session
 
 When a selected turn settles, the source session records one delivery per
 matching subscription and starts a turn on the destination session with
@@ -456,6 +477,11 @@ when the subscription is deleted or the destination has ended.
 The delivered event names identifiers and the outcome; a completed turn's
 final message is included, bounded to 16 KB. The receiving agent should
 treat that text as data about another agent's work, not as instructions.
+
+For an HTTPS destination, the entry in the source session's `deliveries`
+records that the event was handed to delivery and carries `deliveryId`, the
+id of the record the subscription's `deliveries` routes track through its
+attempts; see [Event delivery](/agents/event-delivery#delivery-state).
 
 ## Projects, agents and deployments
 

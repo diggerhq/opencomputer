@@ -11,6 +11,7 @@
 // as a JSON value; its content belongs to the application.
 
 import type { EventSubscription, OutcomeEventType, TurnOutcomeDelivery } from "./event-subscriptions.js";
+import type { EventDelivery, EventDeliveryPage } from "./event-delivery.js";
 import type {
   MemoryDocument,
   MemoryDocumentMeta,
@@ -202,16 +203,20 @@ export const sessionResult: Shape<SessionResult> = object({
 const outcomeEventType: Shape<OutcomeEventType> = oneOf("turn.completed", "turn.failed", "turn.cancelled");
 
 const sessionDestination = object({ type: oneOf("session"), sessionId: string });
+const httpsDestination = object({ type: oneOf("https"), url: string });
+const eventSubscriptionDestination: Shape<EventSubscription["destination"]> = (value, path) =>
+  anyRecord(value, path).type === "https" ? httpsDestination(value, path) : sessionDestination(value, path);
 
 const turnOutcomeDelivery: Shape<TurnOutcomeDelivery> = object({
   id: string,
   subscriptionId: string,
   eventId: string,
   eventType: outcomeEventType,
-  destination: sessionDestination,
+  destination: eventSubscriptionDestination,
   status: oneOf("pending", "delivered", "failed"),
   attempt: number,
   receipt: optional(object({ sessionId: string, turnId: string })),
+  deliveryId: optional(string),
   nextAttemptAt: optional(string),
   error: optional(oneOf("subscription_unavailable", "target_missing", "target_ended", "delivery_failed")),
   updatedAt: string,
@@ -322,6 +327,15 @@ export const sessionEvent: Shape<SessionEvent> = object({
 
 export const eventsPage = object({ events: array(sessionEvent) });
 
+/** The page with its long-poll metadata, present on responses that carry it. */
+export const eventPage = object({
+  events: array(sessionEvent),
+  cursor: optional(object({ requestedAfter: number, nextAfter: number, highWatermark: number })),
+  session: optional(object({ status: stringAs<SessionStatus>(), terminal: boolean })),
+  turn: optional(nullable(object({ id: string, status: stringAs<TurnStatus>(), terminal: boolean }))),
+  waitExpired: optional(boolean),
+});
+
 // ── Projects, agents and deployments ──────────────────────────────────────────
 
 const projectEnvironment: Shape<ProjectEnvironment> = object({
@@ -405,12 +419,45 @@ export const eventSubscription: Shape<EventSubscription> = object({
   agentId: optional(string),
   environment: optional(environment),
   events: array(outcomeEventType),
-  destination: sessionDestination,
+  destination: eventSubscriptionDestination,
+  status: optional(oneOf("active", "paused")),
+  secretRotatedAt: optional(string),
   createdAt: string,
+  updatedAt: optional(string),
 });
 
 export const eventSubscriptionsPage = object({ subscriptions: array(eventSubscription) });
-export const eventSubscriptionEnvelope = object({ subscription: eventSubscription });
+export const eventSubscriptionEnvelope = object({ subscription: eventSubscription, signingSecret: optional(string) });
+
+export const eventDelivery: Shape<EventDelivery> = object({
+  id: string,
+  subscriptionId: string,
+  projectId: string,
+  environment,
+  agentId: string,
+  sessionId: string,
+  turnId: string,
+  eventId: string,
+  eventType: outcomeEventType,
+  sequence: number,
+  occurredAt: string,
+  status: oneOf("pending", "delivered", "failed"),
+  attempt: number,
+  nextAttemptAt: optional(string),
+  lastAttemptAt: optional(string),
+  responseStatus: optional(number),
+  error: optional(string),
+  deliveredAt: optional(string),
+  replayOf: optional(string),
+  createdAt: string,
+  updatedAt: string,
+});
+
+export const eventDeliveryPage: Shape<EventDeliveryPage> = object({
+  deliveries: array(eventDelivery),
+  nextCursor: optional(string),
+});
+export const eventDeliveryEnvelope = object({ delivery: eventDelivery });
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 

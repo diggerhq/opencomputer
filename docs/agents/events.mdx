@@ -25,16 +25,63 @@ Each event is one JSON object:
 | `data` | Fields specific to the type |
 
 `seq` is the cursor. A read with `after=<seq>` returns events with a greater
-`seq`, in ascending order, up to 500 at a time; repeat from the last `seq`
-you received until a page is empty, and keep polling from there to follow a
-live session. Because the log is durable and `seq` only grows, a consumer
-that stops can resume from its cursor without missing anything, and a page
-that overlaps one already read is harmless: apply events whose `seq` is
-greater than what you have applied. The React hook and the CLI work this
-way.
+`seq`, in ascending order, up to 500 at a time (`limit` raises that to
+1000); repeat from `cursor.nextAfter` until you reach the high-watermark,
+and keep reading from there to follow a live session. Because the log is
+durable and `seq` only grows, a consumer that stops can resume from its
+cursor without missing anything, and a page that overlaps one already read
+is harmless: apply events whose `seq` is greater than what you have
+applied. The React hook and the CLI work this way.
 
 Events at or below the cursor never change. New types can appear; treat an
 unknown type as informational and keep reading.
+
+## Waiting for the next event
+
+A read may wait for an event instead of answering empty. `wait=<seconds>`
+holds the request open for up to that long, at most 30 seconds, until an
+event newer than `after` is recorded or the session ends; a page that is
+already non-empty, a full page and a terminal session all answer at once.
+A wait that expires is a normal `200` with `events: []` and
+`waitExpired: true`, not an error. Cancelling the request on your side
+ends only the request; the session and its turn are unaffected.
+
+```http
+GET /sessions/{sessionId}/events?after=32&wait=30&limit=500
+```
+
+Every response, waited or not, carries the page's position and the terminal
+state of the session and of one turn alongside the unchanged `events`:
+
+```json
+{
+  "events": [],
+  "cursor": { "requestedAfter": 32, "nextAfter": 32, "highWatermark": 32 },
+  "session": { "status": "running", "terminal": false },
+  "turn": { "id": "turn_01...", "status": "running", "terminal": false },
+  "waitExpired": true
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `cursor.requestedAfter` | The `after` the page was read from |
+| `cursor.nextAfter` | The `seq` of the last event on the page, or `requestedAfter` when the page is empty; read the next page from here |
+| `cursor.highWatermark` | The highest `seq` recorded when the response was formed. `nextAfter < highWatermark` means more is already waiting; read on without `wait` |
+| `session.status`, `session.terminal` | The session's status, and whether it is `ended` or `failed`: no further events will be recorded |
+| `turn` | The turn the page describes: the running turn, else the most recent one, or the one named by `?turn=<id>`. `null` before the first turn. `terminal` is true once its status is `completed`, `failed` or `cancelled` |
+| `waitExpired` | `true` when a `wait` ran out without a newer event |
+
+A consumer following one turn stops once `turn.terminal` is true and
+`nextAfter` equals `highWatermark`; one following the whole session stops
+on `session.terminal`. Read `turn` and `session` from the same response as
+the events: they describe the state at `highWatermark`, so a page can end
+with the turn still running while the metadata already says it finished,
+and the terminal event is then on the next page.
+
+At most 32 requests may wait on one session at a time; a further `wait`
+is `429 too_many_waiters` and a read without `wait` still answers. One
+waiting request per consumer per session is the intended pattern.
 
 ## Event types
 
