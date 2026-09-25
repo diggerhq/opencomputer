@@ -3094,9 +3094,9 @@ describe("managed agents proxy", () => {
           deploymentId: "dep-1",
           status: "idle",
           turns: [],
-          runtime,
-          retention,
-          compute: { released: true, generation: 2 },
+          runtime: { ...runtime, sandboxId: "sbx-secret", releaseReason: "probe_failed" },
+          retention: { ...retention, bucket: "s3://private" },
+          compute: { released: true, generation: 2, microvmId: "mvm-1", host: "10.0.0.9" },
           runtimeEpoch: 7,
           createdAt: "2026-09-25T00:00:00.000Z",
           updatedAt: "2026-09-25T00:10:00.000Z",
@@ -3115,7 +3115,7 @@ describe("managed agents proxy", () => {
     );
     expect(inspected.status).toBe(200);
     const snapshot = (await inspected.json()) as Record<string, unknown>;
-    expect(snapshot.runtime).toEqual(runtime);
+    expect(snapshot.runtime).toEqual({ ...runtime, releaseReason: "unknown" });
     expect(snapshot.retention).toEqual(retention);
     expect(snapshot).not.toHaveProperty("runtimeEpoch");
 
@@ -3132,7 +3132,7 @@ describe("managed agents proxy", () => {
       id: "session-1",
       status: "idle",
       updatedAt: "2026-09-25T00:10:00.000Z",
-      runtime,
+      runtime: { ...runtime, releaseReason: "unknown" },
       compute: { released: true, generation: 2 },
     });
   });
