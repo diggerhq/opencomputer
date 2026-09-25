@@ -330,8 +330,7 @@ export interface ManagedSessionPage {
 export type MemoryEnvironment = "development" | "production";
 
 export type MemoryWriter =
-  | { kind: "owner" }
-  | { kind: "agent"; sessionId: string };
+  { kind: "owner" } | { kind: "agent"; sessionId: string };
 
 /** One document's metadata, as the list route returns it (no text). */
 export interface MemoryDocumentMeta {
@@ -432,6 +431,26 @@ export class OpenComputerClient {
     private readonly idempotencyKey?: string,
   ) {}
 
+  /**
+   * The caller's key scoped to one operation. Extra `parts` distinguish
+   * operations that share a URL but target different resources (one export
+   * per workspace path), so a stable key still retries each of them.
+   */
+  private derivedIdempotencyKey(
+    method: string,
+    path: string,
+    ...parts: string[]
+  ): string {
+    const hash = createHash("sha256")
+      .update(this.idempotencyKey ?? "")
+      .update("\0")
+      .update(method)
+      .update("\0")
+      .update(path);
+    for (const part of parts) hash.update("\0").update(part);
+    return hash.digest("hex");
+  }
+
   private async response(
     path: string,
     init: RequestInit = {},
@@ -454,23 +473,19 @@ export class OpenComputerClient {
     // backend compares under that key. Hashing the body in would make a
     // retry with different inputs a new operation instead of the conflict
     // the key promises.
-    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
-      headers.set(
-        "idempotency-key",
-        createHash("sha256")
-          .update(this.idempotencyKey)
-          .update("\0")
-          .update(method)
-          .update("\0")
-          .update(path)
-          .digest("hex"),
-      );
+    if (
+      this.idempotencyKey &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !headers.has("idempotency-key")
+    ) {
+      headers.set("idempotency-key", this.derivedIdempotencyKey(method, path));
     }
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+      signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
@@ -1390,4 +1405,132 @@ export class OpenComputerClient {
       { method: "POST" },
     );
   }
+
+  private workspacePath(sessionId: string, suffix: string) {
+    return `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace${suffix}`;
+  }
+
+  /** Every file under the session's /workspace, across all list pages. */
+  async workspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+    const files: WorkspaceFile[] = [];
+    let cursor: string | null = null;
+    do {
+      const query: string = cursor
+        ? `?cursor=${encodeURIComponent(cursor)}`
+        : "";
+      const page: WorkspaceFilePage = await this.request<WorkspaceFilePage>(
+        this.workspacePath(sessionId, `/files${query}`),
+      );
+      files.push(...page.files);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return files;
+  }
+
+  async workspaceArtifacts(sessionId: string): Promise<WorkspaceArtifact[]> {
+    const result = await this.request<{ artifacts: WorkspaceArtifact[] }>(
+      this.workspacePath(sessionId, "/exports"),
+    );
+    return result.artifacts;
+  }
+
+  /** Provider-side export: retains and hashes the file, returns its manifest. */
+  async exportWorkspaceFile(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceArtifact> {
+    const result = await this.request<{
+      export?: WorkspaceExport;
+      artifact: WorkspaceArtifact | null;
+    }>(this.workspacePath(sessionId, "/exports"), {
+      method: "POST",
+      body: JSON.stringify({ path }),
+      ...(this.idempotencyKey
+        ? {
+            headers: {
+              "idempotency-key": this.derivedIdempotencyKey(
+                "POST",
+                this.workspacePath(sessionId, "/exports"),
+                path,
+              ),
+            },
+          }
+        : {}),
+    });
+    if (!result.artifact) {
+      throw new APIError(
+        `Export of ${path} is still in progress (${result.export?.id ?? "unknown export"}); retry shortly`,
+        202,
+        "export_in_progress",
+      );
+    }
+    return result.artifact;
+  }
+
+  /**
+   * Raw bytes of a retained artifact; callers verify size and SHA-256. The
+   * request always carries the one-hour deadline, combined with `signal`.
+   */
+  workspaceArtifactContent(
+    artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    return this.response(
+      this.workspacePath(
+        artifact.sessionId,
+        `/exports/${encodeURIComponent(artifact.id)}/content`,
+      ),
+      { signal: workspaceContentSignal(signal) },
+    );
+  }
 }
+
+/** Large artifacts stream for a while; the default 30 s budget is for JSON. */
+export const WORKSPACE_CONTENT_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** The one-hour content deadline, also aborting when `signal` does. */
+export function workspaceContentSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(WORKSPACE_CONTENT_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export type WorkspaceFile = {
+  path: string;
+  size: number;
+  lastModified: string | null;
+  etag: string | null;
+};
+
+type WorkspaceFilePage = {
+  files: WorkspaceFile[];
+  nextCursor: string | null;
+};
+
+export type WorkspaceExport = {
+  id: string;
+  sessionId: string;
+  path: string;
+  state: "snapshotting" | "delivered" | "failed" | "expired";
+  idempotencyKey: string | null;
+  artifactId: string | null;
+  error: { code: string; message: string; retrySafe: boolean } | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type WorkspaceArtifact = {
+  id: string;
+  exportId?: string;
+  sessionId: string;
+  path: string;
+  size: number;
+  sha256: string;
+  mediaType?: string;
+  snapshotId?: string;
+  receipt: {
+    etag: string | null;
+    sourceEtag: string | null;
+    sourceVersionId: string | null;
+  };
+  exportedAt: string;
+};

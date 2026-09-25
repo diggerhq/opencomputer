@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Bot, Clock3, Loader2, TerminalSquare } from 'lucide-react'
+import {
+  ArrowLeft,
+  Bot,
+  Clock3,
+  FolderDown,
+  Loader2,
+  TerminalSquare,
+} from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -19,6 +26,7 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
+import { SessionFiles } from './SessionFiles'
 import {
   turnAssistantText,
   turnFailureReason,
@@ -33,9 +41,9 @@ export default function ManagedSessionDetail() {
   const { projectId = '', sessionId = '' } = useParams()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
-  const [activeTab, setActiveTab] = useState<'conversation' | 'events'>(
-    'conversation',
-  )
+  const [activeTab, setActiveTab] = useState<
+    'conversation' | 'events' | 'files'
+  >('conversation')
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId),
@@ -201,6 +209,15 @@ export default function ManagedSessionDetail() {
             {events.data?.length ?? 0}
           </span>
         </Button>
+        <Button
+          role="tab"
+          aria-selected={activeTab === 'files'}
+          variant={activeTab === 'files' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('files')}
+        >
+          <FolderDown className="size-3.5" /> Files
+        </Button>
       </div>
 
       {activeTab === 'conversation' ? (
@@ -284,6 +301,11 @@ export default function ManagedSessionDetail() {
             )}
           </PanelContent>
         </Panel>
+      ) : activeTab === 'files' ? (
+        <SessionFiles
+          sessionId={session.data.id}
+          live={session.data.status !== 'ended'}
+        />
       ) : (
         <Panel>
           <PanelHeader>

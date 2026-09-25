@@ -528,6 +528,8 @@ function PlaygroundChat({
       <DebugInspector
         events={debugEvents.data ?? events}
         deploymentId={session?.deploymentId}
+        sessionId={liveSessionId}
+        sessionLive={agentWorking}
       />
     </div>
   )

@@ -9,11 +9,20 @@ import { APIError, OpenComputerClient } from "./api.js";
 // second resource instead of the conflict the key promises.
 test("mutations derive idempotency headers from the caller's key and the target only", async (context) => {
   const requests: Request[] = [];
-  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    return Response.json({ id: "project", agents: [], environments: [], session: { id: "ses" } });
-  });
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return Response.json({
+        id: "project",
+        agents: [],
+        environments: [],
+        session: { id: "ses" },
+      });
+    },
+  );
   const client = new OpenComputerClient(
     { apiUrl: "https://app.opencomputer.dev", apiKey: "test" },
     "retry-42",
@@ -25,13 +34,54 @@ test("mutations derive idempotency headers from the caller's key and the target 
   await client.createSession("muse@development");
   await client.projects();
 
-  const keys = requests.map((request) => request.headers.get("idempotency-key"));
+  const keys = requests.map((request) =>
+    request.headers.get("idempotency-key"),
+  );
   assert.ok(keys[0]);
   assert.equal(keys[0], keys[1]);
   assert.equal(keys[0], keys[2], "a different body is the same operation");
-  assert.notEqual(keys[0], keys[3], "a different target is a different operation");
+  assert.notEqual(
+    keys[0],
+    keys[3],
+    "a different target is a different operation",
+  );
   assert.equal(keys[4], null, "reads carry no key");
   assert.equal(keys[0]?.includes("retry-42"), false);
+});
+
+test("workspace exports derive one idempotency key per workspace path", async (context) => {
+  const requests: Request[] = [];
+  const artifact = {
+    id: "wsart_1",
+    sessionId: "ses",
+    path: "a.txt",
+    size: 1,
+    sha256: "0".repeat(64),
+    receipt: { etag: null, sourceEtag: null, sourceVersionId: null },
+    exportedAt: "2026-09-10T12:00:00.000Z",
+  };
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return Response.json({ export: null, artifact });
+    },
+  );
+  const client = new OpenComputerClient(
+    { apiUrl: "https://app.opencomputer.dev", apiKey: "test" },
+    "retry-42",
+  );
+  await client.exportWorkspaceFile("ses", "a.txt");
+  await client.exportWorkspaceFile("ses", "a.txt");
+  await client.exportWorkspaceFile("ses", "b.txt");
+  const keys = requests.map((request) =>
+    request.headers.get("idempotency-key"),
+  );
+  assert.ok(keys[0]);
+  assert.equal(keys[0], keys[1], "same path retries under the same key");
+  assert.notEqual(keys[0], keys[2], "each path is its own export operation");
 });
 
 test("memory documents travel with their ETag and send it back as a precondition", async (context) => {
@@ -48,12 +98,17 @@ test("memory documents travel with their ETag and send it back as a precondition
     updatedAt: "2026-09-10T12:00:00.000Z",
     writer: { kind: "owner" },
   };
-  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    if (request.method === "DELETE") return new Response(null, { status: 204 });
-    return Response.json(document, { headers: { etag: '"rev-1"' } });
-  });
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "DELETE")
+        return new Response(null, { status: 204 });
+      return Response.json(document, { headers: { etag: '"rev-1"' } });
+    },
+  );
   const client = new OpenComputerClient({
     apiUrl: "https://app.opencomputer.dev",
     apiKey: "test",
@@ -72,8 +127,16 @@ test("memory documents travel with their ETag and send it back as a precondition
   });
   assert.equal(created.etag, '"rev-1"');
   assert.equal(created.document.revision, "rev-1");
-  await client.replaceMemoryDocument({ ...target, etag: created.etag, text: "Node 22" });
-  await client.patchMemoryDocument({ ...target, etag: created.etag, agentWrites: "disabled" });
+  await client.replaceMemoryDocument({
+    ...target,
+    etag: created.etag,
+    text: "Node 22",
+  });
+  await client.patchMemoryDocument({
+    ...target,
+    etag: created.etag,
+    agentWrites: "disabled",
+  });
   await client.deleteMemoryDocument({ ...target, etag: created.etag });
   await client.memoryDocuments({ ...target, cursor: "c2" });
 
@@ -108,7 +171,12 @@ test("memory documents travel with their ETag and send it back as a precondition
 test("memory precondition failures surface the API's code", async (context) => {
   context.mock.method(globalThis, "fetch", async () =>
     Response.json(
-      { error: { code: "precondition_failed", message: "The document changed." } },
+      {
+        error: {
+          code: "precondition_failed",
+          message: "The document changed.",
+        },
+      },
       { status: 412 },
     ),
   );
@@ -199,7 +267,8 @@ test("model connections and routes use write-only connection input and project r
     async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       requests.push(request);
-      if (request.method === "DELETE") return new Response(null, { status: 204 });
+      if (request.method === "DELETE")
+        return new Response(null, { status: 204 });
       if (request.url.endsWith("/model-access/connections")) {
         return Response.json({
           id: "mac_scx",
@@ -264,14 +333,26 @@ test("model connections and routes use write-only connection input and project r
 
 test("database queries use the project read endpoint with positional parameters", async (context) => {
   let request: Request | undefined;
-  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    request = new Request(input, init);
-    return Response.json({
-      environment: "production",
-      result: { columns: ["id"], rows: [{ id: 7 }], rowsAffected: 0, truncated: false },
-    });
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      request = new Request(input, init);
+      return Response.json({
+        environment: "production",
+        result: {
+          columns: ["id"],
+          rows: [{ id: 7 }],
+          rowsAffected: 0,
+          truncated: false,
+        },
+      });
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
   });
-  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" });
 
   const result = await client.databaseQuery({
     projectId: "prj_1",
@@ -282,7 +363,10 @@ test("database queries use the project read endpoint with positional parameters"
 
   assert.deepEqual(result.rows, [{ id: 7 }]);
   assert.ok(request);
-  assert.equal(request.url, "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/database/query");
+  assert.equal(
+    request.url,
+    "https://app.opencomputer.dev/api/managed-agents/projects/prj_1/database/query",
+  );
   assert.equal(request.method, "POST");
   assert.deepEqual(await request.json(), {
     environment: "production",
