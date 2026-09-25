@@ -272,8 +272,8 @@ download's `exportId`, `artifactId`, `mediaType`, `bytes`, `sha256` and
 ## SDK
 
 ```typescript
-import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
+import { rename, rm } from "node:fs/promises";
 import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { OpenComputer, WorkspaceArtifactIntegrityError } from "@opencomputer/sdk/agents";
@@ -294,13 +294,18 @@ const done = await oc.sessions.artifacts.waitUntilTerminal(requested.id, {
 });
 if (done.state !== "delivered") throw new Error(done.error?.code ?? done.state);
 
+// Write to a temporary path and move it into place only once the
+// stream has ended without an integrity error, so an unverified file
+// is never left at `target`.
 const download = await oc.sessions.artifacts.download(done.id);
+const partial = `${target}.part`;
 try {
-  await pipeline(download.stream, Writable.toWeb(createWriteStream(target)));
+  await pipeline(download.stream, Writable.toWeb(createWriteStream(partial, { flags: "wx" })));
+  await rename(partial, target);
 } catch (error) {
+  await rm(partial, { force: true });
   if (error instanceof WorkspaceArtifactIntegrityError) {
-    // error.code is artifact_digest_mismatch or artifact_size_mismatch;
-    // discard whatever was written.
+    // error.code is artifact_digest_mismatch or artifact_size_mismatch.
   }
   throw error;
 }
