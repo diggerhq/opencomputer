@@ -14,6 +14,7 @@ import {
   Package,
   Plug,
   Rocket,
+  Settings,
   Webhook,
   type LucideIcon,
 } from 'lucide-react'
@@ -98,6 +99,11 @@ export function managedAgentsNav(options: {
             to: `${projectPath}/byok`,
             label: 'BYOK',
             icon: BrainCircuit,
+          },
+          {
+            to: `${projectPath}/settings`,
+            label: 'Settings',
+            icon: Settings,
           },
           {
             to: projectPath,

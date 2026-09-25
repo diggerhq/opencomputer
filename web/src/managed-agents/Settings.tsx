@@ -34,12 +34,33 @@ import {
   removeManagedDeploymentSource,
   removeManagedPreview,
   setManagedDeploymentSource,
+  type ManagedDeploymentSourceRepository,
   type ManagedGitBuild,
 } from './api'
 import { launchAuthorizationWindow } from './authorization-window'
 
 const selectClassName =
   'border-input bg-background h-9 min-w-48 rounded-md border px-3 text-sm disabled:opacity-50'
+
+const REPOSITORY_PAGE_LIMIT = 20
+
+async function listAllRepositories(input: {
+  projectId: string
+  connectionId: string
+}): Promise<{ repositories: ManagedDeploymentSourceRepository[] }> {
+  const repositories: ManagedDeploymentSourceRepository[] = []
+  let cursor: string | null = null
+  for (let page = 0; page < REPOSITORY_PAGE_LIMIT; page++) {
+    const result = await listManagedDeploymentSourceRepositories({
+      ...input,
+      cursor,
+    })
+    repositories.push(...result.repositories)
+    cursor = result.nextCursor
+    if (!cursor) break
+  }
+  return { repositories }
+}
 
 function shortSha(sha: string): string {
   return sha.slice(0, 7)
@@ -61,7 +82,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
         (build) => build.state === 'queued' || build.state === 'building',
       )
         ? 3_000
-        : false,
+        : 30_000,
   })
   const connections = useQuery({
     queryKey: ['managed-github-connections'],
@@ -87,8 +108,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
 
   const repositories = useQuery({
     queryKey: ['managed-deployment-source-repos', projectId, connectionId],
-    queryFn: () =>
-      listManagedDeploymentSourceRepositories({ projectId, connectionId }),
+    queryFn: () => listAllRepositories({ projectId, connectionId }),
     enabled: configuring && Boolean(connectionId),
   })
   const repositoryOptions = repositories.data?.repositories ?? []

@@ -920,7 +920,7 @@ export default function ManagedAgentDetail({
                 projectContextSearch(
                   location.search,
                   event.target.value || undefined,
-                  environment,
+                  activeTab === 'playground' ? playgroundAlias : environment,
                 ),
               )
               search.delete('session')
