@@ -107,6 +107,8 @@ Usage:
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]
   opencomputer deploy [--alias development|production] [--watch]
+  opencomputer deployments capabilities <deployment-id> [--digest sha256:...]
+  opencomputer deployments readiness <deployment-id>
   opencomputer run <agent> <prompt> [--keep]
 
 Global options:

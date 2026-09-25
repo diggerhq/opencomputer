@@ -52,6 +52,7 @@ import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
+import { runDeploymentsCommand } from "./deployment-commands.js";
 import { CLIError } from "./errors.js";
 import {
   createSessionWithMemory,
@@ -1233,6 +1234,11 @@ export async function runCommand(
         );
       }
     }
+    return;
+  }
+
+  if (command === "deployments" || command === "deployment") {
+    await runDeploymentsCommand(client, args, globals.json);
     return;
   }
 

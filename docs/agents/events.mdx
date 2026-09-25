@@ -42,7 +42,7 @@ unknown type as informational and keep reading.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
+| `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId`, `manifestDigest` (the deployment's [capability manifest](/agents/deployments#capability-manifest) digest) |
 | `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
 | `session.ended` | The session accepts no more turns; queued and running turns were marked cancelled. Memory revocation and remote cleanup may still be pending. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
@@ -206,7 +206,7 @@ work continued or failed; see [Durability and recovery](/agents/sessions#durabil
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `agent.rendered` | Your agent function was rendered for a model step | `renderId`, `instructions`, `model`, `enabledTools`, `enabledSubagents`, `enabledMcpServers`, `requiredConnections`, `input`, `tools`, `renderedAt` |
+| `agent.rendered` | Your agent function was rendered for a model step | `renderId`, `instructions`, `model`, `enabledTools`, `enabledSubagents`, `enabledMcpServers`, `requiredConnections`, `input`, `tools`, `renderedAt`, `manifestDigest` |
 
 One turn can carry several renders, one per model step. The debug inspector
 in the [playground](/agents/playground) shows the same data.

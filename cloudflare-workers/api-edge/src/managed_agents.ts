@@ -1,4 +1,12 @@
 import { getAutumnCustomer } from "./autumn_webhook";
+import {
+  CAPABILITIES_ROUTE,
+  READINESS_ROUTE,
+  capabilityDeclarationsFromArtifact,
+  publicCapabilityManifest,
+  publicManifestDigestVerifies,
+  publicReadinessReceipt,
+} from "./deployment_capabilities";
 
 export interface ManagedAgentsEnv {
   MANAGED_AGENTS_API_URL?: string;
@@ -105,6 +113,30 @@ export async function mintManagedAgentsAssertion(
     encoder.encode(signingInput),
   );
   return `${signingInput}.${b64url(signature)}`;
+}
+
+/**
+ * The only part of a capability-declaration refusal the edge repeats: the
+ * declaration's location, matched against a fixed grammar. The rest of the
+ * message is composed here, so nothing the backend (or a rejected value that
+ * leaked into its message) says reaches the caller verbatim.
+ */
+const CAPABILITY_LOCATION =
+  /^capabilities\.((?:tools|resultSchemas|skills|mcpServers|subagents)(?:\[\d*\])?(?:\.(?:id|toolId|name|path|connection|origin|schema))?)(?![A-Za-z0-9_])/;
+
+function capabilityDeclarationMessage(
+  code: string,
+  backendMessage: string,
+): string {
+  const location = CAPABILITY_LOCATION.exec(backendMessage)?.[1];
+  const where = location ? ` at capabilities.${location}` : "";
+  if (code === "capabilities_too_large") {
+    return `A capability declaration${where} exceeds the platform's declaration bounds.`;
+  }
+  if (backendMessage.includes("shaped like a credential")) {
+    return `A capability declaration${where} is shaped like a credential; declarations are published with the deployment and may not carry secrets.`;
+  }
+  return `A capability declaration${where} is not a valid identifier, path or origin.`;
 }
 
 function copyRequestHeaders(request: Request): Headers {
@@ -225,7 +257,10 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : "The agent request was invalid.";
+        : backendCode === "invalid_capabilities" ||
+            backendCode === "capabilities_too_large"
+          ? capabilityDeclarationMessage(backendCode, backendMessage)
+          : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -266,7 +301,10 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
         ? "Insufficient prepaid credits. Top up or enable automatic top-up."
         : "The agent request requires additional prepaid credits.";
   } else if (upstream.status >= 500) {
-    message = "The agent service is temporarily unavailable.";
+    message =
+      backendCode === "capabilities_unavailable"
+        ? "The deployment's capability manifest is not available yet. Retry shortly."
+        : "The agent service is temporarily unavailable.";
   }
   const headers = new Headers({ "content-type": "application/json" });
   const retryAfter = upstream.headers.get("retry-after");
@@ -1696,6 +1734,12 @@ function publicSuccessBody(
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) {
     return publicDeployment(body);
   }
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) {
+    return publicCapabilityManifest(body);
+  }
+  if (method === "POST" && READINESS_ROUTE.test(suffix)) {
+    return publicReadinessReceipt(body);
+  }
   if (method === "GET" && suffix === "/connections") {
     return {
       connections: Array.isArray(body.connections)
@@ -1863,6 +1907,27 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) {
+    // The digest customers verify against must be the digest of the manifest
+    // they receive. Refuse to serve one that no longer verifies after the
+    // public projection rather than hand out an unverifiable pair.
+    if (!(await publicManifestDigestVerifies(publicCapabilityManifest(value)))) {
+      return Response.json(
+        {
+          error: {
+            code: "capability_manifest_unverifiable",
+            message:
+              "The deployment's capability manifest could not be verified against its digest.",
+          },
+        },
+        { status: 502, headers: { "cache-control": "no-store" } },
+      );
+    }
+    const etag = upstream.headers.get("etag");
+    if (etag) headers.set("etag", etag);
+    const digest = upstream.headers.get("x-opencomputer-manifest-digest");
+    if (digest) headers.set("x-opencomputer-manifest-digest", digest);
+  }
   if (
     suffix.includes("/webhooks") ||
     suffix.includes("/event-subscriptions") ||
@@ -1990,6 +2055,7 @@ async function deploySourceAgent(
       "The agent artifact contains an invalid reactive model registry.",
     );
   }
+  const capabilities = capabilityDeclarationsFromArtifact(source.body);
 
   const uploadHeaders = new Headers(upstreamHeaders);
   uploadHeaders.set("content-type", "application/json");
@@ -2053,6 +2119,7 @@ async function deploySourceAgent(
         : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,
+      ...(capabilities ? { capabilities } : {}),
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
         : {}),
@@ -2168,6 +2235,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) return true;
+  if (method === "POST" && READINESS_ROUTE.test(suffix)) return true;
   if (method === "GET" && suffix === "/outboxes") return true;
   if (method === "GET" && suffix === "/schedules") return true;
   if (method === "GET" && suffix === "/schedule-runs") return true;
