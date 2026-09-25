@@ -396,20 +396,40 @@ export class APIError extends Error {
     readonly status: number,
     /** The typed reason from `{ error: { code } }` when the API sent one. */
     readonly code?: string,
+    /** Where the human can resolve the error (e.g. billing checkout). */
+    readonly actionUrl?: string,
   ) {
     super(message);
   }
 }
 
-function errorCode(body: unknown): string | undefined {
-  if (body && typeof body === "object") {
-    const error = (body as Record<string, unknown>).error;
-    if (error && typeof error === "object") {
-      const code = (error as Record<string, unknown>).code;
-      if (typeof code === "string") return code;
-    }
+// The API sends typed fields either nested under `error: { code, ... }`
+// (managed-agents routes) or flat beside a string `error` (sandbox routes).
+function errorField(body: unknown, field: string): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  const error = record.error;
+  if (error && typeof error === "object") {
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "string") return value;
   }
-  return undefined;
+  const flat = record[field];
+  return typeof flat === "string" ? flat : undefined;
+}
+
+function errorCode(body: unknown): string | undefined {
+  return errorField(body, "code");
+}
+
+export interface CreditsStatus {
+  usagePlan: "base" | "pro" | "max";
+  creditsRemainingCents: number;
+  lowCreditThresholdCents: number;
+  isLow: boolean;
+  isHalted: boolean;
+  billingUrl: string;
+  upgradeUrl: string;
+  plans: Array<{ id: "pro" | "max"; priceUsd: number; creditsUsd: number }>;
 }
 
 function errorMessage(body: unknown, status: number): string {
@@ -493,6 +513,7 @@ export class OpenComputerClient {
         errorMessage(body, response.status),
         response.status,
         errorCode(body),
+        errorField(body, "upgradeUrl") ?? errorField(body, "actionUrl"),
       );
     }
     return response;
@@ -507,6 +528,18 @@ export class OpenComputerClient {
     if (response.status === 204) return undefined as T;
     const body: unknown = await response.json().catch(() => undefined);
     return body as T;
+  }
+
+  /** Prepaid credit status; `null` for orgs without a credit meter (legacy billing). */
+  async credits(): Promise<CreditsStatus | null> {
+    try {
+      return await this.request<CreditsStatus>("/api/billing/credits");
+    } catch (error) {
+      if (error instanceof APIError && (error.status === 404 || error.status === 503)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   startLogin() {

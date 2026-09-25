@@ -11,6 +11,13 @@ import {
   type MemoryDocumentMeta,
 } from "./api.js";
 import { login, logout } from "./auth.js";
+import {
+  creditsFooter,
+  creditsSummary,
+  fetchCredits,
+  formatBilling,
+  upgradeUrlFor,
+} from "./billing.js";
 import { codexLogin } from "./codex-oauth.js";
 import { resolveConfig } from "./config.js";
 import {
@@ -1183,6 +1190,39 @@ export async function runCommand(
     return;
   }
 
+  if (command === "billing" || command === "credits") {
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await client.credits();
+    if (globals.json) printJSON(status);
+    else if (!status) {
+      process.stdout.write(
+        `This organization is not on prepaid credits. Manage billing at ${config.apiUrl}/billing\n`,
+      );
+    } else process.stdout.write(formatBilling(status));
+    return;
+  }
+
+  if (command === "upgrade") {
+    const plan = args.shift() ?? "pro";
+    if (plan !== "pro" && plan !== "max") {
+      throw new Error("Usage: opencomputer upgrade [pro|max]");
+    }
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await fetchCredits(client);
+    const url = upgradeUrlFor(status, config.apiUrl, plan);
+    if (globals.json) {
+      printJSON({ plan, url, credits: creditsSummary(status) });
+    } else {
+      const offer = status?.plans.find((p) => p.id === plan);
+      process.stdout.write(
+        `Open this link to upgrade to ${plan === "pro" ? "Pro" : "Max"}` +
+          (offer ? ` ($${offer.priceUsd}/mo, $${offer.creditsUsd.toLocaleString("en-US")} in credits every month)` : "") +
+          `:\n\n  ${url}\n\nCheckout completes in the browser; the CLI resumes working as soon as the plan is active.\n`,
+      );
+    }
+    return;
+  }
+
   if (command === "init") {
     const spa = flag(args, "--spa");
     const agentOnly = flag(args, "--agent-only");
@@ -1362,7 +1402,17 @@ export async function runCommand(
       globals.verbose === true,
       globals.idempotencyKey,
     );
-    if (globals.json) printJSON(result);
+    const credits = await fetchCredits(client);
+    if (globals.json) {
+      const summary = creditsSummary(credits);
+      printJSON(
+        summary
+          ? { ...(result as Record<string, unknown>), credits: summary }
+          : result,
+      );
+    } else {
+      process.stderr.write(creditsFooter(credits));
+    }
     return;
   }
 

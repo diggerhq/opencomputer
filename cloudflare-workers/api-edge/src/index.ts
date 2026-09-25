@@ -76,6 +76,7 @@ import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
 } from "./managed_agent_credit_gate";
+import { handleCreditsStatus, insufficientCreditsLegacyResponse } from "./billing_onramp";
 export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
@@ -1390,6 +1391,7 @@ async function refreshOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | nu
 // (inherit the checkpoint's value or the default), so size gates skip it —
 // the defaults are always within limits.
 async function enforceCreatePolicy(
+  req: Request,
   env: Env,
   orgID: string,
   org: OrgPolicy,
@@ -1405,13 +1407,13 @@ async function enforceCreatePolicy(
   // pay per GB-second); only the per-org max_disk_mb cap applies.
   if (org.billing_provider === "autumn") {
     if (org.is_halted === 1 && (await selfHealHalt(env, orgID))) {
-      return json({ error: "credits exhausted — top up to resume" }, 402);
+      return insufficientCreditsLegacyResponse(req);
     }
   } else if (plan === "free") {
     // Legacy free-tier gate. is_halted is the D1 fast path; otherwise ask the
     // CreditAccount DO for an authoritative balance read. Pro orgs skip this.
     if (org.is_halted === 1) {
-      return json({ error: "free trial credits exhausted — upgrade to resume" }, 402);
+      return insufficientCreditsLegacyResponse(req);
     }
     const doStub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(orgID));
     const checkResp = await doStub.fetch(`https://do/check?org_id=${encodeURIComponent(orgID)}`, { method: "POST" });
@@ -1422,7 +1424,7 @@ async function enforceCreatePolicy(
     }
     const check = await checkResp.json<{ allowed: boolean; balance_cents: number }>();
     if (!check.allowed) {
-      return json({ error: "free trial credits exhausted — upgrade to resume", balance_cents: check.balance_cents }, 402);
+      return insufficientCreditsLegacyResponse(req, { balance_cents: check.balance_cents });
     }
   }
 
@@ -2152,7 +2154,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // them concurrently — under a burst these were two serial D1 round-trips
   // (~90ms) sitting on the create hot path.
   const [gate, cell] = await Promise.all([
-    enforceCreatePolicy(env, caller.orgID, org, {
+    enforceCreatePolicy(req, env, caller.orgID, org, {
       cpuCount: bodyCpuCount,
       memoryMB: bodyMemoryMB,
       diskMB: bodyDiskMB,
@@ -3372,10 +3374,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
       const stillHalted =
         haltRow.billing_provider === "autumn" ? await selfHealHalt(env, caller.orgID) : true;
       if (stillHalted) {
-        return json(
-          { error: "org is halted — upgrade to pro or wait for credit refill" },
-          402,
-        );
+        return insufficientCreditsLegacyResponse(req);
       }
     }
   }
@@ -5585,7 +5584,7 @@ export default {
         // previously ungated at the edge and leaned on a cell-side concurrent
         // check that read stale cell PG and could only ever count one cell's
         // sandboxes — wrong once an org spans cells. Enforce from D1 here.
-        const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
+        const fcGate = await enforceCreatePolicy(req, env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
         // org.runtime, deliberately NOT the SDK-version routing createSandbox
@@ -5737,6 +5736,14 @@ export default {
     // /api/whoami — return the authenticated caller's org (+ user). Lets a
     // trusted service resolve an osb_ key to its OC org without custodying it
     // (agent-sandbox-ownership Phase 0.5: sessions-api maps osb_ → oc-org:<id>).
+    // /api/billing/credits — API-key credit status for the CLI (plan, balance,
+    // low-balance flag, checkout deep links). See billing_onramp.ts.
+    if (path === "/api/billing/credits" && req.method === "GET") {
+      const caller = await authenticate(req, env, ctx);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      return handleCreditsStatus(req, env, caller);
+    }
+
     if (path === "/api/whoami" && req.method === "GET") {
       const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);

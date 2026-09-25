@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { MessagesSquare, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { useHalted } from '@/hooks/useHalted'
+import { useCreditState } from '@/hooks/useCreditState'
+import { billingOnrampV2Enabled } from '@/lib/billing-onramp'
 import { getSessions, getAgents, createSession, ApiError } from '@/api/client'
 import type { Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -38,7 +39,13 @@ import {
 export default function Sessions() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const halted = useHalted() // out of credits → gate starting a session (out-of-credits doc, B3)
+  // out of credits → gate starting a session (out-of-credits doc, B3)
+  const { isHalted: halted } = useCreditState()
+  const haltedTitle = halted
+    ? billingOnrampV2Enabled
+      ? 'Out of credits — upgrade to Pro or top up to resume'
+      : 'Out of credits — top up to resume'
+    : undefined
   const { data, isLoading } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => getSessions(),
@@ -202,11 +209,7 @@ export default function Sessions() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
         }}
         actions={
-          <Button
-            onClick={openStart}
-            disabled={halted}
-            title={halted ? 'Out of credits — top up to resume' : undefined}
-          >
+          <Button onClick={openStart} disabled={halted} title={haltedTitle}>
             <Plus className="size-4" />
             Start session
           </Button>
@@ -229,9 +232,7 @@ export default function Sessions() {
                   size="sm"
                   onClick={openStart}
                   disabled={halted}
-                  title={
-                    halted ? 'Out of credits — top up to resume' : undefined
-                  }
+                  title={haltedTitle}
                 >
                   <Plus className="size-4" />
                   Start session

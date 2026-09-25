@@ -13,7 +13,14 @@ import {
 } from 'lucide-react'
 import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import { notifyError } from '@/lib/errors'
-import { useHalted } from '@/hooks/useHalted'
+import { useCreditState } from '@/hooks/useCreditState'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
+import {
+  PLAN_OFFERS,
+  billingOnrampV2Enabled,
+  trackUpsellClicked,
+  upgradeHref,
+} from '@/lib/billing-onramp'
 import {
   getSession,
   getSessionSources,
@@ -127,7 +134,8 @@ type LevelFilter = (typeof LEVELS)[number]['value']
 export default function SessionDetail() {
   const { sessionId = '' } = useParams()
   const queryClient = useQueryClient()
-  const halted = useHalted() // top-level: must run before any early return (Rules of Hooks)
+  // top-level: must run before any early return (Rules of Hooks)
+  const { isHalted: halted, usagePlan, upgradePlan } = useCreditState()
   const [draft, setDraft] = useState('')
   const [level, setLevel] = useState<LevelFilter>('user')
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -563,6 +571,12 @@ for await (const event of session.events()) {
         />
       </div>
 
+      <PostSessionUpsell
+        sessionId={sessionId}
+        status={status}
+        usage={session?.usage}
+      />
+
       {/* Event stream */}
       <Panel ref={eventsRef} className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
@@ -625,16 +639,41 @@ for await (const event of session.events()) {
           {halted && !archived && (
             <div className="text-destructive mb-2 flex items-center gap-1.5 text-xs">
               <CircleAlert className="size-3.5 shrink-0" />
-              <span>
-                Out of credits —{' '}
-                <Link
-                  to="/billing"
-                  className="font-medium underline underline-offset-2"
-                >
-                  top up to resume
-                </Link>
-                .
-              </span>
+              {billingOnrampV2Enabled ? (
+                <span>
+                  Out of credits —{' '}
+                  <Link
+                    to={upgradeHref(upgradePlan)}
+                    onClick={() =>
+                      trackUpsellClicked({
+                        surface: 'session_composer',
+                        plan: upgradePlan,
+                        usagePlan,
+                      })
+                    }
+                    className="font-medium underline underline-offset-2"
+                  >
+                    upgrade to {upgradePlan === 'pro' ? 'Pro' : 'Max'} ($
+                    {PLAN_OFFERS[upgradePlan].priceUsd}/mo)
+                  </Link>{' '}
+                  or{' '}
+                  <Link to="/billing" className="underline underline-offset-2">
+                    top up
+                  </Link>{' '}
+                  to resume.
+                </span>
+              ) : (
+                <span>
+                  Out of credits —{' '}
+                  <Link
+                    to="/billing"
+                    className="font-medium underline underline-offset-2"
+                  >
+                    top up to resume
+                  </Link>
+                  .
+                </span>
+              )}
             </div>
           )}
           <form
