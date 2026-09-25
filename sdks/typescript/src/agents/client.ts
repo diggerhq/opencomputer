@@ -35,9 +35,11 @@ import type {
   ListRepositoriesQuery,
   ListSessionsQuery,
   ListWebhooksQuery,
+  NetworkPolicyRevocation,
   Project,
   ProjectDetail,
   RepositoryPage,
+  RevokeNetworkPolicyParams,
   SendTurnParams,
   Session,
   SessionCreated,
@@ -175,6 +177,25 @@ export class Sessions {
     return this.http.request("POST", `/sessions/${segment(sessionId)}/interrupt`, shapes.session, {
       signal: options.signal,
     });
+  }
+
+  /**
+   * `POST /sessions/<id>/network-policy/revoke`: denies every new
+   * connection and closes the computer's egress, without waiting for the
+   * running turn. `enforcement.closed` says whether closure was confirmed.
+   * `404 egress_policy_required` when the session has no policy.
+   */
+  revokeNetworkPolicy(
+    sessionId: string,
+    params: RevokeNetworkPolicyParams = {},
+    options: CallOptions = {},
+  ): Promise<NetworkPolicyRevocation> {
+    return this.http.request(
+      "POST",
+      `/sessions/${segment(sessionId)}/network-policy/revoke`,
+      shapes.networkPolicyRevocation,
+      { body: params, signal: options.signal },
+    );
   }
 
   /** `PATCH /sessions/<id>/labels`: per-key last-write-wins. */

@@ -188,6 +188,21 @@ reconnecting and completing work. See
 | `egress.response` | The destination answered | `connectionId`, `method`, `path`, `status`, `durationMs` |
 | `egress.failed` | The request did not complete | `connectionId`, `method`, `path`, `message` |
 
+### Network policy
+
+Recorded by sessions created with a [network policy](/agents/network-policy).
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `network.policy.applied` | The session's computer installed and verified the policy before its first command | `policyId`, `policyDigest`, `state`, `enforcementVersion`, `generation`, `installations` |
+| `network.policy.reinstalled` | A replacement computer installed and verified the same policy before any resumed process could send traffic | as above |
+| `network.policy.revoked` | The policy was revoked or expired; every new connection is denied | `policyId`, `policyDigest`, `state` (`revoked` or `expired`), `reason`, `generation`; `expiresAt` on expiry |
+| `network.egress.denied` | A connection or DNS query from the computer was refused | `policyDigest`, `generation`, `reason`, `protocol`; `scheme`, `hostname`, `port` or `query` naming what was refused |
+
+Denied events carry the destination and a [reason](/agents/network-policy#events),
+never a request or response body, header or credential, and at most 32 are
+recorded per minute; the session's receipt carries the totals.
+
 ### Runtime
 
 | Type | When | `data` |
