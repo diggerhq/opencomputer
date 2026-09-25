@@ -24,7 +24,11 @@ import {
   type BuiltAgentArtifact,
   type ProjectResourceManifest,
 } from "./project.js";
-import { environmentLabel, workingEnvironment } from "./scope.js";
+import {
+  environmentLabel,
+  singleEnvironmentError,
+  workingEnvironment,
+} from "./scope.js";
 
 const DEVELOPMENT_ALIAS = "development";
 const DEBOUNCE_MS = 180;
@@ -248,7 +252,7 @@ export async function runDeploymentWatch(
   config: ResolvedConfig,
   root: string,
   options: ProjectBindingOptions = {},
-  behavior: { startWebApp?: boolean } = {},
+  behavior: { startWebApp?: boolean; requestedAlias?: string } = {},
 ): Promise<void> {
   const projectRoot = await findOpenComputerProjectRoot(root);
   const binding = await ensureProjectBinding(
@@ -257,6 +261,16 @@ export async function runDeploymentWatch(
     projectRoot,
     options,
   );
+  if (behavior.requestedAlias !== undefined) {
+    if (binding.environmentMode === "single") {
+      throw singleEnvironmentError("--alias");
+    }
+    if (behavior.requestedAlias !== "development") {
+      throw new Error(
+        "--watch deploys only to development; omit --alias or use --alias development",
+      );
+    }
+  }
   const environment = workingEnvironment(binding.environmentMode);
   const label = environmentLabel(environment);
   const agentReference = (agentId: string) => `${agentId}@${environment}`;

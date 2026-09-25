@@ -140,7 +140,12 @@ export interface ScheduleDefinitionManifest {
   agentId: string;
   cron: string;
   timezone: string;
-  enabled: Array<"development" | "production">;
+  /**
+   * Environments the schedule runs in. `production` also covers a
+   * single-environment project's `default` scope; `development` alone
+   * leaves it manual there.
+   */
+  enabled: Array<"default" | "development" | "production">;
   overlap: "skip" | "allow";
   dispatch: {
     text?: string;
@@ -565,12 +570,12 @@ function openComputerAgent() {
 
 export default defineConfig(({ command }) => {
   const dev = command === "serve" ? openComputerDev() : undefined;
+  // A bare agent id addresses the live deployment: Production for a legacy
+  // project, the single environment otherwise.
   return {
     plugins: [react()],
     define: {
-      __OPENCOMPUTER_AGENT__: JSON.stringify(
-        dev?.agent ?? \`\${openComputerAgent()}@production\`,
-      ),
+      __OPENCOMPUTER_AGENT__: JSON.stringify(dev?.agent ?? openComputerAgent()),
     },
     ...(dev ? { server: {
       proxy: {
@@ -2191,7 +2196,9 @@ function scheduleDefinition(
     !enabled.length ||
     enabled.some(
       (environment) =>
-        environment !== "development" && environment !== "production",
+        environment !== "default" &&
+        environment !== "development" &&
+        environment !== "production",
     )
   ) {
     throw new Error(`${path} enabled environments are invalid`);

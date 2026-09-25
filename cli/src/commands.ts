@@ -126,7 +126,9 @@ export function selectGitHubInstallation(
   connections: ManagedGitHubInstallation[],
   selector?: string,
 ): ManagedGitHubInstallation | undefined {
-  const active = connections.filter((connection) => connection.state === "active");
+  const active = connections.filter(
+    (connection) => connection.state === "active",
+  );
   if (selector) {
     const matches = active.filter(
       (connection) =>
@@ -147,7 +149,9 @@ export function selectGitHubInstallation(
     throw new Error(
       "More than one GitHub App connection is available. Pass --connection <id|account>.\n" +
         active
-          .map((connection) => `  ${connection.id}  @${connection.accountLogin}`)
+          .map(
+            (connection) => `  ${connection.id}  @${connection.accountLogin}`,
+          )
           .join("\n"),
     );
   }
@@ -207,7 +211,11 @@ function environmentOption(
 
 /** An `--environment` filter with no project to say what mode applies: any canonical name. */
 function legacyEnvironmentFilter(value: string): ProjectEnvironment {
-  if (value === "default" || value === "development" || value === "production") {
+  if (
+    value === "default" ||
+    value === "development" ||
+    value === "production"
+  ) {
     return value;
   }
   throw new Error("--environment must be default, development, or production");
@@ -269,10 +277,7 @@ function consumeModelAccessProvider(
     args[0] === "openai-compatible"
   ) {
     return args.shift() as
-      | "claude"
-      | "codex"
-      | "openrouter"
-      | "openai-compatible";
+      "claude" | "codex" | "openrouter" | "openai-compatible";
   }
   return "codex";
 }
@@ -1062,9 +1067,7 @@ export async function runCommand(
         projectName;
     }
     if (terminal && !confirmed) {
-      const answer = (
-        await terminal.question("Create this project? [y/N] ")
-      )
+      const answer = (await terminal.question("Create this project? [y/N] "))
         .trim()
         .toLowerCase();
       if (answer !== "y" && answer !== "yes") {
@@ -1335,19 +1338,19 @@ export async function runCommand(
       );
     }
     if (watch) {
-      if (requestedAlias && requestedAlias !== "development") {
-        throw new Error(
-          "--watch deploys to the project's working environment; omit --alias",
-        );
-      }
-      await runDeploymentWatch(client, config, root, {
-        project,
-        createProjectName,
-      });
+      await runDeploymentWatch(
+        client,
+        config,
+        root,
+        { project, createProjectName },
+        { requestedAlias },
+      );
       return;
     }
     if (createProjectName) {
-      throw new Error("--create-project requires --watch or `opencomputer link`");
+      throw new Error(
+        "--create-project requires --watch or `opencomputer link`",
+      );
     }
     const binding = await ensureProjectBinding(client, config, root, {
       project,
@@ -1434,7 +1437,10 @@ export async function runCommand(
     const agentOption = option(args, "--agent");
     const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -2082,7 +2088,10 @@ export async function runCommand(
     const agentOption = option(args, "--agent");
     const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const agentId = agentOption
       ? agentOption === "current"
         ? project.agentId
@@ -2153,7 +2162,10 @@ export async function runCommand(
     const agentOption = option(args, "--agent");
     const environmentValue = option(args, "--environment");
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const agentId = await selectedSessionAgent(
       client,
       project,
@@ -2298,7 +2310,10 @@ export async function runCommand(
       );
     }
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const result = await client.databaseQuery({
       projectId: project.projectId,
       environment,
@@ -2316,7 +2331,10 @@ export async function runCommand(
     const environmentValue = option(args, "--environment");
     if (!action) throw new Error(MEMORY_USAGE);
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const projectId = project.projectId;
 
     if (action === "export") {
@@ -2481,8 +2499,7 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const current = await client.memoryDocument(target);
       let edited:
-        | Awaited<ReturnType<typeof editMemoryTextInEditor>>
-        | undefined;
+        Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
       const text =
         supplied ??
         (edited = await editMemoryTextInEditor(
@@ -2559,15 +2576,17 @@ export async function runCommand(
       throw new Error("--limit must be between 1 and 1000");
     }
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    if (!agentId && !sessionId) {
-      let insideProject = true;
-      try {
-        await findOpenComputerProjectRoot(process.cwd());
-      } catch {
-        insideProject = false;
-      }
-      if (insideProject) {
-        const project = await selectedProject(client, config);
+    let insideProject = true;
+    try {
+      await findOpenComputerProjectRoot(process.cwd());
+    } catch {
+      insideProject = false;
+    }
+    if (insideProject && !sessionId) {
+      const project = await selectedProject(client, config);
+      // A --agent selector may point outside the linked project; its mode
+      // governs only its own agent. Sessions are validated by the server.
+      if (!agentId || agentId === project.agentId) {
         agentId = project.agentId;
         environment = resolveEnvironmentFilter(
           project.environmentMode,
@@ -2612,7 +2631,10 @@ export async function runCommand(
     const environmentValue = option(args, "--environment");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const project = await selectedProject(client, config, projectReference);
-    const environment = environmentOption(environmentValue, project.environmentMode);
+    const environment = environmentOption(
+      environmentValue,
+      project.environmentMode,
+    );
     const agentId = await selectedSessionAgent(
       client,
       project,
