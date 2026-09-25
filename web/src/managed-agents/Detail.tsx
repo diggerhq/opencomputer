@@ -642,14 +642,11 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
-  // Only the newest page polls; pages opened with "Load more" are kept as
-  // loaded, so the refresh cost does not grow with the history a user opened.
-  const newestProjectSessions = useQuery({
-    queryKey: ['managed-agent-sessions', 'project', projectId, 'newest'],
-    queryFn: () => getManagedAgentSessionsPage({ projectId }),
-    enabled: Boolean(projectId),
-    refetchInterval: 5_000,
-  })
+  // The loaded pages re-walk from the newest cursor so the chain stays
+  // contiguous and every loaded row refreshes, at an interval that grows with
+  // the page count so polling stays at roughly one request per five seconds.
+  // Once more than one page is open, a separate newest-page poll keeps the
+  // head of the list at the five-second cadence.
   const projectSessions = useInfiniteQuery({
     queryKey: ['managed-agent-sessions', 'project', projectId],
     initialPageParam: undefined as string | undefined,
@@ -660,6 +657,15 @@ export default function ManagedAgentDetail({
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      5_000 * Math.max(1, query.state.data?.pages.length ?? 1),
+  })
+  const projectSessionPageCount = projectSessions.data?.pages.length ?? 0
+  const newestProjectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId, 'newest'],
+    queryFn: () => getManagedAgentSessionsPage({ projectId }),
+    enabled: Boolean(projectId) && projectSessionPageCount > 1,
+    refetchInterval: 5_000,
   })
   const projectSessionRows = useMemo(() => {
     const seen = new Set<string>()
