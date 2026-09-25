@@ -55,6 +55,62 @@ export interface ManagedAgentDeployment {
   defaultModel?: { provider: string; model: string };
 }
 
+/** `GET /deployments/<id>/capabilities`: the immutable manifest and its digest. */
+export interface DeploymentCapabilities {
+  manifest: {
+    schema: string;
+    projectId: string | null;
+    agentId: string;
+    deploymentId: string;
+    alias?: string;
+    sourceDigest: string;
+    runtimeImageDigest: string;
+    runtimeImageVersion?: string;
+    runtimeMode?: string;
+    models: Array<{ provider: string; model: string }>;
+    defaultModel?: { provider: string; model: string } | null;
+    tools: Array<{ id: string; gated?: boolean }>;
+    resultSchemas: Array<{ toolId: string; schema: Record<string, unknown> }>;
+    skills: Array<{ name: string }>;
+    mcpServers: Array<{ id: string; origin?: string }>;
+    subagents?: string[];
+    connections: Array<{ id: string; kind: string; policy: Record<string, unknown> }>;
+    memory: Array<{ id: string }>;
+    regions: Array<{ scope: string; region: string }>;
+    lifecycleCapabilities: Record<string, unknown>;
+    egressCapabilities: Record<string, unknown>;
+    createdAt: string;
+  };
+  manifestDigest: string;
+}
+
+/** `POST /deployments/<id>/readiness`: one timestamped receipt of provider-owned checks. */
+export interface DeploymentReadinessReceipt {
+  schema: string;
+  projectId: string | null;
+  agentId: string;
+  deploymentId: string;
+  sessionId: string | null;
+  environment: "development" | "production";
+  checkedAt: string;
+  manifestDigest: string;
+  probe: {
+    mode: string;
+    executesAgentCode: boolean;
+    contactsCustomerTargets: boolean;
+  };
+  checks: Array<{
+    id: string;
+    status: "pass" | "fail" | "skip";
+    required: boolean;
+    summary: string;
+    detail: Record<string, unknown>;
+    checkedAt: string;
+    durationMs: number;
+  }>;
+  ready: boolean;
+}
+
 export interface ManagedAgentEvent {
   id: string;
   seq: number;
@@ -1055,6 +1111,21 @@ export class OpenComputerClient {
         }>;
       }
     >(`/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}`);
+  }
+
+  /** The immutable capability manifest of a deployment and its digest. */
+  deploymentCapabilities(deploymentId: string) {
+    return this.request<DeploymentCapabilities>(
+      `/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}/capabilities`,
+    );
+  }
+
+  /** Runs the provider-owned readiness checks of a deployment; no agent code runs. */
+  deploymentReadiness(deploymentId: string) {
+    return this.request<DeploymentReadinessReceipt>(
+      `/api/managed-agents/deployments/${encodeURIComponent(deploymentId)}/readiness`,
+      { method: "POST", body: "{}" },
+    );
   }
 
   async databaseQuery(input: {

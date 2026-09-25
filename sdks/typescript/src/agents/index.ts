@@ -33,6 +33,13 @@ export { OpenComputerError, type ApiErrorEnvelope, type OpenComputerErrorDetails
 export { DEFAULT_BASE_URL, type HttpOptions } from "./http.js";
 export type * from "./types.js";
 export type {
+  CapabilityManifest,
+  DeploymentCapabilities,
+  ReadinessCheck,
+  ReadinessCheckStatus,
+  ReadinessReceipt,
+} from "./deployment-capabilities.js";
+export type {
   MemoryEnvironment,
   MemoryAccess,
   MemoryAgentWrites,

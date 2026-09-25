@@ -1,4 +1,11 @@
 import { getAutumnCustomer } from "./autumn_webhook";
+import {
+  CAPABILITIES_ROUTE,
+  READINESS_ROUTE,
+  capabilityDeclarationsFromArtifact,
+  publicCapabilityManifest,
+  publicReadinessReceipt,
+} from "./deployment_capabilities";
 
 export interface ManagedAgentsEnv {
   MANAGED_AGENTS_API_URL?: string;
@@ -1696,6 +1703,12 @@ function publicSuccessBody(
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) {
     return publicDeployment(body);
   }
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) {
+    return publicCapabilityManifest(body);
+  }
+  if (method === "POST" && READINESS_ROUTE.test(suffix)) {
+    return publicReadinessReceipt(body);
+  }
   if (method === "GET" && suffix === "/connections") {
     return {
       connections: Array.isArray(body.connections)
@@ -1863,6 +1876,12 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) {
+    const etag = upstream.headers.get("etag");
+    if (etag) headers.set("etag", etag);
+    const digest = upstream.headers.get("x-opencomputer-manifest-digest");
+    if (digest) headers.set("x-opencomputer-manifest-digest", digest);
+  }
   if (
     suffix.includes("/webhooks") ||
     suffix.includes("/event-subscriptions") ||
@@ -1990,6 +2009,7 @@ async function deploySourceAgent(
       "The agent artifact contains an invalid reactive model registry.",
     );
   }
+  const capabilities = capabilityDeclarationsFromArtifact(source.body);
 
   const uploadHeaders = new Headers(upstreamHeaders);
   uploadHeaders.set("content-type", "application/json");
@@ -2053,6 +2073,7 @@ async function deploySourceAgent(
         : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,
+      ...(capabilities ? { capabilities } : {}),
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
         : {}),
@@ -2168,6 +2189,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
+  if (method === "GET" && CAPABILITIES_ROUTE.test(suffix)) return true;
+  if (method === "POST" && READINESS_ROUTE.test(suffix)) return true;
   if (method === "GET" && suffix === "/outboxes") return true;
   if (method === "GET" && suffix === "/schedules") return true;
   if (method === "GET" && suffix === "/schedule-runs") return true;

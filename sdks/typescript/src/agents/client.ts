@@ -15,6 +15,12 @@ import type {
   CreateEventSubscriptionBody,
   EventSubscription,
 } from "./event-subscriptions.js";
+import {
+  deploymentCapabilities as deploymentCapabilitiesShape,
+  readinessReceipt as readinessReceiptShape,
+  type DeploymentCapabilities,
+  type ReadinessReceipt,
+} from "./deployment-capabilities.js";
 import type {
   CreateMemoryDocumentBody,
   MemoryDocument,
@@ -485,6 +491,24 @@ export class Deployments {
       signal: options.signal,
     });
     return page.deployments;
+  }
+
+  /** `GET /deployments/<id>/capabilities`: the immutable capability manifest and its digest. */
+  capabilities(deploymentId: string, options: CallOptions = {}): Promise<DeploymentCapabilities> {
+    return this.http.request(
+      "GET",
+      `/deployments/${segment(deploymentId)}/capabilities`,
+      deploymentCapabilitiesShape,
+      { signal: options.signal },
+    );
+  }
+
+  /** `POST /deployments/<id>/readiness`: runs the provider-owned readiness checks and returns the receipt. */
+  readiness(deploymentId: string, options: CallOptions = {}): Promise<ReadinessReceipt> {
+    return this.http.request("POST", `/deployments/${segment(deploymentId)}/readiness`, readinessReceiptShape, {
+      body: {},
+      signal: options.signal,
+    });
   }
 }
 

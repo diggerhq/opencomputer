@@ -467,6 +467,8 @@ treat that text as data about another agent's work, not as instructions.
 | List agents | `GET /agents` | `200` with `{ agents }`: `id`, `name`, `activeAlias`, `activeDeploymentId`, `deploymentCount`; `activeAlias` and `activeDeploymentId` are `null` while the agent has no active deployment |
 | List deployments | `GET /deployments?agentId=<agent-id>` | `200` with `{ deployments }` |
 | Get deployment | `GET /deployments/<id>` | `200` with `id`, `agentId`, `alias`, `memory` declarations, `createdAt` |
+| Capability manifest | `GET /deployments/<id>/capabilities` | `200` with `{ manifest, manifestDigest }`; the digest is also the `ETag`. See [Capability manifest](/agents/deployments#capability-manifest) |
+| Readiness | `POST /deployments/<id>/readiness` | `200` with a [readiness receipt](/agents/deployments#readiness-receipt); `ready: false` is still `200` |
 | List GitHub repositories | `GET /projects/<p>/github/repositories?environment=<env>` | `200` with `{ repositories, nextCursor }`; see [GitHub App connections](/agents/github#list-the-repositories-an-environment-can-reach) |
 
 A project is `{ id, slug, name, environments, agents, createdAt, updatedAt }`;

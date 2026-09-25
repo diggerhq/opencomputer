@@ -51,3 +51,145 @@ contains more than one agent.
 Open the project's **Deployments** page to inspect immutable versions, their
 aliases, and creation times. Use the deployment ID when correlating a session
 with [logs](/agents/logs) or the [debug inspector](/agents/playground).
+
+## Capability manifest
+
+A deployment ID says which build was selected. The capability manifest says
+what that build declared, so an application can compare it with what a job
+needs before it starts a session.
+
+```bash
+opencomputer deployments capabilities <deployment-id> --json
+```
+
+```ts
+const { manifest, manifestDigest } = await oc.deployments.capabilities(deploymentId);
+```
+
+The answer is `{ manifest, manifestDigest }`. The manifest is derived once,
+when the deployment is created, from the compiled source and the platform's
+own configuration; it is stored with the deployment and never rewritten.
+Fetching it again returns the same bytes and the same `manifestDigest`, which
+is also returned as the `ETag` header.
+
+```json
+{
+  "schema": "opencomputer.deployment-capabilities/v1",
+  "projectId": "prj_01...",
+  "agentId": "support",
+  "deploymentId": "support:3f9c...",
+  "alias": "development",
+  "sourceDigest": "sha256:3f9c...",
+  "runtimeImageDigest": "sha256:8a1e...",
+  "runtimeImageVersion": "12",
+  "runtimeMode": "microvm",
+  "models": [{ "provider": "openrouter", "model": "anthropic/claude-sonnet-4.6", "declaredBy": "agent" }],
+  "defaultModel": { "provider": "openrouter", "model": "anthropic/claude-sonnet-4.6" },
+  "tools": [{ "id": "lookup_customer", "gated": false, "declaredBy": "agent" }],
+  "resultSchemas": [{ "toolId": "report", "schema": { "type": "object" } }],
+  "skills": [{ "name": "triage", "path": ".opencode/skills/triage" }],
+  "mcpServers": [{ "id": "docs", "origin": "https://mcp.example.com" }],
+  "subagents": [],
+  "connections": [{ "id": "crm", "kind": "http", "policy": { "origin": "https://api.crm.example", "methods": ["GET"] }, "headers": ["authorization"], "secrets": [{ "name": "CRM_TOKEN", "scope": "project" }] }],
+  "memory": [{ "id": "requirements", "description": "...", "provider": { "kind": "document", "maxBytes": 8192 } }],
+  "regions": [{ "scope": "runtime", "region": "us-east-1" }, { "scope": "workspace", "region": "us-east-1" }],
+  "lifecycleCapabilities": { "runtime": "microvm", "persistentSandbox": true, "durableWorkspace": true, "interrupt": true, "terminate": true, "gatedToolApprovals": true },
+  "egressCapabilities": { "brokered": true, "connectionOrigins": ["https://api.crm.example"], "mcpServerOrigins": ["https://mcp.example.com"] },
+  "createdAt": "2026-09-25T00:00:00.000Z"
+}
+```
+
+`manifestDigest` is `sha256:` over the canonical JSON of the manifest (keys
+sorted, no whitespace). Changing a tool, a result schema, a skill, a model or
+a connection policy in the source and deploying again produces a new
+deployment with a new digest; deploying unchanged source returns the existing
+deployment and its existing digest.
+
+What the manifest contains, and what it deliberately does not:
+
+- **Declarations, not observations.** A model in `models` is what the source
+  declared, not the route a session will use; a connection in `connections`
+  is its ID, kind and policy, not whether its credential is configured. Both
+  are answered by [readiness](#readiness-receipt).
+- **No credential material.** Connections list the header *names* they attach
+  and the *names* of the secrets they resolve, never values. MCP servers are
+  shown by origin, never by full URL. The runtime image is attested by digest,
+  never by its internal name.
+- **Explicit regions.** `regions` names where the runtime runs and where the
+  workspace and artifacts are stored, per scope.
+- **Egress is declared, not granted.** `egressCapabilities` lists the origins
+  the deployment declared; every request still passes the platform's
+  per-request checks.
+
+Every session started on the deployment carries the same digest in its
+`session.created` and `agent.rendered` [events](/agents/events), so an event
+log can be tied back to exactly the manifest it ran under. Deployments created
+before manifests existed answer with a manifest built from the deployment
+record alone: `tools`, `resultSchemas`, `skills` and `mcpServers` are empty
+until the agent is deployed again.
+
+## Readiness receipt
+
+Some properties can only be observed at a point in time: whether the model
+route resolves, whether the platform's storage is writable, whether every
+declared connection has its credential in place. The readiness probe checks
+them and returns a timestamped receipt.
+
+```bash
+opencomputer deployments readiness <deployment-id> --json
+```
+
+```ts
+const receipt = await oc.deployments.readiness(deploymentId);
+if (!receipt.ready) console.log(receipt.checks.filter((check) => check.status === "fail"));
+```
+
+```json
+{
+  "schema": "opencomputer.deployment-readiness/v1",
+  "projectId": "prj_01...",
+  "agentId": "support",
+  "deploymentId": "support:3f9c...",
+  "sessionId": null,
+  "environment": "development",
+  "checkedAt": "2026-09-25T00:05:00.000Z",
+  "manifestDigest": "sha256:...",
+  "probe": { "mode": "platform", "executesAgentCode": false, "contactsCustomerTargets": false },
+  "checks": [
+    { "id": "model.route", "status": "pass", "required": true, "summary": "...", "detail": {}, "checkedAt": "...", "durationMs": 4 }
+  ],
+  "ready": true
+}
+```
+
+| Check | What passes |
+| --- | --- |
+| `manifest.integrity` | The stored manifest still hashes to `manifestDigest` |
+| `platform.storage` | A bounded write, read and delete under an account-owned path of the platform's storage succeeded |
+| `artifact.packaged` | The deployed artifact is present, matches `sourceDigest`, and packages every declared tool, result schema and skill |
+| `model.route` | The effective route for the environment (project or agent route, or managed access) resolves to available model access; a fail-closed route to unavailable access fails |
+| `model.catalog` | Every declared model exists in the current model catalog |
+| `workspace` | The durable workspace is configured for the runtime mode |
+| `connections` | Every declared connection is configured: its secrets exist, its GitHub App installation is active, its provider account is connected |
+| `memory` | Every declared memory resource resolves to a binding in this environment |
+| `region` | The runtime and workspace regions the manifest declares are the ones the platform runs in now |
+| `lifecycle` | The runtime the deployment needs is configured here |
+
+Each check is `pass`, `fail` or `skip` with its own `checkedAt` and
+`durationMs`. `ready` is `true` when no required check failed; the response is
+`200` either way. The CLI exits non-zero on a not-ready receipt after printing
+it.
+
+Readiness runs on the platform against the deployment's configuration. It
+does not start a session, does not run your agent code, does not send any
+model input, and does not contact the targets of your connections or MCP
+servers; `probe` says so in the receipt. That also bounds what a `ready`
+receipt proves:
+
+- a tool or skill is *packaged*, not that its process started;
+- a connection is *configured*, not that its target accepts the credential;
+- the model route *resolves*, not that a particular request will be accepted.
+
+Readiness never implies authorization to reach a target. Your application
+decides whether a job may proceed by comparing the manifest and receipt with
+what the job requires.
