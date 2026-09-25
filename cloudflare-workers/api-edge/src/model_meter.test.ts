@@ -35,6 +35,10 @@ class Stmt {
     return this;
   }
   async first<T>(): Promise<T | null> {
+    if (this.sql.includes("SELECT model_settle_lease_until")) {
+      const o = this.db.orgs.get(this.args[0] as string);
+      return (o ? { model_settle_lease_until: o.model_settle_lease_until ?? 0 } : null) as T | null;
+    }
     if (this.sql.includes("FROM orgs")) return (this.db.orgs.get(this.args[0] as string) ?? null) as T | null;
     return null;
   }
@@ -190,6 +194,22 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     expect(gTrack).toHaveBeenCalledTimes(1);
     expect(db.keys[0].committed_micro).toBe(500000);
     expect(db.orgs.get("org1")?.model_settle_lease_until).toBe(0);
+  });
+
+  it("a holder that outlived its lease writes no cap once a successor took over", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 500000 }));
+    gOrKey.mockResolvedValue(orKey(0.5, 2.5));
+    // The Autumn read is slow; meanwhile the lease expires and another run takes it.
+    gCust.mockImplementation(async () => {
+      db.orgs.get("org1")!.model_settle_lease_until = Math.floor(Date.now() / 1000) + 999;
+      return { id: "org1", balances: { credits: { remaining: 2 } } };
+    });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gPatch).not.toHaveBeenCalled();
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBeGreaterThan(0); // the successor's lease is intact
   });
 
   it("a stale key row that loses the watermark claim tracks nothing", async () => {

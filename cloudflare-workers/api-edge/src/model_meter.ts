@@ -156,8 +156,20 @@ async function settleOrg(
     console.log(`model-meter: org ${orgId} is being settled elsewhere; skipping`);
     return null;
   }
+  // A holder that outlives its lease (slow provider) must not write caps once a
+  // successor has taken over: re-check ownership right before each PATCH.
+  const stillHeld = async (): Promise<boolean> => {
+    const row = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT model_settle_lease_until FROM orgs WHERE id = ?1",
+    )
+      .bind(orgId)
+      .first<{ model_settle_lease_until: number }>();
+    const held = row?.model_settle_lease_until === leaseUntil;
+    if (!held) console.warn(`model-meter: lease for org ${orgId} lost mid-settlement; caps left to the new holder`);
+    return held;
+  };
   try {
-    return await settleOrgHeld(env, org, keys);
+    return await settleOrgHeld(env, org, keys, stillHeld);
   } finally {
     await env.OPENCOMPUTER_DB.prepare(
       "UPDATE orgs SET model_settle_lease_until=0 WHERE id=?1 AND model_settle_lease_until=?2",
@@ -172,6 +184,7 @@ async function settleOrgHeld(
   env: ModelCapSyncEnv,
   org: OrgMeterRow,
   keys: ManagedModelKeyRow[],
+  stillHeld: () => Promise<boolean>,
 ): Promise<{ debited: boolean; remaining: number }> {
   const orgId = org.id;
   const bps = markupBps(env, org);
@@ -196,7 +209,7 @@ async function settleOrgHeld(
   const cust = await getAutumnCustomer(env, orgId);
   const remainingUsd = cust?.balances?.credits?.remaining;
   const remaining = typeof remainingUsd === "number" ? remainingUsd : 0;
-  await pushCaps(env, keys, usage, remaining, bps);
+  await pushCaps(env, keys, usage, remaining, bps, stillHeld);
   return { debited, remaining };
 }
 
@@ -264,6 +277,7 @@ async function pushCaps(
   usage: Map<string, { usageUsd: number; limitUsd: number | null }>,
   remainingUsd: number,
   bps: number,
+  stillHeld: () => Promise<boolean>,
 ): Promise<void> {
   const others = keys.filter((k) => k.status !== "active");
   const active = keys.find((k) => k.status === "active");
@@ -275,6 +289,7 @@ async function pushCaps(
     const cap = u.usageUsd + CAP_EPSILON_USD;
     sumEps += CAP_EPSILON_USD;
     if (u.limitUsd == null || Math.abs(u.limitUsd - cap) > CAP_MIN_DELTA_USD) {
+      if (!(await stillHeld())) return;
       await patchOrKey(env, k.or_key_hash, { limitUsd: cap }).catch((e) =>
         console.error(`model-meter: cap patch (superseded) ${k.or_key_hash} failed`, e),
       );
@@ -287,6 +302,7 @@ async function pushCaps(
       const headroom = Math.max(0, remainingUsd) / (1 + bps / 10000) - sumEps;
       const cap = Math.max(0, u.usageUsd + headroom);
       if (u.limitUsd == null || Math.abs(u.limitUsd - cap) > CAP_MIN_DELTA_USD) {
+        if (!(await stillHeld())) return;
         await patchOrKey(env, active.or_key_hash, { limitUsd: cap }).catch((e) =>
           console.error(`model-meter: cap patch (active) ${active.or_key_hash} failed`, e),
         );
