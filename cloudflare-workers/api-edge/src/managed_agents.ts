@@ -1849,6 +1849,12 @@ function publicSuccessBody(
   ) {
     return publicSessionSnapshot(body);
   }
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/network-policy\/revoke$/.test(suffix)
+  ) {
+    return stripPrivateValues(body);
+  }
   throw new Error("Unsupported managed agents response");
 }
 
@@ -2218,6 +2224,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/network-policy\/revoke$/.test(suffix)
+  ) {
     return true;
   }
   return (

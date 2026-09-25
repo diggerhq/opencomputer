@@ -3724,6 +3724,59 @@ describe("managed agents proxy", () => {
     expect(serialized).not.toMatch(/runtimeToken|accountId|org_test/);
   });
 
+  it("revokes a session's network policy and returns the receipt with the closure confirmation", async () => {
+    const receipt = {
+      policyId: "npol_1",
+      policyDigest: `sha256:${"ab".repeat(32)}`,
+      enforcementVersion: "egress-gateway/1",
+      state: "revoked",
+      declaredAt: "t",
+      revokedAt: "t2",
+      revokeReason: "window closed",
+      installations: 1,
+      counters: { connectionsAllowed: 1, connectionsDenied: 2, dnsAllowed: 1, dnsDenied: 1, bytesIn: 0, bytesOut: 0 },
+      policy: { version: 1, mode: "deny_by_default", destinations: [], exclusions: [], dns: { mode: "provider_resolver_only" } },
+    };
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        networkPolicy: receipt,
+        changed: true,
+        enforcement: { closed: true, method: "supervisor", generation: 2, microvmId: "mvm-1" },
+        accountId: "org_test",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/network-policy/revoke",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "window closed" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(target)).toBe(
+      "https://managedagents.test/v1/sessions/session-1/network-policy/revoke",
+    );
+    expect(init.method).toBe("POST");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.networkPolicy).toEqual(receipt);
+    expect(body.changed).toBe(true);
+    expect(body.enforcement).toEqual({ closed: true, method: "supervisor", generation: 2 });
+    expect(JSON.stringify(body)).not.toMatch(/accountId|org_test|microvmId/);
+  });
+
   // Public delivery slice (work 025): event subscriptions are managed under
   // the project and pass through the edge one-to-one; the backend owns the
   // body's validation, so fields this edge does not know (the environment
