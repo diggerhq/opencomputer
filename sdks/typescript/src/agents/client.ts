@@ -14,7 +14,14 @@ import {
 import type {
   CreateEventSubscriptionBody,
   EventSubscription,
+  EventSubscriptionWithSecret,
 } from "./event-subscriptions.js";
+import type {
+  EventDelivery,
+  EventDeliveryPage,
+  ListEventDeliveriesQuery,
+  ReplayEventDeliveriesSelection,
+} from "./event-delivery.js";
 import type {
   CreateMemoryDocumentBody,
   MemoryDocument,
@@ -30,6 +37,7 @@ import type {
   CreateWebhookParams,
   Deployment,
   Environment,
+  EventPage,
   ListDeploymentsQuery,
   ListEventsQuery,
   ListRepositoriesQuery,
@@ -121,11 +129,23 @@ export class Events {
    * `seq`, ascending. Repeat from the last `seq` until a page is empty.
    */
   async list(sessionId: string, query: ListEventsQuery = {}, options: CallOptions = {}): Promise<SessionEvent[]> {
-    const page = await this.http.request("GET", `/sessions/${segment(sessionId)}/events`, shapes.eventsPage, {
-      query: { after: query.after ?? 0 },
+    const page = await this.page(sessionId, query, options);
+    return page.events;
+  }
+
+  /**
+   * `GET /sessions/<id>/events?after=&wait=&limit=&turn=`: the page with its
+   * cursor and the session's and turn's terminal state. With `wait`, the
+   * request holds for up to that many seconds (at most 30) for an event
+   * newer than `after`; it answers at once when one exists or the session
+   * has ended. Continue from `cursor.nextAfter`; stop once `session.terminal`
+   * (or the turn you follow) is true and `nextAfter` equals `highWatermark`.
+   */
+  page(sessionId: string, query: ListEventsQuery = {}, options: CallOptions = {}): Promise<EventPage> {
+    return this.http.request("GET", `/sessions/${segment(sessionId)}/events`, shapes.eventPage, {
+      query: { after: query.after ?? 0, wait: query.wait, limit: query.limit, turn: query.turn },
       signal: options.signal,
     });
-    return page.events;
   }
 }
 
@@ -359,25 +379,131 @@ export class Webhooks {
   }
 }
 
-export class EventSubscriptions {
+export class EventDeliveries {
   constructor(private readonly http: Http) {}
+
+  private path(projectId: string, subscriptionId: string, deliveryId?: string): string {
+    const base = `/projects/${segment(projectId)}/event-subscriptions/${segment(subscriptionId)}/deliveries`;
+    return deliveryId === undefined ? base : `${base}/${segment(deliveryId)}`;
+  }
+
+  /** `GET .../event-subscriptions/<id>/deliveries`: oldest first; follow `nextCursor` as `after`. */
+  list(
+    projectId: string,
+    subscriptionId: string,
+    query: ListEventDeliveriesQuery = {},
+    options: CallOptions = {},
+  ): Promise<EventDeliveryPage> {
+    return this.http.request("GET", this.path(projectId, subscriptionId), shapes.eventDeliveryPage, {
+      query: { ...query },
+      signal: options.signal,
+    });
+  }
+
+  /** `GET .../event-subscriptions/<id>/deliveries/<deliveryId>`. */
+  async get(
+    projectId: string,
+    subscriptionId: string,
+    deliveryId: string,
+    options: CallOptions = {},
+  ): Promise<EventDelivery> {
+    const answer = await this.http.request(
+      "GET",
+      this.path(projectId, subscriptionId, deliveryId),
+      shapes.eventDeliveryEnvelope,
+      { signal: options.signal },
+    );
+    return answer.delivery;
+  }
+
+  /**
+   * `POST .../event-subscriptions/<id>/replay`: queues a new delivery of each
+   * selected event, with the original `eventId`, and returns them pending.
+   */
+  async replay(
+    projectId: string,
+    subscriptionId: string,
+    selection: ReplayEventDeliveriesSelection,
+    options: CallOptions = {},
+  ): Promise<EventDelivery[]> {
+    const answer = await this.http.request(
+      "POST",
+      `/projects/${segment(projectId)}/event-subscriptions/${segment(subscriptionId)}/replay`,
+      shapes.eventDeliveryPage,
+      { body: selection, signal: options.signal },
+    );
+    return answer.deliveries;
+  }
+}
+
+export class EventSubscriptions {
+  readonly deliveries: EventDeliveries;
+
+  constructor(private readonly http: Http) {
+    this.deliveries = new EventDeliveries(http);
+  }
 
   private path(projectId: string, subscriptionId?: string): string {
     const base = `/projects/${segment(projectId)}/event-subscriptions`;
     return subscriptionId === undefined ? base : `${base}/${segment(subscriptionId)}`;
   }
 
-  /** `POST /projects/<p>/event-subscriptions`. */
+  /**
+   * `POST /projects/<p>/event-subscriptions`. For an HTTPS destination the
+   * returned subscription carries its `signingSecret`, here and on
+   * `rotateSecret` only; store it.
+   */
   async create(
     projectId: string,
     params: CreateEventSubscriptionBody,
     options: CallOptions = {},
-  ): Promise<EventSubscription> {
+  ): Promise<EventSubscriptionWithSecret> {
     const answer = await this.http.request("POST", this.path(projectId), shapes.eventSubscriptionEnvelope, {
       body: params,
       signal: options.signal,
     });
+    return withSecret(answer);
+  }
+
+  /** `POST .../event-subscriptions/<id>/pause`: deliveries are recorded as pending, not attempted. HTTPS destinations only. */
+  async pause(projectId: string, subscriptionId: string, options: CallOptions = {}): Promise<EventSubscription> {
+    const answer = await this.http.request(
+      "POST",
+      `${this.path(projectId, subscriptionId)}/pause`,
+      shapes.eventSubscriptionEnvelope,
+      { signal: options.signal },
+    );
     return answer.subscription;
+  }
+
+  /** `POST .../event-subscriptions/<id>/resume`: pending deliveries are attempted again. */
+  async resume(projectId: string, subscriptionId: string, options: CallOptions = {}): Promise<EventSubscription> {
+    const answer = await this.http.request(
+      "POST",
+      `${this.path(projectId, subscriptionId)}/resume`,
+      shapes.eventSubscriptionEnvelope,
+      { signal: options.signal },
+    );
+    return answer.subscription;
+  }
+
+  /**
+   * `POST .../event-subscriptions/<id>/rotate-secret`: a new signing secret,
+   * returned once. Deliveries carry signatures under both the new and the
+   * previous secret for 24 hours.
+   */
+  async rotateSecret(
+    projectId: string,
+    subscriptionId: string,
+    options: CallOptions = {},
+  ): Promise<EventSubscriptionWithSecret> {
+    const answer = await this.http.request(
+      "POST",
+      `${this.path(projectId, subscriptionId)}/rotate-secret`,
+      shapes.eventSubscriptionEnvelope,
+      { signal: options.signal },
+    );
+    return withSecret(answer);
   }
 
   /** `GET /projects/<p>/event-subscriptions`. */
@@ -527,6 +653,13 @@ export type StartSessionOnDocumentResult = StartOnDocumentResult;
 export function startSessionOnDocument(params: StartSessionOnDocumentParams): Promise<StartSessionOnDocumentResult> {
   const { apiKey, baseUrl, fetch, ...rest } = params;
   return new OpenComputer({ apiKey, baseUrl, fetch }).sessions.startOnDocument(rest);
+}
+
+/** The subscription with the one-time signing secret the response carried, when it did. */
+function withSecret(answer: { subscription: EventSubscription; signingSecret?: string }): EventSubscriptionWithSecret {
+  return answer.signingSecret === undefined
+    ? answer.subscription
+    : { ...answer.subscription, signingSecret: answer.signingSecret };
 }
 
 /** Quotes a revision for `If-Match`, as the API returns it in `ETag`. */

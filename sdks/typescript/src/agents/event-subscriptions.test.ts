@@ -24,11 +24,13 @@ describe("event subscription types", () => {
       ...body,
       createdAt: "2026-09-10T12:00:00.000Z",
     };
-    expectTypeOf(subscription.destination.type).toEqualTypeOf<"session">();
+    expectTypeOf(subscription.destination.type).toEqualTypeOf<"session" | "https">();
     expect(subscription.events).toContain("turn.failed");
-    // @ts-expect-error a public HTTPS destination is not a destination type.
-    const https: CreateEventSubscriptionBody["destination"] = { type: "https", url: "https://example.com" };
+    const https: CreateEventSubscriptionBody["destination"] = { type: "https", url: "https://example.com/oc" };
     expect(https.type).toBe("https");
+    // @ts-expect-error a managed connection is not a destination type.
+    const connection: CreateEventSubscriptionBody["destination"] = { type: "managed_connection", connectionId: "x" };
+    expect(connection.type).toBe("managed_connection");
   });
 
   it("narrow a delivered outcome from the agent's input", () => {

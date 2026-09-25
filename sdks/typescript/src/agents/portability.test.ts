@@ -38,6 +38,7 @@ describe("@opencomputer/sdk/agents", () => {
     expect([...graph.keys()].map((file) => file.slice(here.length + 1)).sort()).toEqual([
       "client.ts",
       "errors.ts",
+      "event-delivery.ts",
       "event-subscriptions.ts",
       "http.ts",
       "index.ts",

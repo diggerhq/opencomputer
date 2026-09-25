@@ -1,0 +1,299 @@
+---
+title: "Event delivery"
+description: "Signed HTTPS delivery of turn outcomes to your application"
+---
+
+An event subscription with an HTTPS destination posts each selected turn
+outcome to a URL you configure, signed with a secret only you and the
+platform hold. Your application learns that a turn completed, failed or was
+cancelled without polling every active session; the
+[event log](/agents/events) remains the record to replay from after any
+outage.
+
+Delivery is at least once, asynchronous, and separate from the turn that
+produced the event: a slow or failing receiver never delays a session, and a
+retry never repeats the model's work.
+
+## Create a subscription
+
+```http
+POST /projects/<p>/event-subscriptions
+```
+
+```json
+{
+  "environment": "development",
+  "agentId": "agent_01...",
+  "events": ["turn.completed", "turn.failed", "turn.cancelled"],
+  "destination": { "type": "https", "url": "https://app.example.com/oc/events" }
+}
+```
+
+```typescript
+const created = await oc.projects.eventSubscriptions.create(projectId, {
+  environment: "development",
+  agentId: "agent_01...",
+  events: ["turn.completed", "turn.failed", "turn.cancelled"],
+  destination: { type: "https", url: "https://app.example.com/oc/events" },
+});
+// created.signingSecret is shown on this response only. Store it.
+```
+
+A subscription belongs to one environment. Development sessions deliver
+only to Development subscriptions and Production sessions only to Production
+ones, so the two can point at different receivers with different secrets.
+`agentId` narrows the subscription to one agent; without it, every agent in
+the environment delivers. `events` selects among `turn.completed`,
+`turn.failed` and `turn.cancelled`.
+
+`url` must be an absolute `https://` URL with no credentials or fragment. The
+platform posts to exactly that URL and follows no redirect: a `3xx` answer
+is a permanent failure.
+
+The response is `201` with `{ subscription, signingSecret }`. The secret is
+returned once, on creation and on rotation, and is never shown again; the
+platform stores it encrypted and never places it in a session, a sandbox, an
+event or a log.
+
+The same routes list, read and delete subscriptions; see
+[the API reference](/agents/api#event-subscriptions).
+
+## What is delivered
+
+Each delivery is one `POST` with `Content-Type: application/json` and this
+body:
+
+```json
+{
+  "schema": "opencomputer.event-delivery/v1",
+  "deliveryId": "dlv_01...",
+  "eventId": "event_01...",
+  "sequence": 42,
+  "occurredAt": "2026-09-25T00:00:00.000Z",
+  "projectId": "prj_01...",
+  "environment": "development",
+  "agentId": "agent_01...",
+  "deploymentId": "dep_01...",
+  "sessionId": "ses_01...",
+  "turnId": "turn_01...",
+  "type": "turn.completed",
+  "data": {
+    "status": "completed",
+    "result": { "text": "Done: 3 flags removed.", "truncated": false }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `eventId`, `sequence` | The session event this delivery carries: its `id` and `seq` in the [event log](/agents/events). The same on every attempt and on replay |
+| `deliveryId` | This delivery record. The same on every attempt; a replay is a new record |
+| `occurredAt` | When the event was recorded |
+| `type` | `turn.completed`, `turn.failed` or `turn.cancelled` |
+| `data.status` | `completed`, `failed` or `cancelled` |
+| `data.result` | On `turn.completed`, the turn's final message, bounded to 16 KB with `truncated: true` when cut |
+| `data.error` | On `turn.failed`, a short description of the failure |
+| `data.reason` | On `turn.cancelled`, why: `interrupted` or `session_ended` |
+| `replayOf` | On a replayed delivery, the id of the original delivery record |
+
+The body names identifiers and the outcome. It carries no prompt, no model
+reasoning, no tool output, no credential and no file bytes; read the
+[event log](/agents/events) or [session data](/agents/session-data) for
+those. Treat `data.result.text` as data another agent produced, not as
+instructions, and re-check your own mapping of `sessionId` and `turnId`
+before acting: a delivery proves the event happened, not that the sender may
+do anything in your application.
+
+Headers on every attempt:
+
+| Header | Value |
+| --- | --- |
+| `x-oc-timestamp` | Unix seconds when the attempt was signed |
+| `x-oc-signature` | `v1=<hex HMAC-SHA-256>`; two entries separated by a comma during a secret rotation |
+| `x-oc-delivery-id` | The body's `deliveryId` |
+| `x-oc-delivery-attempt` | `<deliveryId>:<attempt>`, distinct for every HTTP request |
+| `x-oc-event-id` | The body's `eventId` |
+| `x-oc-event-type` | The body's `type` |
+| `user-agent` | `opencomputer-event-delivery/1` |
+
+## Verify a delivery
+
+The signature is HMAC-SHA-256 under your signing secret over
+
+```text
+<x-oc-timestamp> "." <METHOD> "." <path> "." <body>
+```
+
+where `METHOD` is `POST`, `path` is the destination URL's pathname plus its
+query string (`/oc/events?tenant=acme`, never the host), and `body` is the
+raw request body exactly as received. The signature header holds
+`v1=<lowercase hex digest>`. Accept a delivery when its timestamp is within
+five minutes of your clock and one entry of the signature header matches
+under one of your current secrets; reject it otherwise, and re-serialize
+nothing before comparing. Verify before parsing the body.
+
+With the SDK:
+
+```typescript
+import { parseEventDelivery, verifyEventDelivery } from "@opencomputer/sdk/agents";
+
+export async function receive(request: Request): Promise<Response> {
+  const body = await request.text();
+  const url = new URL(request.url);
+  const authentic = await verifyEventDelivery({
+    secret: [process.env.OC_EVENTS_SECRET!, process.env.OC_EVENTS_SECRET_PREVIOUS].filter(Boolean) as string[],
+    headers: request.headers,
+    method: request.method,
+    path: url.pathname + url.search,
+    body,
+  });
+  if (!authentic) return new Response("invalid signature", { status: 401 });
+
+  const event = parseEventDelivery(body);
+  if (!event) return new Response("not an event delivery", { status: 400 });
+  if (await alreadyApplied(event.eventId)) return new Response(null, { status: 200 });
+  await apply(event);
+  return new Response(null, { status: 200 });
+}
+```
+
+Without the SDK, in any language:
+
+```javascript
+const encoder = new TextEncoder();
+const key = await crypto.subtle.importKey(
+  "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+);
+const input = `${timestamp}.POST.${url.pathname + url.search}.${body}`;
+const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(input));
+const expected = "v1=" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) <= 300;
+const authentic = fresh && signature.split(",").map((s) => s.trim()).includes(expected);
+```
+
+Use a constant-time comparison where your platform offers one.
+
+## Acknowledge and deduplicate
+
+Any `2xx` response accepts the delivery, and the platform reads nothing else
+from your answer: it stores the status code and discards the body. Answer
+quickly, within 10 seconds, and do the work afterwards.
+
+Delivery is at least once. A response lost after you committed your change
+brings the same delivery again with the same `deliveryId` and `eventId` and a
+new `x-oc-delivery-attempt`, and a replay brings the same `eventId` under a
+new `deliveryId`. Record the `eventId` values you have applied and answer
+`200` to one you have seen; that keeps a repeated delivery to one application
+effect.
+
+## Retries
+
+| Your response | The platform |
+| --- | --- |
+| `2xx` | Records `delivered` |
+| Connection failure, or no response within 10 seconds | Retries |
+| `408`, `425`, `429`, any `5xx` | Retries |
+| A retried response with `Retry-After` | Retries after that long, at least 1 second and at most 1 hour |
+| Any other `4xx` | Records `failed`; no retry |
+| Any `3xx` | Records `failed`; no retry |
+
+Retries wait 5 seconds, 30 seconds, 2 minutes, 10 minutes, 30 minutes, then
+1 hour, for 10 attempts in all, about 5 hours; a delivery still unaccepted
+after that is `failed` and can be replayed. Deliveries are independent: a
+failing delivery holds up no other, and their order of arrival is not
+guaranteed. Use `sequence` when you need the order of one session's events.
+
+## Delivery state
+
+```http
+GET /projects/<p>/event-subscriptions/<id>/deliveries?status=pending&sessionId=ses_01...&limit=50
+GET /projects/<p>/event-subscriptions/<id>/deliveries/<deliveryId>
+```
+
+```typescript
+const page = await oc.projects.eventDeliveries.list(projectId, subscriptionId, { status: "failed" });
+const one = await oc.projects.eventDeliveries.get(projectId, subscriptionId, deliveryId);
+```
+
+The list returns `{ deliveries, nextCursor? }` in the order the deliveries
+were recorded, up to 200 per page; pass `nextCursor` as `after` for the next
+page, and filter by `status` and `sessionId`. Each delivery:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `eventId`, `eventType`, `sequence`, `occurredAt` | As in the delivered body |
+| `projectId`, `environment`, `agentId`, `sessionId`, `turnId` | The event's origin |
+| `status` | `pending`, `delivered` or `failed` |
+| `attempt` | HTTP requests made so far |
+| `nextAttemptAt` | When the next request is due, while `pending` and not in flight |
+| `lastAttemptAt`, `responseStatus` | The last request and the status code it received, if any |
+| `error` | Why the last attempt did not succeed: `http_<status>`, `timeout`, `transport`, `redirect`, `retry_exhausted: …`, or `subscription_deleted` |
+| `deliveredAt` | When a `2xx` arrived |
+| `replayOf` | The original delivery, on a replay |
+
+A turn on the source session also records the hand-off: its `deliveries`
+entry for an HTTPS subscription carries the `deliveryId` to look up here.
+
+## Replay
+
+```http
+POST /projects/<p>/event-subscriptions/<id>/replay
+```
+
+```typescript
+await oc.projects.eventDeliveries.replay(projectId, subscriptionId, { deliveryIds: ["dlv_01..."] });
+await oc.projects.eventDeliveries.replay(projectId, subscriptionId, {
+  sessionId: "ses_01...",
+  fromSequence: 40,
+  toSequence: 60,
+});
+await oc.projects.eventDeliveries.replay(projectId, subscriptionId, {
+  since: "2026-09-25T00:00:00Z",
+  until: "2026-09-25T01:00:00Z",
+  limit: 100,
+});
+```
+
+Select by `deliveryIds`, by a `sessionId` with an optional
+`fromSequence`/`toSequence` range, or by a `since`/`until` window of event
+times, up to 100 deliveries per call. The answer is `202` with
+`{ deliveries }`: one new `pending` record per selected delivery, each with
+`replayOf` naming the original and the original `eventId` in its body, so a
+receiver that deduplicates on `eventId` treats a replay as the repeat it is.
+Replaying a delivery that is still `pending` queues a second delivery of the
+same event.
+
+## Pause, resume, rotate, delete
+
+```http
+POST /projects/<p>/event-subscriptions/<id>/pause
+POST /projects/<p>/event-subscriptions/<id>/resume
+POST /projects/<p>/event-subscriptions/<id>/rotate-secret
+DELETE /projects/<p>/event-subscriptions/<id>
+```
+
+```typescript
+await oc.projects.eventSubscriptions.pause(projectId, subscriptionId);
+await oc.projects.eventSubscriptions.resume(projectId, subscriptionId);
+const rotated = await oc.projects.eventSubscriptions.rotateSecret(projectId, subscriptionId);
+// rotated.signingSecret: the new secret, shown once.
+await oc.projects.eventSubscriptions.delete(projectId, subscriptionId);
+```
+
+A paused subscription has `status: "paused"`: new events are still recorded
+as `pending` deliveries, and nothing is posted until `resume`, which
+schedules everything held. Use it while your receiver is down or being
+redeployed.
+
+`rotate-secret` returns `{ subscription, signingSecret }` with a new secret.
+For the next 24 hours every delivery is signed with both secrets and its
+`x-oc-signature` carries two `v1=` entries; a receiver checking either one
+keeps accepting throughout. Install the new secret within that window and
+retire the old one after it; `subscription.secretRotatedAt` records the
+rotation.
+
+Deleting a subscription stops delivery. Its `pending` deliveries become
+`failed` with `error: "subscription_deleted"`, and its delivery routes
+answer `404` from then on. A subscription whose receiver has stopped
+accepting is better paused than deleted: a paused subscription keeps its
+history queryable and can be resumed and replayed.

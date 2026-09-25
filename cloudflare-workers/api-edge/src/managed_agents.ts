@@ -1,4 +1,14 @@
 import { getAutumnCustomer } from "./autumn_webhook";
+import {
+  isEventDeliveriesListRoute,
+  isEventDeliveryDetailRoute,
+  isEventDeliveryReplayRoute,
+  isEventDeliveryRoute,
+  isEventSubscriptionStateRoute,
+  publicEventDeliveriesPage,
+  publicEventDelivery,
+  publicEventPageMetadata,
+} from "./managed_agents_events";
 
 export interface ManagedAgentsEnv {
   MANAGED_AGENTS_API_URL?: string;
@@ -931,6 +941,9 @@ function publicDelivery(value: unknown): Record<string, unknown> {
     ...(receipt
       ? { receipt: { sessionId: receipt.sessionId, turnId: receipt.turnId } }
       : {}),
+    ...(typeof delivery.deliveryId === "string"
+      ? { deliveryId: delivery.deliveryId }
+      : {}),
     ...(typeof delivery.nextAttemptAt === "string"
       ? { nextAttemptAt: delivery.nextAttemptAt }
       : {}),
@@ -1557,9 +1570,30 @@ function publicSuccessBody(
   }
   if (
     (method === "POST" && EVENT_SUBSCRIPTIONS_ROUTE.test(suffix)) ||
-    (method === "GET" && EVENT_SUBSCRIPTION_ROUTE.test(suffix))
+    (method === "GET" && EVENT_SUBSCRIPTION_ROUTE.test(suffix)) ||
+    isEventSubscriptionStateRoute(method, suffix)
   ) {
-    return { subscription: publicEventSubscription(body.subscription) };
+    // An HTTPS subscription's signing secret is shown once, on the response
+    // that generated it (creation, rotation); it is never stored publicly.
+    return {
+      subscription: publicEventSubscription(body.subscription),
+      ...(typeof body.signingSecret === "string"
+        ? { signingSecret: body.signingSecret }
+        : {}),
+    };
+  }
+  if (isEventDeliveriesListRoute(method, suffix)) {
+    return publicEventDeliveriesPage(body);
+  }
+  if (isEventDeliveryDetailRoute(method, suffix)) {
+    return { delivery: publicEventDelivery(body.delivery) };
+  }
+  if (isEventDeliveryReplayRoute(method, suffix)) {
+    return {
+      deliveries: Array.isArray(body.deliveries)
+        ? body.deliveries.map(publicEventDelivery)
+        : [],
+    };
   }
   if (
     (method === "GET" || method === "PUT") &&
@@ -1814,6 +1848,7 @@ function publicSuccessBody(
             };
           })
         : [],
+      ...publicEventPageMetadata(body),
     };
   }
   if (method === "POST" && /\/turns$/.test(suffix)) {
@@ -2154,6 +2189,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (isMemoryRoute(method, suffix)) return true;
   if (isEventSubscriptionRoute(method, suffix)) return true;
+  if (isEventDeliveryRoute(method, suffix)) return true;
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/runtime-variables(?:\/[^/]+)?$/.test(suffix)
