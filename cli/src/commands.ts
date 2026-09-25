@@ -1338,7 +1338,13 @@ export async function runCommand(
       );
     }
     if (watch) {
-      if (requestedAlias && requestedAlias !== "development") {
+      // Before a project can be created, only the legacy rule is knowable;
+      // an existing project's mode is checked once it is resolved.
+      if (
+        createProjectName &&
+        requestedAlias &&
+        requestedAlias !== "development"
+      ) {
         throw new Error(
           "--watch deploys only to development; omit --alias or use --alias development",
         );
