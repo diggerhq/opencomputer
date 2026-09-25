@@ -1,4 +1,4 @@
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import {
   Link,
   NavLink,
@@ -53,8 +53,11 @@ import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 import { getManagedProject } from '@/managed-agents/api'
 import {
+  projectEnvironmentMode,
   projectEnvironmentSearch,
+  resolveProjectEnvironment,
   type ProjectEnvironment,
+  type ProjectEnvironmentMode,
 } from '@/managed-agents/project-context'
 import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
@@ -147,10 +150,12 @@ function projectIdFromPath(pathname: string): string | undefined {
 
 function ManagedProjectContext({
   projectName,
+  mode,
   environment,
   onChange,
 }: {
   projectName?: string
+  mode: ProjectEnvironmentMode
   environment: ProjectEnvironment
   onChange: (environment: ProjectEnvironment) => void
 }) {
@@ -159,6 +164,15 @@ function ManagedProjectContext({
       <div className="text-muted-foreground flex min-w-0 items-center gap-2 font-mono text-sm">
         <span className="text-muted-foreground/50">/</span>
         <span>Loading project…</span>
+      </div>
+    )
+  }
+  // A single-mode project has one scope, so there is nothing to switch.
+  if (mode === 'single') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
+        <span className="text-muted-foreground/50">/</span>
+        <span className="truncate font-medium">{projectName}</span>
       </div>
     )
   }
@@ -478,10 +492,22 @@ export default function AppShell() {
     queryFn: () => getManagedProject(projectId!),
     enabled: Boolean(projectId),
   })
-  const environment: ProjectEnvironment =
-    new URLSearchParams(location.search).get('environment') === 'production'
-      ? 'production'
-      : 'development'
+  const mode = projectEnvironmentMode(project.data?.project)
+  const resolved = resolveProjectEnvironment(mode, location.search)
+  const environment: ProjectEnvironment = resolved.ok
+    ? resolved.environment
+    : 'default'
+  // An older `?environment=development` bookmark on a single-mode project
+  // lands on the environmentless URL once the project's mode is known.
+  const canonicalSearch =
+    project.data && resolved.ok ? resolved.canonicalSearch : undefined
+  useEffect(() => {
+    if (canonicalSearch === undefined) return
+    void navigate(
+      { pathname: location.pathname, search: canonicalSearch },
+      { replace: true },
+    )
+  }, [canonicalSearch, location.pathname, navigate])
   function changeProjectEnvironment(nextEnvironment: ProjectEnvironment) {
     void navigate(
       {
@@ -504,6 +530,7 @@ export default function AppShell() {
           <div className="flex min-w-0 items-center px-6">
             <ManagedProjectContext
               projectName={project.data?.project.name}
+              mode={mode}
               environment={environment}
               onChange={changeProjectEnvironment}
             />
@@ -539,6 +566,7 @@ export default function AppShell() {
         {projectId ? (
           <ManagedProjectContext
             projectName={project.data?.project.name}
+            mode={mode}
             environment={environment}
             onChange={changeProjectEnvironment}
           />

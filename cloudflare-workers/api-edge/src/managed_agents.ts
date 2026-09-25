@@ -574,6 +574,9 @@ function publicProject(value: unknown): Record<string, unknown> {
     id: project.id,
     slug: project.slug,
     name: project.name,
+    // Projects that predate the mode column are legacy dual-environment
+    // projects; a single-mode project is only ever reported as such.
+    environmentMode: project.environmentMode === "single" ? "single" : "legacy",
     environments: Array.isArray(project.environments)
       ? stripPrivateValues(project.environments)
       : [],
@@ -2768,7 +2771,12 @@ export async function handleAgentWebhookInvocation(
       typeof agentId === "string" &&
       typeof environment === "string" &&
       typeof sessionId === "string"
-        ? `${url.origin}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?agent=${encodeURIComponent(agentId)}&environment=${encodeURIComponent(environment)}`
+        ? `${url.origin}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?agent=${encodeURIComponent(agentId)}${
+            // The single `default` scope is the dashboard's environmentless URL.
+            environment === "default"
+              ? ""
+              : `&environment=${encodeURIComponent(environment)}`
+          }`
         : undefined;
     return Response.json(
       {

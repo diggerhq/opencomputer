@@ -6,7 +6,8 @@ export type SessionAction =
   | "send"
   | "end";
 
-import type { MemoryBindings } from "./api.js";
+import type { MemoryBindings, ProjectEnvironmentMode } from "./api.js";
+import { workingEnvironment } from "./scope.js";
 
 export type SessionCommand = {
   action: SessionAction;
@@ -81,8 +82,12 @@ function takeMemoryOptions(args: string[]): MemoryBindings | undefined {
   return count ? bindings : undefined;
 }
 
-export function developmentAgentReference(agentId: string): string {
-  return `${agentId}@development`;
+/** The deployment a CLI session runs: the project's working environment. */
+export function developmentAgentReference(
+  agentId: string,
+  mode: ProjectEnvironmentMode = "legacy",
+): string {
+  return `${agentId}@${workingEnvironment(mode)}`;
 }
 
 export function resolveProjectAgent(

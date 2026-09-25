@@ -13,6 +13,10 @@ test("sessions target the bound agent's Development deployment", () => {
     developmentAgentReference("unleash-mcp-test"),
     "unleash-mcp-test@development",
   );
+  assert.equal(
+    developmentAgentReference("unleash-mcp-test", "single"),
+    "unleash-mcp-test@default",
+  );
 });
 
 test("session shorthand targets the normal create flow", () => {

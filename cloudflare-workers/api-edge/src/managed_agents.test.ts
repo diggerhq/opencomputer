@@ -1337,6 +1337,7 @@ describe("managed agents proxy", () => {
           id: "prj_test",
           slug: "hello-world",
           name: "Hello World",
+          environmentMode: "legacy",
           environments: [{ name: "development", updatedAt: "2026-08-08" }],
           agents: [{ id: "hello-world", name: "Hello Hello World" }],
           createdAt: "2026-08-08",

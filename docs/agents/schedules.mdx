@@ -45,9 +45,15 @@ Schedules use five-field cron expressions. `timezone` is an IANA timezone such
 as `UTC`, `America/Los_Angeles`, or `Europe/London`. The dispatch payload must
 be JSON-compatible and must not contain secrets.
 
-## Development and Production
+## Where schedules run
 
 When `enabled` is omitted, it defaults to `["production"]`.
+
+In a single-environment project, a schedule that enables `production` (or
+`default`) runs automatically; one that enables only `development` is
+**Manual only**.
+
+### Legacy Development and Production projects
 
 - Development displays every deployed schedule and supports **Run now**.
   Schedules that do not enable Development are marked **Manual only** and never

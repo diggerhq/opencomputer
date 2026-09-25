@@ -6,7 +6,13 @@ description: "Understand development, production, immutable deployments, and ali
 A deployment is an immutable build of one agent. An alias gives a stable name
 to the deployment clients should run.
 
-Every project starts with two working environments:
+New projects have one environment, `default`. Every deploy creates an immutable
+deployment and makes it the current one; sessions keep the deployment they
+were admitted with. Use separate projects when you need distinct development
+and production targets.
+
+Projects created before single-environment mode are legacy projects with two
+working environments:
 
 | Environment | Alias | How it changes |
 | --- | --- | --- |
@@ -16,7 +22,7 @@ Every project starts with two working environments:
 Sessions keep the deployment they started with. Publishing another version
 does not change the code underneath an existing session.
 
-## Deploy to production
+## Deploy to production (legacy projects)
 
 From the project directory:
 
@@ -42,8 +48,14 @@ support@development
 support@production
 ```
 
-The project dashboard's environment selector changes which deployment you are
-inspecting. The playground has a separate agent selector when a project
+Single-environment projects use bare `agent-id` (or `agent-id@default`); older
+clients sending `agent-id@development` resolve to the same deployment, while
+`agent-id@production` is rejected with `single_environment_project`. Explicit
+`--environment` and `--alias` flags are rejected for these projects; `link`
+persists the project and `--project` overrides it for one command.
+
+Legacy project dashboards keep the environment selector to change which
+deployment you are inspecting. The playground has a separate agent selector when a project
 contains more than one agent.
 
 ## Review history
