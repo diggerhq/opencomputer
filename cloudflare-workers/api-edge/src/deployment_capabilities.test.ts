@@ -127,6 +127,20 @@ describe("deployment capability declarations", () => {
     ]);
   });
 
+  it("keeps every packaged declaration, however many the artifact declares", () => {
+    const tools = Array.from({ length: 1200 }, (_, i) => `tool_${String(i).padStart(4, "0")}`);
+    const files = tools.map((name) => ({ path: `.opencode/skills/${name}/SKILL.md`, content: "#" }));
+    files.push({
+      path: ".opencomputer/reactive.json",
+      content: JSON.stringify({ ...reactive, tools, mcpServers: tools, mcpServerDefinitions: [] }),
+    });
+    const declarations = capabilityDeclarationsFromArtifact(artifact(files));
+    expect(declarations?.tools).toHaveLength(1200);
+    expect(declarations?.tools.at(-1)).toEqual({ id: "tool_1199" });
+    expect(declarations?.skills).toHaveLength(1200);
+    expect(declarations?.mcpServers).toHaveLength(1200);
+  });
+
   it("forwards the declarations with the deployment registration", async () => {
     const source = artifact([
       { path: ".opencomputer/reactive.json", content: JSON.stringify(reactive) },

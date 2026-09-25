@@ -19,7 +19,6 @@ export interface CapabilityDeclarations {
 }
 
 const SKILL_PATH = /^\.opencode\/skills\/([^/]+)\/SKILL\.md$/;
-const MAX_DECLARATIONS = 500;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -52,7 +51,7 @@ function decodeBase64Utf8(text: string): string {
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
 }
 
 /**
@@ -96,7 +95,6 @@ export function capabilityDeclarationsFromArtifact(
   const gated = new Set(strings(reactive?.gatedTools));
   const tools = [...new Set(strings(reactive?.tools))]
     .sort(byString)
-    .slice(0, MAX_DECLARATIONS)
     .map((id) => (gated.has(id) ? { id, gated: true as const } : { id }));
 
   const resultSchemas: CapabilityDeclarations["resultSchemas"] = [];
@@ -144,9 +142,8 @@ export function capabilityDeclarationsFromArtifact(
     resultSchemas,
     skills: [...skills.entries()]
       .sort(([a], [b]) => byString(a, b))
-      .slice(0, MAX_DECLARATIONS)
       .map(([name, path]) => ({ name, path })),
-    mcpServers: mcpServers.slice(0, MAX_DECLARATIONS),
+    mcpServers,
     subagents: [...new Set(strings(reactive?.subagents))].sort(byString),
   };
 }
