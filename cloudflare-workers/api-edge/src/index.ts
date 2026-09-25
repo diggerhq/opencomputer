@@ -3800,9 +3800,9 @@ export async function acceptPendingInvitations(
     statements.push(
       env.OPENCOMPUTER_DB.prepare(
         `INSERT INTO org_memberships (org_id, user_id, role, created_at)
-         VALUES (?1, ?2, ?3, ?4)
+         SELECT ?1, ?2, ?3, ?4 FROM invitations WHERE id = ?5 AND status = 'pending'
          ON CONFLICT(org_id, user_id) DO NOTHING`,
-      ).bind(inv.org_id, userID, role, nowSec),
+      ).bind(inv.org_id, userID, role, nowSec, inv.id),
       env.OPENCOMPUTER_DB.prepare(
         `UPDATE invitations SET status = 'accepted', accepted_at = ?1 WHERE id = ?2 AND status = 'pending'`,
       ).bind(nowSec, inv.id),
@@ -3861,12 +3861,6 @@ async function provisionWorkOSIdentity(
   }
 
   const userID = userRow.id;
-  const invitedOrgID = await acceptPendingInvitations(
-    env,
-    userID,
-    userRow.email || profile.email,
-    nowSec,
-  );
   type MembershipRow = {
     id: string;
     name: string;
@@ -3877,21 +3871,20 @@ async function provisionWorkOSIdentity(
     org_created_at: number;
   };
 
-  const selectBrowserMembership = async (): Promise<MembershipRow | null> => {
-    if (invitedOrgID) {
-      const invited = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
-                m.created_at AS membership_created_at, o.created_at AS org_created_at
-           FROM orgs o
-           JOIN org_memberships m ON m.org_id = o.id
-          WHERE m.user_id = ?1 AND o.id = ?2
-          LIMIT 1`,
-      )
-        .bind(userID, invitedOrgID)
-        .first<MembershipRow>();
-      if (invited) return invited;
-    }
-    return env.OPENCOMPUTER_DB.prepare(
+  const selectMembershipByOrg = (orgID: string) =>
+    env.OPENCOMPUTER_DB.prepare(
+      `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
+              m.created_at AS membership_created_at, o.created_at AS org_created_at
+         FROM orgs o
+         JOIN org_memberships m ON m.org_id = o.id
+        WHERE m.user_id = ?1 AND o.id = ?2
+        LIMIT 1`,
+    )
+      .bind(userID, orgID)
+      .first<MembershipRow>();
+
+  const selectBrowserMembership = () =>
+    env.OPENCOMPUTER_DB.prepare(
       `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
               m.created_at AS membership_created_at, o.created_at AS org_created_at
          FROM orgs o
@@ -3901,7 +3894,6 @@ async function provisionWorkOSIdentity(
     )
       .bind(userID)
       .first<MembershipRow>();
-  };
 
   const selectCLIMembership = async (): Promise<MembershipRow | null> => {
     const { results } = await env.OPENCOMPUTER_DB.prepare(
@@ -3974,6 +3966,18 @@ async function provisionWorkOSIdentity(
       membership_created_at: nowSec,
       org_created_at: nowSec,
     };
+  }
+
+  // Invitations are redeemed after the personal workspace exists so a
+  // first-time invitee ends up with both orgs. Browser login lands in the
+  // invited team; CLI login re-runs its deterministic selection policy.
+  const invitedOrgID = await acceptPendingInvitations(env, userID, profile.email, nowSec);
+  if (invitedOrgID) {
+    if (selection === "browser") {
+      orgRow = (await selectMembershipByOrg(invitedOrgID)) ?? orgRow;
+    } else {
+      orgRow = (await selectCLIMembership()) ?? orgRow;
+    }
   }
 
   return {

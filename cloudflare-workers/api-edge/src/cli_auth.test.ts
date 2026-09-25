@@ -542,9 +542,31 @@ describe("CLI device authorization edge contract", () => {
     expect(resp.status).toBe(200);
 
     const membershipInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO org_memberships"));
+    expect(membershipInsert?.sql).toContain("status = 'pending'");
     expect(membershipInsert?.args.slice(0, 3)).toEqual([teamOrgID, userID, "admin"]);
+    expect(membershipInsert?.args[4]).toBe("inv-1");
     const accepted = db.executed.find((entry) => entry.sql.includes("SET status = 'accepted'"));
     expect(accepted?.args[1]).toBe("inv-1");
+  });
+
+  it("still provisions a personal workspace for a first-login invitee", async () => {
+    const teamOrgID = "44444444-4444-4444-8444-444444444444";
+    const db = new FakeDB([], null);
+    db.pendingInvitations = [{ id: "inv-1", org_id: teamOrgID, role: "member" }];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "new-workos-user", email: "new@example.com", first_name: "New" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-ipcountry": "US" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+
+    const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
+    expect(orgInsert).toBeDefined();
+    const memberships = db.executed.filter((entry) => entry.sql.includes("INSERT INTO org_memberships"));
+    expect(memberships.map((m) => m.args[0])).toEqual([orgInsert?.args[0], teamOrgID]);
   });
 
   it("provisions a first-login user, personal org, owner membership, and key", async () => {

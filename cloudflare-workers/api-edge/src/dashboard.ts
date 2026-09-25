@@ -553,10 +553,14 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   const org = await env.OPENCOMPUTER_DB.prepare(`SELECT name, workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ name: string; workos_org_id: string | null }>();
   let workosOrgID = org?.workos_org_id ?? null;
   if (org && !workosOrgID) {
-    workosOrgID = await workosCreateOrg(env, org.name);
-    if (workosOrgID) {
+    const created = await workosCreateOrg(env, org.name);
+    if (created) {
       await env.OPENCOMPUTER_DB.prepare(`UPDATE orgs SET workos_org_id = ?1, updated_at = ?2 WHERE id = ?3 AND workos_org_id IS NULL`)
-        .bind(workosOrgID, now, caller.orgID).run();
+        .bind(created, now, caller.orgID).run();
+      // A concurrent invite may have won the conditional update; always invite
+      // into whichever WorkOS org is actually recorded.
+      const stored = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+      workosOrgID = stored?.workos_org_id ?? created;
     }
   }
   let workosInviteID: string | null = null;
