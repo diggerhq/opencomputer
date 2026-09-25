@@ -642,6 +642,14 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
+  // Only the newest page polls; pages opened with "Load more" are kept as
+  // loaded, so the refresh cost does not grow with the history a user opened.
+  const newestProjectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId, 'newest'],
+    queryFn: () => getManagedAgentSessionsPage({ projectId }),
+    enabled: Boolean(projectId),
+    refetchInterval: 5_000,
+  })
   const projectSessions = useInfiniteQuery({
     queryKey: ['managed-agent-sessions', 'project', projectId],
     initialPageParam: undefined as string | undefined,
@@ -652,12 +660,26 @@ export default function ManagedAgentDetail({
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(projectId),
-    refetchInterval: 5_000,
   })
-  const projectSessionRows = useMemo(
-    () => projectSessions.data?.pages.flatMap((page) => page.sessions) ?? [],
-    [projectSessions.data],
-  )
+  const projectSessionRows = useMemo(() => {
+    const seen = new Set<string>()
+    const rows: ManagedAgentSessionSummary[] = []
+    for (const session of [
+      ...(newestProjectSessions.data?.sessions ?? []),
+      ...(projectSessions.data?.pages.flatMap((page) => page.sessions) ?? []),
+    ]) {
+      if (seen.has(session.id)) continue
+      seen.add(session.id)
+      rows.push(session)
+    }
+    return rows
+  }, [newestProjectSessions.data, projectSessions.data])
+  const loadMoreProjectSessions = async () => {
+    const result = await projectSessions.fetchNextPage()
+    if (result.isError) {
+      notifyError("Couldn't load more sessions.", result.error)
+    }
+  }
   const environmentSessions = project
     ? sessionsForEnvironment(
         sessions.data ?? [],
@@ -1208,7 +1230,7 @@ export default function ManagedAgentDetail({
                 size="sm"
                 variant="outline"
                 disabled={projectSessions.isFetchingNextPage}
-                onClick={() => void projectSessions.fetchNextPage()}
+                onClick={() => void loadMoreProjectSessions()}
               >
                 {projectSessions.isFetchingNextPage ? (
                   <Loader2 className="animate-spin" />
