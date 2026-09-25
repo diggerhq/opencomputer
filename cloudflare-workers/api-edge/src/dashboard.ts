@@ -36,6 +36,10 @@ import {
 import { createAPIKey } from "./api_keys";
 import { proxyManagedAgents } from "./managed_agents";
 import { enableManagedBilling } from "./model_billing";
+import {
+  handleSlackConnectInvite,
+  handleSlackConnectStatus,
+} from "./slack_connect";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -77,6 +81,10 @@ export interface DashboardEnv {
   OPENROUTER_BASE_URL?: string;
   OPENROUTER_MARKUP_BPS?: string;
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Self-serve Slack Connect invites to the team's shared support channel
+  // (Pro/Max only). Both optional — unset hides the feature.
+  SLACK_CONNECT_BOT_TOKEN?: string;
+  SLACK_CONNECT_CHANNEL_ID?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -101,25 +109,48 @@ interface Caller {
 
 // ── auth ─────────────────────────────────────────────────────────────────
 
-export async function authDashboard(req: Request, env: DashboardEnv): Promise<Caller | null> {
+export async function authDashboard(
+  req: Request,
+  env: DashboardEnv,
+): Promise<Caller | null> {
   const cookie = req.headers.get("cookie") ?? "";
   const m = cookie.match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`));
   if (!m) return null;
   const claims = await verifySessionJWT(env.SESSION_JWT_SECRET, m[1]);
   if (!claims) return null;
-  return { orgID: claims.org_id, userID: claims.user_id, plan: claims.plan, claims };
+  return {
+    orgID: claims.org_id,
+    userID: claims.user_id,
+    plan: claims.plan,
+    claims,
+  };
 }
 
-async function verifySessionJWT(secret: string, token: string): Promise<SessionClaims | null> {
+async function verifySessionJWT(
+  secret: string,
+  token: string,
+): Promise<SessionClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [headerB64, payloadB64, sigB64] = parts;
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const expected = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    enc.encode(`${headerB64}.${payloadB64}`),
+  );
   if (b64url(expected) !== sigB64) return null;
   try {
-    const payload = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as SessionClaims;
+    const payload = JSON.parse(
+      atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")),
+    ) as SessionClaims;
     if (payload.iss !== "opensandbox-session") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
@@ -128,17 +159,35 @@ async function verifySessionJWT(secret: string, token: string): Promise<SessionC
   }
 }
 
-async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string): Promise<string> {
+async function mintSessionJWT(
+  secret: string,
+  orgID: string,
+  userID: string,
+  plan: string,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload = {
-    iss: "opensandbox-session", sub: userID, iat: now, exp: now + SESSION_TTL_SEC,
-    org_id: orgID, user_id: userID, plan,
+    iss: "opensandbox-session",
+    sub: userID,
+    iat: now,
+    exp: now + SESSION_TTL_SEC,
+    org_id: orgID,
+    user_id: userID,
+    plan,
   };
   const enc = new TextEncoder();
   const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    b64url(enc.encode(JSON.stringify(header))) +
+    "." +
+    b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
   return signingInput + "." + b64url(sig);
 }
@@ -149,18 +198,37 @@ function setSessionCookie(jwt: string): string {
 
 // Same shape as the cap-token /api/sandboxes mints for /internal/sandboxes/create.
 // Cells' capTokenMiddleware validates this same format on /internal/dashboard/*.
-async function mintCellCapToken(secret: string, orgID: string, cellID: string, plan: string, userID: string | null): Promise<string> {
+async function mintCellCapToken(
+  secret: string,
+  orgID: string,
+  cellID: string,
+  plan: string,
+  userID: string | null,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opensandbox-edge", iat: now, exp: now + 120,
-    org_id: orgID, cell_id: cellID, plan,
+    sub: orgID,
+    iss: "opensandbox-edge",
+    iat: now,
+    exp: now + 120,
+    org_id: orgID,
+    cell_id: cellID,
+    plan,
   };
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
   const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    b64url(enc.encode(JSON.stringify(header))) +
+    "." +
+    b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
   return signingInput + "." + b64url(sig);
 }
@@ -169,18 +237,34 @@ async function mintCellCapToken(secret: string, orgID: string, cellID: string, p
 // OC_ORG_TOKEN_SECRET (shared with sessions-api). /v3 trusts it and sets owner =
 // the asserted org — same "act for org X" shape as the cell cap-token, so no
 // osb_ key reaches the browser and /v3 never custodies a customer key.
-async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
+async function mintOrgToken(
+  secret: string,
+  orgID: string,
+  userID: string | null,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opencomputer", aud: "sessions-api-v3", iat: now, exp: now + 120,
+    sub: orgID,
+    iss: "opencomputer",
+    aud: "sessions-api-v3",
+    iat: now,
+    exp: now + 120,
     org_id: orgID,
   };
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
   const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    b64url(enc.encode(JSON.stringify(header))) +
+    "." +
+    b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
   return signingInput + "." + b64url(sig);
 }
@@ -192,7 +276,11 @@ function b64url(buf: ArrayBuffer | Uint8Array): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
+function json(
+  body: unknown,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json", ...extraHeaders },
@@ -227,23 +315,37 @@ function cellToRegion(cellID: string): string {
 // shapeOrg maps a D1 orgs row to the frontend's Org interface (camelCase,
 // timestamps as ISO strings, integer-flag booleans).
 interface OrgRow {
-  id: string; name: string; slug: string; plan: string;
-  max_concurrent_sandboxes: number; max_sandbox_timeout_sec: number;
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  max_concurrent_sandboxes: number;
+  max_sandbox_timeout_sec: number;
   autumn_concurrency_override: number | null;
-  created_at: number; updated_at: number;
-  custom_domain: string | null; cf_hostname_id: string | null;
-  domain_verification_status: string; domain_ssl_status: string;
-  verification_txt_name: string | null; verification_txt_value: string | null;
-  ssl_txt_name: string | null; ssl_txt_value: string | null;
-  workos_org_id: string | null; is_personal: number;
+  created_at: number;
+  updated_at: number;
+  custom_domain: string | null;
+  cf_hostname_id: string | null;
+  domain_verification_status: string;
+  domain_ssl_status: string;
+  verification_txt_name: string | null;
+  verification_txt_value: string | null;
+  ssl_txt_name: string | null;
+  ssl_txt_value: string | null;
+  workos_org_id: string | null;
+  is_personal: number;
   credit_balance_cents: number;
-  free_credits_remaining_cents: number; is_halted: number;
+  free_credits_remaining_cents: number;
+  is_halted: number;
   halted_at: number | null;
 }
 
 function shapeOrg(r: OrgRow): Record<string, unknown> {
   return {
-    id: r.id, name: r.name, slug: r.slug, plan: r.plan,
+    id: r.id,
+    name: r.name,
+    slug: r.slug,
+    plan: r.plan,
     maxConcurrentSandboxes: r.max_concurrent_sandboxes,
     autumnConcurrencyOverride: r.autumn_concurrency_override ?? undefined,
     maxSandboxTimeoutSec: r.max_sandbox_timeout_sec,
@@ -273,17 +375,27 @@ interface CellRow {
   base_url: string;
 }
 
-async function homeCell(env: DashboardEnv, orgID: string): Promise<CellRow | null> {
+async function homeCell(
+  env: DashboardEnv,
+  orgID: string,
+): Promise<CellRow | null> {
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT c.cell_id, c.base_url FROM orgs o JOIN cells c ON c.cell_id = o.home_cell WHERE o.id = ?1`,
-  ).bind(orgID).first<CellRow>();
+  )
+    .bind(orgID)
+    .first<CellRow>();
   return row ?? null;
 }
 
-async function sandboxCell(env: DashboardEnv, sandboxID: string): Promise<{ cell_id: string; base_url: string; org_id: string } | null> {
+async function sandboxCell(
+  env: DashboardEnv,
+  sandboxID: string,
+): Promise<{ cell_id: string; base_url: string; org_id: string } | null> {
   return env.OPENCOMPUTER_DB.prepare(
     `SELECT s.cell_id, s.org_id, c.base_url FROM sandboxes_index s JOIN cells c ON c.cell_id = s.cell_id WHERE s.id = ?1`,
-  ).bind(sandboxID).first<{ cell_id: string; base_url: string; org_id: string }>();
+  )
+    .bind(sandboxID)
+    .first<{ cell_id: string; base_url: string; org_id: string }>();
 }
 
 // proxyToCell handles non-WebSocket dashboard requests. Looks up the
@@ -298,7 +410,13 @@ async function proxyToCell(
 ): Promise<Response> {
   const url = new URL(req.url);
   const target = cell.base_url.replace(/\/$/, "") + path + url.search;
-  const token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
+  const token = await mintCellCapToken(
+    env.SESSION_JWT_SECRET,
+    caller.orgID,
+    cell.cell_id,
+    caller.plan,
+    caller.userID,
+  );
 
   // Forward only the headers the cell actually needs. CF Workers forbids
   // some headers (Host, Connection, Content-Length) and stripping cookies
@@ -346,7 +464,13 @@ async function proxyWebSocket(
   // a transparent forward puts the broker actually in the middle.
   let token: string;
   try {
-    token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
+    token = await mintCellCapToken(
+      env.SESSION_JWT_SECRET,
+      caller.orgID,
+      cell.cell_id,
+      caller.plan,
+      caller.userID,
+    );
   } catch (e) {
     console.error("proxyWebSocket: mint failed:", e);
     return new Response("token mint failed", { status: 500 });
@@ -365,29 +489,40 @@ async function proxyWebSocket(
 
 // ── identity (/me, /orgs, /org, /org/switch) ─────────────────────────────
 
-async function handleMe(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleMe(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   // Load user + org list. Org list joins via org_memberships; each row carries
   // the active flag so the UI can highlight the current org.
   const user = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, email, name, workos_user_id, durable_sessions_enabled, infrastructure_enabled
        FROM users WHERE id = ?1`,
-  ).bind(caller.userID).first<{
-    id: string;
-    email: string;
-    name: string | null;
-    workos_user_id: string | null;
-    durable_sessions_enabled: number;
-    infrastructure_enabled: number;
-  }>();
+  )
+    .bind(caller.userID)
+    .first<{
+      id: string;
+      email: string;
+      name: string | null;
+      workos_user_id: string | null;
+      durable_sessions_enabled: number;
+      infrastructure_enabled: number;
+    }>();
   if (!user) return json({ error: "user not found" }, 404);
 
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT o.id, o.name, o.is_personal FROM orgs o
        JOIN org_memberships m ON m.org_id = o.id
       WHERE m.user_id = ?1`,
-  ).bind(caller.userID).all<{ id: string; name: string; is_personal: number }>();
+  )
+    .bind(caller.userID)
+    .all<{ id: string; name: string; is_personal: number }>();
   const orgs = (results ?? []).map((r) => ({
-    id: r.id, name: r.name, isPersonal: !!r.is_personal, isActive: r.id === caller.orgID,
+    id: r.id,
+    name: r.name,
+    isPersonal: !!r.is_personal,
+    isActive: r.id === caller.orgID,
   }));
 
   return json({
@@ -401,23 +536,44 @@ async function handleMe(req: Request, env: DashboardEnv, caller: Caller): Promis
   });
 }
 
-async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleUpdateMePreferences(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   type PreferenceUpdate = {
     durableSessionsEnabled?: unknown;
     infrastructureEnabled?: unknown;
   };
-  const body = await req.json<PreferenceUpdate>().catch(() => ({} as PreferenceUpdate));
-  if (body.durableSessionsEnabled !== undefined && typeof body.durableSessionsEnabled !== "boolean") {
+  const body = await req
+    .json<PreferenceUpdate>()
+    .catch(() => ({}) as PreferenceUpdate);
+  if (
+    body.durableSessionsEnabled !== undefined &&
+    typeof body.durableSessionsEnabled !== "boolean"
+  ) {
     return json({ error: "durableSessionsEnabled must be a boolean" }, 400);
   }
   if (body.durableSessionsEnabled !== undefined) {
-    return json({ error: "durable session navigation is managed by an administrator" }, 403);
+    return json(
+      { error: "durable session navigation is managed by an administrator" },
+      403,
+    );
   }
-  if (body.infrastructureEnabled !== undefined && typeof body.infrastructureEnabled !== "boolean") {
+  if (
+    body.infrastructureEnabled !== undefined &&
+    typeof body.infrastructureEnabled !== "boolean"
+  ) {
     return json({ error: "infrastructureEnabled must be a boolean" }, 400);
   }
-  if (body.durableSessionsEnabled === undefined && body.infrastructureEnabled === undefined) {
-    return json({ error: "at least one navigation preference is required" }, 400);
+  if (
+    body.durableSessionsEnabled === undefined &&
+    body.infrastructureEnabled === undefined
+  ) {
+    return json(
+      { error: "at least one navigation preference is required" },
+      400,
+    );
   }
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE users
@@ -425,142 +581,280 @@ async function handleUpdateMePreferences(req: Request, env: DashboardEnv, caller
       WHERE id = ?2`,
   )
     .bind(
-      typeof body.infrastructureEnabled === "boolean" ? Number(body.infrastructureEnabled) : null,
+      typeof body.infrastructureEnabled === "boolean"
+        ? Number(body.infrastructureEnabled)
+        : null,
       caller.userID,
     )
     .run();
   return handleMe(req, env, caller);
 }
 
-async function handleListOrgs(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListOrgs(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT o.id, o.name, o.is_personal, o.plan, o.home_cell FROM orgs o
        JOIN org_memberships m ON m.org_id = o.id
       WHERE m.user_id = ?1
       ORDER BY o.is_personal DESC, o.name ASC`,
-  ).bind(caller.userID).all<{ id: string; name: string; is_personal: number; plan: string; home_cell: string }>();
+  )
+    .bind(caller.userID)
+    .all<{
+      id: string;
+      name: string;
+      is_personal: number;
+      plan: string;
+      home_cell: string;
+    }>();
   // Shape to OrgInfo for /orgs route (the frontend uses { id, name, isPersonal, isActive }).
-  return json((results ?? []).map((r) => ({
-    id: r.id, name: r.name, isPersonal: !!r.is_personal, plan: r.plan,
-    homeCell: r.home_cell, isActive: r.id === caller.orgID,
-  })));
+  return json(
+    (results ?? []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      isPersonal: !!r.is_personal,
+      plan: r.plan,
+      homeCell: r.home_cell,
+      isActive: r.id === caller.orgID,
+    })),
+  );
 }
 
-async function handleGetOrg(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
+async function handleGetOrg(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT * FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<OrgRow>();
   if (!org) return json({ error: "org not found" }, 404);
   return json(shapeOrg(org));
 }
 
-async function handleUpdateOrg(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleUpdateOrg(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   type OrgUpdate = { name?: unknown };
-  const body = await req.json<OrgUpdate>().catch(() => ({} as OrgUpdate));
+  const body = await req.json<OrgUpdate>().catch(() => ({}) as OrgUpdate);
   if (body.name !== undefined && typeof body.name !== "string") {
     return json({ error: "name must be a string" }, 400);
   }
   const name = typeof body.name === "string" ? body.name.trim() : undefined;
-  if (body.name !== undefined && !name) return json({ error: "name is required" }, 400);
+  if (body.name !== undefined && !name)
+    return json({ error: "name is required" }, 400);
   if (name === undefined) return json({ error: "name is required" }, 400);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT owner_user_id, workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ owner_user_id: string | null; workos_org_id: string | null }>();
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT owner_user_id, workos_org_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ owner_user_id: string | null; workos_org_id: string | null }>();
   if (!org) return json({ error: "org not found" }, 404);
-  if (org.owner_user_id !== caller.userID) return json({ error: "only owner can rename" }, 403);
+  if (org.owner_user_id !== caller.userID)
+    return json({ error: "only owner can rename" }, 403);
 
-  await env.OPENCOMPUTER_DB.prepare(`UPDATE orgs SET name = ?1, updated_at = ?2 WHERE id = ?3`)
-    .bind(name, Math.floor(Date.now() / 1000), caller.orgID).run();
+  await env.OPENCOMPUTER_DB.prepare(
+    `UPDATE orgs SET name = ?1, updated_at = ?2 WHERE id = ?3`,
+  )
+    .bind(name, Math.floor(Date.now() / 1000), caller.orgID)
+    .run();
 
   // Best-effort WorkOS sync. Errors logged, not surfaced.
   if (name && org.workos_org_id) {
-    workosUpdateOrg(env, org.workos_org_id, name).catch((e) => console.error("workos org update failed", e));
+    workosUpdateOrg(env, org.workos_org_id, name).catch((e) =>
+      console.error("workos org update failed", e),
+    );
   }
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
+  const updated = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT * FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<OrgRow>();
   return json(updated ? shapeOrg(updated) : null);
 }
 
-async function handleOrgSwitch(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const body = await req.json<{ orgId?: string }>().catch(() => ({} as { orgId?: string }));
+async function handleOrgSwitch(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  const body = await req
+    .json<{ orgId?: string }>()
+    .catch(() => ({}) as { orgId?: string });
   if (!body.orgId) return json({ error: "orgId required" }, 400);
   // Verify membership before issuing a session for the new org.
   const m = await env.OPENCOMPUTER_DB.prepare(
     `SELECT 1 FROM org_memberships WHERE user_id = ?1 AND org_id = ?2`,
-  ).bind(caller.userID, body.orgId).first();
+  )
+    .bind(caller.userID, body.orgId)
+    .first();
   if (!m) return json({ error: "not a member of that org" }, 403);
-  const orgRow = await env.OPENCOMPUTER_DB.prepare(`SELECT plan FROM orgs WHERE id = ?1`).bind(body.orgId).first<{ plan: string }>();
+  const orgRow = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT plan FROM orgs WHERE id = ?1`,
+  )
+    .bind(body.orgId)
+    .first<{ plan: string }>();
   const plan = orgRow?.plan ?? "free";
-  const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, body.orgId, caller.userID, plan);
-  return json({ ok: true, orgId: body.orgId, plan }, 200, { "set-cookie": setSessionCookie(fresh) });
+  const fresh = await mintSessionJWT(
+    env.SESSION_JWT_SECRET,
+    body.orgId,
+    caller.userID,
+    plan,
+  );
+  return json({ ok: true, orgId: body.orgId, plan }, 200, {
+    "set-cookie": setSessionCookie(fresh),
+  });
 }
 
 // ── members ──────────────────────────────────────────────────────────────
 
-async function handleListMembers(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListMembers(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT m.user_id, m.role, m.created_at, u.email, u.name, u.workos_user_id
        FROM org_memberships m JOIN users u ON u.id = m.user_id
       WHERE m.org_id = ?1 ORDER BY m.created_at ASC`,
-  ).bind(caller.orgID).all<{
-    user_id: string; role: string; created_at: number;
-    email: string; name: string | null; workos_user_id: string | null;
-  }>();
+  )
+    .bind(caller.orgID)
+    .all<{
+      user_id: string;
+      role: string;
+      created_at: number;
+      email: string;
+      name: string | null;
+      workos_user_id: string | null;
+    }>();
   // Frontend OrgMember interface — bare array, camelCase.
-  return json((results ?? []).map((r) => ({
-    id: r.user_id,
-    membershipId: r.user_id, // we don't have a separate membership id; reuse
-    workosUserId: r.workos_user_id ?? undefined,
-    email: r.email,
-    name: r.name ?? r.email,
-    role: r.role,
-    status: "active",
-  })));
+  return json(
+    (results ?? []).map((r) => ({
+      id: r.user_id,
+      membershipId: r.user_id, // we don't have a separate membership id; reuse
+      workosUserId: r.workos_user_id ?? undefined,
+      email: r.email,
+      name: r.name ?? r.email,
+      role: r.role,
+      status: "active",
+    })),
+  );
 }
 
-async function handleRemoveMember(_req: Request, env: DashboardEnv, caller: Caller, memberUserID: string): Promise<Response> {
-  if (memberUserID === caller.userID) return json({ error: "cannot remove self" }, 400);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT owner_user_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ owner_user_id: string | null }>();
-  if (!org || org.owner_user_id !== caller.userID) return json({ error: "only owner can remove members" }, 403);
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`).bind(caller.orgID, memberUserID).run();
+async function handleRemoveMember(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  memberUserID: string,
+): Promise<Response> {
+  if (memberUserID === caller.userID)
+    return json({ error: "cannot remove self" }, 400);
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT owner_user_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ owner_user_id: string | null }>();
+  if (!org || org.owner_user_id !== caller.userID)
+    return json({ error: "only owner can remove members" }, 403);
+  await env.OPENCOMPUTER_DB.prepare(
+    `DELETE FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+  )
+    .bind(caller.orgID, memberUserID)
+    .run();
   return new Response(null, { status: 204 });
 }
 
 // ── invitations ──────────────────────────────────────────────────────────
 
-async function handleListInvitations(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListInvitations(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, email, role, status, created_at, expires_at, accepted_at, revoked_at, invited_by
        FROM invitations WHERE org_id = ?1 ORDER BY created_at DESC`,
-  ).bind(caller.orgID).all<{ id: string; email: string; role: string; status: string; created_at: number; expires_at: number | null; accepted_at: number | null; revoked_at: number | null; invited_by: string | null }>();
+  )
+    .bind(caller.orgID)
+    .all<{
+      id: string;
+      email: string;
+      role: string;
+      status: string;
+      created_at: number;
+      expires_at: number | null;
+      accepted_at: number | null;
+      revoked_at: number | null;
+      invited_by: string | null;
+    }>();
   // Bare array — frontend expects OrgInvitation[].
-  return json((results ?? []).map((r) => ({
-    id: r.id, email: r.email, role: r.role, state: r.status,
-    createdAt: epochToISORequired(r.created_at),
-    expiresAt: epochToISORequired(r.expires_at),
-    acceptedAt: epochToISO(r.accepted_at),
-    revokedAt: epochToISO(r.revoked_at),
-    invitedBy: r.invited_by ?? undefined,
-  })));
+  return json(
+    (results ?? []).map((r) => ({
+      id: r.id,
+      email: r.email,
+      role: r.role,
+      state: r.status,
+      createdAt: epochToISORequired(r.created_at),
+      expiresAt: epochToISORequired(r.expires_at),
+      acceptedAt: epochToISO(r.accepted_at),
+      revokedAt: epochToISO(r.revoked_at),
+      invitedBy: r.invited_by ?? undefined,
+    })),
+  );
 }
 
-async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const body = await req.json<{ email?: string; role?: string }>().catch(() => ({} as { email?: string; role?: string }));
+async function handleSendInvitation(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  const body = await req
+    .json<{ email?: string; role?: string }>()
+    .catch(() => ({}) as { email?: string; role?: string });
   const email = (body.email ?? "").trim().toLowerCase();
   const role = body.role || "member";
   if (!email) return json({ error: "email required" }, 400);
-  if (!["owner", "admin", "member"].includes(role)) return json({ error: "invalid role" }, 400);
+  if (!["owner", "admin", "member"].includes(role))
+    return json({ error: "invalid role" }, 400);
 
   // WorkOS invitation send. Returns the WorkOS invitation ID we mirror in D1.
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT workos_org_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ workos_org_id: string | null }>();
   let workosInviteID: string | null = null;
   if (org?.workos_org_id) {
     try {
-      const r = await fetch("https://api.workos.com/user_management/invitations", {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
-        body: JSON.stringify({ email, organization_id: org.workos_org_id, expires_in_days: 7, role_slug: role }),
-      });
+      const r = await fetch(
+        "https://api.workos.com/user_management/invitations",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${env.WORKOS_API_KEY}`,
+          },
+          body: JSON.stringify({
+            email,
+            organization_id: org.workos_org_id,
+            expires_in_days: 7,
+            role_slug: role,
+          }),
+        },
+      );
       if (r.ok) {
         const data = await r.json<{ id: string }>();
         workosInviteID = data.id;
       } else {
-        console.error(`workos invite ${email} returned ${r.status}: ${await r.text()}`);
+        console.error(
+          `workos invite ${email} returned ${r.status}: ${await r.text()}`,
+        );
       }
     } catch (e) {
       console.error(`workos invite ${email} threw`, e);
@@ -572,46 +866,102 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   await env.OPENCOMPUTER_DB.prepare(
     `INSERT INTO invitations (id, org_id, email, role, invited_by, workos_invitation_id, status, expires_at, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)`,
-  ).bind(id, caller.orgID, email, role, caller.userID, workosInviteID, now + 7 * 86400, now).run();
-  return json({ id, email, role, status: "pending", workos_invitation_id: workosInviteID, expires_at: now + 7 * 86400 }, 201);
+  )
+    .bind(
+      id,
+      caller.orgID,
+      email,
+      role,
+      caller.userID,
+      workosInviteID,
+      now + 7 * 86400,
+      now,
+    )
+    .run();
+  return json(
+    {
+      id,
+      email,
+      role,
+      status: "pending",
+      workos_invitation_id: workosInviteID,
+      expires_at: now + 7 * 86400,
+    },
+    201,
+  );
 }
 
-async function handleRevokeInvitation(_req: Request, env: DashboardEnv, caller: Caller, inviteID: string): Promise<Response> {
+async function handleRevokeInvitation(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  inviteID: string,
+): Promise<Response> {
   const inv = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, workos_invitation_id, status FROM invitations WHERE id = ?1 AND org_id = ?2`,
-  ).bind(inviteID, caller.orgID).first<{ id: string; workos_invitation_id: string | null; status: string }>();
+  )
+    .bind(inviteID, caller.orgID)
+    .first<{
+      id: string;
+      workos_invitation_id: string | null;
+      status: string;
+    }>();
   if (!inv) return json({ error: "invitation not found" }, 404);
-  if (inv.status !== "pending") return json({ error: `cannot revoke ${inv.status} invitation` }, 400);
+  if (inv.status !== "pending")
+    return json({ error: `cannot revoke ${inv.status} invitation` }, 400);
 
   if (inv.workos_invitation_id) {
     try {
-      await fetch(`https://api.workos.com/user_management/invitations/${inv.workos_invitation_id}/revoke`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${env.WORKOS_API_KEY}` },
-      });
-    } catch (e) { console.error("workos revoke failed", e); }
+      await fetch(
+        `https://api.workos.com/user_management/invitations/${inv.workos_invitation_id}/revoke`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${env.WORKOS_API_KEY}` },
+        },
+      );
+    } catch (e) {
+      console.error("workos revoke failed", e);
+    }
   }
-  await env.OPENCOMPUTER_DB.prepare(`UPDATE invitations SET status = 'revoked', revoked_at = ?1 WHERE id = ?2`)
-    .bind(Math.floor(Date.now() / 1000), inviteID).run();
+  await env.OPENCOMPUTER_DB.prepare(
+    `UPDATE invitations SET status = 'revoked', revoked_at = ?1 WHERE id = ?2`,
+  )
+    .bind(Math.floor(Date.now() / 1000), inviteID)
+    .run();
   return new Response(null, { status: 204 });
 }
 
 // ── API keys ─────────────────────────────────────────────────────────────
 
-async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListAPIKeys(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, name, key_prefix, scopes, last_used, expires_at, created_at, created_by
        FROM api_keys WHERE org_id = ?1 ORDER BY created_at DESC`,
-  ).bind(caller.orgID).all<{
-    id: string; name: string; key_prefix: string; scopes: string;
-    last_used: number | null; expires_at: number | null; created_at: number; created_by: string | null;
-  }>();
+  )
+    .bind(caller.orgID)
+    .all<{
+      id: string;
+      name: string;
+      key_prefix: string;
+      scopes: string;
+      last_used: number | null;
+      expires_at: number | null;
+      created_at: number;
+      created_by: string | null;
+    }>();
   const keys = (results ?? []).map((r) => ({
     id: r.id,
     orgId: caller.orgID,
     name: r.name,
     keyPrefix: r.key_prefix,
-    scopes: r.scopes.split(",").map((s) => s.trim()).filter(Boolean),
+    scopes: r.scopes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     lastUsed: epochToISO(r.last_used),
     expiresAt: epochToISO(r.expires_at),
     createdAt: epochToISORequired(r.created_at),
@@ -619,24 +969,46 @@ async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: Calle
   return json(keys);
 }
 
-async function handleCreateAPIKey(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const body = await req.json<{ name?: string }>().catch(() => ({} as { name?: string }));
+async function handleCreateAPIKey(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  const body = await req
+    .json<{ name?: string }>()
+    .catch(() => ({}) as { name?: string });
   const name = (body.name ?? "Untitled").trim() || "Untitled";
-  return json(await createAPIKey(env, {
-    orgID: caller.orgID,
-    userID: caller.userID,
-    name,
-  }), 201);
+  return json(
+    await createAPIKey(env, {
+      orgID: caller.orgID,
+      userID: caller.userID,
+      name,
+    }),
+    201,
+  );
 }
 
-async function handleDeleteAPIKey(_req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM api_keys WHERE id = ?1 AND org_id = ?2`).bind(keyID, caller.orgID).run();
+async function handleDeleteAPIKey(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  keyID: string,
+): Promise<Response> {
+  await env.OPENCOMPUTER_DB.prepare(
+    `DELETE FROM api_keys WHERE id = ?1 AND org_id = ?2`,
+  )
+    .bind(keyID, caller.orgID)
+    .run();
   return new Response(null, { status: 204 });
 }
 
 // ── sessions list (cross-cell) ───────────────────────────────────────────
 
-async function handleListSessions(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListSessions(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const url = new URL(req.url);
   const status = url.searchParams.get("status") ?? "";
   let stmt;
@@ -652,8 +1024,14 @@ async function handleListSessions(req: Request, env: DashboardEnv, caller: Calle
     ).bind(caller.orgID);
   }
   const { results } = await stmt.all<{
-    id: string; cell_id: string; worker_id: string | null; status: string;
-    template_id: string | null; created_at: number; last_event_at: number | null; stopped_at: number | null;
+    id: string;
+    cell_id: string;
+    worker_id: string | null;
+    status: string;
+    template_id: string | null;
+    created_at: number;
+    last_event_at: number | null;
+    stopped_at: number | null;
   }>();
   // Reshape to match the frontend's Session interface (camelCase, ISO timestamps).
   const sessions = (results ?? []).map((r) => ({
@@ -673,25 +1051,49 @@ async function handleListSessions(req: Request, env: DashboardEnv, caller: Calle
 
 // ── checkpoints (cross-cell) ─────────────────────────────────────────────
 
-async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListCheckpoints(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   try {
     const url = new URL(req.url);
-    const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-    const perPage = Math.min(100, Math.max(1, parseInt(url.searchParams.get("per_page") ?? "20", 10) || 20));
+    const page = Math.max(
+      1,
+      parseInt(url.searchParams.get("page") ?? "1", 10) || 1,
+    );
+    const perPage = Math.min(
+      100,
+      Math.max(1, parseInt(url.searchParams.get("per_page") ?? "20", 10) || 20),
+    );
     const offset = (page - 1) * perPage;
 
     const { results } = await env.OPENCOMPUTER_DB.prepare(
       `SELECT id, sandbox_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, expires_at, name, status, error_msg, failed_at, kind
          FROM checkpoints_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3`,
-    ).bind(caller.orgID, perPage, offset).all<{
-      id: string; sandbox_id: string; owner_cell_id: string; s3_url: string | null;
-      size_bytes: number | null; golden_hash: string | null; workspace_size: number | null;
-      created_at: number; expires_at: number | null;
-      name: string | null;
-      status: string | null; error_msg: string | null; failed_at: number | null;
-      kind: string | null;
-    }>();
-    const totalRow = await env.OPENCOMPUTER_DB.prepare(`SELECT COUNT(*) AS c FROM checkpoints_index WHERE org_id = ?1`).bind(caller.orgID).first<{ c: number }>();
+    )
+      .bind(caller.orgID, perPage, offset)
+      .all<{
+        id: string;
+        sandbox_id: string;
+        owner_cell_id: string;
+        s3_url: string | null;
+        size_bytes: number | null;
+        golden_hash: string | null;
+        workspace_size: number | null;
+        created_at: number;
+        expires_at: number | null;
+        name: string | null;
+        status: string | null;
+        error_msg: string | null;
+        failed_at: number | null;
+        kind: string | null;
+      }>();
+    const totalRow = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT COUNT(*) AS c FROM checkpoints_index WHERE org_id = ?1`,
+    )
+      .bind(caller.orgID)
+      .first<{ c: number }>();
     return json({
       checkpoints: (results ?? []).map((r) => ({
         id: r.id,
@@ -714,23 +1116,38 @@ async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Ca
         goldenHash: r.golden_hash ?? "",
       })),
       total: totalRow?.c ?? 0,
-      page, perPage,
+      page,
+      perPage,
     });
   } catch (err) {
     console.error("handleListCheckpoints failed:", err);
-    return json({ error: `checkpoints failed: ${(err as Error).message}` }, 500);
+    return json(
+      { error: `checkpoints failed: ${(err as Error).message}` },
+      500,
+    );
   }
 }
 
-async function handleDeleteCheckpoint(_req: Request, env: DashboardEnv, caller: Caller, cpID: string): Promise<Response> {
+async function handleDeleteCheckpoint(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  cpID: string,
+): Promise<Response> {
   // Verify ownership before delete.
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT owner_cell_id FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`,
-  ).bind(cpID, caller.orgID).first<{ owner_cell_id: string }>();
+  )
+    .bind(cpID, caller.orgID)
+    .first<{ owner_cell_id: string }>();
   if (!row) return json({ error: "checkpoint not found" }, 404);
   // Delete D1 row first (source of truth). Owning-cell blob cleanup is async
   // via the cell's existing GC; we don't try to coordinate here.
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`).bind(cpID, caller.orgID).run();
+  await env.OPENCOMPUTER_DB.prepare(
+    `DELETE FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`,
+  )
+    .bind(cpID, caller.orgID)
+    .run();
   return new Response(null, { status: 204 });
 }
 
@@ -739,11 +1156,21 @@ async function handleDeleteCheckpoint(_req: Request, env: DashboardEnv, caller: 
 interface CFCustomHostname {
   id: string;
   status: string;
-  ssl: { status: string; txt_name?: string; txt_value?: string; validation_records?: { name: string; value: string }[] };
+  ssl: {
+    status: string;
+    txt_name?: string;
+    txt_value?: string;
+    validation_records?: { name: string; value: string }[];
+  };
   ownership_verification?: { name: string; value: string };
 }
 
-async function cfAPI(env: DashboardEnv, method: string, path: string, body?: any): Promise<Response> {
+async function cfAPI(
+  env: DashboardEnv,
+  method: string,
+  path: string,
+  body?: any,
+): Promise<Response> {
   return fetch(`https://api.cloudflare.com/client/v4${path}`, {
     method,
     headers: {
@@ -754,45 +1181,104 @@ async function cfAPI(env: DashboardEnv, method: string, path: string, body?: any
   });
 }
 
-async function handleSetCustomDomain(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const body = await req.json<{ domain?: string }>().catch(() => ({} as { domain?: string }));
+async function handleSetCustomDomain(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID)
+    return json({ error: "Cloudflare not configured" }, 503);
+  const body = await req
+    .json<{ domain?: string }>()
+    .catch(() => ({}) as { domain?: string });
   const domain = (body.domain ?? "").trim().toLowerCase();
   if (!domain) return json({ error: "domain required" }, 400);
 
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT cf_hostname_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ cf_hostname_id: string | null }>();
   if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
+    await cfAPI(
+      env,
+      "DELETE",
+      `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`,
+    ).catch(() => {});
   }
-  const r = await cfAPI(env, "POST", `/zones/${env.CF_ZONE_ID}/custom_hostnames`, {
-    hostname: domain,
-    ssl: { method: "txt", type: "dv" },
-  });
-  if (!r.ok) return json({ error: `Cloudflare API: ${r.status} ${await r.text()}` }, 502);
+  const r = await cfAPI(
+    env,
+    "POST",
+    `/zones/${env.CF_ZONE_ID}/custom_hostnames`,
+    {
+      hostname: domain,
+      ssl: { method: "txt", type: "dv" },
+    },
+  );
+  if (!r.ok)
+    return json(
+      { error: `Cloudflare API: ${r.status} ${await r.text()}` },
+      502,
+    );
   const data = (await r.json<{ result: CFCustomHostname }>()).result;
 
   const verifyName = data.ownership_verification?.name ?? null;
   const verifyValue = data.ownership_verification?.value ?? null;
   let sslName: string | null = null;
   let sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
+  if (data.ssl.txt_name) {
+    sslName = data.ssl.txt_name;
+    sslValue = data.ssl.txt_value ?? null;
+  } else if (data.ssl.validation_records?.[0]) {
+    sslName = data.ssl.validation_records[0].name;
+    sslValue = data.ssl.validation_records[0].value;
+  }
 
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE orgs SET custom_domain = ?1, cf_hostname_id = ?2, domain_verification_status = ?3, domain_ssl_status = ?4,
                      verification_txt_name = ?5, verification_txt_value = ?6, ssl_txt_name = ?7, ssl_txt_value = ?8,
                      updated_at = ?9
        WHERE id = ?10`,
-  ).bind(domain, data.id, data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
+  )
+    .bind(
+      domain,
+      data.id,
+      data.status,
+      data.ssl.status,
+      verifyName,
+      verifyValue,
+      sslName,
+      sslValue,
+      Math.floor(Date.now() / 1000),
+      caller.orgID,
+    )
+    .run();
+  const updated = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT * FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<OrgRow>();
   return json(updated ? shapeOrg(updated) : null);
 }
 
-async function handleDeleteCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
+async function handleDeleteCustomDomain(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID)
+    return json({ error: "Cloudflare not configured" }, 503);
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT cf_hostname_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ cf_hostname_id: string | null }>();
   if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
+    await cfAPI(
+      env,
+      "DELETE",
+      `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`,
+    ).catch(() => {});
   }
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE orgs SET custom_domain = NULL, cf_hostname_id = NULL,
@@ -800,41 +1286,92 @@ async function handleDeleteCustomDomain(_req: Request, env: DashboardEnv, caller
                      verification_txt_name = NULL, verification_txt_value = NULL,
                      ssl_txt_name = NULL, ssl_txt_value = NULL, updated_at = ?1
        WHERE id = ?2`,
-  ).bind(Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
+  )
+    .bind(Math.floor(Date.now() / 1000), caller.orgID)
+    .run();
+  const updated = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT * FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<OrgRow>();
   return json(updated ? shapeOrg(updated) : null);
 }
 
-async function handleRefreshCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (!org?.cf_hostname_id) return json({ error: "no custom domain configured" }, 400);
-  const r = await cfAPI(env, "GET", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`);
+async function handleRefreshCustomDomain(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID)
+    return json({ error: "Cloudflare not configured" }, 503);
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT cf_hostname_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ cf_hostname_id: string | null }>();
+  if (!org?.cf_hostname_id)
+    return json({ error: "no custom domain configured" }, 400);
+  const r = await cfAPI(
+    env,
+    "GET",
+    `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`,
+  );
   if (!r.ok) return json({ error: `Cloudflare API: ${r.status}` }, 502);
   const data = (await r.json<{ result: CFCustomHostname }>()).result;
 
   const verifyName = data.ownership_verification?.name ?? null;
   const verifyValue = data.ownership_verification?.value ?? null;
-  let sslName: string | null = null, sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
+  let sslName: string | null = null,
+    sslValue: string | null = null;
+  if (data.ssl.txt_name) {
+    sslName = data.ssl.txt_name;
+    sslValue = data.ssl.txt_value ?? null;
+  } else if (data.ssl.validation_records?.[0]) {
+    sslName = data.ssl.validation_records[0].name;
+    sslValue = data.ssl.validation_records[0].value;
+  }
 
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE orgs SET domain_verification_status = ?1, domain_ssl_status = ?2,
                      verification_txt_name = ?3, verification_txt_value = ?4,
                      ssl_txt_name = ?5, ssl_txt_value = ?6, updated_at = ?7
        WHERE id = ?8`,
-  ).bind(data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
+  )
+    .bind(
+      data.status,
+      data.ssl.status,
+      verifyName,
+      verifyValue,
+      sslName,
+      sslValue,
+      Math.floor(Date.now() / 1000),
+      caller.orgID,
+    )
+    .run();
+  const updated = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT * FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<OrgRow>();
   return json(updated ? shapeOrg(updated) : null);
 }
 
 // ── credits + billing ────────────────────────────────────────────────────
 
-async function handleGetCredits(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const doStub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(caller.orgID));
+async function handleGetCredits(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
+  const doStub = env.CREDIT_ACCOUNT.get(
+    env.CREDIT_ACCOUNT.idFromName(caller.orgID),
+  );
   const snap = await doStub.fetch("https://do/snapshot");
-  const orgRow = await env.OPENCOMPUTER_DB.prepare(`SELECT is_personal FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ is_personal: number }>();
+  const orgRow = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT is_personal FROM orgs WHERE id = ?1`,
+  )
+    .bind(caller.orgID)
+    .first<{ is_personal: number }>();
   if (!snap.ok) {
     // DO might be uninitialized for an org that hasn't done /check yet.
     // Surface a sane default rather than 503'ing the dashboard.
@@ -850,24 +1387,38 @@ async function handleGetCredits(_req: Request, env: DashboardEnv, caller: Caller
     plan: s.plan ?? caller.plan,
     status: s.status ?? "active",
     lifetimeSpentCents: s.lifetime_spent_cents ?? 0,
-    haltedAt: typeof s.halted_at === "number" ? epochToISO(s.halted_at) : undefined,
+    haltedAt:
+      typeof s.halted_at === "number" ? epochToISO(s.halted_at) : undefined,
   });
 }
 
-async function handleListAgentSubscriptions(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListAgentSubscriptions(
+  _req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, agent_id, feature, status, stripe_item_id, created_at, cancelled_at
        FROM agent_subscriptions WHERE org_id = ?1 AND status = 'active'`,
-  ).bind(caller.orgID).all();
+  )
+    .bind(caller.orgID)
+    .all();
   return json({ subscriptions: results ?? [] });
 }
 
 // ── WorkOS helpers ───────────────────────────────────────────────────────
 
-async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: string): Promise<void> {
+async function workosUpdateOrg(
+  env: DashboardEnv,
+  workosOrgID: string,
+  name: string,
+): Promise<void> {
   await fetch(`https://api.workos.com/organizations/${workosOrgID}`, {
     method: "PUT",
-    headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${env.WORKOS_API_KEY}`,
+    },
     body: JSON.stringify({ name }),
   });
 }
@@ -891,7 +1442,11 @@ async function proxyToV3(
   );
   const url = new URL(req.url);
   const target = base + sub + url.search;
-  const orgToken = await mintOrgToken(env.OC_ORG_TOKEN_SECRET, caller.orgID, caller.userID);
+  const orgToken = await mintOrgToken(
+    env.OC_ORG_TOKEN_SECRET,
+    caller.orgID,
+    caller.userID,
+  );
 
   const headers = new Headers();
   headers.set("x-oc-org-token", orgToken);
@@ -920,10 +1475,18 @@ async function proxyToBrowserAPI(
   upstreamPath: string,
 ): Promise<Response> {
   if (!env.BROWSER_API_SECRET) {
-    return json({ error: "browser sessions proxy unavailable: browser API secret not configured" }, 503);
+    return json(
+      {
+        error:
+          "browser sessions proxy unavailable: browser API secret not configured",
+      },
+      503,
+    );
   }
 
-  const base = (env.BROWSER_API_URL ?? "https://browser.opencomputer.dev").replace(/\/+$/, "");
+  const base = (
+    env.BROWSER_API_URL ?? "https://browser.opencomputer.dev"
+  ).replace(/\/+$/, "");
   const url = new URL(req.url);
   const target = `${base}${upstreamPath}${url.search}`;
 
@@ -979,7 +1542,9 @@ export async function handleDashboard(
     }
     const membership = await env.OPENCOMPUTER_DB.prepare(
       `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
-    ).bind(caller.orgID, caller.userID).first<{ role: string }>();
+    )
+      .bind(caller.orgID, caller.userID)
+      .first<{ role: string }>();
     return proxyManagedAgents(
       req,
       env,
@@ -1004,8 +1569,10 @@ export async function handleDashboard(
   }
 
   // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
-  if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
-  if (sub === "/browser-usage" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browser-usage");
+  if (sub === "/browsers" && method === "GET")
+    return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
+  if (sub === "/browser-usage" && method === "GET")
+    return proxyToBrowserAPI(req, env, caller, "/v1/browser-usage");
   {
     const m = sub.match(/^\/browsers\/([^/]+)\/replays\/([^/]+)$/);
     if (m && method === "GET") {
@@ -1020,10 +1587,16 @@ export async function handleDashboard(
   {
     const m = sub.match(/^\/browsers\/([^/]+)$/);
     if (m && (method === "GET" || method === "DELETE")) {
-      return proxyToBrowserAPI(req, env, caller, `/v1/browsers/${encodeURIComponent(m[1])}`);
+      return proxyToBrowserAPI(
+        req,
+        env,
+        caller,
+        `/v1/browsers/${encodeURIComponent(m[1])}`,
+      );
     }
   }
-  if (sub === "/browser-profiles" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
+  if (sub === "/browser-profiles" && method === "GET")
+    return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
 
   // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
   // Reuse the public /api/webhooks handler with the cookie-derived org, so the
@@ -1038,48 +1611,71 @@ export async function handleDashboard(
 
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);
-  if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, caller);
-  if (sub === "/me/preferences" && method === "PUT") return handleUpdateMePreferences(req, env, caller);
+  if (sub === "/orgs" && method === "GET")
+    return handleListOrgs(req, env, caller);
+  if (sub === "/me/preferences" && method === "PUT")
+    return handleUpdateMePreferences(req, env, caller);
   if (sub === "/org" && method === "GET") return handleGetOrg(req, env, caller);
-  if (sub === "/org" && method === "PUT") return handleUpdateOrg(req, env, caller);
-  if (sub === "/org/switch" && method === "POST") return handleOrgSwitch(req, env, caller);
-  if (sub === "/org/members" && method === "GET") return handleListMembers(req, env, caller);
+  if (sub === "/org" && method === "PUT")
+    return handleUpdateOrg(req, env, caller);
+  if (sub === "/org/switch" && method === "POST")
+    return handleOrgSwitch(req, env, caller);
+  if (sub === "/org/members" && method === "GET")
+    return handleListMembers(req, env, caller);
   {
     const m = sub.match(/^\/org\/members\/([^/]+)$/);
-    if (m && method === "DELETE") return handleRemoveMember(req, env, caller, m[1]);
+    if (m && method === "DELETE")
+      return handleRemoveMember(req, env, caller, m[1]);
   }
-  if (sub === "/org/invitations" && method === "GET") return handleListInvitations(req, env, caller);
-  if (sub === "/org/invitations" && method === "POST") return handleSendInvitation(req, env, caller);
+  if (sub === "/org/invitations" && method === "GET")
+    return handleListInvitations(req, env, caller);
+  if (sub === "/org/invitations" && method === "POST")
+    return handleSendInvitation(req, env, caller);
   {
     const m = sub.match(/^\/org\/invitations\/([^/]+)$/);
-    if (m && method === "DELETE") return handleRevokeInvitation(req, env, caller, m[1]);
+    if (m && method === "DELETE")
+      return handleRevokeInvitation(req, env, caller, m[1]);
   }
-  if (sub === "/org/credits" && method === "GET") return handleGetCredits(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "PUT") return handleSetCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "DELETE") return handleDeleteCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain/refresh" && method === "POST") return handleRefreshCustomDomain(req, env, caller);
+  if (sub === "/org/credits" && method === "GET")
+    return handleGetCredits(req, env, caller);
+  if (sub === "/org/custom-domain" && method === "PUT")
+    return handleSetCustomDomain(req, env, caller);
+  if (sub === "/org/custom-domain" && method === "DELETE")
+    return handleDeleteCustomDomain(req, env, caller);
+  if (sub === "/org/custom-domain/refresh" && method === "POST")
+    return handleRefreshCustomDomain(req, env, caller);
+  if (sub === "/org/slack-connect" && method === "GET")
+    return handleSlackConnectStatus(env, caller);
+  if (sub === "/org/slack-connect/invite" && method === "POST")
+    return handleSlackConnectInvite(env, caller);
 
   // ── Agent Hook exposure alerts ──────────────────────────────────────────
   if (sub === "/agent-security-notifications" && method === "GET") {
     return listAgentSecurityNotifications(req, env, caller);
   }
   {
-    const m = sub.match(/^\/agent-security-notifications\/(hse_[0-9a-f]{24})\/acknowledge$/);
+    const m = sub.match(
+      /^\/agent-security-notifications\/(hse_[0-9a-f]{24})\/acknowledge$/,
+    );
     if (m && method === "POST") {
       return acknowledgeAgentSecurityNotification(env, caller, m[1]);
     }
   }
 
   // ── api keys ───────────────────────────────────────────────────────────
-  if (sub === "/api-keys" && method === "GET") return handleListAPIKeys(req, env, caller);
-  if (sub === "/api-keys" && method === "POST") return handleCreateAPIKey(req, env, caller);
+  if (sub === "/api-keys" && method === "GET")
+    return handleListAPIKeys(req, env, caller);
+  if (sub === "/api-keys" && method === "POST")
+    return handleCreateAPIKey(req, env, caller);
   {
     const m = sub.match(/^\/api-keys\/([^/]+)$/);
-    if (m && method === "DELETE") return handleDeleteAPIKey(req, env, caller, m[1]);
+    if (m && method === "DELETE")
+      return handleDeleteAPIKey(req, env, caller, m[1]);
   }
 
   // ── sessions: cross-cell list, then per-cell proxy ─────────────────────
-  if (sub === "/sessions" && method === "GET") return handleListSessions(req, env, caller);
+  if (sub === "/sessions" && method === "GET")
+    return handleListSessions(req, env, caller);
   {
     const m = sub.match(/^\/sessions\/([^/]+)(\/.*)?$/);
     if (m) {
@@ -1087,11 +1683,15 @@ export async function handleDashboard(
       const rest = m[2] ?? ""; // "" means /sessions/:id only
       const target = await sandboxCell(env, sandboxID);
       if (!target) return json({ error: "sandbox not found" }, 404);
-      if (target.org_id !== caller.orgID) return json({ error: "sandbox not in your org" }, 403);
+      if (target.org_id !== caller.orgID)
+        return json({ error: "sandbox not in your org" }, 403);
       const cell = { cell_id: target.cell_id, base_url: target.base_url };
       const cellPath = `/internal/dashboard/sessions/${sandboxID}${rest}`;
       // WebSocket on PTY GET — anything else is a regular HTTP proxy.
-      if (req.headers.get("upgrade")?.toLowerCase() === "websocket" && /^\/pty\/[^/]+$/.test(rest)) {
+      if (
+        req.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+        /^\/pty\/[^/]+$/.test(rest)
+      ) {
         return proxyWebSocket(req, env, caller, cell, cellPath);
       }
       return proxyToCell(req, env, caller, cell, cellPath);
@@ -1099,10 +1699,12 @@ export async function handleDashboard(
   }
 
   // ── checkpoints ───────────────────────────────────────────────────────
-  if (sub === "/checkpoints" && method === "GET") return handleListCheckpoints(req, env, caller);
+  if (sub === "/checkpoints" && method === "GET")
+    return handleListCheckpoints(req, env, caller);
   {
     const m = sub.match(/^\/checkpoints\/([^/]+)$/);
-    if (m && method === "DELETE") return handleDeleteCheckpoint(req, env, caller, m[1]);
+    if (m && method === "DELETE")
+      return handleDeleteCheckpoint(req, env, caller, m[1]);
   }
 
   // ── images: cross-cell list from D1 images_index ───────────────────────
@@ -1133,7 +1735,8 @@ export async function handleDashboard(
 
   // ── agents: proxy to home cell (cell-side hits external agents service) ─
   if (sub === "/agents" || sub.startsWith("/agents/")) {
-    if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
+    if (sub === "/billing/agent-subscriptions" && method === "GET")
+      return handleListAgentSubscriptions(req, env, caller);
     const cell = await homeCell(env, caller.orgID);
     if (!cell) return json({ error: "home cell unavailable" }, 503);
     return proxyToCell(req, env, caller, cell, `/internal/dashboard${sub}`);
@@ -1163,7 +1766,8 @@ export async function handleDashboard(
       return proxyToCell(req, env, caller, cell, cellPath);
     }
   }
-  if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
+  if (sub === "/billing/agent-subscriptions" && method === "GET")
+    return handleListAgentSubscriptions(req, env, caller);
 
   // /billing — basic billing read used by the dashboard billing page.
   // Surfaces the org's plan + credit state from D1 + DO. The full billing
@@ -1174,11 +1778,19 @@ export async function handleDashboard(
     const org = await env.OPENCOMPUTER_DB.prepare(
       `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, autumn_concurrency_override, billing_provider
          FROM orgs WHERE id = ?1`,
-    ).bind(caller.orgID).first<{
-      plan: string; stripe_customer_id: string | null; stripe_subscription_id: string | null;
-      free_credits_remaining_cents: number; credit_balance_cents: number; is_halted: number;
-      max_concurrent_sandboxes: number; autumn_concurrency_override: number | null; billing_provider: string;
-    }>();
+    )
+      .bind(caller.orgID)
+      .first<{
+        plan: string;
+        stripe_customer_id: string | null;
+        stripe_subscription_id: string | null;
+        free_credits_remaining_cents: number;
+        credit_balance_cents: number;
+        is_halted: number;
+        max_concurrent_sandboxes: number;
+        autumn_concurrency_override: number | null;
+        billing_provider: string;
+      }>();
     if (!org) return json({ error: "org not found" }, 404);
     // Managed is a universal capability (every org gets a managed credential provisioned
     // on demand at agent-create / first use), so there's no per-org "available" flag to
@@ -1192,7 +1804,9 @@ export async function handleDashboard(
     let liveBalance = org.free_credits_remaining_cents;
     if (org.plan === "free") {
       try {
-        const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(caller.orgID));
+        const stub = env.CREDIT_ACCOUNT.get(
+          env.CREDIT_ACCOUNT.idFromName(caller.orgID),
+        );
         const snap = await stub.fetch("https://do/snapshot");
         if (snap.ok) {
           const state = await snap.json<Record<string, any>>();
@@ -1202,7 +1816,10 @@ export async function handleDashboard(
           }
         }
       } catch (e) {
-        console.error("billing: DO snapshot failed, falling back to D1 mirror:", e);
+        console.error(
+          "billing: DO snapshot failed, falling back to D1 mirror:",
+          e,
+        );
       }
     }
     // Whether a card is on file + any Stripe promotional credit. Both drive the
@@ -1217,9 +1834,17 @@ export async function handleDashboard(
     let stripeCreditCents = 0;
     if (org.stripe_customer_id && org.billing_provider !== "autumn") {
       try {
-        const cust = await stripeApi(env, `/v1/customers/${org.stripe_customer_id}`, null, "GET");
-        hasPaymentMethod = !!(cust?.invoice_settings?.default_payment_method || cust?.default_source);
-        if (typeof cust?.balance === "number" && cust.balance < 0) stripeCreditCents = -cust.balance;
+        const cust = await stripeApi(
+          env,
+          `/v1/customers/${org.stripe_customer_id}`,
+          null,
+          "GET",
+        );
+        hasPaymentMethod = !!(
+          cust?.invoice_settings?.default_payment_method || cust?.default_source
+        );
+        if (typeof cust?.balance === "number" && cust.balance < 0)
+          stripeCreditCents = -cust.balance;
       } catch (e) {
         console.error("billing: stripe customer fetch failed:", e);
       }
@@ -1304,7 +1929,10 @@ interface ImagesRow {
   last_used_at: number;
 }
 
-async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleListImages(
+  env: DashboardEnv,
+  caller: Caller,
+): Promise<Response> {
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, org_id, owner_cell_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
        FROM images_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
@@ -1313,7 +1941,11 @@ async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Resp
     .all<ImagesRow>();
   const out = (results ?? []).map((r) => {
     let manifest: unknown = {};
-    try { manifest = JSON.parse(r.manifest); } catch { /* keep empty */ }
+    try {
+      manifest = JSON.parse(r.manifest);
+    } catch {
+      /* keep empty */
+    }
     return {
       id: r.id,
       orgId: r.org_id,
@@ -1330,7 +1962,12 @@ async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Resp
   return json(out);
 }
 
-async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller, imageID: string): Promise<Response> {
+async function handleDeleteImage(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  imageID: string,
+): Promise<Response> {
   // Look up owning cell to forward the DELETE to (bytes + checkpoint live there).
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT owner_cell_id, name FROM images_index WHERE id = ?1 AND org_id = ?2`,
@@ -1338,12 +1975,24 @@ async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller
     .bind(imageID, caller.orgID)
     .first<{ owner_cell_id: string; name: string | null }>();
   if (!row) return json({ error: "image not found" }, 404);
-  if (!row.name) return json({ error: "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard" }, 400);
+  if (!row.name)
+    return json(
+      {
+        error:
+          "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard",
+      },
+      400,
+    );
 
   return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, row.name);
 }
 
-async function handleDeleteSnapshot(req: Request, env: DashboardEnv, caller: Caller, name: string): Promise<Response> {
+async function handleDeleteSnapshot(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  name: string,
+): Promise<Response> {
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT owner_cell_id FROM images_index WHERE name = ?1 AND org_id = ?2`,
   )
@@ -1383,7 +2032,12 @@ async function deleteSnapshotOnCell(
 
 // stripeApi POSTs form-urlencoded to Stripe's REST API. GET is supported via
 // the `method` arg; body is ignored for GET. Returns parsed JSON or throws.
-async function stripeApi(env: DashboardEnv, path: string, body: Record<string, string> | null, method: "GET" | "POST" = "POST"): Promise<any> {
+async function stripeApi(
+  env: DashboardEnv,
+  path: string,
+  body: Record<string, string> | null,
+  method: "GET" | "POST" = "POST",
+): Promise<any> {
   const url = `https://api.stripe.com${path}`;
   const init: RequestInit = {
     method,
@@ -1393,7 +2047,8 @@ async function stripeApi(env: DashboardEnv, path: string, body: Record<string, s
     },
   };
   if (method === "POST" && body) {
-    (init.headers as Record<string, string>)["content-type"] = "application/x-www-form-urlencoded";
+    (init.headers as Record<string, string>)["content-type"] =
+      "application/x-www-form-urlencoded";
     init.body = new URLSearchParams(body).toString();
   }
   const resp = await fetch(url, init);
@@ -1405,14 +2060,24 @@ async function stripeApi(env: DashboardEnv, path: string, body: Record<string, s
     parsed = { raw: text };
   }
   if (!resp.ok) {
-    const msg = parsed?.error?.message ?? parsed?.raw ?? `stripe ${path} returned ${resp.status}`;
+    const msg =
+      parsed?.error?.message ??
+      parsed?.raw ??
+      `stripe ${path} returned ${resp.status}`;
     throw new Error(msg);
   }
   return parsed;
 }
 
 // loadOrgStripe pulls just the Stripe-relevant columns for a caller's org.
-async function loadOrgStripe(env: DashboardEnv, orgID: string): Promise<{ name: string; stripe_customer_id: string | null; stripe_subscription_id: string | null } | null> {
+async function loadOrgStripe(
+  env: DashboardEnv,
+  orgID: string,
+): Promise<{
+  name: string;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+} | null> {
   return env.OPENCOMPUTER_DB.prepare(
     `SELECT name, stripe_customer_id, stripe_subscription_id FROM orgs WHERE id = ?1`,
   )
@@ -1422,14 +2087,23 @@ async function loadOrgStripe(env: DashboardEnv, orgID: string): Promise<{ name: 
 
 // ── Stripe billing handlers ────────────────────────────────────────────
 
-async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleBillingPortal(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const org = await loadOrgStripe(env, caller.orgID);
   if (!org) return json({ error: "org not found" }, 404);
   if (!org.stripe_customer_id) {
-    return json({ error: "no billing account on file yet — add a payment method first" }, 400);
+    return json(
+      { error: "no billing account on file yet — add a payment method first" },
+      400,
+    );
   }
   // Bounce back wherever the dashboard came from when the user closes the portal.
-  const returnURL = req.headers.get("referer") ?? `${new URL(req.url).origin}/dashboard/billing`;
+  const returnURL =
+    req.headers.get("referer") ??
+    `${new URL(req.url).origin}/dashboard/billing`;
   try {
     const session = await stripeApi(env, "/v1/billing_portal/sessions", {
       customer: org.stripe_customer_id,
@@ -1445,11 +2119,26 @@ async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { or
 // Autumn-org billing portal — the card lives under Autumn's Stripe account, so
 // we broker the portal session through Autumn (the org id IS the Autumn
 // customer id), NOT the edge's direct STRIPE_API_KEY.
-async function handleAutumnPortal(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  const returnURL = req.headers.get("referer") ?? `${new URL(req.url).origin}/dashboard/billing`;
+async function handleAutumnPortal(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  const returnURL =
+    req.headers.get("referer") ??
+    `${new URL(req.url).origin}/dashboard/billing`;
   try {
-    const { url } = await autumnOpenCustomerPortal(env, { customerId: caller.orgID, returnUrl: returnURL });
-    if (!url) return json({ error: "no billing account on file yet — add a payment method first" }, 400);
+    const { url } = await autumnOpenCustomerPortal(env, {
+      customerId: caller.orgID,
+      returnUrl: returnURL,
+    });
+    if (!url)
+      return json(
+        {
+          error: "no billing account on file yet — add a payment method first",
+        },
+        400,
+      );
     return json({ url });
   } catch (e) {
     console.error("billing/autumn/portal:", e);
@@ -1481,7 +2170,11 @@ const AUTUMN_TIER_RATE_PER_SEC: Record<number, number> = {
 // recent window, for billing transparency. Sourced from D1 usage_samples
 // (global across cells); disk overage is excluded (samples carry no disk size),
 // so this is compute cost only. usage_samples is short-lived, hence the window.
-async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleSandboxUsage(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const url = new URL(req.url);
   let days = Number.parseInt(url.searchParams.get("days") ?? "30", 10);
   if (!Number.isFinite(days) || days < 1) days = 30;
@@ -1497,14 +2190,33 @@ async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { org
       GROUP BY u.sandbox_id, u.memory_mb`,
   )
     .bind(caller.orgID, cutoffMs)
-    .all<{ sandbox_id: string; memory_mb: number; secs: number; status: string | null; created_at: number | null }>();
+    .all<{
+      sandbox_id: string;
+      memory_mb: number;
+      secs: number;
+      status: string | null;
+      created_at: number | null;
+    }>();
 
   // Fold per-(sandbox, tier) rows into per-sandbox totals.
-  const bySandbox = new Map<string, { costCents: number; seconds: number; status: string | null; createdAt: number | null }>();
+  const bySandbox = new Map<
+    string,
+    {
+      costCents: number;
+      seconds: number;
+      status: string | null;
+      createdAt: number | null;
+    }
+  >();
   for (const r of rows.results ?? []) {
     const rate = AUTUMN_TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
     const secs = r.secs ?? 0;
-    const cur = bySandbox.get(r.sandbox_id) ?? { costCents: 0, seconds: 0, status: r.status, createdAt: r.created_at };
+    const cur = bySandbox.get(r.sandbox_id) ?? {
+      costCents: 0,
+      seconds: 0,
+      status: r.status,
+      createdAt: r.created_at,
+    };
     cur.costCents += secs * rate * 100;
     cur.seconds += secs;
     if (cur.status == null) cur.status = r.status;
@@ -1549,8 +2261,13 @@ const AUTUMN_USAGE_PLANS: Record<string, number> = {
 // GET /api/dashboard/billing/autumn — prepaid credit balance + concurrency plan.
 // Re-syncs Autumn → D1 on the way (this is the checkout-return / page-view resume
 // trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
-async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+async function handleAutumnBilling(
+  _req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY)
+    return json({ error: "autumn billing not configured" }, 503);
   let r;
   try {
     r = await syncAutumnToD1(env, caller.orgID);
@@ -1579,12 +2296,16 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     }
   }
 
-  const at = r.customer.billing_controls?.auto_topups?.find((a) => a.feature_id === "credits");
+  const at = r.customer.billing_controls?.auto_topups?.find(
+    (a) => a.feature_id === "credits",
+  );
 
   // Has the customer charged a top-up? That's when auto-recharge becomes armed,
   // so the UI uses it to tell whether enabling auto-recharge will run a first
   // recharge or just save. Free — the customer is already loaded above.
-  const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
+  const hasToppedUp = (r.customer.purchases ?? []).some(
+    (p) => p.plan_id === "top_up",
+  );
   const hasPaidSubscription = usagePlan === "pro" || usagePlan === "max";
   const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
 
@@ -1601,18 +2322,27 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       AND k.status IN ('active', 'superseded', 'deleting')
      WHERE o.id = ?1
      GROUP BY o.model_billing_status, o.model_markup_bps`,
-  ).bind(caller.orgID).first<{
-    status: string;
-    markup_bps: number;
-    active_key_count: number;
-    billing_started_at: number | null;
-    committed_micro: number;
-  }>();
+  )
+    .bind(caller.orgID)
+    .first<{
+      status: string;
+      markup_bps: number;
+      active_key_count: number;
+      billing_started_at: number | null;
+      committed_micro: number;
+    }>();
   const modelStatus = model?.status ?? "off";
   const modelMarkupBps = model?.markup_bps ?? 0;
-  const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
-  const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
-  const creditsRemainingCents = Math.max(0, Math.round(r.creditsRemaining * 100));
+  const modelProviderSpendCents = Math.round(
+    (model?.committed_micro ?? 0) / 10_000,
+  );
+  const modelBilledCreditsCents = Math.round(
+    modelProviderSpendCents * (1 + modelMarkupBps / 10_000),
+  );
+  const creditsRemainingCents = Math.max(
+    0,
+    Math.round(r.creditsRemaining * 100),
+  );
   const planRemainingCents = Math.min(
     creditsRemainingCents,
     Math.round(creditBreakdown.planRemaining * 100),
@@ -1630,9 +2360,10 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       topupRemainingCents,
       otherRemainingCents:
         creditsRemainingCents - planRemainingCents - topupRemainingCents,
-      planResetsAt: creditBreakdown.planResetsAt == null
-        ? null
-        : new Date(creditBreakdown.planResetsAt).toISOString(),
+      planResetsAt:
+        creditBreakdown.planResetsAt == null
+          ? null
+          : new Date(creditBreakdown.planResetsAt).toISOString(),
     },
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
@@ -1669,8 +2400,13 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
 // POST /api/dashboard/billing/autumn/plan { plan } — subscribe to or switch
 // between the recurring Pro and Max shared-credit plans. Usage remains the
 // automatic fallback when a paid subscription is cancelled in Stripe.
-async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+async function handleAutumnUsagePlan(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY)
+    return json({ error: "autumn billing not configured" }, 503);
   let body: { plan?: string };
   try {
     body = await req.json();
@@ -1700,9 +2436,19 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
 // recharge. Monetary values are integer credits ($1 each). Autumn expresses the
 // hard monthly budget as a purchase count, so budget must be a whole multiple of
 // quantity. A saved payment method is required for charges to succeed.
-async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
-  let body: { enabled?: boolean; threshold?: number; quantity?: number; budget?: number };
+async function handleAutumnAutoTopup(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY)
+    return json({ error: "autumn billing not configured" }, 503);
+  let body: {
+    enabled?: boolean;
+    threshold?: number;
+    quantity?: number;
+    budget?: number;
+  };
   try {
     body = await req.json();
   } catch {
@@ -1723,12 +2469,20 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
       budget % quantity !== 0)
   ) {
     return json(
-      { error: "threshold ≥ 0, quantity ≥ 1, and a monthly budget divisible by quantity are required" },
+      {
+        error:
+          "threshold ≥ 0, quantity ≥ 1, and a monthly budget divisible by quantity are required",
+      },
       400,
     );
   }
   try {
-    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity, budget });
+    await autumnSetAutoTopup(env, caller.orgID, {
+      enabled,
+      threshold,
+      quantity,
+      budget,
+    });
 
     // Auto-recharge is armed once the customer has charged a top-up (a
     // saved-but-never-charged card is unarmed). If they've already topped up, just
@@ -1757,11 +2511,17 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
 // dropped query params), which both adds the credits and arms auto-recharge, then
 // 302 back to the billing page. Authenticated by the session cookie carried on
 // the redirect.
-async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleAutumnFinalizeArm(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const origin = new URL(req.url).origin;
   const billing = `${origin}/dashboard/billing`;
   if (!env.AUTUMN_SECRET_KEY) return Response.redirect(billing, 302);
-  const credits = Math.floor(Number(new URL(req.url).searchParams.get("credits") ?? "0"));
+  const credits = Math.floor(
+    Number(new URL(req.url).searchParams.get("credits") ?? "0"),
+  );
   // Idempotency: only charge if not already topped up — so a refresh / double
   // redirect to this URL can't charge twice (after the first charge, hasToppedUp
   // is true).
@@ -1783,8 +2543,13 @@ async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: 
 // POST /api/dashboard/billing/autumn/topup { credits } — one-off prepaid credit
 // purchase. Returns a Stripe checkout URL; success returns to the billing page
 // where handleAutumnBilling re-syncs the new balance.
-async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+async function handleAutumnTopup(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY)
+    return json({ error: "autumn billing not configured" }, 503);
   let body: { credits?: number };
   try {
     body = await req.json();
@@ -1814,8 +2579,13 @@ async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgI
 
 // POST /api/dashboard/billing/autumn/concurrency { plan } — subscribe/upgrade a
 // monthly concurrency tier. Returns a Stripe subscription checkout URL.
-async function handleAutumnConcurrency(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+async function handleAutumnConcurrency(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY)
+    return json({ error: "autumn billing not configured" }, 503);
   let body: { plan?: string };
   try {
     body = await req.json();
@@ -1842,7 +2612,11 @@ async function handleAutumnConcurrency(req: Request, env: DashboardEnv, caller: 
   }
 }
 
-async function handleBillingSetup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleBillingSetup(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const org = await loadOrgStripe(env, caller.orgID);
   if (!org) return json({ error: "org not found" }, 404);
 
@@ -1894,7 +2668,11 @@ async function handleBillingSetup(req: Request, env: DashboardEnv, caller: { org
   }
 }
 
-async function handleBillingRedeem(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleBillingRedeem(
+  req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const body = (await req.json().catch(() => null)) as { code?: string } | null;
   if (!body?.code) return json({ error: "code is required" }, 400);
 
@@ -1906,7 +2684,12 @@ async function handleBillingRedeem(req: Request, env: DashboardEnv, caller: { or
 
   try {
     // Look up the promotion code → coupon
-    const promos = await stripeApi(env, `/v1/promotion_codes?code=${encodeURIComponent(body.code)}&active=true`, null, "GET");
+    const promos = await stripeApi(
+      env,
+      `/v1/promotion_codes?code=${encodeURIComponent(body.code)}&active=true`,
+      null,
+      "GET",
+    );
     const pc = promos?.data?.[0];
     if (!pc) return json({ error: "promo code not found or inactive" }, 400);
     const couponAmount = pc?.coupon?.amount_off as number | undefined;
@@ -1916,11 +2699,15 @@ async function handleBillingRedeem(req: Request, env: DashboardEnv, caller: { or
 
     // Apply as a negative customer balance transaction (= credit). Stripe
     // pulls from this on the next invoice.
-    await stripeApi(env, `/v1/customers/${org.stripe_customer_id}/balance_transactions`, {
-      amount: String(-couponAmount),
-      currency: pc?.coupon?.currency ?? "usd",
-      description: `Promotion code ${body.code}`,
-    });
+    await stripeApi(
+      env,
+      `/v1/customers/${org.stripe_customer_id}/balance_transactions`,
+      {
+        amount: String(-couponAmount),
+        currency: pc?.coupon?.currency ?? "usd",
+        description: `Promotion code ${body.code}`,
+      },
+    );
 
     return json({ creditAppliedCents: couponAmount });
   } catch (e) {
@@ -1929,12 +2716,21 @@ async function handleBillingRedeem(req: Request, env: DashboardEnv, caller: { or
   }
 }
 
-async function handleBillingInvoices(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleBillingInvoices(
+  _req: Request,
+  env: DashboardEnv,
+  caller: { orgID: string },
+): Promise<Response> {
   const org = await loadOrgStripe(env, caller.orgID);
   if (!org) return json({ error: "org not found" }, 404);
   if (!org.stripe_customer_id) return json({ invoices: [] });
   try {
-    const list = await stripeApi(env, `/v1/invoices?customer=${org.stripe_customer_id}&limit=25`, null, "GET");
+    const list = await stripeApi(
+      env,
+      `/v1/invoices?customer=${org.stripe_customer_id}&limit=25`,
+      null,
+      "GET",
+    );
     const invoices = (list?.data ?? []).map((inv: any) => ({
       id: inv.id,
       status: inv.status,

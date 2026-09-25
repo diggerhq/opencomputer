@@ -150,6 +150,11 @@ deleted_classes = ["VmSession"]
 #                            exposure alerts from sessions-api.
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend.
+#   SLACK_CONNECT_BOT_TOKEN — bot token (conversations.connect:write) of the
+#                            OpenComputer workspace app that owns the shared
+#                            support channel; with SLACK_CONNECT_CHANNEL_ID it
+#                            enables Pro/Max self-serve Slack Connect invites
+#                            (src/slack_connect.ts). Unset hides the feature.
 # The VM-DO exec data plane (VM_SESSIONS DO) needs NO dedicated secret: the worker
 # host authenticates its /internal/vms/:id/connect dial with a per-sandbox HMAC
 # over the already-shared SESSION_JWT_SECRET (minted by the CP, re-derived here).

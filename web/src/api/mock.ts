@@ -1439,6 +1439,15 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/members$/, () => orgMembers],
   [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
+  [
+    /^\/org\/slack-connect$/,
+    () => ({
+      available: true,
+      eligible: true,
+      email: me.email,
+      invitedAt: null,
+    }),
+  ],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
@@ -1516,6 +1525,14 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [
+    /^\/org\/slack-connect\/invite$/,
+    () => ({
+      email: me.email,
+      invitedAt: new Date(BASE).toISOString(),
+      alreadyInvited: false,
+    }),
+  ],
   [
     /^\/managed-agents\/projects$/,
     () => {
