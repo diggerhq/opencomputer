@@ -113,7 +113,10 @@ export type ReplayEventDeliveriesSelection =
       until?: string;
       limit?: number;
     }
-  | { sessionId?: string; since?: string; until?: string; limit?: number };
+  | ({ sessionId?: string; limit?: number } & (
+      | { since: string; until?: string }
+      | { since?: string; until: string }
+    ));
 
 /** The headers of every delivery attempt. */
 export const EVENT_DELIVERY_HEADERS = {

@@ -10,6 +10,7 @@ import {
   verifyEventDelivery,
   type EventDelivery,
   type EventDeliveryEnvelope,
+  type ReplayEventDeliveriesSelection,
 } from "./event-delivery.js";
 import type { EventPage } from "./types.js";
 
@@ -192,6 +193,19 @@ describe("projects.eventSubscriptions (HTTPS)", () => {
     expect(api.last().body).toEqual({ sessionId: "ses_1", fromSequence: 40, toSequence: 45 });
     expect(replayed).toHaveLength(1);
     expect(replayed[0]).toMatchObject({ id: "dlv_2", eventId: "event_1", replayOf: "dlv_1", status: "pending" });
+  });
+
+  it("only types replay selections the API accepts", () => {
+    expectTypeOf<{ deliveryIds: string[] }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ sessionId: string }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ sessionId: string; fromSequence: number }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ since: string }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ until: string; limit: number }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ since: string; until: string }>().toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    // The API answers 400 invalid_replay to these, so they must not compile.
+    expectTypeOf<Record<never, never>>().not.toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ limit: number }>().not.toMatchTypeOf<ReplayEventDeliveriesSelection>();
+    expectTypeOf<{ fromSequence: number }>().not.toMatchTypeOf<ReplayEventDeliveriesSelection>();
   });
 
   it("reads a session whose turn was delivered to an HTTPS destination", async () => {
