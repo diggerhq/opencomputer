@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
 import {
   Link,
@@ -30,6 +34,7 @@ import {
   Panel,
   PanelContent,
   PanelDescription,
+  PanelFooter,
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
@@ -55,6 +60,7 @@ import {
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
+  getManagedAgentSessionsPage,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -636,12 +642,22 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
-  const projectSessions = useQuery({
+  const projectSessions = useInfiniteQuery({
     queryKey: ['managed-agent-sessions', 'project', projectId],
-    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      getManagedAgentSessionsPage({
+        projectId,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(projectId),
     refetchInterval: 5_000,
   })
+  const projectSessionRows = useMemo(
+    () => projectSessions.data?.pages.flatMap((page) => page.sessions) ?? [],
+    [projectSessions.data],
+  )
   const environmentSessions = project
     ? sessionsForEnvironment(
         sessions.data ?? [],
@@ -656,7 +672,7 @@ export default function ManagedAgentDetail({
   const externalSessions = (
     project
       ? sessionsForEnvironment(
-          projectSessions.data ?? [],
+          projectSessionRows,
           project.deployments,
           sessionsAgentFilter,
           environment,
@@ -1186,6 +1202,21 @@ export default function ManagedAgentDetail({
               />
             }
           />
+          {project && projectSessions.hasNextPage ? (
+            <PanelFooter>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={projectSessions.isFetchingNextPage}
+                onClick={() => void projectSessions.fetchNextPage()}
+              >
+                {projectSessions.isFetchingNextPage ? (
+                  <Loader2 className="animate-spin" />
+                ) : null}
+                Load more
+              </Button>
+            </PanelFooter>
+          ) : null}
         </Panel>
       ) : null}
 
