@@ -22,6 +22,7 @@ import {
   describeResolution,
   ensureProjectBinding,
   findOpenComputerProjectRoot,
+  readLinkedProject,
 } from "./binding.js";
 import {
   assertStarterTarget,
@@ -368,11 +369,18 @@ function printDoctor(result: DoctorResult, json: boolean): void {
   );
 }
 
+/** The project a cloud-scoped command targets; `checkout` when it is the one this checkout is bound to. */
+interface SelectedProject {
+  projectId: string;
+  agentId: string;
+  checkout: boolean;
+}
+
 async function selectedProject(
   client: OpenComputerClient,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   reference?: string,
-): Promise<{ projectId: string; agentId: string }> {
+): Promise<SelectedProject> {
   if (reference) {
     const project = (await client.projects()).find(
       (candidate) => candidate.id === reference || candidate.slug === reference,
@@ -380,11 +388,20 @@ async function selectedProject(
     if (!project) throw new Error(`Project ${reference} was not found.`);
     const agent = project.agents[0];
     if (!agent) throw new Error(`Project ${project.name} has no agents.`);
-    return { projectId: project.id, agentId: agent.id };
+    const linked = await findOpenComputerProjectRoot(process.cwd())
+      .then((root) => readLinkedProject(root))
+      .catch(() => null);
+    const checkout =
+      linked?.projectId === project.id && linked.apiUrl === config.apiUrl;
+    return {
+      projectId: project.id,
+      agentId: checkout ? linked.agentId : agent.id,
+      checkout,
+    };
   }
   const root = await findOpenComputerProjectRoot(process.cwd());
   const binding = await ensureProjectBinding(client, config, root);
-  return { projectId: binding.projectId, agentId: binding.agentId };
+  return { projectId: binding.projectId, agentId: binding.agentId, checkout: true };
 }
 
 /**
@@ -394,9 +411,16 @@ async function selectedProject(
  * multi-agent checkout never falls back to the first agent.
  */
 async function selectedLocalAgent(
-  project: { agentId: string },
+  project: SelectedProject,
   selector: AgentSelector,
 ): Promise<ProjectAgentMember> {
+  if (!project.checkout) {
+    throw new CLIError(
+      "local_agent_unavailable",
+      "This command needs an agent source from this checkout, but --project selects a project this checkout is not linked to.",
+      "Drop --project, run from a checkout linked to that project, or pass what the source would supply (for secrets, --allow-origin).",
+    );
+  }
   const root = await findOpenComputerProjectRoot(process.cwd());
   const members = projectAgentMembers(await readProjectAgents(root), project);
   if (!selector.agent && !selector.localAgent) {
@@ -412,15 +436,17 @@ async function selectedLocalAgent(
 
 /** `--agent`/`--local-agent` of a cloud-scoped command: the cloud agent id, resolved through the local member when one is named. */
 async function selectedScopeAgent(
-  project: { agentId: string },
+  project: SelectedProject,
   agentOption: string | undefined,
   localAgentOption: string | undefined,
 ): Promise<{ agentId?: string; member?: ProjectAgentMember }> {
   const agent = agentOption === "current" ? project.agentId : agentOption;
   if (!localAgentOption) {
     if (!agent) return {};
-    // A cloud id wins; a local id alone is an alias whose scope is that
-    // member's cloud agent, never the alias itself.
+    // Within the linked checkout a cloud id wins and a local id alone is an
+    // alias for that member's cloud agent; for any other project the id is
+    // taken literally.
+    if (!project.checkout) return { agentId: agent };
     const members = await findOpenComputerProjectRoot(process.cwd())
       .then((root) => (root ? readProjectAgents(root) : []))
       .then((agents) => projectAgentMembers(agents, project))

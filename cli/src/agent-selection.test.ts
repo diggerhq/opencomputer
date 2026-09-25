@@ -152,10 +152,18 @@ function fakeCloud(context: test.TestContext): Cloud {
       return Response.json({
         projects: [
           { id: "prj_1", slug: "app", name: "app", environments: [], agents, createdAt: "2026-01-01T00:00:00Z" },
+          {
+            id: "prj_2",
+            slug: "remote",
+            name: "remote",
+            environments: [],
+            agents: ["remote-base", "billing", "remote-base--billing"].map((id) => ({ id, name: id })),
+            createdAt: "2026-01-01T00:00:00Z",
+          },
         ],
       });
     }
-    const secret = url.pathname.match(/^\/api\/managed-agents\/projects\/prj_1\/secrets\/([^/]+)$/);
+    const secret = url.pathname.match(/^\/api\/managed-agents\/projects\/prj_[12]\/secrets\/([^/]+)$/);
     if (secret && request.method === "PUT") {
       const body = (await request.json()) as Record<string, unknown>;
       cloud.puts.push({ path: url.pathname, body });
@@ -239,6 +247,36 @@ test("acceptance 1 and 3: from a three-agent root, `secrets set --agent` infers 
     assert.equal(cloud.puts.length, 2);
     assert.equal(cloud.puts[1]!.body.agentId, "app--billing", "a local id alias scopes to its cloud agent");
     assert.deepEqual(cloud.puts[1]!.body.allowedOrigins, ["https://billing.example.com"]);
+
+    // Another project's cloud id is taken literally: this checkout's local names are no alias for it.
+    const remote = await runFrom(context, resolve(parent, "app"), "secrets", [
+      "set",
+      "API_TOKEN",
+      "--project",
+      "remote",
+      "--agent",
+      "billing",
+      "--allow-origin",
+      "https://remote.example.com",
+      "--value-stdin",
+    ]);
+    assert.equal(remote.error, undefined, remote.error?.message);
+    assert.equal(cloud.puts.length, 3);
+    assert.equal(cloud.puts[2]!.path, "/api/managed-agents/projects/prj_2/secrets/API_TOKEN");
+    assert.equal(cloud.puts[2]!.body.agentId, "billing");
+
+    const unlinked = await runFrom(context, resolve(parent, "app"), "secrets", [
+      "set",
+      "API_TOKEN",
+      "--project",
+      "remote",
+      "--agent",
+      "billing",
+      "--value-stdin",
+    ]);
+    assert.ok(unlinked.error instanceof CLIError);
+    assert.equal(unlinked.error.code, "local_agent_unavailable");
+    assert.equal(cloud.puts.length, 3);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
