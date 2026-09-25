@@ -530,8 +530,14 @@ export class OpenComputerClient {
     // The caller's key names an operation on a target; the body is what the
     // backend compares under that key. Hashing the body in would make a
     // retry with different inputs a new operation instead of the conflict
-    // the key promises.
-    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
+    // the key promises. A route whose key has a wider scope than one path
+    // sets the header itself and is left alone.
+    if (
+      this.idempotencyKey &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !headers.has("idempotency-key")
+    ) {
       headers.set(
         "idempotency-key",
         createHash("sha256")
@@ -1470,9 +1476,10 @@ export class OpenComputerClient {
 
   /**
    * Asks for one file of the session's workspace to be snapshotted and
-   * hashed. The route requires an Idempotency-Key; the CLI-wide
-   * `--idempotency-key` supplies it when given, otherwise a fresh one is
-   * minted and the request is a new export.
+   * hashed. The route requires an Idempotency-Key scoped to the project,
+   * so the CLI-wide `--idempotency-key` is sent as given when present (a
+   * reuse across sessions is the conflict the API promises); otherwise a
+   * fresh one is minted and the request is a new export.
    */
   async createWorkspaceArtifactExport(input: {
     sessionId: string;
@@ -1485,7 +1492,7 @@ export class OpenComputerClient {
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace-artifacts/exports`,
       {
         method: "POST",
-        headers: { "idempotency-key": crypto.randomUUID() },
+        headers: { "idempotency-key": this.idempotencyKey ?? crypto.randomUUID() },
         body: JSON.stringify(body),
       },
     );
@@ -1493,9 +1500,15 @@ export class OpenComputerClient {
     return { created: response.status === 202, export: result.export };
   }
 
-  async workspaceArtifactExport(exportId: string): Promise<WorkspaceArtifactExport> {
+  async workspaceArtifactExport(
+    exportId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<WorkspaceArtifactExport> {
     const result = await this.request<{ export: WorkspaceArtifactExport }>(
       `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}`,
+      options.signal
+        ? { signal: AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) }
+        : {},
     );
     return result.export;
   }
@@ -1516,15 +1529,26 @@ export class OpenComputerClient {
   }
 
   /**
-   * Opens the delivered bytes of an export as a stream. Only the request has
-   * a timeout; the body is read at the caller's pace. The metadata comes
-   * from the response headers, which the caller checks the bytes against.
+   * Opens the delivered bytes of an export as a stream. The wait for the
+   * response headers has the usual request timeout; once they have arrived
+   * the body is read at the caller's pace. The metadata comes from those
+   * headers, which the caller checks the bytes against.
    */
   async workspaceArtifactContent(exportId: string): Promise<WorkspaceArtifactContent> {
-    const response = await this.response(
-      `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}/content`,
-      { headers: { accept: "*/*" }, signal: new AbortController().signal },
+    const controller = new AbortController();
+    const headersTimeout = setTimeout(
+      () => controller.abort(new Error("The artifact download did not start within 30s.")),
+      30_000,
     );
+    let response: Response;
+    try {
+      response = await this.response(
+        `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}/content`,
+        { headers: { accept: "*/*" }, signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(headersTimeout);
+    }
     const header = (name: string): string => {
       const value = response.headers.get(name);
       if (!value) {

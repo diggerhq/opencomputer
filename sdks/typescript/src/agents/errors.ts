@@ -11,7 +11,7 @@
  * (`session_publication_unconfirmed` carries `sessionId`).
  */
 export interface ApiErrorEnvelope {
-  error?: { code?: string; message?: string; sessionId?: string } | string;
+  error?: { code?: string; message?: string; sessionId?: string; retrySafe?: boolean } | string;
 }
 
 /** What an error carries beside its status, code and message. */
@@ -20,6 +20,8 @@ export interface OpenComputerErrorDetails {
   retryAfter?: number;
   /** The session the failure concerns, when the API named one. */
   sessionId?: string;
+  /** Whether the same request, with the same idempotency key, may be retried, when the API said. */
+  retrySafe?: boolean;
 }
 
 const CODE_BY_STATUS: Record<number, string> = {
@@ -46,6 +48,12 @@ export class OpenComputerError extends Error {
    * yet. The client does not retry; the caller repeats the same call.
    */
   readonly sessionId?: string;
+  /**
+   * Whether repeating the same request with the same idempotency key is
+   * safe, when the API said so. Workspace artifact export errors carry it:
+   * `export_not_ready` is retry-safe, `export_idempotency_conflict` is not.
+   */
+  readonly retrySafe?: boolean;
 
   constructor(
     status: number,
@@ -59,6 +67,7 @@ export class OpenComputerError extends Error {
     this.code = code || CODE_BY_STATUS[status] || (status >= 500 ? "unavailable" : "request_failed");
     if (details.retryAfter !== undefined) this.retryAfter = details.retryAfter;
     if (details.sessionId !== undefined) this.sessionId = details.sessionId;
+    if (details.retrySafe !== undefined) this.retrySafe = details.retrySafe;
   }
 }
 
@@ -73,5 +82,6 @@ export function errorFromResponse(status: number, body: unknown, headers?: Heade
   const details: OpenComputerErrorDetails = {};
   if (Number.isFinite(retryAfter) && retryAfter > 0) details.retryAfter = retryAfter;
   if (typeof fields?.sessionId === "string" && fields.sessionId) details.sessionId = fields.sessionId;
+  if (typeof fields?.retrySafe === "boolean") details.retrySafe = fields.retrySafe;
   return new OpenComputerError(status, fields?.code, message, details);
 }

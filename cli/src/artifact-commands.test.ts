@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -134,14 +134,16 @@ test("export sends the documented body with an Idempotency-Key and reports 202 a
   assert.match(requests[0]?.headers.get("idempotency-key") ?? "", /^[0-9a-f-]{36}$/);
   assert.deepEqual(requests[0]?.body, { path: "/workspace/artifacts/capture.json", expected: { bytes: 16 } });
 
-  // The CLI-wide --idempotency-key names the operation; repeating it replays.
+  // The CLI-wide --idempotency-key is the project-scoped key the API
+  // compares, so it goes on the wire as given: repeating it replays, and
+  // reusing it for another session is the API's conflict, not a new export.
   const keyed = new OpenComputerClient(config, "artifact-001");
   const replay = await createArtifactExport(keyed, request);
   assert.equal(replay.created, false);
-  const first = requests[1]?.headers.get("idempotency-key");
-  await createArtifactExport(keyed, request);
-  assert.equal(requests[2]?.headers.get("idempotency-key"), first);
-  assert.match(first ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(requests[1]?.headers.get("idempotency-key"), "artifact-001");
+  await createArtifactExport(keyed, { ...request, sessionId: "ses_2" });
+  assert.equal(requests[2]?.path, "/api/managed-agents/sessions/ses_2/workspace-artifacts/exports");
+  assert.equal(requests[2]?.headers.get("idempotency-key"), "artifact-001");
 });
 
 test("export names an idempotency conflict and passes other API errors through", async (context) => {
@@ -185,6 +187,20 @@ test("waiting polls the manifest until a terminal state", async (context) => {
   assert.deepEqual(paths, Array<string>(4).fill("/api/managed-agents/workspace-artifact-exports/aexp_1"));
 });
 
+test("aborting while a poll is in flight rejects without waiting for it", async (context) => {
+  const controller = new AbortController();
+  context.mock.method(globalThis, "fetch", (_input: string | URL | Request, init?: RequestInit) => {
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      setTimeout(() => controller.abort(new Error("operator stopped waiting")), 5);
+    });
+  });
+  await assert.rejects(
+    waitForArtifactExport(new OpenComputerClient(config), "aexp_1", { signal: controller.signal }),
+    /operator stopped waiting/,
+  );
+});
+
 test("waiting gives up at the deadline with the export it last saw", async (context) => {
   context.mock.method(globalThis, "fetch", async () => Response.json({ export: record }));
   await assert.rejects(
@@ -225,7 +241,7 @@ test("download writes the exact bytes to the file only after the digest checks o
       sha256: contentSha256,
     });
     assert.deepEqual(await readFile(output), content);
-    await assert.rejects(access(`${output}.part`));
+    assert.deepEqual(await readdir(directory), ["capture.json"]);
     assert.deepEqual(paths, ["/api/managed-agents/workspace-artifact-exports/aexp_1/content"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -238,12 +254,16 @@ test("download leaves no file behind when the digest or size does not match", as
   const directory = await mkdtemp(join(tmpdir(), "opencomputer-artifact-"));
   try {
     const output = join(directory, "capture.json");
+    // Someone else's leftover is not this download's to remove.
+    await writeFile(`${output}.part`, "earlier attempt");
     await assert.rejects(
       downloadArtifactExportToFile(new OpenComputerClient(config), "aexp_1", output),
       (error: unknown) => error instanceof CLIError && error.code === "artifact_digest_mismatch",
     );
     await assert.rejects(access(output));
-    await assert.rejects(access(`${output}.part`));
+    assert.deepEqual(await readdir(directory), ["capture.json.part"]);
+    assert.equal(await readFile(`${output}.part`, "utf8"), "earlier attempt");
+    await rm(`${output}.part`);
 
     response = contentResponse({ "content-length": String(content.byteLength + 3) });
     await assert.rejects(
@@ -251,6 +271,7 @@ test("download leaves no file behind when the digest or size does not match", as
       (error: unknown) => error instanceof CLIError && error.code === "artifact_size_mismatch",
     );
     await assert.rejects(access(output));
+    assert.deepEqual(await readdir(directory), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

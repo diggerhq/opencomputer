@@ -131,9 +131,9 @@ describe("oc.sessions.artifacts", () => {
       .export({ sessionId: "ses_1", path: "/workspace/artifacts/other.json", idempotencyKey: "k" })
       .catch((e: unknown) => e);
     expect(conflict).toBeInstanceOf(OpenComputerError);
-    expect(conflict).toMatchObject({ status: 409, code: "export_idempotency_conflict" });
+    expect(conflict).toMatchObject({ status: 409, code: "export_idempotency_conflict", retrySafe: false });
     const notReady = await oc(api).sessions.artifacts.download("aexp_1").catch((e: unknown) => e);
-    expect(notReady).toMatchObject({ status: 409, code: "export_not_ready" });
+    expect(notReady).toMatchObject({ status: 409, code: "export_not_ready", retrySafe: true });
   });
 
   it("inspects, lists and cancels on the documented routes", async () => {
@@ -231,14 +231,29 @@ describe("oc.sessions.artifacts", () => {
     expect(await readAll(download.stream)).toEqual(content);
   });
 
-  it("refuses a content response that lacks the artifact headers or redirects", async () => {
+  it("refuses a content response that lacks the artifact headers, a body, or redirects", async () => {
+    const emptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     const api = fakeApi({
       "GET /api/managed-agents/workspace-artifact-exports/aexp_1/content": () =>
         new Response(content, { status: 200, headers: { "content-length": String(content.byteLength) } }),
       "GET /api/managed-agents/workspace-artifact-exports/aexp_2/content": () =>
         new Response(null, { status: 302, headers: { location: "https://storage.example/signed" } }),
+      "GET /api/managed-agents/workspace-artifact-exports/aexp_3/content": () =>
+        new Response(null, {
+          status: 200,
+          headers: {
+            "content-length": "0",
+            "x-opencomputer-artifact-sha256": emptySha256,
+            "x-opencomputer-artifact-id": "art_3",
+            "x-opencomputer-export-id": "aexp_3",
+          },
+        }),
     });
     await expect(oc(api).sessions.artifacts.download("aexp_1")).rejects.toMatchObject({ code: "invalid_response" });
     await expect(oc(api).sessions.artifacts.download("aexp_2")).rejects.toMatchObject({ code: "redirected" });
+    await expect(oc(api).sessions.artifacts.download("aexp_3")).rejects.toMatchObject({
+      code: "invalid_response",
+      message: expect.stringContaining("no body"),
+    });
   });
 });

@@ -254,7 +254,10 @@ export class WorkspaceArtifacts {
       throw new OpenComputerError(response.status, "invalid_response", "content download has no valid SHA-256 header");
     }
     const mediaType = response.headers.get("content-type") || "application/octet-stream";
-    const source = response.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
+    const source = response.body;
+    if (!source) {
+      throw new OpenComputerError(response.status, "invalid_response", "content download has no body");
+    }
     const stream = options.verify === false ? source : verified(source, servedExportId, bytes, sha256);
     return { stream, bytes, sha256, mediaType, artifactId, exportId: servedExportId };
   }

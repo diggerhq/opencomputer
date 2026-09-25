@@ -250,9 +250,11 @@ oc artifacts download <export-id> --output ./capture.json
 ```
 
 `export` accepts `--media-type`, `--expected-sha256` and `--expected-bytes`
-as in the API. `--idempotency-key` is the CLI's global option; the same key
-with the same arguments replays the same export, and the command says so.
-Without it every invocation is a new export. `--wait` polls until the export
+as in the API. `--idempotency-key` is the CLI's global option and is sent to
+the API as given: the same key with the same arguments replays the same
+export, and the command says so; the same key with a different session, path
+or expected values is an `export_idempotency_conflict`. Without it every
+invocation is a new export. `--wait` polls until the export
 is terminal and exits non-zero, naming the error code, unless it is
 `delivered`.
 

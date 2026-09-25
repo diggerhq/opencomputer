@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { rename, rm } from "node:fs/promises";
 import { Readable, Transform, type Writable } from "node:stream";
@@ -72,8 +72,8 @@ export function parseArtifactExportOptions(input: {
 
 /**
  * Creates the export. A reused CLI-wide `--idempotency-key` whose earlier
- * export had a different path, media type or expected values is a 409;
- * name the cause.
+ * export in this project had a different session, path, media type or
+ * expected values is a 409; name the cause.
  */
 export async function createArtifactExport(
   client: OpenComputerClient,
@@ -90,7 +90,7 @@ export async function createArtifactExport(
     if (error instanceof APIError && error.code === "export_idempotency_conflict") {
       throw new CLIError(
         "export_idempotency_conflict",
-        "This --idempotency-key already requested an export of this session with a different path, media type or expected values.",
+        "This --idempotency-key already requested a different export in this project (another session, path, media type or expected values).",
         "Pass a new --idempotency-key to request another export, or repeat the earlier command unchanged to get the existing one.",
         { status: 409, sessionId: request.sessionId, path: request.path },
       );
@@ -113,7 +113,7 @@ export async function waitForArtifactExport(
   const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
   for (;;) {
     options.signal?.throwIfAborted();
-    const record = await client.workspaceArtifactExport(exportId);
+    const record = await client.workspaceArtifactExport(exportId, { signal: options.signal });
     if (ARTIFACT_TERMINAL_STATES.has(record.state)) return record;
     if (deadline !== undefined && Date.now() >= deadline) {
       throw new CLIError(
@@ -219,20 +219,22 @@ export async function streamArtifactExport(
 
 /**
  * Downloads the export to `outputPath`. The bytes land in a sibling
- * `.part` file and take the final name only after the digest and byte
- * count check out, so a verified file is the only file ever at the path.
+ * `.part` file that is unique to this download and created exclusively,
+ * and take the final name only after the digest and byte count check out,
+ * so a verified file is the only file ever at the path and a failure only
+ * removes what this download wrote.
  */
 export async function downloadArtifactExportToFile(
   client: OpenComputerClient,
   exportId: string,
   outputPath: string,
 ): Promise<ArtifactDownloadResult> {
-  const partial = `${outputPath}.part`;
+  const partial = `${outputPath}.${randomUUID()}.part`;
   try {
     const result = await streamArtifactExport(
       client,
       exportId,
-      createWriteStream(partial, { flags: "w", mode: 0o600 }),
+      createWriteStream(partial, { flags: "wx", mode: 0o600 }),
     );
     await rename(partial, outputPath);
     return result;

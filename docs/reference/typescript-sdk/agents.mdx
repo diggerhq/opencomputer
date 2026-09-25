@@ -58,8 +58,10 @@ HTTP failures throw `OpenComputerError` with `code`, `status` and
 `session_publication_unconfirmed`); when the body had only text, it is
 derived from the status: `unauthorized`, `forbidden`, `not_found`,
 `conflict`, `rate_limited`, `unavailable` for `5xx`, `request_failed`
-otherwise. A `429` also carries `retryAfter` in seconds, and an error the
-API tied to a session carries `sessionId`.
+otherwise. A `429` also carries `retryAfter` in seconds, an error the API
+tied to a session carries `sessionId`, and a workspace artifact export error
+carries `retrySafe`, whether the same request with the same idempotency key
+may be repeated.
 
 Network failures, response-body read failures and cancellation propagate the
 underlying error, such as `TypeError` or `AbortError`. They do not prove that
