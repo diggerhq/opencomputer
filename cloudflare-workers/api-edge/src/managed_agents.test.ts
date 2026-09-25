@@ -3258,6 +3258,19 @@ describe("managed agents proxy", () => {
               type: "session.created",
               data: { externalReference: "cypen/order/42", accountId: "org_test" },
             },
+            {
+              id: "evt-2",
+              seq: 2,
+              timestamp: "2026-09-15T00:00:01.000Z",
+              sessionId: "session-1",
+              turnId: null,
+              type: "session.failed",
+              data: {
+                reason: "runtime_lost",
+                error: "internal stack trace org_test",
+                externalReference: "cypen/order/42",
+              },
+            },
           ],
         });
       }
@@ -3405,6 +3418,10 @@ describe("managed agents proxy", () => {
       type: "session.created",
       data: { externalReference: "cypen/order/42" },
     });
+    expect(eventBody.events[1]?.type).toBe("session.failed");
+    expect(eventBody.events[1]?.data.externalReference).toBe("cypen/order/42");
+    expect(eventBody.events[1]?.data).not.toHaveProperty("error");
+    expect(eventBody.events[1]?.data).not.toHaveProperty("reason");
     expect(JSON.stringify(eventBody)).not.toContain("org_test");
   });
 

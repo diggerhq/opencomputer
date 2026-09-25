@@ -1350,7 +1350,13 @@ function publicEventData(
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
-  if (type === "session.failed" || type === "turn.failed") {
+  if (type === "session.failed") {
+    return {
+      ...publicFailure(value),
+      ...ownerExternalReference(record(value) ?? {}),
+    };
+  }
+  if (type === "turn.failed") {
     return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
