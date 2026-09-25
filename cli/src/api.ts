@@ -391,6 +391,83 @@ export interface CreateSessionResult {
   deployment?: ManagedAgentDeployment;
 }
 
+export type WorkspaceArtifactExportState =
+  | "queued"
+  | "snapshotting"
+  | "delivering"
+  | "delivered"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export type WorkspaceArtifactExportErrorCode =
+  | "invalid_workspace_path"
+  | "path_outside_workspace"
+  | "artifact_not_found"
+  | "artifact_not_regular_file"
+  | "artifact_symlink_rejected"
+  | "artifact_too_large"
+  | "artifact_changed_during_snapshot"
+  | "artifact_digest_mismatch"
+  | "artifact_size_mismatch"
+  | "destination_not_allowed"
+  | "destination_unavailable"
+  | "destination_rejected"
+  | "export_idempotency_conflict"
+  | "export_expired"
+  | "export_cancelled"
+  | "export_not_ready"
+  | "session_not_exportable"
+  | "export_not_found";
+
+/** One export of a file from a session's workspace (docs/agents/artifacts.mdx). */
+export interface WorkspaceArtifactExport {
+  id: string;
+  artifactId: string | null;
+  projectId: string;
+  environment: "development" | "production";
+  agentId: string;
+  deploymentId: string | null;
+  sessionId: string;
+  turnId: string | null;
+  toolCallId: string | null;
+  workspacePath: string;
+  snapshotId: string | null;
+  mediaType: string | null;
+  bytes: number | null;
+  sha256: string | null;
+  state: WorkspaceArtifactExportState;
+  error: {
+    code: WorkspaceArtifactExportErrorCode;
+    message: string;
+    retrySafe: boolean;
+  } | null;
+  idempotencyKeyDigest: string;
+  retention: {
+    manifestRetainedUntil: string | null;
+    snapshotRetainedUntil: string | null;
+  };
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface CreateWorkspaceArtifactExportResult {
+  /** 202 queued a new export; 200 replayed an earlier one under the same Idempotency-Key. */
+  created: boolean;
+  export: WorkspaceArtifactExport;
+}
+
+/** The metadata the content route asserts about the bytes it streams. */
+export interface WorkspaceArtifactContent {
+  exportId: string;
+  artifactId: string;
+  mediaType: string;
+  bytes: number;
+  sha256: string;
+  body: ReadableStream<Uint8Array>;
+}
+
 export class APIError extends Error {
   constructor(
     message: string,
@@ -470,7 +547,7 @@ export class OpenComputerClient {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+      signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
@@ -1389,5 +1466,90 @@ export class OpenComputerClient {
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/terminate`,
       { method: "POST" },
     );
+  }
+
+  /**
+   * Asks for one file of the session's workspace to be snapshotted and
+   * hashed. The route requires an Idempotency-Key; the CLI-wide
+   * `--idempotency-key` supplies it when given, otherwise a fresh one is
+   * minted and the request is a new export.
+   */
+  async createWorkspaceArtifactExport(input: {
+    sessionId: string;
+    path: string;
+    mediaType?: string;
+    expected?: { bytes?: number; sha256?: string };
+  }): Promise<CreateWorkspaceArtifactExportResult> {
+    const { sessionId, ...body } = input;
+    const response = await this.response(
+      `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace-artifacts/exports`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": crypto.randomUUID() },
+        body: JSON.stringify(body),
+      },
+    );
+    const result = (await response.json()) as { export: WorkspaceArtifactExport };
+    return { created: response.status === 202, export: result.export };
+  }
+
+  async workspaceArtifactExport(exportId: string): Promise<WorkspaceArtifactExport> {
+    const result = await this.request<{ export: WorkspaceArtifactExport }>(
+      `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}`,
+    );
+    return result.export;
+  }
+
+  async workspaceArtifactExports(sessionId: string): Promise<WorkspaceArtifactExport[]> {
+    const result = await this.request<{ exports: WorkspaceArtifactExport[] }>(
+      `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace-artifacts/exports`,
+    );
+    return result.exports;
+  }
+
+  async cancelWorkspaceArtifactExport(exportId: string): Promise<WorkspaceArtifactExport> {
+    const result = await this.request<{ export: WorkspaceArtifactExport }>(
+      `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}/cancel`,
+      { method: "POST" },
+    );
+    return result.export;
+  }
+
+  /**
+   * Opens the delivered bytes of an export as a stream. Only the request has
+   * a timeout; the body is read at the caller's pace. The metadata comes
+   * from the response headers, which the caller checks the bytes against.
+   */
+  async workspaceArtifactContent(exportId: string): Promise<WorkspaceArtifactContent> {
+    const response = await this.response(
+      `/api/managed-agents/workspace-artifact-exports/${encodeURIComponent(exportId)}/content`,
+      { headers: { accept: "*/*" }, signal: new AbortController().signal },
+    );
+    const header = (name: string): string => {
+      const value = response.headers.get(name);
+      if (!value) {
+        throw new APIError(
+          `The artifact download is missing its ${name} header.`,
+          502,
+        );
+      }
+      return value;
+    };
+    const bytes = Number(header("content-length"));
+    const sha256 = header("x-opencomputer-artifact-sha256").toLowerCase();
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || !/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new APIError("The artifact download announced unusable metadata.", 502);
+    }
+    if (!response.body) {
+      throw new APIError("The artifact download has no body.", 502);
+    }
+    return {
+      exportId: header("x-opencomputer-export-id"),
+      artifactId: header("x-opencomputer-artifact-id"),
+      mediaType: response.headers.get("content-type") ?? "application/octet-stream",
+      bytes,
+      sha256,
+      body: response.body,
+    };
   }
 }

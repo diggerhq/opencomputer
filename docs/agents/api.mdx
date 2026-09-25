@@ -336,6 +336,25 @@ without waiting. To follow a live session, keep polling from the last
 durable, so a consumer that stops can resume from its cursor and miss nothing.
 Event types and their `data` are listed on [Session events](/agents/events).
 
+## Workspace artifact exports
+
+An export takes one file out of a session's `/workspace`, as an immutable
+snapshot with a recorded size and SHA-256, and streams it to your server.
+Request bodies, the export record, states, error codes and idempotency rules
+are on [Workspace artifact exports](/agents/artifacts).
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| Request an export | `POST /sessions/<id>/workspace-artifacts/exports` with `Idempotency-Key` and `{ path, mediaType?, expected? }` | `202` with `{ export }`; `200` with the same record on an exact replay; `409 export_idempotency_conflict` when the key was used for a different request |
+| Inspect | `GET /workspace-artifact-exports/<export-id>` | `200` with `{ export }` |
+| List | `GET /sessions/<id>/workspace-artifacts/exports` | `200` with `{ exports }` |
+| Cancel | `POST /workspace-artifact-exports/<export-id>/cancel` | `200` with `{ export }`; a terminal export is returned unchanged |
+| Download | `GET /workspace-artifact-exports/<export-id>/content` | `200` streaming the exact bytes with `Content-Type`, `Content-Length`, `X-OpenComputer-Artifact-Sha256`, `X-OpenComputer-Artifact-Id` and `X-OpenComputer-Export-Id`; `409 export_not_ready` until the export is `delivered` |
+
+Artifact error bodies add `retrySafe` to the envelope:
+`{ error: { code, message, retrySafe } }`. The download is answered to the
+API key directly; it is never a redirect or a URL that works without the key.
+
 ## Memory
 
 Document memory belongs to a project and an environment. Every route takes

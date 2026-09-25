@@ -10,6 +10,7 @@ export {
   Sessions,
   Turns,
   Events,
+  WorkspaceArtifacts,
   Projects,
   Memory,
   MemoryDocuments,
@@ -31,6 +32,23 @@ export {
 export { sessionIdempotencyKey, type StartOnDocumentParams, type StartOnDocumentResult } from "./start-on-document.js";
 export { OpenComputerError, type ApiErrorEnvelope, type OpenComputerErrorDetails } from "./errors.js";
 export { DEFAULT_BASE_URL, type HttpOptions } from "./http.js";
+export {
+  WorkspaceArtifactIntegrityError,
+  WORKSPACE_ARTIFACT_EXPORT_TERMINAL_STATES,
+  isWorkspaceArtifactExportTerminal,
+  type WorkspaceArtifactExport,
+  type WorkspaceArtifactExportState,
+  type WorkspaceArtifactExportErrorCode,
+  type WorkspaceArtifactExportError,
+  type WorkspaceArtifactExportRetention,
+  type WorkspaceArtifactExpected,
+  type CreateWorkspaceArtifactExportParams,
+  type WorkspaceArtifactExportCreated,
+  type WaitUntilTerminalOptions,
+  type DownloadWorkspaceArtifactOptions,
+  type WorkspaceArtifactDownload,
+  type WorkspaceArtifactIntegrityFailure,
+} from "./artifacts.js";
 export type * from "./types.js";
 export type {
   MemoryEnvironment,

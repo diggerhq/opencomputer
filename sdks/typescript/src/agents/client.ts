@@ -4,7 +4,19 @@
 // documented shape of its answer (shapes.ts); the transport checks the body
 // against it before the method returns.
 
+import {
+  isWorkspaceArtifactExportTerminal,
+  WorkspaceArtifactIntegrityError,
+  type CreateWorkspaceArtifactExportParams,
+  type DownloadWorkspaceArtifactOptions,
+  type WaitUntilTerminalOptions,
+  type WorkspaceArtifactDownload,
+  type WorkspaceArtifactExport,
+  type WorkspaceArtifactExportCreated,
+} from "./artifacts.js";
+import { OpenComputerError } from "./errors.js";
 import { Http, type HttpOptions, segment } from "./http.js";
+import { Sha256 } from "./sha256.js";
 import * as shapes from "./shapes.js";
 import {
   startOnDocument,
@@ -129,13 +141,194 @@ export class Events {
   }
 }
 
+/**
+ * Workspace artifact exports (docs/agents/artifacts.mdx): an exact copy of
+ * one file from a session's persisted `/workspace`, snapshotted and hashed
+ * by OpenComputer and served to the API key. The application authorises the
+ * export and owns the destination; the model never sees the bytes, a signed
+ * URL or a credential.
+ */
+export class WorkspaceArtifacts {
+  constructor(private readonly http: Http) {}
+
+  /**
+   * `POST /sessions/<id>/workspace-artifacts/exports` with `Idempotency-Key`:
+   * `202` creates the export, `200` returns the one the key already created,
+   * `409 export_idempotency_conflict` when the key was used with a different
+   * path, media type or expected values.
+   */
+  async export(
+    params: CreateWorkspaceArtifactExportParams,
+    options: CallOptions = {},
+  ): Promise<WorkspaceArtifactExportCreated> {
+    if (!params.idempotencyKey || params.idempotencyKey.length > 255) {
+      throw new OpenComputerError(400, "invalid_request", "idempotencyKey must be 1 to 255 characters");
+    }
+    const body: Record<string, unknown> = { path: params.path };
+    if (params.mediaType !== undefined) body.mediaType = params.mediaType;
+    if (params.expected !== undefined) {
+      const expected: Record<string, unknown> = {};
+      if (params.expected.bytes !== undefined) expected.bytes = params.expected.bytes;
+      if (params.expected.sha256 !== undefined) expected.sha256 = params.expected.sha256;
+      body.expected = expected;
+    }
+    const answer = await this.http.send(
+      "POST",
+      `/sessions/${segment(params.sessionId)}/workspace-artifacts/exports`,
+      shapes.workspaceArtifactExportEnvelope,
+      { body, headers: { "idempotency-key": params.idempotencyKey }, signal: options.signal },
+    );
+    return { export: answer.body.export, created: answer.status === 202 };
+  }
+
+  /** `GET /workspace-artifact-exports/<id>`: the manifest, available after the session has ended. */
+  async get(exportId: string, options: CallOptions = {}): Promise<WorkspaceArtifactExport> {
+    const answer = await this.http.request(
+      "GET",
+      `/workspace-artifact-exports/${segment(exportId)}`,
+      shapes.workspaceArtifactExportEnvelope,
+      { signal: options.signal },
+    );
+    return answer.export;
+  }
+
+  /** `GET /sessions/<id>/workspace-artifacts/exports`. */
+  async list(sessionId: string, options: CallOptions = {}): Promise<WorkspaceArtifactExport[]> {
+    const page = await this.http.request(
+      "GET",
+      `/sessions/${segment(sessionId)}/workspace-artifacts/exports`,
+      shapes.workspaceArtifactExportsPage,
+      { signal: options.signal },
+    );
+    return page.exports;
+  }
+
+  /** `POST /workspace-artifact-exports/<id>/cancel`. A terminal export is returned unchanged. */
+  async cancel(exportId: string, options: CallOptions = {}): Promise<WorkspaceArtifactExport> {
+    const answer = await this.http.request(
+      "POST",
+      `/workspace-artifact-exports/${segment(exportId)}/cancel`,
+      shapes.workspaceArtifactExportEnvelope,
+      { signal: options.signal },
+    );
+    return answer.export;
+  }
+
+  /**
+   * Polls `get` until the export is `delivered`, `failed`, `cancelled` or
+   * `expired` and returns that record. Aborting `signal` rejects with the
+   * signal's reason (an `AbortError` by default) between polls and during
+   * an in-flight poll; the export itself is not cancelled.
+   */
+  async waitUntilTerminal(exportId: string, options: WaitUntilTerminalOptions = {}): Promise<WorkspaceArtifactExport> {
+    const interval = options.pollIntervalMs ?? 1000;
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const record = await this.get(exportId, { signal: options.signal });
+      if (isWorkspaceArtifactExportTerminal(record.state)) return record;
+      await sleep(interval, options.signal);
+    }
+  }
+
+  /**
+   * `GET /workspace-artifact-exports/<id>/content`: the snapshot bytes as a
+   * stream, with the byte count, digest, media type and ids from the
+   * headers. `409 export_not_ready` until the export is `delivered`. With
+   * `verify` (the default) the stream hashes what passes through and errors
+   * with `WorkspaceArtifactIntegrityError` at its end when the digest or
+   * byte count differs from the headers; the caller sees the failure where
+   * it consumes the stream, and must discard what it wrote.
+   */
+  async download(exportId: string, options: DownloadWorkspaceArtifactOptions = {}): Promise<WorkspaceArtifactDownload> {
+    const response = await this.http.open("GET", `/workspace-artifact-exports/${segment(exportId)}/content`, "*/*", {
+      signal: options.signal,
+    });
+    const sha256 = header(response, "x-opencomputer-artifact-sha256").toLowerCase();
+    const artifactId = header(response, "x-opencomputer-artifact-id");
+    const servedExportId = header(response, "x-opencomputer-export-id");
+    const bytes = Number(header(response, "content-length"));
+    if (!Number.isInteger(bytes) || bytes < 0) {
+      throw new OpenComputerError(response.status, "invalid_response", "content download has no valid Content-Length");
+    }
+    if (!/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new OpenComputerError(response.status, "invalid_response", "content download has no valid SHA-256 header");
+    }
+    const mediaType = response.headers.get("content-type") || "application/octet-stream";
+    const source = response.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
+    const stream = options.verify === false ? source : verified(source, servedExportId, bytes, sha256);
+    return { stream, bytes, sha256, mediaType, artifactId, exportId: servedExportId };
+  }
+}
+
+/** A required header of the content download, or `invalid_response`. */
+function header(response: Response, name: string): string {
+  const value = response.headers.get(name);
+  if (!value) throw new OpenComputerError(response.status, "invalid_response", `content download lacks ${name}`);
+  return value;
+}
+
+/** The same bytes, hashed and counted on the way through; the stream errors at its end on a mismatch. */
+function verified(
+  source: ReadableStream<Uint8Array>,
+  exportId: string,
+  expectedBytes: number,
+  expectedSha256: string,
+): ReadableStream<Uint8Array> {
+  const hash = new Sha256();
+  let seen = 0;
+  return source.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        hash.update(chunk);
+        seen += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      flush() {
+        if (seen !== expectedBytes) {
+          throw new WorkspaceArtifactIntegrityError(
+            "artifact_size_mismatch",
+            exportId,
+            String(expectedBytes),
+            String(seen),
+          );
+        }
+        const actual = hash.digestHex();
+        if (actual !== expectedSha256) {
+          throw new WorkspaceArtifactIntegrityError("artifact_digest_mismatch", exportId, expectedSha256, actual);
+        }
+      },
+    }),
+  );
+}
+
+/** Resolves after `ms`, or rejects with the signal's reason when it aborts first. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class Sessions {
   readonly turns: Turns;
   readonly events: Events;
+  readonly artifacts: WorkspaceArtifacts;
 
   constructor(private readonly http: Http) {
     this.turns = new Turns(http);
     this.events = new Events(http);
+    this.artifacts = new WorkspaceArtifacts(http);
   }
 
   /** `POST /sessions`: creates a session without a turn. `created` is false when the key had already created it. */

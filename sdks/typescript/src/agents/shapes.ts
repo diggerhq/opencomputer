@@ -10,6 +10,11 @@
 // `data`, a turn's `payload`, a tool's `input` and `output` — is checked only
 // as a JSON value; its content belongs to the application.
 
+import type {
+  WorkspaceArtifactExport,
+  WorkspaceArtifactExportErrorCode,
+  WorkspaceArtifactExportState,
+} from "./artifacts.js";
 import type { EventSubscription, OutcomeEventType, TurnOutcomeDelivery } from "./event-subscriptions.js";
 import type {
   MemoryDocument,
@@ -452,6 +457,37 @@ export const memoryResourceInventory: Shape<MemoryResourceInventory> = object({
     }),
   ),
 });
+
+// ── Workspace artifact exports ────────────────────────────────────────────────
+
+export const workspaceArtifactExport: Shape<WorkspaceArtifactExport> = object({
+  id: string,
+  artifactId: nullable(string),
+  projectId: string,
+  environment,
+  agentId: string,
+  deploymentId: nullable(string),
+  sessionId: string,
+  turnId: nullable(string),
+  toolCallId: nullable(string),
+  workspacePath: string,
+  snapshotId: nullable(string),
+  mediaType: nullable(string),
+  bytes: nullable(number),
+  sha256: nullable(string),
+  state: stringAs<WorkspaceArtifactExportState>(),
+  error: nullable(
+    object({ code: stringAs<WorkspaceArtifactExportErrorCode>(), message: string, retrySafe: boolean }),
+  ),
+  idempotencyKeyDigest: string,
+  retention: object({ manifestRetainedUntil: nullable(string), snapshotRetainedUntil: nullable(string) }),
+  createdAt: string,
+  updatedAt: string,
+  completedAt: nullable(string),
+});
+
+export const workspaceArtifactExportEnvelope = object({ export: workspaceArtifactExport });
+export const workspaceArtifactExportsPage = object({ exports: array(workspaceArtifactExport) });
 
 // ── GitHub repositories ───────────────────────────────────────────────────────
 

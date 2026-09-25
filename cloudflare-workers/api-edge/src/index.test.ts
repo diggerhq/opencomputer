@@ -517,3 +517,87 @@ describe("/api/managed-agents/slack/callback — unauthenticated mount", () => {
     );
   });
 });
+
+// A sessions-api provisioning token may only touch sandbox + secret-store routes.
+// Workspace artifact exports carry the session's files out to a trusted server,
+// so the same least-privilege gate has to refuse them before anything is proxied:
+// a token minted for a turn's sandbox must not be able to list, request or
+// download a session's artifacts.
+describe("/api/managed-agents workspace artifacts — provision-scope gate", () => {
+  const PROVISION_SECRET = "provision-secret";
+  const PROVISION_ORG = "0f3f5a1e-2b4c-4d6e-8f90-1a2b3c4d5e6f";
+
+  function b64url(bytes: ArrayBuffer | Uint8Array): string {
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let s = "";
+    for (const b of arr) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function mintProvisionToken(): Promise<string> {
+    const enc = new TextEncoder();
+    const now = Math.floor(Date.now() / 1000);
+    const header = b64url(enc.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+    const payload = b64url(
+      enc.encode(
+        JSON.stringify({
+          iss: "sessions-api",
+          aud: "opencomputer-api",
+          iat: now,
+          exp: now + 600,
+          org_id: PROVISION_ORG,
+          scope: "sandbox-provision",
+        }),
+      ),
+    );
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(PROVISION_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = await crypto.subtle.sign("HMAC", key, enc.encode(`${header}.${payload}`));
+    return `${header}.${payload}.${b64url(sig)}`;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ["GET", "/api/managed-agents/workspace-artifact-exports/aexp_1/content"],
+    ["GET", "/api/managed-agents/workspace-artifact-exports/aexp_1"],
+    ["GET", "/api/managed-agents/sessions/ses_1/workspace-artifacts/exports"],
+    ["POST", "/api/managed-agents/sessions/ses_1/workspace-artifacts/exports"],
+    ["POST", "/api/managed-agents/workspace-artifact-exports/aexp_1/cancel"],
+  ])("refuses a provision-scoped token on %s %s without reaching the backend", async (method, path) => {
+    const fetchSpy = vi.fn(async () => new Response("unreachable", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resp = await worker.fetch(
+      new Request(`https://app.opencomputer.dev${path}`, {
+        method,
+        headers: {
+          "X-API-Key": await mintProvisionToken(),
+          "Idempotency-Key": "export:test",
+          "Content-Type": "application/json",
+        },
+        body: method === "POST" ? JSON.stringify({ path: "/workspace/artifacts/a.txt" }) : undefined,
+      }),
+      {
+        ...env,
+        OC_PROVISION_SECRET: PROVISION_SECRET,
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      ctx,
+    );
+
+    expect(resp.status).toBe(403);
+    expect(resp.headers.get("location")).toBeNull();
+    expect(await resp.json()).toEqual({
+      error: expect.stringContaining("provision-scoped token"),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

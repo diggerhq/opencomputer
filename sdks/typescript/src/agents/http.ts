@@ -77,29 +77,8 @@ export class Http {
    * on a success whose body is not JSON or not the documented shape.
    */
   async send<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<Answer<T>> {
-    const headers: Record<string, string> = {
-      "x-api-key": this.apiKey,
-      accept: "application/json",
-      ...options.headers,
-    };
-    const init: RequestInit = { method, headers, signal: options.signal, redirect: "manual" };
-    if (options.body !== undefined) {
-      headers["content-type"] = "application/json";
-      init.body = JSON.stringify(options.body);
-    }
-    const response = await this.doFetch(this.url(path, options.query), init);
-    if (isRedirect(response)) {
-      throw new OpenComputerError(
-        response.status,
-        "redirected",
-        `${method} ${path} was answered with a redirect (${String(response.status)}); ` +
-          "the client does not follow redirects with the API key. Check baseUrl.",
-      );
-    }
+    const response = await this.open(method, path, "application/json", options);
     const text = response.status === 204 ? "" : await response.text();
-    if (!response.ok) {
-      throw errorFromResponse(response.status, parseJson(text) ?? (text ? { error: text } : undefined), response.headers);
-    }
     let body: unknown;
     if (text) {
       body = parseJson(text);
@@ -126,6 +105,39 @@ export class Http {
   /** `send` for callers that need only the body. */
   async request<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<T> {
     return (await this.send(method, path, shape, options)).body;
+  }
+
+  /**
+   * Sends a request and returns the successful response as it came, body
+   * unread, for routes that answer with bytes rather than JSON. A failed
+   * status is read as the error envelope and thrown; a redirect is refused
+   * as in `send`.
+   */
+  async open(method: string, path: string, accept: string, options: RequestOptions = {}): Promise<Response> {
+    const headers: Record<string, string> = {
+      "x-api-key": this.apiKey,
+      accept,
+      ...options.headers,
+    };
+    const init: RequestInit = { method, headers, signal: options.signal, redirect: "manual" };
+    if (options.body !== undefined) {
+      headers["content-type"] = "application/json";
+      init.body = JSON.stringify(options.body);
+    }
+    const response = await this.doFetch(this.url(path, options.query), init);
+    if (isRedirect(response)) {
+      throw new OpenComputerError(
+        response.status,
+        "redirected",
+        `${method} ${path} was answered with a redirect (${String(response.status)}); ` +
+          "the client does not follow redirects with the API key. Check baseUrl.",
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      throw errorFromResponse(response.status, parseJson(text) ?? (text ? { error: text } : undefined), response.headers);
+    }
+    return response;
   }
 }
 

@@ -247,6 +247,27 @@ from the same subpath, is the standalone form of the call for code that
 holds a key and no client, and `sessionIdempotencyKey(key)` derives the
 session-create key.
 
+### Export a workspace file
+
+| Method | Route | Returns |
+| --- | --- | --- |
+| `sessions.artifacts.export({ sessionId, path, mediaType?, expected?, idempotencyKey })` | `POST /sessions/<id>/workspace-artifacts/exports` | `{ export, created }`; `created` is `false` when the key had already requested it |
+| `sessions.artifacts.get(exportId)` | `GET /workspace-artifact-exports/<id>` | The `WorkspaceArtifactExport` |
+| `sessions.artifacts.list(sessionId)` | `GET /sessions/<id>/workspace-artifacts/exports` | The session's exports |
+| `sessions.artifacts.cancel(exportId)` | `POST /workspace-artifact-exports/<id>/cancel` | The export; unchanged when already terminal |
+| `sessions.artifacts.waitUntilTerminal(exportId, { signal?, pollIntervalMs? })` | polls `get` | The export once `delivered`, `failed`, `cancelled` or `expired` |
+| `sessions.artifacts.download(exportId, { verify?, signal? })` | `GET /workspace-artifact-exports/<id>/content` | `{ stream, bytes, sha256, mediaType, artifactId, exportId }` |
+
+`download` returns the response body as a `ReadableStream<Uint8Array>`
+without buffering it, with the size, digest and ids from the response
+headers. By default (`verify: true`) the stream hashes and counts the bytes
+as they pass and fails with `WorkspaceArtifactIntegrityError`, whose `code`
+is `artifact_digest_mismatch` or `artifact_size_mismatch`, when they do not
+match the headers; discard what you wrote when that happens. Aborting the
+signal given to `waitUntilTerminal` rejects with its reason and leaves the
+export running. See [Workspace artifact exports](/agents/artifacts) for the
+record, states, error codes and idempotency rules.
+
 ## Projects
 
 | Method | Route | Returns |
@@ -325,4 +346,9 @@ and results. The memory types (`MemoryDocument`, `MemoryBindings`,
 `MemorySavedEvent`, `MemoryErrorCode`) and the event subscription types
 (`EventSubscription`, `CreateEventSubscriptionBody`, `OutcomeEvent`,
 `EventInput`, `TurnOutcomeDelivery`, `EventSubscriptionErrorCode`) are
-exported from the same place.
+exported from the same place, as are the artifact export types
+(`WorkspaceArtifactExport`, `WorkspaceArtifactExportState`,
+`WorkspaceArtifactExportErrorCode`, `WorkspaceArtifactExportError`,
+`CreateWorkspaceArtifactExportParams`, `WorkspaceArtifactDownload`) with
+`isWorkspaceArtifactExportTerminal(state)` and
+`WORKSPACE_ARTIFACT_EXPORT_TERMINAL_STATES`.

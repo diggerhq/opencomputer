@@ -73,6 +73,10 @@ revokes its memory writes. Neither operation undoes completed writes;
 their different acknowledgement and cleanup guarantees are described in
 the API reference.
 
+Files the agent leaves under `/workspace` persist with the session. To take
+an exact, hashed copy of one out to your own storage, see
+[Workspace artifact exports](/agents/artifacts).
+
 ## CLI
 
 Start a session against the development agent:

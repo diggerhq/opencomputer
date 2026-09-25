@@ -54,6 +54,11 @@ describe("managed-agent credit admission", () => {
     ["POST", "/api/managed-agents/sessions/session_1/suspend"],
     ["POST", "/api/managed-agents/sessions/session_1/end"],
     ["GET", "/api/managed-agents/schedules"],
+    ["POST", "/api/managed-agents/sessions/session_1/workspace-artifacts/exports"],
+    ["GET", "/api/managed-agents/sessions/session_1/workspace-artifacts/exports"],
+    ["GET", "/api/managed-agents/workspace-artifact-exports/aexp_1"],
+    ["GET", "/api/managed-agents/workspace-artifact-exports/aexp_1/content"],
+    ["POST", "/api/managed-agents/workspace-artifact-exports/aexp_1/cancel"],
   ])("does not gate non-billable %s %s", (method, path) => {
     expect(isManagedAgentBillableRequest(method, path)).toBe(false);
   });

@@ -4819,6 +4819,445 @@ describe("managed agents proxy", () => {
     });
   });
 
+  // Workspace artifact exports (docs/agents/artifacts.mdx). The backend owns
+  // the manifest; the edge forwards the documented routes, shapes the record
+  // and streams the content route byte-for-byte with its headers.
+  describe("workspace artifact exports", () => {
+    const artifactEnv = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const artifactCaller = { orgID: "org_test", userID: "user_test" };
+    const exportRecord = {
+      id: "aexp_1",
+      artifactId: "art_1",
+      projectId: "prj_1",
+      environment: "development",
+      agentId: "researcher",
+      deploymentId: "dep_1",
+      sessionId: "ses_1",
+      turnId: null,
+      toolCallId: null,
+      workspacePath: "/workspace/artifacts/capture.json",
+      snapshotId: "snap_1",
+      mediaType: "application/json",
+      bytes: 18422,
+      sha256: "a".repeat(64),
+      state: "delivered",
+      error: null,
+      idempotencyKeyDigest: `sha256:${"b".repeat(64)}`,
+      retention: {
+        manifestRetainedUntil: "2026-12-25T00:00:00.000Z",
+        snapshotRetainedUntil: "2026-10-25T00:00:00.000Z",
+      },
+      createdAt: "2026-09-25T00:00:00.000Z",
+      updatedAt: "2026-09-25T00:00:01.000Z",
+      completedAt: "2026-09-25T00:00:01.000Z",
+      accountId: "acc_private",
+      storageKey: "s3://private-bucket/snap_1",
+    };
+    const publicExport = {
+      id: "aexp_1",
+      artifactId: "art_1",
+      projectId: "prj_1",
+      environment: "development",
+      agentId: "researcher",
+      deploymentId: "dep_1",
+      sessionId: "ses_1",
+      turnId: null,
+      toolCallId: null,
+      workspacePath: "/workspace/artifacts/capture.json",
+      snapshotId: "snap_1",
+      mediaType: "application/json",
+      bytes: 18422,
+      sha256: "a".repeat(64),
+      state: "delivered",
+      error: null,
+      idempotencyKeyDigest: `sha256:${"b".repeat(64)}`,
+      retention: {
+        manifestRetainedUntil: "2026-12-25T00:00:00.000Z",
+        snapshotRetainedUntil: "2026-10-25T00:00:00.000Z",
+      },
+      createdAt: "2026-09-25T00:00:00.000Z",
+      updatedAt: "2026-09-25T00:00:01.000Z",
+      completedAt: "2026-09-25T00:00:01.000Z",
+    };
+
+    it("creates an export with the Idempotency-Key forwarded and the 202 record shaped", async () => {
+      const fetchSpy = vi.fn(
+        async (target: RequestInfo | URL, init?: RequestInit) => {
+          expect(String(target)).toBe(
+            "https://managedagents.test/v1/sessions/ses_1/workspace-artifacts/exports",
+          );
+          expect(init?.method).toBe("POST");
+          const headers = new Headers(init?.headers);
+          expect(headers.get("idempotency-key")).toBe("export:ses_1:artifact-001");
+          expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
+          expect(await new Response(init?.body).json()).toEqual({
+            path: "/workspace/artifacts/capture.json",
+            mediaType: "application/json",
+            expected: { bytes: 18422 },
+          });
+          return Response.json(
+            { export: { ...exportRecord, state: "queued", artifactId: null } },
+            { status: 202 },
+          );
+        },
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/ses_1/workspace-artifacts/exports",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "idempotency-key": "export:ses_1:artifact-001",
+            },
+            body: JSON.stringify({
+              path: "/workspace/artifacts/capture.json",
+              mediaType: "application/json",
+              expected: { bytes: 18422 },
+            }),
+          },
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(202);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const body = (await response.json()) as { export: Record<string, unknown> };
+      expect(body).toEqual({
+        export: { ...publicExport, state: "queued", artifactId: null },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/acc_private|private-bucket/);
+    });
+
+    it("keeps the 200 status of an idempotent replay", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ export: exportRecord })),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/ses_1/workspace-artifacts/exports",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "idempotency-key": "export:ses_1:artifact-001",
+            },
+            body: JSON.stringify({ path: "/workspace/artifacts/capture.json" }),
+          },
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ export: publicExport });
+    });
+
+    it("inspects, lists and cancels exports through the documented routes", async () => {
+      const fetchSpy = vi.fn(
+        async (target: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(target);
+          const method = init?.method ?? "GET";
+          if (
+            url ===
+              "https://managedagents.test/v1/workspace-artifact-exports/aexp_1" &&
+            method === "GET"
+          ) {
+            return Response.json({ export: exportRecord });
+          }
+          if (
+            url ===
+              "https://managedagents.test/v1/sessions/ses_1/workspace-artifacts/exports" &&
+            method === "GET"
+          ) {
+            return Response.json({ exports: [exportRecord] });
+          }
+          if (
+            url ===
+              "https://managedagents.test/v1/workspace-artifact-exports/aexp_1/cancel" &&
+            method === "POST"
+          ) {
+            return Response.json({ export: exportRecord });
+          }
+          throw new Error(`unexpected ${method} ${url}`);
+        },
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const inspected = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+      expect(inspected.status).toBe(200);
+      expect(await inspected.json()).toEqual({ export: publicExport });
+
+      const listed = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/ses_1/workspace-artifacts/exports",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ exports: [publicExport] });
+
+      const cancelled = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1/cancel",
+          { method: "POST" },
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+      expect(cancelled.status).toBe(200);
+      expect(await cancelled.json()).toEqual({ export: publicExport });
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it("streams content byte-for-byte with the artifact headers and no redirect", async () => {
+      const bytes = new Uint8Array([0, 1, 2, 0, 255, 10, 13, 0]);
+      const fetchSpy = vi.fn(
+        async (target: RequestInfo | URL, init?: RequestInit) => {
+          expect(String(target)).toBe(
+            "https://managedagents.test/v1/workspace-artifact-exports/aexp_1/content",
+          );
+          expect(init?.redirect).toBe("manual");
+          expect(init?.body).toBeUndefined();
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(bytes.slice(0, 3));
+              controller.enqueue(bytes.slice(3));
+              controller.close();
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-length": String(bytes.byteLength),
+              "content-disposition": 'attachment; filename="capture.bin"',
+              "x-opencomputer-artifact-sha256": "c".repeat(64),
+              "x-opencomputer-artifact-id": "art_1",
+              "x-opencomputer-export-id": "aexp_1",
+              "x-upstream-storage": "s3://private-bucket/snap_1",
+            },
+          });
+        },
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1/content",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe(
+        "application/octet-stream",
+      );
+      expect(response.headers.get("content-length")).toBe("8");
+      expect(response.headers.get("x-opencomputer-artifact-sha256")).toBe(
+        "c".repeat(64),
+      );
+      expect(response.headers.get("x-opencomputer-artifact-id")).toBe("art_1");
+      expect(response.headers.get("x-opencomputer-export-id")).toBe("aexp_1");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("x-upstream-storage")).toBeNull();
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    });
+
+    it("never forwards an upstream redirect for content", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(null, {
+              status: 302,
+              headers: {
+                location: "https://storage.example/signed?sig=secret",
+              },
+            }),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1/content",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(502);
+      expect(response.headers.get("location")).toBeNull();
+      expect(JSON.stringify(await response.json())).not.toContain("signed");
+    });
+
+    it("passes documented client errors through with retrySafe", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "export_not_ready",
+                message: "The export is still snapshotting.",
+                retrySafe: true,
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1/content",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "export_not_ready",
+          message: "The export is still snapshotting.",
+          retrySafe: true,
+        },
+      });
+    });
+
+    it("keeps the generic redaction for backend failures", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "snapshot_storage_failed",
+                message: "R2 bucket artifacts-prod PutObject timed out",
+              },
+            },
+            { status: 503 },
+          ),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+      const body = (await response.json()) as {
+        error: { code: string; message: string };
+      };
+
+      expect(response.status).toBe(503);
+      expect(body.error.code).toBe("snapshot_storage_failed");
+      expect(body.error.message).not.toMatch(/R2|bucket|PutObject/);
+    });
+
+    it("shapes a failed export's error and nullable fields", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            export: {
+              ...exportRecord,
+              artifactId: null,
+              snapshotId: null,
+              bytes: null,
+              sha256: null,
+              completedAt: "2026-09-25T00:00:02.000Z",
+              state: "failed",
+              error: {
+                code: "artifact_too_large",
+                message: "The file exceeds the export size limit.",
+                retrySafe: false,
+                stack: "Error: at exporter.ts:12",
+              },
+            },
+          }),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/aexp_1",
+        ),
+        artifactEnv,
+        artifactCaller,
+        "/api/managed-agents",
+      );
+      const body = (await response.json()) as { export: Record<string, unknown> };
+
+      expect(body.export).toMatchObject({
+        artifactId: null,
+        snapshotId: null,
+        bytes: null,
+        sha256: null,
+        state: "failed",
+        error: {
+          code: "artifact_too_large",
+          message: "The file exceeds the export size limit.",
+          retrySafe: false,
+        },
+      });
+      expect(JSON.stringify(body)).not.toContain("exporter.ts");
+    });
+
+    it("rejects methods the management API does not document", async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+
+      for (const [method, path] of [
+        ["DELETE", "/workspace-artifact-exports/aexp_1"],
+        ["POST", "/workspace-artifact-exports/aexp_1/content"],
+        ["PUT", "/sessions/ses_1/workspace-artifacts/exports"],
+        ["GET", "/workspace-artifact-exports/aexp_1/cancel"],
+      ]) {
+        const response = await proxyManagedAgents(
+          new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, {
+            method,
+            ...(method === "GET" ? {} : { body: "{}" }),
+          }),
+          artifactEnv,
+          artifactCaller,
+          "/api/managed-agents",
+        );
+        expect(response.status).toBe(404);
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
   // Review reproductions: text the label-and-length redaction used to let
   // through. None of it is public now, because no runtime text is.
   it("never publishes unclassified runtime error text", () => {

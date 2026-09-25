@@ -36,12 +36,14 @@ describe("@opencomputer/sdk/agents", () => {
   it("reaches only relative modules inside its own directory", () => {
     for (const file of graph.keys()) expect(file.startsWith(here)).toBe(true);
     expect([...graph.keys()].map((file) => file.slice(here.length + 1)).sort()).toEqual([
+      "artifacts.ts",
       "client.ts",
       "errors.ts",
       "event-subscriptions.ts",
       "http.ts",
       "index.ts",
       "memory.ts",
+      "sha256.ts",
       "shapes.ts",
       "start-on-document.ts",
       "types.ts",

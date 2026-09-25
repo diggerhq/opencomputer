@@ -15,6 +15,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
   getManagedAgentSession,
+  getManagedAgentSessionArtifactExports,
   getManagedAgentSessionEvents,
   getManagedProject,
 } from './api'
@@ -27,6 +28,18 @@ import {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString()
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let size = value / 1024
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
 export default function ManagedSessionDetail() {
@@ -63,6 +76,13 @@ export default function ManagedSessionDetail() {
     },
     enabled: Boolean(sessionId),
     refetchInterval: 1_000,
+  })
+  const artifactExports = useQuery({
+    queryKey: ['managed-agent-session-artifact-exports', sessionId],
+    queryFn: () => getManagedAgentSessionArtifactExports(sessionId),
+    enabled: Boolean(sessionId),
+    refetchInterval: 5_000,
+    retry: false,
   })
 
   if (project.isLoading || session.isLoading) {
@@ -175,6 +195,55 @@ export default function ManagedSessionDetail() {
         </Panel>
       ) : null}
 
+      {artifactExports.data?.length ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Workspace exports</PanelTitle>
+              <PanelDescription className="mt-1">
+                Files exported from this session&apos;s workspace. Bytes are
+                downloaded with an API key; see the artifacts API.
+              </PanelDescription>
+            </div>
+          </PanelHeader>
+          <div className="divide-y text-sm">
+            {artifactExports.data.map((item) => (
+              <div
+                key={item.id}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
+              >
+                <span className="font-mono text-xs">{item.workspacePath}</span>
+                <span className="text-muted-foreground font-mono text-xs">
+                  {item.id}
+                </span>
+                {item.bytes !== null ? (
+                  <span className="text-muted-foreground text-xs">
+                    {formatBytes(item.bytes)}
+                  </span>
+                ) : null}
+                {item.sha256 ? (
+                  <span
+                    className="text-muted-foreground font-mono text-xs"
+                    title={item.sha256}
+                  >
+                    sha256 {item.sha256.slice(0, 12)}…
+                  </span>
+                ) : null}
+                {item.error ? (
+                  <span className="text-status-error text-xs">
+                    {item.error.code}
+                  </span>
+                ) : null}
+                <span className="text-muted-foreground text-xs">
+                  {formatDate(item.updatedAt)}
+                </span>
+                <StatusBadge className="ml-auto" status={item.state} />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
       <div
         role="tablist"
         aria-label="Session detail"
@@ -238,7 +307,7 @@ export default function ManagedSessionDetail() {
                         {turn.input}
                       </p>
                       {payload !== undefined ? (
-                        <details className="ml-auto mt-2 max-w-2xl">
+                        <details className="mt-2 ml-auto max-w-2xl">
                           <summary className="text-muted-foreground cursor-pointer text-xs">
                             Payload
                           </summary>

@@ -54,6 +54,17 @@ import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
 import {
+  ARTIFACT_TERMINAL_STATES,
+  artifactExportFailure,
+  createArtifactExport,
+  downloadArtifactExportToFile,
+  formatArtifactExport,
+  formatArtifactExportRow,
+  parseArtifactExportOptions,
+  streamArtifactExport,
+  waitForArtifactExport,
+} from "./artifact-commands.js";
+import {
   createSessionWithMemory,
   ensureMemoryDocuments,
   memoryResources,
@@ -2567,6 +2578,11 @@ export async function runCommand(
     return;
   }
 
+  if (command === "artifacts" || command === "artifact") {
+    await runArtifactsCommand(client, args, globals);
+    return;
+  }
+
   if (command === "session" || command === "sessions") {
     if (args[0] === "tail") {
       args.shift();
@@ -2720,4 +2736,101 @@ export async function runCommand(
   }
 
   throw new Error(`Unknown command: ${command}`);
+}
+
+// Workspace artifact exports (docs/agents/artifacts.mdx).
+
+const ARTIFACTS_USAGE =
+  "Use `opencomputer artifacts export --session <id> --path <path>|inspect <export-id>|list --session <id>|cancel <export-id>|download <export-id> --output <path>`.";
+
+async function runArtifactsCommand(
+  client: OpenComputerClient,
+  args: string[],
+  globals: GlobalOptions,
+): Promise<void> {
+  const action = args.shift();
+  if (action === "export") {
+    const request = parseArtifactExportOptions({
+      sessionId: option(args, "--session"),
+      path: option(args, "--path"),
+      mediaType: option(args, "--media-type"),
+      expectedSha256: option(args, "--expected-sha256"),
+      expectedBytes: option(args, "--expected-bytes"),
+      wait: flag(args, "--wait"),
+    });
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const created = await createArtifactExport(client, request);
+    let record = created.export;
+    if (request.wait && !ARTIFACT_TERMINAL_STATES.has(record.state)) {
+      if (!globals.json) {
+        process.stderr.write(
+          `Export ${record.id} ${created.created ? "queued" : "already requested"}; waiting…\n`,
+        );
+      }
+      record = await waitForArtifactExport(client, record.id);
+    }
+    if (request.wait && record.state !== "delivered") {
+      throw artifactExportFailure(record);
+    }
+    if (globals.json) printJSON({ created: created.created, export: record });
+    else {
+      process.stdout.write(
+        (created.created ? "" : "Existing export for this --idempotency-key.\n") +
+          formatArtifactExport(record),
+      );
+    }
+    return;
+  }
+  if (action === "list") {
+    const sessionId = option(args, "--session");
+    if (!sessionId) throw new Error("--session <id> is required.");
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const exports = await client.workspaceArtifactExports(sessionId);
+    if (globals.json) printJSON({ exports });
+    else if (!exports.length) process.stdout.write("No artifact exports.\n");
+    else for (const record of exports) process.stdout.write(formatArtifactExportRow(record));
+    return;
+  }
+  if (action === "inspect" || action === "cancel" || action === "download") {
+    const outputPath = action === "download" ? option(args, "--output") : undefined;
+    const exportId = args.shift();
+    if (!exportId || exportId.startsWith("--")) throw new Error("An export ID is required.");
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    if (action === "inspect") {
+      const record = await client.workspaceArtifactExport(exportId);
+      if (globals.json) printJSON({ export: record });
+      else process.stdout.write(formatArtifactExport(record));
+      return;
+    }
+    if (action === "cancel") {
+      const record = await client.cancelWorkspaceArtifactExport(exportId);
+      if (globals.json) printJSON({ export: record });
+      else process.stdout.write(formatArtifactExport(record));
+      return;
+    }
+    if (!outputPath) {
+      throw new Error(
+        "--output <path> is required; pass `--output -` to write the bytes to standard output.",
+      );
+    }
+    if (outputPath === "-") {
+      // The bytes own stdout, so the summary goes to stderr in either format.
+      const result = await streamArtifactExport(client, exportId, process.stdout, { end: false });
+      process.stderr.write(
+        globals.json
+          ? `${JSON.stringify({ ...result, output: "-" })}\n`
+          : `Wrote ${String(result.bytes)} bytes (sha256 ${result.sha256}) to standard output.\n`,
+      );
+      return;
+    }
+    const result = await downloadArtifactExportToFile(client, exportId, outputPath);
+    if (globals.json) printJSON({ ...result, output: outputPath });
+    else {
+      process.stdout.write(
+        `Wrote ${String(result.bytes)} bytes (sha256 ${result.sha256}) to ${outputPath}.\n`,
+      );
+    }
+    return;
+  }
+  throw new Error(ARTIFACTS_USAGE);
 }

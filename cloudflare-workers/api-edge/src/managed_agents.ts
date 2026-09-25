@@ -427,6 +427,166 @@ async function memoryResponse(
   });
 }
 
+// Workspace artifact exports (docs/agents/artifacts.mdx). The backend owns the
+// state machine, the snapshot and the digest; the edge admits only the
+// documented routes, shapes the manifest to the documented record, passes the
+// documented `{ code, message, retrySafe }` client errors through untouched
+// and streams `/content` byte-for-byte with the authoritative headers. The
+// content route never becomes a redirect or a signed URL: the bytes flow
+// through the caller's authenticated request or not at all.
+const ARTIFACT_EXPORTS_ROUTE = /^\/sessions\/[^/]+\/workspace-artifacts\/exports$/;
+const ARTIFACT_EXPORT_ROUTE = /^\/workspace-artifact-exports\/[^/]+$/;
+const ARTIFACT_EXPORT_CANCEL_ROUTE = /^\/workspace-artifact-exports\/[^/]+\/cancel$/;
+const ARTIFACT_EXPORT_CONTENT_ROUTE = /^\/workspace-artifact-exports\/[^/]+\/content$/;
+const ARTIFACT_CONTENT_RESPONSE_HEADERS = [
+  "content-type",
+  "content-length",
+  "x-opencomputer-artifact-sha256",
+  "x-opencomputer-artifact-id",
+  "x-opencomputer-export-id",
+];
+
+function isArtifactExportRoute(method: string, suffix: string): boolean {
+  if ((method === "GET" || method === "POST") && ARTIFACT_EXPORTS_ROUTE.test(suffix)) {
+    return true;
+  }
+  if (method === "GET" && ARTIFACT_EXPORT_ROUTE.test(suffix)) return true;
+  if (method === "POST" && ARTIFACT_EXPORT_CANCEL_ROUTE.test(suffix)) return true;
+  return method === "GET" && ARTIFACT_EXPORT_CONTENT_ROUTE.test(suffix);
+}
+
+function isArtifactExportContentRoute(method: string, suffix: string): boolean {
+  return method === "GET" && ARTIFACT_EXPORT_CONTENT_ROUTE.test(suffix);
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function publicWorkspaceArtifactExportError(
+  value: unknown,
+): Record<string, unknown> | null {
+  const error = record(value);
+  if (!error || typeof error.code !== "string") return null;
+  return {
+    code: error.code,
+    message: typeof error.message === "string" ? error.message : "",
+    retrySafe: error.retrySafe === true,
+  };
+}
+
+function publicWorkspaceArtifactExport(value: unknown): Record<string, unknown> {
+  const item = record(value) ?? {};
+  const retention = record(item.retention) ?? {};
+  return {
+    id: item.id,
+    artifactId: nullableString(item.artifactId),
+    projectId: item.projectId,
+    environment: item.environment,
+    agentId: item.agentId,
+    deploymentId: nullableString(item.deploymentId),
+    sessionId: item.sessionId,
+    turnId: nullableString(item.turnId),
+    toolCallId: nullableString(item.toolCallId),
+    workspacePath: item.workspacePath,
+    snapshotId: nullableString(item.snapshotId),
+    mediaType: nullableString(item.mediaType),
+    bytes: nullableNumber(item.bytes),
+    sha256: nullableString(item.sha256),
+    state: item.state,
+    error: publicWorkspaceArtifactExportError(item.error),
+    idempotencyKeyDigest: item.idempotencyKeyDigest,
+    retention: {
+      manifestRetainedUntil: nullableString(retention.manifestRetainedUntil),
+      snapshotRetainedUntil: nullableString(retention.snapshotRetainedUntil),
+    },
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    completedAt: nullableString(item.completedAt),
+  };
+}
+
+// Client errors carry the documented envelope (`retrySafe` tells the caller
+// whether replaying the same Idempotency-Key is safe); server errors keep the
+// generic redaction every other route gets.
+async function artifactExportErrorResponse(upstream: Response): Promise<Response> {
+  if (upstream.status >= 300 && upstream.status < 400) {
+    return Response.json(
+      { error: "managed agents service is unavailable" },
+      { status: 502 },
+    );
+  }
+  if (upstream.status < 400 || upstream.status >= 500) {
+    return publicErrorResponse(upstream);
+  }
+  const body = record(
+    await upstream
+      .clone()
+      .json()
+      .catch(() => null),
+  );
+  const error = record(body?.error);
+  const code =
+    typeof error?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+      ? error.code
+      : null;
+  if (!code) return publicErrorResponse(upstream);
+  const message =
+    typeof error?.message === "string" ? error.message.slice(0, 1_000) : "";
+  const headers = new Headers({
+    "content-type": "application/json",
+    "cache-control": "no-store",
+  });
+  const retryAfter = upstream.headers.get("retry-after");
+  if (retryAfter) headers.set("retry-after", retryAfter);
+  return new Response(
+    JSON.stringify({
+      error: { code, message, retrySafe: error?.retrySafe === true },
+    }),
+    { status: upstream.status, headers },
+  );
+}
+
+async function artifactExportResponse(
+  upstream: Response,
+  method: string,
+  suffix: string,
+): Promise<Response> {
+  if (!upstream.ok) return artifactExportErrorResponse(upstream);
+  if (isArtifactExportContentRoute(method, suffix)) {
+    const headers = new Headers({ "cache-control": "private, no-store" });
+    for (const name of ARTIFACT_CONTENT_RESPONSE_HEADERS) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "application/octet-stream");
+    }
+    return new Response(upstream.body, { status: 200, headers });
+  }
+  const body = record(await upstream.json().catch(() => null)) ?? {};
+  const headers = new Headers({
+    "content-type": "application/json",
+    "cache-control": "no-store",
+  });
+  const value =
+    method === "GET" && ARTIFACT_EXPORTS_ROUTE.test(suffix)
+      ? {
+          exports: Array.isArray(body.exports)
+            ? body.exports.map(publicWorkspaceArtifactExport)
+            : [],
+        }
+      : { export: publicWorkspaceArtifactExport(body.export) };
+  return new Response(JSON.stringify(value), {
+    status: upstream.status,
+    headers,
+  });
+}
+
 // A memory resource the deployment declares (docs/agents/document-memory.mdx,
 // "Configuration"): what the Memory page and `memory export` enumerate.
 function publicMemoryDeclaration(value: unknown): Record<string, unknown> {
@@ -2153,6 +2313,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (isMemoryRoute(method, suffix)) return true;
+  if (isArtifactExportRoute(method, suffix)) return true;
   if (isEventSubscriptionRoute(method, suffix)) return true;
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
@@ -2714,6 +2875,7 @@ export async function proxyManagedAgents(
   }
   const headers = copyRequestHeaders(request);
   const memoryRoute = isMemoryRoute(method, suffix);
+  const artifactExportRoute = isArtifactExportRoute(method, suffix);
   if (memoryRoute) {
     for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
       const value = request.headers.get(name);
@@ -2752,6 +2914,9 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
+    if (artifactExportRoute) {
+      return artifactExportResponse(upstream, method, suffix);
+    }
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {

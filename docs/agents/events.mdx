@@ -172,6 +172,23 @@ event as a hint to re-read the document, and also re-read when attaching,
 reconnecting and completing work. See
 [Document memory](/agents/document-memory#saving).
 
+### Workspace artifact exports
+
+| Type | When |
+| --- | --- |
+| `artifact.export.queued` | An [export](/agents/artifacts) of a workspace file was requested |
+| `artifact.snapshot.created` | The file was copied into an immutable snapshot |
+| `artifact.export.started` | The snapshot is being hashed and committed |
+| `artifact.export.completed` | The export is `delivered` and downloadable |
+| `artifact.export.failed` | The export stopped |
+| `artifact.export.cancelled` | The export was cancelled |
+
+`data` on each is `exportId`, `artifactId`, `sessionId`, `deploymentId`,
+`state`, `bytes`, `sha256` and `error.code`, `null` where the export has not
+reached that information. These events never carry the file's content, a
+download URL or a credential; the bytes are fetched with the API key from
+the export's `/content` route.
+
 ### Model and usage
 
 | Type | When | `data` |

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0
+
+- `@opencomputer/sdk/agents`: `oc.sessions.artifacts` exports one file of a
+  session's workspace as an immutable, hashed snapshot and streams it back to
+  trusted server code. `export({ sessionId, path, mediaType?, expected?, idempotencyKey })`,
+  `get`, `list`, `cancel`, `waitUntilTerminal(exportId, { signal?, pollIntervalMs? })`
+  and `download(exportId, { verify? })`, which returns
+  `{ stream, bytes, sha256, mediaType, artifactId, exportId }` and, by default,
+  fails the stream with `WorkspaceArtifactIntegrityError` when the bytes do not
+  match the announced SHA-256 or byte count. Typed `WorkspaceArtifactExport`,
+  `WorkspaceArtifactExportState` and `WorkspaceArtifactExportErrorCode`.
+
 ## 2.1.2
 
 - `@opencomputer/sdk/agents`: the transport called `fetch` as a method of the client, which a native fetch refuses with `Illegal invocation` in workerd; it is now called as a plain function. Found by the Development proof of a Worker without Node compatibility. No API change.

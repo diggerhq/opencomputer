@@ -1693,6 +1693,49 @@ export async function getManagedAgentSession(sessionId: string) {
   )
 }
 
+// Workspace artifact exports (docs/agents/artifacts.mdx). Read-only here: the
+// dashboard lists a session's exports; requesting or downloading one is left
+// to the trusted server that holds the API key.
+const workspaceArtifactExportSchema = z.object({
+  id: z.string(),
+  artifactId: z.string().nullable().default(null),
+  sessionId: z.string(),
+  workspacePath: z.string(),
+  mediaType: z.string().nullable().default(null),
+  bytes: z.number().nullable().default(null),
+  sha256: z.string().nullable().default(null),
+  state: z.string(),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string().optional().default(''),
+      retrySafe: z.boolean().optional().default(false),
+    })
+    .nullable()
+    .default(null),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  completedAt: z.string().nullable().default(null),
+})
+
+export type ManagedWorkspaceArtifactExport = z.infer<
+  typeof workspaceArtifactExportSchema
+>
+
+const workspaceArtifactExportsResponseSchema = z.object({
+  exports: z.array(workspaceArtifactExportSchema),
+})
+
+export async function getManagedAgentSessionArtifactExports(sessionId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace-artifacts/exports`,
+      undefined,
+      workspaceArtifactExportsResponseSchema,
+    )
+  ).exports
+}
+
 export type ManagedMemoryEnvironment = 'development' | 'production'
 
 /** The complete address of one document; every read and write names it in full. */

@@ -1,0 +1,320 @@
+---
+title: "Workspace artifact exports"
+description: "Export an exact file from a session's workspace to your own storage, hashed and streamed to trusted server code"
+---
+
+Agents that work for a long time leave files behind in the session's
+`/workspace`: request captures, screenshots, scanner output, JSON results,
+archives. An artifact export takes one of those files out of the workspace
+and into your application's own storage without the bytes, a signed URL or a
+storage credential ever passing through the model or the sandbox command
+line.
+
+Your server asks for the export, names the file, and later downloads the
+bytes with its API key. OpenComputer takes an immutable snapshot of that
+exact file, records its size and SHA-256 in a manifest, and streams the
+snapshot back to you. The model can say that a file is ready; it cannot
+authorize the export, choose where the bytes go, or see what was sent.
+
+## Who does what
+
+| | Your application | OpenComputer |
+| --- | --- | --- |
+| Decides | Whether a file may leave the session, and where its copy lives | Whether the path names one regular file inside the workspace |
+| Holds | Your storage, access control and retention | The session's persisted workspace and the export manifest |
+| Verifies | The bytes you stored against the manifest's `bytes` and `sha256` | That the snapshot you download is the one it hashed |
+| Never sees | Nothing is hidden from you | Your storage credentials or destination |
+
+The model and the sandbox never see the exported bytes, a download URL or a
+credential. Exported content is not written into the session's event log.
+Session events for exports carry identifiers, states, sizes and digests only.
+
+An export belongs to the session it was requested for, and through it to one
+project and environment. It is not visible from another project, and an
+export ID looked up from the wrong project answers `404 export_not_found`.
+
+## Lifecycle
+
+```text
+queued -> snapshotting -> delivering -> delivered
+
+queued | snapshotting | delivering -> failed | cancelled | expired
+```
+
+| State | Meaning |
+| --- | --- |
+| `queued` | The request is accepted and waiting to run |
+| `snapshotting` | The file is being resolved, checked and copied into an immutable snapshot |
+| `delivering` | The snapshot is being hashed and committed; `artifactId` and `snapshotId` are assigned by now |
+| `delivered` | The snapshot is hashed and downloadable from `/content` |
+| `failed` | The export stopped; `error` says why and whether the same key may be retried |
+| `cancelled` | Cancelled before it was delivered |
+| `expired` | Not delivered before the export's deadline |
+
+`delivered`, `failed`, `cancelled` and `expired` are terminal. A terminal
+export never changes state again: cancelling it returns the record as it is,
+and a repeated request with the same key returns the same record.
+
+For the initial release an export covers one regular file under
+`/workspace/artifacts/`, below a size limit. Paths are normalised once and
+must not contain `..`, encoded traversal or NUL bytes. Symbolic links,
+directories and special files are refused. The file is snapshotted before it
+is hashed, so a file that changes while the export runs either produces a
+digest of exactly the snapshot that was delivered or fails with
+`artifact_changed_during_snapshot`. Wait for the agent to finish writing a
+file before exporting it.
+
+The manifest and its snapshot outlive the sandbox that produced the file:
+they remain readable after the sandbox is replaced, after the session is
+suspended and after it has ended. Each manifest reports its own retention in
+`retention.manifestRetainedUntil` and `retention.snapshotRetainedUntil`;
+`null` means no expiry is scheduled. Store your own copy of the
+bytes: OpenComputer keeps the manifest to show what it exported, not to be the
+long-term home of the file.
+
+## API
+
+All routes are under the [management API](/agents/api) base URL and take the
+`x-api-key` header. Use them from server code only.
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| Request an export | `POST /sessions/<id>/workspace-artifacts/exports` | `202` with `{ export }`; `200` with the same record on an idempotent replay |
+| Inspect | `GET /workspace-artifact-exports/<export-id>` | `200` with `{ export }` |
+| List a session's exports | `GET /sessions/<id>/workspace-artifacts/exports` | `200` with `{ exports }` |
+| Cancel | `POST /workspace-artifact-exports/<export-id>/cancel` | `200` with `{ export }`; a terminal export is returned unchanged |
+| Download | `GET /workspace-artifact-exports/<export-id>/content` | `200` with the bytes; see below |
+
+### Request an export
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/workspace-artifacts/exports' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Idempotency-Key: export:<session-id>:capture-001' \
+  -H 'content-type: application/json' \
+  -d '{
+    "path": "/workspace/artifacts/capture.json",
+    "mediaType": "application/json",
+    "expected": { "bytes": 18422, "sha256": "<hex>" }
+  }'
+```
+
+| Field | | |
+| --- | --- | --- |
+| `path` | required | Absolute path of one regular file under `/workspace/artifacts/` |
+| `mediaType` | optional | Recorded on the manifest and sent back as the download's `Content-Type`. It is metadata you supplied, not something OpenComputer verified |
+| `expected.bytes` | optional | If the snapshot's size differs, the export fails with `artifact_size_mismatch` |
+| `expected.sha256` | optional | Lower-case hex. If the snapshot's digest differs, the export fails with `artifact_digest_mismatch` |
+
+`Idempotency-Key` is required and is 1 to 255 characters. Choose a key that
+names the export in your own system, such as the ID of the record you will
+store the bytes under.
+
+### Idempotency
+
+The key is scoped to the project. Repeating a request with the same key and
+the same `sessionId`, `path`, `mediaType`, `expected.bytes` and
+`expected.sha256` returns the existing export with `200`, in whatever state it
+has reached; nothing is snapshotted or hashed twice. Reusing the key with any
+of those fields changed answers `409 export_idempotency_conflict`. To export
+the same file again, or after it has changed, use a new key.
+
+When an export fails, `error.retrySafe` tells you whether repeating the same
+key can succeed. `true` means the failure was transient and the same request
+may be retried; `false` means the request itself, or the file, has to change,
+which means a new key.
+
+### The export record
+
+```json
+{
+  "export": {
+    "id": "aexp_01...",
+    "artifactId": "art_01...",
+    "projectId": "prj_01...",
+    "environment": "development",
+    "agentId": "worker",
+    "deploymentId": "dep_01...",
+    "sessionId": "ses_01...",
+    "turnId": null,
+    "toolCallId": null,
+    "workspacePath": "/workspace/artifacts/capture.json",
+    "snapshotId": "snap_01...",
+    "mediaType": "application/json",
+    "bytes": 18422,
+    "sha256": "<hex>",
+    "state": "delivered",
+    "error": null,
+    "idempotencyKeyDigest": "sha256:<hex>",
+    "retention": {
+      "manifestRetainedUntil": "2026-12-25T00:00:00Z",
+      "snapshotRetainedUntil": "2026-10-25T00:00:00Z"
+    },
+    "createdAt": "2026-09-25T00:00:00Z",
+    "updatedAt": "2026-09-25T00:00:01Z",
+    "completedAt": "2026-09-25T00:00:01Z"
+  }
+}
+```
+
+| Field | |
+| --- | --- |
+| `id` | The export. Use it to inspect, cancel and download |
+| `artifactId` | The immutable snapshot's identity; `null` until the snapshot exists |
+| `projectId`, `environment`, `agentId`, `deploymentId`, `sessionId` | Where the file came from. `deploymentId` is `null` when the session has none |
+| `turnId`, `toolCallId` | Always `null` for exports requested through this API; they are never filled in from anything the model said |
+| `workspacePath` | The path as requested |
+| `snapshotId` | The snapshot that was hashed and is served; `null` until it exists |
+| `mediaType` | The `mediaType` you supplied, or `null` |
+| `bytes`, `sha256` | Size and SHA-256 of the snapshot; `null` until the export is `delivered` |
+| `state`, `error` | See [Lifecycle](#lifecycle) and [Error codes](#error-codes); `error` is `null` unless the export failed |
+| `idempotencyKeyDigest` | `sha256:<hex>` of your `Idempotency-Key`; the key itself is not stored in the clear |
+| `retention` | When the manifest and the snapshot stop being retained; `null` when not scheduled |
+| `createdAt`, `updatedAt`, `completedAt` | `completedAt` is set when the export reaches a terminal state |
+
+### Download the bytes
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/workspace-artifact-exports/<export-id>/content' \
+  -H 'x-api-key: <api-key>' \
+  --output capture.json --dump-header headers.txt
+```
+
+The response body is the snapshot, byte for byte, streamed as it is read:
+no transformation, no compression you did not ask for and no redirect to
+another URL. The API key on the request is the only credential involved; the
+platform never hands out a URL that can be opened without it.
+
+| Header | |
+| --- | --- |
+| `Content-Type` | The export's `mediaType`, or `application/octet-stream` |
+| `Content-Length` | The snapshot's size in bytes |
+| `X-OpenComputer-Artifact-Sha256` | The snapshot's SHA-256, lower-case hex |
+| `X-OpenComputer-Artifact-Id` | The export's `artifactId` |
+| `X-OpenComputer-Export-Id` | The export's `id` |
+
+Hash the bytes as you store them and compare the count and digest with the
+headers before you treat the copy as accepted. The CLI and the SDK do this
+for you. Downloading an export that is not yet `delivered` answers
+`409 export_not_ready`.
+
+### Error codes
+
+Errors use the management API's envelope with one more field:
+`{ "error": { "code", "message", "retrySafe" } }`. Validation problems are
+`400`, an unknown export or session `404`, conflicts and not-ready `409`, and
+a file over the size limit `413`. The same codes appear in a failed export's
+`error`.
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_workspace_path` | The path is not absolute, or contains `..`, ambiguous encoding or NUL bytes |
+| `path_outside_workspace` | The path is not under the exportable prefix |
+| `artifact_not_found` | No file at that path |
+| `artifact_not_regular_file` | The path is a directory, socket, device, FIFO or other special file |
+| `artifact_symlink_rejected` | The path, or a directory on the way to it, is a symbolic link |
+| `artifact_too_large` | The file exceeds the size limit |
+| `artifact_changed_during_snapshot` | The file changed while it was being snapshotted |
+| `artifact_digest_mismatch` | The snapshot's SHA-256 differs from `expected.sha256`, or downloaded bytes differ from the header (CLI and SDK) |
+| `artifact_size_mismatch` | The snapshot's size differs from `expected.bytes`, or downloaded bytes differ from `Content-Length` (CLI and SDK) |
+| `destination_not_allowed` | The destination is not one the project may deliver to |
+| `destination_unavailable` | The destination could not be reached |
+| `destination_rejected` | The destination refused the bytes |
+| `export_idempotency_conflict` | The `Idempotency-Key` was used before with a different request |
+| `export_expired` | The export was not delivered before its deadline |
+| `export_cancelled` | The export was cancelled |
+| `export_not_ready` | `/content` was requested before the export was `delivered` |
+| `session_not_exportable` | The session has no exportable workspace |
+| `export_not_found` | No export with that ID in this project |
+
+### Events
+
+The session's [event log](/agents/events) records each transition:
+`artifact.export.queued`, `artifact.snapshot.created`,
+`artifact.export.started`, `artifact.export.completed`,
+`artifact.export.failed` and `artifact.export.cancelled`, each with
+`exportId`, `artifactId`, `sessionId`, `deploymentId`, `state`, `bytes`,
+`sha256` and, on failure, `error.code`. No event carries file content, a
+URL or a credential. Applications that already consume the event log can
+learn that an export is `delivered` from it instead of polling.
+
+## CLI
+
+```bash
+oc artifacts export --session <session-id> --path /workspace/artifacts/capture.json \
+  --media-type application/json --idempotency-key capture-001 --wait
+oc artifacts inspect <export-id>
+oc artifacts list --session <session-id>
+oc artifacts cancel <export-id>
+oc artifacts download <export-id> --output ./capture.json
+```
+
+`export` accepts `--media-type`, `--expected-sha256` and `--expected-bytes`
+as in the API. `--idempotency-key` is the CLI's global option; the same key
+with the same arguments replays the same export, and the command says so.
+Without it every invocation is a new export. `--wait` polls until the export
+is terminal and exits non-zero, naming the error code, unless it is
+`delivered`.
+
+`download` writes to `--output`, hashing the bytes as they arrive. The file
+appears at its final path only after the size and SHA-256 match the response
+headers; on a mismatch the command exits non-zero with
+`artifact_size_mismatch` or `artifact_digest_mismatch` and leaves nothing
+behind. Bytes go to standard output only when you pass `--output -`
+explicitly; the summary then goes to standard error.
+
+Every command takes `--json` and prints the export record, the list, or the
+download's `exportId`, `artifactId`, `mediaType`, `bytes`, `sha256` and
+`output`.
+
+## SDK
+
+```typescript
+import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { OpenComputer, WorkspaceArtifactIntegrityError } from "@opencomputer/sdk/agents";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+const { export: requested } = await oc.sessions.artifacts.export({
+  sessionId,
+  path: "/workspace/artifacts/capture.json",
+  mediaType: "application/json",
+  idempotencyKey: `export:${evidenceId}`,
+});
+
+const controller = new AbortController();
+const done = await oc.sessions.artifacts.waitUntilTerminal(requested.id, {
+  signal: controller.signal,
+  pollIntervalMs: 1000,
+});
+if (done.state !== "delivered") throw new Error(done.error?.code ?? done.state);
+
+const download = await oc.sessions.artifacts.download(done.id);
+try {
+  await pipeline(download.stream, Writable.toWeb(createWriteStream(target)));
+} catch (error) {
+  if (error instanceof WorkspaceArtifactIntegrityError) {
+    // error.code is artifact_digest_mismatch or artifact_size_mismatch;
+    // discard whatever was written.
+  }
+  throw error;
+}
+// download.bytes, download.sha256, download.artifactId and download.exportId
+// come from the response headers; compare them with your own record.
+```
+
+`export` sends the `Idempotency-Key` and returns `{ export, created }`;
+`created` is `false` on a replay. `get`, `list` and `cancel` mirror the
+routes. `waitUntilTerminal` polls `get` until a terminal state and stops
+with the signal's reason when the `AbortSignal` fires. `download` returns
+`{ stream, bytes, sha256, mediaType, artifactId, exportId }`; the stream is
+the response body as it arrives, and by default the client hashes and counts
+it, failing the stream with `WorkspaceArtifactIntegrityError` if the bytes
+do not match the headers. Pass `{ verify: false }` to receive the bytes
+without that check. `WorkspaceArtifactExport`,
+`WorkspaceArtifactExportState` and `WorkspaceArtifactExportErrorCode` are
+exported types; `isWorkspaceArtifactExportTerminal(state)` tells terminal
+states apart.

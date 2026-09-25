@@ -106,6 +106,13 @@ Usage:
   opencomputer logs [--agent <agent>] [--session <session-id>] [--environment development|production] [--follow]
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]
+  opencomputer artifacts export --session <id> --path <workspace-path> [--media-type <type>]
+      [--expected-sha256 <hex>] [--expected-bytes <n>] [--idempotency-key <key>] [--wait]
+  opencomputer artifacts inspect <export-id>
+  opencomputer artifacts list --session <id>
+  opencomputer artifacts cancel <export-id>
+  opencomputer artifacts download <export-id> --output <path|->
+      verifies the SHA-256 of the bytes; writes to stdout only with --output -
   opencomputer deploy [--alias development|production] [--watch]
   opencomputer run <agent> <prompt> [--keep]
 
