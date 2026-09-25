@@ -101,15 +101,15 @@ export function managedAgentsNav(options: {
             icon: BrainCircuit,
           },
           {
-            to: `${projectPath}/settings`,
-            label: 'Settings',
-            icon: Settings,
-          },
-          {
             to: projectPath,
             label: 'Debug playground',
             icon: Bot,
             end: true,
+          },
+          {
+            to: `${projectPath}/settings`,
+            label: 'Settings',
+            icon: Settings,
           },
         ],
       },
