@@ -1,5 +1,5 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import ts from "typescript";
 
 import {
@@ -181,7 +181,32 @@ export async function doctorProject(
 ): Promise<DoctorResult> {
   const started = performance.now();
   const diagnostics: DoctorDiagnostic[] = [];
-  const files = await sourceFiles(resolve(projectRoot, "opencomputer"));
+  let agents: ProjectAgentSource[] = [];
+  let contractValid = false;
+  try {
+    agents = await readProjectAgents(projectRoot);
+    await readProjectResources(projectRoot);
+    contractValid = true;
+  } catch (error) {
+    diagnostics.push({
+      code: "project_contract_invalid",
+      severity: "error",
+      file: "opencomputer/",
+      message: error instanceof Error ? error.message : String(error),
+      hint: "Fix the referenced project, channel, scope, event, or resource declaration.",
+    });
+  }
+  const linked = await readLinkedProject(projectRoot);
+  const members = projectAgentMembers(agents, linked);
+  const selected = options.selector ? selectProjectAgent(members, options.selector) : undefined;
+  // A selected member is checked alone: other agents' sources are left out of
+  // the scan, while project-level files stay in.
+  const excluded = selected
+    ? members.filter((member) => member !== selected).map((member) => `${member.root}${sep}`)
+    : [];
+  const files = (await sourceFiles(resolve(projectRoot, "opencomputer"))).filter(
+    (path) => !excluded.some((root) => path.startsWith(root)),
+  );
   const requiredSecrets = new Set<string>();
   const toolNames = new Map<string, Array<{ file: string; line: number }>>();
   for (const path of files) {
@@ -309,21 +334,6 @@ export async function doctorProject(
       hint: "Give every tool in the project a unique literal name.",
     });
   }
-  let agents: ProjectAgentSource[] = [];
-  let contractValid = false;
-  try {
-    agents = await readProjectAgents(projectRoot);
-    await readProjectResources(projectRoot);
-    contractValid = true;
-  } catch (error) {
-    diagnostics.push({
-      code: "project_contract_invalid",
-      severity: "error",
-      file: "opencomputer/",
-      message: error instanceof Error ? error.message : String(error),
-      hint: "Fix the referenced project, channel, scope, event, or resource declaration.",
-    });
-  }
   const examplePath = resolve(projectRoot, "opencomputer", ".env.example");
   const localPath = resolve(projectRoot, "opencomputer", ".env.local");
   const declared = envNames(
@@ -354,9 +364,6 @@ export async function doctorProject(
       });
     }
   }
-  const linked = await readLinkedProject(projectRoot);
-  const members = projectAgentMembers(agents, linked);
-  const selected = options.selector ? selectProjectAgent(members, options.selector) : undefined;
   if (contractValid) {
     diagnostics.push(
       ...(await compileMembers(selected ? [selected] : members, !selected)),

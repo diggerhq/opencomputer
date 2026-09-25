@@ -31,6 +31,7 @@ import {
   readProjectAgents,
 } from "./project.js";
 import {
+  membersMatchingAgent,
   projectAgentMembers,
   selectProjectAgent,
   type AgentSelector,
@@ -416,7 +417,19 @@ async function selectedScopeAgent(
   localAgentOption: string | undefined,
 ): Promise<{ agentId?: string; member?: ProjectAgentMember }> {
   const agent = agentOption === "current" ? project.agentId : agentOption;
-  if (!localAgentOption) return agent ? { agentId: agent } : {};
+  if (!localAgentOption) {
+    if (!agent) return {};
+    // A cloud id wins; a local id alone is an alias whose scope is that
+    // member's cloud agent, never the alias itself.
+    const members = await findOpenComputerProjectRoot(process.cwd())
+      .then((root) => (root ? readProjectAgents(root) : []))
+      .then((agents) => projectAgentMembers(agents, project))
+      .catch((): ProjectAgentMember[] => []);
+    const matches = membersMatchingAgent(members, agent);
+    if (matches.length !== 1) return { agentId: agent };
+    const member = matches[0]!;
+    return { agentId: member.agentId ?? agent, member };
+  }
   const member = await selectedLocalAgent(project, {
     agent,
     localAgent: localAgentOption,

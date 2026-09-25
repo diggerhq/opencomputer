@@ -262,9 +262,18 @@ test("acceptance 6: agent-level doctor checks the selected member only", async (
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-doctor-"));
   try {
     await projectWithAgents(root, {
-      billing: CONNECTION_AGENT("billing", "prefix"),
+      // Broken for both the source scan (origin with a path) and the compiler (pathPrefix).
+      billing: CONNECTION_AGENT("billing", "prefix").replace(
+        "https://billing.example.com",
+        "https://billing.example.com/v1",
+      ),
       support: CONNECTION_AGENT("support", '"/v2"'),
     });
+    const whole = await doctorProject(root);
+    assert.ok(
+      whole.diagnostics.some((diagnostic) => diagnostic.code === "connection_origin_not_literal"),
+    );
+
     const support = await doctorProject(root, { selector: { localAgent: "support" } });
     assert.equal(support.ok, true, JSON.stringify(support.diagnostics));
     assert.deepEqual(support.resolution.selected, { localId: "support", agentId: null });
@@ -272,10 +281,12 @@ test("acceptance 6: agent-level doctor checks the selected member only", async (
 
     const billing = await doctorProject(root, { selector: { agent: "billing" } });
     assert.equal(billing.ok, false);
-    assert.deepEqual(
-      billing.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.agent?.localId]),
-      [["literal_required", "billing"]],
-    );
+    assert.equal(billing.diagnostics.length, 2);
+    assert.equal(billing.diagnostics[0]!.code, "connection_origin_not_literal");
+    assert.equal(billing.diagnostics[1]!.agent?.localId, "billing");
+    for (const diagnostic of billing.diagnostics) {
+      assert.equal(diagnostic.file, "opencomputer/agents/billing/agent.ts");
+    }
 
     await assert.rejects(
       doctorProject(root, { selector: { agent: "payments" } }),

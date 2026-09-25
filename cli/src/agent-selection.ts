@@ -47,8 +47,21 @@ function details(members: readonly ProjectAgentMember[], selector: AgentSelector
 }
 
 /**
+ * Members whose cloud id is `agent`; when none, members whose local id is
+ * `agent` (a local alias, whose cloud scope is then the member's `agentId`).
+ */
+export function membersMatchingAgent(
+  members: readonly ProjectAgentMember[],
+  agent: string,
+): ProjectAgentMember[] {
+  const cloud = members.filter((candidate) => candidate.agentId === agent);
+  if (cloud.length) return cloud;
+  return members.filter((candidate) => candidate.localId === agent);
+}
+
+/**
  * The one project member a command works on. `--agent` matches the member's
- * cloud id (or its local id when the two coincide); `--local-agent` names the
+ * cloud id (or, failing that, its local id); `--local-agent` names the
  * local id outright and, when both are given, must map to that cloud agent.
  * Without a selector the sole member is chosen; several members are never
  * narrowed silently.
@@ -91,10 +104,7 @@ export function selectProjectAgent(
     return member;
   }
   if (selector.agent) {
-    const matches = members.filter(
-      (candidate) =>
-        candidate.agentId === selector.agent || candidate.localId === selector.agent,
-    );
+    const matches = membersMatchingAgent(members, selector.agent);
     if (matches.length === 1) return matches[0]!;
     if (matches.length > 1) {
       throw new CLIError(

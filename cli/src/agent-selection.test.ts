@@ -70,7 +70,8 @@ test("acceptance 2: unknown or ambiguous mappings list the valid local IDs and n
   assert.equal(mismatch.code, "agent_selection_mismatch");
   assert.match(mismatch.message, /support deploys as cloud agent app--support, not app--billing/);
 
-  // A local id that is also another member's cloud id cannot be resolved by --agent alone.
+  // A local id that is also another member's cloud id: cloud ids win, and
+  // several cloud matches are ambiguous.
   const twins = projectAgentMembers(
     [
       { localId: "app", root: "/p/a", manifest: {} as never },
@@ -79,9 +80,16 @@ test("acceptance 2: unknown or ambiguous mappings list the valid local IDs and n
     ],
     { agentId: "app" },
   );
-  const ambiguous = codeOf(() => selectProjectAgent(twins, { agent: "app--app" }));
+  assert.equal(selectProjectAgent(twins, { agent: "app--app" }).root, "/p/c");
+  assert.equal(selectProjectAgent(twins, { agent: "app--app--app" }).root, "/p/b");
+  const ambiguous = codeOf(() =>
+    selectProjectAgent(
+      [...twins, { localId: "app", agentId: "app--app", root: "/p/d", index: 3 }],
+      { agent: "app--app" },
+    ),
+  );
   assert.equal(ambiguous.code, "local_agent_ambiguous");
-  assert.match(ambiguous.message, /Add --local-agent|matches several local agents/);
+  assert.match(ambiguous.message, /matches several local agents/);
 
   const none = codeOf(() => selectProjectAgent(members));
   assert.equal(none.code, "local_agent_required");
@@ -219,6 +227,18 @@ test("acceptance 1 and 3: from a three-agent root, `secrets set --agent` infers 
     const output = JSON.parse(run.stdout) as { preflight: unknown; allowedOrigins: string[] };
     assert.deepEqual(output.preflight, { agent: { localId: "billing", agentId: "app--billing" } });
     assert.deepEqual(output.allowedOrigins, ["https://billing.example.com"]);
+
+    const alias = await runFrom(context, resolve(parent, "app"), "secrets", [
+      "set",
+      "API_TOKEN",
+      "--agent",
+      "billing",
+      "--value-stdin",
+    ]);
+    assert.equal(alias.error, undefined, alias.error?.message);
+    assert.equal(cloud.puts.length, 2);
+    assert.equal(cloud.puts[1]!.body.agentId, "app--billing", "a local id alias scopes to its cloud agent");
+    assert.deepEqual(cloud.puts[1]!.body.allowedOrigins, ["https://billing.example.com"]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
