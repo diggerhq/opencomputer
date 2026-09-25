@@ -198,7 +198,10 @@ export async function doctorProject(
   }
   const linked = await readLinkedProject(projectRoot);
   const members = projectAgentMembers(agents, linked);
-  const selected = options.selector ? selectProjectAgent(members, options.selector) : undefined;
+  // With an unreadable contract the roster is empty; selecting against it
+  // would throw and hide the contract diagnostic.
+  const selected =
+    options.selector && contractValid ? selectProjectAgent(members, options.selector) : undefined;
   // A selected member is checked alone: other agents' sources are left out of
   // the scan, while project-level files stay in.
   const excluded = selected

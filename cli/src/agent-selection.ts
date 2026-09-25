@@ -88,11 +88,16 @@ export function selectProjectAgent(
         details(members, selector),
       );
     }
+    // `--agent` may be the member's own local id as an alias, but never
+    // another member's cloud id.
+    const alias =
+      selector.agent === member.localId &&
+      !members.some((candidate) => candidate.agentId === selector.agent);
     if (
       selector.agent &&
       member.agentId !== null &&
       selector.agent !== member.agentId &&
-      selector.agent !== member.localId
+      !alias
     ) {
       throw new CLIError(
         "agent_selection_mismatch",

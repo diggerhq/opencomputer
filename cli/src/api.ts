@@ -58,6 +58,7 @@ export interface ManagedAgentDeployment {
 export interface ManagedAgentEvent {
   id: string;
   seq: number;
+  turnId?: string | null;
   type: string;
   data: Record<string, unknown>;
 }

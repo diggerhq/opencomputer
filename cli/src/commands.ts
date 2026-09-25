@@ -924,12 +924,19 @@ export async function runAgent(
   let streamed = false;
   let streamedText = "";
   let completedText = "";
+  // A replayed session may already hold settled turns; only this turn's
+  // events end (or are shown for) this command.
+  const ofThisTurn = (event: ManagedAgentEvent) =>
+    event.turnId == null || event.turnId === turn.turnId;
   const completed = await waitForEvent(
     client,
     sessionId,
     connected.cursor,
-    (event) => event.type === "turn.completed" || event.type === "turn.failed",
+    (event) =>
+      ofThisTurn(event) &&
+      (event.type === "turn.completed" || event.type === "turn.failed"),
     (event) => {
+      if (!ofThisTurn(event)) return;
       if (event.type === "message.delta") {
         streamed = true;
         const text = String(event.data.text ?? "");

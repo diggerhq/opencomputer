@@ -90,6 +90,14 @@ test("acceptance 2: unknown or ambiguous mappings list the valid local IDs and n
   );
   assert.equal(ambiguous.code, "local_agent_ambiguous");
   assert.match(ambiguous.message, /matches several local agents/);
+  // With both flags, --agent naming another member's cloud id is not
+  // reinterpreted as the chosen member's local alias.
+  const collision = codeOf(() =>
+    selectProjectAgent(twins, { agent: "app--app", localAgent: "app--app" }),
+  );
+  assert.equal(collision.code, "agent_selection_mismatch");
+  assert.match(collision.message, /app--app deploys as cloud agent app--app--app, not app--app/);
+  assert.equal(selectProjectAgent(twins, { agent: "app", localAgent: "app" }).root, "/p/a");
 
   const none = codeOf(() => selectProjectAgent(members));
   assert.equal(none.code, "local_agent_required");

@@ -38,7 +38,10 @@ function fakeManagementApi(context: test.TestContext): FakeApi {
     loseNextSessionResponse: false,
     loseNextTurnResponse: false,
   };
-  const events = new Map<string, Array<{ seq: number; type: string; data: Record<string, unknown> }>>();
+  const events = new Map<
+    string,
+    Array<{ seq: number; turnId?: string; type: string; data: Record<string, unknown> }>
+  >();
   const problem = (status: number, code: string, message: string) =>
     Response.json({ error: { code, message } }, { status });
   const sessionByKey = new Map<string, Committed>();
@@ -109,8 +112,13 @@ function fakeManagementApi(context: test.TestContext): FakeApi {
       turnByKey.set(key, turn);
       const log = events.get(sessionId)!;
       log.push(
-        { seq: log.length + 1, type: "message.completed", data: { text: `echo: ${String(body.input)}` } },
-        { seq: log.length + 2, type: "turn.completed", data: { turnId: turn.id } },
+        {
+          seq: log.length + 1,
+          turnId: turn.id,
+          type: "message.completed",
+          data: { text: `echo: ${String(body.input)}` },
+        },
+        { seq: log.length + 2, turnId: turn.id, type: "turn.completed", data: { turnId: turn.id } },
       );
       if (state.loseNextTurnResponse) {
         state.loseNextTurnResponse = false;
@@ -221,6 +229,19 @@ test("acceptance 2: a lost session-create response converges on one session when
   assert.deepEqual(retried.session, { id: "ses_01", created: false, duplicate: true, status: "idle" });
   assert.equal(retried.turn.admitted, true);
   assert.equal(retried.complete, true);
+});
+
+test("a replayed session with a fresh turn key waits for the new turn, not an earlier one", async (context) => {
+  quiet(context);
+  const api = fakeManagementApi(context);
+  const first = await createAndRun(api, { sessionIdempotencyKey: "s", turnIdempotencyKey: "t1", prompt: "one" });
+  assert.equal(first.turn.id, "turn_01");
+
+  const second = await createAndRun(api, { sessionIdempotencyKey: "s", turnIdempotencyKey: "t2", prompt: "two" });
+  assert.equal(second.session.id, "ses_01");
+  assert.equal(second.session.duplicate, true);
+  assert.deepEqual(second.turn, { id: "turn_02", admitted: true, duplicate: false, status: "completed" });
+  assert.equal(second.output, "echo: two", "the earlier turn's output is not reported for the new turn");
 });
 
 test("acceptance 3: a lost turn-admission response converges on one turn when retried", async (context) => {

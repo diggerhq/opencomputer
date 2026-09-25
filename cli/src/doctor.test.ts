@@ -295,6 +295,16 @@ test("acceptance 6: agent-level doctor checks the selected member only", async (
         error.code === "local_agent_not_found" &&
         /hello-world, billing, support/.test(error.message),
     );
+
+    // An unreadable project contract is reported even with a selector,
+    // instead of the selection failing against an empty roster.
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      'export default { agents: [billing] };\n',
+    );
+    const broken = await doctorProject(root, { selector: { agent: "billing" } });
+    assert.equal(broken.ok, false);
+    assert.ok(broken.diagnostics.some((diagnostic) => diagnostic.code === "project_contract_invalid"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
