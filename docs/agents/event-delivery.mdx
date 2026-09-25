@@ -261,7 +261,10 @@ times, up to 100 deliveries per call. The answer is `202` with
 `replayOf` naming the original and the original `eventId` in its body, so a
 receiver that deduplicates on `eventId` treats a replay as the repeat it is.
 Replaying a delivery that is still `pending` queues a second delivery of the
-same event.
+same event. `since` and `until` may carry any UTC offset; they select by
+instant. While a subscription has 500 or more replayed deliveries still
+`pending`, further replay requests answer `429` with
+`error.code: "replay_backlog"` until those settle.
 
 ## Pause, resume, rotate, delete
 
@@ -288,9 +291,11 @@ redeployed.
 `rotate-secret` returns `{ subscription, signingSecret }` with a new secret.
 For the next 24 hours every delivery is signed with both secrets and its
 `x-oc-signature` carries two `v1=` entries; a receiver checking either one
-keeps accepting throughout. Install the new secret within that window and
-retire the old one after it; `subscription.secretRotatedAt` records the
-rotation.
+keeps accepting throughout. Rotating again inside that window keeps every
+earlier secret signing until its own 24 hours are up (up to five retired
+secrets at once), so a receiver mid-rollout is never cut off early. Install
+the new secret within that window and retire the old one after it;
+`subscription.secretRotatedAt` records the latest rotation.
 
 Deleting a subscription stops delivery. Its `pending` deliveries become
 `failed` with `error: "subscription_deleted"`, and its delivery routes
