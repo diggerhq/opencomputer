@@ -960,18 +960,21 @@ function ownerLabels(source: Record<string, unknown>): Record<string, string> {
 }
 
 /**
- * The session's result as documented: the call that reported it and its
- * `data` verbatim. `data` is the application's own JSON, so nothing inside
- * it is inspected or renamed; `null` when no turn has reported one.
+ * The session's result as documented: the call that reported it, its
+ * `data` verbatim and the platform-assigned `identity` of that call when the
+ * platform recorded one. `data` is the application's own JSON, so nothing
+ * inside it is inspected or renamed; `null` when no turn has reported one.
  */
 function publicSessionResult(value: unknown): unknown {
   const result = record(value);
   if (!result) return null;
+  const identity = record(result.identity);
   return {
     turnId: result.turnId,
     callId: result.callId,
     reportedAt: result.reportedAt,
     data: result.data,
+    ...(identity ? { identity } : {}),
   };
 }
 
