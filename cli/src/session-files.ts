@@ -144,11 +144,7 @@ export async function downloadWorkspaceFile(
  * downloadable. Fall back to those in that case only.
  */
 function isWorkspaceGone(error: unknown): boolean {
-  return (
-    error instanceof APIError &&
-    (error.code === "workspace_unavailable" ||
-      error.code === "artifact_not_found")
-  );
+  return error instanceof APIError && error.code === "workspace_unavailable";
 }
 
 async function latestRetainedArtifacts(
