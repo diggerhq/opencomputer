@@ -33,6 +33,7 @@ import {
   resolveProjectAgent,
 } from "./session-command.js";
 import {
+  type DownloadResult,
   downloadWorkspace,
   downloadWorkspaceFile,
   formatSize,
@@ -187,10 +188,7 @@ function consumeModelAccessProvider(
     args[0] === "openai-compatible"
   ) {
     return args.shift() as
-      | "claude"
-      | "codex"
-      | "openrouter"
-      | "openai-compatible";
+      "claude" | "codex" | "openrouter" | "openai-compatible";
   }
   return "codex";
 }
@@ -2229,8 +2227,7 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const current = await client.memoryDocument(target);
       let edited:
-        | Awaited<ReturnType<typeof editMemoryTextInEditor>>
-        | undefined;
+        Awaited<ReturnType<typeof editMemoryTextInEditor>> | undefined;
       const text =
         supplied ??
         (edited = await editMemoryTextInEditor(
@@ -2394,69 +2391,9 @@ export async function runCommand(
       await tailSession(client, sessionId, after, follow, globals.json);
       return;
     }
-    if (args[0] === "files" || args[0] === "ls") {
+    if (args[0] === "files") {
       args.shift();
-      const sessionId = args.shift();
-      if (!sessionId) throw new Error("A session ID is required.");
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const files = await listWorkspaceFiles(client, sessionId);
-      if (globals.json) printJSON({ sessionId, files });
-      else if (!files.length) process.stdout.write("No workspace files.\n");
-      else {
-        for (const file of files) {
-          process.stdout.write(
-            `${(file.lastModified ?? "").padEnd(24)} ${formatSize(file.size).padStart(10)}  ${file.path}\n`,
-          );
-        }
-      }
-      return;
-    }
-    if (args[0] === "download" || args[0] === "cp") {
-      args.shift();
-      const all = flag(args, "--all");
-      const sessionId = args.shift();
-      if (!sessionId) throw new Error("A session ID is required.");
-      if (all) {
-        const root = args.shift() ?? sessionId;
-        if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-        const results = await downloadWorkspace(
-          client,
-          sessionId,
-          root,
-          (result) => {
-            if (!globals.json) {
-              process.stdout.write(
-                `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256})\n`,
-              );
-            }
-          },
-        );
-        if (globals.json) printJSON({ sessionId, root, files: results });
-        else if (!results.length) process.stdout.write("No workspace files.\n");
-        return;
-      }
-      const remote = args.shift();
-      if (!remote) {
-        throw new Error("A workspace file path is required (or pass --all).");
-      }
-      const workspacePath = normalizeWorkspacePath(remote);
-      const destination = await resolveSingleDestination(
-        args.shift(),
-        workspacePath,
-      );
-      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const result = await downloadWorkspaceFile(
-        client,
-        sessionId,
-        workspacePath,
-        destination,
-      );
-      if (globals.json) printJSON({ sessionId, ...result });
-      else {
-        process.stdout.write(
-          `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256})\n`,
-        );
-      }
+      await runSessionFiles(client, args, globals.json);
       return;
     }
     const session = parseSessionCommand(args);
@@ -2597,4 +2534,79 @@ export async function runCommand(
   }
 
   throw new Error(`Unknown command: ${command}`);
+}
+
+/**
+ * `session files <ls|download|cp> <session-id> ...`. A bare
+ * `session files <session-id>` lists, so the common case stays short.
+ */
+async function runSessionFiles(
+  client: OpenComputerClient,
+  args: string[],
+  json: boolean,
+) {
+  const printDownload = (result: DownloadResult) => {
+    process.stdout.write(
+      `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256})\n`,
+    );
+  };
+  const action =
+    args[0] === "ls" ||
+    args[0] === "list" ||
+    args[0] === "download" ||
+    args[0] === "cp"
+      ? (args.shift() as "ls" | "list" | "download" | "cp")
+      : "ls";
+  if (action === "ls" || action === "list") {
+    const sessionId = args.shift();
+    if (!sessionId) throw new Error("A session ID is required.");
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const files = await listWorkspaceFiles(client, sessionId);
+    if (json) printJSON({ sessionId, files });
+    else if (!files.length) process.stdout.write("No workspace files.\n");
+    else {
+      for (const file of files) {
+        process.stdout.write(
+          `${(file.lastModified ?? "").padEnd(24)} ${formatSize(file.size).padStart(10)}  ${file.path}\n`,
+        );
+      }
+    }
+    return;
+  }
+  const all = flag(args, "--all");
+  const sessionId = args.shift();
+  if (!sessionId) throw new Error("A session ID is required.");
+  if (all) {
+    const root = args.shift() ?? sessionId;
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const results = await downloadWorkspace(
+      client,
+      sessionId,
+      root,
+      (result) => {
+        if (!json) printDownload(result);
+      },
+    );
+    if (json) printJSON({ sessionId, root, files: results });
+    else if (!results.length) process.stdout.write("No workspace files.\n");
+    return;
+  }
+  const remote = args.shift();
+  if (!remote) {
+    throw new Error("A workspace file path is required (or pass --all).");
+  }
+  const workspacePath = normalizeWorkspacePath(remote);
+  const destination = await resolveSingleDestination(
+    args.shift(),
+    workspacePath,
+  );
+  if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+  const result = await downloadWorkspaceFile(
+    client,
+    sessionId,
+    workspacePath,
+    destination,
+  );
+  if (json) printJSON({ sessionId, ...result });
+  else printDownload(result);
 }

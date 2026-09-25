@@ -69,10 +69,10 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
-  opencomputer session files <session-id>
+  opencomputer session files [ls] <session-id>
       lists the files under the session's /workspace
-  opencomputer session download <session-id> <workspace-path> [dest]
-  opencomputer session download <session-id> --all [dest-dir]
+  opencomputer session files download <session-id> <workspace-path> [dest]
+  opencomputer session files download <session-id> --all [dest-dir]
       exports the file(s) provider-side, streams the retained copy to disk and
       verifies size and SHA-256 against the manifest before saving; "cp" is an alias
   opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]

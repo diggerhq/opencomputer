@@ -135,6 +135,39 @@ npx --package @opencomputer/cli opencomputer session "Draft a response"
 Use `--keep` on supported commands when the session should remain active after
 the command exits.
 
+### Workspace files
+
+Files an agent writes under `/workspace` (reports, captures, screenshots, tool
+output) can be listed and downloaded with `session files`. Downloads never pass
+through the model or the session transcript: OpenComputer exports the file into
+provider-owned storage, records its byte count and SHA-256, and the CLI streams
+that retained copy to disk, verifying both before the file is saved.
+
+```bash
+# List the files in the session's /workspace
+opencomputer session files <session-id>
+opencomputer session files ls <session-id>
+
+# Download one file (dest may be a file path or an existing directory)
+opencomputer session files download <session-id> report/summary.md
+opencomputer session files download <session-id> /workspace/captures/run.har ./evidence/
+
+# Download the whole workspace, mirroring its layout
+opencomputer session files download <session-id> --all ./workspace-copy
+
+# Machine-readable output with artifactId, size and sha256 per file
+opencomputer session files download <session-id> --all ./workspace-copy --json
+```
+
+`cp` is an alias for `download`. Workspace paths may be written relative to
+`/workspace` or with the `/workspace/` prefix; paths that leave the workspace
+are refused before any request is made. Each download is written to a
+temporary file and renamed into place only after the size and SHA-256 match
+the export manifest, so an interrupted or corrupted transfer never leaves a
+partial file behind. Retained copies remain downloadable after the session
+ends, from the CLI, the session page's **Files** tab, or the
+[playground debug inspector](/agents/playground).
+
 ## From an application
 
 Applications create sessions with the [management API](/agents/api): `POST
