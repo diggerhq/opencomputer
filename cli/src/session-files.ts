@@ -4,7 +4,11 @@ import { mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
-import type { WorkspaceArtifact, WorkspaceFile } from "./api.js";
+import {
+  workspaceContentSignal,
+  type WorkspaceArtifact,
+  type WorkspaceFile,
+} from "./api.js";
 
 /** The client surface this module needs; `OpenComputerClient` satisfies it. */
 export type WorkspaceClient = {
@@ -153,10 +157,15 @@ export async function downloadArtifact(
   await withInterruptAbort(async (signal) => {
     try {
       await streamVerified(client, artifact, temporary, signal);
+      signal.throwIfAborted();
       await rename(temporary, destination);
     } catch (error) {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;
+    }
+    if (signal.aborted) {
+      await rm(destination, { force: true }).catch(() => undefined);
+      signal.throwIfAborted();
     }
   });
   return {
@@ -172,8 +181,9 @@ async function streamVerified(
   client: WorkspaceClient,
   artifact: WorkspaceArtifact,
   temporary: string,
-  signal: AbortSignal,
+  interrupt: AbortSignal,
 ): Promise<void> {
+  const signal = workspaceContentSignal(interrupt);
   const response = await client.workspaceArtifactContent(artifact, signal);
   if (!response.body) throw new VerificationError("Empty artifact response.");
   const hash = createHash("sha256");

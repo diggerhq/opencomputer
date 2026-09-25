@@ -327,8 +327,7 @@ export interface ManagedSessionPage {
 export type MemoryEnvironment = "development" | "production";
 
 export type MemoryWriter =
-  | { kind: "owner" }
-  | { kind: "agent"; sessionId: string };
+  { kind: "owner" } | { kind: "agent"; sessionId: string };
 
 /** One document's metadata, as the list route returns it (no text). */
 export interface MemoryDocumentMeta {
@@ -1411,7 +1410,10 @@ export class OpenComputerClient {
     return result.artifact;
   }
 
-  /** Raw bytes of a retained artifact; callers verify size and SHA-256. */
+  /**
+   * Raw bytes of a retained artifact; callers verify size and SHA-256. The
+   * request always carries the one-hour deadline, combined with `signal`.
+   */
   workspaceArtifactContent(
     artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
     signal?: AbortSignal,
@@ -1421,13 +1423,19 @@ export class OpenComputerClient {
         artifact.sessionId,
         `/exports/${encodeURIComponent(artifact.id)}/content`,
       ),
-      signal ? { signal } : { signal: AbortSignal.timeout(WORKSPACE_CONTENT_TIMEOUT_MS) },
+      { signal: workspaceContentSignal(signal) },
     );
   }
 }
 
 /** Large artifacts stream for a while; the default 30 s budget is for JSON. */
-const WORKSPACE_CONTENT_TIMEOUT_MS = 60 * 60 * 1000;
+export const WORKSPACE_CONTENT_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** The one-hour content deadline, also aborting when `signal` does. */
+export function workspaceContentSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(WORKSPACE_CONTENT_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 export type WorkspaceFile = {
   path: string;
