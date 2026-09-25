@@ -199,11 +199,13 @@ export const SlackConnectStatusSchema = z.object({
   available: z.boolean(),
   eligible: z.boolean(),
   email: z.string().nullable(),
+  channelName: z.string().nullable(),
   invitedAt: z.string().nullable(),
 })
 
 export const SlackConnectInviteSchema = z.object({
   email: z.string(),
+  channelName: z.string(),
   invitedAt: z.string(),
   alreadyInvited: z.boolean(),
 })

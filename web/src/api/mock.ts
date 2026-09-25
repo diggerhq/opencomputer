@@ -1445,6 +1445,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
       available: true,
       eligible: true,
       email: me.email,
+      channelName: null,
       invitedAt: null,
     }),
   ],
@@ -1529,6 +1530,7 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
     /^\/org\/slack-connect\/invite$/,
     () => ({
       email: me.email,
+      channelName: 'oc-acme-preview',
       invitedAt: new Date(BASE).toISOString(),
       alreadyInvited: false,
     }),

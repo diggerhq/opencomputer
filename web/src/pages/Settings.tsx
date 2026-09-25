@@ -503,6 +503,7 @@ function SlackConnectPanel() {
         available: true,
         eligible: true,
         email: invite.email,
+        channelName: invite.channelName,
         invitedAt: invite.invitedAt,
       }),
     onError: (e) => notifyError("Couldn't send the Slack invitation.", e),
@@ -516,12 +517,20 @@ function SlackConnectPanel() {
         <div>
           <PanelTitle>Slack Connect</PanelTitle>
           <PanelDescription className="mt-1">
-            Join a shared Slack channel with the OpenComputer team for direct
-            support. Available on Pro and Max.
+            Get a private Slack channel shared between your organization and the
+            OpenComputer team. Available on Pro and Max.
           </PanelDescription>
           {status.eligible && status.invitedAt ? (
             <p className="text-muted-foreground mt-3 text-sm">
-              Invitation sent to{' '}
+              Invitation to{' '}
+              {status.channelName ? (
+                <span className="text-foreground font-mono font-medium">
+                  #{status.channelName}
+                </span>
+              ) : (
+                'your shared channel'
+              )}{' '}
+              sent to{' '}
               <span className="text-foreground font-medium">
                 {status.email}
               </span>{' '}
@@ -530,6 +539,15 @@ function SlackConnectPanel() {
             </p>
           ) : status.eligible ? (
             <p className="text-muted-foreground mt-3 text-sm">
+              {status.channelName ? (
+                <>
+                  Your organization&apos;s channel{' '}
+                  <span className="text-foreground font-mono font-medium">
+                    #{status.channelName}
+                  </span>{' '}
+                  already exists.{' '}
+                </>
+              ) : null}
               Slack will email an invitation to{' '}
               <span className="text-foreground font-medium">
                 {status.email}
@@ -547,7 +565,9 @@ function SlackConnectPanel() {
               ? 'Sending…'
               : status.invitedAt
                 ? 'Invitation sent'
-                : 'Send me an invite'}
+                : status.channelName
+                  ? 'Join the channel'
+                  : 'Create shared channel'}
           </Button>
         ) : (
           <Button asChild variant="outline">

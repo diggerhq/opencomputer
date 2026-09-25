@@ -81,10 +81,11 @@ export interface DashboardEnv {
   OPENROUTER_BASE_URL?: string;
   OPENROUTER_MARKUP_BPS?: string;
   OC_MANAGED_CRED_HMAC_SECRET: string;
-  // Self-serve Slack Connect invites to the team's shared support channel
-  // (Pro/Max only). Both optional — unset hides the feature.
+  // Self-serve Slack Connect: per-org shared channel with the team (Pro/Max
+  // only). Token + team IDs required to enable; unset hides the feature.
   SLACK_CONNECT_BOT_TOKEN?: string;
-  SLACK_CONNECT_CHANNEL_ID?: string;
+  SLACK_CONNECT_TEAM_USER_IDS?: string;
+  SLACK_CONNECT_CHANNEL_PREFIX?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
