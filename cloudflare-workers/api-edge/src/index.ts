@@ -71,7 +71,7 @@ import {
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
-import { runModelMeter } from "./model_meter";
+import { runModelMeter, syncManagedModelCaps } from "./model_meter";
 import {
   enforceManagedAgentCreditGate,
   insufficientManagedAgentCredits,
@@ -5460,7 +5460,14 @@ export default {
 
     // Autumn (useautumn.com) webhook — Svix-signed; projects authoritative
     // balance/plans into D1 (is_halted, max_concurrent) + dispatches to cells.
-    if (path === "/webhooks/autumn" && req.method === "POST") return autumnWebhook(req, env);
+    // A balance change (top-up, auto-recharge) also re-caps the org's managed
+    // OpenRouter key inline, so new credit is spendable at once instead of after
+    // the next model-meter tick.
+    if (path === "/webhooks/autumn" && req.method === "POST") {
+      return autumnWebhook(req, env, async (orgID) => {
+        if (env.OPENROUTER_PROVISIONING_KEY) await syncManagedModelCaps(env, orgID);
+      });
+    }
 
     // Dashboard API — everything under /api/dashboard/*. Edge-native handlers
     // back D1 reads/writes; sandbox-runtime calls proxy to the sandbox's cell.

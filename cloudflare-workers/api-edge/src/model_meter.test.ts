@@ -10,7 +10,7 @@ vi.mock("./autumn_webhook", () => ({
 
 import { getOrKey, patchOrKey } from "./openrouter";
 import { getAutumnCustomer, trackAutumnUsage, projectOrg } from "./autumn_webhook";
-import { runModelMeter, type ModelMeterEnv } from "./model_meter";
+import { runModelMeter, syncManagedModelCaps, type ModelMeterEnv } from "./model_meter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
 const gOrKey = getOrKey as unknown as ReturnType<typeof vi.fn>;
@@ -187,5 +187,56 @@ describe("model_meter cap + halt (§5.4/§7)", () => {
 
     await runModelMeter(env(db), 0);
     expect(gProject).toHaveBeenCalledWith(expect.anything(), "org1");
+  });
+});
+
+describe("syncManagedModelCaps (synchronous after a balance change)", () => {
+  it("lifts the active key's cap to usage + new remaining right away, debiting outstanding spend first", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 4000000 }));
+    gOrKey.mockResolvedValue(orKey(4.573794, 5)); // usage 4.57 against the old $5 cap
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 20.426206 } } }); // after a $20 top-up
+
+    await syncManagedModelCaps(env(db), "org1");
+
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(db.keys[0].committed_micro).toBe(4573794);
+    expect(gPatch).toHaveBeenCalledTimes(1);
+    expect(gPatch.mock.calls[0][1]).toBe("hash1");
+    expect(gPatch.mock.calls[0][2].limitUsd).toBeCloseTo(25, 5);
+    expect(gProject).not.toHaveBeenCalled();
+  });
+
+  it("applies markup to the headroom", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 2500, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 1000000 }));
+    gOrKey.mockResolvedValue(orKey(1.0, 1));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 12.5 } } });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gPatch.mock.calls[0][2].limitUsd).toBeCloseTo(1 + 12.5 / 1.25, 5);
+  });
+
+  it("is a no-op for orgs without a generated key or not on autumn", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gOrKey).not.toHaveBeenCalled();
+
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "stripe" });
+    db.keys.push(key());
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gOrKey).not.toHaveBeenCalled();
+    expect(gPatch).not.toHaveBeenCalled();
+  });
+
+  it("swallows provider failures so the caller (webhook, billing page) still succeeds", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key());
+    gOrKey.mockRejectedValue(new Error("openrouter down"));
+    await expect(syncManagedModelCaps(env(db), "org1")).resolves.toBeUndefined();
   });
 });

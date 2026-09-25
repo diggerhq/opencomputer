@@ -219,6 +219,9 @@ export const AutumnModelUsageSchema = z.object({
   billedCreditsCents: z.number(),
   activeKeyCount: z.number(),
   billingStartedAt: z.string().nullable().optional(),
+  reserveCents: z.number().optional(),
+  spendableCents: z.number().optional(),
+  lowBalance: z.boolean().optional(),
 })
 
 export const AutumnBillingSchema = z.object({

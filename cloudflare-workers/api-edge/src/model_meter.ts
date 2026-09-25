@@ -12,13 +12,24 @@
 // into the Autumn ledger + keeps the cap aligned with the shared balance. Mirrors
 // the autumn_meter idempotency model (Autumn dedupes the track key).
 
-import { type AutumnEnv, getAutumnCustomer, projectOrg, trackAutumnUsage } from "./autumn_webhook";
+import {
+  type AutumnApiEnv,
+  type AutumnEnv,
+  getAutumnCustomer,
+  projectOrg,
+  trackAutumnUsage,
+} from "./autumn_webhook";
 import { getOrKey, patchOrKey, type OpenRouterEnv } from "./openrouter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
-export interface ModelMeterEnv extends OpenRouterEnv, AutumnEnv {
+// Enough to debit + push caps for one org, without the dispatch secrets the halt
+// path needs. Satisfied by the dashboard + webhook handlers.
+export interface ModelCapSyncEnv extends OpenRouterEnv, AutumnApiEnv {
+  OPENCOMPUTER_DB: D1Database;
   OPENROUTER_MARKUP_BPS?: string; // env-default markup when an org's column is 0
 }
+
+export interface ModelMeterEnv extends ModelCapSyncEnv, AutumnEnv {}
 
 const MODEL_SPEND_FEATURE = "model_spend";
 // Grace headroom left on a superseded key so an in-flight call can finish while the
@@ -33,7 +44,7 @@ interface OrgMeterRow {
   billing_provider: string;
 }
 
-function markupBps(env: ModelMeterEnv, org: OrgMeterRow): number {
+function markupBps(env: ModelCapSyncEnv, org: OrgMeterRow): number {
   if (org.model_markup_bps && org.model_markup_bps > 0) return org.model_markup_bps;
   const envDefault = parseInt(env.OPENROUTER_MARKUP_BPS ?? "", 10);
   return Number.isFinite(envDefault) && envDefault > 0 ? envDefault : 0;
@@ -71,20 +82,60 @@ export async function runModelMeter(env: ModelMeterEnv, _nowMs: number): Promise
   console.log(`model-meter: ${byOrg.size} org(s), ${billed} debited this run`);
 }
 
+// syncManagedModelCaps re-aligns one org's OpenRouter key caps with its Autumn
+// balance NOW rather than on the next cron tick. Called right after a balance
+// change the user is waiting on (a top-up landing via webhook or checkout return),
+// so the provider stops rejecting the moment the dashboard shows new credit. Debits
+// outstanding spend first so the cap is computed off a balance that reflects it.
+// Halting stays with the cron. Never throws — a failed sync just leaves the cron
+// to catch up.
+export async function syncManagedModelCaps(env: ModelCapSyncEnv, orgId: string): Promise<void> {
+  try {
+    const res = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT * FROM managed_model_keys
+        WHERE org_id = ?1 AND status IN ('active','superseded','deleting') AND or_key_hash IS NOT NULL`,
+    )
+      .bind(orgId)
+      .all<ManagedModelKeyRow>();
+    const keys = res.results ?? [];
+    if (keys.length === 0) return;
+    await settleOrg(env, orgId, keys);
+  } catch (err) {
+    console.error(`model-meter: cap sync for org ${orgId} failed`, err);
+  }
+}
+
 async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKeyRow[]): Promise<boolean> {
+  const settled = await settleOrg(env, orgId, keys);
+  if (!settled) return false;
+  if (settled.remaining <= 0) {
+    // Halt immediately (mirror autumn_meter) — don't wait on the Autumn webhook.
+    await projectOrg(env, orgId).catch((e) => console.error(`model-meter: projectOrg ${orgId} failed`, e));
+  }
+  return settled.debited;
+}
+
+// settleOrg = debit new spend + push caps for one org. Returns the post-debit
+// balance so the caller can decide about halting, or null when the org is not
+// metered.
+async function settleOrg(
+  env: ModelCapSyncEnv,
+  orgId: string,
+  keys: ManagedModelKeyRow[],
+): Promise<{ debited: boolean; remaining: number } | null> {
   const org = await env.OPENCOMPUTER_DB.prepare(
     "SELECT id, model_markup_bps, billing_provider FROM orgs WHERE id = ?1",
   )
     .bind(orgId)
     .first<OrgMeterRow>();
-  if (!org) return false;
+  if (!org) return null;
   // Decoupled billing: only autumn orgs are on the shared credit pool, so only they
   // are metered, capped-to-credits, and halted. Non-autumn orgs run on the FIXED OR
   // key budget set at provision — the key limit is the ceiling; we never debit or
   // halt them. This guard is also a correctness requirement, not just a skip: with
   // no Autumn customer, `remaining` below would read 0 and wrongly halt the org
   // (hibernate its boxes). Top-up = move the org to autumn + grant credits.
-  if (org.billing_provider !== "autumn") return false;
+  if (org.billing_provider !== "autumn") return null;
   const bps = markupBps(env, org);
 
   // Read each key's current OpenRouter usage once (reused for debit + cap).
@@ -103,23 +154,19 @@ async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKey
     if (await debitKey(env, orgId, k, u.usageUsd, bps)) debited = true;
   }
 
-  // 2. Halt + push caps off the post-debit balance (read once).
+  // 2. Push caps off the post-debit balance (read once).
   const cust = await getAutumnCustomer(env, orgId);
   const remainingUsd = cust?.balances?.credits?.remaining;
   const remaining = typeof remainingUsd === "number" ? remainingUsd : 0;
-  if (remaining <= 0) {
-    // Halt immediately (mirror autumn_meter) — don't wait on the Autumn webhook.
-    await projectOrg(env, orgId).catch((e) => console.error(`model-meter: projectOrg ${orgId} failed`, e));
-  }
   await pushCaps(env, keys, usage, remaining, bps);
-  return debited;
+  return { debited, remaining };
 }
 
 // debitKey moves a key's NEW OpenRouter spend into Autumn, exactly-once (§7):
 // persist an immutable [from,to) interval BEFORE the track; on a crashed retry,
 // re-send the SAME interval/key (never recompute against newer usage).
 async function debitKey(
-  env: ModelMeterEnv,
+  env: ModelCapSyncEnv,
   orgId: string,
   row: ManagedModelKeyRow,
   usageUsd: number,
@@ -167,7 +214,7 @@ async function debitKey(
 // freeze every superseded/deleting key near its own usage (+ε grace), and give the
 // active key the rest of the headroom. PATCH only when a cap actually moves.
 async function pushCaps(
-  env: ModelMeterEnv,
+  env: ModelCapSyncEnv,
   keys: ManagedModelKeyRow[],
   usage: Map<string, { usageUsd: number; limitUsd: number | null }>,
   remainingUsd: number,

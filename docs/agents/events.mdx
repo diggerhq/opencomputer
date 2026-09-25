@@ -94,8 +94,9 @@ retried. Each retry appears in the log as a `runtime.log` milestone with
 `phase: "model_retry"`, the attempt and the failure's class (for example
 `provider.transport`), never the provider's own text. A rejection is not
 retried: credentials, quota, content policy and an invalid request are
-`model_rejected` at once. A `model_stream_failed` message names its retry
-only when one happened.
+`model_rejected` at once, except that a managed model refused for want of
+OpenComputer credit is `balance_exhausted`. A `model_stream_failed` message
+names its retry only when one happened.
 
 | `code` | Meaning | Parameter |
 | --- | --- | --- |
@@ -106,6 +107,7 @@ only when one happened.
 | `deployment_invalid` | The runtime could not load the deployment | |
 | `model_unavailable` | The requested model is not available to this agent | `model`: the requested model id |
 | `model_rejected` | The model provider rejected the request: credentials, rate limit or quota | |
+| `balance_exhausted` | The organization's OpenComputer balance cannot fund a managed model call; top up to continue | |
 | `context_too_long` | The conversation exceeds the model's context window | |
 | `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
 | `sandbox_timeout` | A sandbox command did not finish in time | |

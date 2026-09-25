@@ -1097,6 +1097,7 @@ export type PublicFailureCode =
   | "deployment_invalid"
   | "model_unavailable"
   | "model_rejected"
+  | "balance_exhausted"
   | "context_too_long"
   | "tool_failed"
   | "sandbox_timeout"
@@ -1131,6 +1132,8 @@ const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
   deployment_invalid: "The deployment could not be loaded by the runtime.",
   model_unavailable: "The requested model is not available to this agent.",
   model_rejected: "The model provider rejected the request.",
+  balance_exhausted:
+    "Your OpenComputer balance has reached zero. Top up your credits to continue using managed models.",
   context_too_long:
     "The conversation is too long for the model's context window.",
   tool_failed: "A tool failed.",
@@ -1244,11 +1247,22 @@ const PROVIDER_FAILURE_CODES: Record<string, PublicFailureCode> = {
   unknown: "model_stream_failed",
 };
 
+// The provider refused the call for want of funds: its quota class, or a 402
+// (OpenRouter's answer when a request's worst-case cost exceeds the generated
+// key's remaining cap). On a managed route the funds are the org's OpenComputer
+// balance, so the failure is `balance_exhausted`; on a customer's own key it
+// stays a plain rejection.
+function balanceExhausted(failure: Record<string, unknown>, subtype: string): boolean {
+  if (failure.access !== "managed") return false;
+  return subtype === "quota" || failure.status === 402;
+}
+
 /**
  * The public failure from the typed fields the runtime recorded, when it
- * recorded a provider failure: `{ class: "provider", subtype, model?,
- * retry: { attempts } }`. The provider's text decides one thing only, on
- * an invalid request: whether the conversation outgrew the model's window.
+ * recorded a provider failure: `{ class: "provider", subtype, status?,
+ * model?, access?, retry: { attempts } }`. The provider's text decides one
+ * thing only, on an invalid request: whether the conversation outgrew the
+ * model's window.
  * The retry is named only when one happened; a call that bypasses the
  * runtime's retry (compaction, titling) fails on its first attempt.
  */
@@ -1259,6 +1273,12 @@ function structuredFailure(
   const failure = record(data.failure);
   if (!failure || failure.class !== "provider") return undefined;
   const subtype = typeof failure.subtype === "string" ? failure.subtype : "";
+  if (balanceExhausted(failure, subtype)) {
+    return {
+      code: "balance_exhausted",
+      message: PUBLIC_FAILURE_MESSAGES.balance_exhausted,
+    };
+  }
   const code = PROVIDER_FAILURE_CODES[subtype];
   if (!code) return undefined;
   if (subtype === "invalid-request" && CONTEXT_TOO_LONG.test(firstLine)) {

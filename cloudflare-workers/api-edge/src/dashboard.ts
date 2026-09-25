@@ -36,6 +36,7 @@ import {
 import { createAPIKey } from "./api_keys";
 import { proxyManagedAgents } from "./managed_agents";
 import { enableManagedBilling } from "./model_billing";
+import { syncManagedModelCaps } from "./model_meter";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -76,7 +77,21 @@ export interface DashboardEnv {
   OPENROUTER_PROVISIONING_KEY: string;
   OPENROUTER_BASE_URL?: string;
   OPENROUTER_MARKUP_BPS?: string;
+  // USD the balance must keep clear for one more managed-model call to go
+  // through. OpenRouter pre-checks a request's worst-case cost (max_tokens ×
+  // price) against the key's remaining cap, so credit below this is displayed
+  // as not spendable on models. Default 1.00.
+  MANAGED_MODEL_RESERVE_USD?: string;
   OC_MANAGED_CRED_HMAC_SECRET: string;
+}
+
+const DEFAULT_MANAGED_MODEL_RESERVE_USD = 1;
+
+export function managedModelReserveCents(env: { MANAGED_MODEL_RESERVE_USD?: string }): number {
+  const raw = env.MANAGED_MODEL_RESERVE_USD?.trim();
+  const v = raw ? Number(raw) : NaN;
+  const usd = Number.isFinite(v) && v >= 0 ? v : DEFAULT_MANAGED_MODEL_RESERVE_USD;
+  return Math.round(usd * 100);
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -1551,6 +1566,10 @@ const AUTUMN_USAGE_PLANS: Record<string, number> = {
 // trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
 async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  // Settle managed-model spend + re-cap the OpenRouter key before reading the
+  // balance, so what we display is what the provider will actually honour —
+  // and a just-topped-up user's key is unblocked on the checkout return itself.
+  if (env.OPENROUTER_PROVISIONING_KEY) await syncManagedModelCaps(env, caller.orgID);
   let r;
   try {
     r = await syncAutumnToD1(env, caller.orgID);
@@ -1613,6 +1632,8 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
   const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
   const creditsRemainingCents = Math.max(0, Math.round(r.creditsRemaining * 100));
+  const modelReserveCents = managedModelReserveCents(env);
+  const modelSpendableCents = Math.max(0, creditsRemainingCents - modelReserveCents);
   const planRemainingCents = Math.min(
     creditsRemainingCents,
     Math.round(creditBreakdown.planRemaining * 100),
@@ -1658,6 +1679,12 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       providerSpendCents: modelProviderSpendCents,
       billedCreditsCents: modelBilledCreditsCents,
       activeKeyCount: model?.active_key_count ?? 0,
+      // Credit a managed-model call can actually draw on (balance minus the
+      // per-request reserve). lowBalance = one more request may already fail;
+      // the UI should nudge a top-up before spendable hits zero.
+      reserveCents: modelReserveCents,
+      spendableCents: modelSpendableCents,
+      lowBalance: modelStatus === "active" && modelSpendableCents < modelReserveCents,
       billingStartedAt:
         model?.billing_started_at != null
           ? new Date(Number(model.billing_started_at) * 1_000).toISOString()
@@ -1776,6 +1803,7 @@ async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: 
       console.error("billing/autumn finalize-arm:", e);
       return Response.redirect(`${billing}?arm=failed`, 302);
     }
+    if (env.OPENROUTER_PROVISIONING_KEY) await syncManagedModelCaps(env, caller.orgID);
   }
   return Response.redirect(`${billing}?arm=ok`, 302);
 }

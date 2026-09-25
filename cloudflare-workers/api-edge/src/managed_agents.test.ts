@@ -4708,6 +4708,59 @@ describe("managed agents proxy", () => {
       code: "model_rejected",
       message: "The model provider rejected the request.",
     });
+    // A managed model refused for want of OpenComputer credit: OpenRouter's
+    // 402 or a quota rejection on the organization-funded key names the
+    // organization's balance, not "the provider".
+    const balanceExhausted = {
+      code: "balance_exhausted",
+      message:
+        "Your OpenComputer balance has reached zero. Top up your credits to continue using managed models.",
+    };
+    expect(
+      publicFailure(
+        providerFailure("quota", { status: 402, access: "managed" }),
+      ),
+    ).toEqual(balanceExhausted);
+    expect(
+      publicFailure(
+        providerFailure("invalid-request", { status: 402, access: "managed" }),
+      ),
+    ).toEqual(balanceExhausted);
+    expect(
+      publicFailure(providerFailure("quota", { status: 429, access: "managed" })),
+    ).toEqual(balanceExhausted);
+    // The same refusals on a user-owned key are the user's own provider
+    // account, never OpenComputer's balance.
+    for (const extra of [
+      { status: 402, access: "user" },
+      { status: 402 },
+    ]) {
+      expect(publicFailure(providerFailure("quota", extra))).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    // Other managed rejections keep their meaning.
+    for (const subtype of ["auth", "rate-limit", "content-filter"]) {
+      expect(
+        publicFailure(
+          providerFailure(subtype, { status: 429, access: "managed" }),
+        ),
+      ).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    expect(
+      publicFailure({
+        ...providerFailure("invalid-request", { status: 400, access: "managed" }),
+        message:
+          "prompt is too long: 214000 tokens > 200000 maximum context length",
+      }),
+    ).toEqual({
+      code: "context_too_long",
+      message: "The conversation is too long for the model's context window.",
+    });
     // An invalid request because the conversation outgrew the window.
     expect(
       publicFailure({

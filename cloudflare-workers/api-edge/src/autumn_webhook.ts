@@ -182,7 +182,14 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-export async function autumnWebhook(req: Request, env: AutumnEnv): Promise<Response> {
+// onProjected runs after a successful projection with the org whose balance
+// changed (e.g. to push the new balance to the managed OpenRouter key cap). Its
+// failure is logged, never surfaced: the projection already landed.
+export async function autumnWebhook(
+  req: Request,
+  env: AutumnEnv,
+  onProjected?: (orgID: string, type: string) => Promise<void>,
+): Promise<Response> {
   const rawBody = await req.text();
 
   if (!env.AUTUMN_WEBHOOK_SECRET) {
@@ -213,6 +220,11 @@ export async function autumnWebhook(req: Request, env: AutumnEnv): Promise<Respo
     // 5xx → Svix retries with backoff (the Go reconciler is the longer backstop).
     console.error(`autumn-webhook: project ${orgID} (${type}) failed`, err);
     return json({ error: "projection failed" }, 502);
+  }
+  if (onProjected) {
+    await onProjected(orgID, type).catch((err) =>
+      console.error(`autumn-webhook: post-projection hook ${orgID} (${type}) failed`, err),
+    );
   }
   return json({ ok: true, type, org_id: orgID });
 }
