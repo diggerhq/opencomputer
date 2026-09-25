@@ -4585,6 +4585,83 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("Workerd");
   });
 
+  // The same managed 402 names the org's balance only when the org's key is
+  // capped by its Autumn credit; a fixed-budget key on a legacy org is not.
+  it("reports balance_exhausted only for orgs whose managed spend is credit", async () => {
+    const quotaEvents = () =>
+      Response.json({
+        events: [
+          {
+            id: "event_1",
+            seq: 1,
+            timestamp: "2026-09-10T00:00:00.000Z",
+            sessionId: "session-1",
+            turnId: "turn-1",
+            type: "turn.failed",
+            data: {
+              message: "Provider request failed: 402 Payment Required",
+              failure: {
+                class: "provider",
+                subtype: "quota",
+                status: 402,
+                provider: "openrouter",
+                access: "managed",
+                retry: { attempts: 1, hostGranted: false },
+              },
+            },
+          },
+        ],
+      });
+    const request = () =>
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      );
+    const envFor = (billing_provider: string) => ({
+      ...memoryEnv,
+      OPENCOMPUTER_DB: {
+        prepare: (sql: string) => ({
+          bind: () => ({
+            first: async () => {
+              expect(sql).toContain("billing_provider");
+              return { billing_provider };
+            },
+          }),
+        }),
+      } as unknown as D1Database,
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async () => quotaEvents()));
+    let response = await proxyManagedAgents(
+      request(),
+      envFor("autumn"),
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    let body = (await response.json()) as {
+      events: Array<{ data: Record<string, unknown> }>;
+    };
+    expect(body.events[0].data).toEqual({
+      code: "balance_exhausted",
+      message:
+        "Your OpenComputer balance has reached zero. Top up your credits to continue using managed models.",
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async () => quotaEvents()));
+    response = await proxyManagedAgents(
+      request(),
+      envFor("legacy"),
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    body = (await response.json()) as {
+      events: Array<{ data: Record<string, unknown> }>;
+    };
+    expect(body.events[0].data).toEqual({
+      code: "model_rejected",
+      message: "The model provider rejected the request.",
+    });
+  });
+
   it("classifies known runtime failures into typed public failures", () => {
     expect(publicFailure({ reason: "interrupted" })).toEqual({
       code: "interrupted",
@@ -4707,6 +4784,79 @@ describe("managed agents proxy", () => {
     ).toEqual({
       code: "model_rejected",
       message: "The model provider rejected the request.",
+    });
+    // A managed model refused for want of OpenComputer credit: OpenRouter's
+    // 402 or a quota rejection on the credit-funded key names the
+    // organization's balance, not "the provider".
+    const credit = { managedSpendIsCredit: true };
+    const balanceExhausted = {
+      code: "balance_exhausted",
+      message:
+        "Your OpenComputer balance has reached zero. Top up your credits to continue using managed models.",
+    };
+    expect(
+      publicFailure(
+        providerFailure("quota", { status: 402, access: "managed" }),
+        credit,
+      ),
+    ).toEqual(balanceExhausted);
+    expect(
+      publicFailure(
+        providerFailure("invalid-request", { status: 402, access: "managed" }),
+        credit,
+      ),
+    ).toEqual(balanceExhausted);
+    expect(
+      publicFailure(
+        providerFailure("quota", { status: 429, access: "managed" }),
+        credit,
+      ),
+    ).toEqual(balanceExhausted);
+    // A fixed-budget managed key (non-Autumn org) running dry is not a balance
+    // the customer can top up, so it stays a provider rejection.
+    for (const context of [{ managedSpendIsCredit: false }, undefined]) {
+      expect(
+        publicFailure(
+          providerFailure("quota", { status: 402, access: "managed" }),
+          context,
+        ),
+      ).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    // The same refusals on a user-owned key are the user's own provider
+    // account, never OpenComputer's balance.
+    for (const extra of [
+      { status: 402, access: "user" },
+      { status: 402 },
+    ]) {
+      expect(publicFailure(providerFailure("quota", extra), credit)).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    // Other managed rejections keep their meaning.
+    for (const subtype of ["auth", "rate-limit", "content-filter"]) {
+      expect(
+        publicFailure(
+          providerFailure(subtype, { status: 429, access: "managed" }),
+          credit,
+        ),
+      ).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    expect(
+      publicFailure({
+        ...providerFailure("invalid-request", { status: 400, access: "managed" }),
+        message:
+          "prompt is too long: 214000 tokens > 200000 maximum context length",
+      }),
+    ).toEqual({
+      code: "context_too_long",
+      message: "The conversation is too long for the model's context window.",
     });
     // An invalid request because the conversation outgrew the window.
     expect(

@@ -10,7 +10,7 @@ vi.mock("./autumn_webhook", () => ({
 
 import { getOrKey, patchOrKey } from "./openrouter";
 import { getAutumnCustomer, trackAutumnUsage, projectOrg } from "./autumn_webhook";
-import { runModelMeter, type ModelMeterEnv } from "./model_meter";
+import { runModelMeter, syncManagedModelCaps, type ModelMeterEnv } from "./model_meter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
 const gOrKey = getOrKey as unknown as ReturnType<typeof vi.fn>;
@@ -21,7 +21,7 @@ const gProject = projectOrg as unknown as ReturnType<typeof vi.fn>;
 
 // ── in-memory D1 for orgs + managed_model_keys ──────────────────────────────
 class FakeDb {
-  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string }>();
+  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string; model_settle_lease_until?: number }>();
   keys: ManagedModelKeyRow[] = [];
   prepare(sql: string) {
     return new Stmt(this, sql);
@@ -35,28 +35,49 @@ class Stmt {
     return this;
   }
   async first<T>(): Promise<T | null> {
+    if (this.sql.includes("SELECT model_settle_lease_until")) {
+      const o = this.db.orgs.get(this.args[0] as string);
+      return (o ? { model_settle_lease_until: o.model_settle_lease_until ?? 0 } : null) as T | null;
+    }
     if (this.sql.includes("FROM orgs")) return (this.db.orgs.get(this.args[0] as string) ?? null) as T | null;
     return null;
   }
   async all<T>(): Promise<{ results: T[] }> {
     if (this.sql.includes("FROM managed_model_keys")) {
-      return { results: this.db.keys.filter((k) => ["active", "superseded", "deleting"].includes(k.status) && k.or_key_hash) as T[] };
+      // Rows are copies, as D1 returns them: a reader holds a snapshot, not the store.
+      return { results: this.db.keys.filter((k) => ["active", "superseded", "deleting"].includes(k.status) && k.or_key_hash).map((k) => ({ ...k })) as T[] };
     }
     return { results: [] };
   }
-  async run(): Promise<void> {
+  async run(): Promise<{ meta: { changes: number } }> {
     const s = this.sql;
+    if (s.includes("SET model_settle_lease_until=?1")) {
+      const [until, id, now] = this.args as [number, string, number];
+      const o = this.db.orgs.get(id);
+      if (!o || (o.model_settle_lease_until ?? 0) >= now) return { meta: { changes: 0 } };
+      o.model_settle_lease_until = until;
+      return { meta: { changes: 1 } };
+    }
+    if (s.includes("SET model_settle_lease_until=0")) {
+      const [id, until] = this.args as [string, number];
+      const o = this.db.orgs.get(id);
+      if (!o || o.model_settle_lease_until !== until) return { meta: { changes: 0 } };
+      o.model_settle_lease_until = 0;
+      return { meta: { changes: 1 } };
+    }
     if (s.includes("SET pending_from_micro")) {
       const [from, to, idem, id] = this.args as [number, number, string, string];
-      const r = this.db.keys.find((k) => k.id === id);
-      if (r) { r.pending_from_micro = from; r.pending_to_micro = to; r.pending_idem = idem; }
-      return;
+      const r = this.db.keys.find((k) => k.id === id && k.committed_micro === from && k.pending_idem == null);
+      if (!r) return { meta: { changes: 0 } };
+      r.pending_from_micro = from; r.pending_to_micro = to; r.pending_idem = idem;
+      return { meta: { changes: 1 } };
     }
     if (s.includes("SET committed_micro")) {
-      const [committed, id] = this.args as [number, string];
-      const r = this.db.keys.find((k) => k.id === id);
-      if (r) { r.committed_micro = committed; r.pending_from_micro = null; r.pending_to_micro = null; r.pending_idem = null; }
-      return;
+      const [committed, id, idem] = this.args as [number, string, string];
+      const r = this.db.keys.find((k) => k.id === id && k.pending_idem === idem);
+      if (!r) return { meta: { changes: 0 } };
+      r.committed_micro = committed; r.pending_from_micro = null; r.pending_to_micro = null; r.pending_idem = null;
+      return { meta: { changes: 1 } };
     }
     throw new Error("unhandled run: " + s);
   }
@@ -139,6 +160,82 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     expect(db.keys[0].committed_micro).toBe(500000); // advances to the pending `to`, not 1000000
   });
 
+  it("a concurrent settlement of the same org skips: one track, one cap write, lease released", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 0 }));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+    // Both runs start from committed 0; the provider would report 0.5 to one and 0.6 to the other.
+    let calls = 0;
+    gOrKey.mockImplementation(async () => orKey(++calls === 1 ? 0.5 : 0.6));
+    await Promise.all([runModelMeter(env(db), 0), syncManagedModelCaps(env(db), "org1")]);
+
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(gTrack.mock.calls[0][1].value).toBe(500000);
+    expect(db.keys[0].committed_micro).toBe(500000);
+    expect(gPatch).toHaveBeenCalledTimes(1);
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBe(0);
+  });
+
+  it("a settlement whose lease is still held by a live run is skipped; an expired lease is taken over", async () => {
+    const db = new FakeDb();
+    const now = Math.floor(Date.now() / 1000);
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn", model_settle_lease_until: now + 30 });
+    db.keys.push(key({ committed_micro: 0 }));
+    gOrKey.mockResolvedValue(orKey(0.5));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gTrack).not.toHaveBeenCalled();
+    expect(gPatch).not.toHaveBeenCalled();
+
+    db.orgs.get("org1")!.model_settle_lease_until = now - 1; // the holder crashed
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(db.keys[0].committed_micro).toBe(500000);
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBe(0);
+  });
+
+  it("a holder that outlived its lease writes no cap once a successor took over", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 500000 }));
+    gOrKey.mockResolvedValue(orKey(0.5, 2.5));
+    // The Autumn read is slow; meanwhile the lease expires and another run takes it.
+    gCust.mockImplementation(async () => {
+      db.orgs.get("org1")!.model_settle_lease_until = Math.floor(Date.now() / 1000) + 999;
+      return { id: "org1", balances: { credits: { remaining: 2 } } };
+    });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gPatch).not.toHaveBeenCalled();
+    expect(db.orgs.get("org1")?.model_settle_lease_until).toBeGreaterThan(0); // the successor's lease is intact
+  });
+
+  it("a stale key row that loses the watermark claim tracks nothing", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 500000 })); // another run already settled to 0.5
+    gOrKey.mockResolvedValue(orKey(0.6));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+    // The row this run read is older than the store.
+    const stale = new FakeDb();
+    stale.orgs = db.orgs;
+    stale.keys = db.keys;
+    const origAll = stale.prepare.bind(stale);
+    stale.prepare = (sql: string) => {
+      const stmt = origAll(sql);
+      if (sql.includes("FROM managed_model_keys")) {
+        stmt.all = async <T>() => ({ results: [key({ committed_micro: 0 }) as T] });
+      }
+      return stmt;
+    };
+
+    await syncManagedModelCaps(env(stale), "org1");
+    expect(gTrack).not.toHaveBeenCalled();
+    expect(db.keys[0].committed_micro).toBe(500000);
+  });
+
   it("no track when usage hasn't advanced past the watermark", async () => {
     const db = new FakeDb();
     db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
@@ -187,5 +284,56 @@ describe("model_meter cap + halt (§5.4/§7)", () => {
 
     await runModelMeter(env(db), 0);
     expect(gProject).toHaveBeenCalledWith(expect.anything(), "org1");
+  });
+});
+
+describe("syncManagedModelCaps (synchronous after a balance change)", () => {
+  it("lifts the active key's cap to usage + new remaining right away, debiting outstanding spend first", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 4000000 }));
+    gOrKey.mockResolvedValue(orKey(4.573794, 5)); // usage 4.57 against the old $5 cap
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 20.426206 } } }); // after a $20 top-up
+
+    await syncManagedModelCaps(env(db), "org1");
+
+    expect(gTrack).toHaveBeenCalledTimes(1);
+    expect(db.keys[0].committed_micro).toBe(4573794);
+    expect(gPatch).toHaveBeenCalledTimes(1);
+    expect(gPatch.mock.calls[0][1]).toBe("hash1");
+    expect(gPatch.mock.calls[0][2].limitUsd).toBeCloseTo(25, 5);
+    expect(gProject).not.toHaveBeenCalled();
+  });
+
+  it("applies markup to the headroom", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 2500, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 1000000 }));
+    gOrKey.mockResolvedValue(orKey(1.0, 1));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 12.5 } } });
+
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gPatch.mock.calls[0][2].limitUsd).toBeCloseTo(1 + 12.5 / 1.25, 5);
+  });
+
+  it("is a no-op for orgs without a generated key or not on autumn", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gOrKey).not.toHaveBeenCalled();
+
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "stripe" });
+    db.keys.push(key());
+    await syncManagedModelCaps(env(db), "org1");
+    expect(gOrKey).not.toHaveBeenCalled();
+    expect(gPatch).not.toHaveBeenCalled();
+  });
+
+  it("swallows provider failures so the caller (webhook, billing page) still succeeds", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key());
+    gOrKey.mockRejectedValue(new Error("openrouter down"));
+    await expect(syncManagedModelCaps(env(db), "org1")).resolves.toBeUndefined();
   });
 });

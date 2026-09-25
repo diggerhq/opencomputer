@@ -238,6 +238,7 @@ export type FailureCode =
   | "deployment_invalid"
   | "model_unavailable"
   | "model_rejected"
+  | "balance_exhausted"
   | "context_too_long"
   | "tool_failed"
   | "sandbox_timeout"

@@ -1,0 +1,13 @@
+-- orgs.model_settle_lease_until — the per-org lock around managed-model
+-- settlement (debit OpenRouter spend to Autumn, then re-cap the generated keys).
+--
+-- Settlement used to run only from the five-minute cron, one org at a time. It
+-- now also runs inline the moment a balance changes (Autumn webhook, billing
+-- page, checkout return), so two settlements of the same org can overlap. Each
+-- reads usage and balance as a snapshot and PATCHes an absolute cap; an older
+-- snapshot landing last would re-install a stale cap. The lease makes one
+-- settlement at a time the owner of an org's caps: a run that cannot take it
+-- skips, and the next trigger (or the cron) catches up.
+--
+-- Unix seconds. 0 = free. A holder that crashes leaves the lease to expire.
+ALTER TABLE orgs ADD COLUMN model_settle_lease_until INTEGER NOT NULL DEFAULT 0;

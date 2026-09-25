@@ -381,6 +381,8 @@ function PrepaidPlan() {
   const credits = (autumn?.creditsRemainingCents ?? 0) / 100
   const creditBreakdown = autumn?.creditBreakdown
   const halted = autumn?.isHalted ?? false
+  const modelLowBalance = !halted && (autumn?.modelUsage?.lowBalance ?? false)
+  const modelSpendable = (autumn?.modelUsage?.spendableCents ?? 0) / 100
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
   const selectedUsagePlan = USAGE_PLANS.find(
@@ -486,6 +488,13 @@ function PrepaidPlan() {
               <CircleAlert className="size-4 shrink-0" />
               Credits exhausted — top up to resume your agent sessions and
               sandboxes
+            </p>
+          ) : modelLowBalance ? (
+            <p className="text-status-warning mt-2 flex items-center gap-1.5 text-sm">
+              <CircleAlert className="size-4 shrink-0" />
+              {modelSpendable > 0
+                ? `Only $${modelSpendable.toFixed(2)} is spendable on managed models — top up before your next model call is refused`
+                : 'Balance too low to fund another managed model call — top up to keep your agents running'}
             </p>
           ) : null}
 
