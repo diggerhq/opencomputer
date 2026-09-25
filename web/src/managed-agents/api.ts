@@ -1593,22 +1593,33 @@ export async function getManagedAgentDeployments(agentId: string) {
 }
 
 /**
- * The newest page of session rows, filtered by the API rather than here.
- * Rows are ordered by creation time; one page of a hundred is what the
- * agent view shows.
+ * One page of session rows, newest first, filtered by the API rather than
+ * here. `nextCursor` is null on the last page; pass it back as `cursor` to
+ * continue with the same filters.
  */
-export async function getManagedAgentSessions(
-  agentId?: string,
-  options: { projectId?: string } = {},
+export function getManagedAgentSessionsPage(
+  options: { agentId?: string; projectId?: string; cursor?: string } = {},
 ) {
   const query = new URLSearchParams({ limit: '100' })
-  if (agentId) query.set('agent', agentId)
+  if (options.agentId) query.set('agent', options.agentId)
   if (options.projectId) query.set('project', options.projectId)
-  const { sessions } = await apiFetch(
+  if (options.cursor) query.set('cursor', options.cursor)
+  return apiFetch(
     `/managed-agents/sessions?${query.toString()}`,
     undefined,
     sessionsResponseSchema,
   )
+}
+
+/** The newest page of session rows; what the single-agent view shows. */
+export async function getManagedAgentSessions(
+  agentId?: string,
+  options: { projectId?: string } = {},
+) {
+  const { sessions } = await getManagedAgentSessionsPage({
+    agentId,
+    projectId: options.projectId,
+  })
   return sessions
 }
 

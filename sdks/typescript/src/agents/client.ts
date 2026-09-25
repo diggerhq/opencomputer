@@ -43,6 +43,7 @@ import type {
   SessionCreated,
   SessionEvent,
   SessionPage,
+  SessionSummary,
   SetLabelsParams,
   TurnReceipt,
   UpdateWebhookParams,
@@ -62,9 +63,9 @@ export interface CallOptions {
 export interface CreateSessionOptions extends CallOptions {
   /**
    * At most 256 characters. The same key with the same agent (or the same
-   * pinned deployment), environment and memory bindings returns the
-   * existing session with the deployment it started on, after a redeploy
-   * too; anything else under the key is `409 idempotency_conflict`.
+   * pinned deployment), environment, memory bindings and `externalReference`
+   * returns the existing session with the deployment it started on, after a
+   * redeploy too; anything else under the key is `409 idempotency_conflict`.
    */
   idempotencyKey?: string;
 }
@@ -154,15 +155,39 @@ export class Sessions {
   }
 
   /**
-   * `GET /sessions`: rows ordered by `createdAt` descending then `id`, with
-   * `nextCursor` for the next page. Sort the pages you hold by `updatedAt`
-   * for recent activity first.
+   * `GET /sessions`: one page of rows matching the exact filters, ordered by
+   * `createdAt` descending then `id` ascending, with `nextCursor` for the
+   * next page and `null` on the last. A cursor is bound to the filters it
+   * was issued with; sending it with different filters is `400
+   * invalid_cursor`. Sort the pages you hold by `updatedAt` for recent
+   * activity first, or use `iterate` to walk every page.
    */
   list(query: ListSessionsQuery = {}, options: CallOptions = {}): Promise<SessionPage> {
     const { labels, ...rest } = query;
     const q: Record<string, string | number | undefined> = { ...rest };
     for (const [key, value] of Object.entries(labels ?? {})) q[`label.${key}`] = value;
     return this.http.request("GET", "/sessions", shapes.sessionPage, { query: q, signal: options.signal });
+  }
+
+  /**
+   * Every row matching the filters, page by page, until `nextCursor` is
+   * `null`. `limit` is the page size; `cursor` is where to start. Paging is
+   * live: a session created while you iterate appears only if it sorts
+   * after your position.
+   *
+   * ```ts
+   * for await (const row of oc.sessions.iterate({ status: "idle", limit: 100 })) {
+   *   console.log(row.id, row.externalReference);
+   * }
+   * ```
+   */
+  async *iterate(query: ListSessionsQuery = {}, options: CallOptions = {}): AsyncGenerator<SessionSummary, void, undefined> {
+    let cursor = query.cursor;
+    do {
+      const page = await this.list({ ...query, cursor }, options);
+      yield* page.sessions;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
   }
 
   /** `POST /sessions/<id>/end`: cancels queued and running turns and revokes memory writes. */

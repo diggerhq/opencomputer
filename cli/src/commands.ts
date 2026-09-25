@@ -32,6 +32,7 @@ import {
 import {
   developmentAgentReference,
   parseSessionCommand,
+  parseSessionListOptions,
   resolveProjectAgent,
 } from "./session-command.js";
 import { formatSessionEvent } from "./session-prompt.js";
@@ -419,9 +420,13 @@ function printSession(
           .map(([key, value]) => `${key}=${value}`)
           .join(",")
       : "";
+  const reference =
+    session.externalReference !== undefined
+      ? `  ref=${session.externalReference}`
+      : "";
   process.stdout.write(
     `${session.id}  ${session.status.padEnd(15)}  ` +
-      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}\n`,
+      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}${reference}\n`,
   );
 }
 
@@ -2585,12 +2590,16 @@ export async function runCommand(
     const session = parseSessionCommand(args);
     const sessionArgs = session.args;
     if (session.action === "list") {
-      const cursor = option(sessionArgs, "--cursor");
+      const filters = parseSessionListOptions(sessionArgs);
       if (sessionArgs.length)
         throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
-      // One page of rows, newest created first. The page carries the
-      // cursor of the next one; `--cursor` continues from it.
-      const page = await client.sessions(cursor ? { cursor } : {});
+      // One page of rows, newest created first, narrowed by the exact
+      // filters. The page carries the cursor of the next one; `--cursor`
+      // continues from it with the same filters.
+      const page = await client.sessions({
+        ...filters,
+        ...(session.agent ? { agent: session.agent } : {}),
+      });
       if (globals.json) printJSON(page);
       else if (!page.sessions.length) process.stdout.write("No sessions.\n");
       else {

@@ -290,3 +290,30 @@ test("database queries use the project read endpoint with positional parameters"
     parameters: ["pricing", 20],
   });
 });
+
+test("session list sends exact filters, the page size and the cursor as query parameters", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    return Response.json({ sessions: [], nextCursor: null });
+  });
+  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" });
+
+  await client.sessions();
+  await client.sessions({
+    status: "suspended",
+    agent: "reviewer",
+    externalReference: "order 42/α",
+    limit: 2,
+    cursor: "eyJjIjoxfQ",
+  });
+
+  assert.equal(new URL(requests[0]!.url).search, "");
+  const query = new URL(requests[1]!.url).searchParams;
+  assert.equal(query.get("status"), "suspended");
+  assert.equal(query.get("agentId"), "reviewer");
+  assert.equal(query.get("externalReference"), "order 42/α");
+  assert.equal(query.get("limit"), "2");
+  assert.equal(query.get("cursor"), "eyJjIjoxfQ");
+});

@@ -225,7 +225,11 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : "The agent request was invalid.";
+        : backendCode === "invalid_external_reference"
+          ? "externalReference must be a non-empty string of at most 256 bytes of UTF-8 without control characters."
+          : backendCode === "invalid_cursor"
+            ? "The cursor is invalid or was issued for different filters. Start again from the first page."
+            : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -1044,6 +1048,19 @@ function publicSessionSnapshot(value: unknown): unknown {
   );
 }
 
+/**
+ * The caller's own `externalReference`, when the session has one. The value is
+ * the caller's opaque string and is read from the source, never from a
+ * stripped copy, for the same reason labels are.
+ */
+function ownerExternalReference(
+  source: Record<string, unknown>,
+): { externalReference: string } | Record<never, never> {
+  return typeof source.externalReference === "string"
+    ? { externalReference: source.externalReference }
+    : {};
+}
+
 /** One list row as documented: nothing private is in it, and the labels and result are the owner's. */
 function publicSessionSummary(value: unknown): unknown {
   const source = record(value);
@@ -1058,6 +1075,7 @@ function publicSessionSummary(value: unknown): unknown {
     source: row.source,
     status: row.status,
     labels: ownerLabels(source),
+    ...ownerExternalReference(source),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     revision: row.revision,
@@ -1332,7 +1350,13 @@ function publicEventData(
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
-  if (type === "session.failed" || type === "turn.failed") {
+  if (type === "session.failed") {
+    return {
+      ...publicFailure(value),
+      ...ownerExternalReference(record(value) ?? {}),
+    };
+  }
+  if (type === "turn.failed") {
     return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
@@ -1791,6 +1815,7 @@ function publicSuccessBody(
         executionMode: session.executionMode,
         status: session.status,
         createdAt: session.createdAt,
+        ...ownerExternalReference(session),
       },
       deployment: body.deployment
         ? publicDeployment(body.deployment)

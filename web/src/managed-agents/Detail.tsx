@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
 import {
   Link,
@@ -30,6 +34,7 @@ import {
   Panel,
   PanelContent,
   PanelDescription,
+  PanelFooter,
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
@@ -55,6 +60,7 @@ import {
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
+  getManagedAgentSessionsPage,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -636,12 +642,50 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
-  const projectSessions = useQuery({
+  // The loaded pages re-walk from the newest cursor so the chain stays
+  // contiguous and every loaded row refreshes, at an interval that grows with
+  // the page count so polling stays at roughly one request per five seconds.
+  // Once more than one page is open, a separate newest-page poll keeps the
+  // head of the list at the five-second cadence.
+  const projectSessions = useInfiniteQuery({
     queryKey: ['managed-agent-sessions', 'project', projectId],
-    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      getManagedAgentSessionsPage({
+        projectId,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      5_000 * Math.max(1, query.state.data?.pages.length ?? 1),
+  })
+  const projectSessionPageCount = projectSessions.data?.pages.length ?? 0
+  const newestProjectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId, 'newest'],
+    queryFn: () => getManagedAgentSessionsPage({ projectId }),
+    enabled: Boolean(projectId) && projectSessionPageCount > 1,
     refetchInterval: 5_000,
   })
+  const projectSessionRows = useMemo(() => {
+    const seen = new Set<string>()
+    const rows: ManagedAgentSessionSummary[] = []
+    for (const session of [
+      ...(newestProjectSessions.data?.sessions ?? []),
+      ...(projectSessions.data?.pages.flatMap((page) => page.sessions) ?? []),
+    ]) {
+      if (seen.has(session.id)) continue
+      seen.add(session.id)
+      rows.push(session)
+    }
+    return rows
+  }, [newestProjectSessions.data, projectSessions.data])
+  const loadMoreProjectSessions = async () => {
+    const result = await projectSessions.fetchNextPage()
+    if (result.isError) {
+      notifyError("Couldn't load more sessions.", result.error)
+    }
+  }
   const environmentSessions = project
     ? sessionsForEnvironment(
         sessions.data ?? [],
@@ -656,7 +700,7 @@ export default function ManagedAgentDetail({
   const externalSessions = (
     project
       ? sessionsForEnvironment(
-          projectSessions.data ?? [],
+          projectSessionRows,
           project.deployments,
           sessionsAgentFilter,
           environment,
@@ -1186,6 +1230,21 @@ export default function ManagedAgentDetail({
               />
             }
           />
+          {project && projectSessions.hasNextPage ? (
+            <PanelFooter>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={projectSessions.isFetchingNextPage}
+                onClick={() => void loadMoreProjectSessions()}
+              >
+                {projectSessions.isFetchingNextPage ? (
+                  <Loader2 className="animate-spin" />
+                ) : null}
+                Load more
+              </Button>
+            </PanelFooter>
+          ) : null}
         </Panel>
       ) : null}
 

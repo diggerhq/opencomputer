@@ -3228,6 +3228,244 @@ describe("managed agents proxy", () => {
     );
   });
 
+  it("passes session filters through and keeps the owner's externalReference on create, list rows, inspect and events", async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        return Response.json(
+          {
+            session: {
+              id: "session-1",
+              executionMode: "workerd",
+              status: "connecting",
+              createdAt: "2026-09-15T00:00:00.000Z",
+              externalReference: "cypen/order/42",
+              accountId: "org_test",
+            },
+          },
+          { status: 201 },
+        );
+      }
+      if (url.endsWith("/events")) {
+        return Response.json({
+          events: [
+            {
+              id: "evt-1",
+              seq: 1,
+              timestamp: "2026-09-15T00:00:00.000Z",
+              sessionId: "session-1",
+              turnId: null,
+              type: "session.created",
+              data: { externalReference: "cypen/order/42", accountId: "org_test" },
+            },
+            {
+              id: "evt-2",
+              seq: 2,
+              timestamp: "2026-09-15T00:00:01.000Z",
+              sessionId: "session-1",
+              turnId: null,
+              type: "session.failed",
+              data: {
+                reason: "runtime_lost",
+                error: "internal stack trace org_test",
+                externalReference: "cypen/order/42",
+              },
+            },
+          ],
+        });
+      }
+      if (url.includes("/sessions/session-1")) {
+        return Response.json({
+          id: "session-1",
+          status: "idle",
+          externalReference: "cypen/order/42",
+          labels: {},
+          revision: 1,
+          result: null,
+          turns: [],
+          accountId: "org_test",
+        });
+      }
+      return Response.json({
+        sessions: [
+          {
+            id: "session-1",
+            projectId: "prj_test",
+            agentId: "reviewer",
+            deploymentId: "reviewer:digest",
+            environment: "development",
+            source: "api",
+            status: "idle",
+            labels: {},
+            externalReference: "cypen/order/42",
+            createdAt: "2026-09-15T00:00:00.000Z",
+            updatedAt: "2026-09-15T00:00:00.000Z",
+            revision: 1,
+            activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+            result: null,
+            accountId: "org_test",
+          },
+          {
+            id: "session-2",
+            projectId: "prj_test",
+            agentId: "reviewer",
+            deploymentId: "reviewer:digest",
+            environment: "development",
+            source: "api",
+            status: "idle",
+            labels: {},
+            createdAt: "2026-09-15T00:00:00.000Z",
+            updatedAt: "2026-09-15T00:00:00.000Z",
+            revision: 1,
+            activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+            result: null,
+          },
+        ],
+        nextCursor: null,
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const identity = { orgID: "org_test", userID: "user_test" };
+
+    const created = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "order-42",
+        },
+        body: JSON.stringify({
+          agentId: "reviewer",
+          externalReference: "cypen/order/42",
+        }),
+      }),
+      env,
+      identity,
+      "/api/managed-agents",
+    );
+    expect(created.status).toBe(201);
+    const [, createInit] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(await new Response(createInit.body).json()).toMatchObject({
+      externalReference: "cypen/order/42",
+    });
+    expect(new Headers(createInit.headers).get("idempotency-key")).toBe("order-42");
+    expect(await created.json()).toEqual({
+      session: {
+        id: "session-1",
+        executionMode: "workerd",
+        status: "connecting",
+        createdAt: "2026-09-15T00:00:00.000Z",
+        externalReference: "cypen/order/42",
+      },
+    });
+
+    const query =
+      "projectId=prj_test&environment=development&agentId=reviewer&status=idle&deploymentId=reviewer%3Adigest&externalReference=cypen%2Forder%2F42&createdAfter=2026-09-14T00%3A00%3A00Z&createdBefore=2026-09-16T00%3A00%3A00Z&updatedAfter=2026-09-14T00%3A00%3A00Z&limit=2&cursor=abc";
+    const listed = await proxyManagedAgents(
+      new Request(
+        `https://app.opencomputer.dev/api/managed-agents/sessions?${query}`,
+      ),
+      env,
+      identity,
+      "/api/managed-agents",
+    );
+    expect(listed.status).toBe(200);
+    const [listTarget] = fetchSpy.mock.calls[1] as unknown as [URL];
+    expect(String(listTarget)).toBe(
+      `https://managedagents.test/v1/sessions?${query}`,
+    );
+    const page = (await listed.json()) as {
+      sessions: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+    expect(page.nextCursor).toBeNull();
+    expect(page.sessions[0]).toMatchObject({
+      id: "session-1",
+      externalReference: "cypen/order/42",
+    });
+    expect(page.sessions[1]).not.toHaveProperty("externalReference");
+    expect(JSON.stringify(page)).not.toContain("org_test");
+
+    const inspected = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+      ),
+      env,
+      identity,
+      "/api/managed-agents",
+    );
+    expect(await inspected.json()).toMatchObject({
+      id: "session-1",
+      externalReference: "cypen/order/42",
+    });
+
+    const events = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events",
+      ),
+      env,
+      identity,
+      "/api/managed-agents",
+    );
+    const eventBody = (await events.json()) as {
+      events: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    expect(eventBody.events[0]).toMatchObject({
+      type: "session.created",
+      data: { externalReference: "cypen/order/42" },
+    });
+    expect(eventBody.events[1]?.type).toBe("session.failed");
+    expect(eventBody.events[1]?.data.externalReference).toBe("cypen/order/42");
+    expect(eventBody.events[1]?.data).not.toHaveProperty("error");
+    expect(eventBody.events[1]?.data).not.toHaveProperty("reason");
+    expect(JSON.stringify(eventBody)).not.toContain("org_test");
+  });
+
+  it("explains rejected external references and mismatched cursors", async () => {
+    for (const [code, status, expected] of [
+      [
+        "invalid_external_reference",
+        400,
+        /externalReference must be a non-empty string/,
+      ],
+      ["invalid_cursor", 400, /issued for different filters/],
+      ["idempotency_conflict", 409, /conflicts with the current state/],
+    ] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { error: { code, message: "backend detail" } },
+            { status },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ agentId: "reviewer", externalReference: "" }),
+          },
+        ),
+        { OC_MANAGED_AGENTS_SECRET: "test-secret" },
+        { orgID: "org_test", userID: "user_test" },
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(status);
+      const body = (await response.json()) as {
+        error: { code: string; message: string };
+      };
+      expect(body.error.code).toBe(code);
+      expect(body.error.message).toMatch(expected);
+    }
+  });
+
   it("patches session labels and returns the sanitized session with its labels", async () => {
     const fetchSpy = vi.fn(async () =>
       Response.json({
