@@ -375,6 +375,19 @@ export function SessionFiles({
   )
 }
 
+function latestRetainedByPath(
+  artifacts: ManagedWorkspaceArtifact[],
+): ManagedWorkspaceArtifact[] {
+  const latest = new Map<string, ManagedWorkspaceArtifact>()
+  for (const artifact of artifacts) {
+    const current = latest.get(artifact.path)
+    if (!current || current.exportedAt < artifact.exportedAt) {
+      latest.set(artifact.path, artifact)
+    }
+  }
+  return [...latest.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
 /**
  * Compact workspace listing for the playground debug inspector: the same
  * verified export-then-download path as the Files tab, one row per file.
@@ -388,6 +401,7 @@ export function WorkspaceFilesInspector({
 }) {
   const {
     files,
+    artifacts,
     retainedFor,
     download,
     exportThenDownload,
@@ -397,6 +411,11 @@ export function WorkspaceFilesInspector({
     busyPath,
   } = useWorkspaceFiles(sessionId, live)
   const list = files.data ?? []
+  // Once the workspace is gone (session ended), the retained copies are all
+  // that is left to offer; newest export per path.
+  const retainedOnly = files.isError
+    ? latestRetainedByPath(artifacts.data ?? [])
+    : []
 
   return (
     <details open className="group bg-background rounded-md border">
@@ -440,6 +459,42 @@ export function WorkspaceFilesInspector({
           {files.isLoading ? (
             <div className="flex min-h-16 items-center justify-center">
               <Loader2 className="text-muted-foreground size-4 animate-spin" />
+            </div>
+          ) : files.isError && retainedOnly.length > 0 ? (
+            <div className="divide-y">
+              <p className="text-muted-foreground px-3 py-1.5 text-[10px]">
+                Workspace listing is unavailable; showing retained copies.
+              </p>
+              {retainedOnly.map((artifact) => (
+                <div
+                  key={artifact.id}
+                  className="flex items-center gap-2 px-3 py-1.5"
+                >
+                  <span
+                    className="min-w-0 flex-1 truncate font-mono text-[10px]"
+                    title={`sha256 ${artifact.sha256}`}
+                  >
+                    {artifact.path}
+                  </span>
+                  <FileCheck2 className="text-muted-foreground size-3" />
+                  <span className="text-muted-foreground text-[10px] tabular-nums">
+                    {formatBytes(artifact.size)}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    aria-label={`Download ${artifact.path}`}
+                    onClick={() => download.mutate(artifact)}
+                  >
+                    {busy && busyPath === artifact.path ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Download className="size-3.5" />
+                    )}
+                  </Button>
+                </div>
+              ))}
             </div>
           ) : files.isError ? (
             <p className="text-status-error px-3 py-2 text-xs">
