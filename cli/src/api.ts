@@ -58,6 +58,7 @@ export interface ManagedAgentDeployment {
 export interface ManagedAgentEvent {
   id: string;
   seq: number;
+  turnId?: string | null;
   type: string;
   data: Record<string, unknown>;
 }
@@ -431,18 +432,26 @@ export class OpenComputerClient {
     private readonly idempotencyKey?: string,
   ) {}
 
+  /** The same connection under another caller key (one mutation domain each). */
+  withIdempotencyKey(idempotencyKey: string | undefined): OpenComputerClient {
+    return new OpenComputerClient(this.config, idempotencyKey);
+  }
+
   /**
    * The caller's key scoped to one operation. Extra `parts` distinguish
    * operations that share a URL but target different resources (one export
-   * per workspace path), so a stable key still retries each of them.
+   * per workspace path), so a stable key still retries each of them. The body
+   * is deliberately left out: hashing it in would make a retry with different
+   * inputs a new operation instead of the conflict the key promises.
    */
   private derivedIdempotencyKey(
     method: string,
     path: string,
     ...parts: string[]
-  ): string {
+  ): string | undefined {
+    if (!this.idempotencyKey) return undefined;
     const hash = createHash("sha256")
-      .update(this.idempotencyKey ?? "")
+      .update(this.idempotencyKey)
       .update("\0")
       .update(method)
       .update("\0")
@@ -469,18 +478,11 @@ export class OpenComputerClient {
       headers.set("x-api-key", this.config.apiKey);
     }
     const method = (init.method ?? "GET").toUpperCase();
-    // The caller's key names an operation on a target; the body is what the
-    // backend compares under that key. Hashing the body in would make a
-    // retry with different inputs a new operation instead of the conflict
-    // the key promises.
-    if (
-      this.idempotencyKey &&
-      method !== "GET" &&
-      method !== "HEAD" &&
-      !headers.has("idempotency-key")
-    ) {
-      headers.set("idempotency-key", this.derivedIdempotencyKey(method, path));
-    }
+    const idempotencyKey =
+      method === "GET" || method === "HEAD" || headers.has("idempotency-key")
+        ? undefined
+        : this.derivedIdempotencyKey(method, path);
+    if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
       headers,
@@ -1354,21 +1356,22 @@ export class OpenComputerClient {
     );
   }
 
-  createTurn(
-    sessionId: string,
-    input: string,
-    idempotencyKey: string = crypto.randomUUID(),
-  ) {
-    return this.request<{ turnId: string; duplicate: boolean }>(
-      `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          input,
-          idempotencyKey,
-        }),
-      },
-    );
+  /**
+   * Admits one turn. An explicit `idempotencyKey` replaces the client's key
+   * for this call. The API requires the `Idempotency-Key` header and the
+   * `idempotencyKey` body field to agree, so both carry the derived value.
+   */
+  createTurn(sessionId: string, input: string, idempotencyKey?: string) {
+    const path = `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`;
+    const client = idempotencyKey ? this.withIdempotencyKey(idempotencyKey) : this;
+    return client.request<{ turnId: string; duplicate: boolean }>(path, {
+      method: "POST",
+      body: JSON.stringify({
+        input,
+        idempotencyKey:
+          client.derivedIdempotencyKey("POST", path) ?? crypto.randomUUID(),
+      }),
+    });
   }
 
   async events(sessionId: string, after: number) {

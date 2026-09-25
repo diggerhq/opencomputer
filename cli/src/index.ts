@@ -55,15 +55,17 @@ Usage:
   opencomputer template clone <repository-url> --commit <sha> --project <id> [--directory <path>]
   opencomputer project clone <project-id> [--directory <path>]
   opencomputer link (--project <id|slug> | --create-project <name>)
-  opencomputer doctor
+  opencomputer doctor [--agent <agent> | --local-agent <local-agent>]
+      compiles every project agent the way deploy and secrets set do; --agent checks one
   opencomputer deploy --watch [--project <id|slug> | --create-project <name>]
   opencomputer dev [--project <id|slug> | --create-project <name>]  (legacy alias)
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
-  opencomputer session create [prompt] [--agent <project-agent>] [--keep]
+  opencomputer session create [prompt] [--agent <project-agent>] [--local-agent <local-agent>] [--keep]
+      [--session-idempotency-key <key>] [--turn-idempotency-key <key>]
       [--memory <resource>=<documentId>[:read|read-write] | --memory <resource>]... [--create-document]
       --memory binds a document (read-write by default) or a collection; --create-document
       creates each bound document that does not exist yet; with --idempotency-key a retry
-      returns the same session
+      returns the same session and, with a prompt, the same first turn
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
@@ -75,10 +77,10 @@ Usage:
   opencomputer session files download <session-id> --all [dest-dir]
       exports the file(s) provider-side, streams the retained copy to disk and
       verifies size and SHA-256 against the manifest before saving; "cp" is an alias
-  opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
+  opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current] [--local-agent <local-agent>]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]
-  opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
+  opencomputer env set <name> --value-stdin [--environment development|production] [--agent <agent>|current] [--local-agent <local-agent>]
   opencomputer env list [--environment development|production] [--agent <agent>|current]
   opencomputer env remove <name> [--environment development|production] [--agent <agent>|current]
   opencomputer connection add <gmail|calendar|drive|sheets|linear> [--alias <name>] [--no-wait]

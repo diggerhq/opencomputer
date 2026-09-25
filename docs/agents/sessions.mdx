@@ -135,6 +135,42 @@ npx --package @opencomputer/cli opencomputer session "Draft a response"
 Use `--keep` on supported commands when the session should remain active after
 the command exits.
 
+### Retrying `session create` safely
+
+`session create "<prompt>"` performs two changes: it creates the session and
+then submits the first turn. Each has its own retry key, so a retried command
+converges on one session and one turn instead of creating a second of either:
+
+```bash
+opencomputer --idempotency-key deploy-42 session create "Draft a response"
+opencomputer session create "Draft a response" \
+  --session-idempotency-key deploy-42-session \
+  --turn-idempotency-key deploy-42-turn
+```
+
+With the global `--idempotency-key`, the CLI derives a separate session key
+and turn key from the one value; they are only printed with `--verbose`. Retry
+the same command unchanged after a lost response and it returns the session and
+turn already committed. Retrying with a different prompt under the same turn
+key, or different memory bindings under the same session key, is rejected as a
+conflict rather than silently starting new work.
+
+If the session is created but the first turn is not, the command fails with
+`session_created_turn_failed` and the session ID, so the session is never
+hidden. With `--json`, the error's `details` describe each step:
+
+```json
+{
+  "session": { "id": "ses_01...", "created": true, "duplicate": false, "status": "running" },
+  "turn": { "id": null, "admitted": false, "error": { "code": "...", "message": "..." } },
+  "complete": false
+}
+```
+
+Retry the same command with the same keys to converge on that session, or end
+it with `opencomputer session end <session-id>`. A completed run reports the
+same `session` and `turn` objects with `"complete": true`.
+
 ### Workspace files
 
 Files an agent writes under `/workspace` (reports, captures, screenshots, tool

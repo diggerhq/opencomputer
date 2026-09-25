@@ -13,6 +13,12 @@ export type SessionCommand = {
   args: string[];
   keep: boolean;
   agent?: string;
+  /** `--local-agent`: the project member whose source `--agent` maps to. */
+  localAgent?: string;
+  /** `--session-idempotency-key`: caller key for session creation. */
+  sessionIdempotencyKey?: string;
+  /** `--turn-idempotency-key`: caller key for the first turn. */
+  turnIdempotencyKey?: string;
   /** `--memory` bindings for `create`, keyed by resource. */
   memory?: MemoryBindings;
   /** `--create-document`: create each bound document that does not exist yet. */
@@ -119,25 +125,31 @@ const DEPRECATED_ROUTING_OPTIONS = [
   "--alias",
 ] as const;
 
-function takeAgentOption(args: string[]): string | undefined {
+function takeValueOption(args: string[], name: string): string | undefined {
   const equalsIndex = args.findIndex((argument) =>
-    argument.startsWith("--agent="),
+    argument.startsWith(`${name}=`),
   );
   if (equalsIndex >= 0) {
-    const value = args[equalsIndex]!.slice("--agent=".length);
-    if (!value) throw new Error("--agent requires a value");
+    const value = args[equalsIndex]!.slice(name.length + 1);
+    if (!value) throw new Error(`${name} requires a value`);
     args.splice(equalsIndex, 1);
     return value;
   }
-  const index = args.indexOf("--agent");
+  const index = args.indexOf(name);
   if (index < 0) return undefined;
   const value = args[index + 1];
   if (!value || value.startsWith("--")) {
-    throw new Error("--agent requires a value");
+    throw new Error(`${name} requires a value`);
   }
   args.splice(index, 2);
   return value;
 }
+
+const CREATE_ONLY_OPTIONS = [
+  "--local-agent",
+  "--session-idempotency-key",
+  "--turn-idempotency-key",
+] as const;
 
 export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   const deprecated = rawArgs.find((argument) =>
@@ -153,7 +165,13 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   }
 
   const args = [...rawArgs];
-  const agent = takeAgentOption(args);
+  const agent = takeValueOption(args, "--agent");
+  const createOnly = Object.fromEntries(
+    CREATE_ONLY_OPTIONS.map((name) => [name, takeValueOption(args, name)]),
+  ) as Record<(typeof CREATE_ONLY_OPTIONS)[number], string | undefined>;
+  const localAgent = createOnly["--local-agent"];
+  const sessionIdempotencyKey = createOnly["--session-idempotency-key"];
+  const turnIdempotencyKey = createOnly["--turn-idempotency-key"];
   const memory = takeMemoryOptions(args);
   const createDocumentsIndex = args.indexOf("--create-document");
   const createDocuments = createDocumentsIndex >= 0;
@@ -169,6 +187,11 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
       : "create";
   if (agent && action !== "create") {
     throw new Error("--agent is only supported when creating a session.");
+  }
+  for (const name of CREATE_ONLY_OPTIONS) {
+    if (createOnly[name] && action !== "create") {
+      throw new Error(`${name} is only supported when creating a session.`);
+    }
   }
   if (memory && action !== "create") {
     throw new Error("--memory is only supported when creating a session.");
@@ -187,6 +210,9 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
     args,
     keep,
     ...(agent ? { agent } : {}),
+    ...(localAgent ? { localAgent } : {}),
+    ...(sessionIdempotencyKey ? { sessionIdempotencyKey } : {}),
+    ...(turnIdempotencyKey ? { turnIdempotencyKey } : {}),
     ...(memory ? { memory } : {}),
     ...(createDocuments ? { createDocuments } : {}),
   };
