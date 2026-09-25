@@ -34,6 +34,8 @@ import type {
   SessionEvent,
   SessionPage,
   SessionResult,
+  SessionResultPage,
+  SessionResultRecord,
   SessionStatus,
   SessionSummary,
   Turn,
@@ -199,6 +201,38 @@ export const sessionResult: Shape<SessionResult> = object({
   data: jsonValue,
 });
 
+export const sessionResultRecord: Shape<SessionResultRecord> = (value, path) => {
+  const result = object({
+    resultId: string,
+    projectId: string,
+    environment: optional(nullable(environment)),
+    agentId: string,
+    deploymentId: string,
+    sessionId: string,
+    turnId: string,
+    messageId: optional(nullable(string)),
+    toolCallId: string,
+    resultTool: string,
+    schemaId: optional(nullable(string)),
+    schemaDigest: optional(nullable(string)),
+    dataDigest: string,
+    data: jsonValue,
+    createdAt: string,
+  })(value, path);
+  return {
+    ...result,
+    environment: result.environment ?? null,
+    messageId: result.messageId ?? null,
+    schemaId: result.schemaId ?? null,
+    schemaDigest: result.schemaDigest ?? null,
+  };
+};
+
+export const sessionResultPage: Shape<SessionResultPage> = (value, path) => {
+  const page = object({ results: array(sessionResultRecord), nextCursor: optional(nullable(string)) })(value, path);
+  return { results: page.results, nextCursor: page.nextCursor ?? null };
+};
+
 const outcomeEventType: Shape<OutcomeEventType> = oneOf("turn.completed", "turn.failed", "turn.cancelled");
 
 const sessionDestination = object({ type: oneOf("session"), sessionId: string });
@@ -259,6 +293,8 @@ export const session: Shape<Session> = object({
   labelsUpdatedAt: optional(string),
   revision: optional(number),
   result: optional(nullable(sessionResult)),
+  sessionDataDigest: optional(string),
+  sessionDataRevision: optional(number),
   createdAt: string,
   updatedAt: string,
 }) as Shape<Session>;
@@ -269,6 +305,8 @@ export const sessionCreated: Shape<Omit<SessionCreated, "created">> = object({
     status: stringAs<SessionStatus>(),
     createdAt: string,
     executionMode: optional(string),
+    sessionDataDigest: optional(string),
+    sessionDataRevision: optional(number),
   }),
   deployment: optional((value, path) => deployment(value, path)),
 });

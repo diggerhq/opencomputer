@@ -71,6 +71,56 @@ export interface SessionResult {
   data: DataValue;
 }
 
+/**
+ * One committed result, immutable and keyed by the turn and tool call that
+ * produced it. A turn may commit several; each has its own `resultId`.
+ */
+export interface SessionResultRecord {
+  /** Platform-assigned, stable; `result_...`. */
+  resultId: string;
+  projectId: string;
+  /** `null` when the session has no environment. */
+  environment: Environment | null;
+  agentId: string;
+  /** The deployment the session pinned when the result was committed; unchanged by later alias moves. */
+  deploymentId: string;
+  sessionId: string;
+  turnId: string;
+  /** The model message that made the tool call, when the runtime reports one. */
+  messageId: string | null;
+  toolCallId: string;
+  /** The result tool's name. */
+  resultTool: string;
+  /** The `$id` of the tool's output schema, when it declares one. */
+  schemaId: string | null;
+  /** `sha256:...` of the tool's output schema. */
+  schemaDigest: string | null;
+  /** `sha256:...` of the canonical JSON of `data`. */
+  dataDigest: string;
+  /** The tool's output as committed; at most 8 KB of JSON. */
+  data: DataValue;
+  createdAt: string;
+}
+
+/** Paging for `GET /sessions/<id>/results` and `GET /sessions/<id>/turns/<turnId>/results`. */
+export interface ListResultsQuery {
+  /** Only this turn's results; an empty page when it committed none. */
+  turnId?: string;
+  cursor?: string;
+  /** Default 50, at most 200. */
+  limit?: number;
+}
+
+export interface SessionResultPage {
+  /** Oldest first. */
+  results: SessionResultRecord[];
+  /** Pass as `cursor` for the next page; `null` on the last. */
+  nextCursor: string | null;
+}
+
+/** Application context fixed at session creation. A JSON object; at most 32 KB and 32 levels deep. */
+export type SessionData = Record<string, DataValue>;
+
 /** Application metadata on a session. Not authorization, not visible to the agent. */
 export type SessionLabels = Record<string, string>;
 
@@ -100,6 +150,10 @@ export interface Session {
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
+  /** `sha256:...` of the canonical JSON of the `sessionData` the session was created with. */
+  sessionDataDigest?: string;
+  /** The session data's revision; `1` for as long as session data is fixed at creation. */
+  sessionDataRevision?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +187,13 @@ export interface CreateSessionParams {
   source?: SessionSource;
   /** Applied at creation and ignored on an idempotent replay. */
   labels?: SessionLabels;
+  /**
+   * Application context the agent reads with `useSessionData(key)`. Fixed for
+   * the session's lifetime; the same `idempotencyKey` with different
+   * `sessionData` is `409 idempotency_conflict`. Never shown to the model
+   * unless the agent's code renders it.
+   */
+  sessionData?: SessionData;
 }
 
 /** Turn admission, as `POST /sessions/<id>/turns` answers it. */
@@ -150,8 +211,8 @@ export interface TurnReceipt {
 }
 
 export interface SendTurnParams {
-  /** The user text. Required, not empty. */
-  input: string;
+  /** The user text. Optional when a non-empty `payload` is sent; a turn with neither is `400 invalid_turn`. */
+  input?: string;
   /**
    * Sent as the `Idempotency-Key` header. The same key returns the existing
    * turn; without one every request starts a turn.
@@ -159,7 +220,7 @@ export interface SendTurnParams {
   idempotencyKey?: string;
   /** `queue` (default), `steer` or `interrupt`. */
   mode?: TurnMode;
-  /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON. */
+  /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON, 32 levels deep. */
   payload?: DataValue;
 }
 
@@ -254,15 +315,32 @@ export interface Failure {
 }
 
 /**
+ * What the event log records about a structured value (a turn's `payload`,
+ * a session's `sessionData`): its size and digest, never the value itself.
+ * Read the value from the session (`turns[].payload`) or in the agent.
+ */
+export interface StructuredInputMetadata {
+  /** The value's own `schema` field, when it is a string. */
+  schemaId?: string;
+  /** Bytes of canonical JSON. */
+  bytes: number;
+  /** `sha256:...` of the canonical JSON. */
+  digest: string;
+}
+
+/**
  * One entry of `GET /sessions/<id>/events`, discriminated on `type`. New
  * types can appear; the last member keeps them readable.
  */
 export type SessionEvent =
-  | (EventBase & { type: "session.created"; data: { agentId: string; deploymentId: string } })
+  | (EventBase & {
+      type: "session.created";
+      data: { agentId: string; deploymentId: string; sessionData?: StructuredInputMetadata & { revision: number } };
+    })
   | (EventBase & { type: "session.status_changed"; data: { from: SessionStatus; to: SessionStatus } })
   | (EventBase & { type: "session.ended"; data: Record<string, never> })
   | (EventBase & { type: "session.failed"; data: Failure })
-  | (EventBase & { type: "message.received"; data: { input: string; mode: TurnMode; payload?: DataValue } })
+  | (EventBase & { type: "message.received"; data: { input: string; mode: TurnMode; payload?: StructuredInputMetadata } })
   | (EventBase & { type: "turn.queued"; data: { mode: TurnMode } })
   | (EventBase & { type: "turn.steered"; data: { activeTurnId: string } })
   | (EventBase & { type: "turn.interrupted"; data: { interruptedTurnIds: string[] } })

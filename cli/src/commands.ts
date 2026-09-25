@@ -34,6 +34,12 @@ import {
   parseSessionCommand,
   resolveProjectAgent,
 } from "./session-command.js";
+import {
+  parseResultsCommand,
+  payloadIsEmpty,
+  readPayloadFile,
+  readSessionDataFile,
+} from "./structured-input.js";
 import { formatSessionEvent } from "./session-prompt.js";
 import {
   buildTemplateProject,
@@ -589,10 +595,11 @@ function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
 async function sendAgentTurn(
   client: OpenComputerClient,
   sessionId: string,
-  prompt: string,
+  prompt: string | undefined,
   keep: boolean,
   json: boolean,
   idempotencyKey?: string,
+  payload?: unknown,
 ): Promise<{ turnId: string; output?: string }> {
   const existing = await client.events(sessionId, 0);
   let cursor = existing.at(-1)?.seq ?? 0;
@@ -610,7 +617,7 @@ async function sendAgentTurn(
     );
     cursor = connected.cursor;
   }
-  const turn = await client.createTurn(sessionId, prompt, idempotencyKey);
+  const turn = await client.createTurn(sessionId, prompt, idempotencyKey, payload);
   let streamedText = "";
   let completedText = "";
   const completed = await waitForEvent(
@@ -763,14 +770,20 @@ async function waitForEvent(
 async function runAgent(
   client: OpenComputerClient,
   agent: string,
-  prompt: string,
+  prompt: string | undefined,
   keep: boolean,
   json: boolean,
   verbose: boolean,
   idempotencyKey?: string,
   memory?: MemoryBindings,
+  structured: { payload?: unknown; sessionData?: Record<string, unknown> } = {},
 ): Promise<unknown> {
-  const created = await createSessionWithMemory(client, agent, memory);
+  const created = await createSessionWithMemory(
+    client,
+    agent,
+    memory,
+    structured.sessionData,
+  );
   process.stderr.write(`Starting ${agent}…\n`);
   const connected = await waitForEvent(
     client,
@@ -784,6 +797,7 @@ async function runAgent(
     created.session.id,
     prompt,
     idempotencyKey,
+    structured.payload,
   );
   let streamed = false;
   let streamedText = "";
@@ -2567,6 +2581,30 @@ export async function runCommand(
     return;
   }
 
+  if (command === "results") {
+    const results = parseResultsCommand(args);
+    if (results.action === "get") {
+      printJSON(await client.result(results.sessionId, results.resultId));
+      return;
+    }
+    const page = await client.results(results.sessionId, results);
+    if (globals.json) printJSON(page);
+    else if (!page.results.length) process.stdout.write("No results.\n");
+    else {
+      for (const result of page.results) {
+        process.stdout.write(
+          `${result.resultId} ${result.createdAt} turn ${result.turnId} ${result.resultTool}` +
+            `${result.schemaId ? ` ${result.schemaId}` : ""}\n` +
+            `  ${JSON.stringify(result.data)}\n`,
+        );
+      }
+      if (page.nextCursor) {
+        process.stdout.write(`More: --cursor ${page.nextCursor}\n`);
+      }
+    }
+    return;
+  }
+
   if (command === "session" || command === "sessions") {
     if (args[0] === "tail") {
       args.shift();
@@ -2603,6 +2641,17 @@ export async function runCommand(
     }
     if (session.action === "create") {
       const prompt = sessionArgs.join(" ").trim();
+      const payload = session.payloadFile
+        ? readPayloadFile(session.payloadFile)
+        : undefined;
+      const sessionData = session.sessionDataFile
+        ? readSessionDataFile(session.sessionDataFile)
+        : undefined;
+      if (!prompt && payload !== undefined && payloadIsEmpty(payload)) {
+        throw new Error(
+          "--payload-file: the payload must not be empty when no prompt is given.",
+        );
+      }
       const project = await selectedProject(client, config, undefined);
       const agentId = await selectedSessionAgent(
         client,
@@ -2619,16 +2668,17 @@ export async function runCommand(
               bindings: session.memory,
             })
           : [];
-      if (prompt) {
+      if (prompt || payload !== undefined) {
         const result = await runAgent(
           client,
           agent,
-          prompt,
+          prompt || undefined,
           session.keep,
           globals.json,
           globals.verbose === true,
           globals.idempotencyKey,
           session.memory,
+          { payload, sessionData },
         );
         if (globals.json) {
           printJSON(
@@ -2643,6 +2693,7 @@ export async function runCommand(
         client,
         agent,
         session.memory,
+        sessionData,
       );
       const connected = await waitForEvent(
         client,
@@ -2662,6 +2713,12 @@ export async function runCommand(
         deploymentId: created.deployment?.id,
         ...(session.memory ? { memory: session.memory } : {}),
         ...(documents.length ? { documents } : {}),
+        ...(created.session.sessionDataDigest
+          ? {
+              sessionDataDigest: created.session.sessionDataDigest,
+              sessionDataRevision: created.session.sessionDataRevision,
+            }
+          : {}),
         status: session.keep ? "running" : "suspended",
         cursor: connected.cursor,
       };
@@ -2693,14 +2750,25 @@ export async function runCommand(
     }
     if (session.action === "send") {
       const prompt = sessionArgs.join(" ").trim();
-      if (!prompt) throw new Error("A prompt is required.");
+      const payload = session.payloadFile
+        ? readPayloadFile(session.payloadFile)
+        : undefined;
+      if (!prompt && payload === undefined) {
+        throw new Error("A prompt or --payload-file <path> is required.");
+      }
+      if (!prompt && payloadIsEmpty(payload)) {
+        throw new Error(
+          "--payload-file: the payload must not be empty when no prompt is given.",
+        );
+      }
       const result = await sendAgentTurn(
         client,
         sessionId,
-        prompt,
+        prompt || undefined,
         session.keep,
         globals.json,
         globals.idempotencyKey,
+        payload,
       );
       if (globals.json) {
         printJSON({ sessionId, ...result, status: "completed" });

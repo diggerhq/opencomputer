@@ -41,10 +41,18 @@ string, array, or object. Both `text` and `payload` are optional, so check them
 before use.
 
 A payload comes from whatever started the turn. An application sends one on
-the [turns route](/agents/api#turns) next to the text, and the agent reads it
-with `source: "user"`; a [webhook](/agents/webhooks) delivers its body as the
-payload; a [schedule](/agents/schedules) dispatches the payload it was
-configured with. The agent reads all of them the same way.
+the [turns route](/agents/api#turns) next to the text, or instead of it, and
+the agent reads it with `source: "user"`; a [webhook](/agents/webhooks)
+delivers its body as the payload; a [schedule](/agents/schedules) dispatches
+the payload it was configured with. The agent reads all of them the same way.
+
+The payload is delivered exactly as it was admitted: the same JSON value the
+application sent, with the same nesting and values. Nothing in it is shown to
+the model unless the agent's render puts it there. A turn sent with a payload
+and no text renders with `text` undefined; the model is told only that the
+turn delivered structured input, and the agent decides what to say about it.
+An application's payload may be up to 32 KiB of JSON and nest up to 32 levels
+deep.
 
 A message from a connected [Slack app](/agents/slack) arrives with
 `source: "channel"` and a `channel` object naming the `provider` (`slack`),
@@ -94,6 +102,12 @@ export default function Agent() {
 ```
 
 Validate untrusted payloads in a tool before performing side effects.
+
+When the payload is an object with a string `schema` field, that value is
+recorded as the payload's schema id in the turn's `message.received`
+[event](/agents/events), next to the payload's size and digest. The platform
+does not interpret it; it is there so a reader of the event log can tell what
+kind of payload the turn carried without reading the payload.
 
 ## Event input
 

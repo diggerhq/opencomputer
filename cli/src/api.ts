@@ -287,13 +287,41 @@ export interface ManagedSessionSnapshot {
   microvmState?: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Present when the session was created with `sessionData`. */
+  sessionDataDigest?: string;
+  sessionDataRevision?: number;
   turns?: Array<{
     id: string;
     input: string;
     status: string;
+    payload?: unknown;
     createdAt: string;
     updatedAt: string;
   }>;
+}
+
+/** One committed result (docs/agents/results.mdx): immutable, keyed by turn and tool call. */
+export interface ManagedSessionResult {
+  resultId: string;
+  projectId: string;
+  environment: "development" | "production" | null;
+  agentId: string;
+  deploymentId: string;
+  sessionId: string;
+  turnId: string;
+  messageId: string | null;
+  toolCallId: string;
+  resultTool: string;
+  schemaId: string | null;
+  schemaDigest: string | null;
+  dataDigest: string;
+  data: unknown;
+  createdAt: string;
+}
+
+export interface ManagedSessionResultPage {
+  results: ManagedSessionResult[];
+  nextCursor: string | null;
 }
 
 /** One row of `GET /sessions` (docs/agents/api.mdx, "Get and list"): no turns. */
@@ -1302,7 +1330,7 @@ export class OpenComputerClient {
 
   async createSession(
     agentId: string,
-    options: { memory?: MemoryBindings } = {},
+    options: { memory?: MemoryBindings; sessionData?: Record<string, unknown> } = {},
   ): Promise<CreateSessionResult> {
     const response = await this.response("/api/managed-agents/sessions", {
       method: "POST",
@@ -1310,6 +1338,9 @@ export class OpenComputerClient {
         agentId,
         ...(options.memory && Object.keys(options.memory).length
           ? { memory: options.memory }
+          : {}),
+        ...(options.sessionData !== undefined
+          ? { sessionData: options.sessionData }
           : {}),
       }),
     });
@@ -1339,20 +1370,49 @@ export class OpenComputerClient {
     );
   }
 
+  /** `input` may be omitted when a non-empty `payload` is sent; a turn needs one of the two. */
   createTurn(
     sessionId: string,
-    input: string,
+    input: string | undefined,
     idempotencyKey: string = crypto.randomUUID(),
+    payload?: unknown,
   ) {
     return this.request<{ turnId: string; duplicate: boolean }>(
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
       {
         method: "POST",
         body: JSON.stringify({
-          input,
+          ...(input !== undefined ? { input } : {}),
           idempotencyKey,
+          ...(payload !== undefined ? { payload } : {}),
         }),
       },
+    );
+  }
+
+  /**
+   * `GET /sessions/<id>/results`, or the turn's results when `turnId` is
+   * given: every committed result, oldest first, one page at a time.
+   */
+  results(
+    sessionId: string,
+    options: { turnId?: string; cursor?: string; limit?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    const session = encodeURIComponent(sessionId);
+    const path =
+      options.turnId === undefined
+        ? `/api/managed-agents/sessions/${session}/results`
+        : `/api/managed-agents/sessions/${session}/turns/${encodeURIComponent(options.turnId)}/results`;
+    return this.request<ManagedSessionResultPage>(`${path}${suffix}`);
+  }
+
+  result(sessionId: string, resultId: string) {
+    return this.request<ManagedSessionResult>(
+      `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/results/${encodeURIComponent(resultId)}`,
     );
   }
 

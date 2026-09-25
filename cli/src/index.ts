@@ -61,14 +61,19 @@ Usage:
   opencomputer session [prompt] [--agent <project-agent>] [--keep]
   opencomputer session create [prompt] [--agent <project-agent>] [--keep]
       [--memory <resource>=<documentId>[:read|read-write] | --memory <resource>]... [--create-document]
+      [--session-data-file <path>] [--payload-file <path>]
       --memory binds a document (read-write by default) or a collection; --create-document
       creates each bound document that does not exist yet; with --idempotency-key a retry
-      returns the same session
+      returns the same session; --session-data-file fixes a JSON object the agent reads with
+      useSessionData(); --payload-file sends a JSON file as the first turn's payload (the
+      prompt is then optional)
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
-  opencomputer session send <session-id> <prompt> [--keep]
+  opencomputer session send <session-id> [prompt] [--payload-file <path>] [--keep]
   opencomputer session end <session-id>
+  opencomputer results list <session-id> [--turn <turn-id>] [--cursor <cursor>] [--limit <n>]
+  opencomputer results get <session-id> <result-id>
   opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]

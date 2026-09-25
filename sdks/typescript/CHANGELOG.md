@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.2.0
+
+- `@opencomputer/sdk/agents`: `sessions.create({ sessionData })` sends
+  application context fixed at creation (a JSON object, at most 32 KB); the
+  create response and `sessions.get` carry `sessionDataDigest` and
+  `sessionDataRevision`. `sessions.turns.send({ payload })` no longer requires
+  `input`: a turn is admitted with text, a payload, or both.
+- `sessions.results.list(sessionId, { turnId?, cursor?, limit? })` and
+  `sessions.results.get(sessionId, resultId)` read the session's immutable
+  result history — every committed result with its `resultId`, turn, tool
+  call, deployment and schema provenance — alongside the existing latest
+  `session.result` projection.
+- `SessionEvent`: `message.received` records a payload's `bytes`, `digest` and
+  optional `schemaId` rather than the payload itself; `session.created`
+  records the same for `sessionData`.
+
 ## 2.1.2
 
 - `@opencomputer/sdk/agents`: the transport called `fetch` as a method of the client, which a native fetch refuses with `Illegal invocation` in workerd; it is now called as a plain function. Found by the Development proof of a Worker without Node compatibility. No API change.

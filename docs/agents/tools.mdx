@@ -167,7 +167,10 @@ the session:
   stands.
 - A call from a turn that was interrupted or has ended, or from a runtime
   the session no longer runs on, is refused the same way.
-- A later call replaces the entire value. Reporting does not finish the turn.
+- A later call replaces the entire value of the session's `result`.
+  Reporting does not finish the turn. Every committed value is also kept as
+  its own immutable record, readable by session, turn or id through the
+  [results routes](/agents/results).
   A subsequent turn that fails or is cancelled does not clear the result, and
   the event log keeps every call.
 
