@@ -34,7 +34,10 @@ import {
   listAgentSecurityNotifications,
 } from "./agent_security_notifications";
 import { createAPIKey } from "./api_keys";
-import { proxyManagedAgents } from "./managed_agents";
+import {
+  proxyManagedAgents,
+  proxyPublicTemplateInspection,
+} from "./managed_agents";
 import { enableManagedBilling } from "./model_billing";
 
 export interface DashboardEnv {
@@ -954,12 +957,19 @@ export async function handleDashboard(
   _ctx: ExecutionContext,
   path: string,
 ): Promise<Response> {
-  const caller = await authDashboard(req, env);
-  if (!caller) return json({ error: "unauthenticated" }, 401);
-
   // /api/dashboard/* — strip the prefix for routing.
   const sub = path.replace(/^\/api\/dashboard/, "");
   const method = req.method.toUpperCase();
+
+  const caller = await authDashboard(req, env);
+  if (!caller) {
+    // Template preview is the one anonymous entry point: visitors can see
+    // a template's deploy form before signing up.
+    if (sub === "/managed-agents/template-inspections" && method === "POST") {
+      return proxyPublicTemplateInspection(req, env);
+    }
+    return json({ error: "unauthenticated" }, 401);
+  }
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
