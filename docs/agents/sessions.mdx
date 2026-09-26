@@ -138,10 +138,14 @@ the command exits.
 ### Workspace files
 
 Files an agent writes under `/workspace` (reports, captures, screenshots, tool
-output) can be listed and downloaded with `session files`. Downloads never pass
-through the model or the session transcript: OpenComputer exports the file into
-provider-owned storage, records its byte count and SHA-256, and the CLI streams
-that retained copy to disk, verifying both before the file is saved.
+output) can be listed and downloaded with `session files`. Newly written files
+appear gradually and may take a few moments to finish syncing. Refresh or list
+the workspace again if a file has just been created.
+
+Downloads never pass through the model or the session transcript: OpenComputer
+exports the file into retained storage, records its byte count and SHA-256, and
+authorizes a short-lived direct download. The CLI streams that retained copy to
+disk, verifying both fields before the file is saved.
 
 ```bash
 # List the files in the session's /workspace

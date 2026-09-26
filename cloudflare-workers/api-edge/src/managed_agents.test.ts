@@ -429,6 +429,15 @@ describe("managed agents proxy", () => {
             },
           });
         }
+        if (url.endsWith("/workspace/exports/wsart_1/download")) {
+          return Response.json(
+            {
+              url: "https://objects.example.test/private/capture.har?signature=secret",
+              expiresAt: "2026-09-25T20:00:00.000Z",
+            },
+            { headers: { "cache-control": "private, no-store" } },
+          );
+        }
         throw new Error(`unexpected upstream ${url}`);
       }),
     );
@@ -496,6 +505,21 @@ describe("managed agents proxy", () => {
     expect(content.headers.get("x-workspace-artifact-size")).toBe("12");
     expect(content.headers.get("cache-control")).toBe("private, no-store");
     expect(content.headers.get("x-storage-provider")).toBeNull();
+
+    const download = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/download",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(download.status).toBe(200);
+    expect(await download.json()).toEqual({
+      url: "https://objects.example.test/private/capture.har?signature=secret",
+      expiresAt: "2026-09-25T20:00:00.000Z",
+    });
+    expect(download.headers.get("cache-control")).toBe("private, no-store");
 
     const blocked = await proxyManagedAgents(
       new Request(
