@@ -8,6 +8,7 @@ import {
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
+  proxyPublicTemplateInspection,
   publicFailure,
 } from "./managed_agents";
 
@@ -1544,6 +1545,58 @@ describe("managed agents proxy", () => {
       },
       { orgID: "org_test", userID: "user_test" },
       "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(JSON.stringify(await response.json())).not.toContain(
+      "builderCredential",
+    );
+  });
+
+  it("proxies anonymous template inspection to the public upstream route without an org assertion", async () => {
+    const fetchSpy = vi.fn(
+      async (request: URL | RequestInfo, init?: RequestInit) => {
+        expect(String(request)).toBe(
+          "https://managedagents.test/v1/public/template-inspections",
+        );
+        expect(
+          new Headers(init?.headers).get("x-opencomputer-agent-token"),
+        ).toBeNull();
+        return Response.json({
+          id: "tin_test",
+          repository: {
+            url: "https://github.com/diggerhq/example",
+            fullName: "diggerhq/example",
+            defaultBranch: "main",
+            commitSha: "a".repeat(40),
+          },
+          template: { name: "Example", description: "Example agent" },
+          agents: [{ id: "example", name: "Example" }],
+          requirements: {
+            secrets: [],
+            runtimeVariables: [],
+            connections: [],
+          },
+          expiresAt: "2026-09-01T01:00:00.000Z",
+          builderCredential: "must-not-leak",
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyPublicTemplateInspection(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/template-inspections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            repositoryUrl: "https://github.com/diggerhq/example",
+          }),
+        },
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
     );
 
     expect(response.status).toBe(200);

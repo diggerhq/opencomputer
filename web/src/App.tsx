@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
+import PublicTemplateRoute from './components/PublicTemplateRoute'
 import { managedAgentsExperimentEnabled } from './managed-agents/feature'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
 
@@ -56,6 +57,11 @@ export default function App() {
         {/* Deferred-action executor — outside ProtectedRoute so the anonymous
             branch can fire analytics + capture returnTo before login. */}
         <Route path="do" element={<DeferredAction />} />
+        {/* Template links are shareable: anonymous visitors see the template
+            and its deploy form, and sign up when they actually deploy. */}
+        <Route element={<PublicTemplateRoute />}>
+          <Route path="template" element={<ManagedTemplateNew />} />
+        </Route>
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route
@@ -91,7 +97,6 @@ export default function App() {
               element={<Navigate to="/new" replace />}
             />
             <Route path="new" element={<NewProject />} />
-            <Route path="template" element={<ManagedTemplateNew />} />
             <Route
               path="projects/:projectId"
               element={<ManagedProjectDetail />}

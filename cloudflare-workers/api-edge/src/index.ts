@@ -90,6 +90,7 @@ import {
   handleManagedSlackCallback,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
+  proxyPublicTemplateInspection,
 } from "./managed_agents";
 
 export interface Env extends DashboardEnv {
@@ -5498,6 +5499,14 @@ export default {
     ) {
       const caller = await authenticate(req, env, ctx);
       if (!caller) {
+        // Template preview is the one anonymous entry point: visitors can see
+        // a template's deploy form before signing up.
+        if (
+          path === "/api/managed-agents/template-inspections" &&
+          req.method === "POST"
+        ) {
+          return proxyPublicTemplateInspection(req, env);
+        }
         return json({ error: "missing or invalid API key" }, 401);
       }
       const scopeError = provisionScopeGate(caller, path);
