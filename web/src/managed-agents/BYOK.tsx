@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BrainCircuit, Link2, LockKeyhole, Loader2, Trash2 } from 'lucide-react'
@@ -16,6 +16,12 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
+import {
+  PLAN_OFFERS,
+  trackUpsellClicked,
+  trackUpsellShown,
+  upgradeHref,
+} from '@/lib/billing-onramp'
 import {
   connectManagedModelApiKey,
   deleteManagedModelRoute,
@@ -63,6 +69,10 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
       ? autumnBilling.data?.usagePlan
       : billing.data?.plan
   const planEligible = hasBYOKPlanAccess(usagePlan)
+  const showGate = !billing.isLoading && !billing.isError && !planEligible
+  useEffect(() => {
+    if (showGate) trackUpsellShown({ surface: 'byok_gate', plan: 'pro' })
+  }, [showGate])
   const billingLoading =
     billing.isLoading ||
     (billing.data?.billingProvider === 'autumn' && autumnBilling.isLoading)
@@ -172,10 +182,17 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
         <EmptyState
           icon={LockKeyhole}
           title="BYOK is available on Pro"
-          description="Upgrade to Pro to connect your model provider and configure a project model route."
+          description={`Bring your own provider keys and route this project's models through them. Pro is $${PLAN_OFFERS.pro.priceUsd}/mo and includes $${PLAN_OFFERS.pro.creditsUsd} in credits every month.`}
           action={
             <Button asChild>
-              <Link to="/billing">Upgrade to Pro</Link>
+              <Link
+                to={upgradeHref('pro')}
+                onClick={() =>
+                  trackUpsellClicked({ surface: 'byok_gate', plan: 'pro' })
+                }
+              >
+                Upgrade to Pro — ${PLAN_OFFERS.pro.priceUsd}/mo
+              </Link>
             </Button>
           }
         />

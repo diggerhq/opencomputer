@@ -29,6 +29,22 @@ export function structuredError(error: unknown): StructuredCLIError {
   }
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof APIError) {
+    if (error.code === "insufficient_credits" || error.status === 402) {
+      const url = error.actionUrl;
+      return {
+        code: "insufficient_credits",
+        message,
+        hint:
+          "Out of prepaid credits \u2014 do not retry. Tell the user to upgrade to Pro ($20/mo, $200 credits)" +
+          (url ? ` at ${url}` : " with `opencomputer upgrade pro`") +
+          ", then run the command again.",
+        details: {
+          status: error.status,
+          apiCode: error.code ?? "insufficient_credits",
+          ...(url ? { upgradeUrl: url } : {}),
+        },
+      };
+    }
     const code =
       error.status === 401 || error.status === 403
         ? "authentication_required"

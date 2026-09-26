@@ -142,3 +142,20 @@ Use `opencomputer sessions tail <session-id> --json` for durable NDJSON session
 events. All commands accept `--json`; mutations accept
 `--idempotency-key <stable-retry-key>`. Run
 `opencomputer doctor --json` for the sub-second local pre-deploy scan.
+
+## Billing and credits
+
+New organizations start on prepaid credits. `opencomputer run` prints the
+remaining balance after each run (a `credits` block under `--json`, with
+`warning: "low_credits"` when the balance is running low), and
+`opencomputer billing` shows the plan table:
+
+```bash
+opencomputer billing
+opencomputer upgrade pro   # prints the checkout link for Pro ($20/mo, $200 credits)
+```
+
+When credits are exhausted every command fails with HTTP `402` and a structured
+`insufficient_credits` error whose `hint` and `details.upgradeUrl` point at
+checkout. Agents driving the CLI should stop, relay that link to the user, and
+resume once billing is sorted rather than retrying.

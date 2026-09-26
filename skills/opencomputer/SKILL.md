@@ -49,6 +49,23 @@ with an auth error (`401`, "unauthorized", "missing API key"):
 Do **not** ask for an API key in chat. For CI or service automation, the user
 may instead configure `OPENCOMPUTER_API_KEY` themselves.
 
+### 3. Out of credits (`402`, `insufficient_credits`)
+
+If any command fails with HTTP `402`, `code: "insufficient_credits"`, or a
+message mentioning "credits exhausted" / "out of prepaid credits", the
+organization has no prepaid credits left and **every further command will fail
+the same way**. Do **not** retry or work around it. Instead:
+
+1. Stop and tell the user their OpenComputer credits are exhausted.
+2. Relay the upgrade link from the error verbatim (it looks like
+   `https://app.opencomputer.dev/billing?plan=pro`). Pro is $20/month for $200 in
+   credits; one-off top-ups are on the same page.
+3. Resume once they confirm they've upgraded or topped up.
+
+A response that carries `warning: "low_credits"` (or a "credits left (running
+low)" line) still succeeded — finish the task, then mention the balance and
+the upgrade link to the user so they can act before sessions pause.
+
 ## CLI Reference
 
 ### Sandbox Lifecycle
