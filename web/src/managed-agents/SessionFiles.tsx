@@ -200,7 +200,9 @@ export function SessionFiles({
             <PanelTitle>Workspace</PanelTitle>
             <PanelDescription className="mt-1">
               Files under <code>/workspace</code> as last synced from the
-              sandbox. Downloading retains a verified copy first.
+              sandbox. Newly written files appear gradually and may take a few
+              moments to finish syncing. Downloading retains a verified copy
+              first.
             </PanelDescription>
           </div>
           <div className="flex items-center gap-2">
@@ -242,7 +244,8 @@ export function SessionFiles({
           </p>
         ) : (files.data ?? []).length === 0 ? (
           <p className="text-muted-foreground px-5 py-4 text-sm">
-            The agent has not written any files yet.
+            No files are visible yet. Newly written files may take a few moments
+            to finish syncing.
           </p>
         ) : (
           <div className="divide-y text-sm">
@@ -455,6 +458,10 @@ export function WorkspaceFilesInspector({
             />
           </Button>
         </div>
+        <p className="text-muted-foreground border-t px-3 py-1.5 text-[10px]">
+          Newly written files appear gradually and may take a few moments to
+          finish syncing.
+        </p>
         <div className="max-h-72 overflow-y-auto border-t">
           {files.isLoading ? (
             <div className="flex min-h-16 items-center justify-center">
@@ -502,7 +509,7 @@ export function WorkspaceFilesInspector({
             </p>
           ) : list.length === 0 ? (
             <p className="text-muted-foreground px-3 py-2 text-xs">
-              The agent has not written any files yet.
+              No files are visible yet. Try refreshing in a few moments.
             </p>
           ) : (
             <div className="divide-y">

@@ -1668,6 +1668,16 @@ const workspaceExportResponseSchema = z.object({
   export: z.object({ id: z.string(), state: z.string() }).optional(),
   artifact: workspaceArtifactSchema.nullable(),
 })
+const workspaceDownloadResponseSchema = z.object({
+  url: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value)
+      return url.protocol === 'https:' && !url.username && !url.password
+    }),
+  expiresAt: z.string(),
+})
 
 export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
 export type ManagedWorkspaceArtifact = z.infer<typeof workspaceArtifactSchema>
@@ -1715,10 +1725,26 @@ export async function exportManagedAgentWorkspaceFile(
   return result.artifact
 }
 
-export function managedAgentWorkspaceArtifactContentPath(
+export function managedAgentWorkspaceArtifactDownloadPath(
   artifact: Pick<ManagedWorkspaceArtifact, 'sessionId' | 'id'>,
 ) {
-  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/content`
+  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/download`
+}
+
+/** Fetches a signed object without sending dashboard credentials to storage. */
+export async function fetchManagedAgentWorkspaceObject(
+  url: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(url, {
+    credentials: 'omit',
+    redirect: 'error',
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Workspace object download failed (${response.status})`)
+  }
+  return response
 }
 
 /**
@@ -1733,10 +1759,14 @@ export async function streamManagedAgentWorkspaceArtifact(
   write: (chunk: Uint8Array) => Promise<void>,
   signal?: AbortSignal,
 ) {
-  const response = await apiFetchResponse(
-    managedAgentWorkspaceArtifactContentPath(artifact),
+  const handoff = await apiFetch(
+    managedAgentWorkspaceArtifactDownloadPath(artifact),
     { signal },
+    workspaceDownloadResponseSchema,
   )
+  // This second request is deliberately unauthenticated. The signed query is
+  // the authorization; platform cookies and headers must not reach storage.
+  const response = await fetchManagedAgentWorkspaceObject(handoff.url, signal)
   if (!response.body) throw new Error('Artifact response had no body')
   const hash = new Sha256()
   let received = 0

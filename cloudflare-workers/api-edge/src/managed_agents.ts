@@ -1937,6 +1937,22 @@ function publicSuccessBody(
       artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
     };
   }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return { url: url.toString(), expiresAt: body.expiresAt };
+  }
   throw new Error("Unsupported managed agents response");
 }
 
@@ -2416,7 +2432,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     method === "GET" &&
-    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
+      suffix,
+    )
   ) {
     return true;
   }
