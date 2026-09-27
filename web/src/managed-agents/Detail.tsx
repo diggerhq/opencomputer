@@ -63,6 +63,7 @@ import {
   type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
+import { useLiveSessionEvents } from './use-live-session-events'
 import { PostSessionUpsell } from '@/components/post-session-upsell'
 import { useCreditState } from '@/hooks/useCreditState'
 import {
@@ -292,7 +293,6 @@ function PlaygroundChat({
     queryKey: ['managed-agent-session-events', liveSessionId],
     queryFn: () => getManagedAgentSessionEvents(liveSessionId!),
     enabled: Boolean(liveSessionId),
-    refetchInterval: 1_000,
   })
   useEffect(() => {
     liveSessionIdRef.current = liveSessionId
@@ -325,6 +325,11 @@ function PlaygroundChat({
   const halted = credits.isHalted
   const turnFinished =
     !agentWorking && status === 'ready' && messages.length > 0
+  const inspectorEvents = useLiveSessionEvents(
+    liveSessionId,
+    debugEvents.data ?? events,
+    agentWorking,
+  )
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -572,7 +577,7 @@ function PlaygroundChat({
         </div>
       </div>
       <DebugInspector
-        events={debugEvents.data ?? events}
+        events={inspectorEvents}
         deploymentId={session?.deploymentId}
         sessionId={liveSessionId}
         sessionLive={agentWorking}
@@ -733,7 +738,7 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
-    refetchInterval: 1_000,
+    refetchInterval: 5_000,
   })
   // The list carries rows; the open session's turns come from its own route.
   const selectedPlaygroundSession = useQuery({

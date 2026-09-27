@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
+import { managedAgentEventSchema, type ManagedAgentEvent } from './events'
+import {
+  ManagedAgentEventStream,
+  ManagedAgentEventStreamTimeout,
+} from './live-events'
 import {
   Sha256,
   ZipWriter,
@@ -553,15 +558,7 @@ const sessionCreateSchema = z.object({
   deployment: deploymentSchema.optional(),
 })
 
-const eventSchema = z.object({
-  id: z.string().optional(),
-  seq: z.number(),
-  timestamp: z.string().optional(),
-  sessionId: z.string().optional(),
-  turnId: z.string().optional(),
-  type: z.string(),
-  data: z.record(z.string(), z.unknown()),
-})
+const eventSchema = managedAgentEventSchema
 
 const renderDebugSchema = z.object({
   renderId: z.string(),
@@ -773,7 +770,7 @@ export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
-export type ManagedAgentEvent = z.infer<typeof eventSchema>
+export type { ManagedAgentEvent } from './events'
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
@@ -1843,12 +1840,13 @@ export async function downloadManagedAgentWorkspaceArchive(
 export async function getManagedAgentSessionEvents(
   sessionId: string,
   after = 0,
+  signal?: AbortSignal,
 ) {
   return collectManagedAgentEventPages(async (cursor) => {
     return (
       await apiFetch(
         `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-        undefined,
+        signal ? { signal } : undefined,
         eventsResponseSchema,
       )
     ).events
@@ -2037,38 +2035,32 @@ export async function deleteManagedMemoryDocument(
   })
 }
 
-async function sleep(milliseconds: number) {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds))
-}
-
-export function nextAgentEventDeadline(
-  deadline: number,
-  timeoutMs: number,
-  receivedEvents: number,
-  now = Date.now(),
+export function openManagedAgentEventStream(
+  sessionId: string,
+  after: number,
+  signal?: AbortSignal,
 ) {
-  return receivedEvents > 0 ? now + timeoutMs : deadline
+  return new ManagedAgentEventStream(sessionId, after, {
+    fetchEvents: getManagedAgentSessionEvents,
+    signal,
+  })
 }
 
+// `timeoutMs` is an inactivity deadline: multi-step agents can run for longer
+// than one fixed window while continuing to stream useful progress.
 async function waitForAgentEvent(
   sessionId: string,
   after: number,
-  terminal: (event: z.infer<typeof eventSchema>) => boolean,
-  onEvent: (event: z.infer<typeof eventSchema>) => void,
+  terminal: (event: ManagedAgentEvent) => boolean,
+  onEvent: (event: ManagedAgentEvent) => void,
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  let deadline = Date.now() + timeoutMs
-  let cursor = after
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const { events } = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-      { signal },
-      eventsResponseSchema,
-    )
-    for (const event of events) {
-      cursor = Math.max(cursor, event.seq)
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const stream = openManagedAgentEventStream(sessionId, after, signal)
+  try {
+    for (;;) {
+      const event = await stream.next(timeoutMs)
       onEvent(event)
       if (
         event.type === 'runtime.disconnected' ||
@@ -2082,14 +2074,16 @@ async function waitForAgentEvent(
               : 'The agent runtime disconnected.',
         )
       }
-      if (terminal(event)) return { event, cursor }
+      if (terminal(event)) return { event, cursor: event.seq }
     }
-    // Treat timeoutMs as an inactivity deadline. Multi-step agents can run for
-    // longer than one fixed window while continuing to stream useful progress.
-    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length)
-    await sleep(600)
+  } catch (error) {
+    if (error instanceof ManagedAgentEventStreamTimeout) {
+      throw new Error('Timed out waiting for the agent.')
+    }
+    throw error
+  } finally {
+    stream.close()
   }
-  throw new Error('Timed out waiting for the agent.')
 }
 
 export async function runManagedAgent(
