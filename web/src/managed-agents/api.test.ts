@@ -4,7 +4,6 @@ import {
   displayManagedAgentName,
   managedAgentModelRoute,
   managedAgentRenderDebug,
-  nextAgentEventDeadline,
 } from './api'
 
 describe('collectManagedAgentEventPages', () => {
@@ -29,13 +28,6 @@ describe('collectManagedAgentEventPages', () => {
 
     expect(cursors).toEqual([0, 500, 501])
     expect(events.map(({ seq }) => seq)).toEqual([1, 500, 501])
-  })
-})
-
-describe('nextAgentEventDeadline', () => {
-  it('refreshes the inactivity deadline only when progress arrives', () => {
-    expect(nextAgentEventDeadline(10_000, 3_000, 0, 9_000)).toBe(10_000)
-    expect(nextAgentEventDeadline(10_000, 3_000, 1, 9_000)).toBe(12_000)
   })
 })
 

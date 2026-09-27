@@ -4882,6 +4882,155 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("Workerd");
   });
 
+  it("relays the session WebSocket with the same public event redaction", async () => {
+    class FakeSocket extends EventTarget {
+      peer!: FakeSocket;
+      sent: string[] = [];
+      closed: { code?: number; reason?: string } | null = null;
+      accept() {}
+      send(data: string) {
+        this.sent.push(data);
+      }
+      close(code?: number, reason?: string) {
+        if (this.closed) return;
+        this.closed = { code, reason };
+        this.peer.dispatchEvent(
+          Object.assign(new Event("close"), { code, reason }),
+        );
+      }
+      receive(data: string) {
+        this.dispatchEvent(Object.assign(new Event("message"), { data }));
+      }
+    }
+    const pairs: FakeSocket[][] = [];
+    vi.stubGlobal(
+      "WebSocketPair",
+      class {
+        0: FakeSocket;
+        1: FakeSocket;
+        constructor() {
+          const a = new FakeSocket();
+          const b = new FakeSocket();
+          a.peer = b;
+          b.peer = a;
+          this[0] = a;
+          this[1] = b;
+          pairs.push([a, b]);
+        }
+      },
+    );
+
+    const upstream = new FakeSocket();
+    upstream.peer = new FakeSocket();
+    upstream.peer.peer = upstream;
+    const fetchMock = vi.fn(
+      async (_input: URL | RequestInfo, _init?: RequestInit) =>
+        ({ status: 101, webSocket: upstream }) as unknown as Response,
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    // Node's Response rejects status 101; workerd accepts it for upgrades.
+    const NativeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class extends NativeResponse {
+        constructor(body: BodyInit | null, init?: ResponseInit) {
+          if (init?.status === 101) {
+            super(null, { ...init, status: 200 });
+            Object.defineProperty(this, "status", { value: 101 });
+          } else {
+            super(body, init);
+          }
+        }
+      },
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/connect?cursor=4",
+        { headers: { upgrade: "websocket" } },
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(101);
+    const target = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(target.pathname).toBe("/v1/sessions/session-1/connect");
+    expect(target.searchParams.get("role")).toBe("client");
+    expect(target.searchParams.get("cursor")).toBe("4");
+    const [, server] = pairs[0];
+
+    upstream.receive(
+      JSON.stringify({ type: "ready", sessionId: "session-1", cursor: 4 }),
+    );
+    upstream.receive("not json");
+    upstream.receive(
+      JSON.stringify({
+        type: "event",
+        event: {
+          id: "event_1",
+          seq: 5,
+          type: "turn.failed",
+          data: {
+            message: "The agent runtime stopped reporting on this turn and its lease expired",
+            reason: "runtime_lost",
+            runtimeToken: "never-return-this",
+          },
+        },
+      }),
+    );
+    upstream.receive(
+      JSON.stringify({ type: "error", code: "boom", message: "stack trace" }),
+    );
+
+    expect(server.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "ready", sessionId: "session-1", cursor: 4 },
+      {
+        type: "event",
+        event: {
+          id: "event_1",
+          seq: 5,
+          type: "turn.failed",
+          data: {
+            code: "runtime_lost",
+            message:
+              "The agent runtime stopped responding and the turn was abandoned.",
+          },
+        },
+      },
+      {
+        type: "error",
+        code: "boom",
+        message: "The session stream reported an error.",
+      },
+    ]);
+    expect(server.sent.join("")).not.toContain("never-return-this");
+    expect(server.sent.join("")).not.toContain("stack trace");
+
+    server.receive(JSON.stringify({ type: "ping" }));
+    expect(upstream.sent).toEqual([JSON.stringify({ type: "ping" })]);
+
+    upstream.peer.close(1006, "");
+    expect(server.closed).toEqual({ code: 1000, reason: "" });
+    expect(upstream.closed).toEqual({ code: 1000, reason: "" });
+  });
+
+  it("rejects non-upgrade requests to the session connect route", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/connect",
+      ),
+      memoryEnv,
+      memoryCaller,
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(426);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("classifies known runtime failures into typed public failures", () => {
     expect(publicFailure({ reason: "interrupted" })).toEqual({
       code: "interrupted",
