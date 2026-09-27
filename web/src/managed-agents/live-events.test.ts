@@ -122,7 +122,33 @@ describe('ManagedAgentEventStream', () => {
     expect((await stream.next(1_000)).seq).toBe(1)
     expect((await stream.next(1_000)).seq).toBe(2)
     expect(FakeSocket.instances).toHaveLength(1)
-    expect(fetchEvents.mock.calls[0]).toEqual(['s1', 0])
+    expect(fetchEvents.mock.calls[0]).toEqual(['s1', 0, undefined])
+    stream.close()
+  })
+
+  it('gives up on a socket that never becomes ready and polls instead', async () => {
+    const fetchEvents = vi
+      .fn<
+        (
+          sessionId: string,
+          after: number,
+          signal?: AbortSignal,
+        ) => Promise<ManagedAgentEvent[]>
+      >()
+      .mockResolvedValueOnce([event(1)])
+      .mockResolvedValue([])
+    const controller = new AbortController()
+    const stream = new ManagedAgentEventStream('s1', 0, {
+      fetchEvents,
+      webSocket: Socket,
+      sleep: noSleep,
+      readyTimeoutMs: 5,
+      signal: controller.signal,
+    })
+    expect((await stream.next(1_000)).seq).toBe(1)
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(FakeSocket.instances[0].closed?.reason).toBe('ready timeout')
+    expect(fetchEvents.mock.calls[0]).toEqual(['s1', 0, controller.signal])
     stream.close()
   })
 

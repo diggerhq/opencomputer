@@ -1840,12 +1840,13 @@ export async function downloadManagedAgentWorkspaceArchive(
 export async function getManagedAgentSessionEvents(
   sessionId: string,
   after = 0,
+  signal?: AbortSignal,
 ) {
   return collectManagedAgentEventPages(async (cursor) => {
     return (
       await apiFetch(
         `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-        undefined,
+        signal ? { signal } : undefined,
         eventsResponseSchema,
       )
     ).events
@@ -2073,7 +2074,7 @@ async function waitForAgentEvent(
               : 'The agent runtime disconnected.',
         )
       }
-      if (terminal(event)) return { event, cursor: stream.position }
+      if (terminal(event)) return { event, cursor: event.seq }
     }
   } catch (error) {
     if (error instanceof ManagedAgentEventStreamTimeout) {

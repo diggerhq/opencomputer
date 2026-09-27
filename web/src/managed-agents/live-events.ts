@@ -2,7 +2,11 @@ import { z } from 'zod'
 import { managedAgentEventSchema, type ManagedAgentEvent } from './events'
 
 const frameSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('ready'), sessionId: z.string(), cursor: z.number() }),
+  z.object({
+    type: z.literal('ready'),
+    sessionId: z.string(),
+    cursor: z.number(),
+  }),
   z.object({ type: z.literal('event'), event: managedAgentEventSchema }),
   z.object({ type: z.literal('pong') }),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string() }),
@@ -10,8 +14,14 @@ const frameSchema = z.discriminatedUnion('type', [
 
 export type ManagedAgentEventStreamOptions = {
   /** REST fallback used when the WebSocket relay is unavailable. */
-  fetchEvents: (sessionId: string, after: number) => Promise<ManagedAgentEvent[]>
+  fetchEvents: (
+    sessionId: string,
+    after: number,
+    signal?: AbortSignal,
+  ) => Promise<ManagedAgentEvent[]>
   signal?: AbortSignal
+  /** How long an upgraded socket may stay silent before it counts as unavailable. */
+  readyTimeoutMs?: number
   /** Delay between REST polls when the WebSocket path is unavailable. */
   pollIntervalMs?: number
   /** WebSocket reconnect attempts before falling back to polling for good. */
@@ -108,8 +118,7 @@ export class ManagedAgentEventStream {
 
   private fail(reason: unknown) {
     if (this.closed) return
-    const error =
-      reason instanceof Error ? reason : new Error(String(reason))
+    const error = reason instanceof Error ? reason : new Error(String(reason))
     this.failure = error
     const waiter = this.waiter
     this.waiter = null
@@ -157,6 +166,7 @@ export class ManagedAgentEventStream {
       const settle = (outcome: 'unavailable' | 'dropped') => {
         if (settled) return
         settled = true
+        clearTimeout(readyTimer)
         if (this.socket === socket) this.socket = null
         resolve(outcome)
       }
@@ -168,6 +178,15 @@ export class ManagedAgentEventStream {
         return
       }
       this.socket = socket
+      const readyTimer = setTimeout(() => {
+        if (ready || settled) return
+        try {
+          socket.close(1000, 'ready timeout')
+        } catch {
+          // Already closed.
+        }
+        settle('unavailable')
+      }, this.options.readyTimeoutMs ?? 5_000)
       socket.addEventListener('message', (message) => {
         if (typeof message.data !== 'string') return
         let parsed: unknown
@@ -178,8 +197,10 @@ export class ManagedAgentEventStream {
         }
         const frame = frameSchema.safeParse(parsed)
         if (!frame.success) return
-        if (frame.data.type === 'ready') ready = true
-        else if (frame.data.type === 'event') this.deliver(frame.data.event)
+        if (frame.data.type === 'ready') {
+          ready = true
+          clearTimeout(readyTimer)
+        } else if (frame.data.type === 'event') this.deliver(frame.data.event)
       })
       socket.addEventListener('close', () =>
         settle(ready ? 'dropped' : 'unavailable'),
@@ -195,7 +216,11 @@ export class ManagedAgentEventStream {
     const interval = this.options.pollIntervalMs ?? 300
     while (!this.closed) {
       try {
-        const events = await fetchEvents(this.sessionId, this.cursor)
+        const events = await fetchEvents(
+          this.sessionId,
+          this.cursor,
+          this.options.signal,
+        )
         for (const event of events) this.deliver(event)
       } catch (error) {
         if (this.options.signal?.aborted) return
