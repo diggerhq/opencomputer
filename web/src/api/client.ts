@@ -433,6 +433,17 @@ export const acknowledgeAgentSecurityNotification = (id: string) =>
 // Credits
 export const getCredits = () => apiFetch('/org/credits', {}, S.CreditsSchema)
 
+// Slack Connect (Pro/Max): self-serve invite to the team's shared channel.
+export const getSlackConnectStatus = () =>
+  apiFetch('/org/slack-connect', {}, S.SlackConnectStatusSchema)
+
+export const requestSlackConnectInvite = () =>
+  apiFetch(
+    '/org/slack-connect/invite',
+    { method: 'POST' },
+    S.SlackConnectInviteSchema,
+  )
+
 // Billing API
 export const getBilling = () => apiFetch('/billing', {}, S.BillingStateSchema)
 

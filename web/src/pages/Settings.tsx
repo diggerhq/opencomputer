@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
@@ -11,8 +12,10 @@ import {
   getInvitations,
   getOrg,
   getOrgMembers,
+  getSlackConnectStatus,
   refreshCustomDomain,
   removeMember,
+  requestSlackConnectInvite,
   revokeInvitation,
   sendInvitation,
   setCustomDomain,
@@ -392,6 +395,8 @@ export default function Settings() {
           )}
         </Panel>
 
+        <SlackConnectPanel />
+
         {user?.capabilities?.manageMembers !== false ? (
           <>
             <div className="lg:col-span-2">
@@ -480,6 +485,100 @@ function NavigationToggle({
         onCheckedChange={onCheckedChange}
       />
     </div>
+  )
+}
+
+function SlackConnectPanel() {
+  const queryClient = useQueryClient()
+  const { data: status } = useQuery({
+    queryKey: ['slack-connect'],
+    queryFn: getSlackConnectStatus,
+    retry: false,
+  })
+
+  const inviteMutation = useMutation({
+    mutationFn: () => requestSlackConnectInvite(),
+    onSuccess: (invite) =>
+      queryClient.setQueryData(['slack-connect'], {
+        available: true,
+        eligible: true,
+        email: invite.email,
+        channelName: invite.channelName,
+        invitedAt: invite.invitedAt,
+      }),
+    onError: (e) => {
+      notifyError("Couldn't send the Slack invitation.", e)
+      void queryClient.invalidateQueries({ queryKey: ['slack-connect'] })
+    },
+  })
+
+  if (!status?.available) return null
+
+  return (
+    <Panel className="p-6 lg:col-span-2">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div>
+          <PanelTitle>Slack Connect</PanelTitle>
+          <PanelDescription className="mt-1">
+            Get a private Slack channel shared between your organization and the
+            OpenComputer team. Available on Pro and Max.
+          </PanelDescription>
+          {status.eligible && status.invitedAt ? (
+            <p className="text-muted-foreground mt-3 text-sm">
+              Invitation to{' '}
+              {status.channelName ? (
+                <span className="text-foreground font-mono font-medium">
+                  #{status.channelName}
+                </span>
+              ) : (
+                'your shared channel'
+              )}{' '}
+              sent to{' '}
+              <span className="text-foreground font-medium">
+                {status.email}
+              </span>{' '}
+              on {new Date(status.invitedAt).toLocaleDateString()}. Check your
+              inbox for a link from Slack.
+            </p>
+          ) : status.eligible ? (
+            <p className="text-muted-foreground mt-3 text-sm">
+              {status.channelName ? (
+                <>
+                  Your organization&apos;s channel{' '}
+                  <span className="text-foreground font-mono font-medium">
+                    #{status.channelName}
+                  </span>{' '}
+                  already exists.{' '}
+                </>
+              ) : null}
+              Slack will email an invitation to{' '}
+              <span className="text-foreground font-medium">
+                {status.email}
+              </span>
+              .
+            </p>
+          ) : null}
+        </div>
+        {status.eligible ? (
+          <Button
+            onClick={() => inviteMutation.mutate()}
+            disabled={inviteMutation.isPending || !!status.invitedAt}
+          >
+            {inviteMutation.isPending
+              ? 'Sending…'
+              : status.invitedAt
+                ? 'Invitation sent'
+                : status.channelName
+                  ? 'Join the channel'
+                  : 'Create shared channel'}
+          </Button>
+        ) : (
+          <Button asChild variant="outline">
+            <Link to="/billing">Upgrade plan</Link>
+          </Button>
+        )}
+      </div>
+    </Panel>
   )
 }
 
