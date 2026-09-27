@@ -1,9 +1,21 @@
 import { useCallback, useEffect, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import posthog from 'posthog-js'
-import { getMe, switchOrg as switchOrgApi } from '../api/client'
+import { getMe, refreshSession, switchOrg as switchOrgApi } from '../api/client'
 import { ApiError } from '../api/errors'
 import { AuthContext, ME_QUERY_KEY } from './useAuth'
+
+// Session cookies carry a fixed 8h expiry. Re-mint one whenever the user
+// comes back to the tab (and on load), throttled so a flurry of focus events
+// doesn't hammer the edge. Module-level so it survives provider remounts.
+const SESSION_REFRESH_MIN_INTERVAL_MS = 15 * 60_000
+let lastSessionRefreshAt = 0
+function refreshSessionThrottled() {
+  const now = Date.now()
+  if (now - lastSessionRefreshAt < SESSION_REFRESH_MIN_INTERVAL_MS) return
+  lastSessionRefreshAt = now
+  void refreshSession()
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -23,6 +35,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const unauthorized =
     query.error instanceof ApiError && query.error.status === 401
   const user = unauthorized ? null : (query.data ?? null)
+
+  useEffect(() => {
+    if (!user) return
+    refreshSessionThrottled()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshSessionThrottled()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [user])
 
   // Identify the analytics user once /me resolves (external-system sync).
   useEffect(() => {
