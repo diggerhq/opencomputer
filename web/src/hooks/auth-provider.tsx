@@ -2,7 +2,8 @@ import { useCallback, useEffect, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import posthog from 'posthog-js'
 import { getMe, switchOrg as switchOrgApi } from '../api/client'
-import { AuthContext } from './useAuth'
+import { ApiError } from '../api/errors'
+import { AuthContext, ME_QUERY_KEY } from './useAuth'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -10,13 +11,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // /me is server state, so React Query owns it. A 401 throws (see apiFetch)
   // and lands as an error with no data — ProtectedRoute redirects to login.
   const query = useQuery({
-    queryKey: ['me'],
+    queryKey: ME_QUERY_KEY,
     queryFn: getMe,
     retry: false,
     staleTime: 60_000,
   })
   const { refetch } = query
-  const user = query.data ?? null
+  // A 401 on a background refetch keeps the previous data around; the session
+  // is gone regardless, so treat it as signed out rather than trusting the
+  // stale user.
+  const unauthorized =
+    query.error instanceof ApiError && query.error.status === 401
+  const user = unauthorized ? null : (query.data ?? null)
 
   // Identify the analytics user once /me resolves (external-system sync).
   useEffect(() => {
@@ -44,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // A 401 is an expected unauthenticated state, not a surfaced error.
   const error =
-    query.error && !/unauthorized/i.test(query.error.message)
+    query.error && !unauthorized && !/unauthorized/i.test(query.error.message)
       ? query.error.message
       : null
 
