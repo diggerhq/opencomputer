@@ -2799,6 +2799,55 @@ export async function handleAgentWebhookInvocation(
   }
 }
 
+// Anonymous template preview: the dashboard shows a template's deploy form
+// before sign-up, so inspection is proxied without an org assertion to the
+// backend's public route. Installation still requires an authenticated caller.
+export async function proxyPublicTemplateInspection(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method.toUpperCase() !== "POST") {
+    return Response.json({ error: "method not allowed" }, { status: 405 });
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/public/template-inspections`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return Response.json(
+      { error: "managed agents upstream must use HTTPS" },
+      { status: 503 },
+    );
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers: copyRequestHeaders(request),
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    return publicSuccessResponse(
+      upstream,
+      "POST",
+      "/template-inspections",
+      new URL(request.url).origin,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.upstream_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      { error: "managed agents service is unavailable" },
+      { status: 502 },
+    );
+  }
+}
+
 export async function proxyManagedAgents(
   request: Request,
   env: ManagedAgentsEnv,
