@@ -98,8 +98,8 @@ export function PostSessionUpsell({
           </p>
           <p className="text-muted-foreground mt-0.5">
             Pro is ${pro.priceUsd}/mo for ${pro.creditsUsd} in credits —{' '}
-            {Math.round(pro.creditsUsd / (BASE_GRANT_CENTS / 100))}× your free
-            grant every month, and your agents never pause.
+            {Math.round(pro.creditsUsd / pro.priceUsd)}× the value every month,
+            and your agents never pause.
           </p>
         </div>
       </div>
