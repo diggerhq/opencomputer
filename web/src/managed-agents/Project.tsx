@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { FolderKanban, Loader2 } from 'lucide-react'
+import { AlertTriangle, FolderKanban, Loader2 } from 'lucide-react'
+import { ApiError } from '@/api/errors'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
@@ -25,7 +26,27 @@ export default function ProjectDetail() {
       </div>
     )
   }
-  if (!project.data || project.isError) {
+  // A poll that fails (laptop woke up, session cookie expired, network blip)
+  // keeps the last good project as stale `data` — keep rendering it rather
+  // than replacing the page with "not found". Only a fetch with nothing cached
+  // decides between a real 404 and a load failure.
+  if (!project.data) {
+    if (project.isError && !isNotFound(project.error)) {
+      return (
+        <Panel>
+          <EmptyState
+            icon={AlertTriangle}
+            title="Couldn't load this project"
+            description={project.error.message}
+            action={
+              <Button variant="outline" onClick={() => void project.refetch()}>
+                Retry
+              </Button>
+            }
+          />
+        </Panel>
+      )
+    }
     return (
       <Panel>
         <EmptyState
@@ -61,4 +82,8 @@ export default function ProjectDetail() {
     )
   }
   return <ManagedAgentDetail agentId={agentId} project={project.data} />
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404
 }
