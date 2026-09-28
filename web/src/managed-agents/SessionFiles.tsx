@@ -17,8 +17,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  authorizeManagedAgentWorkspaceDownload,
   downloadManagedAgentWorkspaceArchive,
   downloadManagedAgentWorkspaceArtifact,
+  downloadManagedAgentWorkspaceFile,
   exportManagedAgentWorkspaceFile,
   getManagedAgentWorkspaceArtifacts,
   getManagedAgentWorkspaceFiles,
@@ -88,20 +90,9 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
     onError: reportDownloadError,
   })
 
-  const exportThenDownload = useMutation({
+  const directDownload = useMutation({
     mutationFn: (file: ManagedWorkspaceFile) =>
-      downloadManagedAgentWorkspaceArtifact(
-        fileName(file.path),
-        file.size,
-        async () => {
-          const artifact = await exportManagedAgentWorkspaceFile(
-            sessionId,
-            file.path,
-          )
-          void queryClient.invalidateQueries({ queryKey: artifactsKey })
-          return artifact
-        },
-      ),
+      downloadManagedAgentWorkspaceFile(sessionId, file),
     onError: reportDownloadError,
   })
 
@@ -122,22 +113,11 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
       downloadManagedAgentWorkspaceArchive(
         `${sessionId}-workspace.zip`,
         workspace,
-        async () => {
-          const retained: ManagedWorkspaceArtifact[] = []
-          for (const [index, file] of workspace.entries()) {
-            setArchiveProgress(`Retaining ${index + 1}/${workspace.length}`)
-            retained.push(
-              retainedFor(file) ??
-                (await exportManagedAgentWorkspaceFile(sessionId, file.path)),
-            )
-          }
-          void queryClient.invalidateQueries({ queryKey: artifactsKey })
-          return retained
-        },
-        (done, total) => setArchiveProgress(`Verifying ${done}/${total}`),
+        (file) => authorizeManagedAgentWorkspaceDownload(sessionId, file.path),
+        (done, total) => setArchiveProgress(`Downloading ${done}/${total}`),
       ),
-    onSuccess: (retained) =>
-      notifySuccess(`Downloaded ${retained.length} verified files.`),
+    onSuccess: (downloads) =>
+      notifySuccess(`Downloaded ${downloads.length} files.`),
     onError: reportDownloadError,
     onSettled: () => setArchiveProgress(null),
   })
@@ -145,11 +125,11 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
   const busy =
     exportFile.isPending ||
     download.isPending ||
-    exportThenDownload.isPending ||
+    directDownload.isPending ||
     downloadAll.isPending
   const busyPath =
     exportFile.variables ??
-    exportThenDownload.variables?.path ??
+    directDownload.variables?.path ??
     download.variables?.path
 
   return {
@@ -158,7 +138,7 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
     retainedFor,
     exportFile,
     download,
-    exportThenDownload,
+    directDownload,
     downloadAll,
     archiveProgress,
     busy,
@@ -168,8 +148,8 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
 
 /**
  * Files the agent wrote under /workspace and the ones the provider has
- * retained. "Export" asks the provider to copy and hash a file; "Download"
- * fetches the retained bytes and verifies them against the manifest.
+ * retained. "Export" asks the provider to copy and hash a file; ordinary
+ * downloads use a short-lived URL to stream directly from the file edge.
  */
 export function SessionFiles({
   sessionId,
@@ -185,7 +165,7 @@ export function SessionFiles({
     retainedFor,
     exportFile,
     download,
-    exportThenDownload,
+    directDownload,
     downloadAll,
     archiveProgress,
     busy,
@@ -201,8 +181,8 @@ export function SessionFiles({
             <PanelDescription className="mt-1">
               Files under <code>/workspace</code> as last synced from the
               sandbox. Newly written files appear gradually and may take a few
-              moments to finish syncing. Downloading retains a verified copy
-              first.
+              moments to finish syncing. Downloads stream directly from our file
+              delivery edge.
             </PanelDescription>
           </div>
           <div className="flex items-center gap-2">
@@ -275,11 +255,7 @@ export function SessionFiles({
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() =>
-                      retained
-                        ? download.mutate(retained)
-                        : exportThenDownload.mutate(file)
-                    }
+                    onClick={() => directDownload.mutate(file)}
                   >
                     {working ? (
                       <Loader2 className="size-3.5 animate-spin" />
@@ -407,7 +383,7 @@ export function WorkspaceFilesInspector({
     artifacts,
     retainedFor,
     download,
-    exportThenDownload,
+    directDownload,
     downloadAll,
     archiveProgress,
     busy,
@@ -538,11 +514,7 @@ export function WorkspaceFilesInspector({
                       size="sm"
                       disabled={busy}
                       aria-label={`Download ${file.path}`}
-                      onClick={() =>
-                        retained
-                          ? download.mutate(retained)
-                          : exportThenDownload.mutate(file)
-                      }
+                      onClick={() => directDownload.mutate(file)}
                     >
                       {working ? (
                         <Loader2 className="size-3.5 animate-spin" />

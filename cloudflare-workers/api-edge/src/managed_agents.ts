@@ -1912,6 +1912,37 @@ function publicSuccessBody(
     };
   }
   if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.path !== "string" ||
+      typeof body.size !== "number" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return {
+      path: body.path,
+      size: body.size,
+      etag: typeof body.etag === "string" ? body.etag : null,
+      versionId: typeof body.versionId === "string" ? body.versionId : null,
+      lastModified:
+        typeof body.lastModified === "string" ? body.lastModified : null,
+      mediaType:
+        typeof body.mediaType === "string"
+          ? body.mediaType
+          : "application/octet-stream",
+      url: url.toString(),
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
   ) {
@@ -2421,6 +2452,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
   ) {
     return true;
   }

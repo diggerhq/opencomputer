@@ -1678,9 +1678,21 @@ const workspaceDownloadResponseSchema = z.object({
     }),
   expiresAt: z.string(),
 })
+const workspaceFileDownloadResponseSchema =
+  workspaceDownloadResponseSchema.extend({
+    path: z.string(),
+    size: z.number(),
+    etag: z.string().nullable(),
+    versionId: z.string().nullable(),
+    lastModified: z.string().nullable(),
+    mediaType: z.string(),
+  })
 
 export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
 export type ManagedWorkspaceArtifact = z.infer<typeof workspaceArtifactSchema>
+export type ManagedWorkspaceDownload = z.infer<
+  typeof workspaceFileDownloadResponseSchema
+>
 
 /** Every file the agent wrote under /workspace, across all list pages. */
 export async function getManagedAgentWorkspaceFiles(sessionId: string) {
@@ -1707,6 +1719,33 @@ export async function getManagedAgentWorkspaceArtifacts(sessionId: string) {
       workspaceArtifactsResponseSchema,
     )
   ).artifacts
+}
+
+export function authorizeManagedAgentWorkspaceDownload(
+  sessionId: string,
+  path: string,
+) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+    workspaceFileDownloadResponseSchema,
+  )
+}
+
+/** Hands the browser a short-lived CloudFront URL; file bytes bypass Workers. */
+export async function downloadManagedAgentWorkspaceFile(
+  sessionId: string,
+  file: ManagedWorkspaceFile,
+) {
+  const handoff = await authorizeManagedAgentWorkspaceDownload(
+    sessionId,
+    file.path,
+  )
+  const link = document.createElement('a')
+  link.href = handoff.url
+  link.rel = 'noreferrer'
+  link.click()
+  return handoff
 }
 
 /** Provider-side export: retains and hashes the file, returns its manifest. */
@@ -1843,31 +1882,55 @@ function archiveBytes(entries: Array<{ path: string; size: number }>) {
 export async function downloadManagedAgentWorkspaceArchive(
   name: string,
   expected: Array<{ path: string; size: number }>,
-  resolve: () => Promise<ManagedWorkspaceArtifact[]>,
+  resolve: (file: {
+    path: string
+    size: number
+  }) => Promise<ManagedWorkspaceDownload>,
   onProgress?: (done: number, total: number) => void,
 ) {
   const sink = await openDownloadSink(name)
   const zip = new ZipWriter(sink)
-  let artifacts: ManagedWorkspaceArtifact[]
+  const downloads: ManagedWorkspaceDownload[] = []
   try {
     assertSinkCapacity(sink, archiveBytes(expected))
-    artifacts = await resolve()
-    assertSinkCapacity(sink, archiveBytes(artifacts))
-    for (const [index, artifact] of artifacts.entries()) {
-      onProgress?.(index, artifacts.length)
-      await zip.beginEntry(artifact.path, new Date(artifact.exportedAt))
-      await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
-        zip.write(chunk),
+    for (const [index, file] of expected.entries()) {
+      onProgress?.(index, expected.length)
+      const download = await resolve(file)
+      if (download.path !== file.path) {
+        throw new Error(`Workspace download path changed from ${file.path}`)
+      }
+      downloads.push(download)
+      await zip.beginEntry(
+        download.path,
+        download.lastModified ? new Date(download.lastModified) : new Date(),
       )
+      const response = await fetchManagedAgentWorkspaceObject(download.url)
+      if (!response.body) throw new Error('Workspace file response had no body')
+      const reader = response.body.getReader()
+      let received = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        received += value.byteLength
+        if (received > download.size) {
+          throw new Error(`Download exceeded ${download.size} bytes`)
+        }
+        await zip.write(value)
+      }
+      if (received !== download.size) {
+        throw new Error(
+          `Downloaded ${received} bytes, expected ${download.size}`,
+        )
+      }
       await zip.endEntry()
     }
-    onProgress?.(artifacts.length, artifacts.length)
+    onProgress?.(expected.length, expected.length)
     await zip.finish()
   } catch (error) {
     await zip.abort(error).catch(() => undefined)
     throw error
   }
-  return artifacts
+  return downloads
 }
 
 export async function getManagedAgentSessionEvents(

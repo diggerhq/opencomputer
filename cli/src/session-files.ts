@@ -8,6 +8,7 @@ import {
   APIError,
   workspaceContentSignal,
   type WorkspaceArtifact,
+  type WorkspaceDownload,
   type WorkspaceFile,
 } from "./api.js";
 
@@ -15,6 +16,14 @@ import {
 export type WorkspaceClient = {
   workspaceFiles(sessionId: string): Promise<WorkspaceFile[]>;
   workspaceArtifacts(sessionId: string): Promise<WorkspaceArtifact[]>;
+  workspaceDownload(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceDownload>;
+  workspaceFileContent(
+    download: WorkspaceDownload,
+    signal?: AbortSignal,
+  ): Promise<Response>;
   exportWorkspaceFile(
     sessionId: string,
     path: string,
@@ -55,7 +64,7 @@ async function withInterruptAbort<T>(
 export type DownloadResult = {
   path: string;
   destination: string;
-  artifactId: string;
+  artifactId?: string;
   size: number;
   sha256: string;
 };
@@ -114,9 +123,8 @@ export async function listWorkspaceFiles(
 }
 
 /**
- * Exports (retains) the workspace file provider-side, then streams the retained
- * artifact to `destination`, verifying byte count and SHA-256 against the
- * manifest before the file becomes visible at its final path.
+ * Authorizes a short-lived direct file URL, streams it to `destination`, and
+ * computes SHA-256 locally before the file becomes visible at its final path.
  */
 export async function downloadWorkspaceFile(
   client: WorkspaceClient,
@@ -125,17 +133,75 @@ export async function downloadWorkspaceFile(
   destination: string,
   root?: string,
 ): Promise<DownloadResult> {
-  let artifact: WorkspaceArtifact;
+  let download: WorkspaceDownload;
   try {
-    artifact = await client.exportWorkspaceFile(sessionId, workspacePath);
+    download = await client.workspaceDownload(sessionId, workspacePath);
   } catch (error) {
     if (!isWorkspaceGone(error)) throw error;
     const retained = await latestRetainedArtifacts(client, sessionId);
     const fallback = retained.get(workspacePath);
     if (!fallback) throw error;
-    artifact = fallback;
+    return downloadArtifact(client, fallback, destination, root);
   }
-  return downloadArtifact(client, artifact, destination, root);
+  await mkdir(path.dirname(destination), { recursive: true });
+  if (root !== undefined) await assertResolvedWithin(root, destination);
+  const temporary = `${destination}.${randomBytes(6).toString("hex")}.part`;
+  let sha256 = "";
+  await withInterruptAbort(async (signal) => {
+    try {
+      sha256 = await streamDirect(client, download, temporary, signal);
+      signal.throwIfAborted();
+      await rename(temporary, destination);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  });
+  return {
+    path: download.path,
+    destination,
+    size: download.size,
+    sha256,
+  };
+}
+
+async function streamDirect(
+  client: WorkspaceClient,
+  download: WorkspaceDownload,
+  temporary: string,
+  interrupt: AbortSignal,
+): Promise<string> {
+  const signal = workspaceContentSignal(interrupt);
+  const response = await client.workspaceFileContent(download, signal);
+  if (!response.body)
+    throw new VerificationError("Empty workspace file response.");
+  const hash = createHash("sha256");
+  let received = 0;
+  const verify = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.length;
+      if (received > download.size) {
+        callback(
+          new VerificationError(`Received more than ${download.size} bytes.`),
+        );
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  await pipeline(
+    Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+    verify,
+    createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
+    { signal },
+  );
+  if (received !== download.size) {
+    throw new VerificationError(
+      `Received ${received} bytes but expected ${download.size}.`,
+    );
+  }
+  return hash.digest("hex");
 }
 
 /**

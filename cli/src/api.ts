@@ -1435,6 +1435,48 @@ export class OpenComputerClient {
     return result.artifacts;
   }
 
+  async workspaceDownload(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceDownload> {
+    return this.request<WorkspaceDownload>(
+      this.workspacePath(sessionId, "/download"),
+      { method: "POST", body: JSON.stringify({ path }) },
+    );
+  }
+
+  async workspaceFileContent(
+    download: WorkspaceDownload,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const downloadSignal = workspaceContentSignal(signal);
+    const location = new URL(download.url);
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
+  }
+
   /** Provider-side export: retains and hashes the file, returns its manifest. */
   async exportWorkspaceFile(
     sessionId: string,
@@ -1537,6 +1579,13 @@ export type WorkspaceFile = {
   size: number;
   lastModified: string | null;
   etag: string | null;
+};
+
+export type WorkspaceDownload = WorkspaceFile & {
+  versionId: string | null;
+  mediaType: string;
+  url: string;
+  expiresAt: string;
 };
 
 type WorkspaceFilePage = {
