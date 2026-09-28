@@ -73,7 +73,7 @@ Usage:
       lists the files under the session's /workspace
   opencomputer session files download <session-id> <workspace-path> [dest]
   opencomputer session files download <session-id> --all [dest-dir]
-      exports the file(s) provider-side, streams the retained copy to disk and
+      streams the versioned workspace file(s) directly to disk and
       verifies size and SHA-256 against the manifest before saving; "cp" is an alias
   opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
