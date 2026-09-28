@@ -1993,6 +1993,37 @@ function publicSuccessBody(
     };
   }
   if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.path !== "string" ||
+      typeof body.size !== "number" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return {
+      path: body.path,
+      size: body.size,
+      etag: typeof body.etag === "string" ? body.etag : null,
+      versionId: typeof body.versionId === "string" ? body.versionId : null,
+      lastModified:
+        typeof body.lastModified === "string" ? body.lastModified : null,
+      mediaType:
+        typeof body.mediaType === "string"
+          ? body.mediaType
+          : "application/octet-stream",
+      url: url.toString(),
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
   ) {
@@ -2017,6 +2048,22 @@ function publicSuccessBody(
         : {}),
       artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
     };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return { url: url.toString(), expiresAt: body.expiresAt };
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -2492,13 +2539,21 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
     /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
   ) {
     return true;
   }
   if (
     method === "GET" &&
-    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
+      suffix,
+    )
   ) {
     return true;
   }
@@ -3116,6 +3171,34 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
+    if (
+      method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix) &&
+      upstream.status === 302
+    ) {
+      const value = upstream.headers.get("location");
+      let location: URL;
+      try {
+        location = new URL(value ?? "");
+      } catch {
+        throw new Error("Invalid workspace download redirect");
+      }
+      if (
+        location.protocol !== "https:" ||
+        location.username ||
+        location.password
+      ) {
+        throw new Error("Invalid workspace download redirect");
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: location.toString(),
+          "cache-control": "private, no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (

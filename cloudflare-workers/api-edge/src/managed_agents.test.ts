@@ -109,6 +109,37 @@ describe("managed agents proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("redirects browser workspace downloads to the signed file URL", async () => {
+    const signed =
+      "https://downloads.mo-oc-dev.com/r/us-west-2/file.txt?Policy=signed";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { location: signed } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/dashboard/managed-agents/sessions/sess_1/workspace/download?path=reports%2Fresult.txt",
+      ),
+      {
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/dashboard/managed-agents",
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(signed);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://managedagents.test/v1/sessions/sess_1/workspace/download?path=reports%2Fresult.txt",
+    );
+  });
+
   it("forwards managed GitHub project connection requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
@@ -430,6 +461,15 @@ describe("managed agents proxy", () => {
             },
           });
         }
+        if (url.endsWith("/workspace/exports/wsart_1/download")) {
+          return Response.json(
+            {
+              url: "https://objects.example.test/private/capture.har?signature=secret",
+              expiresAt: "2026-09-25T20:00:00.000Z",
+            },
+            { headers: { "cache-control": "private, no-store" } },
+          );
+        }
         throw new Error(`unexpected upstream ${url}`);
       }),
     );
@@ -497,6 +537,21 @@ describe("managed agents proxy", () => {
     expect(content.headers.get("x-workspace-artifact-size")).toBe("12");
     expect(content.headers.get("cache-control")).toBe("private, no-store");
     expect(content.headers.get("x-storage-provider")).toBeNull();
+
+    const download = await proxyManagedAgents(
+      new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/sess_1/workspace/exports/wsart_1/download",
+      ),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(download.status).toBe(200);
+    expect(await download.json()).toEqual({
+      url: "https://objects.example.test/private/capture.har?signature=secret",
+      expiresAt: "2026-09-25T20:00:00.000Z",
+    });
+    expect(download.headers.get("cache-control")).toBe("private, no-store");
 
     const blocked = await proxyManagedAgents(
       new Request(

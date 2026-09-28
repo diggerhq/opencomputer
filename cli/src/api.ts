@@ -330,7 +330,8 @@ export interface ManagedSessionPage {
 export type MemoryEnvironment = "development" | "production";
 
 export type MemoryWriter =
-  { kind: "owner" } | { kind: "agent"; sessionId: string };
+  | { kind: "owner" }
+  | { kind: "agent"; sessionId: string };
 
 /** One document's metadata, as the list route returns it (no text). */
 export interface MemoryDocumentMeta {
@@ -1467,6 +1468,48 @@ export class OpenComputerClient {
     return result.artifacts;
   }
 
+  async workspaceDownload(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceDownload> {
+    return this.request<WorkspaceDownload>(
+      this.workspacePath(sessionId, "/download"),
+      { method: "POST", body: JSON.stringify({ path }) },
+    );
+  }
+
+  async workspaceFileContent(
+    download: WorkspaceDownload,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const downloadSignal = workspaceContentSignal(signal);
+    const location = new URL(download.url);
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
+  }
+
   /** Provider-side export: retains and hashes the file, returns its manifest. */
   async exportWorkspaceFile(
     sessionId: string,
@@ -1504,17 +1547,54 @@ export class OpenComputerClient {
    * Raw bytes of a retained artifact; callers verify size and SHA-256. The
    * request always carries the one-hour deadline, combined with `signal`.
    */
-  workspaceArtifactContent(
+  async workspaceArtifactContent(
     artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
     signal?: AbortSignal,
   ): Promise<Response> {
-    return this.response(
+    const downloadSignal = workspaceContentSignal(signal);
+    const handoff = await this.request<{ url: string; expiresAt: string }>(
       this.workspacePath(
         artifact.sessionId,
-        `/exports/${encodeURIComponent(artifact.id)}/content`,
+        `/exports/${encodeURIComponent(artifact.id)}/download`,
       ),
-      { signal: workspaceContentSignal(signal) },
+      { signal: downloadSignal },
     );
+    let location: URL;
+    try {
+      location = new URL(handoff.url);
+    } catch {
+      throw new APIError(
+        "Workspace download did not provide a valid signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    // Never forward the OpenComputer API key to object storage. The signed
+    // query authorizes this exact immutable object for a few minutes.
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
   }
 }
 
@@ -1532,6 +1612,13 @@ export type WorkspaceFile = {
   size: number;
   lastModified: string | null;
   etag: string | null;
+};
+
+export type WorkspaceDownload = WorkspaceFile & {
+  versionId: string | null;
+  mediaType: string;
+  url: string;
+  expiresAt: string;
 };
 
 type WorkspaceFilePage = {
