@@ -1732,20 +1732,26 @@ export function authorizeManagedAgentWorkspaceDownload(
   )
 }
 
-/** Hands the browser a short-lived CloudFront URL; file bytes bypass Workers. */
+/** Streams a short-lived CloudFront response into a local download; bytes bypass Workers. */
 export async function downloadManagedAgentWorkspaceFile(
   sessionId: string,
   file: ManagedWorkspaceFile,
 ) {
-  const handoff = await authorizeManagedAgentWorkspaceDownload(
-    sessionId,
-    file.path,
-  )
-  const link = document.createElement('a')
-  link.href = handoff.url
-  link.rel = 'noreferrer'
-  link.click()
-  return handoff
+  const sink = await openDownloadSink(file.path.split('/').pop() ?? file.path)
+  try {
+    assertSinkCapacity(sink, file.size)
+    const handoff = await authorizeManagedAgentWorkspaceDownload(
+      sessionId,
+      file.path,
+    )
+    assertSinkCapacity(sink, handoff.size)
+    await streamManagedWorkspaceDownload(handoff, (chunk) => sink.write(chunk))
+    await sink.close()
+    return handoff
+  } catch (error) {
+    await sink.abort(error).catch(() => undefined)
+    throw error
+  }
 }
 
 /** Provider-side export: retains and hashes the file, returns its manifest. */
@@ -1784,6 +1790,35 @@ export async function fetchManagedAgentWorkspaceObject(
     throw new Error(`Workspace object download failed (${response.status})`)
   }
   return response
+}
+
+async function streamManagedWorkspaceDownload(
+  download: ManagedWorkspaceDownload,
+  write: (chunk: Uint8Array) => Promise<void>,
+) {
+  const response = await fetchManagedAgentWorkspaceObject(download.url)
+  if (!response.body) throw new Error('Workspace file response had no body')
+  const reader = response.body.getReader()
+  let received = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > download.size) {
+        throw new Error(`Download exceeded ${download.size} bytes`)
+      }
+      await write(value)
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  if (received !== download.size) {
+    throw new Error(`Downloaded ${received} bytes, expected ${download.size}`)
+  }
 }
 
 /**
@@ -1904,24 +1939,9 @@ export async function downloadManagedAgentWorkspaceArchive(
         download.path,
         download.lastModified ? new Date(download.lastModified) : new Date(),
       )
-      const response = await fetchManagedAgentWorkspaceObject(download.url)
-      if (!response.body) throw new Error('Workspace file response had no body')
-      const reader = response.body.getReader()
-      let received = 0
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        received += value.byteLength
-        if (received > download.size) {
-          throw new Error(`Download exceeded ${download.size} bytes`)
-        }
-        await zip.write(value)
-      }
-      if (received !== download.size) {
-        throw new Error(
-          `Downloaded ${received} bytes, expected ${download.size}`,
-        )
-      }
+      await streamManagedWorkspaceDownload(download, (chunk) =>
+        zip.write(chunk),
+      )
       await zip.endEntry()
     }
     onProgress?.(expected.length, expected.length)
