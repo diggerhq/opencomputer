@@ -56,6 +56,7 @@ import {
   type OrgPolicy,
 } from "./create_context_cache";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
+import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
   receiveAgentSecurityNotification,
@@ -92,7 +93,7 @@ import {
   proxyManagedAgents,
 } from "./managed_agents";
 
-export interface Env extends DashboardEnv {
+export interface Env extends DashboardEnv, AgentFeedbackEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -5022,6 +5023,12 @@ export default {
       return json({ ok: true, env: env.WORKER_ENV });
     }
 
+    // feedback.now protocol (agent_feedback.ts). Must precede both the generic
+    // /api/* API-key gate (agents submit anonymously) and the SPA asset
+    // fallthrough (which would otherwise answer /.well-known/* with index.html).
+    if (isAgentFeedbackPath(path)) {
+      return handleAgentFeedback(req, env, path);
+    }
 
 
     // VM-DO host dial: the QEMU worker host opens a persistent WebSocket to the

@@ -150,6 +150,9 @@ deleted_classes = ["VmSession"]
 #                            exposure alerts from sessions-api.
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend.
+#   AGENT_FEEDBACK_TRIAGE_TOKEN — bearer token for the feedback.now triage
+#                            routes (src/agent_feedback.ts). Triage is disabled
+#                            while unset; agent submission still works.
 # The VM-DO exec data plane (VM_SESSIONS DO) needs NO dedicated secret: the worker
 # host authenticates its /internal/vms/:id/connect dial with a per-sandbox HMAC
 # over the already-shared SESSION_JWT_SECRET (minted by the CP, re-derived here).
