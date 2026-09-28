@@ -18,8 +18,8 @@ import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   authorizeManagedAgentWorkspaceDownload,
   downloadManagedAgentWorkspaceArchive,
-  downloadManagedAgentWorkspaceFile,
   getManagedAgentWorkspaceFiles,
+  managedAgentWorkspaceBrowserDownloadPath,
   type ManagedWorkspaceFile,
 } from './api'
 import { DownloadCancelled } from './workspace-download'
@@ -52,12 +52,6 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
     queryFn: () => getManagedAgentWorkspaceFiles(sessionId),
     refetchInterval: live ? 5_000 : false,
   })
-  const directDownload = useMutation({
-    mutationFn: (file: ManagedWorkspaceFile) =>
-      downloadManagedAgentWorkspaceFile(sessionId, file),
-    onError: reportDownloadError,
-  })
-
   const [archiveProgress, setArchiveProgress] = useState<string | null>(null)
   const downloadAll = useMutation({
     mutationFn: (workspace: ManagedWorkspaceFile[]) =>
@@ -73,16 +67,11 @@ function useWorkspaceFiles(sessionId: string, live: boolean) {
     onSettled: () => setArchiveProgress(null),
   })
 
-  const busy = directDownload.isPending || downloadAll.isPending
-  const busyPath = directDownload.variables?.path
-
   return {
     files,
-    directDownload,
     downloadAll,
     archiveProgress,
-    busy,
-    busyPath,
+    busy: downloadAll.isPending,
   }
 }
 
@@ -98,14 +87,10 @@ export function SessionFiles({
   /** The agent may still be writing; keep the listing fresh. */
   live: boolean
 }) {
-  const {
-    files,
-    directDownload,
-    downloadAll,
-    archiveProgress,
-    busy,
-    busyPath,
-  } = useWorkspaceFiles(sessionId, live)
+  const { files, downloadAll, archiveProgress, busy } = useWorkspaceFiles(
+    sessionId,
+    live,
+  )
 
   return (
     <div className="space-y-5">
@@ -165,7 +150,6 @@ export function SessionFiles({
         ) : (
           <div className="divide-y text-sm">
             {(files.data ?? []).map((file: ManagedWorkspaceFile) => {
-              const working = busy && busyPath === file.path
               return (
                 <div
                   key={file.path}
@@ -177,18 +161,16 @@ export function SessionFiles({
                   <span className="text-muted-foreground text-xs tabular-nums">
                     {formatBytes(file.size)}
                   </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => directDownload.mutate(file)}
-                  >
-                    {working ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
+                  <Button asChild variant="outline" size="sm">
+                    <a
+                      href={managedAgentWorkspaceBrowserDownloadPath(
+                        sessionId,
+                        file.path,
+                      )}
+                    >
                       <Download className="size-3.5" />
-                    )}
-                    Download
+                      Download
+                    </a>
                   </Button>
                 </div>
               )
@@ -211,14 +193,10 @@ export function WorkspaceFilesInspector({
   sessionId: string
   live: boolean
 }) {
-  const {
-    files,
-    directDownload,
-    downloadAll,
-    archiveProgress,
-    busy,
-    busyPath,
-  } = useWorkspaceFiles(sessionId, live)
+  const { files, downloadAll, archiveProgress, busy } = useWorkspaceFiles(
+    sessionId,
+    live,
+  )
   const list = files.data ?? []
 
   return (
@@ -279,7 +257,6 @@ export function WorkspaceFilesInspector({
           ) : (
             <div className="divide-y">
               {list.map((file: ManagedWorkspaceFile) => {
-                const working = busy && busyPath === file.path
                 return (
                   <div
                     key={file.path}
@@ -294,18 +271,16 @@ export function WorkspaceFilesInspector({
                     <span className="text-muted-foreground text-[10px] tabular-nums">
                       {formatBytes(file.size)}
                     </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
-                      aria-label={`Download ${file.path}`}
-                      onClick={() => directDownload.mutate(file)}
-                    >
-                      {working ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
+                    <Button asChild variant="ghost" size="sm">
+                      <a
+                        href={managedAgentWorkspaceBrowserDownloadPath(
+                          sessionId,
+                          file.path,
+                        )}
+                        aria-label={`Download ${file.path}`}
+                      >
                         <Download className="size-3.5" />
-                      )}
+                      </a>
                     </Button>
                   </div>
                 )

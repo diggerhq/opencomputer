@@ -1912,7 +1912,7 @@ function publicSuccessBody(
     };
   }
   if (
-    method === "POST" &&
+    (method === "GET" || method === "POST") &&
     /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
   ) {
     const url = typeof body.url === "string" ? new URL(body.url) : null;
@@ -2456,7 +2456,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (
-    method === "POST" &&
+    (method === "GET" || method === "POST") &&
     /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
   ) {
     return true;
@@ -3007,6 +3007,34 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
+    if (
+      method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix) &&
+      upstream.status === 302
+    ) {
+      const value = upstream.headers.get("location");
+      let location: URL;
+      try {
+        location = new URL(value ?? "");
+      } catch {
+        throw new Error("Invalid workspace download redirect");
+      }
+      if (
+        location.protocol !== "https:" ||
+        location.username ||
+        location.password
+      ) {
+        throw new Error("Invalid workspace download redirect");
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: location.toString(),
+          "cache-control": "private, no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (

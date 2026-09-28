@@ -1732,26 +1732,12 @@ export function authorizeManagedAgentWorkspaceDownload(
   )
 }
 
-/** Streams a short-lived CloudFront response into a local download; bytes bypass Workers. */
-export async function downloadManagedAgentWorkspaceFile(
+/** A normal browser download: same-origin auth redirects to signed CloudFront. */
+export function managedAgentWorkspaceBrowserDownloadPath(
   sessionId: string,
-  file: ManagedWorkspaceFile,
+  path: string,
 ) {
-  const sink = await openDownloadSink(file.path.split('/').pop() ?? file.path)
-  try {
-    assertSinkCapacity(sink, file.size)
-    const handoff = await authorizeManagedAgentWorkspaceDownload(
-      sessionId,
-      file.path,
-    )
-    assertSinkCapacity(sink, handoff.size)
-    await streamManagedWorkspaceDownload(handoff, (chunk) => sink.write(chunk))
-    await sink.close()
-    return handoff
-  } catch (error) {
-    await sink.abort(error).catch(() => undefined)
-    throw error
-  }
+  return `/api/dashboard/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`
 }
 
 /** Provider-side export: retains and hashes the file, returns its manifest. */
