@@ -46,7 +46,7 @@ The sandbox keeps the same ID across hibernate/wake cycles. Preview URLs remain 
 
 ## Adjusting Timeout
 
-The idle timeout resets on every operation (exec, file access, agent activity). Default: 300s.
+The idle timeout resets on every operation (exec, file access, agent activity). Default: `0` — persistent, never auto-hibernates. Set a positive value (or `0` to disable) with `oc sandbox set-timeout`.
 
 ```bash
 oc sandbox set-timeout sb-abc123 3600  # 1 hour
