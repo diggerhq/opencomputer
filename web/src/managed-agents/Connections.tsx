@@ -73,13 +73,28 @@ function connectionService(connection: { provider: string; scopes: string[] }) {
 
 function connectionServiceId(
   connection: ManagedAgentConnection,
-): 'gmail' | 'calendar' | 'drive' | 'sheets' | 'github' | 'linear' | undefined {
+):
+  | 'gmail'
+  | 'calendar'
+  | 'drive'
+  | 'sheets'
+  | 'github'
+  | 'linear'
+  | 'notion'
+  | 'searchconsole'
+  | undefined {
   if (connection.provider === 'github') return 'github'
   if (connection.provider === 'linear') return 'linear'
+  if (connection.provider === 'notion') return 'notion'
+  if (connection.provider === 'searchconsole') return 'searchconsole'
   if (connection.provider !== 'google') return undefined
   // Returning undefined here strands the connection: the page skips it when
   // reconciling and cannot disconnect it either.
   return googleServiceFor(connection.scopes)?.id
+}
+
+function googleService(service: string) {
+  return GOOGLE_SERVICES.some((candidate) => candidate.id === service)
 }
 
 async function loadManagedAgentConnections() {
@@ -93,7 +108,7 @@ async function loadManagedAgentConnections() {
       const service = connectionServiceId(connection)
       if (!service) return Promise.resolve()
       return refreshManagedAgentConnection(
-        service === 'github' || service === 'linear' ? service : 'google',
+        googleService(service) ? 'google' : service,
         service,
         connection.id,
       )
@@ -484,7 +499,7 @@ export default function ManagedAgentConnections() {
             </div>
             <p className="text-sm font-medium">No connections yet</p>
             <p className="text-muted-foreground mt-1 max-w-sm text-sm">
-              Add Google, GitHub, or Linear accounts for your agents.
+              Add Google, GitHub, Linear, or Notion accounts for your agents.
             </p>
             <Button
               className="mt-4"
@@ -575,6 +590,8 @@ export default function ManagedAgentConnections() {
                 <option value="drive">Google Drive</option>
                 <option value="sheets">Google Sheets</option>
                 <option value="linear">Linear</option>
+                <option value="notion">Notion</option>
+                <option value="searchconsole">Google Search Console</option>
               </select>
             </div>
             <div className="grid gap-2">
@@ -642,7 +659,7 @@ export default function ManagedAgentConnections() {
           setRemovingConnection(true)
           setRemoveConnectionError(undefined)
           void disconnectManagedAgentConnection(
-            service === 'github' || service === 'linear' ? service : 'google',
+            googleService(service) ? 'google' : service,
             service,
             connectionToRemove.id,
           )

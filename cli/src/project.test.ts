@@ -712,6 +712,35 @@ export default function Agent() {
   }
 });
 
+test("the compiler records Notion and Search Console as their own providers", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-toolkit-service-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useService } from "@opencomputer/agent";
+export default function Agent() {
+  useService("notion");
+  useService("searchconsole");
+  return "Read Notion pages and Search Console reports when asked.";
+}
+`,
+    );
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { connections: string[] };
+    assert.deepEqual(manifest.connections, ["notion", "searchconsole"]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("a tool is gated by having preview and apply, not by the words appearing in it", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-gated-shape-"));
   try {

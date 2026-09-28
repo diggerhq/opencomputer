@@ -193,6 +193,7 @@ const templateInspectionSchema = z.object({
       z.object({
         id: z.string(),
         description: z.string().optional(),
+        required: z.boolean().default(true),
         provider: z.string(),
         permissions: z.array(z.string()),
       }),
@@ -1295,7 +1296,7 @@ export async function linkManagedAgentConnection(
 }
 
 export async function refreshManagedAgentConnection(
-  provider: 'google' | 'github' | 'linear',
+  provider: string,
   service: string,
   connectionId: string,
 ) {
@@ -1308,7 +1309,7 @@ export async function refreshManagedAgentConnection(
 }
 
 export async function disconnectManagedAgentConnection(
-  provider: 'google' | 'github' | 'linear',
+  provider: string,
   service: string,
   connectionId: string,
 ) {

@@ -34,6 +34,8 @@ test("model access binds the explicit or current linked project", () => {
 
 test("managed service connections exclude the dedicated GitHub App flow", () => {
   assert.equal(SERVICE_CONNECTIONS.includes("linear"), true);
+  assert.equal(SERVICE_CONNECTIONS.includes("notion"), true);
+  assert.equal(SERVICE_CONNECTIONS.includes("searchconsole"), true);
   assert.equal(
     (SERVICE_CONNECTIONS as readonly string[]).includes("github"),
     false,

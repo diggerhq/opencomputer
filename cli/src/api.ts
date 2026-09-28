@@ -197,6 +197,7 @@ export interface TemplateInspection {
     connections: Array<{
       id: string;
       description?: string;
+      required?: boolean;
       provider: string;
       permissions: string[];
     }>;
@@ -444,6 +445,18 @@ function errorMessage(body: unknown, status: number): string {
     if (typeof record.message === "string") return record.message;
   }
   return `OpenComputer request failed (${status})`;
+}
+
+const DIRECT_SERVICE_PROVIDERS = new Set([
+  "github",
+  "linear",
+  "notion",
+  "searchconsole",
+]);
+
+/** The grant a connected service belongs to: Google services share one. */
+export function serviceProvider(service: string): string {
+  return DIRECT_SERVICE_PROVIDERS.has(service) ? service : "google";
 }
 
 export class OpenComputerClient {
@@ -762,7 +775,8 @@ export class OpenComputerClient {
   // ── Connected services ───────────────────────────────────────────────────
   // Accounts the platform holds an OAuth credential for, reached from an agent
   // with callService(). The provider segment is the grant — google covers
-  // gmail, calendar, drive and sheets; github and linear are their own.
+  // gmail, calendar, drive and sheets; github, linear, notion and
+  // searchconsole are their own.
 
   async serviceConnections(): Promise<ServiceConnection[]> {
     const result = await this.request<{ connections: ServiceConnection[] }>(
@@ -778,9 +792,7 @@ export class OpenComputerClient {
    */
   linkServiceConnection(input: { service: string; label?: string }) {
     const provider =
-      input.service === "github" || input.service === "linear"
-        ? input.service
-        : "google";
+      serviceProvider(input.service);
     return this.request<{
       service: string;
       label: string;
@@ -807,9 +819,7 @@ export class OpenComputerClient {
    */
   serviceConnectionStatus(input: { service: string; label: string }) {
     const provider =
-      input.service === "github" || input.service === "linear"
-        ? input.service
-        : "google";
+      serviceProvider(input.service);
     const query = new URLSearchParams({
       service: input.service,
       label: input.label,
@@ -830,9 +840,7 @@ export class OpenComputerClient {
     connectionId: string;
   }) {
     const provider =
-      input.service === "github" || input.service === "linear"
-        ? input.service
-        : "google";
+      serviceProvider(input.service);
     const query = new URLSearchParams({
       service: input.service,
       connectionId: input.connectionId,
