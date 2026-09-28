@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import ManagedAgentDetail from './Detail'
+import { ApiError } from '@/api/client'
 import { getManagedProject } from './api'
 import { selectedProjectAgentId } from './project-context'
 
@@ -25,17 +26,36 @@ export default function ProjectDetail() {
       </div>
     )
   }
-  if (!project.data || project.isError) {
+  // A failed poll keeps the last good snapshot on screen; only a missing
+  // project (404, or nothing ever loaded) is "not found".
+  if (!project.data) {
+    const missing =
+      !project.isError ||
+      (project.error instanceof ApiError && project.error.status === 404)
     return (
       <Panel>
         <EmptyState
           icon={FolderKanban}
-          title="Project not found"
-          description="This project is not available in your organization."
+          title={
+            missing
+              ? 'Project not found'
+              : 'This project is temporarily unavailable'
+          }
+          description={
+            missing
+              ? 'This project is not available in your organization.'
+              : 'Try loading the project again.'
+          }
           action={
-            <Button asChild variant="outline">
-              <Link to="/">Back to projects</Link>
-            </Button>
+            missing ? (
+              <Button asChild variant="outline">
+                <Link to="/">Back to projects</Link>
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => void project.refetch()}>
+                Try again
+              </Button>
+            )
           }
         />
       </Panel>

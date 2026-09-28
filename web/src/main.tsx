@@ -1,10 +1,15 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
 import App from './App'
+import { ApiError } from './api/client'
 import { Toaster } from './components/ui/sonner'
 import {
   ErrorBoundary,
@@ -13,7 +18,22 @@ import {
 import { reloadForStaleChunk } from './lib/chunk-reload'
 import './index.css'
 
-const queryClient = new QueryClient({
+// Any query rejected with 401 means the session cookie is gone (it expires
+// after a fixed TTL, so a tab left open overnight wakes up logged out). Recheck
+// /me right away so ProtectedRoute redirects to login instead of every screen
+// degrading into its own "not found" state.
+const queryClient: QueryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      if (
+        error instanceof ApiError &&
+        error.status === 401 &&
+        query.queryKey[0] !== 'me'
+      ) {
+        void queryClient.invalidateQueries({ queryKey: ['me'] })
+      }
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: 1,
