@@ -30,6 +30,8 @@ CREATE TABLE agent_feedback (
   observations    INTEGER NOT NULL DEFAULT 1,
   quality_score   REAL,
   duplicate_of    TEXT,
+  tracker_issue_id  TEXT,                         -- e.g. Linear identifier (ENG-123) when an issue was opened
+  tracker_issue_url TEXT,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL
 );

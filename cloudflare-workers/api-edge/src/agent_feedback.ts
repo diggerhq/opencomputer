@@ -29,10 +29,23 @@
 // the submission to an agent identity whose reputation we track. An invalid
 // signature is rejected — a present-but-wrong signature is a bug worth
 // surfacing, not something to silently downgrade to anonymous.
+//
+// When LINEAR_API_KEY + LINEAR_TEAM_ID are set, every new (non-duplicate)
+// report also opens a Linear issue off the response path; the issue URL is
+// written back onto the row and surfaced as `tracker` on feedback reads.
 
 export interface AgentFeedbackEnv {
   OPENCOMPUTER_DB: D1Database;
   AGENT_FEEDBACK_TRIAGE_TOKEN?: string;
+  LINEAR_API_KEY?: string;
+  LINEAR_TEAM_ID?: string;
+  LINEAR_PROJECT_ID?: string;
+}
+
+// Minimal slice of Cloudflare's ExecutionContext; optional so tests (and any
+// caller without one) run the tracker hook inline instead.
+export interface AgentFeedbackCtx {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 export const AGENT_FEEDBACK_ROUTE_PREFIX = "/api/v1/";
@@ -470,6 +483,8 @@ interface FeedbackRow {
   observations: number;
   quality_score: number | null;
   duplicate_of: string | null;
+  tracker_issue_id: string | null;
+  tracker_issue_url: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -506,6 +521,7 @@ function feedbackSummary(row: FeedbackRow): Record<string, unknown> {
     status: row.status,
     quality_score: row.quality_score,
     observations: row.observations,
+    tracker: row.tracker_issue_url ? { provider: "linear", id: row.tracker_issue_id, url: row.tracker_issue_url } : null,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
   };
@@ -568,7 +584,87 @@ async function readJSONBody(req: Request): Promise<{ text: string; body: unknown
   }
 }
 
-async function submitFeedback(req: Request, env: AgentFeedbackEnv, path: string): Promise<Response> {
+// ── issue tracker (Linear) ───────────────────────────────────────────────
+
+const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
+// Linear priority: 0 none, 1 urgent, 2 high, 3 normal, 4 low.
+const LINEAR_PRIORITY: Record<Severity, number> = { critical: 1, high: 2, medium: 3, low: 4 };
+
+function linearEnabled(env: AgentFeedbackEnv): boolean {
+  return !!(env.LINEAR_API_KEY && env.LINEAR_TEAM_ID);
+}
+
+function linearDescription(fb: FeedbackIn, feedbackID: string, host: string): string {
+  const lines: string[] = [];
+  if (fb.content.summary) lines.push(fb.content.summary, "");
+  if (fb.content.hypothesis) lines.push("**Hypothesis**", "", fb.content.hypothesis, "");
+  lines.push(
+    "| | |",
+    "|---|---|",
+    `| Surface | \`${fb.subject.surface}\`${fb.subject.kind ? ` (${fb.subject.kind})` : ""} |`,
+    `| Domain | ${fb.subject.domain} |`,
+    `| Category | ${fb.signal.category} |`,
+    `| Severity | ${fb.signal.severity} |`,
+    `| Reproducibility | ${fb.signal.reproducibility ?? "n/a"} |`,
+    `| Confidence | ${fb.signal.confidence} |`,
+    `| Reporter | ${fb.reporter.agent_vendor} / ${fb.reporter.agent_product}${fb.reporter.agent_version ? ` ${fb.reporter.agent_version}` : ""} |`,
+    `| Feedback | [${feedbackID}](https://${host}/api/v1/feedback/${feedbackID}) |`,
+  );
+  for (const e of fb.evidence) {
+    const body = e.redacted ? "_(redacted)_" : "```\n" + e.content.slice(0, 4000) + (e.content.length > 4000 ? "\n…" : "") + "\n```";
+    lines.push("", `**Evidence: ${e.type}**`, "", body);
+  }
+  lines.push("", "_Filed automatically via the feedback.now agent-feedback protocol._");
+  return lines.join("\n");
+}
+
+// Opens a Linear issue for a freshly stored report and records its URL on the
+// row. Never throws: a tracker outage must not fail or delay the agent's 201.
+export async function createLinearIssue(env: AgentFeedbackEnv, fb: FeedbackIn, feedbackID: string, host: string): Promise<void> {
+  if (!linearEnabled(env)) return;
+  try {
+    const key = env.LINEAR_API_KEY!;
+    const input: Record<string, unknown> = {
+      teamId: env.LINEAR_TEAM_ID,
+      title: `[agent-feedback] ${fb.content.title}`.slice(0, 255),
+      description: linearDescription(fb, feedbackID, host),
+      priority: LINEAR_PRIORITY[fb.signal.severity],
+    };
+    if (env.LINEAR_PROJECT_ID) input.projectId = env.LINEAR_PROJECT_ID;
+    const res = await fetch(LINEAR_GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Personal API keys go bare; OAuth access tokens need the Bearer scheme.
+        authorization: key.startsWith("lin_api_") ? key : `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        query: "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }",
+        variables: { input },
+      }),
+    });
+    if (!res.ok) {
+      console.warn(`agent_feedback: linear issueCreate HTTP ${res.status} for ${feedbackID}`);
+      return;
+    }
+    const out = (await res.json()) as {
+      data?: { issueCreate?: { success: boolean; issue?: { id: string; identifier: string; url: string } } };
+      errors?: { message: string }[];
+    };
+    const issue = out.data?.issueCreate?.issue;
+    if (!issue || !out.data?.issueCreate?.success) {
+      console.warn(`agent_feedback: linear issueCreate failed for ${feedbackID}: ${out.errors?.map((e) => e.message).join("; ") ?? "no issue"}`);
+      return;
+    }
+    await env.OPENCOMPUTER_DB.prepare("UPDATE agent_feedback SET tracker_issue_id = ?2, tracker_issue_url = ?3 WHERE id = ?1")
+      .bind(feedbackID, issue.identifier, issue.url)
+      .run();
+  } catch (err) {
+    console.warn(`agent_feedback: linear issueCreate threw for ${feedbackID}: ${String(err)}`);
+  }
+}
+
+async function submitFeedback(req: Request, env: AgentFeedbackEnv, path: string, ctx?: AgentFeedbackCtx): Promise<Response> {
   const read = await readJSONBody(req);
   if (read instanceof Response) return read;
   const sig = await verifyAgentSignature(req, path, read.text);
@@ -654,6 +750,12 @@ async function submitFeedback(req: Request, env: AgentFeedbackEnv, path: string)
   );
   if (sig.agentKey) stmts.push(bumpAgent(db, sig.agentKey, fb.reporter.agent_vendor, fb.reporter.agent_product, ts));
   await db.batch(stmts);
+
+  if (!existing && linearEnabled(env)) {
+    const hook = createLinearIssue(env, fb, feedbackID, new URL(req.url).host);
+    if (ctx) ctx.waitUntil(hook);
+    else await hook;
+  }
 
   return json(
     {
@@ -1020,7 +1122,7 @@ export function isAgentFeedbackPath(path: string): boolean {
   return path === AGENT_FEEDBACK_DISCOVERY_PATH || path.startsWith(AGENT_FEEDBACK_ROUTE_PREFIX);
 }
 
-export async function handleAgentFeedback(req: Request, env: AgentFeedbackEnv, path: string): Promise<Response> {
+export async function handleAgentFeedback(req: Request, env: AgentFeedbackEnv, path: string, ctx?: AgentFeedbackCtx): Promise<Response> {
   const method = req.method.toUpperCase();
 
   if (path === AGENT_FEEDBACK_DISCOVERY_PATH) {
@@ -1041,7 +1143,7 @@ export async function handleAgentFeedback(req: Request, env: AgentFeedbackEnv, p
     return submitObservation(req, env, path);
   }
   if (path === "/api/v1/feedback") {
-    if (method === "POST") return submitFeedback(req, env, path);
+    if (method === "POST") return submitFeedback(req, env, path, ctx);
     if (method === "GET") return triageAuthorized(req, env) ? listFeedback(req, env) : errorJSON("unauthorized", "triage token required", 401);
     return errorJSON("method_not_allowed", "GET or POST", 405);
   }

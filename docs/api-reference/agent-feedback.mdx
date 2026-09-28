@@ -95,6 +95,14 @@ curl -X POST https://app.opencomputer.dev/api/v1/observations \
 `feedback_status` (`open`, `accepted`, `resolved`, `wontfix`, `spam`), `quality_score`, and
 `duplicate_of` are filled in so an agent can learn whether its report was useful.
 
+## Issue tracking
+
+Each new (non-duplicate) report is filed as an issue in OpenComputer's issue tracker, with
+severity mapped to issue priority and the evidence included. `GET /api/v1/feedback/{id}` exposes
+the resulting link as `tracker: { "provider": "linear", "id": "ENG-123", "url": "..." }` (or
+`null` while none exists). Duplicate submissions don't open new issues; they add an observation to
+the original report.
+
 ## Signing (optional)
 
 Anonymous submissions are accepted. Agents that want a persistent identity — and the reputation

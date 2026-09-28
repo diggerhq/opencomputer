@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AGENT_FEEDBACK_DISCOVERY_PATH,
   handleAgentFeedback,
@@ -391,5 +391,84 @@ describe("triage", () => {
   it("validates custom category names", async () => {
     expect((await call(env, "POST", "/api/v1/categories", { name: "Bad Name" }, auth)).status).toBe(400);
     expect((await call(env, "POST", "/api/v1/categories", { name: "bug" }, auth)).status).toBe(400);
+  });
+});
+
+describe("linear tracker hook", () => {
+  const realFetch = globalThis.fetch;
+  let calls: { url: string; init: RequestInit }[];
+  let reply: () => Response;
+
+  beforeEach(() => {
+    calls = [];
+    reply = () =>
+      new Response(JSON.stringify({ data: { issueCreate: { success: true, issue: { id: "uuid-1", identifier: "ENG-42", url: "https://linear.app/acme/issue/ENG-42" } } } }), {
+        status: 200,
+      });
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return reply();
+    }) as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("does nothing when LINEAR_* is unset", async () => {
+    const res = await call(env, "POST", "/api/v1/feedback", validFeedback);
+    expect(res.status).toBe(201);
+    expect(calls).toHaveLength(0);
+    const { receipt } = await res.json() as { receipt: { feedback_id: string } };
+    const detail = await (await call(env, "GET", `/api/v1/feedback/${receipt.feedback_id}`)).json() as { data: Record<string, unknown> };
+    expect(detail.data.tracker).toBeNull();
+  });
+
+  it("opens a Linear issue for a new report and records it; duplicates don't re-file", async () => {
+    env.LINEAR_API_KEY = "lin_api_test";
+    env.LINEAR_TEAM_ID = "team-1";
+    env.LINEAR_PROJECT_ID = "proj-1";
+    const res = await call(env, "POST", "/api/v1/feedback", validFeedback);
+    expect(res.status).toBe(201);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://api.linear.app/graphql");
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBe("lin_api_test");
+    const body = JSON.parse(String(calls[0].init.body)) as { variables: { input: Record<string, unknown> } };
+    expect(body.variables.input.teamId).toBe("team-1");
+    expect(body.variables.input.projectId).toBe("proj-1");
+    expect(body.variables.input.priority).toBe(2);
+    expect(body.variables.input.title).toBe("[agent-feedback] create returns 500 when template missing");
+    expect(String(body.variables.input.description)).toContain("POST /api/sandboxes");
+    expect(String(body.variables.input.description)).toContain('{"status":500}');
+
+    const { receipt } = await res.json() as { receipt: { feedback_id: string } };
+    const detail = await (await call(env, "GET", `/api/v1/feedback/${receipt.feedback_id}`)).json() as { data: Record<string, unknown> };
+    expect(detail.data.tracker).toEqual({ provider: "linear", id: "ENG-42", url: "https://linear.app/acme/issue/ENG-42" });
+
+    const dup = await call(env, "POST", "/api/v1/feedback", validFeedback);
+    expect(((await dup.json()) as { receipt: { status: string } }).receipt.status).toBe("duplicate");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("uses Bearer for OAuth tokens and hands the hook to ctx.waitUntil when given", async () => {
+    env.LINEAR_API_KEY = "oauth-token";
+    env.LINEAR_TEAM_ID = "team-1";
+    const pending: Promise<unknown>[] = [];
+    const req = new Request(HOST + "/api/v1/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(validFeedback) });
+    const res = await handleAgentFeedback(req, env, "/api/v1/feedback", { waitUntil: (p) => void pending.push(p) });
+    expect(res.status).toBe(201);
+    expect(pending).toHaveLength(1);
+    await Promise.all(pending);
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBe("Bearer oauth-token");
+  });
+
+  it("swallows tracker failures so the agent still gets its receipt", async () => {
+    env.LINEAR_API_KEY = "lin_api_test";
+    env.LINEAR_TEAM_ID = "team-1";
+    reply = () => new Response(JSON.stringify({ errors: [{ message: "nope" }] }), { status: 400 });
+    const res = await call(env, "POST", "/api/v1/feedback", validFeedback);
+    expect(res.status).toBe(201);
+    const { receipt } = await res.json() as { receipt: { feedback_id: string } };
+    const detail = await (await call(env, "GET", `/api/v1/feedback/${receipt.feedback_id}`)).json() as { data: Record<string, unknown> };
+    expect(detail.data.tracker).toBeNull();
   });
 });

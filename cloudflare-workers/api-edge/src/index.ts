@@ -5027,7 +5027,7 @@ export default {
     // /api/* API-key gate (agents submit anonymously) and the SPA asset
     // fallthrough (which would otherwise answer /.well-known/* with index.html).
     if (isAgentFeedbackPath(path)) {
-      return handleAgentFeedback(req, env, path);
+      return handleAgentFeedback(req, env, path, ctx);
     }
 
 
