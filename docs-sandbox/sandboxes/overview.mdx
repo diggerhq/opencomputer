@@ -82,13 +82,13 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
 | `memoryMB` | number | — | Memory in MB. TypeScript and HTTP API only |
 | `diskMB` | number | `20480` | Workspace disk size in MB (20GB–256GB). See disk sizing note below. |
 | `secretStore` | string | — | Secret store name — resolves encrypted secrets and egress allowlist |
-| `image` | Image | — | Declarative image definition (see [Templates](/sandboxes/templates) |
+| `image` | Image | — | Declarative image definition (see [Templates](/sandboxes/templates)) |
 | `snapshot` | string | — | Name of a pre-built snapshot for instant boot |
 | `apiKey` | string | — | Defaults to `OPENCOMPUTER_API_KEY` env var |
 | `apiUrl` | string | — | Defaults to `OPENCOMPUTER_API_URL` env var |
 
 <Note>
-  `cpuCount`, `memoryMB`, and `secretStore` are not available in the Python SDK. Use the [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle directly for custom resources from Python.
+  `cpuCount`, `memoryMB`, and `secretStore` are not available in the Python SDK. Use the [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle) directly for custom resources from Python.
 </Note>
 
 <Info>
@@ -151,7 +151,7 @@ Content-Type: application/json
 </CodeGroup>
 
 <Note>
-  `hibernate()` and `wake()` are available in the TypeScript SDK and [CLI](/cli/sandbox. Python SDK support is planned — use the [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle directly.
+  `hibernate()` and `wake()` are available in the TypeScript SDK and [CLI](/cli/sandbox). Python SDK support is planned — use the [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle) directly.
 </Note>
 
 ## Methods
@@ -171,10 +171,10 @@ Content-Type: application/json
 | Sandbox ID | `sandbox.sandboxId` | `sandbox.sandbox_id` | Unique identifier |
 | Status | `sandbox.status` | `sandbox.status` | Current lifecycle state |
 | Domain | `sandbox.domain` | — | Preview URL domain for port 80 |
-| Agent | `sandbox.agent` | `sandbox.agent` | [Agent sessions](https://docs.opencomputer.dev/agent-sessions/overview |
-| Exec | `sandbox.exec` | `sandbox.exec` | [Command execution](/sandboxes/running-commands |
-| Files | `sandbox.files` | `sandbox.files` | [Filesystem](/sandboxes/working-with-files |
-| PTY | `sandbox.pty` | `sandbox.pty` | [Interactive terminals](/sandboxes/interactive-terminals |
+| Agent | `sandbox.agent` | `sandbox.agent` | [Agent sessions](https://docs.opencomputer.dev/agent-sessions/overview) |
+| Exec | `sandbox.exec` | `sandbox.exec` | [Command execution](/sandboxes/running-commands) |
+| Files | `sandbox.files` | `sandbox.files` | [Filesystem](/sandboxes/working-with-files) |
+| PTY | `sandbox.pty` | `sandbox.pty` | [Interactive terminals](/sandboxes/interactive-terminals) |
 
 <Warning>
   `sandbox.commands` is a deprecated alias for `sandbox.exec`. Use `sandbox.exec` in all new code.
@@ -207,7 +207,7 @@ forked = await Sandbox.create_from_checkpoint("cp-abc123", timeout=600)
 
 </CodeGroup>
 
-See [Checkpoints](/sandboxes/checkpoints for the full workflow.
+See [Checkpoints](/sandboxes/checkpoints) for the full workflow.
 
 ## Related
 
@@ -233,5 +233,5 @@ See [Checkpoints](/sandboxes/checkpoints for the full workflow.
 </CardGroup>
 
 <Tip>
-  CLI: [`oc sandbox`](/cli/sandbox for lifecycle management. Full reference: [TypeScript SDK](https://docs.opencomputer.dev/reference/typescript-sdk#sandbox · [Python SDK](https://docs.opencomputer.dev/reference/python-sdk#sandbox · [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle.
+  CLI: [`oc sandbox`](/cli/sandbox) for lifecycle management. Full reference: [TypeScript SDK](https://docs.opencomputer.dev/reference/typescript-sdk#sandbox) · [Python SDK](https://docs.opencomputer.dev/reference/python-sdk#sandbox) · [HTTP API](https://docs.opencomputer.dev/reference/api#sandbox-lifecycle).
 </Tip>

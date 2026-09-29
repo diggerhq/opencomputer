@@ -3,13 +3,13 @@ title: "Usage Monitoring"
 description: "Inspect a sandbox's memory allocation and actual utilization over time"
 ---
 
-[`GET /api/sandboxes/:id/usage`](/api-reference/usage/get-sandbox-usage
+[`GET /api/sandboxes/:id/usage`](/api-reference/usage/get-sandbox-usage)
 returns a per-minute time series of a sandbox's memory — both the
 tier you provisioned and what the process actually consumed —
 together with envelope totals. Use it to answer "am I over-paying for
 this sandbox" or "when did memory spike?" For cross-sandbox
 leaderboards (rank by usage, group by tag) see the aggregator at
-[`GET /api/usage`](/api-reference/usage/get-usage instead.
+[`GET /api/usage`](/api-reference/usage/get-usage) instead.
 
 <Note>
   **Preview:** Usage and tag APIs are new. Endpoints, response fields,
@@ -38,7 +38,7 @@ Path carries the sandbox ID. `from` and `to` are optional and accept
 ISO dates (`YYYY-MM-DD`, interpreted as UTC midnight) or RFC3339
 timestamps; omit them for the last hour. Max window is **30 days**.
 Full param reference: the
-[API page](/api-reference/usage/get-sandbox-usage.
+[API page](/api-reference/usage/get-sandbox-usage).
 
 ## Response
 
@@ -65,7 +65,7 @@ Full param reference: the
 `totals` is the server-side sum of `points[]` — summing any
 additive field across the array reproduces the matching `totals.*`
 exactly. Full field semantics live in the
-[API reference](/api-reference/usage/get-sandbox-usage.
+[API reference](/api-reference/usage/get-sandbox-usage).
 
 ## Allocated vs used
 
@@ -109,7 +109,7 @@ curl -s "$OPENCOMPUTER_API_URL/api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:
 
 </CodeGroup>
 
-Full TypeScript SDK reference: [Usage & Tags](/reference/typescript-sdk/usage.
+Full TypeScript SDK reference: [Usage & Tags](/reference/typescript-sdk/usage).
 
 ## Bucket semantics
 

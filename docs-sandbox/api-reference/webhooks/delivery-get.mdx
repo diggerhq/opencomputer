@@ -3,12 +3,12 @@ title: 'Get Delivery'
 api: 'GET /api/webhooks/{id}/deliveries/{deliveryId}'
 ---
 
-Fetch one delivered message by id. See [Webhooks](/sandboxes/webhooks#deliveries.
+Fetch one delivered message by id. See [Webhooks](/sandboxes/webhooks#deliveries).
 
 <Note>
 The delivery provider's attempt index and message store are eventually consistent: a message id can
-appear in [list deliveries](/api-reference/webhooks/deliveries-list **before** this endpoint (and
-[redeliver](/api-reference/webhooks/redeliver) can resolve it — observed up to ~30s+ after the
+appear in [list deliveries](/api-reference/webhooks/deliveries-list) **before** this endpoint (and
+[redeliver](/api-reference/webhooks/redeliver)) can resolve it — observed up to ~30s+ after the
 attempt. So a `404` shortly after a delivery is transient — **retry with backoff** rather than
 treating it as final.
 </Note>
@@ -18,7 +18,7 @@ treating it as final.
 </ParamField>
 
 <ParamField path="deliveryId" type="string" required>
-  Message id (`msg_…`, the `id` from [list deliveries](/api-reference/webhooks/deliveries-list; equals the `svix-id` header).
+  Message id (`msg_…`, the `id` from [list deliveries](/api-reference/webhooks/deliveries-list); equals the `svix-id` header).
 </ParamField>
 
 <ResponseExample>

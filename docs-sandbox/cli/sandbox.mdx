@@ -58,7 +58,7 @@ oc sandbox set-timeout sb-abc123 3600  # 1 hour
 oc sandbox kill sb-abc123
 ```
 
-All data is lost unless you've created a [checkpoint](/cli/checkpoint first.
+All data is lost unless you've created a [checkpoint](/cli/checkpoint) first.
 
 ## Common Patterns
 
@@ -81,5 +81,5 @@ oc ls --json | jq -r '.[].sandboxID' | xargs -I{} oc sandbox kill {}
 ```
 
 <Tip>
-  SDK usage: [Sandboxes](/sandboxes/overview. Full flags: [CLI Reference](https://docs.opencomputer.dev/reference/cli#oc-sandbox.
+  SDK usage: [Sandboxes](/sandboxes/overview). Full flags: [CLI Reference](https://docs.opencomputer.dev/reference/cli#oc-sandbox).
 </Tip>

@@ -7,7 +7,7 @@ description: "Manage sandbox checkpoints"
 
 ## `oc checkpoint create <sandbox-id>`
 
-Create a named checkpoint of a running sandbox. [HTTP API →](/api-reference/checkpoints/create
+Create a named checkpoint of a running sandbox. [HTTP API →](/api-reference/checkpoints/create)
 
 <ParamField query="--name" type="string" required>
   Checkpoint name
@@ -37,7 +37,7 @@ oc cp create sb-abc \
 
 ## `oc checkpoint list <sandbox-id>`
 
-List checkpoints for a sandbox. [HTTP API →](/api-reference/checkpoints/list
+List checkpoints for a sandbox. [HTTP API →](/api-reference/checkpoints/list)
 
 Output columns: `ID`, `NAME`, `STATUS`, `SIZE`, `CREATED`
 
@@ -45,13 +45,13 @@ Output columns: `ID`, `NAME`, `STATUS`, `SIZE`, `CREATED`
 
 ## `oc checkpoint restore <sandbox-id> <checkpoint-id>`
 
-Revert a sandbox in-place to a checkpoint. All changes since the checkpoint are lost. [HTTP API →](/api-reference/checkpoints/restore
+Revert a sandbox in-place to a checkpoint. All changes since the checkpoint are lost. [HTTP API →](/api-reference/checkpoints/restore)
 
 ---
 
 ## `oc checkpoint spawn <checkpoint-id>`
 
-Create a new sandbox from a checkpoint (fork). [HTTP API →](/api-reference/checkpoints/fork
+Create a new sandbox from a checkpoint (fork). [HTTP API →](/api-reference/checkpoints/fork)
 
 <ParamField query="--timeout" type="int" default="300">
   Idle timeout for the new sandbox
@@ -66,4 +66,4 @@ oc exec "$ID" --wait -- echo "forked sandbox ready"
 
 ## `oc checkpoint delete <sandbox-id> <checkpoint-id>`
 
-Delete a checkpoint. [HTTP API →](/api-reference/checkpoints/delete
+Delete a checkpoint. [HTTP API →](/api-reference/checkpoints/delete)

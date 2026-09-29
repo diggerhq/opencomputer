@@ -6,7 +6,7 @@ api: 'GET /api/capacity/calendar'
 Return a planning snapshot of 15-minute UTC intervals in the requested window.
 One row per interval with current `reservedGb`, `reservableGb`, and the
 per-org `reservationLimitGb`. See
-[Reading the calendar](/reserved-capacity/calendar for field semantics.
+[Reading the calendar](/reserved-capacity/calendar) for field semantics.
 
 <ParamField query="from" type="string" required>
   Window start. RFC 3339, aligned to 15 minutes, UTC.

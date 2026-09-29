@@ -7,7 +7,7 @@ Patches are scripts that run when a sandbox is spawned from a checkpoint.
 
 ## `oc patch create <checkpoint-id>`
 
-[HTTP API →](/api-reference/patches/create
+[HTTP API →](/api-reference/patches/create)
 
 <ParamField query="--script" type="string" required>
   Path to script file, or `-` for stdin
@@ -26,7 +26,7 @@ echo "apt install -y curl" | oc patch create cp-xyz --script=-
 
 ## `oc patch list <checkpoint-id>`
 
-[HTTP API →](/api-reference/patches/list
+[HTTP API →](/api-reference/patches/list)
 
 Output columns: `ID`, `SEQ`, `DESCRIPTION`, `STRATEGY`, `CREATED`
 
@@ -34,4 +34,4 @@ Output columns: `ID`, `SEQ`, `DESCRIPTION`, `STRATEGY`, `CREATED`
 
 ## `oc patch delete <checkpoint-id> <patch-id>`
 
-[HTTP API →](/api-reference/patches/delete
+[HTTP API →](/api-reference/patches/delete)

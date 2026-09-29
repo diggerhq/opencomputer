@@ -82,7 +82,7 @@ pty = await sandbox.pty.create(
 
 ### Resize
 
-PTY resize is available via the [HTTP API](https://docs.opencomputer.dev/reference/api#pty only (`POST /api/sandboxes/:id/pty/:sessionID/resize`). The SDKs do not expose a resize method — the CLI handles resize automatically for interactive sessions.
+PTY resize is available via the [HTTP API](https://docs.opencomputer.dev/reference/api#pty) only (`POST /api/sandboxes/:id/pty/:sessionID/resize`). The SDKs do not expose a resize method — the CLI handles resize automatically for interactive sessions.
 
 ## CLI
 
@@ -93,8 +93,8 @@ oc shell sb-abc123
 oc shell sb-abc123 --shell /bin/zsh
 ```
 
-Terminal size is auto-detected and resize events are forwarded. See [`oc shell`](/cli/shell for details.
+Terminal size is auto-detected and resize events are forwarded. See [`oc shell`](/cli/shell) for details.
 
 <Tip>
-  CLI equivalent: [`oc shell`](/cli/shell. Full reference: [TypeScript SDK](https://docs.opencomputer.dev/reference/typescript-sdk#pty · [Python SDK](https://docs.opencomputer.dev/reference/python-sdk#pty · [HTTP API](https://docs.opencomputer.dev/reference/api#pty.
+  CLI equivalent: [`oc shell`](/cli/shell). Full reference: [TypeScript SDK](https://docs.opencomputer.dev/reference/typescript-sdk#pty) · [Python SDK](https://docs.opencomputer.dev/reference/python-sdk#pty) · [HTTP API](https://docs.opencomputer.dev/reference/api#pty).
 </Tip>

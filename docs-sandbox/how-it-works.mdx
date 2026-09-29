@@ -61,11 +61,11 @@ const sandbox = await Sandbox.create({ image });
 const sandbox = await Sandbox.create({ snapshot: 'my-custom-stack' });
 ```
 
-See [Templates](/sandboxes/templates for the full guide.
+See [Templates](/sandboxes/templates) for the full guide.
 
 ## Elasticity
 
-Sandboxes can scale memory at runtime via an internal metadata endpoint (`http://169.254.169.254/v1/scale`) accessible from inside the VM. CPU scales proportionally. This lets workloads request more resources before heavy tasks and release them after. See [Elasticity](/sandboxes/elasticity for details.
+Sandboxes can scale memory at runtime via an internal metadata endpoint (`http://169.254.169.254/v1/scale`) accessible from inside the VM. CPU scales proportionally. This lets workloads request more resources before heavy tasks and release them after. See [Elasticity](/sandboxes/elasticity) for details.
 
 ## Networking
 
@@ -77,8 +77,8 @@ For inbound access, create a **preview URL** that reverse-proxies public traffic
 oc preview create sb-abc --port 3000
 ```
 
-See [Preview URLs](/sandboxes/preview-urls for custom domains and auth.
+See [Preview URLs](/sandboxes/preview-urls) for custom domains and auth.
 
 <Tip>
-  API details: [HTTP API Reference](https://docs.opencomputer.dev/reference/api#base-url--authentication.
+  API details: [HTTP API Reference](https://docs.opencomputer.dev/reference/api#base-url--authentication).
 </Tip>

@@ -139,15 +139,15 @@ Seven questions. If every answer is "no", upgrading is the whole migration.
 <Steps>
   <Step title="Does any sandbox need to live longer than 8 hours?">
     v2 sandboxes have a hard 8-hour lifetime, counting hibernated time. See
-    [Sandbox lifetime](/sandboxes/lifetime.
+    [Sandbox lifetime](/sandboxes/lifetime).
   </Step>
   <Step title="Do you restore checkpoints expecting a running process?">
     v2 checkpoints capture the filesystem only. Restoring gives a fresh boot with your files,
-    not a resumed process tree. See [Checkpoints](/sandboxes/checkpoints.
+    not a resumed process tree. See [Checkpoints](/sandboxes/checkpoints).
   </Step>
   <Step title="Do you use templates built on v1?">
     A template that carries a rootfs image is refused. Most v1 templates do. See
-    [Templates](/sandboxes/templates.
+    [Templates](/sandboxes/templates).
   </Step>
   <Step title="Do you run sandboxes larger than 8 GB?">
     The 16 GB tier does not exist in v2, and memory cannot change after launch.
@@ -159,7 +159,7 @@ Seven questions. If every answer is "no", upgrading is the whole migration.
     None of these exist in v2.
   </Step>
   <Step title="Do you build images or fork from checkpoints?">
-    Image builds work, but only ahead of time — see [Templates](/sandboxes/templates.
+    Image builds work, but only ahead of time — see [Templates](/sandboxes/templates).
     Passing `image:` directly to a create is refused. Fork is unavailable today and being
     worked on.
   </Step>
@@ -224,7 +224,7 @@ silently would hand you your files while dropping every system change the templa
 So it refuses, loudly, at create.
 
 Rebuild them on v2 — usually by re-running the same `Image` definition under the same name.
-See [Templates](/sandboxes/templates.
+See [Templates](/sandboxes/templates).
 
 ### Sizes are fixed steps, and 16 GB is gone
 
@@ -264,7 +264,7 @@ work exactly as in v1, and your code does not change.
 The difference is where the real values are held: in v2 the substituting proxy runs inside your
 sandbox as a root-owned process, rather than outside it. Your code runs unprivileged and cannot
 read them, but a privilege escalation **inside** a sandbox now reaches the secrets scoped to
-that sandbox. See [Secrets](/sandboxes/secrets.
+that sandbox. See [Secrets](/sandboxes/secrets).
 
 ### Not available in v2
 
@@ -272,7 +272,7 @@ that sandbox. See [Secrets](/sandboxes/secrets.
 |---|---|
 | `scale()`, `setAutoscale()` | memory is fixed at launch |
 | Mounts (FUSE, NFS, overlay) | the guest cannot perform `mount` |
-| Inline `image:` on create | build ahead of time instead — see [Templates](/sandboxes/templates |
+| Inline `image:` on create | build ahead of time instead — see [Templates](/sandboxes/templates) |
 | Fork from a checkpoint | in progress |
 | Checkpoint patches | not wired up |
 | Live migration | not applicable |

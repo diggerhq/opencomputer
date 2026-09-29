@@ -7,7 +7,7 @@ description: "Create, connect, and manage sandbox lifecycle"
 
 ### `Sandbox.create(opts?)`
 
-Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create
+Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 
 <ParamField body="template" type="string" default="base">
   Template name
@@ -34,7 +34,7 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create
 </ParamField>
 
 <ParamField body="burst" type="boolean">
-  Create a [Burst Sandbox](/sandboxes/burst-sandboxes. Disk is preserved across infrastructure restarts; processes may restart.
+  Create a [Burst Sandbox](/sandboxes/burst-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
 </ParamField>
 
 <ParamField body="cpuCount" type="number">
@@ -50,7 +50,7 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create
 </ParamField>
 
 <ParamField body="image" type="Image">
-  Declarative image definition (see [Image](/reference/typescript-sdk/image)
+  Declarative image definition (see [Image](/reference/typescript-sdk/image))
 </ParamField>
 
 <ParamField body="snapshot" type="string">
@@ -86,7 +86,7 @@ const sandbox = await Sandbox.create({
 
 ### `Sandbox.connect(sandboxId, opts?)`
 
-Connect to an existing sandbox. [HTTP API →](/api-reference/sandboxes/get
+Connect to an existing sandbox. [HTTP API →](/api-reference/sandboxes/get)
 
 <ParamField body="sandboxId" type="string" required>
   Sandbox ID
@@ -110,7 +110,7 @@ const sandbox = await Sandbox.connect("sb-abc123");
 
 ### `Sandbox.createFromCheckpoint(checkpointId, opts?)`
 
-Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoints/fork
+Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoints/fork)
 
 <ParamField body="checkpointId" type="string" required>
   Checkpoint ID
@@ -130,7 +130,7 @@ const forked = await Sandbox.createFromCheckpoint("cp-abc123");
 
 ### `Sandbox.createCheckpointPatch(checkpointId, opts)`
 
-Create a patch for a checkpoint. [HTTP API →](/api-reference/patches/create
+Create a patch for a checkpoint. [HTTP API →](/api-reference/patches/create)
 
 <ParamField body="checkpointId" type="string" required>
   Target checkpoint
@@ -154,7 +154,7 @@ const result = await Sandbox.createCheckpointPatch("cp-abc", { script: "apt inst
 
 ### `Sandbox.listCheckpointPatches(checkpointId, opts?)`
 
-[HTTP API →](/api-reference/patches/list
+[HTTP API →](/api-reference/patches/list)
 
 **Returns:** `Promise<PatchInfo[]>`
 
@@ -162,7 +162,7 @@ const result = await Sandbox.createCheckpointPatch("cp-abc", { script: "apt inst
 
 ### `Sandbox.deleteCheckpointPatch(checkpointId, patchId, opts?)`
 
-[HTTP API →](/api-reference/patches/delete
+[HTTP API →](/api-reference/patches/delete)
 
 **Returns:** `Promise<void>`
 
@@ -172,7 +172,7 @@ const result = await Sandbox.createCheckpointPatch("cp-abc", { script: "apt inst
 
 ### `sandbox.kill()`
 
-Terminate the sandbox. [HTTP API →](/api-reference/sandboxes/delete
+Terminate the sandbox. [HTTP API →](/api-reference/sandboxes/delete)
 
 **Returns:** `Promise<void>`
 
@@ -184,13 +184,13 @@ Check if the sandbox is running.
 
 ### `sandbox.hibernate()`
 
-Snapshot VM state and stop. No compute cost while hibernated. [HTTP API →](/api-reference/sandboxes/hibernate
+Snapshot VM state and stop. No compute cost while hibernated. [HTTP API →](/api-reference/sandboxes/hibernate)
 
 **Returns:** `Promise<void>`
 
 ### `sandbox.wake(opts?)`
 
-Resume a hibernated sandbox. [HTTP API →](/api-reference/sandboxes/wake
+Resume a hibernated sandbox. [HTTP API →](/api-reference/sandboxes/wake)
 
 <ParamField body="timeout" type="number" default="300">
   Idle timeout after wake
@@ -200,7 +200,7 @@ Resume a hibernated sandbox. [HTTP API →](/api-reference/sandboxes/wake
 
 ### `sandbox.setTimeout(timeout)`
 
-Update the idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout
+Update the idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout)
 
 <ParamField body="timeout" type="number" required>
   New timeout in seconds
@@ -210,7 +210,7 @@ Update the idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout
 
 ### `sandbox.createCheckpoint(name, opts?)`
 
-Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create
+Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create)
 
 <ParamField body="name" type="string" required>
   Checkpoint name (unique per sandbox)
@@ -227,17 +227,17 @@ Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create
 
 ### `sandbox.listCheckpoints()`
 
-[HTTP API →](/api-reference/checkpoints/list — **Returns:** `Promise<CheckpointInfo[]>`
+[HTTP API →](/api-reference/checkpoints/list) — **Returns:** `Promise<CheckpointInfo[]>`
 
 ### `sandbox.restoreCheckpoint(checkpointId)`
 
-Revert in-place to a checkpoint. [HTTP API →](/api-reference/checkpoints/restore
+Revert in-place to a checkpoint. [HTTP API →](/api-reference/checkpoints/restore)
 
 **Returns:** `Promise<void>`
 
 ### `sandbox.deleteCheckpoint(checkpointId)`
 
-[HTTP API →](/api-reference/checkpoints/delete — **Returns:** `Promise<void>`
+[HTTP API →](/api-reference/checkpoints/delete) — **Returns:** `Promise<void>`
 
 ### `sandbox.getPreviewDomain(port)`
 
@@ -258,7 +258,7 @@ console.log(`https://${domain}`);
 
 ### `sandbox.downloadUrl(path, opts?)`
 
-Generate a signed download URL. [HTTP API →](/api-reference/files/generate-download-url · [Guide →](/sandboxes/signed-urls
+Generate a signed download URL. [HTTP API →](/api-reference/files/generate-download-url) · [Guide →](/sandboxes/signed-urls)
 
 <ParamField body="path" type="string" required>
   Absolute path to the file
@@ -272,7 +272,7 @@ Generate a signed download URL. [HTTP API →](/api-reference/files/generate-dow
 
 ### `sandbox.uploadUrl(path, opts?)`
 
-Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-upload-url · [Guide →](/sandboxes/signed-urls
+Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-upload-url) · [Guide →](/sandboxes/signed-urls)
 
 <ParamField body="path" type="string" required>
   Absolute path for the destination file
@@ -286,7 +286,7 @@ Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-uploa
 
 ### `sandbox.createPreviewURL(opts)`
 
-[HTTP API →](/api-reference/preview/create
+[HTTP API →](/api-reference/preview/create)
 
 <ParamField body="port" type="number" required>
   Container port (1–65535)
@@ -304,17 +304,17 @@ Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-uploa
 
 ### `sandbox.listPreviewURLs()`
 
-[HTTP API →](/api-reference/preview/list — **Returns:** `Promise<PreviewURLResult[]>`
+[HTTP API →](/api-reference/preview/list) — **Returns:** `Promise<PreviewURLResult[]>`
 
 ### `sandbox.deletePreviewURL(port)`
 
-[HTTP API →](/api-reference/preview/delete — **Returns:** `Promise<void>`
+[HTTP API →](/api-reference/preview/delete) — **Returns:** `Promise<void>`
 
 ---
 
 ### `sandbox.getAllowedHosts()`
 
-Return the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/sandboxes/secrets config separately.
+Return the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/sandboxes/secrets) config separately.
 
 Sandboxes created without a `secretStore` option return an empty allowlist with `secretStore` undefined — the sandbox has no per-store egress restriction.
 
@@ -365,19 +365,19 @@ The returned `AllowedHostsInfo`:
 </ParamField>
 
 <ParamField body="agent" type="SandboxAgent">
-  [Sandbox agent sessions](https://docs.opencomputer.dev/reference/typescript-sdk/agent
+  [Sandbox agent sessions](https://docs.opencomputer.dev/reference/typescript-sdk/agent)
 </ParamField>
 
 <ParamField body="exec" type="Exec">
-  [Command execution](/reference/typescript-sdk/exec
+  [Command execution](/reference/typescript-sdk/exec)
 </ParamField>
 
 <ParamField body="files" type="Filesystem">
-  [File operations](/reference/typescript-sdk/filesystem
+  [File operations](/reference/typescript-sdk/filesystem)
 </ParamField>
 
 <ParamField body="pty" type="Pty">
-  [Terminal sessions](/reference/typescript-sdk/pty
+  [Terminal sessions](/reference/typescript-sdk/pty)
 </ParamField>
 
 <ParamField body="commands" type="Exec">
