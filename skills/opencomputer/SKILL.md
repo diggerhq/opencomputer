@@ -183,6 +183,37 @@ oc shell <sandbox-id>
 oc shell <sandbox-id> --shell /bin/zsh
 ```
 
+### Report a bug or friction (feedback.now)
+
+If OpenComputer itself misbehaves while you work — an API call returns an unexpected error, a
+flag doesn't match the docs, an SDK method is confusing — report it. Reports go through the
+open [feedback.now](https://feedback.now) protocol; no API key needed and it does not interrupt
+your task. Prefer one precise report over many vague ones.
+
+```bash
+# Full report: --surface, --category, --severity, --title are required
+oc feedback submit \
+  --surface 'POST /api/sandboxes' --kind api_endpoint \
+  --category bug --severity high --reproducibility always \
+  --title 'create returns 500 when template is missing' \
+  --summary 'Expected 404 with a clear error' \
+  --evidence 'http_summary={"status":500}' --evidence stderr_excerpt=@/tmp/err.log \
+  --agent-vendor <your-vendor> --agent-product <your-product> --json
+
+# Low-confidence or minor: an observation (only --surface required)
+oc feedback observe --surface 'oc sandbox create' --category friction \
+  --summary '--template flag name differs from the docs'
+
+# Later: was it accepted, folded into a known issue, or fixed?
+oc feedback receipt <receipt-id> --json
+```
+
+- Categories: `bug`, `docs_mismatch`, `friction`, `feature_gap`, `quality_degradation`, `other`.
+  Severities: `critical`, `high`, `medium`, `low`.
+- Set `--agent-vendor` / `--agent-product` to identify yourself (e.g. `anthropic` / `claude-code`).
+- Never put secrets, API keys, or customer data in `--summary` or `--evidence`.
+- Works against any feedback.now host: `oc feedback submit --target https://api.example.com ...`.
+
 ### Global Flags
 
 All commands support:

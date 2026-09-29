@@ -42,11 +42,11 @@ the label bounds are on the [API reference](/agents/api#get-and-list).
 
 These describe different parts of a session:
 
-| Field | What it answers |
-| --- | --- |
-| `status` and `activity` | Is work queued, running, stopping or finished? |
-| `labels` | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work. |
-| `result` | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
+| Field                   | What it answers                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status` and `activity` | Is work queued, running, stopping or finished?                                                                                                                                  |
+| `labels`                | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work.                                             |
+| `result`                | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
 
 A report does not finish a turn, and each report replaces the whole result.
 Later work can run, fail or be cancelled while an earlier result remains.
@@ -138,10 +138,14 @@ the command exits.
 ### Workspace files
 
 Files an agent writes under `/workspace` (reports, captures, screenshots, tool
-output) can be listed and downloaded with `session files`. Downloads never pass
-through the model or the session transcript: OpenComputer exports the file into
-provider-owned storage, records its byte count and SHA-256, and the CLI streams
-that retained copy to disk, verifying both before the file is saved.
+output) can be listed and downloaded with `session files`. Newly written files
+appear gradually and may take a few moments to finish syncing. Refresh or list
+the workspace again if a file has just been created.
+
+Downloads never pass through the model or the session transcript: OpenComputer
+authorizes the exact versioned workspace object for a short-lived direct
+download through its file-delivery edge. The CLI streams that object to disk,
+checks its byte count, and computes SHA-256 locally before the file is saved.
 
 ```bash
 # List the files in the session's /workspace
@@ -155,17 +159,18 @@ opencomputer session files download <session-id> /workspace/captures/run.har ./e
 # Download the whole workspace, mirroring its layout
 opencomputer session files download <session-id> --all ./workspace-copy
 
-# Machine-readable output with artifactId, size and sha256 per file
+# Machine-readable output with size and locally computed sha256 per file
 opencomputer session files download <session-id> --all ./workspace-copy --json
 ```
 
 `cp` is an alias for `download`. Workspace paths may be written relative to
 `/workspace` or with the `/workspace/` prefix; paths that leave the workspace
 are refused before any request is made. Each download is written to a
-temporary file and renamed into place only after the size and SHA-256 match
-the export manifest, so an interrupted or corrupted transfer never leaves a
-partial file behind. Retained copies remain downloadable after the session
-ends, from the CLI, the session page's **Files** tab, or the
+temporary file and renamed into place only after the expected byte count is
+received; SHA-256 is reported from the completed local file. An interrupted
+transfer never leaves a partial file behind. The versioned S3-backed workspace
+remains the source of the file in the
+CLI, the session page's **Files** tab, and the
 [playground debug inspector](/agents/playground).
 
 ## From an application

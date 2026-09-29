@@ -76,6 +76,7 @@ describe('ManagedAgentChatTransport', () => {
       'agent-1',
       undefined,
       (sessionId) => assigned.push(sessionId),
+      false,
     )
 
     const first = await readChunks(
@@ -120,5 +121,85 @@ describe('ManagedAgentChatTransport', () => {
       undefined,
     )
     expect(runManagedAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('paces bursty deltas into a steady trickle without changing the transcript', async () => {
+    const reasoning = 'Thinking about the request carefully.'
+    const answer = 'Here is the full answer, delivered in two big bursts.'
+    runManagedAgent.mockImplementation(
+      (
+        _agentId: string,
+        _input: string,
+        onEvent: (event: unknown) => void,
+        options: { onSession: (sessionId: string) => void },
+      ) => {
+        options.onSession('session-2')
+        onEvent({ seq: 1, type: 'reasoning.delta', data: { text: reasoning } })
+        onEvent({
+          seq: 2,
+          type: 'tool.started',
+          data: { callId: 'call-1', tool: 'search', input: {} },
+        })
+        onEvent({
+          seq: 3,
+          type: 'message.delta',
+          data: { text: answer.slice(0, 20) },
+        })
+        onEvent({
+          seq: 4,
+          type: 'tool.completed',
+          data: { callId: 'call-1', tool: 'search', output: 'ok' },
+        })
+        onEvent({
+          seq: 5,
+          type: 'message.delta',
+          data: { text: answer.slice(20) },
+        })
+        onEvent({ seq: 6, type: 'message.completed', data: { text: answer } })
+        return Promise.resolve()
+      },
+    )
+    const transport = new ManagedAgentChatTransport(
+      'agent-1',
+      undefined,
+      () => undefined,
+      { intervalMs: 1, catchUpMs: 8 },
+    )
+
+    const chunks = await readChunks(
+      await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-2',
+        messageId: undefined,
+        messages: messages('Go'),
+        abortSignal: undefined,
+      }),
+    )
+
+    const text = (type: 'text-delta' | 'reasoning-delta') =>
+      chunks
+        .filter((chunk) => chunk.type === type)
+        .map((chunk) => (chunk as { delta: string }).delta)
+    expect(text('reasoning-delta').join('')).toBe(reasoning)
+    expect(text('text-delta').join('')).toBe(answer)
+    expect(text('reasoning-delta').length).toBeGreaterThan(1)
+    expect(text('text-delta').length).toBeGreaterThan(2)
+
+    const types = chunks.map((chunk) => chunk.type)
+    expect(types[0]).toBe('start')
+    expect(types.slice(-3)).toEqual(['reasoning-end', 'text-end', 'finish'])
+    // The tool call stays where it happened: after all reasoning, and the
+    // tool result lands after exactly the first 20 characters of text.
+    const toolInput = types.indexOf('tool-input-available')
+    const toolOutput = types.indexOf('tool-output-available')
+    expect(types.lastIndexOf('reasoning-delta')).toBeLessThan(toolInput)
+    expect(toolInput).toBeLessThan(types.indexOf('text-start'))
+    expect(
+      chunks
+        .slice(0, toolOutput)
+        .filter((chunk) => chunk.type === 'text-delta')
+        .map((chunk) => (chunk as { delta: string }).delta)
+        .join(''),
+    ).toBe(answer.slice(0, 20))
   })
 })

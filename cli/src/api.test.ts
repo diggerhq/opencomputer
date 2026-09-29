@@ -84,6 +84,50 @@ test("workspace exports derive one idempotency key per workspace path", async (c
   assert.notEqual(keys[0], keys[2], "each path is its own export operation");
 });
 
+test("workspace artifact downloads use a signed URL without forwarding credentials", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.url.includes("/workspace/exports/wsart_1/download")) {
+        return Response.json({
+          url: "https://objects.example.test/artifact?signature=test",
+          expiresAt: "2026-09-25T20:00:00.000Z",
+        });
+      }
+      return new Response(new Uint8Array([1, 2, 3]));
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+  const response = await client.workspaceArtifactContent({
+    sessionId: "ses",
+    id: "wsart_1",
+  });
+  assert.deepEqual(
+    new Uint8Array(await response.arrayBuffer()),
+    new Uint8Array([1, 2, 3]),
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[0]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/sessions/ses/workspace/exports/wsart_1/download",
+  );
+  assert.equal(requests[0]?.redirect, "manual");
+  assert.equal(requests[0]?.headers.get("x-api-key"), "test");
+  assert.equal(
+    requests[1]?.url,
+    "https://objects.example.test/artifact?signature=test",
+  );
+  assert.equal(requests[1]?.redirect, "error");
+  assert.equal(requests[1]?.headers.get("x-api-key"), null);
+});
+
 test("memory documents travel with their ETag and send it back as a precondition", async (context) => {
   const requests: Request[] = [];
   const document = {
