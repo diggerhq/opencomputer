@@ -167,7 +167,8 @@
               "cli/checkpoint",
               "cli/patch",
               "cli/preview",
-              "cli/secrets"
+              "cli/secrets",
+              "cli/feedback"
             ]
           },
           {
@@ -291,6 +292,7 @@
                   "api-reference/capacity/list-reservations"
                 ]
               },
+              "api-reference/agent-feedback",
               {
                 "group": "Commands",
                 "pages": [

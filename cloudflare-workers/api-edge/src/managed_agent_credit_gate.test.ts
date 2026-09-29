@@ -94,14 +94,15 @@ describe("managed-agent credit admission", () => {
       new Request("https://mo-oc-dev.com/api/managed-agents/sessions"),
     );
     expect(response.status).toBe(402);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "insufficient_credits",
-        message:
-          "Insufficient prepaid credits. Top up or enable automatic top-up: https://mo-oc-dev.com/billing",
-        actionUrl: "https://mo-oc-dev.com/billing",
-      },
+    const body = (await response.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({
+      code: "insufficient_credits",
+      actionUrl: "https://mo-oc-dev.com/billing",
+      billingUrl: "https://mo-oc-dev.com/billing",
+      upgradeUrl: "https://mo-oc-dev.com/billing?plan=pro",
     });
+    expect(body.error.message).toContain("https://mo-oc-dev.com/billing?plan=pro");
+    expect(body.error.message).toContain("do not retry");
   });
 
   it("allows active organizations and fails open when D1 is unavailable", async () => {

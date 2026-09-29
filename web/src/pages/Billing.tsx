@@ -34,6 +34,12 @@ import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { cn } from '@/lib/utils'
+import {
+  billingOnrampV2Enabled,
+  trackCheckoutStarted,
+  trackPlanActivated,
+  trackUpsellShown,
+} from '@/lib/billing-onramp'
 
 type Tab = 'usage' | 'invoices'
 
@@ -243,7 +249,8 @@ function PlanTab() {
 
 /* ── Prepaid (Autumn) ─────────────────────────────────────────────────────── */
 
-const TOPUP_AMOUNTS = [5, 25, 100]
+const TOPUP_AMOUNTS = billingOnrampV2Enabled ? [10, 25, 100] : [5, 25, 100]
+const DEFAULT_TOPUP = billingOnrampV2Enabled ? 10 : 25
 
 const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro', label: 'Pro', limit: 100, price: 150 },
@@ -293,18 +300,53 @@ function PrepaidPlan() {
   const redirectedPlan = searchParams.get('usage-plan')
   const pendingUsagePlan =
     redirectedPlan === 'pro' || redirectedPlan === 'max' ? redirectedPlan : null
+  // `?plan=pro|max` (upsell deep link) opens the upgrade confirmation directly.
+  const requestedPlan = searchParams.get('plan')
+  const deepLinkedPlan =
+    billingOnrampV2Enabled &&
+    (requestedPlan === 'pro' || requestedPlan === 'max')
+      ? requestedPlan
+      : null
   const activationToastShown = useRef(false)
   const { data: autumn, isLoading } = useQuery({
     queryKey: ['autumn-billing'],
     queryFn: getAutumnBilling,
     refetchInterval: pendingUsagePlan != null ? 1_500 : 30_000,
   })
-  const [amount, setAmount] = useState(25)
+  const [amount, setAmount] = useState(DEFAULT_TOPUP)
   const [confirmTopup, setConfirmTopup] = useState(false)
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
   const [confirmUsagePlanId, setConfirmUsagePlanId] = useState<
     'pro' | 'max' | null
   >(null)
+  // While `?plan=` is in the URL it drives the dialog; closing it clears the
+  // param so the same link can reopen it later.
+  const openUsagePlanId =
+    confirmUsagePlanId ??
+    (deepLinkedPlan && autumn && autumn.usagePlan !== deepLinkedPlan
+      ? deepLinkedPlan
+      : null)
+  const clearDeepLink = () => {
+    if (!searchParams.has('plan')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('plan')
+    setSearchParams(next, { replace: true })
+  }
+  const closeUsagePlanDialog = () => {
+    setConfirmUsagePlanId(null)
+    clearDeepLink()
+  }
+
+  useEffect(() => {
+    if (!deepLinkedPlan || !autumn) return
+    trackUpsellShown({
+      surface: 'billing_deeplink',
+      plan: deepLinkedPlan,
+      usagePlan: autumn.usagePlan,
+      creditsRemainingCents: autumn.creditsRemainingCents,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkedPlan, autumn?.usagePlan])
   const [usageProduct, setUsageProduct] = useState<
     'sandboxes' | 'serverless-agents'
   >('serverless-agents')
@@ -318,6 +360,7 @@ function PrepaidPlan() {
       toast.success(`${label} plan activated`, {
         description: 'Your monthly credits are ready to use.',
       })
+      trackPlanActivated({ plan: pendingUsagePlan })
       activationToastShown.current = true
     }
     const next = new URLSearchParams(searchParams)
@@ -335,6 +378,9 @@ function PrepaidPlan() {
     mutationFn: () => autumnTopup(amount),
     onSuccess: (d) => {
       setConfirmTopup(false)
+      trackCheckoutStarted({ topupUsd: amount, usagePlan: autumn?.usagePlan })
+      if (!d.url)
+        trackPlanActivated({ topupUsd: amount, usagePlan: autumn?.usagePlan })
       onPurchase(d)
     },
     onError: (e) => notifyError("Couldn't complete the top-up.", e),
@@ -350,12 +396,14 @@ function PrepaidPlan() {
   const usagePlanMutation = useMutation({
     mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
     onSuccess: (d, plan) => {
-      setConfirmUsagePlanId(null)
+      closeUsagePlanDialog()
+      trackCheckoutStarted({ plan, usagePlan: autumn?.usagePlan })
       if (!d.url) {
         const label = plan === 'pro' ? 'Pro' : 'Max'
         toast.success(`${label} plan updated`, {
           description: 'Your billing status and credits are refreshing.',
         })
+        trackPlanActivated({ plan, usagePlan: autumn?.usagePlan })
       }
       onPurchase(d)
     },
@@ -384,7 +432,7 @@ function PrepaidPlan() {
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
   const selectedUsagePlan = USAGE_PLANS.find(
-    (plan) => plan.id === confirmUsagePlanId,
+    (plan) => plan.id === openUsagePlanId,
   )
   const hasCard =
     (billing?.hasPaymentMethod ?? false) ||
@@ -482,11 +530,26 @@ function PrepaidPlan() {
             </div>
           ) : null}
           {halted ? (
-            <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
-              <CircleAlert className="size-4 shrink-0" />
-              Credits exhausted — top up to resume your agent sessions and
-              sandboxes
-            </p>
+            <div className="text-status-error mt-2 space-y-2 text-sm">
+              <p className="flex items-center gap-1.5">
+                <CircleAlert className="size-4 shrink-0" />
+                Credits exhausted — your agent sessions and sandboxes are paused
+              </p>
+              {billingOnrampV2Enabled && autumn?.usagePlan !== 'max' ? (
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    setConfirmUsagePlanId(
+                      autumn?.usagePlan === 'pro' ? 'max' : 'pro',
+                    )
+                  }
+                >
+                  {autumn?.usagePlan === 'pro'
+                    ? 'Upgrade to Max — $200/mo'
+                    : 'Upgrade to Pro — $20/mo for $200 credits'}
+                </Button>
+              ) : null}
+            </div>
           ) : null}
 
           <div className="mt-5">
@@ -608,7 +671,7 @@ function PrepaidPlan() {
       />
       <ConfirmDialog
         open={!!selectedUsagePlan}
-        onOpenChange={(open) => !open && setConfirmUsagePlanId(null)}
+        onOpenChange={(open) => !open && closeUsagePlanDialog()}
         title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
         description={
           selectedUsagePlan

@@ -63,6 +63,15 @@ import {
   type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
+import { useLiveSessionEvents } from './use-live-session-events'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
+import { useCreditState } from '@/hooks/useCreditState'
+import {
+  PLAN_OFFERS,
+  billingOnrampV2Enabled,
+  trackUpsellClicked,
+  upgradeHref,
+} from '@/lib/billing-onramp'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
@@ -284,7 +293,6 @@ function PlaygroundChat({
     queryKey: ['managed-agent-session-events', liveSessionId],
     queryFn: () => getManagedAgentSessionEvents(liveSessionId!),
     enabled: Boolean(liveSessionId),
-    refetchInterval: 1_000,
   })
   useEffect(() => {
     liveSessionIdRef.current = liveSessionId
@@ -313,6 +321,15 @@ function PlaygroundChat({
     running ||
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
+  const credits = useCreditState()
+  const halted = credits.isHalted
+  const turnFinished =
+    !agentWorking && status === 'ready' && messages.length > 0
+  const inspectorEvents = useLiveSessionEvents(
+    liveSessionId,
+    debugEvents.data ?? events,
+    agentWorking,
+  )
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -334,7 +351,7 @@ function PlaygroundChat({
 
   const send = () => {
     const input = prompt.trim()
-    if (!input || admitting) return
+    if (!input || admitting || halted) return
     if (agentWorking) {
       const sessionId = liveSessionId
       if (!sessionId) {
@@ -460,7 +477,43 @@ function PlaygroundChat({
         </div>
 
         <div className="bg-panel shrink-0 border-t p-4">
-          {error ? (
+          {liveSessionId ? (
+            <PostSessionUpsell
+              sessionId={liveSessionId}
+              completed={turnFinished}
+              className="mb-3"
+            />
+          ) : null}
+          {halted ? (
+            <p className="text-destructive mb-2 text-xs">
+              Out of credits — this agent can&apos;t run until you{' '}
+              <Link
+                to={upgradeHref(credits.upgradePlan)}
+                className="font-medium underline"
+                onClick={() =>
+                  trackUpsellClicked({
+                    surface: 'session_composer',
+                    plan: credits.upgradePlan,
+                    usagePlan: credits.usagePlan,
+                    creditsRemainingCents: credits.creditsRemainingCents,
+                  })
+                }
+              >
+                upgrade to {credits.upgradePlan === 'max' ? 'Max' : 'Pro'} — $
+                {PLAN_OFFERS[credits.upgradePlan].priceUsd}/mo
+              </Link>
+              {billingOnrampV2Enabled ? (
+                <>
+                  {' '}
+                  or{' '}
+                  <Link to="/billing" className="underline">
+                    top up
+                  </Link>
+                </>
+              ) : null}
+              .
+            </p>
+          ) : error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
           {admissionNotice ? (
@@ -499,7 +552,7 @@ function PlaygroundChat({
                     variant={
                       inputMode === 'interrupt' ? 'destructive' : 'default'
                     }
-                    disabled={!prompt.trim() || admitting}
+                    disabled={!prompt.trim() || admitting || halted}
                     onClick={send}
                   >
                     {admitting ? (
@@ -511,7 +564,11 @@ function PlaygroundChat({
                   </Button>
                 </div>
               ) : (
-                <Button size="sm" disabled={!prompt.trim()} onClick={send}>
+                <Button
+                  size="sm"
+                  disabled={!prompt.trim() || halted}
+                  onClick={send}
+                >
                   <Send /> Send
                 </Button>
               )}
@@ -520,8 +577,10 @@ function PlaygroundChat({
         </div>
       </div>
       <DebugInspector
-        events={debugEvents.data ?? events}
+        events={inspectorEvents}
         deploymentId={session?.deploymentId}
+        sessionId={liveSessionId}
+        sessionLive={agentWorking}
       />
     </div>
   )
@@ -679,7 +738,7 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
-    refetchInterval: 1_000,
+    refetchInterval: 5_000,
   })
   // The list carries rows; the open session's turns come from its own route.
   const selectedPlaygroundSession = useQuery({

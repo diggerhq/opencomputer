@@ -185,6 +185,31 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This setup no longer owns the connection. Use Set up manually or start again.",
 };
 
+/** Fixed public wording per workspace export code; upstream messages may
+ * name buckets or object keys and are never forwarded. */
+const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
+  artifact_path_invalid: "The workspace path is not exportable.",
+  artifact_not_found: "The workspace file was not found.",
+  artifact_symlink_rejected: "Symbolic links are not exported.",
+  artifact_not_regular_file: "Only regular files can be exported.",
+  artifact_too_large: "The workspace file is too large to export.",
+  artifact_changed_during_snapshot:
+    "The workspace file changed during export; retry.",
+  artifact_size_mismatch:
+    "The workspace file size differs from the expected byte count.",
+  artifact_digest_mismatch:
+    "The workspace file digest differs from the expected SHA-256.",
+  artifact_media_type_mismatch:
+    "The workspace file media type differs from the expected one.",
+  export_idempotency_conflict:
+    "The Idempotency-Key was already used for a different export request.",
+  export_in_progress: "An export with this Idempotency-Key is still running.",
+  export_expired:
+    "The export expired before completing; use a new Idempotency-Key.",
+  workspace_unavailable: "The session workspace is not available.",
+  workspace_export_failed: "The workspace export failed.",
+};
+
 async function publicErrorResponse(upstream: Response): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
@@ -210,9 +235,18 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     backendCode === "template_sync_failed" &&
     backendMessage.includes("oc-template.toml") &&
     backendMessage.includes("expected a regular file");
+  const workspaceExportError =
+    backendCode.startsWith("artifact_") ||
+    backendCode.startsWith("export_") ||
+    backendCode.startsWith("workspace_");
+  // Only the documented export codes pass through; anything else from that
+  // family collapses to the generic code so no upstream detail leaks.
   const publicCode = missingTemplateManifest
     ? "template_manifest_missing"
-    : backendCode;
+    : workspaceExportError &&
+        !Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, backendCode)
+      ? "workspace_export_failed"
+      : backendCode;
   let message = "The agent request could not be completed.";
   const slackSetupMessage = Object.hasOwn(
     SLACK_SETUP_ERROR_MESSAGES,
@@ -283,8 +317,25 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
       ? { setupId: backendError.setupId }
       : {};
+  // Workspace export refusals say whether the same Idempotency-Key may be
+  // retried and which export record the refusal was written to.
+  const exportOutcome: Record<string, unknown> = {};
+  if (workspaceExportError) {
+    if (typeof backendError?.retrySafe === "boolean") {
+      exportOutcome.retrySafe = backendError.retrySafe;
+    }
+    if (
+      typeof backendError?.exportId === "string" &&
+      /^wsexp_[a-f0-9]{32}$/.test(backendError.exportId)
+    ) {
+      exportOutcome.exportId = backendError.exportId;
+    }
+    message = WORKSPACE_EXPORT_ERROR_MESSAGES[publicCode];
+  }
   return new Response(
-    JSON.stringify({ error: { code: publicCode, message, ...setupId } }),
+    JSON.stringify({
+      error: { code: publicCode, message, ...setupId, ...exportOutcome },
+    }),
     { status: upstream.status, headers },
   );
 }
@@ -1345,6 +1396,101 @@ function publicEventData(
   );
 }
 
+export function publicEvent(value: unknown): Record<string, unknown> {
+  const event = record(value) ?? {};
+  const type = typeof event.type === "string" ? event.type : "";
+  return {
+    id: event.id,
+    seq: event.seq,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    turnId: event.turnId,
+    type,
+    data: publicEventData(type, event.data),
+  };
+}
+
+const SESSION_CONNECT_ROUTE = /^\/sessions\/[^/]+\/connect$/;
+
+// Live session stream. The browser opens a WebSocket against the edge; the
+// edge opens the backend's client socket and relays frames, applying the same
+// redaction as GET /events to every event. Only keepalive pings travel
+// upstream: turns are admitted over REST, where the credit gate lives.
+function relaySessionSocket(upstream: WebSocket): Response {
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+  server.accept();
+  upstream.accept();
+
+  const closeBoth = (code: number, reason: string) => {
+    for (const socket of [server, upstream]) {
+      try {
+        socket.close(code, reason);
+      } catch {
+        // Already closed.
+      }
+    }
+  };
+
+  upstream.addEventListener("message", (message) => {
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(
+        JSON.parse(
+          typeof message.data === "string"
+            ? message.data
+            : new TextDecoder().decode(message.data as ArrayBuffer),
+        ),
+      );
+    } catch {
+      return;
+    }
+    if (!frame) return;
+    if (frame.type === "event") {
+      server.send(
+        JSON.stringify({ type: "event", event: publicEvent(frame.event) }),
+      );
+    } else if (frame.type === "ready" || frame.type === "pong") {
+      server.send(JSON.stringify(frame));
+    } else if (frame.type === "error") {
+      server.send(
+        JSON.stringify({
+          type: "error",
+          code: typeof frame.code === "string" ? frame.code : "stream_error",
+          message: "The session stream reported an error.",
+        }),
+      );
+    }
+  });
+  upstream.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  upstream.addEventListener("error", () => closeBoth(1011, "upstream error"));
+
+  server.addEventListener("message", (message) => {
+    if (typeof message.data !== "string") return;
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(JSON.parse(message.data));
+    } catch {
+      return;
+    }
+    if (frame?.type === "ping") upstream.send(JSON.stringify({ type: "ping" }));
+  });
+  server.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  server.addEventListener("error", () => closeBoth(1011, "client error"));
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
 function publicTemplateInspection(value: unknown): Record<string, unknown> {
   const inspection = record(value) ?? {};
   if (inspection.status === "preparing") {
@@ -1812,21 +1958,7 @@ function publicSuccessBody(
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return {
-      events: Array.isArray(body.events)
-        ? body.events.map((value) => {
-            const event = record(value) ?? {};
-            const type = typeof event.type === "string" ? event.type : "";
-            return {
-              id: event.id,
-              seq: event.seq,
-              timestamp: event.timestamp,
-              sessionId: event.sessionId,
-              turnId: event.turnId,
-              type,
-              data: publicEventData(type, event.data),
-            };
-          })
-        : [],
+      events: Array.isArray(body.events) ? body.events.map(publicEvent) : [],
     };
   }
   if (method === "POST" && /\/turns$/.test(suffix)) {
@@ -1862,8 +1994,186 @@ function publicSuccessBody(
   ) {
     return publicSessionSnapshot(body);
   }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return {
+      files: Array.isArray(body.files)
+        ? body.files.map(publicWorkspaceFile)
+        : [],
+      nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
+    };
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.path !== "string" ||
+      typeof body.size !== "number" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return {
+      path: body.path,
+      size: body.size,
+      etag: typeof body.etag === "string" ? body.etag : null,
+      versionId: typeof body.versionId === "string" ? body.versionId : null,
+      lastModified:
+        typeof body.lastModified === "string" ? body.lastModified : null,
+      mediaType:
+        typeof body.mediaType === "string"
+          ? body.mediaType
+          : "application/octet-stream",
+      url: url.toString(),
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return {
+      artifacts: Array.isArray(body.artifacts)
+        ? body.artifacts.map(publicWorkspaceArtifact)
+        : [],
+      exports: Array.isArray(body.exports)
+        ? body.exports.map(publicWorkspaceExport)
+        : [],
+    };
+  }
+  if (
+    (method === "POST" &&
+      /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)) ||
+    (method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+$/.test(suffix))
+  ) {
+    return {
+      ...(body.export !== undefined
+        ? { export: publicWorkspaceExport(body.export) }
+        : {}),
+      artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
+    };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return { url: url.toString(), expiresAt: body.expiresAt };
+  }
   throw new Error("Unsupported managed agents response");
 }
+
+function publicWorkspaceFile(value: unknown): Record<string, unknown> {
+  const file = record(value) ?? {};
+  return {
+    path: file.path,
+    size: file.size,
+    lastModified: file.lastModified ?? null,
+    etag: file.etag ?? null,
+  };
+}
+
+/** The manifest a caller verifies against: id, path, size, sha256 and the
+ * retained object's etags. Where the provider retains it (bucket and object
+ * key) is not part of the public contract. */
+function publicWorkspaceArtifact(value: unknown): Record<string, unknown> {
+  const artifact = record(value) ?? {};
+  const receipt = record(artifact.receipt) ?? {};
+  const retention = record(artifact.retention);
+  return {
+    id: artifact.id,
+    exportId: artifact.exportId ?? null,
+    sessionId: artifact.sessionId,
+    projectId: artifact.projectId ?? null,
+    agentId: artifact.agentId ?? null,
+    deploymentId: artifact.deploymentId ?? null,
+    environment: artifact.environment ?? null,
+    path: artifact.path,
+    size: artifact.size,
+    sha256: artifact.sha256,
+    mediaType: artifact.mediaType ?? "application/octet-stream",
+    snapshotId:
+      artifact.snapshotId ??
+      receipt.sourceVersionId ??
+      receipt.sourceEtag ??
+      null,
+    receipt: {
+      etag: receipt.etag ?? null,
+      sourceEtag: receipt.sourceEtag ?? null,
+      sourceVersionId: receipt.sourceVersionId ?? null,
+    },
+    retention: retention
+      ? { policy: retention.policy, expiresAt: retention.expiresAt ?? null }
+      : { policy: "until_deleted", expiresAt: null },
+    exportedAt: artifact.exportedAt,
+  };
+}
+
+/** One export attempt: its state, what the caller expected, the artifact it
+ * produced or the error it ended in. The request digest is internal. */
+function publicWorkspaceExport(value: unknown): Record<string, unknown> {
+  const exported = record(value) ?? {};
+  const error = record(exported.error);
+  const expected = record(exported.expected);
+  return {
+    id: exported.id,
+    sessionId: exported.sessionId,
+    projectId: exported.projectId ?? null,
+    agentId: exported.agentId ?? null,
+    deploymentId: exported.deploymentId ?? null,
+    environment: exported.environment ?? null,
+    path: exported.path,
+    state: exported.state,
+    idempotencyKey: exported.idempotencyKey ?? null,
+    expected: expected
+      ? {
+          ...(expected.bytes !== undefined ? { bytes: expected.bytes } : {}),
+          ...(expected.sha256 !== undefined ? { sha256: expected.sha256 } : {}),
+          ...(expected.mediaType !== undefined
+            ? { mediaType: expected.mediaType }
+            : {}),
+        }
+      : null,
+    artifactId: exported.artifactId ?? null,
+    error: error
+      ? {
+          code:
+            typeof error.code === "string" &&
+            Object.hasOwn(WORKSPACE_EXPORT_ERROR_MESSAGES, error.code)
+              ? error.code
+              : "workspace_export_failed",
+          message:
+            (typeof error.code === "string" &&
+              WORKSPACE_EXPORT_ERROR_MESSAGES[error.code]) ||
+            WORKSPACE_EXPORT_ERROR_MESSAGES.workspace_export_failed,
+          retrySafe: error.retrySafe === true,
+        }
+      : null,
+    createdAt: exported.createdAt,
+    completedAt: exported.completedAt ?? null,
+  };
+}
+
+const WORKSPACE_ARTIFACT_CONTENT_ROUTE =
+  /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/content$/;
 
 async function publicSuccessResponse(
   upstream: Response,
@@ -2234,6 +2544,33 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (isSessionResultsRoute(method, suffix)) return true;
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) return true;
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
+      suffix,
+    )
+  ) {
+    return true;
+  }
   return (
     method === "POST" &&
     /^\/sessions\/[^/]+\/(turns|suspend|resume|end|terminate|interrupt)$/.test(
@@ -2613,6 +2950,55 @@ export async function handleAgentWebhookInvocation(
   }
 }
 
+// Anonymous template preview: the dashboard shows a template's deploy form
+// before sign-up, so inspection is proxied without an org assertion to the
+// backend's public route. Installation still requires an authenticated caller.
+export async function proxyPublicTemplateInspection(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method.toUpperCase() !== "POST") {
+    return Response.json({ error: "method not allowed" }, { status: 405 });
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/public/template-inspections`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return Response.json(
+      { error: "managed agents upstream must use HTTPS" },
+      { status: 503 },
+    );
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers: copyRequestHeaders(request),
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    return publicSuccessResponse(
+      upstream,
+      "POST",
+      "/template-inspections",
+      new URL(request.url).origin,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.upstream_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      { error: "managed agents service is unavailable" },
+      { status: 502 },
+    );
+  }
+}
+
 export async function proxyManagedAgents(
   request: Request,
   env: ManagedAgentsEnv,
@@ -2727,6 +3113,39 @@ export async function proxyManagedAgents(
     );
   }
   const headers = copyRequestHeaders(request);
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return Response.json(
+        { error: "expected a WebSocket upgrade" },
+        { status: 426 },
+      );
+    }
+    target.searchParams.set("role", "client");
+    headers.set("upgrade", "websocket");
+    headers.set(
+      "x-opencomputer-agent-token",
+      await mintManagedAgentsAssertion(env.OC_MANAGED_AGENTS_SECRET, caller),
+    );
+    try {
+      const upstream = await fetch(target, { method: "GET", headers });
+      if (upstream.status !== 101 || !upstream.webSocket) {
+        return publicErrorResponse(upstream);
+      }
+      return relaySessionSocket(upstream.webSocket);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "managed_agents.upstream_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Response.json(
+        { error: "managed agents service is unavailable" },
+        { status: 502 },
+      );
+    }
+  }
   const memoryRoute = isMemoryRoute(method, suffix);
   if (memoryRoute) {
     for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
@@ -2766,15 +3185,49 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
+    if (
+      method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix) &&
+      upstream.status === 302
+    ) {
+      const value = upstream.headers.get("location");
+      let location: URL;
+      try {
+        location = new URL(value ?? "");
+      } catch {
+        throw new Error("Invalid workspace download redirect");
+      }
+      if (
+        location.protocol !== "https:" ||
+        location.username ||
+        location.password
+      ) {
+        throw new Error("Invalid workspace download redirect");
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: location.toString(),
+          "cache-control": "private, no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
-    if (/^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    if (
+      /^\/projects\/[^/]+\/source-archive$/.test(suffix) ||
+      WORKSPACE_ARTIFACT_CONTENT_ROUTE.test(suffix)
+    ) {
       const responseHeaders = new Headers();
       for (const name of [
         "content-type",
         "content-length",
         "content-disposition",
         "etag",
+        "x-workspace-artifact-id",
+        "x-workspace-artifact-sha256",
+        "x-workspace-artifact-size",
       ]) {
         const value = upstream.headers.get(name);
         if (value) responseHeaders.set(name, value);

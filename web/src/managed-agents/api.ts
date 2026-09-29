@@ -1,5 +1,17 @@
 import { z } from 'zod'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
+import { managedAgentEventSchema, type ManagedAgentEvent } from './events'
+import {
+  ManagedAgentEventStream,
+  ManagedAgentEventStreamTimeout,
+} from './live-events'
+import {
+  Sha256,
+  ZipWriter,
+  assertSinkCapacity,
+  zipOverheadBytes,
+  openDownloadSink,
+} from './workspace-download'
 
 const agentSchema = z.object({
   id: z.string(),
@@ -546,15 +558,7 @@ const sessionCreateSchema = z.object({
   deployment: deploymentSchema.optional(),
 })
 
-const eventSchema = z.object({
-  id: z.string().optional(),
-  seq: z.number(),
-  timestamp: z.string().optional(),
-  sessionId: z.string().optional(),
-  turnId: z.string().optional(),
-  type: z.string(),
-  data: z.record(z.string(), z.unknown()),
-})
+const eventSchema = managedAgentEventSchema
 
 const renderDebugSchema = z.object({
   renderId: z.string(),
@@ -767,7 +771,7 @@ export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
-export type ManagedAgentEvent = z.infer<typeof eventSchema>
+export type { ManagedAgentEvent } from './events'
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
@@ -1629,15 +1633,320 @@ export async function collectManagedAgentEventPages(
   }
 }
 
+const workspaceFileSchema = z.object({
+  path: z.string(),
+  size: z.number(),
+  lastModified: z.string().nullable(),
+  etag: z.string().nullable(),
+})
+const workspaceFilesResponseSchema = z.object({
+  files: z.array(workspaceFileSchema),
+  nextCursor: z.string().nullable(),
+})
+const workspaceArtifactSchema = z.object({
+  id: z.string(),
+  exportId: z.string().nullish(),
+  sessionId: z.string(),
+  path: z.string(),
+  size: z.number(),
+  sha256: z.string(),
+  mediaType: z.string().nullish(),
+  snapshotId: z.string().nullish(),
+  receipt: z.object({
+    etag: z.string().nullable(),
+    sourceEtag: z.string().nullable(),
+    sourceVersionId: z.string().nullable(),
+  }),
+  exportedAt: z.string(),
+})
+const workspaceArtifactsResponseSchema = z.object({
+  artifacts: z.array(workspaceArtifactSchema),
+})
+const workspaceExportResponseSchema = z.object({
+  export: z.object({ id: z.string(), state: z.string() }).optional(),
+  artifact: workspaceArtifactSchema.nullable(),
+})
+const workspaceDownloadResponseSchema = z.object({
+  url: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value)
+      return url.protocol === 'https:' && !url.username && !url.password
+    }),
+  expiresAt: z.string(),
+})
+const workspaceFileDownloadResponseSchema =
+  workspaceDownloadResponseSchema.extend({
+    path: z.string(),
+    size: z.number(),
+    etag: z.string().nullable(),
+    versionId: z.string().nullable(),
+    lastModified: z.string().nullable(),
+    mediaType: z.string(),
+  })
+
+export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
+export type ManagedWorkspaceArtifact = z.infer<typeof workspaceArtifactSchema>
+export type ManagedWorkspaceDownload = z.infer<
+  typeof workspaceFileDownloadResponseSchema
+>
+
+/** Every file the agent wrote under /workspace, across all list pages. */
+export async function getManagedAgentWorkspaceFiles(sessionId: string) {
+  const files: ManagedWorkspaceFile[] = []
+  let cursor: string | null = null
+  do {
+    const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+    const page: z.infer<typeof workspaceFilesResponseSchema> = await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/files${query}`,
+      undefined,
+      workspaceFilesResponseSchema,
+    )
+    files.push(...page.files)
+    cursor = page.nextCursor
+  } while (cursor)
+  return files
+}
+
+export async function getManagedAgentWorkspaceArtifacts(sessionId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
+      undefined,
+      workspaceArtifactsResponseSchema,
+    )
+  ).artifacts
+}
+
+export function authorizeManagedAgentWorkspaceDownload(
+  sessionId: string,
+  path: string,
+) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+    workspaceFileDownloadResponseSchema,
+  )
+}
+
+/** A normal browser download: same-origin auth redirects to signed CloudFront. */
+export function managedAgentWorkspaceBrowserDownloadPath(
+  sessionId: string,
+  path: string,
+) {
+  return `/api/dashboard/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`
+}
+
+/** Provider-side export: retains and hashes the file, returns its manifest. */
+export async function exportManagedAgentWorkspaceFile(
+  sessionId: string,
+  path: string,
+) {
+  const result = await apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/exports`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+    workspaceExportResponseSchema,
+  )
+  if (!result.artifact) {
+    throw new Error(`Export of ${path} is still in progress; try again shortly`)
+  }
+  return result.artifact
+}
+
+export function managedAgentWorkspaceArtifactDownloadPath(
+  artifact: Pick<ManagedWorkspaceArtifact, 'sessionId' | 'id'>,
+) {
+  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/download`
+}
+
+/** Fetches a signed object without sending dashboard credentials to storage. */
+export async function fetchManagedAgentWorkspaceObject(
+  url: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(url, {
+    credentials: 'omit',
+    redirect: 'error',
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Workspace object download failed (${response.status})`)
+  }
+  return response
+}
+
+async function streamManagedWorkspaceDownload(
+  download: ManagedWorkspaceDownload,
+  write: (chunk: Uint8Array) => Promise<void>,
+) {
+  const response = await fetchManagedAgentWorkspaceObject(download.url)
+  if (!response.body) throw new Error('Workspace file response had no body')
+  const reader = response.body.getReader()
+  let received = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > download.size) {
+        throw new Error(`Download exceeded ${download.size} bytes`)
+      }
+      await write(value)
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  if (received !== download.size) {
+    throw new Error(`Downloaded ${received} bytes, expected ${download.size}`)
+  }
+}
+
+/**
+ * Streams a retained artifact chunk by chunk into `write`, hashing and
+ * counting as it goes, and rejects once the stream ends unless the bytes
+ * match the manifest's size and SHA-256. Callers must discard what they
+ * wrote when this throws; nothing is buffered here, so a 1 GiB artifact
+ * costs one chunk of memory at a time.
+ */
+export async function streamManagedAgentWorkspaceArtifact(
+  artifact: ManagedWorkspaceArtifact,
+  write: (chunk: Uint8Array) => Promise<void>,
+  signal?: AbortSignal,
+) {
+  const handoff = await apiFetch(
+    managedAgentWorkspaceArtifactDownloadPath(artifact),
+    { signal },
+    workspaceDownloadResponseSchema,
+  )
+  // This second request is deliberately unauthenticated. The signed query is
+  // the authorization; platform cookies and headers must not reach storage.
+  const response = await fetchManagedAgentWorkspaceObject(handoff.url, signal)
+  if (!response.body) throw new Error('Artifact response had no body')
+  const hash = new Sha256()
+  let received = 0
+  const reader = response.body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > artifact.size) {
+        throw new Error(
+          `Download exceeded the manifest size of ${artifact.size} bytes`,
+        )
+      }
+      hash.update(value)
+      await write(value)
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  if (received !== artifact.size) {
+    throw new Error(
+      `Downloaded ${received} bytes, manifest says ${artifact.size}`,
+    )
+  }
+  if (hash.hex() !== artifact.sha256) {
+    throw new Error('Downloaded bytes do not match the manifest SHA-256')
+  }
+}
+
+/**
+ * Downloads a verified artifact to the browser under `name`; on any
+ * mismatch the partial output is discarded and nothing is saved. The sink
+ * is opened before `resolve` runs because the save dialog needs the click's
+ * user activation, which an export round-trip would outlive.
+ */
+export async function downloadManagedAgentWorkspaceArtifact(
+  name: string,
+  expectedBytes: number,
+  resolve: () => Promise<ManagedWorkspaceArtifact>,
+) {
+  const sink = await openDownloadSink(name)
+  let artifact: ManagedWorkspaceArtifact
+  try {
+    assertSinkCapacity(sink, expectedBytes)
+    artifact = await resolve()
+    assertSinkCapacity(sink, artifact.size)
+    await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
+      sink.write(chunk),
+    )
+    await sink.close()
+  } catch (error) {
+    await sink.abort(error).catch(() => undefined)
+    throw error
+  }
+  return artifact
+}
+
+function archiveBytes(entries: Array<{ path: string; size: number }>) {
+  return (
+    entries.reduce((sum, entry) => sum + entry.size, 0) +
+    zipOverheadBytes(entries)
+  )
+}
+
+/**
+ * Streams several verified artifacts into a single stored zip named `name`.
+ * Each entry is hashed while it is written; a mismatch aborts the whole
+ * archive rather than leaving an unverifiable file behind.
+ */
+export async function downloadManagedAgentWorkspaceArchive(
+  name: string,
+  expected: Array<{ path: string; size: number }>,
+  resolve: (file: {
+    path: string
+    size: number
+  }) => Promise<ManagedWorkspaceDownload>,
+  onProgress?: (done: number, total: number) => void,
+) {
+  const sink = await openDownloadSink(name)
+  const zip = new ZipWriter(sink)
+  const downloads: ManagedWorkspaceDownload[] = []
+  try {
+    assertSinkCapacity(sink, archiveBytes(expected))
+    for (const [index, file] of expected.entries()) {
+      onProgress?.(index, expected.length)
+      const download = await resolve(file)
+      if (download.path !== file.path) {
+        throw new Error(`Workspace download path changed from ${file.path}`)
+      }
+      downloads.push(download)
+      await zip.beginEntry(
+        download.path,
+        download.lastModified ? new Date(download.lastModified) : new Date(),
+      )
+      await streamManagedWorkspaceDownload(download, (chunk) =>
+        zip.write(chunk),
+      )
+      await zip.endEntry()
+    }
+    onProgress?.(expected.length, expected.length)
+    await zip.finish()
+  } catch (error) {
+    await zip.abort(error).catch(() => undefined)
+    throw error
+  }
+  return downloads
+}
+
 export async function getManagedAgentSessionEvents(
   sessionId: string,
   after = 0,
+  signal?: AbortSignal,
 ) {
   return collectManagedAgentEventPages(async (cursor) => {
     return (
       await apiFetch(
         `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-        undefined,
+        signal ? { signal } : undefined,
         eventsResponseSchema,
       )
     ).events
@@ -1826,38 +2135,32 @@ export async function deleteManagedMemoryDocument(
   })
 }
 
-async function sleep(milliseconds: number) {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds))
-}
-
-export function nextAgentEventDeadline(
-  deadline: number,
-  timeoutMs: number,
-  receivedEvents: number,
-  now = Date.now(),
+export function openManagedAgentEventStream(
+  sessionId: string,
+  after: number,
+  signal?: AbortSignal,
 ) {
-  return receivedEvents > 0 ? now + timeoutMs : deadline
+  return new ManagedAgentEventStream(sessionId, after, {
+    fetchEvents: getManagedAgentSessionEvents,
+    signal,
+  })
 }
 
+// `timeoutMs` is an inactivity deadline: multi-step agents can run for longer
+// than one fixed window while continuing to stream useful progress.
 async function waitForAgentEvent(
   sessionId: string,
   after: number,
-  terminal: (event: z.infer<typeof eventSchema>) => boolean,
-  onEvent: (event: z.infer<typeof eventSchema>) => void,
+  terminal: (event: ManagedAgentEvent) => boolean,
+  onEvent: (event: ManagedAgentEvent) => void,
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  let deadline = Date.now() + timeoutMs
-  let cursor = after
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const { events } = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-      { signal },
-      eventsResponseSchema,
-    )
-    for (const event of events) {
-      cursor = Math.max(cursor, event.seq)
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const stream = openManagedAgentEventStream(sessionId, after, signal)
+  try {
+    for (;;) {
+      const event = await stream.next(timeoutMs)
       onEvent(event)
       if (
         event.type === 'runtime.disconnected' ||
@@ -1871,14 +2174,16 @@ async function waitForAgentEvent(
               : 'The agent runtime disconnected.',
         )
       }
-      if (terminal(event)) return { event, cursor }
+      if (terminal(event)) return { event, cursor: event.seq }
     }
-    // Treat timeoutMs as an inactivity deadline. Multi-step agents can run for
-    // longer than one fixed window while continuing to stream useful progress.
-    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length)
-    await sleep(600)
+  } catch (error) {
+    if (error instanceof ManagedAgentEventStreamTimeout) {
+      throw new Error('Timed out waiting for the agent.')
+    }
+    throw error
+  } finally {
+    stream.close()
   }
-  throw new Error('Timed out waiting for the agent.')
 }
 
 export async function runManagedAgent(

@@ -1,3 +1,5 @@
+import { insufficientCreditsResponse } from "./billing_onramp";
+
 export interface ManagedAgentCreditGateEnv {
   OPENCOMPUTER_DB: D1Database;
 }
@@ -52,18 +54,7 @@ export async function getManagedAgentBillingAdmission(
 }
 
 export function insufficientManagedAgentCredits(request: Request): Response {
-  const billingURL = new URL("/billing", request.url).toString();
-  return Response.json(
-    {
-      error: {
-        code: "insufficient_credits",
-        message:
-          `Insufficient prepaid credits. Top up or enable automatic top-up: ${billingURL}`,
-        actionUrl: billingURL,
-      },
-    },
-    { status: 402 },
-  );
+  return insufficientCreditsResponse(request);
 }
 
 export async function enforceManagedAgentCreditGate(
