@@ -27,7 +27,7 @@ const snapshots = new Snapshots({ apiKey: "...", apiUrl: "..." });
 
 ## `snapshots.create(opts)`
 
-Create a pre-built snapshot from a declarative image. [HTTP API →](/api-reference/snapshots/create
+Create a pre-built snapshot from a declarative image. [HTTP API →](/api-reference/snapshots/create)
 
 <ParamField body="name" type="string" required>
   Unique snapshot name
@@ -47,7 +47,7 @@ Create a pre-built snapshot from a declarative image. [HTTP API →](/api-refere
 
 ## `snapshots.list()`
 
-List all snapshots. [HTTP API →](/api-reference/snapshots/list
+List all snapshots. [HTTP API →](/api-reference/snapshots/list)
 
 **Returns:** `Promise<SnapshotInfo[]>`
 
@@ -55,7 +55,7 @@ List all snapshots. [HTTP API →](/api-reference/snapshots/list
 
 ## `snapshots.get(name)`
 
-Get a snapshot by name. [HTTP API →](/api-reference/snapshots/get
+Get a snapshot by name. [HTTP API →](/api-reference/snapshots/get)
 
 <ParamField body="name" type="string" required>
   Snapshot name
@@ -67,7 +67,7 @@ Get a snapshot by name. [HTTP API →](/api-reference/snapshots/get
 
 ## `snapshots.delete(name)`
 
-Delete a snapshot. Existing sandboxes created from it are not affected. [HTTP API →](/api-reference/snapshots/delete
+Delete a snapshot. Existing sandboxes created from it are not affected. [HTTP API →](/api-reference/snapshots/delete)
 
 <ParamField body="name" type="string" required>
   Snapshot name

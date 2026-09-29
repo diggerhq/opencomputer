@@ -1,0 +1,31 @@
+name: Deploy Sandbox Docs (Holocron)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-sandbox/**'
+      - '.github/workflows/deploy-docs-sandbox.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-docs-sandbox
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Holocron
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: docs-sandbox
+      - run: npx -y "@holocron.so/cli" deploy
+        working-directory: docs-sandbox
+        env:
+          HOLOCRON_KEY: ${{ secrets.HOLOCRON_KEY }}

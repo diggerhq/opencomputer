@@ -3,7 +3,7 @@ title: 'Create Webhook'
 api: 'POST /api/webhooks'
 ---
 
-Register a webhook destination for sandbox lifecycle events. See [Webhooks](/sandboxes/webhooks.
+Register a webhook destination for sandbox lifecycle events. See [Webhooks](/sandboxes/webhooks).
 
 <ParamField body="url" type="string" required>
   HTTPS endpoint to deliver to. (SSRF protection is applied by the delivery provider at send time, not at registration.)
@@ -18,7 +18,7 @@ Register a webhook destination for sandbox lifecycle events. See [Webhooks](/san
 </ParamField>
 
 <ParamField body="secret" type="string">
-  Signing secret. Omit and one is generated (`whsec_…`). The secret is returned in the create response and is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get.
+  Signing secret. Omit and one is generated (`whsec_…`). The secret is returned in the create response and is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
 </ParamField>
 
 <ParamField body="name" type="string">
@@ -53,5 +53,5 @@ Without an `Idempotency-Key`, each call creates a **new** destination and return
 }
 ```
 
-The `secret` is returned here and stays re-fetchable via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get — store it to verify deliveries.
+The `secret` is returned here and stays re-fetchable via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get) — store it to verify deliveries.
 </ResponseExample>

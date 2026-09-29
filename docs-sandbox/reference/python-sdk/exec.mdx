@@ -7,7 +7,7 @@ Accessed via `sandbox.exec`.
 
 ## `await sandbox.exec.run(command, ...)`
 
-Run a command synchronously via `sh -c`. [HTTP API →](/api-reference/exec/run
+Run a command synchronously via `sh -c`. [HTTP API →](/api-reference/exec/run)
 
 <ParamField body="command" type="str" required>
   Shell command
@@ -35,7 +35,7 @@ result = await sandbox.exec.run("npm test", cwd="/app")
 
 ## `await sandbox.exec.start(command, ...)`
 
-Start a long-running command with streaming I/O. [HTTP API →](/api-reference/exec/create-session
+Start a long-running command with streaming I/O. [HTTP API →](/api-reference/exec/create-session)
 
 <ParamField body="command" type="str" required>
   Command
@@ -171,7 +171,7 @@ Reconnect to a running exec session over WebSocket.
 
 ## `await sandbox.exec.list()`
 
-List all exec sessions. [HTTP API →](/api-reference/exec/list-sessions
+List all exec sessions. [HTTP API →](/api-reference/exec/list-sessions)
 
 **Returns:** `list[ExecSessionInfo]`
 
@@ -179,7 +179,7 @@ List all exec sessions. [HTTP API →](/api-reference/exec/list-sessions
 
 ## `await sandbox.exec.kill(session_id, signal=9)`
 
-Kill an exec session. [HTTP API →](/api-reference/exec/kill-session
+Kill an exec session. [HTTP API →](/api-reference/exec/kill-session)
 
 **Returns:** `None`
 

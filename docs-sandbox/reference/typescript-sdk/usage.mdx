@@ -27,7 +27,7 @@ work.
 ## `usage.forSandbox(sandboxId, opts?)`
 
 Return 1-minute memory points plus envelope totals for one sandbox.
-[HTTP API ->](/api-reference/usage/get-sandbox-usage
+[HTTP API ->](/api-reference/usage/get-sandbox-usage)
 
 <ParamField body="sandboxId" type="string" required>
   Sandbox ID.
@@ -66,7 +66,7 @@ for (const point of r.points) {
 
 ## `usage.bySandbox(opts?)`
 
-Rank sandboxes by usage for an organization. [HTTP API ->](/api-reference/usage/get-usage
+Rank sandboxes by usage for an organization. [HTTP API ->](/api-reference/usage/get-usage)
 
 <ParamField body="from" type="string">
   ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
@@ -123,7 +123,7 @@ if (page.nextCursor) {
 ## `usage.byTag(tagKey, opts?)`
 
 Group usage by the value of one tag key. Tag keys may contain `:`.
-[HTTP API ->](/api-reference/usage/get-usage
+[HTTP API ->](/api-reference/usage/get-usage)
 
 <ParamField body="tagKey" type="string" required>
   Tag key to group by, for example `"team"` or `"team:subsystem"`.
@@ -174,7 +174,7 @@ const bySubsystem = await usage.byTag("team:subsystem");
 ## `tags.set(sandboxId, tags)`
 
 Replace the full tag set for a sandbox. Partial updates are not
-supported: read, modify, then write the full map. [HTTP API ->](/api-reference/sandboxes/set-tags
+supported: read, modify, then write the full map. [HTTP API ->](/api-reference/sandboxes/set-tags)
 
 <ParamField body="sandboxId" type="string" required>
   Sandbox ID.
@@ -196,7 +196,7 @@ await tags.set("sb-abc123", {
 
 ## `tags.get(sandboxId)`
 
-Read the current tag set for a sandbox. [HTTP API ->](/api-reference/sandboxes/get-tags
+Read the current tag set for a sandbox. [HTTP API ->](/api-reference/sandboxes/get-tags)
 
 **Returns:** `Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }>`
 
@@ -208,7 +208,7 @@ console.log(current.tags);
 ## `tags.listKeys()`
 
 List tag keys seen in the organization, with counts for tagged
-sandboxes and distinct values. [HTTP API ->](/api-reference/usage/list-tags
+sandboxes and distinct values. [HTTP API ->](/api-reference/usage/list-tags)
 
 **Returns:** `Promise<TagKeyInfo[]>`
 

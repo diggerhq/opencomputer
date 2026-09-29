@@ -6,7 +6,7 @@ api: 'POST /api/capacity/reservations'
 Commit capacity across one or more 15-minute UTC intervals in a single
 atomic write. The result is one reservation event with a server-generated
 `reservationId` covering all intervals in the request. See
-[Reserving capacity](/reserved-capacity/reserving for the full write
+[Reserving capacity](/reserved-capacity/reserving) for the full write
 contract.
 
 Send an `Idempotency-Key` header so retries return the original result.

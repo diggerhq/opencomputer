@@ -3,7 +3,7 @@ title: 'Update Webhook'
 api: 'PATCH /api/webhooks/{id}'
 ---
 
-Update a destination — pause/resume, retune filters, change the URL, or rotate the secret. See [Webhooks](/sandboxes/webhooks.
+Update a destination — pause/resume, retune filters, change the URL, or rotate the secret. See [Webhooks](/sandboxes/webhooks).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
@@ -29,7 +29,7 @@ Update a destination — pause/resume, retune filters, change the URL, or rotate
   Rename the destination.
 </ParamField>
 
-`sandboxId` (scope) is **immutable** — set it at create; it can't be changed here. The current signing secret is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get.
+`sandboxId` (scope) is **immutable** — set it at create; it can't be changed here. The current signing secret is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
 
 <ResponseExample>
 ```json 200

@@ -7,7 +7,7 @@ description: "Create, connect, and manage sandbox lifecycle"
 
 ### `await Sandbox.create(...)`
 
-Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create
+Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 
 <ParamField body="template" type="str" default="base">
   Template name
@@ -34,11 +34,11 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create
 </ParamField>
 
 <ParamField body="burst" type="bool">
-  Create a [Burst Sandbox](/sandboxes/burst-sandboxes. Disk is preserved across infrastructure restarts; processes may restart.
+  Create a [Burst Sandbox](/sandboxes/burst-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
 </ParamField>
 
 <ParamField body="image" type="Image">
-  Declarative image definition (see [Image](/reference/python-sdk/image)
+  Declarative image definition (see [Image](/reference/python-sdk/image))
 </ParamField>
 
 <ParamField body="snapshot" type="str">
@@ -74,7 +74,7 @@ sandbox = await Sandbox.create(
 
 ### `await Sandbox.connect(sandbox_id, ...)`
 
-Connect to an existing sandbox. [HTTP API →](/api-reference/sandboxes/get
+Connect to an existing sandbox. [HTTP API →](/api-reference/sandboxes/get)
 
 <ParamField body="sandbox_id" type="str" required>
   Sandbox ID
@@ -90,7 +90,7 @@ sandbox = await Sandbox.connect("sb-abc123")
 
 ### `await Sandbox.create_from_checkpoint(checkpoint_id, ...)`
 
-Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoints/fork
+Create a new sandbox from a checkpoint. [HTTP API →](/api-reference/checkpoints/fork)
 
 <ParamField body="checkpoint_id" type="str" required>
   Checkpoint ID
@@ -110,7 +110,7 @@ forked = await Sandbox.create_from_checkpoint("cp-abc123")
 
 ### `await Sandbox.create_checkpoint_patch(checkpoint_id, script, ...)`
 
-[HTTP API →](/api-reference/patches/create
+[HTTP API →](/api-reference/patches/create)
 
 <ParamField body="checkpoint_id" type="str" required>
   Target checkpoint
@@ -130,11 +130,11 @@ forked = await Sandbox.create_from_checkpoint("cp-abc123")
 
 ### `await Sandbox.list_checkpoint_patches(checkpoint_id, ...)`
 
-[HTTP API →](/api-reference/patches/list — **Returns:** `list[dict]`
+[HTTP API →](/api-reference/patches/list) — **Returns:** `list[dict]`
 
 ### `await Sandbox.delete_checkpoint_patch(checkpoint_id, patch_id, ...)`
 
-[HTTP API →](/api-reference/patches/delete — **Returns:** `None`
+[HTTP API →](/api-reference/patches/delete) — **Returns:** `None`
 
 ---
 
@@ -155,7 +155,7 @@ async with await Sandbox.create() as sandbox:
 
 ### `await sandbox.kill()`
 
-Terminate the sandbox. [HTTP API →](/api-reference/sandboxes/delete
+Terminate the sandbox. [HTTP API →](/api-reference/sandboxes/delete)
 
 **Returns:** `None`
 
@@ -167,7 +167,7 @@ Check if the sandbox is running.
 
 ### `await sandbox.set_timeout(timeout)`
 
-Update idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout
+Update idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout)
 
 <ParamField body="timeout" type="int" required>
   New timeout in seconds
@@ -177,7 +177,7 @@ Update idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout
 
 ### `await sandbox.create_checkpoint(name, kind=None, retention_policy=None)`
 
-Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create
+Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create)
 
 <ParamField body="retention_policy" type="dict">
   Optional retention policy. Use `{"mode": "delete_oldest", "maxCount": 10}`
@@ -190,21 +190,21 @@ Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create
 
 ### `await sandbox.list_checkpoints()`
 
-[HTTP API →](/api-reference/checkpoints/list — **Returns:** `list[dict]`
+[HTTP API →](/api-reference/checkpoints/list) — **Returns:** `list[dict]`
 
 ### `await sandbox.restore_checkpoint(checkpoint_id)`
 
-Revert in-place to a checkpoint. [HTTP API →](/api-reference/checkpoints/restore
+Revert in-place to a checkpoint. [HTTP API →](/api-reference/checkpoints/restore)
 
 **Returns:** `None`
 
 ### `await sandbox.delete_checkpoint(checkpoint_id)`
 
-[HTTP API →](/api-reference/checkpoints/delete — **Returns:** `None`
+[HTTP API →](/api-reference/checkpoints/delete) — **Returns:** `None`
 
 ### `await sandbox.download_url(path, *, expires_in=3600)`
 
-Generate a signed download URL. [HTTP API →](/api-reference/files/generate-download-url · [Guide →](/sandboxes/signed-urls
+Generate a signed download URL. [HTTP API →](/api-reference/files/generate-download-url) · [Guide →](/sandboxes/signed-urls)
 
 <ParamField body="path" type="str" required>
   Absolute path to the file
@@ -218,7 +218,7 @@ Generate a signed download URL. [HTTP API →](/api-reference/files/generate-dow
 
 ### `await sandbox.upload_url(path, *, expires_in=3600)`
 
-Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-upload-url · [Guide →](/sandboxes/signed-urls
+Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-upload-url) · [Guide →](/sandboxes/signed-urls)
 
 <ParamField body="path" type="str" required>
   Absolute path for the destination file
@@ -232,7 +232,7 @@ Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-uploa
 
 ### `await sandbox.create_preview_url(port, domain?, auth_config?)`
 
-[HTTP API →](/api-reference/preview/create
+[HTTP API →](/api-reference/preview/create)
 
 <ParamField body="port" type="int" required>
   Container port (1–65535)
@@ -250,15 +250,15 @@ Generate a signed upload URL. [HTTP API →](/api-reference/files/generate-uploa
 
 ### `await sandbox.list_preview_urls()`
 
-[HTTP API →](/api-reference/preview/list — **Returns:** `list[dict]`
+[HTTP API →](/api-reference/preview/list) — **Returns:** `list[dict]`
 
 ### `await sandbox.delete_preview_url(port)`
 
-[HTTP API →](/api-reference/preview/delete — **Returns:** `None`
+[HTTP API →](/api-reference/preview/delete) — **Returns:** `None`
 
 ### `await sandbox.get_allowed_hosts()`
 
-Return the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/sandboxes/secrets config separately.
+Return the egress allowlist + per-secret allowed hosts the sandbox's secrets proxy enforces. Useful for debugging "why is my outbound HTTP call being blocked" without having to cross-reference the [secret store](/sandboxes/secrets) config separately.
 
 Sandboxes created without a `secret_store` option return an empty allowlist with `secretStore` omitted — the sandbox has no per-store egress restriction.
 
@@ -292,7 +292,7 @@ Close HTTP clients. Called automatically by the context manager.
 
 ## Not Available in Python
 
-These features are TypeScript-only. Use the [HTTP API](/api-reference/overview directly:
+These features are TypeScript-only. Use the [HTTP API](/api-reference/overview) directly:
 
 - `hibernate()` / `wake()`
 - `cpuCount` / `memoryMB` on create
@@ -310,19 +310,19 @@ These features are TypeScript-only. Use the [HTTP API](/api-reference/overview d
 </ParamField>
 
 <ParamField body="agent" type="Agent">
-  [Agent sessions](https://docs.opencomputer.dev/reference/python-sdk/agent
+  [Agent sessions](https://docs.opencomputer.dev/reference/python-sdk/agent)
 </ParamField>
 
 <ParamField body="exec" type="Exec">
-  [Command execution](/reference/python-sdk/exec
+  [Command execution](/reference/python-sdk/exec)
 </ParamField>
 
 <ParamField body="files" type="Filesystem">
-  [File operations](/reference/python-sdk/filesystem
+  [File operations](/reference/python-sdk/filesystem)
 </ParamField>
 
 <ParamField body="pty" type="Pty">
-  [Terminal sessions](/reference/python-sdk/pty
+  [Terminal sessions](/reference/python-sdk/pty)
 </ParamField>
 
 <ParamField body="commands" type="Exec">

@@ -27,7 +27,7 @@ snapshots = Snapshots(api_key="...", api_url="...")
 
 ## `await snapshots.create(name, image, on_build_logs=None)`
 
-Create a pre-built snapshot. [HTTP API →](/api-reference/snapshots/create
+Create a pre-built snapshot. [HTTP API →](/api-reference/snapshots/create)
 
 <ParamField body="name" type="str" required>
   Unique snapshot name
@@ -47,11 +47,11 @@ Create a pre-built snapshot. [HTTP API →](/api-reference/snapshots/create
 
 ## `await snapshots.list()`
 
-[HTTP API →](/api-reference/snapshots/list — **Returns:** `list[dict]`
+[HTTP API →](/api-reference/snapshots/list) — **Returns:** `list[dict]`
 
 ## `await snapshots.get(name)`
 
-[HTTP API →](/api-reference/snapshots/get
+[HTTP API →](/api-reference/snapshots/get)
 
 <ParamField body="name" type="str" required>
   Snapshot name
@@ -61,7 +61,7 @@ Create a pre-built snapshot. [HTTP API →](/api-reference/snapshots/create
 
 ## `await snapshots.delete(name)`
 
-Delete a snapshot. Existing sandboxes are not affected. [HTTP API →](/api-reference/snapshots/delete
+Delete a snapshot. Existing sandboxes are not affected. [HTTP API →](/api-reference/snapshots/delete)
 
 **Returns:** `None`
 
