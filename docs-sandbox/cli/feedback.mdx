@@ -1,0 +1,68 @@
+---
+title: "Feedback"
+description: "Report bugs, docs mismatches, and friction with the feedback.now protocol from the CLI"
+---
+
+`oc feedback` is a [feedback.now](https://feedback.now) emitter. When you — or an agent driving
+`oc` — hit a bug, a docs mismatch, or friction in an API, CLI, or SDK, file it straight from the
+terminal. No account or API key is needed; every submission returns a receipt you can poll.
+
+By default it reports to OpenComputer. Pass `--target` (or set `OC_FEEDBACK_TARGET`) to report to
+any other host that publishes `/.well-known/agent-feedback.json`. See the
+[protocol reference](/api-reference/agent-feedback for the receiving side.
+
+```bash
+# What does the target accept?
+oc feedback policy
+
+# File a structured report
+oc feedback submit \
+  --surface 'POST /api/sandboxes' --category bug --severity high \
+  --title 'create returns 500 when template is missing' \
+  --summary 'Expected a 404 with a clear error' \
+  --reproducibility always \
+  --evidence 'http_summary={"status":500}' \
+  --evidence stderr_excerpt=@error.log
+
+# Lightweight signal — no title or evidence needed
+oc feedback observe --surface 'oc sandbox create' --category friction \
+  --summary '--template flag name differs from the docs'
+
+# Check what happened to a report
+oc feedback receipt rcpt_…
+
+# Report to a different feedback.now receiver
+oc feedback submit --target https://api.example.com --surface 'GET /v1/items' \
+  --category docs_mismatch --severity low --title 'docs say limit max is 500, API caps at 100'
+```
+
+## Flags
+
+| Flag | Applies to | Notes |
+| --- | --- | --- |
+| `--surface` | submit, observe | Required. What was being used: `POST /api/sandboxes`, `oc exec`, `Sandbox.create()`, a docs URL |
+| `--category` | submit, observe | `bug`, `docs_mismatch`, `friction`, `feature_gap`, `quality_degradation`, `other` |
+| `--severity` | submit, observe | `critical`, `high`, `medium`, `low` |
+| `--title` | submit | Required. Short, specific |
+| `--summary` | submit, observe | What happened vs. what you expected |
+| `--hypothesis` | submit | Suspected root cause |
+| `--reproducibility` | submit | `always`, `sometimes`, `intermittent`, `once` |
+| `--confidence` | submit, observe | 0–1, default 0.7 |
+| `--kind` | submit, observe | `api_endpoint`, `docs_page`, `cli_command`, `sdk_method`, `other` |
+| `--evidence` | submit | `type=content` or `type=@file`; repeatable, up to 10 |
+| `--target`, `--domain` | all | Receiver base URL; `subject.domain` defaults to its host |
+| `--agent-vendor`, `--agent-product`, `--agent-version` | all | Reporter identity; default `opencomputer` / `oc-cli` / the `oc` version |
+| `--signing-key` | all | PEM Ed25519 key from `oc feedback keygen`; also `OC_FEEDBACK_SIGNING_KEY` |
+
+`--json` prints the raw receipt. Exit code `3` means the receiver rejected the request (the
+validation errors are printed), matching the rest of `oc`.
+
+## Signing
+
+Signing is optional. A signed agent builds a reputation across submissions, which receivers use
+to prioritize triage:
+
+```bash
+oc feedback keygen --out ~/.config/oc/agent-feedback.pem
+export OC_FEEDBACK_SIGNING_KEY=~/.config/oc/agent-feedback.pem
+```

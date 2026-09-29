@@ -1,0 +1,61 @@
+---
+title: "Login and identity"
+description: "Sign the local CLI in to OpenComputer"
+---
+
+## `oc login`
+
+```bash
+oc login [--no-browser] [--force]
+```
+
+The CLI prints a short confirmation code and a complete HTTPS sign-in URL,
+then waits for approval. It tries to open the URL on a local machine; browser
+failure does not stop the flow.
+
+- `--no-browser` only prints the URL, which is useful over SSH or when a coding
+  agent is running the command.
+- `--force` replaces an existing saved credential. A prior CLI-created key is
+  revoked only after the replacement is saved and verified. If its previous API
+  is unreachable, replacement continues with a warning and that old key remains
+  available for manual revocation. A manually configured key is replaced
+  locally but never remotely revoked.
+
+The credential is stored in `~/.oc/config.json` with private permissions and is
+never printed, including under `--json`. If `--api-key` or
+`OPENCOMPUTER_API_KEY` is active, unset that override before logging in.
+When an API URL override differs from a saved login, the CLI requires an
+explicit replacement rather than reporting the old host as logged in. Remote
+login endpoints should use HTTPS; the CLI warns before sending credentials to
+a non-loopback HTTP URL.
+
+`oc login` is for a person's local CLI. CI, servers, and SDK applications
+should keep using an explicit org API key supplied through their secret
+manager.
+
+## `oc whoami`
+
+```bash
+oc whoami
+oc whoami --json
+```
+
+Shows the authenticated user, workspace, org id, and API URL for the effective
+credential.
+
+## `oc logout`
+
+```bash
+oc logout
+oc logout --local
+```
+
+For a CLI-managed login, `oc logout` first revokes that exact key and only then
+clears it from the config file. If remote revocation is ambiguous, the local
+credential is retained and the command fails so it cannot claim a still-live
+key was revoked.
+
+`--local` explicitly clears local login state without remote revocation.
+It remains available when an environment or flag key currently overrides the
+saved login. Manually configured and environment-provided keys are never
+remotely revoked by this command.
