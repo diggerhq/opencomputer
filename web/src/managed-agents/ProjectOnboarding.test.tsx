@@ -7,17 +7,16 @@ import ProjectOnboarding, {
 } from './ProjectOnboarding'
 
 describe('project onboarding', () => {
-  it('presents the CLI-only three-step flow', () => {
+  it('offers prompt-first and command-first paths, defaulting to the prompt', () => {
     const markup = renderToStaticMarkup(<ProjectOnboarding />)
 
     expect(markup).toContain('Create your first agent')
-    expect(markup).toContain('Install the OpenComputer CLI')
-    expect(markup).toContain(INSTALL_CLI_COMMAND)
-    expect(markup).toContain('Sign in to OpenComputer')
-    expect(markup).toContain(LOGIN_COMMAND)
-    expect(markup).toContain('Codex, Claude Code, or OpenCode')
+    expect(markup).toContain('Use your coding agent')
+    expect(markup).toContain('Run the commands')
+    expect(markup).toContain('Claude Code, Codex, or OpenCode')
     expect(markup).toContain(CREATE_AGENT_PROMPT)
-    expect(markup).not.toContain('template')
+    expect(CREATE_AGENT_PROMPT).toContain(INSTALL_CLI_COMMAND)
+    expect(CREATE_AGENT_PROMPT).toContain(LOGIN_COMMAND)
     expect(markup).not.toContain('repository URL')
   })
 })
