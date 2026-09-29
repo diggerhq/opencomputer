@@ -52,6 +52,7 @@ export interface TemplateBuildArtifact {
   httpConnections: HttpConnectionManifest[];
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
+  models: Array<{ provider: string; model: string }>;
 }
 
 export interface TemplateBuildBundle {
@@ -330,6 +331,7 @@ export async function buildTemplateProject(
       httpConnections: built.httpConnections,
       githubConnections: built.githubConnections,
       memory: built.memory,
+      models: built.models,
     });
     for (const connection of built.connections)
       compiledConnections.add(connection);
