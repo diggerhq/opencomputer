@@ -1,0 +1,123 @@
+---
+title: "Agent Feedback (feedback.now)"
+description: "Let coding agents report bugs, docs mismatches, and friction directly to OpenComputer using the open feedback.now protocol"
+---
+
+OpenComputer implements the [feedback.now](https://feedback.now) protocol: a vendor-neutral, SDK-less
+HTTP interface that lets AI agents file structured feedback about an API, its docs, SDKs, or CLI
+while they are using it. Any agent that speaks feedback.now can report an issue to OpenComputer
+with no account, no API key, and no SDK — and get back a receipt it can poll for triage status.
+
+<Note>
+These endpoints are intentionally **unauthenticated** so third-party agents can report problems.
+They live under `/api/v1/` on the API host and are separate from the API-key-protected sandbox API
+under `/api/`.
+</Note>
+
+## Discovery
+
+Agents find the feedback surface at the well-known path:
+
+```bash
+curl https://app.opencomputer.dev/.well-known/agent-feedback.json
+```
+
+The document lists the endpoints below, the accepted categories and evidence types, and the
+optional request-signing scheme. `GET /api/v1/policy` returns the full policy including limits
+(max 10 evidence items, 64 KiB per item, titles up to 256 characters, summaries up to 4,096) and
+the rate limit (100 submissions per hour per client).
+
+## Submit feedback
+
+`POST /api/v1/feedback`
+
+```bash
+curl -X POST https://app.opencomputer.dev/api/v1/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "reporter": { "agent_vendor": "anthropic", "agent_product": "claude-code", "agent_version": "1.2.3" },
+    "subject":  { "surface": "POST /api/sandboxes", "domain": "app.opencomputer.dev", "kind": "api_endpoint" },
+    "signal":   { "category": "bug", "severity": "high", "reproducibility": "always", "confidence": 0.9 },
+    "content":  { "title": "create returns 500 when template is missing",
+                  "summary": "Expected a 404 with a clear error message." },
+    "evidence": [ { "type": "http_summary", "content": "{\"status\":500,\"body\":\"internal error\"}" } ]
+  }'
+```
+
+| Field | Values |
+| --- | --- |
+| `signal.category` | `bug`, `docs_mismatch`, `friction`, `feature_gap`, `quality_degradation`, `other` (plus any listed by `GET /api/v1/categories`) |
+| `signal.severity` | `critical`, `high`, `medium`, `low` |
+| `signal.reproducibility` | `always`, `sometimes`, `intermittent`, `once` |
+| `signal.confidence` | number from 0 to 1 |
+| `subject.kind` | `api_endpoint`, `docs_page`, `cli_command`, `sdk_method`, `other` |
+| `evidence[].type` | `http_summary`, `stderr_excerpt`, `repro_steps`, `screenshot`, `log_excerpt`, `other` |
+
+Responses:
+
+```json 201
+{
+  "receipt": {
+    "id": "rcpt_…",
+    "status": "accepted",
+    "feedback_id": "fb_…",
+    "evidence_ids": ["ev_…"],
+    "created_at": "2026-01-01T00:00:00.000Z"
+  }
+}
+```
+
+If the same surface and title were already reported in the last 30 days, the report is folded into
+the existing one: the receipt has `"status": "duplicate"` and `duplicate_of` pointing at the
+canonical `feedback_id`. Validation problems return `400` with
+`{ "error": "validation_failed", "errors": [{ "field", "error", "message" }] }`.
+
+More evidence can be attached later with `POST /api/v1/feedback/{id}/attachments`, and any report
+can be read back with `GET /api/v1/feedback/{id}`.
+
+## Submit an observation
+
+`POST /api/v1/observations` is the lightweight form for low-confidence or repetitive signals —
+only `surface`, `domain`, `agent_vendor`, and `agent_product` are required:
+
+```bash
+curl -X POST https://app.opencomputer.dev/api/v1/observations \
+  -H 'Content-Type: application/json' \
+  -d '{ "surface": "oc sandbox create", "domain": "app.opencomputer.dev",
+        "agent_vendor": "openai", "agent_product": "codex",
+        "category": "friction", "summary": "--template flag name differs from the docs" }'
+```
+
+## Receipts
+
+`GET /api/v1/receipts/{id}` returns the current state of a submission. `status` is one of
+`accepted`, `duplicate`, `rejected`, `queued`, or `needs_more_evidence`; once a report is triaged,
+`feedback_status` (`open`, `accepted`, `resolved`, `wontfix`, `spam`), `quality_score`, and
+`duplicate_of` are filled in so an agent can learn whether its report was useful.
+
+## Issue tracking
+
+Each new (non-duplicate) report is filed as an issue in OpenComputer's issue tracker, with
+severity mapped to issue priority and the evidence included. `GET /api/v1/feedback/{id}` exposes
+the resulting link as `tracker: { "provider": "linear", "id": "ENG-123", "url": "..." }` (or
+`null` while none exists). Duplicate submissions don't open new issues; they add an observation to
+the original report.
+
+## Signing (optional)
+
+Anonymous submissions are accepted. Agents that want a persistent identity — and the reputation
+that comes with reports being accepted — can sign requests with an Ed25519 key:
+
+| Header | Value |
+| --- | --- |
+| `X-Agent-Key` | base64 SPKI DER Ed25519 public key |
+| `X-Agent-Timestamp` | ISO 8601 timestamp, within 5 minutes of server time |
+| `X-Agent-Signature` | base64 Ed25519 signature over `timestamp\nMETHOD\npath\nsha256hex(body)` |
+
+Requests carrying a bad or stale signature are rejected with `401`.
+
+## From the CLI
+
+The `oc` CLI ships an emitter so agents running inside OpenComputer (or anywhere `oc` is
+installed) can report issues without hand-writing JSON — see [`oc feedback`](/cli/feedback. It
+works against any feedback.now receiver, not only OpenComputer.

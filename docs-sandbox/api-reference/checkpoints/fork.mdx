@@ -1,0 +1,38 @@
+---
+title: 'Fork from Checkpoint'
+api: 'POST /api/sandboxes/from-checkpoint/{checkpointId}'
+---
+
+Create a new sandbox from a checkpoint.
+
+<ParamField path="checkpointId" type="string" required>
+  Checkpoint ID
+</ParamField>
+
+<ParamField body="timeout" type="integer">
+  Idle timeout for the new sandbox (default: `300`)
+</ParamField>
+
+<ParamField body="envs" type="object">
+  Environment variables to override on the fork. Keys that match the checkpoint's stored envs are replaced; new keys are added.
+</ParamField>
+
+<ParamField body="secretStore" type="string">
+  Name of a secret store to attach. If the checkpoint already has a store, secrets are merged — the new store's values win on collision and egress allowlists are aggregated.
+</ParamField>
+
+<ParamField body="memoryMB" type="integer">
+  Memory for the forked sandbox, in MB. Clamped to a valid range: the floor is the checkpoint's own memory (a fork can't start smaller than the snapshot it restores, so a smaller value is ignored) and the ceiling is 16384 (16 GB; larger values are capped). The `memoryMB` field in the response reports the effective value after clamping.
+</ParamField>
+
+<ResponseExample>
+```json 201
+{
+  "sandboxID": "sb-def456",
+  "status": "running",
+  "region": "use2",
+  "workerID": "w-use2-abc123",
+  "memoryMB": 4096
+}
+```
+</ResponseExample>

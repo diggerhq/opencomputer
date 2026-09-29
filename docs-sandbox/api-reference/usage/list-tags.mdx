@@ -1,0 +1,31 @@
+---
+title: 'List Tag Keys'
+api: 'GET /api/tags'
+---
+
+List all tag keys set on any sandbox in the org, with per-key counts
+of tagged sandboxes and distinct values. Useful for building
+group-by pickers without querying the full tag set.
+
+<Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
+<ResponseExample>
+```json 200
+{
+  "keys": [
+    { "key": "team", "sandboxCount": 17, "valueCount": 4 },
+    { "key": "env",  "sandboxCount": 23, "valueCount": 3 }
+  ]
+}
+```
+</ResponseExample>
+
+<Note>
+Tag keys on torn-down sandboxes are retained so historical drilldowns
+keep resolving. As a result `sandboxCount` may include sandboxes
+that are no longer active.
+</Note>
