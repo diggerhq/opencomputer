@@ -42,7 +42,7 @@ unknown type as informational and keep reading.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
+| `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId`; `sessionData`: `{ schemaId?, bytes, digest, revision }` describing the [session data](/agents/session-data) the session was created with, when there was any. The values themselves are not in the event. |
 | `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
 | `session.ended` | The session accepts no more turns; queued and running turns were marked cancelled. Memory revocation and remote cleanup may still be pending. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
@@ -61,7 +61,7 @@ remote cleanup continues in the background.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt`; `payload`: the structured value the turn was sent with, when there was one |
+| `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text, empty for a payload-only turn; `mode`: `queue`, `steer` or `interrupt`; `payload`: `{ schemaId?, bytes, digest }` describing the structured value the turn was sent with, when there was one. The value itself is on the turn in `GET /sessions/<id>`, not in the event. |
 | `turn.queued` | The turn waits for earlier turns | `mode` |
 | `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
 | `turn.interrupted` | This turn requested interruption of the running turns | `interruptedTurnIds` |
@@ -146,7 +146,9 @@ A successful call of the agent's [result tool](/agents/tools#the-session-result)
 is recorded with `result: true`; its `output` is the validated value, the
 same JSON value `GET /sessions/<id>` returns as `result.data`. The session
 writes this event when it commits the result, before the model sees the call
-succeed, and there is one per call.
+succeed, and there is one per call. Each commit is also kept as an immutable
+record on the [results routes](/agents/results), keyed by the turn and the
+`callId`.
 
 Every tool call ends in the log. The runtime reports a `tool.completed` or
 `tool.failed` per call; when a turn ends with a call still open, whether

@@ -84,22 +84,28 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground` or `webhook`. The dashboard groups sessions by it. |
 | `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
+| `sessionData` | Optional. A JSON object the agent reads with [`useSessionData(key)`](/agents/session-data), fixed for the life of the session: at most 32 KiB of JSON, 32 levels deep, keys of at most 200 characters. Never shown to the model by the platform. |
 
 The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
-The session starts without a turn; send one with the turns route.
+A session created with `sessionData` also carries `sessionDataDigest`, the
+`sha256:` digest of the data with keys in sorted order, and
+`sessionDataRevision`, which is `1`. The session starts without a turn; send
+one with the turns route.
 
 `Idempotency-Key` (at most 256 characters) makes a retry safe. The key
 identifies the session within your organization:
 
 - The same key with the same request, meaning the same `agentId` (or the
-  same pinned `deploymentId`), environment and memory bindings, returns the
-  existing session with `200`, together with the deployment it pinned when
+  same pinned `deploymentId`), environment, memory bindings and
+  `sessionData` (key order does not matter), returns the existing session
+  with `200`, together with the deployment it pinned when
   it was first created. That holds after a redeploy or a rollback: the
   session keeps the deployment it started with, and your retry does not
   need to know which one that was. A new session under a new key gets the
   deployment active at that time.
 - Anything else under that key is `409 idempotency_conflict`: another
-  agent, environment or pinned deployment, or different memory bindings.
+  agent, environment or pinned deployment, different memory bindings, or
+  different session data.
   Pinning the deployment the session already holds counts as the same
   request.
 - Two identical requests under one key that arrive together create one
@@ -117,7 +123,8 @@ identifies the session within your organization:
   way.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
-`400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
+`400 invalid_labels`, `400 invalid_session_data` (not an object, over the
+limits, or a key that is empty or reserved), `404 deployment_not_found`, `409 deployment_not_promoted`
 (a pinned deployment is not active in the named environment), `402
 insufficient_credits`.
 
@@ -134,8 +141,9 @@ insufficient_credits`.
 | `source` | The `source` given at creation |
 | `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
-| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
-| `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
+| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, `payload` when the turn was sent with one, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
+| `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. Every committed result, not only the latest, is on the [results routes](#results). |
+| `sessionDataDigest`, `sessionDataRevision` | Present when the session was created with [`sessionData`](/agents/session-data): its digest and revision (`1`) |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 
@@ -267,10 +275,15 @@ are present they must be equal, else `400 invalid_turn`.
 
 | Field | Meaning |
 | --- | --- |
-| `input` | The user text for this turn. Required, not empty. |
+| `input` | The user text for this turn. Required unless a non-empty `payload` is sent; a turn with neither is `400 invalid_turn`. |
 | `idempotencyKey` | Optional. The key in body form, for a proxied browser send; equal to the header when both are present. |
 | `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: interrupt running turns and run next, with the [same settlement behavior](#end-and-interrupt) as the interrupt route. |
-| `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
+| `payload` | Optional. A JSON value for the agent, at most 32 KiB encoded and 32 levels deep. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, exactly as sent, next to the text. The text stays the message; the payload is structured context the agent reads, and the platform never renders it into the model's instructions. A payload-only turn tells the model that structured input arrived without a message. |
+
+The turn's `message.received` event records the payload's schema id (the
+top-level `schema` string, when the payload is an object with one), byte count
+and digest, not the payload. The payload itself is on the turn in
+`GET /sessions/<id>` and in the agent's input.
 
 The response is `202 { turnId, status, duplicate }` for a new turn and
 `200` with `duplicate: true` when the key had already created one. `status`
@@ -287,7 +300,8 @@ idempotency_conflict` and admits nothing. A retry after a lost reply is
 therefore safe with the same body, and a different request never lands on
 another request's key.
 
-Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KB),
+Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KiB or deeper than
+32 levels),
 `402 insufficient_credits`, `409 idempotency_conflict`,
 `409 memory_admission_pending` (retry the session creation with its key
 first), `409 memory_admission_rejected` (the session is ended; create a new
@@ -316,6 +330,34 @@ holder of the submission can retry it. A `409 idempotency_conflict` from
 either call means a different request already used that id; show it, keep
 the draft, and do not append the submission to a session it did not create.
 Each later message is its own submission with its own key.
+
+## Results
+
+Every value the agent's [result tool](/agents/tools#the-session-result)
+commits is kept as an immutable record owned by the turn that committed it.
+[Results](/agents/results) explains the record and its guarantees; the routes:
+
+| Operation | Method and path | Success |
+| --- | --- | --- |
+| List | `GET /sessions/<id>/results` | `200` with `{ results, nextCursor }` |
+| List for a turn | `GET /sessions/<id>/turns/<turn-id>/results` | `200` with `{ results, nextCursor }`; `results: []` when the turn committed none |
+| Get | `GET /sessions/<id>/results/<result-id>` | `200` with the record |
+
+```bash
+curl 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/results?limit=50' \
+  -H 'x-api-key: <api-key>'
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `limit` | Records per page, at most 200 (a larger value returns 200); default 50 |
+| `cursor` | The `nextCursor` of the previous page |
+
+Records are ordered by commit, oldest first, and never move; a page is
+`{ results, nextCursor }` with `nextCursor: null` at the end. Codes: `400
+invalid_limit`, `400 invalid_cursor` (a cursor not issued by this listing),
+`404 result_not_found`, and `404 session_not_found` for a session another
+project or environment owns.
 
 ## Events
 

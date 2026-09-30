@@ -59,7 +59,8 @@
               "agents/react",
               "reference/typescript-sdk/agents",
               "agents/api",
-              "agents/events"
+              "agents/events",
+              "agents/results"
             ]
           },
           {

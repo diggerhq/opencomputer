@@ -1,0 +1,133 @@
+---
+title: "Results"
+description: "Read every result an agent committed, by session, turn or id"
+---
+
+An agent's [result tool](/agents/tools#the-session-result) commits structured
+values while a turn runs. The session's `result` field is the latest of them.
+The results routes keep every one: each commit is an immutable record owned
+by the turn that made it, readable for as long as the session exists, after
+later turns and after the session has ended.
+
+Use them when a session does several pieces of work over several turns and
+each outcome matters, or when an application must know which turn, tool call
+and deployment produced a value rather than trusting the message text.
+
+## The record
+
+```json
+{
+  "resultId": "result_4f1c…",
+  "projectId": "prj_…",
+  "environment": "development",
+  "agentId": "reviewer",
+  "deploymentId": "dep_…",
+  "sessionId": "ses_…",
+  "turnId": "turn_…",
+  "messageId": null,
+  "toolCallId": "call_…",
+  "resultTool": "check_url",
+  "schemaId": "https://example.com/schemas/check-result/v1",
+  "schemaDigest": "sha256:…",
+  "dataDigest": "sha256:…",
+  "data": { "url": "https://example.com/", "status": 200 },
+  "createdAt": "2026-09-25T10:15:00.000Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `resultId` | The record's id, assigned by the platform. Stable; the same commit never has two ids. |
+| `projectId`, `environment`, `agentId`, `deploymentId` | Where the result came from. `deploymentId` is the deployment the session was created on and does not change when the environment's alias later moves. `environment` is `null` when the session was created without one. |
+| `sessionId`, `turnId` | The session and the turn whose tool call committed the value |
+| `toolCallId` | The model's call of the result tool, the same `callId` as its `tool.completed` event |
+| `messageId` | The assistant message the call belonged to, when the runtime recorded one; otherwise `null` |
+| `resultTool` | The result tool's name |
+| `schemaId`, `schemaDigest` | The result tool's output schema: its `$id`, when the schema declares one, and a `sha256:` digest of the schema as deployed. Values from different deployments of the same tool are comparable through the digest. |
+| `dataDigest` | A `sha256:` digest of `data` with keys in sorted order |
+| `data` | The committed value, validated against the tool's output schema at commit time; at most 8 KiB of JSON |
+| `createdAt` | When the value was committed |
+
+`data` is what the tool's `run()` returned and the platform validated. It is
+never a model message, a summary of one, or the model's reasoning: only a
+result tool writes a record, and only through `run()`.
+
+## Routes
+
+| Operation | Method and path |
+| --- | --- |
+| Every result of a session | `GET /sessions/<id>/results` |
+| The results of one turn | `GET /sessions/<id>/turns/<turn-id>/results` |
+| One result | `GET /sessions/<id>/results/<result-id>` |
+
+The list routes return `{ results, nextCursor }`, oldest first in the order
+the values were committed. `limit` is the page size (default 50, at most 200)
+and `cursor` continues from a previous page's `nextCursor`; `null` means the
+listing is complete. Records never move: paging through more results than one
+page holds returns each once, with no gaps. A turn that committed nothing
+lists `results: []`; the route never falls back to another turn's value.
+
+Read them with the SDK:
+
+```ts
+import { OpenComputer } from "@opencomputer/sdk/agents";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+let cursor: string | null = null;
+do {
+  const page = await oc.sessions.results.list(sessionId, { cursor: cursor ?? undefined });
+  for (const result of page.results) console.log(result.turnId, result.resultTool, result.data);
+  cursor = page.nextCursor;
+} while (cursor);
+
+const forTurn = await oc.sessions.results.list(sessionId, { turnId });
+const one = await oc.sessions.results.get(sessionId, resultId);
+```
+
+Or the CLI:
+
+```bash
+opencomputer results list <session-id> [--turn <turn-id>] [--limit 50] [--cursor <cursor>]
+opencomputer results get <session-id> <result-id>
+```
+
+Codes: `400 invalid_limit`, `400 invalid_cursor` for a cursor this listing did
+not issue, `404 result_not_found`, and `404 session_not_found` when the
+session belongs to another project or environment. Result visibility is the
+session's: whoever may read the session may read its results.
+
+## Guarantees
+
+- **Immutable.** A committed record is never changed or deleted by a later
+  turn or result. A later commit adds a record; the session's `result`
+  projection moves to it, and the earlier records stay where they are.
+- **One record per tool call; many per turn.** A turn may call its result
+  tool more than once, and each successful call is its own record with its
+  own `resultId` and `toolCallId`. An application that expects one result
+  per turn reads the turn's list and treats more than one entry as its own
+  concern.
+- **Retries converge.** The platform retries a commit whose acknowledgement
+  was lost. An exact retry of the same tool call with the same value
+  returns the existing `resultId` and writes nothing; the same call with a
+  different value is refused as a conflict and the model sees the failure.
+- **Attached to the turn and deployment.** The record keeps the
+  `deploymentId` the session pinned at creation and the `turnId` that
+  committed it, through alias moves, suspension and resume.
+- **Ending a session keeps its results.** After
+  [`POST /sessions/<id>/end`](/agents/api#end-and-interrupt) no new result
+  is admitted, and every existing record stays readable through these
+  routes.
+- **Scoped to the owner.** Records are readable by the project and
+  environment that own the session and by nobody else.
+
+## Limits and retention
+
+A result's `data` is at most 8 KiB of JSON; a larger value fails the tool
+call and the model is told why. Records are kept with the session: they are
+readable while the session exists, including after it has ended, and are
+removed when the session itself is removed.
+
+A record says what the agent's tool reported, not that the work is accepted.
+Deciding what a result means for your application, whether it is a finding,
+an artifact or a report to review, stays with your code.

@@ -40,6 +40,69 @@ than assuming every session has been initialized.
 Values must be JSON-compatible: `null`, booleans, numbers, strings, arrays,
 and objects containing those values.
 
+## Set session data when creating the session
+
+An application fixes a session's data when it creates the session, with the
+`sessionData` field of [`POST /sessions`](/agents/api#create). It is a JSON
+object; each top-level key is a name `useSessionData()` reads:
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: campaign/812' \
+  -d '{
+    "agentId": "<agent-id>@production",
+    "sessionData": {
+      "schema": "example.session-context/v1",
+      "campaign_name": "Spring launch",
+      "audience": "backend engineers",
+      "brief_approved": false
+    }
+  }'
+```
+
+```ts
+import { OpenComputer } from "@opencomputer/sdk/agents";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const { session } = await oc.sessions.create(
+  {
+    agentId: "<agent-id>@production",
+    sessionData: { campaign_name: "Spring launch", audience: "backend engineers" },
+  },
+  { idempotencyKey: "campaign/812" },
+);
+session.sessionDataDigest; // "sha256:…", the digest of the admitted data
+session.sessionDataRevision; // 1
+```
+
+From the CLI, `opencomputer session create --session-data-file context.json`
+reads the object from a file.
+
+The rules:
+
+- Session data is fixed at creation. It has one revision, `1`, and no route
+  changes it later. A session created without `sessionData` has none.
+- It is at most 32 KiB of JSON and nests at most 32 levels deep. Keys are
+  non-empty strings of at most 200 characters. Anything else, or a value that
+  is not a JSON object, is `400 invalid_session_data` and no session is
+  created.
+- The response and `GET /sessions/<id>` carry `sessionDataDigest` (a
+  `sha256:` digest of the data with keys in sorted order) and
+  `sessionDataRevision`. Two requests whose data differ only in key order have
+  the same digest.
+- Under an `Idempotency-Key`, the session data is part of the request: the
+  same key with the same data returns the existing session, and the same key
+  with different data, or with data where there was none, is `409
+  idempotency_conflict`.
+- The `session.created` event records the data's schema id (its top-level
+  `schema` string, when present), byte count and digest, not the data
+  itself. Event and log views never carry the values; only the agent's
+  render and tools read them.
+- Nothing in the data is shown to the model unless the agent's render puts
+  it there. Application context and model instructions stay apart.
+
 ## Configure capabilities from session data
 
 Because session data is available during render, it can control instructions
@@ -80,7 +143,8 @@ data for the current job and memory for notes shared with later sessions.
 
 The current `@opencomputer/agent` API exposes session data as a read-only
 snapshot. It does not yet include a hook for setting or updating a value from
-agent code. Code should treat the returned value as immutable.
+agent code. Code should treat the returned value as immutable; keys fixed with
+`sessionData` at creation cannot be replaced by anything later.
 
 See [Sessions and turns](/agents/sessions) for the durable conversation
 lifecycle and the [GTM engineer example](/agents/examples/gtm-engineer) for an

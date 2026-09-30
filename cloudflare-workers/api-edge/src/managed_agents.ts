@@ -1,4 +1,8 @@
 import { getAutumnCustomer } from "./autumn_webhook";
+import {
+  isSessionResultsRoute,
+  publicSessionResultsBody,
+} from "./managed_agent_results";
 
 export interface ManagedAgentsEnv {
   MANAGED_AGENTS_API_URL?: string;
@@ -1937,11 +1941,20 @@ function publicSuccessBody(
         executionMode: session.executionMode,
         status: session.status,
         createdAt: session.createdAt,
+        ...(typeof session.sessionDataDigest === "string"
+          ? {
+              sessionDataDigest: session.sessionDataDigest,
+              sessionDataRevision: session.sessionDataRevision,
+            }
+          : {}),
       },
       deployment: body.deployment
         ? publicDeployment(body.deployment)
         : undefined,
     };
+  }
+  if (isSessionResultsRoute(method, suffix)) {
+    return publicSessionResultsBody(suffix, body);
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return {
@@ -2530,6 +2543,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
   }
+  if (isSessionResultsRoute(method, suffix)) return true;
   if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) return true;
   if (
     method === "GET" &&

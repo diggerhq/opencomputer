@@ -50,6 +50,8 @@ These describe different parts of a session:
 
 A report does not finish a turn, and each report replaces the whole result.
 Later work can run, fail or be cancelled while an earlier result remains.
+Every report is also kept as its own record; [Results](/agents/results) lists
+them by session or by turn when the latest one is not enough.
 For a review queue, check current activity, the last settled turn's status,
 and whether `result.turnId` matches that turn before treating the report as
 ready. Your application decides what the reported data means.

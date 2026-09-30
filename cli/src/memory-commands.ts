@@ -294,14 +294,18 @@ export async function createSessionWithMemory(
   client: OpenComputerClient,
   agent: string,
   memory?: MemoryBindings,
+  sessionData?: Record<string, unknown>,
 ): Promise<CreateSessionResult> {
   try {
-    return await client.createSession(agent, memory ? { memory } : {});
+    return await client.createSession(agent, {
+      ...(memory ? { memory } : {}),
+      ...(sessionData !== undefined ? { sessionData } : {}),
+    });
   } catch (error) {
     if (error instanceof APIError && error.status === 409) {
       throw new CLIError(
         "session_idempotency_conflict",
-        "This --idempotency-key already created a session with a different agent, deployment, environment or memory bindings.",
+        "This --idempotency-key already created a session with a different agent, deployment, environment or memory bindings (or session data).",
         "Pass a new --idempotency-key to start another session, or repeat the earlier command unchanged to get the existing one.",
         { status: 409, ...(memory ? { memory } : {}) },
       );
