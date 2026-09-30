@@ -134,6 +134,12 @@ deleted_classes = ["VmSession"]
 #                            browser-session proxy requests
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend
+#   AGENT_FEEDBACK_TRIAGE_TOKEN — bearer token for the feedback.now triage
+#                            routes (src/agent_feedback.ts); submission works
+#                            without it
+#   LINEAR_API_KEY / LINEAR_TEAM_ID (+ optional LINEAR_PROJECT_ID var) —
+#                            when set, each new agent-feedback report opens a
+#                            Linear issue. Off when unset.
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 

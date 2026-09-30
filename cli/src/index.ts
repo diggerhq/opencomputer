@@ -47,6 +47,8 @@ Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
+  opencomputer billing
+  opencomputer upgrade [pro|max]
   opencomputer agents
   opencomputer init <directory|.>
   opencomputer template validate [directory] [--repository-url <url>] [--app-url <url>]
@@ -70,6 +72,12 @@ Usage:
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
   opencomputer session end <session-id>
+  opencomputer session files [ls] <session-id>
+      lists the files under the session's /workspace
+  opencomputer session files download <session-id> <workspace-path> [dest]
+  opencomputer session files download <session-id> --all [dest-dir]
+      streams the versioned workspace file(s) directly to disk and
+      verifies size and SHA-256 against the manifest before saving; "cp" is an alias
   opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]
   opencomputer secrets remove <name> [--environment development|production] [--agent <agent>|current]

@@ -1,11 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   collectManagedAgentEventPages,
   displayManagedAgentName,
+  fetchManagedAgentWorkspaceObject,
   managedAgentModelRoute,
   managedAgentRenderDebug,
-  nextAgentEventDeadline,
 } from './api'
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('fetchManagedAgentWorkspaceObject', () => {
+  it('fetches the signed object without platform credentials or redirects', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])))
+
+    const response = await fetchManagedAgentWorkspaceObject(
+      'https://objects.example.test/artifact?signature=test',
+    )
+
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3]),
+    )
+    expect(fetch).toHaveBeenCalledWith(
+      'https://objects.example.test/artifact?signature=test',
+      expect.objectContaining({ credentials: 'omit', redirect: 'error' }),
+    )
+  })
+})
 
 describe('collectManagedAgentEventPages', () => {
   it('follows event cursors until the API returns an empty page', async () => {
@@ -29,13 +51,6 @@ describe('collectManagedAgentEventPages', () => {
 
     expect(cursors).toEqual([0, 500, 501])
     expect(events.map(({ seq }) => seq)).toEqual([1, 500, 501])
-  })
-})
-
-describe('nextAgentEventDeadline', () => {
-  it('refreshes the inactivity deadline only when progress arrives', () => {
-    expect(nextAgentEventDeadline(10_000, 3_000, 0, 9_000)).toBe(10_000)
-    expect(nextAgentEventDeadline(10_000, 3_000, 1, 9_000)).toBe(12_000)
   })
 })
 

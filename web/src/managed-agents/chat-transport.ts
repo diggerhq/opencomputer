@@ -4,6 +4,7 @@ import {
   runManagedAgent,
   type ManagedAgentEvent,
 } from './api'
+import { UIMessageChunkPacer, type ChunkPacerOptions } from './chunk-pacer'
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
@@ -36,6 +37,7 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
     private readonly agentId: string,
     sessionId: string | undefined,
     private readonly onSession: (sessionId: string) => void,
+    private readonly pacing: ChunkPacerOptions | false = {},
   ) {
     this.sessionId = sessionId
   }
@@ -59,9 +61,18 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
           let reasoningStarted = false
           const startedTools = new Set<string>()
 
-          const enqueue = (chunk: UIMessageChunk) => {
+          const emit = (chunk: UIMessageChunk) => {
             if (!closed && !abortSignal?.aborted) controller.enqueue(chunk)
           }
+          const pacer =
+            this.pacing === false
+              ? null
+              : new UIMessageChunkPacer(emit, this.pacing)
+          const enqueue = (chunk: UIMessageChunk) =>
+            pacer ? pacer.push(chunk) : emit(chunk)
+          abortSignal?.addEventListener('abort', () => pacer?.dispose(), {
+            once: true,
+          })
           const finishParts = () => {
             if (reasoningStarted)
               enqueue({ type: 'reasoning-end', id: reasoningId })
@@ -158,11 +169,15 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
                   },
                 })
           )
-            .then(() => {
+            .then(async () => {
+              // Let the tail of the reply trickle out at the same pace instead
+              // of dumping the remaining backlog on completion.
+              await pacer?.drain()
               finishParts()
               enqueue({ type: 'finish', finishReason: 'stop' })
             })
             .catch((error: unknown) => {
+              pacer?.flush()
               if (abortSignal?.aborted) enqueue({ type: 'abort' })
               else
                 enqueue({
@@ -172,6 +187,7 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
                 })
             })
             .finally(() => {
+              pacer?.dispose()
               closed = true
               controller.close()
             })

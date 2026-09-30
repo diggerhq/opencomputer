@@ -47,6 +47,85 @@ CREATE TABLE agent_security_notifications (
   )
 );
 
+CREATE TABLE agent_feedback (
+  id              TEXT PRIMARY KEY,
+  status          TEXT NOT NULL DEFAULT 'open',   -- open|investigating|accepted|resolved|dismissed|spam
+  category        TEXT NOT NULL,
+  severity        TEXT NOT NULL,
+  reproducibility TEXT,
+  confidence      REAL NOT NULL,
+  surface         TEXT NOT NULL,
+  domain          TEXT NOT NULL,
+  surface_kind    TEXT,
+  product         TEXT,
+  title           TEXT NOT NULL,
+  summary         TEXT,
+  hypothesis      TEXT,
+  agent_vendor    TEXT NOT NULL,
+  agent_product   TEXT NOT NULL,
+  agent_version   TEXT,
+  agent_key       TEXT,                           -- base64 SPKI Ed25519 public key when the request was signed
+  dedupe_key      TEXT NOT NULL,                  -- sha256(domain|surface|normalized title)
+  observations    INTEGER NOT NULL DEFAULT 1,
+  quality_score   REAL,
+  duplicate_of    TEXT,
+  tracker_issue_id  TEXT,                         -- e.g. Linear identifier (ENG-123) when an issue was opened
+  tracker_issue_url TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE agent_feedback_evidence (
+  id          TEXT PRIMARY KEY,
+  feedback_id TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  redacted    INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE agent_observations (
+  id            TEXT PRIMARY KEY,
+  surface       TEXT NOT NULL,
+  domain        TEXT NOT NULL,
+  category      TEXT,
+  severity      TEXT,
+  confidence    REAL,
+  summary       TEXT,
+  agent_vendor  TEXT NOT NULL,
+  agent_product TEXT NOT NULL,
+  agent_key     TEXT,
+  created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE agent_feedback_receipts (
+  id             TEXT PRIMARY KEY,
+  feedback_id    TEXT,
+  observation_id TEXT,
+  status         TEXT NOT NULL,                   -- accepted|needs_more_evidence|duplicate|rejected|queued
+  duplicate_of   TEXT,
+  agent_key      TEXT,
+  client_ip      TEXT,
+  created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE agent_feedback_categories (
+  name        TEXT PRIMARY KEY,
+  description TEXT,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE agent_feedback_agents (
+  agent_key     TEXT PRIMARY KEY,
+  agent_vendor  TEXT NOT NULL,
+  agent_product TEXT NOT NULL,
+  submissions   INTEGER NOT NULL DEFAULT 0,
+  accepted      INTEGER NOT NULL DEFAULT 0,
+  dismissed     INTEGER NOT NULL DEFAULT 0,
+  first_seen    INTEGER NOT NULL,
+  last_seen     INTEGER NOT NULL
+);
+
 CREATE TABLE api_keys (
   id          TEXT PRIMARY KEY,
   org_id      TEXT NOT NULL,
@@ -376,3 +455,17 @@ CREATE INDEX webhook_dest_org_idx
 
 CREATE UNIQUE INDEX webhook_dest_svix_ep_idx
   ON webhook_destinations (svix_endpoint_id);
+
+CREATE INDEX idx_agent_feedback_status  ON agent_feedback(status, created_at);
+
+CREATE INDEX idx_agent_feedback_dedupe  ON agent_feedback(dedupe_key, created_at);
+
+CREATE INDEX idx_agent_feedback_domain  ON agent_feedback(domain, created_at);
+
+CREATE INDEX idx_agent_feedback_evidence_fb ON agent_feedback_evidence(feedback_id);
+
+CREATE INDEX idx_agent_observations_surface ON agent_observations(domain, surface, created_at);
+
+CREATE INDEX idx_agent_feedback_receipts_key ON agent_feedback_receipts(agent_key, created_at);
+
+CREATE INDEX idx_agent_feedback_receipts_ip  ON agent_feedback_receipts(client_ip, created_at);

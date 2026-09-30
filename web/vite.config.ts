@@ -39,14 +39,13 @@ const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
       '/api/dashboard/managed-agents': {
         target: managedAgentsTarget,
         changeOrigin: true,
+        ws: true,
         rewrite: (p) => p.replace(/^\/api\/dashboard\/managed-agents/, '/v1'),
         configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            proxyReq.setHeader(
-              'x-opencomputer-agent-token',
-              managedAgentsToken,
-            )
-          })
+          const inject = (proxyReq: { setHeader(k: string, v: string): void }) =>
+            proxyReq.setHeader('x-opencomputer-agent-token', managedAgentsToken)
+          proxy.on('proxyReq', inject)
+          proxy.on('proxyReqWs', inject)
         },
       },
     }

@@ -15,6 +15,7 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentRenderDebug,
 } from './api'
+import { WorkspaceFilesInspector } from './SessionFiles'
 
 export function modelRouteForRender(
   events: ManagedAgentEvent[],
@@ -195,9 +196,14 @@ function RenderChanges({
 export function DebugInspector({
   events,
   deploymentId,
+  sessionId,
+  sessionLive = false,
 }: {
   events: ManagedAgentEvent[]
   deploymentId?: string
+  /** When set, the agent's /workspace files are listed for download. */
+  sessionId?: string
+  sessionLive?: boolean
 }) {
   const renders = events.flatMap((event) => {
     const render = managedAgentRenderDebug(event)
@@ -412,6 +418,9 @@ export function DebugInspector({
             </div>
           </>
         )}
+        {sessionId ? (
+          <WorkspaceFilesInspector sessionId={sessionId} live={sessionLive} />
+        ) : null}
         <RuntimeActivity events={activity} />
       </div>
     </aside>

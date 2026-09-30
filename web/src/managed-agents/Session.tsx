@@ -1,9 +1,17 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Bot, Clock3, Loader2, TerminalSquare } from 'lucide-react'
+import {
+  ArrowLeft,
+  Bot,
+  Clock3,
+  FolderDown,
+  Loader2,
+  TerminalSquare,
+} from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
 import {
   Panel,
   PanelContent,
@@ -19,6 +27,7 @@ import {
   getManagedProject,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
+import { SessionFiles } from './SessionFiles'
 import {
   turnAssistantText,
   turnFailureReason,
@@ -33,9 +42,9 @@ export default function ManagedSessionDetail() {
   const { projectId = '', sessionId = '' } = useParams()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
-  const [activeTab, setActiveTab] = useState<'conversation' | 'events'>(
-    'conversation',
-  )
+  const [activeTab, setActiveTab] = useState<
+    'conversation' | 'events' | 'files'
+  >('conversation')
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId),
@@ -111,6 +120,11 @@ export default function ManagedSessionDetail() {
             </Link>
           </Button>
         }
+      />
+
+      <PostSessionUpsell
+        sessionId={session.data.id}
+        completed={session.data.status === 'completed'}
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -201,6 +215,15 @@ export default function ManagedSessionDetail() {
             {events.data?.length ?? 0}
           </span>
         </Button>
+        <Button
+          role="tab"
+          aria-selected={activeTab === 'files'}
+          variant={activeTab === 'files' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('files')}
+        >
+          <FolderDown className="size-3.5" /> Files
+        </Button>
       </div>
 
       {activeTab === 'conversation' ? (
@@ -238,7 +261,7 @@ export default function ManagedSessionDetail() {
                         {turn.input}
                       </p>
                       {payload !== undefined ? (
-                        <details className="ml-auto mt-2 max-w-2xl">
+                        <details className="mt-2 ml-auto max-w-2xl">
                           <summary className="text-muted-foreground cursor-pointer text-xs">
                             Payload
                           </summary>
@@ -284,6 +307,11 @@ export default function ManagedSessionDetail() {
             )}
           </PanelContent>
         </Panel>
+      ) : activeTab === 'files' ? (
+        <SessionFiles
+          sessionId={session.data.id}
+          live={session.data.status !== 'ended'}
+        />
       ) : (
         <Panel>
           <PanelHeader>

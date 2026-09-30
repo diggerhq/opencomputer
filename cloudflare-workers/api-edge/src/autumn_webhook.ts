@@ -51,6 +51,30 @@ const CONCURRENCY_BY_PLAN: Record<string, number> = {
 };
 const DEFAULT_CONCURRENCY = 50;
 
+export type UsagePlan = "base" | "pro" | "max";
+
+const USAGE_PLAN_RANK: Record<string, number> = { base: 0, pro: 1, max: 2 };
+
+export function activeUsagePlan(customer: AutumnCustomer): UsagePlan {
+  let plan: UsagePlan = "base";
+  let rank = 0;
+  for (const s of customer.subscriptions ?? []) {
+    if (s.status && s.status !== "active") continue;
+    const r = USAGE_PLAN_RANK[s.plan_id];
+    if (r !== undefined && r >= rank) {
+      rank = r;
+      plan = s.plan_id as UsagePlan;
+    }
+  }
+  return plan;
+}
+
+// Paid usage plans keep running managed agents on the open-weight fallback
+// model once credits are exhausted; base orgs hard-stop and must upgrade.
+export function isPaidUsagePlan(plan: string | null | undefined): boolean {
+  return plan === "pro" || plan === "max";
+}
+
 const HANDLED_EVENTS = new Set([
   "billing.updated",
   "billing.auto_topup_succeeded",
@@ -424,7 +448,7 @@ export async function selfHealHalt(env: AutumnEnv, orgID: string): Promise<boole
 }
 
 // syncAutumnToD1 reads Autumn's authoritative balance/plans and writes the D1
-// projection (is_halted / max_concurrent) WITHOUT any cell dispatch. Returns the
+// projection (is_halted / usage_plan / max_concurrent) WITHOUT any cell dispatch. Returns the
 // halt transition so callers can decide whether to actively hibernate. Reusable
 // by the dashboard (checkout-return) since it needs no dispatch secrets.
 export interface AutumnSyncResult {
@@ -433,6 +457,7 @@ export interface AutumnSyncResult {
   maxConcurrent: number;
   halted: boolean;
   wasHalted: boolean;
+  usagePlan: UsagePlan;
 }
 
 export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise<AutumnSyncResult | null> {
@@ -444,6 +469,7 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
 
   const creditsRemaining = cust.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
   const halted = creditsRemaining <= 0;
+  const usagePlan = activeUsagePlan(cust);
   const projectedMaxConcurrent = maxConcurrency(cust.subscriptions ?? []);
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -454,12 +480,12 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, updated_at = ?4 WHERE id = ?5`,
+    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, usage_plan = ?4, updated_at = ?5 WHERE id = ?6`,
   )
-    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, nowSec, orgID)
+    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID)
     .run();
 
-  return { customer: cust, creditsRemaining, maxConcurrent, halted, wasHalted };
+  return { customer: cust, creditsRemaining, maxConcurrent, halted, wasHalted, usagePlan };
 }
 
 // autumnSetProviderInternal flips D1 orgs.billing_provider for one org (the

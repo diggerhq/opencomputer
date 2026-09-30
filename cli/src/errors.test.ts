@@ -33,3 +33,26 @@ test("memory precondition and size failures map to their own codes", () => {
     "precondition_required",
   );
 });
+
+test("out-of-credits responses tell the agent to stop and surface the upgrade link", () => {
+  const halted = structuredError(
+    new APIError(
+      "Out of prepaid credits.",
+      402,
+      "insufficient_credits",
+      "https://app.opencomputer.dev/billing?plan=pro",
+    ),
+  );
+  assert.equal(halted.code, "insufficient_credits");
+  assert.match(halted.hint, /do not retry/);
+  assert.match(halted.hint, /https:\/\/app\.opencomputer\.dev\/billing\?plan=pro/);
+  assert.deepEqual(halted.details, {
+    status: 402,
+    apiCode: "insufficient_credits",
+    upgradeUrl: "https://app.opencomputer.dev/billing?plan=pro",
+  });
+
+  const bare = structuredError(new APIError("Payment required.", 402));
+  assert.equal(bare.code, "insufficient_credits");
+  assert.match(bare.hint, /opencomputer upgrade pro/);
+});

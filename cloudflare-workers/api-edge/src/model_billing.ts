@@ -7,7 +7,7 @@
 // The metering cron (model_meter, §5.4) is a separate file (step 3); this is step 1:
 // the key lifecycle + per-org state only.
 
-import { type AutumnApiEnv, getAutumnCustomer } from "./autumn_webhook";
+import { type AutumnApiEnv, getAutumnCustomer, isPaidUsagePlan } from "./autumn_webhook";
 import {
   createOrKey,
   deleteOrKey,
@@ -67,6 +67,7 @@ interface OrgBillingRow {
   model_billing_status: string;
   model_markup_bps: number;
   is_halted?: number;
+  usage_plan?: string | null;
 }
 
 // sessions-api owner id for an OC org. MUST match sessions-api's ownerIdForOrg
@@ -97,7 +98,7 @@ function markupBps(env: ModelBillingEnv, org: OrgBillingRow): number {
 
 async function getOrg(env: ModelBillingEnv, orgId: string): Promise<OrgBillingRow | null> {
   return env.OPENCOMPUTER_DB.prepare(
-    "SELECT id, billing_provider, model_billing_status, model_markup_bps, is_halted FROM orgs WHERE id = ?1",
+    "SELECT id, billing_provider, model_billing_status, model_markup_bps, is_halted, usage_plan FROM orgs WHERE id = ?1",
   )
     .bind(orgId)
     .first<OrgBillingRow>();
@@ -319,7 +320,11 @@ export async function enableManagedBilling(env: ModelBillingEnv, orgId: string):
   // Reuse the row this path already reads so session creation pays no extra D1
   // round trip for credit admission. OpenRouter's per-org key limit remains the
   // hard backstop if this asynchronously maintained projection briefly lags.
-  if (org.is_halted === 1) return { status: "halted" };
+  // Paid orgs stay admitted: the managed-agent gateway moves their model calls
+  // to the open-weight fallback instead of stopping them.
+  if (org.is_halted === 1 && !isPaidUsagePlan(org.usage_plan)) {
+    return { status: "halted" };
+  }
   if (org.model_billing_status === "active") {
     const active = await getActiveKeyRow(env, orgId);
     if (active) {
