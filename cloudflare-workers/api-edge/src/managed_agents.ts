@@ -228,7 +228,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   const backendMessage =
     typeof backendError?.message === "string" ? backendError.message : "";
   const missingTemplateManifest =
-    backendCode === "template_sync_failed" &&
+    (backendCode === "template_sync_failed" ||
+      backendCode === "template_build_failed") &&
     backendMessage.includes("oc-template.toml") &&
     backendMessage.includes("expected a regular file");
   const workspaceExportError =
@@ -255,6 +256,12 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (missingTemplateManifest) {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
+  } else if (backendCode === "template_build_failed") {
+    // The backend's build cause is already scrubbed of container internals;
+    // it is the actionable reason the inspection failed, so it passes through.
+    message =
+      backendMessage.slice(0, 1_000) ||
+      "The template could not be prepared.";
   } else if (upstream.status === 400) {
     message =
       backendCode === "invalid_agent_name"
@@ -1721,6 +1728,7 @@ function publicSuccessBody(
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) {
     const project = publicProject(body.project);
     const templateSource = record(body.templateSource);
+    const cloneError = record(templateSource?.cloneError);
     return {
       project,
       ...(templateSource &&
@@ -1731,6 +1739,17 @@ function publicSuccessBody(
               repositoryUrl: templateSource.repositoryUrl,
               commitSha: templateSource.commitSha,
               cloneReady: templateSource.cloneReady === true,
+              ...(cloneError && typeof cloneError.message === "string"
+                ? {
+                    cloneError: {
+                      stage:
+                        typeof cloneError.stage === "string"
+                          ? cloneError.stage
+                          : "repository",
+                      message: cloneError.message.slice(0, 1_000),
+                    },
+                  }
+                : {}),
             },
           }
         : {}),
