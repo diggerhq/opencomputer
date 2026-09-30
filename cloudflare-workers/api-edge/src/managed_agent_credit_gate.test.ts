@@ -13,6 +13,7 @@ class FakeStatement {
   constructor(
     private readonly halted: number | null,
     private readonly haltedAt: number | null,
+    private readonly usagePlan: string,
   ) {}
 
   bind(orgID: string): this {
@@ -24,16 +25,26 @@ class FakeStatement {
     expect(this.orgID).toBe("org_test");
     return (this.halted === null
       ? null
-      : { is_halted: this.halted, halted_at: this.haltedAt }) as T | null;
+      : {
+          is_halted: this.halted,
+          halted_at: this.haltedAt,
+          usage_plan: this.usagePlan,
+        }) as T | null;
   }
 }
 
-function env(halted: number | null, haltedAt: number | null = null) {
+function env(
+  halted: number | null,
+  haltedAt: number | null = null,
+  usagePlan = "base",
+) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
-        expect(sql).toBe("SELECT is_halted, halted_at FROM orgs WHERE id = ?1");
-        return new FakeStatement(halted, haltedAt);
+        expect(sql).toBe(
+          "SELECT is_halted, halted_at, usage_plan FROM orgs WHERE id = ?1",
+        );
+        return new FakeStatement(halted, haltedAt, usagePlan);
       },
     } as unknown as D1Database,
   };
@@ -78,6 +89,8 @@ describe("managed-agent credit admission", () => {
       isHalted: true,
       haltedAt: 1_789_707_077,
       reason: "insufficient_credits",
+      paid: false,
+      modelAccess: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(null), "org_test"),
@@ -86,7 +99,55 @@ describe("managed-agent credit admission", () => {
       isHalted: false,
       haltedAt: null,
       reason: null,
+      paid: false,
+      modelAccess: "full",
     });
+    await expect(
+      getManagedAgentBillingAdmission(env(0, null, "pro"), "org_test"),
+    ).resolves.toEqual({
+      allowed: true,
+      isHalted: false,
+      haltedAt: null,
+      reason: null,
+      paid: true,
+      modelAccess: "full",
+    });
+  });
+
+  it.each(["pro", "max"])(
+    "admits an exhausted %s org onto the fallback model",
+    async (plan) => {
+      await expect(
+        getManagedAgentBillingAdmission(env(1, 1_789_707_077, plan), "org_test"),
+      ).resolves.toEqual({
+        allowed: true,
+        isHalted: true,
+        haltedAt: 1_789_707_077,
+        reason: null,
+        paid: true,
+        modelAccess: "fallback",
+      });
+      const request = new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+        { method: "POST" },
+      );
+      await expect(
+        enforceManagedAgentCreditGate(request, env(1, 1_789_707_077, plan), "org_test"),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it("hard-stops an exhausted base org with the upgrade 402", async () => {
+    const request = new Request(
+      "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+      { method: "POST" },
+    );
+    const response = await enforceManagedAgentCreditGate(
+      request,
+      env(1, 1_789_707_077, "base"),
+      "org_test",
+    );
+    expect(response?.status).toBe(402);
   });
 
   it("returns a typed, actionable 402", async () => {

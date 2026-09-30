@@ -322,7 +322,7 @@ function PlaygroundChat({
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
   const credits = useCreditState()
-  const halted = credits.isHalted
+  const halted = credits.sessionsBlocked
   const turnFinished =
     !agentWorking && status === 'ready' && messages.length > 0
   const inspectorEvents = useLiveSessionEvents(
