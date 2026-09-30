@@ -454,7 +454,16 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, updated_at = ?4 WHERE id = ?5`,
+    `UPDATE orgs
+        SET is_halted = ?1,
+            halted_at = CASE
+              WHEN ?1 = 0 THEN NULL
+              WHEN is_halted = 0 OR halted_at IS NULL THEN ?2
+              ELSE halted_at
+            END,
+            max_concurrent_sandboxes = ?3,
+            updated_at = ?4
+      WHERE id = ?5`,
   )
     .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, nowSec, orgID)
     .run();

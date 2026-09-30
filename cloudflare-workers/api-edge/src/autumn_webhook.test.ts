@@ -4,8 +4,61 @@ import {
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
   summarizeAutumnCreditBalance,
+  syncAutumnToD1,
   type AutumnApiEnv,
+  type AutumnSyncEnv,
 } from "./autumn_webhook";
+
+interface ProjectedOrgState {
+  isHalted: number;
+  haltedAt: number | null;
+  maxConcurrent: number;
+  updatedAt: number;
+}
+
+function autumnSyncEnv(state: ProjectedOrgState): AutumnSyncEnv {
+  const db = {
+    prepare(sql: string) {
+      let bindings: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) {
+          bindings = values;
+          return statement;
+        },
+        async first() {
+          expect(sql).toContain("SELECT is_halted, autumn_concurrency_override");
+          return {
+            is_halted: state.isHalted,
+            autumn_concurrency_override: null,
+          };
+        },
+        async run() {
+          expect(sql).toContain("WHEN ?1 = 0 THEN NULL");
+          expect(sql).toContain("WHEN is_halted = 0 OR halted_at IS NULL THEN ?2");
+          expect(sql).toContain("ELSE halted_at");
+
+          const [isHalted, nowSec, maxConcurrent, updatedAt] = bindings as number[];
+          if (isHalted === 0) {
+            state.haltedAt = null;
+          } else if (state.isHalted === 0 || state.haltedAt === null) {
+            state.haltedAt = nowSec;
+          }
+          state.isHalted = isHalted;
+          state.maxConcurrent = maxConcurrent;
+          state.updatedAt = updatedAt;
+          return { success: true };
+        },
+      };
+      return statement;
+    },
+  } as unknown as D1Database;
+
+  return {
+    AUTUMN_SECRET_KEY: "autumn-secret",
+    AUTUMN_BASE_URL: "https://autumn.test/v1",
+    OPENCOMPUTER_DB: db,
+  };
+}
 
 describe("Autumn credit balance summary", () => {
   it("separates monthly plan credits from persistent top-ups", () => {
@@ -97,6 +150,76 @@ const env: AutumnApiEnv = {
   AUTUMN_SECRET_KEY: "autumn-secret",
   AUTUMN_BASE_URL: "https://autumn.test/v1",
 };
+
+describe("Autumn halted-at projection", () => {
+  let creditsRemaining = 0;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function mockAutumnCustomer() {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        id: "org_1",
+        balances: { credits: { remaining: creditsRemaining } },
+      }),
+    );
+  }
+
+  it("preserves the first halt timestamp until the org resumes", async () => {
+    vi.useFakeTimers();
+    const state: ProjectedOrgState = {
+      isHalted: 0,
+      haltedAt: null,
+      maxConcurrent: 50,
+      updatedAt: 0,
+    };
+    mockAutumnCustomer();
+
+    vi.setSystemTime(new Date("2026-09-17T15:00:00Z"));
+    await syncAutumnToD1(autumnSyncEnv(state), "org_1");
+    const firstHaltedAt = state.haltedAt;
+    expect(firstHaltedAt).toBe(1_789_657_200);
+
+    vi.setSystemTime(new Date("2026-09-17T16:00:00Z"));
+    await syncAutumnToD1(autumnSyncEnv(state), "org_1");
+    expect(state.haltedAt).toBe(firstHaltedAt);
+
+    creditsRemaining = 4;
+    vi.setSystemTime(new Date("2026-09-17T17:00:00Z"));
+    await syncAutumnToD1(autumnSyncEnv(state), "org_1");
+    expect(state).toMatchObject({ isHalted: 0, haltedAt: null });
+
+    creditsRemaining = 0;
+    vi.setSystemTime(new Date("2026-09-17T18:00:00Z"));
+    await syncAutumnToD1(autumnSyncEnv(state), "org_1");
+    expect(state).toMatchObject({
+      isHalted: 1,
+      haltedAt: 1_789_668_000,
+    });
+  });
+
+  it("repairs a halted projection whose timestamp is missing", async () => {
+    vi.useFakeTimers();
+    const state: ProjectedOrgState = {
+      isHalted: 1,
+      haltedAt: null,
+      maxConcurrent: 50,
+      updatedAt: 0,
+    };
+    mockAutumnCustomer();
+
+    vi.setSystemTime(new Date("2026-09-17T15:00:00Z"));
+    await syncAutumnToD1(autumnSyncEnv(state), "org_1");
+
+    expect(state).toMatchObject({
+      isHalted: 1,
+      haltedAt: 1_789_657_200,
+    });
+  });
+});
 
 describe("Autumn auto top-up", () => {
   afterEach(() => vi.restoreAllMocks());
