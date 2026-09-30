@@ -572,7 +572,7 @@ function HaltBanner() {
         <CircleAlert className="size-4 shrink-0" />
         <span>
           You&apos;ve used this month&apos;s credits — agents keep running on an
-          open-weight model (GLM) and sandboxes are paused.{' '}
+          open-weight model (GLM).{' '}
           <Link
             to="/billing"
             onClick={click}
@@ -589,8 +589,7 @@ function HaltBanner() {
     <div className="border-destructive/40 bg-status-error-bg text-destructive flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium sm:px-8">
       <CircleAlert className="size-4 shrink-0" />
       <span>
-        Your agent sessions and sandboxes are paused — you&apos;re out of
-        prepaid credits.{' '}
+        Your agent sessions are paused — you&apos;re out of prepaid credits.{' '}
         {billingOnrampV2Enabled ? (
           <>
             <Link
