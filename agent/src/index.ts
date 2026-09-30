@@ -1,5 +1,10 @@
 import { Cron } from "croner";
 
+import {
+  browserId,
+  browserProjection,
+  type BrowserProjection,
+} from "./browser.js";
 import { memoryId, memoryProjection, type MemoryProjection } from "./memory.js";
 
 export type DataValue =
@@ -624,6 +629,17 @@ export type {
 } from "./memory.js";
 export { defineMemory, documentMemory, httpMemory } from "./memory.js";
 
+export type {
+  BrowserProjection,
+  BrowserReference,
+} from "./browser.js";
+export {
+  BROWSER_DEFAULT_ID,
+  BROWSER_RESERVED_ARGUMENT,
+  BROWSER_TOOLS,
+  browserToolNames,
+} from "./browser.js";
+
 /**
  * Implemented by the host that renders the agent. The host renders inside an
  * isolated worker with a per-render `scope`, sets this object on
@@ -642,6 +658,12 @@ export { defineMemory, documentMemory, httpMemory } from "./memory.js";
  *   `scope.selectedMemory`, returned sorted as `selectedMemory` next to
  *   `enabledTools`. The selection is what routes memory tools and their
  *   `memory` argument for the model request this render produced.
+ * - `useBrowser(id?)` reads `scope.browsers[id]` (`"browser"` when omitted),
+ *   the declaration the project enabled (absent when it did not), and adds
+ *   the id to `scope.selectedBrowsers`, returned sorted as
+ *   `selectedBrowsers` next to `enabledTools`. The selection is what
+ *   exposes the fixed browser tools for the model request this render
+ *   produced.
  */
 interface AgentHooks {
   useInput(): Readonly<AgentInput>;
@@ -655,6 +677,9 @@ interface AgentHooks {
    *  that does nothing at run time is still correct. */
   useService?(service: string): void;
   useMemory(memory: string): MemoryProjection | undefined;
+  /** Optional: browser sessions are a workerd-runtime feature; a host that
+   *  does not implement the hook makes `useBrowser()` fail the render. */
+  useBrowser?(browser?: string): BrowserProjection | undefined;
 }
 
 function hooks(): AgentHooks {
@@ -1619,6 +1644,28 @@ export function useMemory(
     "useMemory",
   );
   return memoryProjection(id, hooks().useMemory(id));
+}
+
+/**
+ * Select the project's browser session for this render: the fixed
+ * `browser_*` tools exist for the model request only when the render
+ * selects it, and the host provisions the remote session on the first tool
+ * call. The declaration lives at project level (`browser: true` in
+ * `opencomputer/project.ts`); an omitted argument selects the one browser
+ * every enabled project declares.
+ */
+export function useBrowser(
+  browser?: string | ResourceReference,
+): BrowserProjection {
+  const id = browserId(
+    browser === undefined
+      ? undefined
+      : typeof browser === "string"
+        ? browser
+        : browser.id,
+    "useBrowser",
+  );
+  return browserProjection(id, hooks().useBrowser?.(id));
 }
 
 export const useInput = (): Readonly<AgentInput> => hooks().useInput();

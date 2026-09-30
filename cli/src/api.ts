@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 
 import type { ResolvedConfig } from "./config.js";
-import type { MemoryDeclaration, ProjectResourceManifest } from "./project.js";
+import type {
+  BrowserDeclaration,
+  MemoryDeclaration,
+  ProjectResourceManifest,
+} from "./project.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -1325,6 +1329,7 @@ export class OpenComputerClient {
     }>;
     memory: MemoryDeclaration[];
     models: Array<{ provider: string; model: string }>;
+    browsers?: BrowserDeclaration[];
     projectDeployment?: {
       id: string;
       digest: string;

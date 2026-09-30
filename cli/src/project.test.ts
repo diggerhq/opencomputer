@@ -2927,6 +2927,191 @@ test("the CLI's memory contract is the agent package's module", async () => {
   );
 });
 
+test("the CLI's browser contract is the agent package's module", async () => {
+  const repo = resolve(import.meta.dirname, "..", "..");
+  const packageModule = resolve(repo, "agent", "src", "browser.ts");
+  const cliModule = resolve(repo, "cli", "src", "browser.ts");
+  assert.equal(
+    await readFile(cliModule, "utf8"),
+    await readFile(packageModule, "utf8"),
+    "cli/src/browser.ts must stay byte-identical to agent/src/browser.ts; the compiler and @opencomputer/agent share it",
+  );
+});
+
+test("the compiler declares the project browser and renders selections for the enabled agent", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-browser-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      `export default {
+  name: "app",
+  browser: true,
+  agents: ["hello-world"],
+};
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useBrowser, useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const browser = useBrowser();
+  const input = useInput();
+  return "browser=" + browser.id + " input=" + input.text;
+}
+`,
+    );
+
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    assert.deepEqual(built.browsers, [{ id: "browser" }]);
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { browsers: unknown };
+    assert.deepEqual(manifest.browsers, built.browsers);
+
+    const scope = {
+      input: { source: "user", text: "hi" } as {
+        source: string;
+        text: string;
+      },
+      browsers: { browser: { id: "browser" } } as Record<string, unknown>,
+      selectedBrowsers: new Set<string>(),
+    };
+    (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("opencomputer.agent-hooks")
+    ] = {
+      useInput: () => scope.input,
+      useBrowser(id: string) {
+        const declaration = scope.browsers[id] as { id: string } | undefined;
+        if (declaration) scope.selectedBrowsers.add(id);
+        return declaration;
+      },
+    };
+    try {
+      const module = (await import(
+        `${pathToFileURL(resolve(runtime, "agent.js")).href}?test=${crypto.randomUUID()}`
+      )) as { default: () => string };
+      assert.equal(module.default(), "browser=browser input=hi");
+      assert.deepEqual([...scope.selectedBrowsers], ["browser"]);
+      scope.browsers = {};
+      assert.throws(
+        () => module.default(),
+        /Browser "browser" is not enabled for this project/,
+      );
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[
+        Symbol.for("opencomputer.agent-hooks")
+      ];
+    }
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler refuses useBrowser when the project does not enable browsers", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-browser-off-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useBrowser } from "@opencomputer/agent";
+export default function Agent() {
+  useBrowser();
+  return "hi";
+}
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /useBrowser\(\) but the project does not enable browser sessions; set browser: true/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler refuses useBrowser calls for undeclared browser ids", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-browser-id-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      `export default { name: "app", browser: true, agents: ["hello-world"] };\n`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useBrowser } from "@opencomputer/agent";
+export default function Agent() {
+  useBrowser("backup");
+  return "hi";
+}
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /useBrowser\("backup"\) references a browser this project does not declare/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler refuses tools that collide with a browser's fixed names", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-browser-tool-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      `export default { name: "app", browser: true, agents: ["hello-world"] };\n`,
+    );
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "browser-navigate.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+export const navigate = defineTool({
+  name: "browser_navigate",
+  description: "Collides.",
+  input: { type: "object", properties: {} },
+  run: async () => "done",
+});
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /"browser_navigate" collides with the fixed tool name of browser browser/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler refuses a non-boolean browser flag", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-browser-flag-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(root, "opencomputer", "project.ts"),
+      `export default { name: "app", browser: "managed", agents: ["hello-world"] };\n`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /browser must be true or false/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("prepareAgent builds into a cache under node_modules, never into the agent's source directory", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-"));
   try {

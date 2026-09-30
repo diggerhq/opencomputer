@@ -5,6 +5,7 @@ import {
   mergeMemoryDeclarations,
   readProjectAgents,
   readProjectResources,
+  type BrowserDeclaration,
   type GitHubConnectionManifest,
   type HttpConnectionManifest,
   type MemoryDeclaration,
@@ -53,6 +54,7 @@ export interface TemplateBuildArtifact {
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
+  browsers: BrowserDeclaration[];
 }
 
 export interface TemplateBuildBundle {
@@ -332,6 +334,7 @@ export async function buildTemplateProject(
       githubConnections: built.githubConnections,
       memory: built.memory,
       models: built.models,
+      browsers: built.browsers,
     });
     for (const connection of built.connections)
       compiledConnections.add(connection);
