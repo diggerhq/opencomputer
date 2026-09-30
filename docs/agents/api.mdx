@@ -84,6 +84,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground` or `webhook`. The dashboard groups sessions by it. |
 | `labels` | Your own metadata on the session, an object of strings; see [Labels](#labels). Applied at creation and ignored on a replay of the same `Idempotency-Key`. |
+| `networkPolicy` | A deny-by-default list of the exact HTTP and HTTPS origins the session's computer may reach, enforced beneath every process and immutable for the session; see [Network egress policy](/agents/network-policy). Part of the request identity under `Idempotency-Key`. |
 
 The response is `{ session: { id, executionMode, status, createdAt }, deployment }`.
 The session starts without a turn; send one with the turns route.
@@ -99,7 +100,8 @@ identifies the session within your organization:
   need to know which one that was. A new session under a new key gets the
   deployment active at that time.
 - Anything else under that key is `409 idempotency_conflict`: another
-  agent, environment or pinned deployment, or different memory bindings.
+  agent, environment or pinned deployment, different memory bindings, or a
+  different (or added or removed) `networkPolicy`.
   Pinning the deployment the session already holds counts as the same
   request.
 - Two identical requests under one key that arrive together create one
@@ -117,9 +119,10 @@ identifies the session within your organization:
   way.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
-`400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
-(a pinned deployment is not active in the named environment), `402
-insufficient_credits`.
+`400 invalid_labels`, `400 invalid_network_policy`, `404 deployment_not_found`,
+`409 deployment_not_promoted` (a pinned deployment is not active in the named
+environment), `409 egress_policy_unsupported` (a `networkPolicy` on a session
+whose commands do not run in a managed computer), `402 insufficient_credits`.
 
 ### Get and list
 
@@ -137,6 +140,7 @@ insufficient_credits`.
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
+| `networkPolicy` | The [network policy receipt](/agents/network-policy#receipt), with `policyDigest` and `state`; present when the session was created with a policy |
 | `createdAt`, `updatedAt` | Timestamps |
 
 `GET /sessions` returns one page of rows, `{ sessions, nextCursor }`, filtered
@@ -243,6 +247,16 @@ unchanged. Stopping does not undo files already written or external effects.
   `stopping`, and their cancellation events have no settlement fields.
   Check the creation response when this guarantee matters to your app.
 </Note>
+
+### Network policy
+
+`POST /sessions/<id>/network-policy/revoke` revokes the session's
+[network policy](/agents/network-policy#revocation): every new connection
+from its computer is denied and open connections are closed, without
+waiting for the running turn. The body may carry a `reason`. The response
+is `{ networkPolicy, changed, enforcement }`, where `enforcement.closed`
+says whether the computer's egress is confirmed closed. A session without a
+policy answers `404 egress_policy_required`.
 
 ## Turns
 

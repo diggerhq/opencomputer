@@ -46,6 +46,7 @@
               "agents/webhooks",
               "agents/capabilities",
               "agents/secrets",
+              "agents/network-policy",
               "agents/services",
               "agents/github",
               "agents/slack",

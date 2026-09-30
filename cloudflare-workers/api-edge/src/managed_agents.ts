@@ -1982,6 +1982,12 @@ function publicSuccessBody(
     return publicSessionSnapshot(body);
   }
   if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/network-policy\/revoke$/.test(suffix)
+  ) {
+    return stripPrivateValues(body);
+  }
+  if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
   ) {
@@ -2531,6 +2537,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     return true;
   }
   if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) return true;
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/network-policy\/revoke$/.test(suffix)
+  ) {
+    return true;
+  }
   if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)

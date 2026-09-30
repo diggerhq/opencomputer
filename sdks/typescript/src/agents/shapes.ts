@@ -24,6 +24,9 @@ import type {
   DataValue,
   Deployment,
   Environment,
+  NetworkPolicy,
+  NetworkPolicyReceipt,
+  NetworkPolicyRevocation,
   Project,
   ProjectDetail,
   ProjectEnvironment,
@@ -244,6 +247,61 @@ const sessionMemoryBinding: Shape<SessionMemoryBinding> = (value, path) => {
   return { resource: binding.resource, scope: "collection", access: "read", writable: binding.writable };
 };
 
+const networkPolicyVersion: Shape<1> = (value, path) => {
+  if (value !== 1) throw new ShapeError(path, "1");
+  return 1;
+};
+
+const networkPolicy: Shape<NetworkPolicy> = object({
+  version: networkPolicyVersion,
+  mode: oneOf("deny_by_default"),
+  destinations: array(
+    object({
+      type: oneOf("origin"),
+      scheme: oneOf("http", "https"),
+      hostname: nonEmptyString,
+      port: number,
+      addressFamilies: array(oneOf("ipv4", "ipv6")),
+    }),
+  ),
+  exclusions: array(object({ type: oneOf("ip"), address: nonEmptyString })),
+  dns: object({ mode: oneOf("provider_resolver_only") }),
+  limits: optional(
+    object({ newConnectionsPerSecond: optional(number), concurrentConnections: optional(number) }),
+  ),
+  expiresAt: optional(string),
+});
+
+export const networkPolicyReceipt: Shape<NetworkPolicyReceipt> = object({
+  policyId: string,
+  policyDigest: string,
+  enforcementVersion: string,
+  state: nonEmptyString,
+  declaredAt: string,
+  installedAt: optional(string),
+  activatedAt: optional(string),
+  expiresAt: optional(string),
+  revokedAt: optional(string),
+  revokeReason: optional(string),
+  generation: optional(number),
+  installations: number,
+  counters: object({
+    connectionsAllowed: number,
+    connectionsDenied: number,
+    dnsAllowed: number,
+    dnsDenied: number,
+    bytesIn: number,
+    bytesOut: number,
+  }),
+  policy: networkPolicy,
+});
+
+export const networkPolicyRevocation: Shape<NetworkPolicyRevocation> = object({
+  networkPolicy: networkPolicyReceipt,
+  changed: boolean,
+  enforcement: object({ closed: boolean, method: string, generation: optional(number) }),
+});
+
 export const session: Shape<Session> = object({
   id: string,
   projectId: optional(string),
@@ -259,6 +317,7 @@ export const session: Shape<Session> = object({
   labelsUpdatedAt: optional(string),
   revision: optional(number),
   result: optional(nullable(sessionResult)),
+  networkPolicy: optional(networkPolicyReceipt),
   createdAt: string,
   updatedAt: string,
 }) as Shape<Session>;

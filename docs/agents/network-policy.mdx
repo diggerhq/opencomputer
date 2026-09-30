@@ -1,0 +1,261 @@
+---
+title: "Network egress policy"
+description: "Restrict every process in a session's computer to an exact list of HTTP and HTTPS origins"
+---
+
+A network policy is a deny-by-default list of the exact web origins a
+session's computer may reach. Attach it when you create the session and every
+shell command, child process, scanner, proxy or browser the agent starts in
+that computer is held to it: connections to anything else are refused before
+they leave the computer, and the session's event log records what was denied.
+
+The policy is enforced beneath the sandbox, not by the agent. Prompt
+instructions, agent skills and tool descriptions are behavioural guidance; the
+policy is the boundary. Root inside the computer cannot widen, replace or
+disable it, and the policy is immutable for the life of the session: an
+emergency can revoke it, but nothing can add to it.
+
+<Note>
+  Network policies apply to sessions whose commands run in a managed
+  computer, which is how deployed agents run by default. A session created
+  with `executionMode: "microvm"`, or for an agent that runs locally,
+  answers `409 egress_policy_unsupported` rather than running without
+  enforcement.
+</Note>
+
+## Attaching a policy
+
+Send `networkPolicy` with `POST /sessions`:
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: pentest/engagement-42' \
+  -d '{
+    "agentId": "<agent-id>@production",
+    "networkPolicy": {
+      "version": 1,
+      "mode": "deny_by_default",
+      "destinations": [
+        { "type": "origin", "origin": "https://owned-target.example" },
+        { "type": "origin", "scheme": "https", "hostname": "api.owned-target.example", "port": 8443,
+          "addressFamilies": ["ipv4", "ipv6"] }
+      ],
+      "exclusions": [{ "type": "ip", "address": "192.0.2.7" }],
+      "limits": { "newConnectionsPerSecond": 10, "concurrentConnections": 50 },
+      "expiresAt": "2026-09-26T00:00:00Z"
+    }
+  }'
+```
+
+```ts
+import { OpenComputer } from "@opencomputer/sdk/agents";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const { session } = await oc.sessions.create(
+  {
+    agentId: "<agent-id>@production",
+    networkPolicy: {
+      destinations: [{ type: "origin", origin: "https://owned-target.example" }],
+      expiresAt: "2026-09-26T00:00:00Z",
+    },
+  },
+  { idempotencyKey: "pentest/engagement-42" },
+);
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `1`. Optional. |
+| `mode` | `deny_by_default`, the only mode. Optional. |
+| `destinations` | The origins the computer may reach, at most 64. Each is `{ type: "origin", origin }` with an `https://host[:port]` or `http://host[:port]` URL, or `{ type: "origin", scheme, hostname, port? }`. An omitted port is the scheme's default. `addressFamilies` says which resolved addresses may be dialled, `["ipv4"]` by default; `ipv4` does not imply `ipv6` or the reverse. |
+| `exclusions` | Addresses the computer may never reach, at most 64, each `{ type: "ip", address }`. An exclusion wins over every destination: an allowed hostname that resolves to an excluded address is denied. |
+| `dns` | `{ mode: "provider_resolver_only" }`, the only mode. Optional. |
+| `limits` | `newConnectionsPerSecond` and `concurrentConnections`, each 1 to 100000. Enforced outside the sandbox, per session. |
+| `expiresAt` | When the policy expires. After it every new connection is denied and open connections are closed. Suspending and resuming the session does not move it. |
+
+The policy is canonicalised before it is stored: hostnames are lowercased,
+trailing dots removed and internationalised names encoded; default ports are
+made explicit; duplicate origins are merged; destinations and exclusions are
+sorted. The digest on the session is computed over that canonical form, so two
+requests that mean the same policy produce the same digest.
+
+A destination names one origin exactly: scheme, canonical hostname and port.
+There is no wildcard or suffix matching, `sub.example.com` is not covered by
+`example.com`, and a destination cannot be an IP address. Only HTTP and HTTPS
+over TCP are supported; other destination types (`cidr`, `ip`, `hostname`,
+`tcp`, `udp`) are refused with `400 invalid_network_policy` so that a policy
+you send is never silently narrower than you meant.
+
+### Idempotency
+
+The policy is part of the request identity under an `Idempotency-Key`. The
+same key with the same canonical policy returns the existing session with
+`200`; the same key with a different policy, or with the policy added or
+removed, is `409 idempotency_conflict`. A retry therefore never changes what a
+session is allowed to reach.
+
+## What is enforced
+
+Every process in the computer, whatever its user, shares one network path
+that the policy governs:
+
+- **Origins.** A connection is classified by the name it presents, the server
+  name of a TLS handshake or the `Host` of a plain HTTP request, and by the
+  port it is dialled on. The pair must be an allowed origin. A `Host` or
+  server name that does not match the port, a connection that presents no
+  name, a name that is an IP address, HTTP `CONNECT`, and HTTP/2 without a
+  TLS handshake are denied.
+- **Direct IP connections** are denied: an allowed hostname is the only way to
+  a destination, and only the addresses it resolves to right now are dialled.
+- **Redirects** are not followed on the agent's behalf. A redirect to another
+  origin is a new connection and is classified on its own, so a redirect from
+  an allowed origin to an unlisted one is denied before the redirected request
+  is sent.
+- **DNS** is answered only by the platform's resolver. Queries for names that
+  are not allowed origins are refused rather than forwarded, so a disallowed
+  hostname is never resolved on the computer's behalf; alternate resolvers,
+  DNS over HTTPS and DNS over TLS are not reachable. Resolved addresses are
+  checked again when the connection is made, so an answer that changes between
+  lookup and connection cannot redirect the connection.
+- **Addresses.** IPv4 and IPv6 are separate permissions per destination.
+  Loopback, link-local, private, multicast, reserved and cloud metadata
+  addresses are denied whatever a hostname resolves to; so is every address in
+  `exclusions`.
+- **Other protocols.** UDP other than DNS to the platform resolver, ICMP, raw
+  sockets and TCP ports that no destination names are denied. Inbound
+  listeners are not reachable from outside the computer.
+- **Limits** count connections per second and concurrent connections for the
+  one session; other sessions are unaffected.
+- **Inside the computer** environment variables, proxy settings, `/etc/hosts`,
+  routes and namespaces change nothing, because the boundary sits outside the
+  process tree: the computer's processes run in their own network namespace
+  whose only exit is the platform's gateway, and administrative network
+  capabilities are removed from that tree before the first command starts.
+
+Platform traffic, such as model calls, session control and
+[declared connections](/agents/secrets), travels on a separate lane the
+computer's processes cannot route through; an allowed origin is never a tunnel
+to it.
+
+## Lifecycle
+
+```text
+declared -> installed -> active -> revoked | expired
+```
+
+The policy is `declared` when the session is created. The computer installs it
+and verifies the digest before any command runs; the session then records
+`network.policy.applied` and the policy is `active`. A turn that needs the
+computer does not start before that, and a computer that cannot install or
+verify the policy is not used: the failure is closed, never open.
+
+When the computer is replaced, after a suspension, an interrupt that had to
+terminate it or a runtime failure, the new computer installs the same policy
+and verifies the same digest before any resumed process can send traffic, and
+the session records `network.policy.reinstalled`. The receipt's
+`installations` counts these; `generation` names the computer the policy is
+on.
+
+### Revocation
+
+```bash
+curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/network-policy/revoke' \
+  -H 'x-api-key: <api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{ "reason": "engagement window closed" }'
+```
+
+```ts
+const { networkPolicy, enforcement } = await oc.sessions.revokeNetworkPolicy(session.id, {
+  reason: "engagement window closed",
+});
+```
+
+Revocation denies every new connection and closes open ones. It does not wait
+for the running turn, the model or the current tool call, and it needs no
+cooperation from the sandbox: the closure is applied from outside the
+computer. The response is `{ networkPolicy, changed, enforcement }`:
+`networkPolicy` is the receipt with `state: "revoked"`, `changed` is `false`
+when the policy had already been revoked or had expired, and `enforcement`
+says whether the running computer's egress is confirmed closed
+(`closed: true`) and how; when the computer could not confirm closure it is
+terminated instead, so no process keeps its access either way. The session
+itself continues: turns that need no network still run, and
+`POST /sessions/<id>/end` ends it as usual.
+
+A session without a policy answers `404 egress_policy_required`. Revocation is
+final; a policy cannot be reinstated or widened. Start a new session for a new
+scope.
+
+Expiry behaves like a revocation with reason `expired`, applied by the
+platform at `expiresAt`.
+
+## Receipt
+
+`GET /sessions/<id>` carries the policy's receipt as `networkPolicy`:
+
+| Field | Meaning |
+| --- | --- |
+| `policyId` | The platform's ID for the policy, fixed at creation |
+| `policyDigest` | `sha256:<hex>` over the canonical policy. The same digest means the same policy. |
+| `enforcementVersion` | Which version of the enforcement the computer runs |
+| `state` | `declared`, `installed`, `active`, `revoked` or `expired` |
+| `declaredAt`, `installedAt`, `activatedAt` | When the policy was attached, last installed on a computer, and last became active |
+| `expiresAt` | The effective expiry, when one was given |
+| `revokedAt`, `revokeReason` | When and why the policy was revoked or expired |
+| `generation`, `installations` | The computer the policy is installed on, and how many computers have installed it |
+| `counters` | `connectionsAllowed`, `connectionsDenied`, `dnsAllowed`, `dnsDenied`, `bytesIn`, `bytesOut`, from the current computer |
+| `policy` | The canonical policy the digest covers |
+
+## Events
+
+The [event log](/agents/events#network-policy) records the policy's lifecycle
+and its denials:
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `network.policy.applied` | The first computer installed and verified the policy | `policyId`, `policyDigest`, `state`, `enforcementVersion`, `generation`, `installations` |
+| `network.policy.reinstalled` | A replacement computer installed and verified the same policy | as above |
+| `network.policy.revoked` | The policy was revoked or expired | `policyId`, `policyDigest`, `state` (`revoked` or `expired`), `reason`, `expiresAt` when it expired, `generation` |
+| `network.egress.denied` | A connection or DNS query was refused | `policyDigest`, `generation`, `reason`, `protocol` (`tcp` or `dns`); `scheme`, `hostname`, `port` for a connection, `query` (`A`, `AAAA` or `other`) for DNS |
+
+Denied events name the destination and the reason, never a request or
+response body, header, credential or URL path. They are bounded: at most 32
+are recorded per minute per session, and the receipt's counters carry the
+totals, so a scan that is refused ten thousand times leaves a readable log.
+Allowed connections are counted, not recorded one by one.
+
+Reasons a connection is denied:
+
+| Reason | Meaning |
+| --- | --- |
+| `destination_not_allowed` | The hostname is not an allowed destination, is an IP address, or the destination could not be reached at any permitted address |
+| `protocol_not_allowed` | The hostname is allowed on this port but with the other scheme; or HTTP `CONNECT`, HTTP/2 without TLS, an unrecognised protocol, or a connection that presents no server name |
+| `port_not_allowed` | The hostname is allowed, but not on this port |
+| `dns_resolution_not_allowed` | A DNS query for a name that is not an allowed destination, or no permitted address was returned for it |
+| `private_address_not_allowed` | The name resolved to a loopback, link-local, private, multicast, metadata or excluded address |
+| `address_family_not_allowed` | The name resolved to addresses of a family the destination does not allow |
+| `rate_limit_exceeded`, `connection_limit_exceeded` | A limit in the policy was reached |
+| `egress_policy_expired`, `egress_policy_revoked` | The policy is no longer active |
+| `egress_policy_not_ready` | The connection was attempted before installation completed |
+
+A redirect to an unlisted origin is denied as `destination_not_allowed` on
+the connection the redirected request would have used, and a hostname whose
+addresses change is denied at connection time by the same address checks;
+there is no separate reason for either.
+
+## Limits of this release
+
+- Destinations are exact HTTP and HTTPS origins over TCP. IP addresses and
+  CIDR ranges, hostname exclusions, wildcard scopes, UDP other than platform
+  DNS, ICMP, raw sockets and inbound callbacks are not supported; a policy
+  that names them is refused.
+- HTTP and HTTPS are classified by server name and `Host`; a WebSocket or
+  protocol upgrade is allowed when its origin is, and HTTP/2 is allowed over
+  TLS only.
+- At most 64 destinations and 64 exclusions per policy.
+- Provider-owned platform traffic (model inference, session control,
+  declared connections) is not governed by the policy and is not reachable
+  from the computer's processes.

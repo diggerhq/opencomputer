@@ -74,6 +74,155 @@ export interface SessionResult {
 /** Application metadata on a session. Not authorization, not visible to the agent. */
 export type SessionLabels = Record<string, string>;
 
+// ── Network egress policy ─────────────────────────────────────────────────────
+
+/**
+ * One exact HTTP or HTTPS origin the session's processes may reach, given
+ * either as an `origin` URL or as its `scheme` and `hostname`.
+ */
+export type NetworkPolicyOriginInput =
+  | {
+      type: "origin";
+      /** `https://host` or `http://host:8080`: scheme, host and optional port; no path. */
+      origin: string;
+      scheme?: undefined;
+      hostname?: undefined;
+      port?: undefined;
+      /** Which resolved address families may be dialled; default `["ipv4"]`. Neither implies the other. */
+      addressFamilies?: Array<"ipv4" | "ipv6">;
+    }
+  | {
+      type: "origin";
+      origin?: undefined;
+      scheme: "http" | "https";
+      hostname: string;
+      /** Defaults to the scheme's port. */
+      port?: number;
+      /** Which resolved address families may be dialled; default `["ipv4"]`. Neither implies the other. */
+      addressFamilies?: Array<"ipv4" | "ipv6">;
+    };
+
+/** An address the session may never reach, even when an allowed hostname resolves to it. */
+export interface NetworkPolicyIpExclusion {
+  type: "ip";
+  address: string;
+}
+
+export interface NetworkPolicyLimits {
+  newConnectionsPerSecond?: number;
+  concurrentConnections?: number;
+}
+
+/** The policy as `POST /sessions` accepts it. */
+export interface NetworkPolicyInput {
+  version?: 1;
+  mode?: "deny_by_default";
+  /** At most 64 origins. */
+  destinations: NetworkPolicyOriginInput[];
+  /** At most 64 addresses. */
+  exclusions?: NetworkPolicyIpExclusion[];
+  dns?: { mode?: "provider_resolver_only" };
+  limits?: NetworkPolicyLimits;
+  /** ISO-8601; after it, every connection is denied. */
+  expiresAt?: string;
+}
+
+/** A destination as the canonical policy records it. */
+export interface NetworkPolicyOrigin {
+  type: "origin";
+  scheme: "http" | "https";
+  hostname: string;
+  port: number;
+  addressFamilies: Array<"ipv4" | "ipv6">;
+}
+
+/** The canonical policy: what the digest is computed over. */
+export interface NetworkPolicy {
+  version: 1;
+  mode: "deny_by_default";
+  destinations: NetworkPolicyOrigin[];
+  exclusions: NetworkPolicyIpExclusion[];
+  dns: { mode: "provider_resolver_only" };
+  limits?: NetworkPolicyLimits;
+  expiresAt?: string;
+}
+
+/** `declared` → `installed` → `active` → `revoked` | `expired`. */
+export type NetworkPolicyState = "declared" | "installed" | "active" | "revoked" | "expired" | (string & {});
+
+export interface NetworkPolicyCounters {
+  connectionsAllowed: number;
+  connectionsDenied: number;
+  dnsAllowed: number;
+  dnsDenied: number;
+  bytesIn: number;
+  bytesOut: number;
+}
+
+/** The session's network policy receipt, on `GET /sessions/<id>` as `networkPolicy`. */
+export interface NetworkPolicyReceipt {
+  policyId: string;
+  /** `sha256:<hex>` over the canonical policy; immutable for the session. */
+  policyDigest: string;
+  enforcementVersion: string;
+  state: NetworkPolicyState;
+  declaredAt: string;
+  installedAt?: string;
+  activatedAt?: string;
+  expiresAt?: string;
+  revokedAt?: string;
+  revokeReason?: string;
+  /** The computer generation the policy is installed on. */
+  generation?: number;
+  /** How many computers have installed it: one, plus one per replacement. */
+  installations: number;
+  counters: NetworkPolicyCounters;
+  policy: NetworkPolicy;
+}
+
+/** What `POST /sessions/<id>/network-policy/revoke` returns. */
+export interface NetworkPolicyRevocation {
+  networkPolicy: NetworkPolicyReceipt;
+  /** `false` when the policy was already revoked or expired. */
+  changed: boolean;
+  /** Whether the running computer's egress is confirmed closed, and how. */
+  enforcement: { closed: boolean; method: string; generation?: number };
+}
+
+export interface RevokeNetworkPolicyParams {
+  /** Recorded on the receipt and the `network.policy.revoked` event; at most 200 characters. */
+  reason?: string;
+}
+
+/** Data of `network.policy.applied` and `network.policy.reinstalled`. */
+export interface NetworkPolicyLifecycleEvent {
+  policyId: string;
+  policyDigest: string;
+  state: NetworkPolicyState;
+  enforcementVersion: string;
+  generation: number;
+  sandboxId?: string;
+  installations: number;
+}
+
+/**
+ * Data of `network.egress.denied`: the destination and reason, never a
+ * request or response body. At most 32 are recorded per minute.
+ */
+export interface NetworkEgressDeniedEvent {
+  policyDigest: string;
+  generation: number;
+  reason: string;
+  protocol: "tcp" | "dns" | (string & {});
+  scheme?: "http" | "https";
+  hostname?: string;
+  port?: number;
+  /** DNS: the record type asked for. */
+  query?: "A" | "AAAA" | "other";
+  detail?: string;
+  timestamp?: string;
+}
+
 /** A session as `GET /sessions/<id>` returns it. */
 export interface Session {
   id: string;
@@ -100,6 +249,8 @@ export interface Session {
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
+  /** Present when the session was created with a `networkPolicy`. */
+  networkPolicy?: NetworkPolicyReceipt;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +284,12 @@ export interface CreateSessionParams {
   source?: SessionSource;
   /** Applied at creation and ignored on an idempotent replay. */
   labels?: SessionLabels;
+  /**
+   * Deny-by-default egress policy for every process in the session's
+   * computer; immutable once created. Part of the idempotency identity: the
+   * same key with a different policy is `409 idempotency_conflict`.
+   */
+  networkPolicy?: NetworkPolicyInput;
 }
 
 /** Turn admission, as `POST /sessions/<id>/turns` answers it. */
@@ -262,6 +419,13 @@ export type SessionEvent =
   | (EventBase & { type: "session.status_changed"; data: { from: SessionStatus; to: SessionStatus } })
   | (EventBase & { type: "session.ended"; data: Record<string, never> })
   | (EventBase & { type: "session.failed"; data: Failure })
+  | (EventBase & { type: "network.policy.applied"; data: NetworkPolicyLifecycleEvent })
+  | (EventBase & { type: "network.policy.reinstalled"; data: NetworkPolicyLifecycleEvent })
+  | (EventBase & {
+      type: "network.policy.revoked";
+      data: { policyId: string; policyDigest: string; state: "revoked" | "expired"; reason: string; expiresAt?: string; generation?: number };
+    })
+  | (EventBase & { type: "network.egress.denied"; data: NetworkEgressDeniedEvent })
   | (EventBase & { type: "message.received"; data: { input: string; mode: TurnMode; payload?: DataValue } })
   | (EventBase & { type: "turn.queued"; data: { mode: TurnMode } })
   | (EventBase & { type: "turn.steered"; data: { activeTurnId: string } })
