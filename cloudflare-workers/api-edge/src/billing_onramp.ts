@@ -5,12 +5,13 @@
 // that fires before the hard stop.
 
 import {
-  type AutumnCustomer,
+  activeUsagePlan,
   type AutumnSyncEnv,
   syncAutumnToD1,
+  type UsagePlan,
 } from "./autumn_webhook";
 
-export type UsagePlan = "base" | "pro" | "max";
+export { activeUsagePlan, type UsagePlan };
 
 // Mirror of PLAN_CREDIT_GRANTS in autumn_webhook.ts (dollars). The base grant is
 // the signup credit; low-balance fires at LOW_CREDIT_FRACTION of the plan grant.
@@ -21,24 +22,8 @@ const PLAN_GRANT_CENTS: Record<UsagePlan, number> = {
 };
 const LOW_CREDIT_FRACTION = 0.3;
 
-const USAGE_PLAN_RANK: Record<string, number> = { base: 0, pro: 1, max: 2 };
-
 export function lowCreditThresholdCents(plan: UsagePlan): number {
   return Math.round(PLAN_GRANT_CENTS[plan] * LOW_CREDIT_FRACTION);
-}
-
-export function activeUsagePlan(customer: AutumnCustomer): UsagePlan {
-  let plan: UsagePlan = "base";
-  let rank = 0;
-  for (const s of customer.subscriptions ?? []) {
-    if (s.status && s.status !== "active") continue;
-    const r = USAGE_PLAN_RANK[s.plan_id];
-    if (r !== undefined && r >= rank) {
-      rank = r;
-      plan = s.plan_id as UsagePlan;
-    }
-  }
-  return plan;
 }
 
 export interface BillingLinks {

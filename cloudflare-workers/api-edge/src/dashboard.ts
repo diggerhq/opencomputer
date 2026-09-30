@@ -39,6 +39,7 @@ import {
   proxyPublicTemplateInspection,
 } from "./managed_agents";
 import { enableManagedBilling } from "./model_billing";
+import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -1009,6 +1010,9 @@ export async function handleDashboard(
     if (sub === "/managed-agents/sessions" && method === "POST") {
       try {
         const billing = await enableManagedBilling(env, caller.orgID);
+        if (billing.status === "halted") {
+          return insufficientManagedAgentCredits(req);
+        }
         if (billing.status !== "active") {
           return json({ error: "managed model billing is unavailable" }, 503);
         }
