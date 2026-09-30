@@ -137,6 +137,8 @@ insufficient_credits`.
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
+| `runtime` | The computer serving the session: `generation`, `state`, `startedAt`, `expiresAt`, `releasedAt`, `releaseReason`, `replacedAt`, `replacementReason`, `lifetimeSeconds`, `idleReleaseSeconds`; see [Session lifecycle](/agents/lifecycle#observing-the-computer) |
+| `retention` | The effective retention: `sessionExpiresAt`, `workspaceExpiresAt`, `eventHistoryExpiresAt` (`null` is no time-based expiry while the project exists) and `policyVersion`; see [Retention](/agents/lifecycle#retention) |
 | `createdAt`, `updatedAt` | Timestamps |
 
 `GET /sessions` returns one page of rows, `{ sessions, nextCursor }`, filtered
@@ -243,6 +245,19 @@ unchanged. Stopping does not undo files already written or external effects.
   `stopping`, and their cancellation events have no settlement fields.
   Check the creation response when this guarantee matters to your app.
 </Note>
+
+### Suspend
+
+`POST /sessions/<id>/suspend` releases the session's computer between turns
+and keeps the session resumable; the next turn acquires a new computer over
+the same workspace. It returns the session with `compute: { released,
+generation }`. `409 turn_in_progress` while a turn is running or queued;
+`409 session_ended` for an ended session. Idle release happens without this
+call; see [Session lifecycle](/agents/lifecycle#releasing-a-computer-explicitly).
+
+Sessions created with `executionMode: "microvm"` hibernate their computer
+instead: the session passes through `suspending` to `suspended`, and
+`POST /sessions/<id>/resume` wakes the same computer.
 
 ## Turns
 

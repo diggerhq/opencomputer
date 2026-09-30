@@ -74,6 +74,57 @@ export interface SessionResult {
 /** Application metadata on a session. Not authorization, not visible to the agent. */
 export type SessionLabels = Record<string, string>;
 
+/**
+ * Why a session's computer went away. `idle` and `requested` are suspensions
+ * between turns; `lifetime` is the computer's maximum running time; the rest
+ * are replacements the platform made because the computer could no longer
+ * be trusted to serve the session.
+ */
+export type RuntimeReleaseReason =
+  | "idle"
+  | "lifetime"
+  | "requested"
+  | "session_ended"
+  | "operation_unsettled"
+  | "unresponsive"
+  | "unverifiable"
+  | "unknown"
+  | (string & {});
+
+/**
+ * The computer currently serving the session, as `GET /sessions/<id>`
+ * reports it. The session outlives its computers: each replacement
+ * increments `generation` over the same workspace and deployment. See
+ * docs/agents/lifecycle.mdx.
+ */
+export interface SessionRuntime {
+  /** 0 until the first computer is acquired; increments on every replacement. */
+  generation: number;
+  state: "none" | "running" | "released";
+  startedAt: string | null;
+  /** When the running computer reaches its maximum lifetime; `null` once released. */
+  expiresAt: string | null;
+  releasedAt: string | null;
+  releaseReason: RuntimeReleaseReason | null;
+  /** When this generation replaced the previous one, and why the previous one went. */
+  replacedAt: string | null;
+  replacementReason: RuntimeReleaseReason | null;
+  /** The effective limits applied to this generation. */
+  lifetimeSeconds: number | null;
+  idleReleaseSeconds: number | null;
+}
+
+/**
+ * The retention that applies to the logical session. `null` means no
+ * time-based expiry while the project exists.
+ */
+export interface SessionRetention {
+  sessionExpiresAt: string | null;
+  workspaceExpiresAt: string | null;
+  eventHistoryExpiresAt: string | null;
+  policyVersion: string;
+}
+
 /** A session as `GET /sessions/<id>` returns it. */
 export interface Session {
   id: string;
@@ -100,6 +151,10 @@ export interface Session {
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
+  /** The computer serving the session; present for sessions with a lazily acquired computer. */
+  runtime?: SessionRuntime;
+  /** The effective retention of the session, its events and its workspace. */
+  retention?: SessionRetention;
   createdAt: string;
   updatedAt: string;
 }
@@ -229,6 +284,28 @@ export interface EventBase {
   turnId?: string;
 }
 
+/** A computer generation became ready to serve the session. */
+export interface RuntimeStartedData {
+  generation: number;
+  /** When the computer reaches its maximum lifetime, when known. */
+  expiresAt?: string | null;
+  /** Present when this generation replaces an earlier one. */
+  previousGeneration?: number;
+}
+
+/** A computer generation is confirmed gone; `reason` says why. */
+export interface RuntimeReleasedData {
+  generation: number;
+  reason: RuntimeReleaseReason;
+}
+
+/** A later generation took over the session; `reason` is why the previous one went. */
+export interface RuntimeReplacedData {
+  generation: number;
+  previousGeneration: number;
+  reason: RuntimeReleaseReason;
+}
+
 /** A public failure: a stable code, a fixed message and at most one parameter. */
 export type FailureCode =
   | "interrupted"
@@ -347,7 +424,11 @@ export type SessionEvent =
   | (EventBase & { type: "egress.failed"; data: { connectionId: string; method: string; path: string; message: string } })
   | (EventBase & { type: "runtime.connected"; data: Record<string, never> })
   | (EventBase & { type: "runtime.disconnected"; data: Record<string, never> })
-  | (EventBase & { type: "runtime.suspended"; data: Record<string, never> })
+  | (EventBase & { type: "runtime.started"; data: RuntimeStartedData })
+  | (EventBase & { type: "runtime.suspended"; data: RuntimeReleasedData | Record<string, never> })
+  | (EventBase & { type: "runtime.replaced"; data: RuntimeReplacedData })
+  | (EventBase & { type: "runtime.expired"; data: RuntimeReleasedData })
+  | (EventBase & { type: "runtime.released"; data: RuntimeReleasedData })
   | (EventBase & { type: "runtime.resumed"; data: Record<string, never> })
   | (EventBase & { type: "runtime.log"; data: { level?: string; stream?: string; phase?: string; message: string } })
   | (EventBase & { type: "agent.rendered"; data: Record<string, unknown> })

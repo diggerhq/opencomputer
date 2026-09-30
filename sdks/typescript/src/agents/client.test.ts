@@ -73,6 +73,26 @@ describe("OpenComputer client", () => {
     expect(api.last()).toMatchObject({ method: "PATCH", body: { set: { title: "Fix login" }, unset: ["archived"] } });
   });
 
+  it("returns the session's runtime generation, replacement reason and retention when the API reports them", async () => {
+    const runtime = {
+      generation: 3, state: "released", startedAt: "t1", expiresAt: null, releasedAt: "t2", releaseReason: "idle",
+      replacedAt: "t1", replacementReason: "lifetime", lifetimeSeconds: 3600, idleReleaseSeconds: 180,
+    };
+    const retention = { sessionExpiresAt: null, workspaceExpiresAt: null, eventHistoryExpiresAt: null, policyVersion: "2026-09-25" };
+    const session = { id: "ses_1", agentId: "worker", deploymentId: "dep_1", status: "idle", source: "api", turns: [], runtime, retention, createdAt: "t", updatedAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/ses_1": () => Response.json(session),
+      "GET /api/managed-agents/sessions/ses_2": () => Response.json({ ...session, id: "ses_2", runtime: { ...runtime, state: "hibernating" } }),
+    });
+    const got = await oc(api).sessions.get("ses_1");
+    expect(got.runtime).toEqual(runtime);
+    expect(got.retention).toEqual(retention);
+    expect(await oc(api).sessions.get("ses_2").catch((cause: unknown) => cause)).toMatchObject({
+      code: "invalid_response",
+      message: expect.stringContaining("runtime.state"),
+    });
+  });
+
   it("lists sessions with filters, label filters and paging, and normalizes a missing cursor", async () => {
     const row = (id: string) => ({
       id, projectId: "prj_1", agentId: "worker", deploymentId: "dep_1", environment: null, source: "api", status: "idle",
