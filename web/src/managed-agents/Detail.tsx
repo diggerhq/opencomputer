@@ -1,7 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
+import {
+  isDynamicToolUIPart,
+  type DynamicToolUIPart,
+  type FileUIPart,
+  type UIMessage,
+} from 'ai'
 import {
   Link,
   useLocation,
@@ -16,12 +21,14 @@ import {
   Clock3,
   Clipboard,
   GitCommitHorizontal,
+  ImagePlus,
   Loader2,
   Pencil,
   Plus,
   Send,
   TerminalSquare,
   Wrench,
+  X,
 } from 'lucide-react'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { EmptyState } from '@/components/empty-state'
@@ -63,6 +70,13 @@ import {
   type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
+import {
+  IMAGE_LIMIT,
+  IMAGE_MEDIA_TYPES,
+  imageAttachments,
+  imagePart,
+  imageRefusal,
+} from './images'
 import { useLiveSessionEvents } from './use-live-session-events'
 import { PostSessionUpsell } from '@/components/post-session-upsell'
 import { useCreditState } from '@/hooks/useCreditState'
@@ -266,6 +280,9 @@ function PlaygroundChat({
 }) {
   const queryClient = useQueryClient()
   const [prompt, setPrompt] = useState('')
+  const [images, setImages] = useState<FileUIPart[]>([])
+  const [imageNotice, setImageNotice] = useState<string>()
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const [inputMode, setInputMode] = useState<ManagedAgentInputMode>('queue')
   const [admitting, setAdmitting] = useState(false)
   const [admissionNotice, setAdmissionNotice] = useState<string>()
@@ -349,9 +366,32 @@ function PlaygroundChat({
     initializedScrollRef.current = true
   }, [messages, status])
 
+  const addImages = (files: File[]) => {
+    const room = IMAGE_LIMIT - images.length
+    const refusal =
+      files.map(imageRefusal).find(Boolean) ??
+      (files.length > room
+        ? `Attach up to ${IMAGE_LIMIT} images per message.`
+        : undefined)
+    setImageNotice(refusal)
+    const accepted = files
+      .filter((file) => !imageRefusal(file))
+      .slice(0, Math.max(room, 0))
+    if (!accepted.length) return
+    void Promise.all(accepted.map(imagePart))
+      .then((parts) =>
+        setImages((current) => [...current, ...parts].slice(0, IMAGE_LIMIT)),
+      )
+      .catch((readError: unknown) =>
+        notifyError("Couldn't read that image.", readError),
+      )
+  }
+
+  const canSend = Boolean(prompt.trim() || images.length)
+
   const send = () => {
     const input = prompt.trim()
-    if (!input || admitting || halted) return
+    if (!canSend || admitting || halted) return
     if (agentWorking) {
       const sessionId = liveSessionId
       if (!sessionId) {
@@ -363,14 +403,25 @@ function PlaygroundChat({
       }
       setAdmitting(true)
       setAdmissionNotice(undefined)
-      void admitManagedAgentInput(sessionId, input, inputMode)
+      const attachments = imageAttachments(images)
+      void admitManagedAgentInput(
+        sessionId,
+        input,
+        inputMode,
+        undefined,
+        attachments,
+      )
         .then(() => {
           setPrompt('')
+          setImages([])
+          setImageNotice(undefined)
           setAdmissionNotice(
             inputMode === 'queue'
               ? 'Queued after the active work.'
               : inputMode === 'steer'
-                ? 'Steering will apply at the next safe boundary.'
+                ? attachments.length
+                  ? 'Images start their own turn, so this was queued after the active work.'
+                  : 'Steering will apply at the next safe boundary.'
                 : 'Active work was interrupted and the replacement was admitted.',
           )
           void queryClient.invalidateQueries({
@@ -388,8 +439,12 @@ function PlaygroundChat({
     }
     followOutputRef.current = true
     setPrompt('')
+    setImages([])
+    setImageNotice(undefined)
     setAdmissionNotice(undefined)
-    void sendMessage({ text: input })
+    void sendMessage(
+      images.length ? { text: input, files: images } : { text: input },
+    )
   }
 
   return (
@@ -439,6 +494,14 @@ function PlaygroundChat({
                 .filter((part) => part.type === 'text')
                 .map((part) => part.text)
                 .join('')
+              const sentImages =
+                message.role === 'user'
+                  ? message.parts.filter(
+                      (part): part is FileUIPart =>
+                        part.type === 'file' &&
+                        part.mediaType.startsWith('image/'),
+                    )
+                  : []
               return (
                 <div
                   key={message.id}
@@ -455,6 +518,18 @@ function PlaygroundChat({
                       message={message}
                       running={messageRunning}
                     />
+                  ) : null}
+                  {sentImages.length ? (
+                    <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
+                      {sentImages.map((image, imageIndex) => (
+                        <img
+                          key={imageIndex}
+                          src={image.url}
+                          alt={image.filename ?? 'Attached image'}
+                          className="max-h-40 max-w-60 rounded-lg border object-cover"
+                        />
+                      ))}
+                    </div>
                   ) : null}
                   {text ? (
                     message.role === 'user' ? (
@@ -521,18 +596,86 @@ function PlaygroundChat({
               {admissionNotice}
             </p>
           ) : null}
-          <div className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors">
+          {imageNotice ? (
+            <p className="text-destructive mb-2 text-xs">{imageNotice}</p>
+          ) : null}
+          <div
+            className="bg-background focus-within:border-ring/60 rounded-lg border p-2 transition-colors"
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes('Files'))
+                event.preventDefault()
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer.files.length) return
+              event.preventDefault()
+              addImages([...event.dataTransfer.files])
+            }}
+          >
+            {images.length ? (
+              <div className="flex flex-wrap gap-2 px-1 pb-2">
+                {images.map((image, index) => (
+                  <div key={index} className="relative">
+                    <img
+                      src={image.url}
+                      alt={image.filename ?? 'Attached image'}
+                      className="size-14 rounded-md border object-cover"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove ${image.filename ?? 'image'}`}
+                      onClick={() =>
+                        setImages((current) =>
+                          current.filter((_, other) => other !== index),
+                        )
+                      }
+                      className="bg-background absolute -top-1.5 -right-1.5 rounded-full border p-0.5"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <ChatTextarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
+              onPaste={(event) => {
+                const files = [...event.clipboardData.files]
+                if (!files.length) return
+                event.preventDefault()
+                addImages(files)
+              }}
               onSend={send}
               placeholder="Message this agent…"
               className="min-h-12 border-0 px-2 shadow-none focus-visible:border-transparent"
             />
             <div className="flex items-center justify-between gap-3 px-1 pt-1">
-              <p className="text-muted-foreground text-[10px]">
-                Enter to send · Shift + Enter for a new line
-              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept={IMAGE_MEDIA_TYPES.join(',')}
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    addImages([...(event.target.files ?? [])])
+                    event.target.value = ''
+                  }}
+                />
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="Attach images"
+                  title="Attach images (PNG, JPEG, GIF or WebP, up to 5 MB)"
+                  disabled={images.length >= IMAGE_LIMIT || halted}
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <ImagePlus />
+                </Button>
+                <p className="text-muted-foreground text-[10px]">
+                  Enter to send · Shift + Enter for a new line
+                </p>
+              </div>
               {agentWorking ? (
                 <div className="flex items-center gap-2">
                   <select
@@ -552,7 +695,7 @@ function PlaygroundChat({
                     variant={
                       inputMode === 'interrupt' ? 'destructive' : 'default'
                     }
-                    disabled={!prompt.trim() || admitting || halted}
+                    disabled={!canSend || admitting || halted}
                     onClick={send}
                   >
                     {admitting ? (
@@ -564,11 +707,7 @@ function PlaygroundChat({
                   </Button>
                 </div>
               ) : (
-                <Button
-                  size="sm"
-                  disabled={!prompt.trim() || halted}
-                  onClick={send}
-                >
+                <Button size="sm" disabled={!canSend || halted} onClick={send}>
                   <Send /> Send
                 </Button>
               )}

@@ -1952,11 +1952,20 @@ export async function getManagedAgentSessionEvents(
   }, after)
 }
 
+/** An image sent with a turn: base64 bytes without a `data:` prefix. */
+export interface ManagedAgentImage {
+  type: 'image'
+  mediaType: string
+  data: string
+  name?: string
+}
+
 export async function admitManagedAgentInput(
   sessionId: string,
   input: string,
   mode: ManagedAgentInputMode,
   signal?: AbortSignal,
+  attachments: ManagedAgentImage[] = [],
 ) {
   return apiFetch(
     `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
@@ -1966,6 +1975,7 @@ export async function admitManagedAgentInput(
         input,
         mode,
         idempotencyKey: crypto.randomUUID(),
+        ...(attachments.length ? { attachments } : {}),
       }),
       signal,
     },
@@ -2192,6 +2202,7 @@ export async function runManagedAgent(
   options: {
     onSession?: (sessionId: string) => void
     signal?: AbortSignal
+    attachments?: ManagedAgentImage[]
   } = {},
 ) {
   const created = await apiFetch(
@@ -2223,6 +2234,7 @@ export async function runManagedAgent(
       input,
       'queue',
       options.signal,
+      options.attachments,
     )
     const completed = await waitForAgentEvent(
       sessionId,
@@ -2254,6 +2266,7 @@ export async function continueManagedAgentSession(
   input: string,
   onEvent: (event: ManagedAgentEvent) => void,
   signal?: AbortSignal,
+  attachments: ManagedAgentImage[] = [],
 ) {
   const existing = await getManagedAgentSessionEvents(sessionId)
   let cursor = existing[existing.length - 1]?.seq ?? 0
@@ -2281,7 +2294,13 @@ export async function continueManagedAgentSession(
     cursor = connected.cursor
   }
   try {
-    const turn = await admitManagedAgentInput(sessionId, input, 'queue', signal)
+    const turn = await admitManagedAgentInput(
+      sessionId,
+      input,
+      'queue',
+      signal,
+      attachments,
+    )
     const completed = await waitForAgentEvent(
       sessionId,
       cursor,
