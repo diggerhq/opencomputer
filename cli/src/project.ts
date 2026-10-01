@@ -16,6 +16,11 @@ import { build as bundle } from "esbuild";
 import ts from "typescript";
 
 import {
+  BROWSER_DEFAULT_ID,
+  browserId,
+  browserToolNames,
+} from "./browser.js";
+import {
   defineMemory,
   documentMemory,
   httpMemory,
@@ -43,9 +48,19 @@ export interface BuiltAgentArtifact {
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
+  browsers: BrowserDeclaration[];
   body: Buffer;
   digest: string;
   elapsedMs: number;
+}
+
+/**
+ * A browser session the project enables, registered with the deployment.
+ * The provider and its configuration are platform-owned; the declaration is
+ * only the resource id the agent selects with `useBrowser()`.
+ */
+export interface BrowserDeclaration {
+  id: string;
 }
 
 /**
@@ -328,6 +343,61 @@ export async function findAgentRoot(
         );
       }
     }
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+function projectObjectLiteral(
+  source: string,
+  path: string,
+): ts.ObjectLiteralExpression {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  for (const statement of file.statements) {
+    if (
+      ts.isExportAssignment(statement) &&
+      ts.isObjectLiteralExpression(statement.expression)
+    ) {
+      return statement.expression;
+    }
+  }
+  throw new Error(`${path} must export an object literal`);
+}
+
+/**
+ * The project-level switch for managed browser sessions. Absent or `false`
+ * is disabled; any other shape is a build error rather than a silent
+ * misconfiguration.
+ */
+function projectBrowserEnabled(source: string, path: string): boolean {
+  const object = projectObjectLiteral(source, path);
+  const property = object.properties.find(
+    (candidate): candidate is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(candidate) &&
+      ((ts.isIdentifier(candidate.name) && candidate.name.text === "browser") ||
+        (ts.isStringLiteral(candidate.name) &&
+          candidate.name.text === "browser")),
+  );
+  if (!property) return false;
+  const initializer = property.initializer;
+  if (
+    initializer.kind !== ts.SyntaxKind.TrueKeyword &&
+    initializer.kind !== ts.SyntaxKind.FalseKeyword
+  ) {
+    throw new Error("opencomputer/project.ts browser must be true or false");
+  }
+  return initializer.kind === ts.SyntaxKind.TrueKeyword;
+}
+
+/** The `opencomputer/project.ts` above an agent, if the agent lives in a project. */
+async function agentProjectSource(
+  root: string,
+): Promise<{ path: string; source: string } | undefined> {
+  let directory = resolve(root);
+  for (;;) {
+    const path = resolve(directory, "opencomputer", "project.ts");
+    if (await exists(path)) return { path, source: await readFile(path, "utf8") };
     const parent = dirname(directory);
     if (parent === directory) return undefined;
     directory = parent;
@@ -3144,6 +3214,10 @@ const MEMORY_CONTRACT_SOURCE = readFileSync(
   fileURLToPath(new URL("./memory.js", import.meta.url)),
   "utf8",
 ).replace(/^\/\/# sourceMappingURL=.*$/m, "");
+const BROWSER_CONTRACT_SOURCE = readFileSync(
+  fileURLToPath(new URL("./browser.js", import.meta.url)),
+  "utf8",
+).replace(/^\/\/# sourceMappingURL=.*$/m, "");
 
 /**
  * The `@opencomputer/agent` module the runtime evaluates, bundled into every
@@ -3157,6 +3231,7 @@ export function agentApiRuntimeSource(
   manifest: { resultTool: string | null } = { resultTool: null },
 ): string {
   return `${MEMORY_CONTRACT_SOURCE}
+${BROWSER_CONTRACT_SOURCE}
 const MANIFEST_RESULT_TOOL = ${JSON.stringify(manifest.resultTool)};
 function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
@@ -3190,6 +3265,13 @@ export const githubApp = (options) => {
   }
   return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
 };
+export function useBrowser(browser) {
+  const id = browserId(
+    browser === undefined ? undefined : typeof browser === "string" ? browser : browser.id,
+    "useBrowser",
+  );
+  return browserProjection(id, hooks().useBrowser?.(id));
+}
 export const callService = async (request) => {
   const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
   const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
@@ -3791,6 +3873,38 @@ the product or support surface presented to users.
       );
     }
   }
+  const project = await agentProjectSource(root);
+  const browserEnabled = project
+    ? projectBrowserEnabled(project.source, project.path)
+    : false;
+  const browsers: BrowserDeclaration[] = browserEnabled
+    ? [{ id: BROWSER_DEFAULT_ID }]
+    : [];
+  if (/\buseBrowser\s*\(/.test(agentSource)) {
+    if (!browserEnabled) {
+      throw new Error(
+        project
+          ? "agent.ts calls useBrowser() but the project does not enable browser sessions; set browser: true in opencomputer/project.ts"
+          : "agent.ts calls useBrowser() outside a project; browser sessions are enabled per project in opencomputer/project.ts",
+      );
+    }
+    for (const id of literalHookIds(agentSource, "useBrowser")) {
+      browserId(id, "useBrowser");
+      if (id !== BROWSER_DEFAULT_ID) {
+        throw new Error(
+          `useBrowser(${JSON.stringify(id)}) references a browser this project does not declare; projects enable the one browser ${JSON.stringify(BROWSER_DEFAULT_ID)}`,
+        );
+      }
+    }
+  }
+  for (const declaration of browsers) {
+    const collision = browserToolNames().find((name) => tools.includes(name));
+    if (collision) {
+      throw new Error(
+        `Tool id ${JSON.stringify(collision)} collides with the fixed tool name of browser ${declaration.id}; rename the tool`,
+      );
+    }
+  }
   await mkdir(resolve(runtime, ".opencomputer"), { recursive: true });
   await writeFile(
     resolve(runtime, ".opencomputer", "reactive.json"),
@@ -3824,6 +3938,7 @@ the product or support surface presented to users.
         ].sort(),
         mcpServerDefinitions,
         memory,
+        ...(browsers.length ? { browsers } : {}),
         models: declaredModels,
       },
       null,
@@ -3868,12 +3983,14 @@ export async function buildAgentArtifact(
     githubConnections?: GitHubConnectionManifest[];
     memory?: MemoryDeclaration[];
     models?: Array<{ provider: string; model: string }>;
+    browsers?: BrowserDeclaration[];
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const githubConnections = reactive.githubConnections ?? [];
   const memory = reactive.memory ?? [];
   const models = reactive.models ?? [];
+  const browsers = reactive.browsers ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -3890,6 +4007,7 @@ export async function buildAgentArtifact(
     githubConnections,
     memory,
     models,
+    browsers,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
