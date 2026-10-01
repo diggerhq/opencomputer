@@ -37,6 +37,16 @@ class FakeStatement {
       if (!this.db.user) return null;
       return this.db.user as T;
     }
+    if (this.sql.includes("FROM api_keys WHERE id")) {
+      return {
+        id: "key-1",
+        key_prefix: "osb_abcd",
+        scopes: "sandbox:*",
+        last_used: null,
+        expires_at: null,
+        created_at: 1700000000,
+      } as T;
+    }
     if (
       this.sql.includes("FROM api_keys WHERE key_hash") ||
       this.sql.includes("FROM api_keys k")
@@ -718,5 +728,60 @@ describe("CLI identity and credential lifecycle", () => {
       entry.sql.includes("INSERT INTO api_keys") && entry.args[5] === "Dashboard key"
     );
     expect(insert?.args).not.toContain(body.key);
+  });
+
+  it("renames a dashboard API key scoped to the caller's org", async () => {
+    const db = new FakeDB();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const callback = await worker.fetch(
+      request("/auth/callback?code=browser-code"),
+      testEnv(db),
+      ctx,
+    );
+    const cookie = callback.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(cookie).toMatch(/^oc_session=/);
+
+    const resp = await worker.fetch(request("/api/dashboard/api-keys/key-1", {
+      method: "PATCH",
+      headers: {
+        cookie: cookie ?? "",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "  Renamed key  " }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+    const body = await resp.json<Record<string, unknown>>();
+    expect(body.name).toBe("Renamed key");
+    expect(body.key).toBeUndefined();
+    const update = db.executed.find((entry) =>
+      entry.sql.includes("UPDATE api_keys SET name")
+    );
+    expect(update?.args).toEqual(["Renamed key", "key-1", orgID]);
+  });
+
+  it("rejects a dashboard API key rename without a name", async () => {
+    const db = new FakeDB();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const callback = await worker.fetch(
+      request("/auth/callback?code=browser-code"),
+      testEnv(db),
+      ctx,
+    );
+    const cookie = callback.headers.get("set-cookie")?.split(";", 1)[0];
+
+    const resp = await worker.fetch(request("/api/dashboard/api-keys/key-1", {
+      method: "PATCH",
+      headers: {
+        cookie: cookie ?? "",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "   " }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(400);
+    expect(db.executed.some((entry) => entry.sql.includes("UPDATE api_keys"))).toBe(false);
   });
 });
