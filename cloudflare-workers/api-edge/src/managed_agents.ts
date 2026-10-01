@@ -276,6 +276,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
         backendMessage || "The deployment selects an unavailable model.";
     } else if (backendCode === "database_not_provisioned") {
       message = "Redeploy this project to provision its database.";
+    } else if (backendCode === "question_stale") {
+      message =
+        "That question is no longer open. Read the session's current question and answer that one.";
     } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
@@ -2385,6 +2388,9 @@ async function deploySourceAgent(
         : [],
       githubConnections: Array.isArray(body.githubConnections)
         ? body.githubConnections
+        : [],
+      linearConnections: Array.isArray(body.linearConnections)
+        ? body.linearConnections
         : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,

@@ -3107,6 +3107,9 @@ describe("managed agents proxy", () => {
                 },
               },
             ],
+            linearConnections: [
+              { id: "linear", provider: { kind: "linear-agent" } },
+            ],
             memory: [
               {
                 id: "requirements",
@@ -3169,6 +3172,9 @@ describe("managed agents proxy", () => {
             },
           },
         },
+      ],
+      linearConnections: [
+        { id: "linear", provider: { kind: "linear-agent" } },
       ],
       memory: [
         {
@@ -4081,6 +4087,255 @@ describe("managed agents proxy", () => {
           },
         }),
       ],
+    });
+  });
+
+  describe("questions", () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+    const question = {
+      id: "q_turn-1_call-1",
+      text: "Ship the small fix or the refactor? Messages typed meanwhile are held.",
+      options: [
+        { label: "Small fix", value: "small" },
+        { label: "Refactor", value: "refactor" },
+      ],
+      askedAt: "2026-10-02T10:00:00.000Z",
+    };
+
+    it("forwards answers on a turn unchanged and maps question_stale to 409", async () => {
+      const body = {
+        input: "Small fix",
+        idempotencyKey: "answer-1",
+        answers: question.id,
+      };
+      const fetchSpy = vi.fn(async () =>
+        Response.json(
+          { turnId: "turn-2", status: "queued", duplicate: false },
+          { status: 202 },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(202);
+      const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+        URL,
+        RequestInit,
+      ];
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/sessions/session-1/turns",
+      );
+      expect(await new Response(init.body).text()).toBe(JSON.stringify(body));
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "question_stale",
+                message: "question q_old is not the open question",
+                accountId: "acct_private",
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+      const stale = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...body, answers: "q_old" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({
+        error: {
+          code: "question_stale",
+          message:
+            "That question is no longer open. Read the session's current question and answer that one.",
+        },
+      });
+    });
+
+    it("passes the open question and a turn's outcome through the session snapshot", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            id: "session-1",
+            status: "idle",
+            accountId: "acct_private",
+            question,
+            turns: [
+              {
+                id: "turn-1",
+                input: "Fix the flaky test.",
+                mode: "queue",
+                status: "completed",
+                outcome: "question",
+                runtimeId: "runtime_private",
+                createdAt: "2026-10-02T09:59:00.000Z",
+                updatedAt: "2026-10-02T10:00:00.000Z",
+              },
+            ],
+            createdAt: "2026-10-02T09:59:00.000Z",
+            updatedAt: "2026-10-02T10:00:00.000Z",
+          }),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        question,
+        turns: [
+          {
+            id: "turn-1",
+            input: "Fix the flaky test.",
+            mode: "queue",
+            status: "completed",
+            outcome: "question",
+            createdAt: "2026-10-02T09:59:00.000Z",
+            updatedAt: "2026-10-02T10:00:00.000Z",
+          },
+        ],
+        createdAt: "2026-10-02T09:59:00.000Z",
+        updatedAt: "2026-10-02T10:00:00.000Z",
+      });
+
+      // A session with no open question answers null, not absent.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({ id: "session-1", status: "idle", question: null }),
+        ),
+      );
+      const closed = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(await closed.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        question: null,
+      });
+    });
+
+    it("keeps the question events and the asking turn's outcome on public events", async () => {
+      const event = (
+        seq: number,
+        type: string,
+        data: Record<string, unknown>,
+      ) => ({
+        id: `event-${seq}`,
+        seq,
+        timestamp: "2026-10-02T10:00:00.000Z",
+        sessionId: "session-1",
+        turnId: seq < 3 ? "turn-1" : "turn-2",
+        type,
+        data,
+      });
+      const answer = {
+        questionId: question.id,
+        text: "Small fix",
+        value: "small",
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            events: [
+              event(1, "question.asked", {
+                questionId: question.id,
+                text: question.text,
+                options: question.options,
+              }),
+              event(2, "turn.completed", {
+                outcome: "question",
+                questionId: question.id,
+              }),
+              event(3, "question.answered", {
+                questionId: question.id,
+                answer,
+                accountId: "acct_private",
+              }),
+              event(4, "question.closed", {
+                questionId: "q_turn-2_call-1",
+                reason: "replaced",
+              }),
+            ],
+          }),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(200);
+      const { events } = (await response.json()) as {
+        events: Array<{ type: string; data: unknown }>;
+      };
+      expect(events.map(({ type, data }) => ({ type, data }))).toEqual([
+        {
+          type: "question.asked",
+          data: {
+            questionId: question.id,
+            text: question.text,
+            options: question.options,
+          },
+        },
+        {
+          type: "turn.completed",
+          data: { outcome: "question", questionId: question.id },
+        },
+        {
+          type: "question.answered",
+          data: { questionId: question.id, answer },
+        },
+        {
+          type: "question.closed",
+          data: { questionId: "q_turn-2_call-1", reason: "replaced" },
+        },
+      ]);
     });
   });
 
