@@ -9,6 +9,7 @@ interface ManagedAgentCreditRow {
   is_halted: number;
   halted_at: number | null;
   usage_plan: string | null;
+  plan: string | null;
 }
 
 // "full": the org's selected models. "fallback": credits are exhausted on a
@@ -49,12 +50,15 @@ export async function getManagedAgentBillingAdmission(
   orgID: string,
 ): Promise<ManagedAgentBillingAdmission> {
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at, usage_plan FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, usage_plan, plan FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<ManagedAgentCreditRow>();
   const isHalted = row?.is_halted === 1;
-  const paid = isPaidUsagePlan(row?.usage_plan);
+  // Existing paid orgs predate usage_plan and initially carry its conservative
+  // 'base' default. Keep their established Pro entitlement effective until an
+  // Autumn projection refines usage_plan to the authoritative pro/max value.
+  const paid = isPaidUsagePlan(row?.usage_plan) || row?.plan === "pro";
   const allowed = !isHalted || paid;
   return {
     allowed,
