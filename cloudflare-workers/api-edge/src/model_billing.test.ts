@@ -22,6 +22,7 @@ interface OrgRow {
   model_billing_status: string;
   model_markup_bps: number;
   is_halted?: number;
+  usage_plan?: string;
 }
 
 class FakeDb {
@@ -242,6 +243,34 @@ describe("enableManagedBilling state machine", () => {
     expect(db.keys).toHaveLength(0);
     expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
   });
+
+  it.each(["pro", "max"])(
+    "keeps an exhausted %s org admitted for the fallback model",
+    async (plan) => {
+      const db = new FakeDb();
+      const orgId = seedOrg(db, {
+        is_halted: 1,
+        usage_plan: plan,
+        model_billing_status: "active",
+      });
+      db.keys.push({
+        id: "mmk_1",
+        org_id: orgId,
+        status: "active",
+        or_key_hash: "hash",
+        managed_credential_id: "cred_1",
+        created_at: 1,
+      } as ManagedModelKeyRow);
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(enableManagedBilling(makeEnv(db), orgId)).resolves.toEqual({
+        status: "active",
+        credentialId: "cred_1",
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it("off → active: mints key, binds credential, flips org", async () => {
     const db = new FakeDb();

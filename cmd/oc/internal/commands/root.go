@@ -83,6 +83,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(feedbackCmd)
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(whoamiCmd)
 	rootCmd.AddCommand(logoutCmd)

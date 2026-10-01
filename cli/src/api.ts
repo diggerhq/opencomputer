@@ -296,6 +296,8 @@ export interface ManagedSessionSnapshot {
   agentId?: string;
   deploymentId?: string;
   microvmState?: string;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt?: string;
   updatedAt?: string;
   turns?: Array<{
@@ -317,6 +319,8 @@ export interface ManagedSessionSummary {
   source: string;
   status: string;
   labels: Record<string, string>;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt: string;
   updatedAt: string;
   revision: number;
@@ -336,6 +340,18 @@ export interface ManagedSessionSummary {
 export interface ManagedSessionPage {
   sessions: ManagedSessionSummary[];
   nextCursor: string | null;
+}
+
+/** Exact-match filters and paging of `GET /sessions` (docs/agents/api.mdx, "Get and list"). */
+export interface ManagedSessionListOptions {
+  status?: string;
+  /** The agent's id. */
+  agent?: string;
+  externalReference?: string;
+  /** `nextCursor` of the previous page; only valid with the same filters. */
+  cursor?: string;
+  /** Page size, default 50, at most 100. */
+  limit?: number;
 }
 
 export type MemoryEnvironment = ProjectEnvironment;
@@ -408,20 +424,40 @@ export class APIError extends Error {
     readonly status: number,
     /** The typed reason from `{ error: { code } }` when the API sent one. */
     readonly code?: string,
+    /** Where the human can resolve the error (e.g. billing checkout). */
+    readonly actionUrl?: string,
   ) {
     super(message);
   }
 }
 
-function errorCode(body: unknown): string | undefined {
-  if (body && typeof body === "object") {
-    const error = (body as Record<string, unknown>).error;
-    if (error && typeof error === "object") {
-      const code = (error as Record<string, unknown>).code;
-      if (typeof code === "string") return code;
-    }
+// The API sends typed fields either nested under `error: { code, ... }`
+// (managed-agents routes) or flat beside a string `error` (sandbox routes).
+function errorField(body: unknown, field: string): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  const error = record.error;
+  if (error && typeof error === "object") {
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "string") return value;
   }
-  return undefined;
+  const flat = record[field];
+  return typeof flat === "string" ? flat : undefined;
+}
+
+function errorCode(body: unknown): string | undefined {
+  return errorField(body, "code");
+}
+
+export interface CreditsStatus {
+  usagePlan: "base" | "pro" | "max";
+  creditsRemainingCents: number;
+  lowCreditThresholdCents: number;
+  isLow: boolean;
+  isHalted: boolean;
+  billingUrl: string;
+  upgradeUrl: string;
+  plans: Array<{ id: "pro" | "max"; priceUsd: number; creditsUsd: number }>;
 }
 
 function errorMessage(body: unknown, status: number): string {
@@ -442,6 +478,26 @@ export class OpenComputerClient {
     private readonly config: ResolvedConfig,
     private readonly idempotencyKey?: string,
   ) {}
+
+  /**
+   * The caller's key scoped to one operation. Extra `parts` distinguish
+   * operations that share a URL but target different resources (one export
+   * per workspace path), so a stable key still retries each of them.
+   */
+  private derivedIdempotencyKey(
+    method: string,
+    path: string,
+    ...parts: string[]
+  ): string {
+    const hash = createHash("sha256")
+      .update(this.idempotencyKey ?? "")
+      .update("\0")
+      .update(method)
+      .update("\0")
+      .update(path);
+    for (const part of parts) hash.update("\0").update(part);
+    return hash.digest("hex");
+  }
 
   private async response(
     path: string,
@@ -465,23 +521,19 @@ export class OpenComputerClient {
     // backend compares under that key. Hashing the body in would make a
     // retry with different inputs a new operation instead of the conflict
     // the key promises.
-    if (this.idempotencyKey && method !== "GET" && method !== "HEAD") {
-      headers.set(
-        "idempotency-key",
-        createHash("sha256")
-          .update(this.idempotencyKey)
-          .update("\0")
-          .update(method)
-          .update("\0")
-          .update(path)
-          .digest("hex"),
-      );
+    if (
+      this.idempotencyKey &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !headers.has("idempotency-key")
+    ) {
+      headers.set("idempotency-key", this.derivedIdempotencyKey(method, path));
     }
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+      signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined);
@@ -489,6 +541,7 @@ export class OpenComputerClient {
         errorMessage(body, response.status),
         response.status,
         errorCode(body),
+        errorField(body, "upgradeUrl") ?? errorField(body, "actionUrl"),
       );
     }
     return response;
@@ -503,6 +556,18 @@ export class OpenComputerClient {
     if (response.status === 204) return undefined as T;
     const body: unknown = await response.json().catch(() => undefined);
     return body as T;
+  }
+
+  /** Prepaid credit status; `null` for orgs without a credit meter (legacy billing). */
+  async credits(): Promise<CreditsStatus | null> {
+    try {
+      return await this.request<CreditsStatus>("/api/billing/credits");
+    } catch (error) {
+      if (error instanceof APIError && (error.status === 404 || error.status === 503)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   startLogin() {
@@ -1341,9 +1406,14 @@ export class OpenComputerClient {
 
   /** One page of session rows, newest created first; pass `cursor` for the next page. */
   async sessions(
-    options: { cursor?: string; limit?: number } = {},
+    options: ManagedSessionListOptions = {},
   ): Promise<ManagedSessionPage> {
     const query = new URLSearchParams();
+    if (options.status) query.set("status", options.status);
+    if (options.agent) query.set("agentId", options.agent);
+    if (options.externalReference !== undefined) {
+      query.set("externalReference", options.externalReference);
+    }
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
     const suffix = query.size ? `?${query.toString()}` : "";
@@ -1409,4 +1479,218 @@ export class OpenComputerClient {
       { method: "POST" },
     );
   }
+
+  private workspacePath(sessionId: string, suffix: string) {
+    return `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace${suffix}`;
+  }
+
+  /** Every file under the session's /workspace, across all list pages. */
+  async workspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+    const files: WorkspaceFile[] = [];
+    let cursor: string | null = null;
+    do {
+      const query: string = cursor
+        ? `?cursor=${encodeURIComponent(cursor)}`
+        : "";
+      const page: WorkspaceFilePage = await this.request<WorkspaceFilePage>(
+        this.workspacePath(sessionId, `/files${query}`),
+      );
+      files.push(...page.files);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return files;
+  }
+
+  async workspaceArtifacts(sessionId: string): Promise<WorkspaceArtifact[]> {
+    const result = await this.request<{ artifacts: WorkspaceArtifact[] }>(
+      this.workspacePath(sessionId, "/exports"),
+    );
+    return result.artifacts;
+  }
+
+  async workspaceDownload(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceDownload> {
+    return this.request<WorkspaceDownload>(
+      this.workspacePath(sessionId, "/download"),
+      { method: "POST", body: JSON.stringify({ path }) },
+    );
+  }
+
+  async workspaceFileContent(
+    download: WorkspaceDownload,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const downloadSignal = workspaceContentSignal(signal);
+    const location = new URL(download.url);
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
+  }
+
+  /** Provider-side export: retains and hashes the file, returns its manifest. */
+  async exportWorkspaceFile(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceArtifact> {
+    const result = await this.request<{
+      export?: WorkspaceExport;
+      artifact: WorkspaceArtifact | null;
+    }>(this.workspacePath(sessionId, "/exports"), {
+      method: "POST",
+      body: JSON.stringify({ path }),
+      ...(this.idempotencyKey
+        ? {
+            headers: {
+              "idempotency-key": this.derivedIdempotencyKey(
+                "POST",
+                this.workspacePath(sessionId, "/exports"),
+                path,
+              ),
+            },
+          }
+        : {}),
+    });
+    if (!result.artifact) {
+      throw new APIError(
+        `Export of ${path} is still in progress (${result.export?.id ?? "unknown export"}); retry shortly`,
+        202,
+        "export_in_progress",
+      );
+    }
+    return result.artifact;
+  }
+
+  /**
+   * Raw bytes of a retained artifact; callers verify size and SHA-256. The
+   * request always carries the one-hour deadline, combined with `signal`.
+   */
+  async workspaceArtifactContent(
+    artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const downloadSignal = workspaceContentSignal(signal);
+    const handoff = await this.request<{ url: string; expiresAt: string }>(
+      this.workspacePath(
+        artifact.sessionId,
+        `/exports/${encodeURIComponent(artifact.id)}/download`,
+      ),
+      { signal: downloadSignal },
+    );
+    let location: URL;
+    try {
+      location = new URL(handoff.url);
+    } catch {
+      throw new APIError(
+        "Workspace download did not provide a valid signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    // Never forward the OpenComputer API key to object storage. The signed
+    // query authorizes this exact immutable object for a few minutes.
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
+  }
 }
+
+/** Large artifacts stream for a while; the default 30 s budget is for JSON. */
+export const WORKSPACE_CONTENT_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** The one-hour content deadline, also aborting when `signal` does. */
+export function workspaceContentSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(WORKSPACE_CONTENT_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export type WorkspaceFile = {
+  path: string;
+  size: number;
+  lastModified: string | null;
+  etag: string | null;
+};
+
+export type WorkspaceDownload = WorkspaceFile & {
+  versionId: string | null;
+  mediaType: string;
+  url: string;
+  expiresAt: string;
+};
+
+type WorkspaceFilePage = {
+  files: WorkspaceFile[];
+  nextCursor: string | null;
+};
+
+export type WorkspaceExport = {
+  id: string;
+  sessionId: string;
+  path: string;
+  state: "snapshotting" | "delivered" | "failed" | "expired";
+  idempotencyKey: string | null;
+  artifactId: string | null;
+  error: { code: string; message: string; retrySafe: boolean } | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type WorkspaceArtifact = {
+  id: string;
+  exportId?: string;
+  sessionId: string;
+  path: string;
+  size: number;
+  sha256: string;
+  mediaType?: string;
+  snapshotId?: string;
+  receipt: {
+    etag: string | null;
+    sourceEtag: string | null;
+    sourceVersionId: string | null;
+  };
+  exportedAt: string;
+};

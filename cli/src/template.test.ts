@@ -156,3 +156,61 @@ prompt = "Say hello."
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+const modelTemplate = `schema = 1
+[template]
+name = "Model template"
+description = "Declares a model."
+[template.first_run]
+agent = "hello-world"
+prompt = "Say hello."
+`;
+
+test("template build retains compiled model declarations per agent", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-template-models-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(resolve(initialized.root, "oc-template.toml"), modelTemplate);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useModel } from "@opencomputer/agent";
+
+export default function Agent() {
+  useModel("typesafe/jev-router");
+  return "Route the request.";
+}
+`,
+    );
+    const bundle = await buildTemplateProject(initialized.root);
+    assert.equal(bundle.artifacts.length, 1);
+    assert.deepEqual(bundle.artifacts[0]!.models, [
+      { provider: "openrouter", model: "typesafe/jev-router" },
+    ]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("template build emits an empty model list for agents without useModel", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-template-no-model-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(resolve(initialized.root, "oc-template.toml"), modelTemplate);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `export default function Agent() {
+  return "Help with the request.";
+}
+`,
+    );
+    const bundle = await buildTemplateProject(initialized.root);
+    assert.equal(bundle.artifacts.length, 1);
+    assert.deepEqual(bundle.artifacts[0]!.models, []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

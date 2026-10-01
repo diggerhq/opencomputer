@@ -257,6 +257,7 @@ export const session: Shape<Session> = object({
   turns: array(turn),
   labels: optional(labels),
   labelsUpdatedAt: optional(string),
+  externalReference: optional(string),
   revision: optional(number),
   result: optional(nullable(sessionResult)),
   createdAt: string,
@@ -269,6 +270,7 @@ export const sessionCreated: Shape<Omit<SessionCreated, "created">> = object({
     status: stringAs<SessionStatus>(),
     createdAt: string,
     executionMode: optional(string),
+    externalReference: optional(string),
   }),
   deployment: optional((value, path) => deployment(value, path)),
 });
@@ -282,6 +284,7 @@ export const sessionSummary: Shape<SessionSummary> = object({
   source: optional(string),
   status: stringAs<SessionStatus>(),
   labels: optional(labels),
+  externalReference: optional(string),
   createdAt: string,
   updatedAt: string,
   revision: optional(number),

@@ -13,6 +13,13 @@ import {
   type ProjectEnvironmentMode,
 } from "./api.js";
 import { login, logout } from "./auth.js";
+import {
+  creditsFooter,
+  creditsSummary,
+  fetchCredits,
+  formatBilling,
+  upgradeUrlFor,
+} from "./billing.js";
 import { codexLogin } from "./codex-oauth.js";
 import { resolveConfig } from "./config.js";
 import {
@@ -42,8 +49,18 @@ import {
 import {
   developmentAgentReference,
   parseSessionCommand,
+  parseSessionListOptions,
   resolveProjectAgent,
 } from "./session-command.js";
+import {
+  type DownloadResult,
+  downloadWorkspace,
+  downloadWorkspaceFile,
+  formatSize,
+  listWorkspaceFiles,
+  normalizeWorkspacePath,
+  resolveSingleDestination,
+} from "./session-files.js";
 import { formatSessionEvent } from "./session-prompt.js";
 import {
   buildTemplateProject,
@@ -461,9 +478,13 @@ function printSession(
           .map(([key, value]) => `${key}=${value}`)
           .join(",")
       : "";
+  const reference =
+    session.externalReference !== undefined
+      ? `  ref=${session.externalReference}`
+      : "";
   process.stdout.write(
     `${session.id}  ${session.status.padEnd(15)}  ` +
-      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}\n`,
+      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}${reference}\n`,
   );
 }
 
@@ -1218,6 +1239,39 @@ export async function runCommand(
     return;
   }
 
+  if (command === "billing" || command === "credits") {
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await client.credits();
+    if (globals.json) printJSON(status);
+    else if (!status) {
+      process.stdout.write(
+        `This organization is not on prepaid credits. Manage billing at ${config.apiUrl}/billing\n`,
+      );
+    } else process.stdout.write(formatBilling(status));
+    return;
+  }
+
+  if (command === "upgrade") {
+    const plan = args.shift() ?? "pro";
+    if (plan !== "pro" && plan !== "max") {
+      throw new Error("Usage: opencomputer upgrade [pro|max]");
+    }
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await fetchCredits(client);
+    const url = upgradeUrlFor(status, config.apiUrl, plan);
+    if (globals.json) {
+      printJSON({ plan, url, credits: creditsSummary(status) });
+    } else {
+      const offer = status?.plans.find((p) => p.id === plan);
+      process.stdout.write(
+        `Open this link to upgrade to ${plan === "pro" ? "Pro" : "Max"}` +
+          (offer ? ` ($${offer.priceUsd}/mo, $${offer.creditsUsd.toLocaleString("en-US")} in credits every month)` : "") +
+          `:\n\n  ${url}\n\nCheckout completes in the browser; the CLI resumes working as soon as the plan is active.\n`,
+      );
+    }
+    return;
+  }
+
   if (command === "init") {
     const spa = flag(args, "--spa");
     const agentOnly = flag(args, "--agent-only");
@@ -1414,7 +1468,17 @@ export async function runCommand(
       globals.verbose === true,
       globals.idempotencyKey,
     );
-    if (globals.json) printJSON(result);
+    const credits = await fetchCredits(client);
+    if (globals.json) {
+      const summary = creditsSummary(credits);
+      printJSON(
+        summary
+          ? { ...(result as Record<string, unknown>), credits: summary }
+          : result,
+      );
+    } else {
+      process.stderr.write(creditsFooter(credits));
+    }
     return;
   }
 
@@ -2693,15 +2757,24 @@ export async function runCommand(
       await tailSession(client, sessionId, after, follow, globals.json);
       return;
     }
+    if (args[0] === "files") {
+      args.shift();
+      await runSessionFiles(client, args, globals.json);
+      return;
+    }
     const session = parseSessionCommand(args);
     const sessionArgs = session.args;
     if (session.action === "list") {
-      const cursor = option(sessionArgs, "--cursor");
+      const filters = parseSessionListOptions(sessionArgs);
       if (sessionArgs.length)
         throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
-      // One page of rows, newest created first. The page carries the
-      // cursor of the next one; `--cursor` continues from it.
-      const page = await client.sessions(cursor ? { cursor } : {});
+      // One page of rows, newest created first, narrowed by the exact
+      // filters. The page carries the cursor of the next one; `--cursor`
+      // continues from it with the same filters.
+      const page = await client.sessions({
+        ...filters,
+        ...(session.agent ? { agent: session.agent } : {}),
+      });
       if (globals.json) printJSON(page);
       else if (!page.sessions.length) process.stdout.write("No sessions.\n");
       else {
@@ -2831,4 +2904,79 @@ export async function runCommand(
   }
 
   throw new Error(`Unknown command: ${command}`);
+}
+
+/**
+ * `session files <ls|download|cp> <session-id> ...`. A bare
+ * `session files <session-id>` lists, so the common case stays short.
+ */
+async function runSessionFiles(
+  client: OpenComputerClient,
+  args: string[],
+  json: boolean,
+) {
+  const printDownload = (result: DownloadResult) => {
+    process.stdout.write(
+      `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256})\n`,
+    );
+  };
+  const action =
+    args[0] === "ls" ||
+    args[0] === "list" ||
+    args[0] === "download" ||
+    args[0] === "cp"
+      ? (args.shift() as "ls" | "list" | "download" | "cp")
+      : "ls";
+  if (action === "ls" || action === "list") {
+    const sessionId = args.shift();
+    if (!sessionId) throw new Error("A session ID is required.");
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const files = await listWorkspaceFiles(client, sessionId);
+    if (json) printJSON({ sessionId, files });
+    else if (!files.length) process.stdout.write("No workspace files.\n");
+    else {
+      for (const file of files) {
+        process.stdout.write(
+          `${(file.lastModified ?? "").padEnd(24)} ${formatSize(file.size).padStart(10)}  ${file.path}\n`,
+        );
+      }
+    }
+    return;
+  }
+  const all = flag(args, "--all");
+  const sessionId = args.shift();
+  if (!sessionId) throw new Error("A session ID is required.");
+  if (all) {
+    const root = args.shift() ?? sessionId;
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const results = await downloadWorkspace(
+      client,
+      sessionId,
+      root,
+      (result) => {
+        if (!json) printDownload(result);
+      },
+    );
+    if (json) printJSON({ sessionId, root, files: results });
+    else if (!results.length) process.stdout.write("No workspace files.\n");
+    return;
+  }
+  const remote = args.shift();
+  if (!remote) {
+    throw new Error("A workspace file path is required (or pass --all).");
+  }
+  const workspacePath = normalizeWorkspacePath(remote);
+  const destination = await resolveSingleDestination(
+    args.shift(),
+    workspacePath,
+  );
+  if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+  const result = await downloadWorkspaceFile(
+    client,
+    sessionId,
+    workspacePath,
+    destination,
+  );
+  if (json) printJSON({ sessionId, ...result });
+  else printDownload(result);
 }
