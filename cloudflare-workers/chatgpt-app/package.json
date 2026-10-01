@@ -1,0 +1,25 @@
+{
+  "name": "opencomputer-chatgpt-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "node -e \"throw new Error('choose an explicit environment; production is deploy:production')\"",
+    "deploy:production": "wrangler deploy --env production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opencomputer/sdk": "^2.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "wrangler": "~4.92.0"
+  }
+}

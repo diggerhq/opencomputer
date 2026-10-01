@@ -49,6 +49,7 @@
               "agents/services",
               "agents/github",
               "agents/slack",
+              "agents/chatgpt",
               "agents/byok",
               "agents/deployments"
             ]

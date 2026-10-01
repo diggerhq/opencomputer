@@ -1,0 +1,28 @@
+name = "opencomputer-chatgpt-app-local"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+# global_fetch_strictly_public: the OAuth provider fetches ChatGPT's client metadata document.
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+workers_dev = false
+
+[vars]
+PUBLIC_URL = "http://localhost:8787"
+OPENCOMPUTER_API_URL = "https://app.opencomputer.dev"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "00000000000000000000000000000000"
+
+# Production is deliberately available only through `npm run deploy:production`. Fill in the KV
+# namespace id and route before the first production deploy.
+[env.production]
+name = "opencomputer-chatgpt-app-prod"
+workers_dev = false
+
+[env.production.vars]
+PUBLIC_URL = "https://chatgpt.opencomputer.dev"
+OPENCOMPUTER_API_URL = "https://app.opencomputer.dev"
+
+[[env.production.kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_WITH_PRODUCTION_KV_NAMESPACE_ID"
