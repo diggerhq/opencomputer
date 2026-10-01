@@ -96,6 +96,8 @@ export interface Session {
   labels?: SessionLabels;
   /** When the labels last changed. */
   labelsUpdatedAt?: string;
+  /** Your opaque reference from `create`, returned as given; absent when none was set. */
+  externalReference?: string;
   /** Monotonic; every listed mutation increments it. */
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
@@ -133,6 +135,15 @@ export interface CreateSessionParams {
   source?: SessionSource;
   /** Applied at creation and ignored on an idempotent replay. */
   labels?: SessionLabels;
+  /**
+   * Your opaque reference to the session (an order id, a ticket key): at most
+   * 256 bytes of UTF-8, no control characters, stored as given and never shown
+   * to the agent. Returned on the session, its list row and its `session.*`
+   * events, and filterable by exact match with `list({ externalReference })`.
+   * Part of the creation identity: a replay of the same `idempotencyKey`
+   * with a different reference is `409 idempotency_conflict`.
+   */
+  externalReference?: string;
 }
 
 /** Turn admission, as `POST /sessions/<id>/turns` answers it. */
@@ -185,6 +196,8 @@ export interface SessionSummary {
   source: SessionSource;
   status: SessionStatus;
   labels?: SessionLabels;
+  /** Present when the session was created with one. */
+  externalReference?: string;
   createdAt: string;
   updatedAt: string;
   revision?: number;
@@ -192,16 +205,40 @@ export interface SessionSummary {
   result?: SessionResult | null;
 }
 
-/** Filters and paging for `GET /sessions`; any other parameter is `400 invalid_query`. */
-export interface ListSessionsQuery {
+/**
+ * Exact-match filters for `GET /sessions`; any other parameter is
+ * `400 invalid_query`. Filters narrow the sessions your key can already see,
+ * never widen them.
+ */
+export interface SessionFilters {
+  /** Project id or slug. */
   project?: string;
+  /** Same filter as `project`. */
+  projectId?: string;
   environment?: Environment;
+  /** Agent id. */
   agent?: string;
+  /** Same filter as `agent`. */
+  agentId?: string;
   status?: SessionStatus;
+  deploymentId?: string;
+  /** The exact `externalReference` the session was created with. */
+  externalReference?: string;
+  /** RFC 3339 timestamp; sessions created at or after it. */
+  createdAfter?: string;
+  /** RFC 3339 timestamp; sessions created strictly before it. */
+  createdBefore?: string;
+  /** RFC 3339 timestamp; sessions last updated at or after it. */
+  updatedAfter?: string;
   /** Up to three equality filters, sent as `label.<key>=<value>`. */
   labels?: SessionLabels;
+}
+
+/** Filters and paging for `GET /sessions`. */
+export interface ListSessionsQuery extends SessionFilters {
+  /** `nextCursor` of the previous page; valid only with the same filters. */
   cursor?: string;
-  /** Default 50, at most 100. */
+  /** Page size: default 50, at most 100. */
   limit?: number;
 }
 

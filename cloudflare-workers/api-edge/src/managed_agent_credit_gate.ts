@@ -1,3 +1,4 @@
+import { isPaidUsagePlan } from "./autumn_webhook";
 import { insufficientCreditsResponse } from "./billing_onramp";
 
 export interface ManagedAgentCreditGateEnv {
@@ -7,13 +8,22 @@ export interface ManagedAgentCreditGateEnv {
 interface ManagedAgentCreditRow {
   is_halted: number;
   halted_at: number | null;
+  usage_plan: string | null;
+  plan: string | null;
 }
+
+// "full": the org's selected models. "fallback": credits are exhausted on a
+// paid plan, so model calls run on the open-weight fallback model. null: the
+// org is denied (base plan out of credits).
+export type ManagedAgentModelAccess = "full" | "fallback";
 
 export interface ManagedAgentBillingAdmission {
   allowed: boolean;
   isHalted: boolean;
   haltedAt: number | null;
   reason: "insufficient_credits" | null;
+  paid: boolean;
+  modelAccess: ManagedAgentModelAccess | null;
 }
 
 export function isManagedAgentBillableRequest(
@@ -40,16 +50,23 @@ export async function getManagedAgentBillingAdmission(
   orgID: string,
 ): Promise<ManagedAgentBillingAdmission> {
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, usage_plan, plan FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<ManagedAgentCreditRow>();
   const isHalted = row?.is_halted === 1;
+  // Existing paid orgs predate usage_plan and initially carry its conservative
+  // 'base' default. Keep their established Pro entitlement effective until an
+  // Autumn projection refines usage_plan to the authoritative pro/max value.
+  const paid = isPaidUsagePlan(row?.usage_plan) || row?.plan === "pro";
+  const allowed = !isHalted || paid;
   return {
-    allowed: !isHalted,
+    allowed,
     isHalted,
     haltedAt: row?.halted_at ?? null,
-    reason: isHalted ? "insufficient_credits" : null,
+    reason: allowed ? null : "insufficient_credits",
+    paid,
+    modelAccess: !isHalted ? "full" : paid ? "fallback" : null,
   };
 }
 
@@ -66,9 +83,9 @@ export async function enforceManagedAgentCreditGate(
     return null;
   }
   try {
-    return (await isManagedAgentCreditHalted(env, orgID))
-      ? insufficientManagedAgentCredits(request)
-      : null;
+    return (await getManagedAgentBillingAdmission(env, orgID)).allowed
+      ? null
+      : insufficientManagedAgentCredits(request);
   } catch (error) {
     // D1 is the low-latency projection, not the financial authority. Preserve
     // availability and rely on the provider key limit as the hard backstop.

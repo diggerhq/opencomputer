@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { getAutumnBilling } from '@/api/client'
 
-// Out-of-credits (halt) state, shared across the halt banner and the credit-gated
-// controls (composer, new-session) so they stay in sync and share one 30s poll.
+// Out-of-credits state for the credit-gated agent controls (composer,
+// new-session), sharing the halt banner's 30s poll. Only base orgs are blocked:
+// Pro/Max orgs keep running agents on the fallback model once credits run out.
 // Autumn orgs only; legacy orgs 404 on /billing/autumn → error → treated as not halted.
 export function useHalted(): boolean {
   const { data } = useQuery({
@@ -11,5 +12,6 @@ export function useHalted(): boolean {
     retry: false,
     refetchInterval: (q) => (q.state.error ? false : 30_000),
   })
-  return data?.isHalted ?? false
+  if (!data?.isHalted) return false
+  return data.usagePlan !== 'pro' && data.usagePlan !== 'max'
 }

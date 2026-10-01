@@ -517,8 +517,14 @@ function SidebarCreditMeter({ onNavigate }: { onNavigate?: () => void }) {
 // data → no banner.
 function HaltBanner() {
   const location = useLocation()
-  const { isHalted, isLow, usagePlan, creditsRemainingCents, upgradePlan } =
-    useCreditState()
+  const {
+    isHalted,
+    isLow,
+    modelFallback,
+    usagePlan,
+    creditsRemainingCents,
+    upgradePlan,
+  } = useCreditState()
   const onBilling = location.pathname.startsWith('/billing')
   const state = isHalted ? 'halted' : isLow ? 'low' : null
   useEffect(() => {
@@ -560,12 +566,30 @@ function HaltBanner() {
       </div>
     )
   }
+  if (modelFallback) {
+    return (
+      <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
+        <CircleAlert className="size-4 shrink-0" />
+        <span>
+          You&apos;ve used this month&apos;s credits — agents keep running on an
+          open-weight model (GLM).{' '}
+          <Link
+            to="/billing"
+            onClick={click}
+            className="font-semibold underline underline-offset-2"
+          >
+            Top up
+          </Link>{' '}
+          to switch back to your selected models.
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="border-destructive/40 bg-status-error-bg text-destructive flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium sm:px-8">
       <CircleAlert className="size-4 shrink-0" />
       <span>
-        Your agent sessions and sandboxes are paused — you&apos;re out of
-        prepaid credits.{' '}
+        Your agent sessions are paused — you&apos;re out of prepaid credits.{' '}
         {billingOnrampV2Enabled ? (
           <>
             <Link

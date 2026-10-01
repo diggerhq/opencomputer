@@ -533,7 +533,9 @@ function PrepaidPlan() {
             <div className="text-status-error mt-2 space-y-2 text-sm">
               <p className="flex items-center gap-1.5">
                 <CircleAlert className="size-4 shrink-0" />
-                Credits exhausted — your agent sessions and sandboxes are paused
+                {autumn?.usagePlan === 'pro' || autumn?.usagePlan === 'max'
+                  ? 'Credits exhausted — agents are running on an open-weight model (GLM)'
+                  : 'Credits exhausted — your agent sessions are paused'}
               </p>
               {billingOnrampV2Enabled && autumn?.usagePlan !== 'max' ? (
                 <Button

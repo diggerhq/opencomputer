@@ -14,6 +14,10 @@ export interface CreditState {
   usagePlan: UsagePlanId | undefined
   creditsRemainingCents: number | undefined
   isHalted: boolean
+  // Out of credits on base: agent sessions are blocked until the org upgrades.
+  sessionsBlocked: boolean
+  // Out of credits on Pro/Max: agents keep running on the fallback model.
+  modelFallback: boolean
   // Below the low-credit threshold but not yet halted; only for prepaid orgs
   // with the on-ramp experiment enabled.
   isLow: boolean
@@ -30,6 +34,7 @@ export function useCreditState(): CreditState {
   })
   const usagePlan = data?.usagePlan
   const isHalted = data?.isHalted ?? false
+  const paid = usagePlan === 'pro' || usagePlan === 'max'
   const isLow =
     billingOnrampV2Enabled &&
     !isHalted &&
@@ -40,6 +45,8 @@ export function useCreditState(): CreditState {
     usagePlan,
     creditsRemainingCents: data?.creditsRemainingCents,
     isHalted,
+    sessionsBlocked: isHalted && !paid,
+    modelFallback: isHalted && paid,
     isLow,
     upgradePlan: upgradePlanFor(usagePlan ?? 'base'),
   }

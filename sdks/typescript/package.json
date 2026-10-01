@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/sdk",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "description": "TypeScript SDK for OpenComputer - cloud sandboxes and the Serverless Agents management API",
   "type": "module",
   "main": "dist/index.js",
