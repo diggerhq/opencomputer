@@ -15,6 +15,8 @@ import {
   type AgentInput,
   type MemoryProjection,
   type OutcomeEvent,
+  type ToolExecutionContext,
+  type ToolInvocationIdentity,
 } from "./index.js";
 
 const HOOKS = Symbol.for("opencomputer.agent-hooks");
@@ -559,6 +561,114 @@ test("defineTool marks a result tool and pins its output schema", () => {
     run: () => "ok",
   });
   assert.equal("result" in opted, false);
+});
+
+/**
+ * A context shaped as the platform hands it to a tool: the identity frozen,
+ * the legacy ids copied from it, the model's arguments under `input` only.
+ */
+function hostContext(input: Record<string, unknown>): ToolExecutionContext {
+  const identity: ToolInvocationIdentity = Object.freeze({
+    projectId: "prj_01",
+    environment: "development",
+    agentId: "agent_01",
+    deploymentId: "dep_01",
+    sessionId: "ses_01",
+    turnId: "turn_01",
+    messageId: "msg_01",
+    toolCallId: "call_01",
+  });
+  return {
+    input,
+    identity,
+    sessionId: identity.sessionId,
+    messageId: identity.messageId,
+    agentId: identity.agentId,
+    toolCallId: identity.toolCallId,
+    reportProgress: async () => undefined,
+  };
+}
+
+test("a tool reads the platform's identity next to, never from, the model's input (acceptance 5)", async () => {
+  const forged = {
+    projectId: "prj_forged",
+    environment: "production",
+    agentId: "agent_forged",
+    deploymentId: "dep_forged",
+    sessionId: "ses_forged",
+    turnId: "turn_forged",
+    messageId: "msg_forged",
+    toolCallId: "call_forged",
+  };
+  const echo = defineTool({
+    name: "echo",
+    description: "Echo where the call ran",
+    input: { type: "object", additionalProperties: true },
+    run: ({ input, identity, sessionId, messageId, agentId, toolCallId }) => ({
+      identity: { ...identity },
+      // Spreading the model's arguments under the identity changes nothing.
+      merged: { ...input, ...{ identity } }.identity.turnId,
+      inputTurnId: String(input.turnId),
+      legacy: { sessionId, messageId, agentId, toolCallId },
+    }),
+  });
+  const context = hostContext({ identity: forged, turnId: "turn_forged", deploymentId: "dep_forged" });
+  const output = await echo.run(context);
+  assert.deepEqual(output.identity, {
+    projectId: "prj_01",
+    environment: "development",
+    agentId: "agent_01",
+    deploymentId: "dep_01",
+    sessionId: "ses_01",
+    turnId: "turn_01",
+    messageId: "msg_01",
+    toolCallId: "call_01",
+  });
+  assert.equal(output.merged, "turn_01");
+  // The forged copy is still in the arguments, as data.
+  assert.equal(output.inputTurnId, "turn_forged");
+  assert.deepEqual(context.input.identity, forged);
+  // The pre-identity ids are the identity's own values.
+  assert.deepEqual(output.legacy, {
+    sessionId: "ses_01",
+    messageId: "msg_01",
+    agentId: "agent_01",
+    toolCallId: "call_01",
+  });
+  // Frozen: a write throws in strict code and changes nothing.
+  assert.throws(() => {
+    (context.identity as { turnId: string }).turnId = "turn_forged";
+  }, TypeError);
+  assert.equal(context.identity.turnId, "turn_01");
+  // And read-only at the type level (compiled, never run).
+  void function typeLevel(c: ToolExecutionContext) {
+    // @ts-expect-error identity fields are readonly
+    c.identity.deploymentId = "dep_forged";
+    // @ts-expect-error identity itself is readonly
+    c.identity = forged;
+  };
+});
+
+test("a tool that waits for approval previews with the same identity the model's call carried", async () => {
+  const seen: ToolInvocationIdentity[] = [];
+  const charge = defineTool({
+    name: "charge",
+    description: "Charge a customer",
+    preview: ({ identity }) => {
+      seen.push(identity);
+      return { title: `Charge in ${identity.environment}` };
+    },
+    apply: ({ identity, decision }) => ({ turnId: identity.turnId, decision: decision.id }),
+  });
+  const context = hostContext({ customerId: "cus_1" });
+  // No approval service in the test: the preview ran, the publish did not.
+  await assert.rejects(charge.run(context), /approvals are unavailable/);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0], context.identity);
+  assert.deepEqual(
+    await charge.apply({ ...context, decision: { id: "apr_1", decidedAt: "2026-09-25T00:00:00Z" } }),
+    { turnId: "turn_01", decision: "apr_1" },
+  );
 });
 
 test("defineTool refuses a result tool without an output schema", () => {

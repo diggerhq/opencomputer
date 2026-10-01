@@ -1,5 +1,5 @@
 {
-  "description": "One full turn of a managed session on the Workerd runtime, as the public event log records it: a failed ordinary tool call (call-0), then the agent's result tool (call-1) started, reporting progress, and completed by its commit with the decoded value and result: true. Volatile values are normalized: <uuid>, <timestamp>, <turn>, <render-id>, <n> ms, and every *Ms measurement is 0.",
+  "description": "One full turn of a managed session on the Workerd runtime, as the public event log records it: a failed ordinary tool call (call-0), then the agent's result tool (call-1) started, reporting progress, and completed by its commit with the decoded value and result: true. Volatile values are normalized: <uuid>, <timestamp>, <turn>, <render-id>, <n> ms, and every *Ms measurement is 0. Every tool event carries the host-assigned identity tuple (project, environment, agent, deployment, session, turn, message, tool call) the session stamps from its own state.",
   "recordedBy": "bluecode test/managed-session-workerd.test.ts, 'public tool events' (the fake Workerd runtime speaking OpenCode's native event shapes through the real Session object)",
   "runtime": "workerd",
   "events": [
@@ -140,6 +140,16 @@
         "title": "lookup",
         "input": {
           "q": "x"
+        },
+        "identity": {
+          "projectId": "project:workerd-public-events",
+          "environment": "development",
+          "agentId": "workerd-public-events",
+          "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sessionId": "<uuid>",
+          "turnId": "<uuid>",
+          "messageId": "msg-1",
+          "toolCallId": "call-0"
         }
       }
     },
@@ -151,7 +161,17 @@
         "callId": "call-0",
         "tool": "lookup",
         "title": "lookup",
-        "message": "lookup exploded"
+        "message": "lookup exploded",
+        "identity": {
+          "projectId": "project:workerd-public-events",
+          "environment": "development",
+          "agentId": "workerd-public-events",
+          "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sessionId": "<uuid>",
+          "turnId": "<uuid>",
+          "messageId": "msg-1",
+          "toolCallId": "call-0"
+        }
       }
     },
     {
@@ -164,6 +184,16 @@
         "title": "report",
         "input": {
           "branch": "task/1"
+        },
+        "identity": {
+          "projectId": "project:workerd-public-events",
+          "environment": "development",
+          "agentId": "workerd-public-events",
+          "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sessionId": "<uuid>",
+          "turnId": "<uuid>",
+          "messageId": "msg-1",
+          "toolCallId": "call-1"
         }
       }
     },
@@ -174,7 +204,17 @@
       "data": {
         "stage": "verifying",
         "callId": "call-1",
-        "tool": "report"
+        "tool": "report",
+        "identity": {
+          "projectId": "project:workerd-public-events",
+          "environment": "development",
+          "agentId": "workerd-public-events",
+          "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sessionId": "<uuid>",
+          "turnId": "<uuid>",
+          "messageId": "msg-1",
+          "toolCallId": "call-1"
+        }
       }
     },
     {
@@ -188,7 +228,17 @@
         "output": {
           "branch": "task/1"
         },
-        "result": true
+        "result": true,
+        "identity": {
+          "projectId": "project:workerd-public-events",
+          "environment": "development",
+          "agentId": "workerd-public-events",
+          "deploymentId": "workerd-public-events:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sessionId": "<uuid>",
+          "turnId": "<uuid>",
+          "messageId": "msg-1",
+          "toolCallId": "call-1"
+        }
       }
     },
     {
