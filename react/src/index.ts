@@ -13,6 +13,7 @@ import {
   type AgentMessage,
   type DataValue,
   type MemorySave,
+  type Question,
   type SessionTimeline,
   type Turn,
   type TurnStatus,
@@ -30,6 +31,8 @@ export {
   type AgentMessage,
   type DataValue,
   type MemorySave,
+  type Question,
+  type QuestionOption,
   type SessionTimeline,
   type ToolCall,
   type ToolCallStatus,
@@ -103,6 +106,11 @@ export interface SendOptions {
   idempotencyKey?: string;
   /** Structured input the agent reads as `useInput().payload`, beside the text. */
   payload?: DataValue;
+  /**
+   * The id of the open question this input answers. `answer()` sets it.
+   * Naming a question that is no longer open is refused with `question_stale`.
+   */
+  answers?: string;
 }
 
 /**
@@ -147,6 +155,13 @@ export interface UseAgentResult {
    * settlement, which arrives through `turns`.
    */
   stop: () => Promise<void>;
+  /**
+   * The question the agent is waiting on, or null. While it is open, input
+   * sent with `send` is held and reaches the agent with the answer.
+   */
+  question: Question | null;
+  /** Answers the question with that id: `send(text, { answers: questionId })`. */
+  answer: (questionId: string, text: string, options?: Omit<SendOptions, "answers">) => Promise<SendReceipt>;
   sessionId: string | undefined;
   /** A turn is running in the log, or a locally admitted turn has not settled. Queued replay alone is false. */
   isRunning: boolean;
@@ -374,6 +389,9 @@ export function useAgent(
               idempotencyKey: sendOptions.idempotencyKey ?? crypto.randomUUID(),
               ...(sendOptions.payload !== undefined
                 ? { payload: sendOptions.payload }
+                : {}),
+              ...(sendOptions.answers !== undefined
+                ? { answers: sendOptions.answers }
                 : {}),
             }),
           },
@@ -629,6 +647,12 @@ export function useAgent(
     }
   }, [request]);
 
+  const answer = useCallback(
+    (questionId: string, value: string, answerOptions: Omit<SendOptions, "answers"> = {}) =>
+      send(value, { ...answerOptions, answers: questionId }),
+    [send],
+  );
+
   const turns = useMemo(() => turnsOf(timeline), [timeline]);
 
   return {
@@ -636,6 +660,8 @@ export function useAgent(
     turns,
     send,
     stop,
+    question: timeline.question,
+    answer,
     sessionId,
     isRunning: timeline.isRunning || admitted.length > 0,
     isReplaying,

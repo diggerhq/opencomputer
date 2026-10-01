@@ -70,6 +70,25 @@ export interface ToolCall {
   status: ToolCallStatus;
 }
 
+/** One choice of a question; a selection sends `value` back. */
+export interface QuestionOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * The question the session is waiting on, from `question.asked`; cleared by
+ * `question.answered` or `question.closed` for the same id.
+ */
+export interface Question {
+  id: string;
+  text: string;
+  /** Empty when the answer is free text. */
+  options: QuestionOption[];
+  /** The turn that asked. */
+  turnId?: string;
+}
+
 /** The public failure a `turn.failed` event carries. */
 export interface TurnFailure {
   code: string;
@@ -93,6 +112,8 @@ export interface Turn {
    */
   result?: DataValue;
   failure?: TurnFailure;
+  /** `"question"` when the turn completed by asking; the session's `question` holds what it asked. */
+  outcome?: "question";
 }
 
 /** What the timeline keeps per turn; `Turn` adds the messages. */
@@ -103,6 +124,7 @@ export interface TurnRecord {
   toolCalls: ToolCall[];
   result?: DataValue;
   failure?: TurnFailure;
+  outcome?: "question";
   /** The `seq` of the first event that named the turn; orders the turns. */
   seq: number;
 }
@@ -114,6 +136,8 @@ export interface SessionTimeline {
   cursor: number;
   /** Every turn the log has recorded, by id, as of the cursor. */
   turns: Record<string, TurnRecord>;
+  /** The open question, or null. */
+  question: Question | null;
   isRunning: boolean;
   ended: boolean;
 }
@@ -124,6 +148,7 @@ export function emptyTimeline(): SessionTimeline {
     memorySaves: [],
     cursor: 0,
     turns: {},
+    question: null,
     isRunning: false,
     ended: false,
   };
@@ -251,7 +276,12 @@ export function applyTurnEvent(
       next = { ...current, status: "running" };
       break;
     case "turn.completed":
-      next = { ...current, status: "completed", toolCalls: settleToolCalls(current.toolCalls, "completed") };
+      next = {
+        ...current,
+        status: "completed",
+        toolCalls: settleToolCalls(current.toolCalls, "completed"),
+        ...(fields.outcome === "question" ? { outcome: "question" as const } : {}),
+      };
       break;
     case "turn.failed":
       next = {
@@ -376,6 +406,27 @@ export function applyEvent(
           ? { ...message, streaming: false }
           : message,
       );
+      return next;
+    case "question.asked": {
+      const options = Array.isArray(fields.options)
+        ? fields.options.flatMap((option: unknown) => {
+            const entry = option as { label?: unknown; value?: unknown } | null;
+            return entry && typeof entry.label === "string" && typeof entry.value === "string"
+              ? [{ label: entry.label, value: entry.value }]
+              : [];
+          })
+        : [];
+      next.question = {
+        id: text(fields.questionId),
+        text: text(fields.text),
+        options,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      };
+      return next;
+    }
+    case "question.answered":
+    case "question.closed":
+      if (timeline.question?.id === text(fields.questionId)) next.question = null;
       return next;
     case "memory.saved": {
       const save = memorySaveFromEvent(event);

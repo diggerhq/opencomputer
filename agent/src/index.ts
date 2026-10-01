@@ -94,9 +94,90 @@ export interface OutcomeEvent {
   readonly result?: { readonly text: string; readonly truncated?: boolean };
 }
 
+/** One choice of a question; a selection sends `value` back. Each 1–80 characters. */
+export interface QuestionOption {
+  readonly label: string;
+  readonly value: string;
+}
+
+/** How this input answered the session's open question. */
+export interface QuestionAnswer {
+  readonly questionId: string;
+  /** What the person wrote or selected. */
+  readonly text: string;
+  /** The chosen option's value, when the text matched an option by value or label. */
+  readonly value?: string;
+}
+
+/**
+ * An input that arrived while a question was open without answering it.
+ * Held inputs never run as turns of their own: they are delivered, in
+ * arrival order, with the answer.
+ */
+export interface HeldInput {
+  readonly text?: string;
+  readonly payload?: DataValue;
+  readonly channel?: Readonly<ChannelMessageContext>;
+  readonly receivedAt: string;
+  /** When the provider says it was written, when it says. */
+  readonly providerTime?: string;
+}
+
 interface BasicAgentInput {
   readonly text?: string;
   readonly payload?: DataValue;
+  /**
+   * Present only when this input answers the question an earlier turn
+   * asked with `ask`. Anything else written meanwhile is in `steering`.
+   */
+  readonly answer?: Readonly<QuestionAnswer>;
+  /**
+   * Inputs written while the question was open that did not answer it, in
+   * order. Read them before acting on the answer: they may change what the
+   * answer should mean.
+   */
+  readonly steering?: readonly Readonly<HeldInput>[];
+}
+
+/**
+ * The `payload` of a turn started from Linear: `source: "channel"`,
+ * `channel.provider: "linear"`, `channel.conversationId` the Linear agent
+ * session, `channel.workspaceId` the Linear workspace. `text` is Linear's
+ * prompt context when the session began, then each message's body.
+ */
+export interface LinearInputPayload {
+  readonly action: "created" | "prompted";
+  /** The issue as this message carried it. */
+  readonly issue: {
+    readonly id: string;
+    readonly identifier: string;
+    readonly title: string;
+    readonly description?: string | null;
+    readonly url: string;
+    readonly team: { readonly id: string; readonly key: string; readonly name: string };
+  };
+  /**
+   * Read from Linear when the session started and fixed for its life: the
+   * issue's parent at that time, and whether this agent's own Linear app
+   * created the issue. What they mean is the agent's decision.
+   */
+  readonly origin: {
+    readonly parent?: { readonly id: string; readonly identifier: string };
+    readonly createdByAgent: boolean;
+  };
+  readonly session: {
+    readonly id: string;
+    readonly url?: string;
+    /** The person responsible for the session; absent when automation started it. */
+    readonly creator?: { readonly id: string; readonly name: string };
+  };
+  readonly promptContext?: string;
+  /** The thread's root comment, when the session is a comment thread. */
+  readonly comment?: { readonly id: string; readonly body: string };
+  /** Earlier comments of that thread, as Linear sent them. */
+  readonly previousComments?: DataValue;
+  /** Workspace and team guidance for agents, as Linear sent it. */
+  readonly guidance?: DataValue;
 }
 
 export type AgentInput =
@@ -193,6 +274,20 @@ export interface GitHubAppProvider {
 
 export interface GitHubConnectionDefinition extends ConnectionReference {
   readonly provider: GitHubAppProvider;
+}
+
+export interface LinearAgentProvider {
+  readonly kind: "linear-agent";
+}
+
+/**
+ * Linear's GraphQL API as this agent's own Linear app: `POST /graphql` on
+ * `https://api.linear.app`, with the app's token attached on the way out.
+ * The token is the environment's Linear connection for this agent; the
+ * agent never sees it.
+ */
+export interface LinearConnectionDefinition extends ConnectionReference {
+  readonly provider: LinearAgentProvider;
 }
 
 export interface McpServerDefinition extends ResourceReference {
@@ -676,6 +771,9 @@ function identifier(value: string, kind: string): string {
 const OPENCOMPUTER_USER_AGENT =
   "OpenComputer-Agent/1 (+https://opencomputer.dev)";
 
+/** The platform's question tool, selected with `useTool("ask")`. No defined tool may use the id. */
+export const ASK_TOOL = "ask";
+
 export function useSecret(
   name: string,
   options: { scope?: SecretScope } = {},
@@ -741,6 +839,16 @@ export function githubApp(options: {
     kind: "github-app",
     permissions: Object.freeze(permissions),
   });
+}
+
+/**
+ * The agent's own Linear app as a connection provider. Requests go to
+ * Linear's GraphQL API with the token of the Linear connection bound to this
+ * agent in the session's environment; with it the agent writes documents,
+ * sub-issues, comments and status changes as itself.
+ */
+export function linearAgent(): LinearAgentProvider {
+  return Object.freeze({ kind: "linear-agent" });
 }
 
 /**
@@ -963,6 +1071,11 @@ interface GitHubConnectionInput {
   provider: GitHubAppProvider;
 }
 
+interface LinearConnectionInput {
+  id: string;
+  provider: LinearAgentProvider;
+}
+
 export function defineConnection(
   input: HttpConnectionInput,
 ): HttpConnectionDefinition;
@@ -970,14 +1083,25 @@ export function defineConnection(
   input: GitHubConnectionInput,
 ): GitHubConnectionDefinition;
 export function defineConnection(
-  input: HttpConnectionInput | GitHubConnectionInput,
-): HttpConnectionDefinition | GitHubConnectionDefinition {
+  input: LinearConnectionInput,
+): LinearConnectionDefinition;
+export function defineConnection(
+  input: HttpConnectionInput | GitHubConnectionInput | LinearConnectionInput,
+):
+  | HttpConnectionDefinition
+  | GitHubConnectionDefinition
+  | LinearConnectionDefinition {
   const id = identifier(input.id, "defineConnection");
   if ("provider" in input) {
-    if (input.provider?.kind !== "github-app") {
+    const kind = input.provider?.kind;
+    if (kind !== "github-app" && kind !== "linear-agent") {
       throw new Error("defineConnection() received an unsupported provider");
     }
-    return Object.freeze({ kind: "connection", id, provider: input.provider });
+    return Object.freeze({
+      kind: "connection",
+      id,
+      provider: input.provider,
+    }) as GitHubConnectionDefinition | LinearConnectionDefinition;
   }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") {
@@ -1520,6 +1644,11 @@ export function defineTool<Output extends DataValue = DataValue>(
       "Tool IDs may contain only letters, numbers, underscores, and hyphens",
     );
   }
+  if (id === ASK_TOOL) {
+    throw new Error(
+      `Tool id ${JSON.stringify(ASK_TOOL)} is the platform's question tool; select it with useTool("${ASK_TOOL}") and rename this tool`,
+    );
+  }
   if (!input.description.trim()) {
     throw new Error("defineTool requires a non-empty description");
   }
@@ -1625,6 +1754,14 @@ export const useInput = (): Readonly<AgentInput> => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model: ModelSelection): void =>
   hooks().useModel(model);
+/**
+ * Selects a tool for this render: a tool defined with `defineTool`, or
+ * `"ask"`, the platform's question tool. `ask` takes `{ text, options? }`
+ * (`text` 1–4000 characters; at most six `{ label, value }` options, each
+ * 1–80 characters) and ends the turn with that question open. The person's
+ * reply arrives as the next input with `answer` set; anything written
+ * meanwhile arrives with it as `steering`.
+ */
 export const useTool = (tool: string | ResourceReference): void =>
   hooks().useTool(tool);
 export const useConnection = (connection: string | ResourceReference): void =>

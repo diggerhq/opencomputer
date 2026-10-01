@@ -43,6 +43,34 @@ export type TurnMode = "queue" | "steer" | "interrupt";
 
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | (string & {});
 
+/** What a settled turn came to beyond its status. `question`: a completed turn that ended by asking. */
+export type TurnOutcome = "question" | (string & {});
+
+/** One choice of a question; a selection sends `value` back. */
+export interface QuestionOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * The question a session is waiting on, asked by the agent with `ask`.
+ * Answer it with `turns.send(id, { input, answers: question.id })`.
+ */
+export interface SessionQuestion {
+  id: string;
+  text: string;
+  /** Empty when the question is free text. */
+  options: QuestionOption[];
+  askedAt: string;
+}
+
+/** How an input answered a question; `value` when the text matched an option by value or label. */
+export interface QuestionAnswer {
+  questionId: string;
+  text: string;
+  value?: string;
+}
+
 /** One entry of a session's `turns`. */
 export interface Turn {
   id: string;
@@ -50,6 +78,8 @@ export interface Turn {
   input: string;
   mode: TurnMode;
   status: TurnStatus;
+  /** `question` on a completed turn that ended by asking. */
+  outcome?: TurnOutcome;
   /** The structured input sent with the turn. */
   payload?: DataValue;
   /** Present when an event subscription selected the turn's outcome. */
@@ -102,6 +132,8 @@ export interface Session {
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
+  /** The question the session is waiting on, or `null`. Independent of `result`. */
+  question?: SessionQuestion | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -172,6 +204,13 @@ export interface SendTurnParams {
   mode?: TurnMode;
   /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON. */
   payload?: DataValue;
+  /**
+   * The id of the open question this input answers; the agent reads it as
+   * `useInput().answer`. Naming any other question is `409 question_stale`.
+   * Without it, input sent while a question is open is held and delivered
+   * with the answer, not run on its own.
+   */
+  answers?: string;
 }
 
 /** What a session's activity looks like from a list row. */
@@ -304,7 +343,14 @@ export type SessionEvent =
   | (EventBase & { type: "turn.steered"; data: { activeTurnId: string } })
   | (EventBase & { type: "turn.interrupted"; data: { interruptedTurnIds: string[] } })
   | (EventBase & { type: "turn.started"; data: Record<string, never> })
-  | (EventBase & { type: "turn.completed"; data: Record<string, never> })
+  | (EventBase & {
+      type: "turn.completed";
+      /** Empty, or `{ outcome: "question", questionId }` when the turn ended by asking. */
+      data: { outcome?: TurnOutcome; questionId?: string };
+    })
+  | (EventBase & { type: "question.asked"; data: { questionId: string; text: string; options: QuestionOption[] } })
+  | (EventBase & { type: "question.answered"; data: { questionId: string; answer: QuestionAnswer } })
+  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: "stopped" | "replaced" | (string & {}) } })
   | (EventBase & { type: "turn.failed"; data: Failure })
   | (EventBase & {
       type: "turn.cancelled";

@@ -98,6 +98,7 @@ export class Turns {
     const body: Record<string, unknown> = { input: params.input };
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
+    if (params.answers !== undefined) body.answers = params.answers;
     const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
       body,
       headers: params.idempotencyKey !== undefined ? { "idempotency-key": params.idempotencyKey } : undefined,

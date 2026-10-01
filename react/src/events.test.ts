@@ -264,3 +264,41 @@ test("a terminal turn event settles every tool row without a completion, and the
   ]);
   assert.deepEqual(cancelled?.result, turn.result);
 });
+
+test("a turn that asks completes with outcome question and opens the question until it is answered", () => {
+  const asked = applyEvents(emptyTimeline(), [
+    { seq: 1, turnId: "t1", type: "message.received", data: { input: "Fix the login page." } },
+    { seq: 2, turnId: "t1", type: "turn.started", data: {} },
+    {
+      seq: 3,
+      turnId: "t1",
+      type: "question.asked",
+      data: { questionId: "q1", text: "Plan first, or go?", options: [{ label: "Go", value: "go" }, { bad: true }] },
+    },
+    { seq: 4, turnId: "t1", type: "turn.completed", data: { outcome: "question", questionId: "q1" } },
+  ]);
+  assert.deepEqual(asked.question, {
+    id: "q1",
+    text: "Plan first, or go?",
+    options: [{ label: "Go", value: "go" }],
+    turnId: "t1",
+  });
+  assert.equal(asked.isRunning, false);
+  const [first] = turnsOf(asked);
+  assert.equal(first?.status, "completed");
+  assert.equal(first?.outcome, "question");
+
+  const unrelated = applyEvents(asked, [
+    { seq: 5, turnId: "t2", type: "question.answered", data: { questionId: "q0", answer: { questionId: "q0", text: "go" } } },
+  ]);
+  assert.equal(unrelated.question?.id, "q1");
+  const answered = applyEvents(unrelated, [
+    { seq: 6, turnId: "t2", type: "question.answered", data: { questionId: "q1", answer: { questionId: "q1", text: "go", value: "go" } } },
+  ]);
+  assert.equal(answered.question, null);
+
+  const closed = applyEvents(asked, [
+    { seq: 5, type: "question.closed", data: { questionId: "q1", reason: "stopped" } },
+  ]);
+  assert.equal(closed.question, null);
+});

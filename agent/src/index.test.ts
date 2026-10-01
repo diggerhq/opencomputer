@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ASK_TOOL,
   bearer,
   defineConnection,
   defineMemory,
@@ -8,6 +9,7 @@ import {
   documentMemory,
   githubApp,
   httpMemory,
+  linearAgent,
   useConnection,
   useInput,
   useMemory,
@@ -597,5 +599,29 @@ test("defineTool refuses a result tool that waits for approval", () => {
         apply: () => ({}),
       } as unknown as Parameters<typeof defineTool>[0]),
     /waits for approval cannot be the result tool/,
+  );
+});
+
+test("linearAgent defines a frozen connection to the agent's own Linear app", () => {
+  const connection = defineConnection({ id: "linear", provider: linearAgent() });
+  assert.deepEqual(JSON.parse(JSON.stringify(connection)), {
+    kind: "connection",
+    id: "linear",
+    provider: { kind: "linear-agent" },
+  });
+  assert.ok(Object.isFrozen(connection));
+  assert.ok(Object.isFrozen(connection.provider));
+});
+
+test("defineTool reserves the question tool's id", () => {
+  assert.equal(ASK_TOOL, "ask");
+  assert.throws(
+    () =>
+      defineTool({
+        name: "ask",
+        description: "Ask something.",
+        run: () => "asked",
+      }),
+    /platform's question tool/,
   );
 });

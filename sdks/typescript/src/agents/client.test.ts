@@ -190,6 +190,32 @@ describe("OpenComputer client", () => {
     expect(api.last().body).toEqual({ input: "again", mode: "steer" });
   });
 
+  it("answers the open question by naming it, and reads the question from the session", async () => {
+    const question = { id: "q_1", text: "Plan first, or go?", options: [{ label: "Go", value: "go" }], askedAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/ses_1": () =>
+        Response.json({
+          id: "ses_1",
+          agentId: "worker",
+          deploymentId: "dep_1",
+          status: "idle",
+          source: "api",
+          turns: [{ id: "turn_1", input: "Fix it.", mode: "queue", status: "completed", outcome: "question", createdAt: "t", updatedAt: "t" }],
+          question,
+          createdAt: "t",
+          updatedAt: "t",
+        }),
+      "POST /api/managed-agents/sessions/ses_1/turns": () =>
+        Response.json({ turnId: "turn_2", status: "queued", duplicate: false }, { status: 202 }),
+    });
+    const client = oc(api);
+    const session = await client.sessions.get("ses_1");
+    expect(session.question).toEqual(question);
+    expect(session.turns[0]?.outcome).toBe("question");
+    await client.sessions.turns.send("ses_1", { input: "go", answers: "q_1" });
+    expect(api.last().body).toEqual({ input: "go", answers: "q_1" });
+  });
+
   it("reads the event log from a cursor", async () => {
     const events = [{ id: "e1", seq: 1, timestamp: "t", sessionId: "ses_1", type: "session.created", data: { agentId: "worker", deploymentId: "dep_1" } }];
     const api = fakeApi({ "GET /api/managed-agents/sessions/ses_1/events": () => Response.json({ events }) });

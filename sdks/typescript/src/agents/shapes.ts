@@ -33,10 +33,12 @@ import type {
   SessionCreated,
   SessionEvent,
   SessionPage,
+  SessionQuestion,
   SessionResult,
   SessionStatus,
   SessionSummary,
   Turn,
+  TurnOutcome,
   TurnStatus,
   Webhook,
   WebhookRequest,
@@ -217,11 +219,19 @@ const turnOutcomeDelivery: Shape<TurnOutcomeDelivery> = object({
   updatedAt: string,
 });
 
+const sessionQuestion: Shape<SessionQuestion> = object({
+  id: string,
+  text: string,
+  options: array(object({ label: string, value: string })),
+  askedAt: string,
+});
+
 export const turn: Shape<Turn> = object({
   id: string,
   input: string,
   mode: oneOf("queue", "steer", "interrupt"),
   status: stringAs<TurnStatus>(),
+  outcome: optional(stringAs<TurnOutcome>()),
   payload: optional(jsonValue),
   deliveries: optional(array(turnOutcomeDelivery)),
   createdAt: string,
@@ -260,6 +270,7 @@ export const session: Shape<Session> = object({
   externalReference: optional(string),
   revision: optional(number),
   result: optional(nullable(sessionResult)),
+  question: optional(nullable(sessionQuestion)),
   createdAt: string,
   updatedAt: string,
 }) as Shape<Session>;
