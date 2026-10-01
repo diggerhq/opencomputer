@@ -1423,6 +1423,7 @@ export class OpenComputerClient {
     sessionId: string,
     input: string,
     idempotencyKey: string = crypto.randomUUID(),
+    toolPolicy?: unknown,
   ) {
     return this.request<{ turnId: string; duplicate: boolean }>(
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
@@ -1431,6 +1432,7 @@ export class OpenComputerClient {
         body: JSON.stringify({
           input,
           idempotencyKey,
+          ...(toolPolicy !== undefined ? { toolPolicy } : {}),
         }),
       },
     );

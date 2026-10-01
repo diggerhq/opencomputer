@@ -70,7 +70,9 @@ Usage:
       [--limit <1-100>] [--cursor <next-cursor>]
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
-  opencomputer session send <session-id> <prompt> [--keep]
+  opencomputer session send <session-id> <prompt> [--keep] [--tool-policy <json>]
+      --tool-policy admits a per-turn host tool policy (JSON), e.g.
+      '{"version":1,"mode":"deny_all"}' or '{"version":1,"mode":"allow","allow":[{"tool":"sandbox_exec","maxCalls":1,"args":{"command":"echo hi"}}]}'
   opencomputer session end <session-id>
   opencomputer session files [ls] <session-id>
       lists the files under the session's /workspace
@@ -116,7 +118,7 @@ Usage:
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]
   opencomputer deploy [--alias development|production] [--watch]
-  opencomputer run <agent> <prompt> [--keep]
+  opencomputer run <agent> <prompt> [--keep] [--tool-policy <json>]
 
 Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)
@@ -145,6 +147,7 @@ async function main(): Promise<void> {
     json: takeFlag(args, "--json"),
     verbose: takeFlag(args, "--verbose"),
     idempotencyKey: takeOption(args, "--idempotency-key"),
+    toolPolicy: takeOption(args, "--tool-policy"),
   };
   const command = args.shift();
   if (!command) {
