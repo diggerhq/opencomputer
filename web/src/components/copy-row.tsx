@@ -45,7 +45,7 @@ export function CopyRow({
         className,
       )}
     >
-      <code className="text-foreground flex-1 font-mono text-[13px] break-all">
+      <code className="text-foreground flex-1 font-mono text-[13px] break-all [font-variant-ligatures:none]">
         {displayText}
       </code>
       {maskable ? (

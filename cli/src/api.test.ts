@@ -84,6 +84,50 @@ test("workspace exports derive one idempotency key per workspace path", async (c
   assert.notEqual(keys[0], keys[2], "each path is its own export operation");
 });
 
+test("workspace artifact downloads use a signed URL without forwarding credentials", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.url.includes("/workspace/exports/wsart_1/download")) {
+        return Response.json({
+          url: "https://objects.example.test/artifact?signature=test",
+          expiresAt: "2026-09-25T20:00:00.000Z",
+        });
+      }
+      return new Response(new Uint8Array([1, 2, 3]));
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+  const response = await client.workspaceArtifactContent({
+    sessionId: "ses",
+    id: "wsart_1",
+  });
+  assert.deepEqual(
+    new Uint8Array(await response.arrayBuffer()),
+    new Uint8Array([1, 2, 3]),
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[0]?.url,
+    "https://app.opencomputer.dev/api/managed-agents/sessions/ses/workspace/exports/wsart_1/download",
+  );
+  assert.equal(requests[0]?.redirect, "manual");
+  assert.equal(requests[0]?.headers.get("x-api-key"), "test");
+  assert.equal(
+    requests[1]?.url,
+    "https://objects.example.test/artifact?signature=test",
+  );
+  assert.equal(requests[1]?.redirect, "error");
+  assert.equal(requests[1]?.headers.get("x-api-key"), null);
+});
+
 test("memory documents travel with their ETag and send it back as a precondition", async (context) => {
   const requests: Request[] = [];
   const document = {
@@ -373,4 +417,31 @@ test("database queries use the project read endpoint with positional parameters"
     sql: "SELECT id FROM records WHERE name = ? LIMIT ?",
     parameters: ["pricing", 20],
   });
+});
+
+test("session list sends exact filters, the page size and the cursor as query parameters", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    return Response.json({ sessions: [], nextCursor: null });
+  });
+  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" });
+
+  await client.sessions();
+  await client.sessions({
+    status: "suspended",
+    agent: "reviewer",
+    externalReference: "order 42/α",
+    limit: 2,
+    cursor: "eyJjIjoxfQ",
+  });
+
+  assert.equal(new URL(requests[0]!.url).search, "");
+  const query = new URL(requests[1]!.url).searchParams;
+  assert.equal(query.get("status"), "suspended");
+  assert.equal(query.get("agentId"), "reviewer");
+  assert.equal(query.get("externalReference"), "order 42/α");
+  assert.equal(query.get("limit"), "2");
+  assert.equal(query.get("cursor"), "eyJjIjoxfQ");
 });

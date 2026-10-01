@@ -47,6 +47,8 @@ Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
+  opencomputer billing
+  opencomputer upgrade [pro|max]
   opencomputer agents
   opencomputer init <directory|.>
   opencomputer template validate [directory] [--repository-url <url>] [--app-url <url>]
@@ -66,7 +68,8 @@ Usage:
       --memory binds a document (read-write by default) or a collection; --create-document
       creates each bound document that does not exist yet; with --idempotency-key a retry
       returns the same session and, with a prompt, the same first turn
-  opencomputer session list
+  opencomputer session list [--status <status>] [--agent <agent-id>] [--external-reference <ref>]
+      [--limit <1-100>] [--cursor <next-cursor>]
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
   opencomputer session send <session-id> <prompt> [--keep]
@@ -75,7 +78,7 @@ Usage:
       lists the files under the session's /workspace
   opencomputer session files download <session-id> <workspace-path> [dest]
   opencomputer session files download <session-id> --all [dest-dir]
-      exports the file(s) provider-side, streams the retained copy to disk and
+      streams the versioned workspace file(s) directly to disk and
       verifies size and SHA-256 against the manifest before saving; "cp" is an alias
   opencomputer secrets set <name> --value-stdin [--environment development|production] [--agent <agent>|current] [--local-agent <local-agent>]
   opencomputer secrets list [--environment development|production] [--agent <agent>|current]

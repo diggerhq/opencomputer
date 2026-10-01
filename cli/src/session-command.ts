@@ -12,6 +12,7 @@ export type SessionCommand = {
   action: SessionAction;
   args: string[];
   keep: boolean;
+  /** `--agent`: the project agent to create on, or the agent id to list by. */
   agent?: string;
   /** `--local-agent`: the project member whose source `--agent` maps to. */
   localAgent?: string;
@@ -151,6 +152,44 @@ const CREATE_ONLY_OPTIONS = [
   "--turn-idempotency-key",
 ] as const;
 
+const SESSION_LIST_MAX_LIMIT = 100;
+
+/**
+ * The filters of `session list`: `--status`, `--external-reference`,
+ * `--limit` and `--cursor` (`--agent` is taken with the command). Each is an
+ * exact match; the values are sent as given and the API answers `400` for
+ * one it does not accept. Consumes the options it recognises from `args`.
+ */
+export function parseSessionListOptions(args: string[]): {
+  status?: string;
+  externalReference?: string;
+  cursor?: string;
+  limit?: number;
+} {
+  const status = takeValueOption(args, "--status");
+  if (status === "") throw new Error("--status requires a value");
+  const externalReference = takeValueOption(args, "--external-reference");
+  if (externalReference === "") {
+    throw new Error("--external-reference requires a value");
+  }
+  const cursor = takeValueOption(args, "--cursor");
+  if (cursor === "") throw new Error("--cursor requires a value");
+  const limitValue = takeValueOption(args, "--limit");
+  let limit: number | undefined;
+  if (limitValue !== undefined) {
+    limit = /^\d+$/.test(limitValue) ? Number.parseInt(limitValue, 10) : NaN;
+    if (!Number.isInteger(limit) || limit < 1 || limit > SESSION_LIST_MAX_LIMIT) {
+      throw new Error(`--limit must be a whole number from 1 to ${SESSION_LIST_MAX_LIMIT}`);
+    }
+  }
+  return {
+    ...(status !== undefined ? { status } : {}),
+    ...(externalReference !== undefined ? { externalReference } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
 export function parseSessionCommand(rawArgs: string[]): SessionCommand {
   const deprecated = rawArgs.find((argument) =>
     DEPRECATED_ROUTING_OPTIONS.some(
@@ -185,8 +224,8 @@ export function parseSessionCommand(rawArgs: string[]): SessionCommand {
     shorthand && ACTIONS.has(shorthand)
       ? (args.shift()! as SessionAction)
       : "create";
-  if (agent && action !== "create") {
-    throw new Error("--agent is only supported when creating a session.");
+  if (agent && action !== "create" && action !== "list") {
+    throw new Error("--agent is only supported when creating or listing sessions.");
   }
   for (const name of CREATE_ONLY_OPTIONS) {
     if (createOnly[name] && action !== "create") {

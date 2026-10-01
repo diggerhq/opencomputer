@@ -32,21 +32,40 @@ debug inspector.
 ## Finding sessions
 
 Give a session labels when you create it, such as the ticket, repository or
-user it works for, and list sessions by project, environment, agent, status
-and label instead of keeping your own index of session ids. The list returns
-rows with the session's status, its current turn activity and its latest
-result; open a session for its turns and events. The query, the row shape and
-the label bounds are on the [API reference](/agents/api#get-and-list).
+user it works for, and list sessions by project, environment, agent,
+deployment, status, creation or update time and label instead of keeping
+your own index of session ids. The list returns rows with the session's
+status, its current turn activity and its latest result, and never the
+prompts or messages; open a session for its turns and events. The query, the
+row shape and the label bounds are on the [API
+reference](/agents/api#get-and-list).
+
+When one session stands for one record in your application, give it that
+record's id as its `externalReference` at creation. The reference is stored
+as given, returned on the session and its lifecycle events, and is an exact
+list filter: after a lost create response, retry with the same request key
+first, then `GET /sessions?externalReference=<ref>` finds the session
+however many unrelated sessions have been created since. Retrying the key
+with a different reference is refused, so a record cannot be attached to
+the wrong session. Bounds and semantics are on the [API
+reference](/agents/api#external-references).
+
+The list is paged: at most 100 rows per request, 50 by default, newest
+created first. Follow `nextCursor` with the same filters until it is
+`null`; every session matching the filters appears exactly once, however
+many were created in the same instant. The [TypeScript
+client](/reference/typescript-sdk/agents#sessions) does this for you with
+`sessions.iterate(filters)`.
 
 ## Execution, labels and results
 
 These describe different parts of a session:
 
-| Field | What it answers |
-| --- | --- |
-| `status` and `activity` | Is work queued, running, stopping or finished? |
-| `labels` | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work. |
-| `result` | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
+| Field                   | What it answers                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status` and `activity` | Is work queued, running, stopping or finished?                                                                                                                                  |
+| `labels`                | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work.                                             |
+| `result`                | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
 
 A report does not finish a turn, and each report replaces the whole result.
 Later work can run, fail or be cancelled while an earlier result remains.
@@ -108,6 +127,19 @@ npm run session -- attach <session-id>
 npm run session -- send <session-id> "Continue"
 npm run session -- end <session-id>
 ```
+
+`list` shows the newest sessions first, one page at a time; narrow it with
+exact filters and continue from the cursor the previous page printed. With
+`--json` the page is printed as `{ sessions, nextCursor }` for scripts:
+
+```bash
+opencomputer session list --status suspended --agent reviewer --limit 20
+opencomputer session list --external-reference order-42 --json
+opencomputer session list --limit 2 --cursor <next-cursor> --json
+```
+
+`--agent` takes the agent's id, `--limit` is 1 to 100, and `--cursor`
+continues only with the filters that produced it.
 
 Bind [memory](/agents/memory) documents when creating a session; add
 `--create-document` to create the ones that do not exist yet:
@@ -174,10 +206,14 @@ same `session` and `turn` objects with `"complete": true`.
 ### Workspace files
 
 Files an agent writes under `/workspace` (reports, captures, screenshots, tool
-output) can be listed and downloaded with `session files`. Downloads never pass
-through the model or the session transcript: OpenComputer exports the file into
-provider-owned storage, records its byte count and SHA-256, and the CLI streams
-that retained copy to disk, verifying both before the file is saved.
+output) can be listed and downloaded with `session files`. Newly written files
+appear gradually and may take a few moments to finish syncing. Refresh or list
+the workspace again if a file has just been created.
+
+Downloads never pass through the model or the session transcript: OpenComputer
+authorizes the exact versioned workspace object for a short-lived direct
+download through its file-delivery edge. The CLI streams that object to disk,
+checks its byte count, and computes SHA-256 locally before the file is saved.
 
 ```bash
 # List the files in the session's /workspace
@@ -191,17 +227,18 @@ opencomputer session files download <session-id> /workspace/captures/run.har ./e
 # Download the whole workspace, mirroring its layout
 opencomputer session files download <session-id> --all ./workspace-copy
 
-# Machine-readable output with artifactId, size and sha256 per file
+# Machine-readable output with size and locally computed sha256 per file
 opencomputer session files download <session-id> --all ./workspace-copy --json
 ```
 
 `cp` is an alias for `download`. Workspace paths may be written relative to
 `/workspace` or with the `/workspace/` prefix; paths that leave the workspace
 are refused before any request is made. Each download is written to a
-temporary file and renamed into place only after the size and SHA-256 match
-the export manifest, so an interrupted or corrupted transfer never leaves a
-partial file behind. Retained copies remain downloadable after the session
-ends, from the CLI, the session page's **Files** tab, or the
+temporary file and renamed into place only after the expected byte count is
+received; SHA-256 is reported from the completed local file. An interrupted
+transfer never leaves a partial file behind. The versioned S3-backed workspace
+remains the source of the file in the
+CLI, the session page's **Files** tab, and the
 [playground debug inspector](/agents/playground).
 
 ## From an application

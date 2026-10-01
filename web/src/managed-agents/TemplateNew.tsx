@@ -1,8 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ExternalLink, FolderGit2, Loader2, Rocket } from 'lucide-react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
+import { loginPathForReturn } from '@/lib/login-path'
+import { useAuth } from '@/hooks/useAuth'
 import { PageHeader } from '@/components/page-header'
 import {
   Panel,
@@ -46,6 +48,9 @@ async function waitForInstallation(id: string) {
 
 export default function TemplateNew() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { user } = useAuth()
+  const anonymous = !user
   const [searchParams] = useSearchParams()
   const repositoryUrl = searchParams.get('repository-url')?.trim() ?? ''
   const quickStart = searchParams.get('quick-start') === '1'
@@ -160,6 +165,12 @@ export default function TemplateNew() {
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    if (anonymous) {
+      window.location.assign(
+        loginPathForReturn(location.pathname + location.search),
+      )
+      return
+    }
     install.mutate()
   }
 
@@ -232,6 +243,12 @@ export default function TemplateNew() {
             : reviewed.template.description
         }
       />
+      {anonymous ? (
+        <p className="text-muted-foreground text-sm">
+          Sign in or create a free account to configure and deploy this template
+          to your own project.
+        </p>
+      ) : null}
       {!quickStart ? (
         <Panel>
           <PanelHeader>
@@ -269,7 +286,8 @@ export default function TemplateNew() {
             <Input
               value={projectName}
               onChange={(event) => setProjectName(event.target.value)}
-              autoFocus={quickStart}
+              disabled={anonymous}
+              autoFocus={quickStart && !anonymous}
               onFocus={(event) => {
                 if (quickStart) event.currentTarget.select()
               }}
@@ -290,6 +308,7 @@ export default function TemplateNew() {
               <Input
                 type="password"
                 autoComplete="off"
+                disabled={anonymous}
                 value={secrets[requirement.name] ?? ''}
                 onChange={(event) =>
                   setSecrets((current) => ({
@@ -312,6 +331,7 @@ export default function TemplateNew() {
               <Input
                 value={variables[requirement.name] ?? ''}
                 placeholder={requirement.example}
+                disabled={anonymous}
                 required={requirement.required}
                 onChange={(event) =>
                   setVariables((current) => ({
@@ -328,10 +348,11 @@ export default function TemplateNew() {
         <Button
           type="submit"
           disabled={
-            !projectName.trim() ||
-            missingSecret ||
-            missingRequiredVariable ||
-            install.isPending
+            !anonymous &&
+            (!projectName.trim() ||
+              missingSecret ||
+              missingRequiredVariable ||
+              install.isPending)
           }
         >
           {install.isPending ? (
@@ -339,13 +360,15 @@ export default function TemplateNew() {
           ) : (
             <Rocket />
           )}
-          {install.isPending
-            ? quickStart
-              ? 'Creating…'
-              : 'Deploying…'
-            : quickStart
-              ? 'Create agent'
-              : 'Deploy to Development'}
+          {anonymous
+            ? 'Sign in to deploy'
+            : install.isPending
+              ? quickStart
+                ? 'Creating…'
+                : 'Deploying…'
+              : quickStart
+                ? 'Create agent'
+                : 'Deploy to Development'}
         </Button>
       </div>
     </form>

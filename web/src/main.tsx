@@ -1,6 +1,10 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
@@ -11,9 +15,26 @@ import {
   DefaultErrorFallback,
 } from './components/error-boundary'
 import { reloadForStaleChunk } from './lib/chunk-reload'
+import { ME_QUERY_KEY } from './hooks/useAuth'
+import { ApiError } from './api/errors'
 import './index.css'
 
+// When the dashboard session expires (laptop sleep, cookie TTL), the polling
+// queries are the first to see the 401 — ['me'] keeps serving its cached user,
+// so ProtectedRoute never redirects and screens render "not found" instead.
+// Drop the cached user on any 401 so the auth gate re-checks and sends the
+// user to login. Skipped when no user is cached: ['me'] itself failing with
+// 401 is the normal signed-out state and must not loop.
+const queryCache = new QueryCache({
+  onError: (error) => {
+    if (!(error instanceof ApiError) || error.status !== 401) return
+    if (queryClient.getQueryData(ME_QUERY_KEY) === undefined) return
+    void queryClient.resetQueries({ queryKey: ME_QUERY_KEY, exact: true })
+  },
+})
+
 const queryClient = new QueryClient({
+  queryCache,
   defaultOptions: {
     queries: {
       retry: 1,

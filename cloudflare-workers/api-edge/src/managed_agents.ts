@@ -259,7 +259,11 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : "The agent request was invalid.";
+        : backendCode === "invalid_external_reference"
+          ? "externalReference must be a non-empty string of at most 256 bytes of UTF-8 without control characters."
+          : backendCode === "invalid_cursor"
+            ? "The cursor is invalid or was issued for different filters. Start again from the first page."
+            : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -1095,6 +1099,19 @@ function publicSessionSnapshot(value: unknown): unknown {
   );
 }
 
+/**
+ * The caller's own `externalReference`, when the session has one. The value is
+ * the caller's opaque string and is read from the source, never from a
+ * stripped copy, for the same reason labels are.
+ */
+function ownerExternalReference(
+  source: Record<string, unknown>,
+): { externalReference: string } | Record<never, never> {
+  return typeof source.externalReference === "string"
+    ? { externalReference: source.externalReference }
+    : {};
+}
+
 /** One list row as documented: nothing private is in it, and the labels and result are the owner's. */
 function publicSessionSummary(value: unknown): unknown {
   const source = record(value);
@@ -1109,6 +1126,7 @@ function publicSessionSummary(value: unknown): unknown {
     source: row.source,
     status: row.status,
     labels: ownerLabels(source),
+    ...ownerExternalReference(source),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     revision: row.revision,
@@ -1383,13 +1401,114 @@ function publicEventData(
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
-  if (type === "session.failed" || type === "turn.failed") {
+  if (type === "session.failed") {
+    return {
+      ...publicFailure(value),
+      ...ownerExternalReference(record(value) ?? {}),
+    };
+  }
+  if (type === "turn.failed") {
     return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(
     Object.entries(data).filter(([key]) => !PRIVATE_EVENT_KEYS.has(key)),
   );
+}
+
+export function publicEvent(value: unknown): Record<string, unknown> {
+  const event = record(value) ?? {};
+  const type = typeof event.type === "string" ? event.type : "";
+  return {
+    id: event.id,
+    seq: event.seq,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    turnId: event.turnId,
+    type,
+    data: publicEventData(type, event.data),
+  };
+}
+
+const SESSION_CONNECT_ROUTE = /^\/sessions\/[^/]+\/connect$/;
+
+// Live session stream. The browser opens a WebSocket against the edge; the
+// edge opens the backend's client socket and relays frames, applying the same
+// redaction as GET /events to every event. Only keepalive pings travel
+// upstream: turns are admitted over REST, where the credit gate lives.
+function relaySessionSocket(upstream: WebSocket): Response {
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+  server.accept();
+  upstream.accept();
+
+  const closeBoth = (code: number, reason: string) => {
+    for (const socket of [server, upstream]) {
+      try {
+        socket.close(code, reason);
+      } catch {
+        // Already closed.
+      }
+    }
+  };
+
+  upstream.addEventListener("message", (message) => {
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(
+        JSON.parse(
+          typeof message.data === "string"
+            ? message.data
+            : new TextDecoder().decode(message.data as ArrayBuffer),
+        ),
+      );
+    } catch {
+      return;
+    }
+    if (!frame) return;
+    if (frame.type === "event") {
+      server.send(
+        JSON.stringify({ type: "event", event: publicEvent(frame.event) }),
+      );
+    } else if (frame.type === "ready" || frame.type === "pong") {
+      server.send(JSON.stringify(frame));
+    } else if (frame.type === "error") {
+      server.send(
+        JSON.stringify({
+          type: "error",
+          code: typeof frame.code === "string" ? frame.code : "stream_error",
+          message: "The session stream reported an error.",
+        }),
+      );
+    }
+  });
+  upstream.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  upstream.addEventListener("error", () => closeBoth(1011, "upstream error"));
+
+  server.addEventListener("message", (message) => {
+    if (typeof message.data !== "string") return;
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(JSON.parse(message.data));
+    } catch {
+      return;
+    }
+    if (frame?.type === "ping") upstream.send(JSON.stringify({ type: "ping" }));
+  });
+  server.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  server.addEventListener("error", () => closeBoth(1011, "client error"));
+
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 function publicTemplateInspection(value: unknown): Record<string, unknown> {
@@ -1842,6 +1961,7 @@ function publicSuccessBody(
         executionMode: session.executionMode,
         status: session.status,
         createdAt: session.createdAt,
+        ...ownerExternalReference(session),
       },
       deployment: body.deployment
         ? publicDeployment(body.deployment)
@@ -1850,21 +1970,7 @@ function publicSuccessBody(
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return {
-      events: Array.isArray(body.events)
-        ? body.events.map((value) => {
-            const event = record(value) ?? {};
-            const type = typeof event.type === "string" ? event.type : "";
-            return {
-              id: event.id,
-              seq: event.seq,
-              timestamp: event.timestamp,
-              sessionId: event.sessionId,
-              turnId: event.turnId,
-              type,
-              data: publicEventData(type, event.data),
-            };
-          })
-        : [],
+      events: Array.isArray(body.events) ? body.events.map(publicEvent) : [],
     };
   }
   if (method === "POST" && /\/turns$/.test(suffix)) {
@@ -1912,6 +2018,37 @@ function publicSuccessBody(
     };
   }
   if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.path !== "string" ||
+      typeof body.size !== "number" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return {
+      path: body.path,
+      size: body.size,
+      etag: typeof body.etag === "string" ? body.etag : null,
+      versionId: typeof body.versionId === "string" ? body.versionId : null,
+      lastModified:
+        typeof body.lastModified === "string" ? body.lastModified : null,
+      mediaType:
+        typeof body.mediaType === "string"
+          ? body.mediaType
+          : "application/octet-stream",
+      url: url.toString(),
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/exports$/.test(suffix)
   ) {
@@ -1936,6 +2073,22 @@ function publicSuccessBody(
         : {}),
       artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
     };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return { url: url.toString(), expiresAt: body.expiresAt };
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -2402,9 +2555,16 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
   }
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) return true;
   if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
   ) {
     return true;
   }
@@ -2416,7 +2576,9 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     method === "GET" &&
-    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
+      suffix,
+    )
   ) {
     return true;
   }
@@ -2799,6 +2961,55 @@ export async function handleAgentWebhookInvocation(
   }
 }
 
+// Anonymous template preview: the dashboard shows a template's deploy form
+// before sign-up, so inspection is proxied without an org assertion to the
+// backend's public route. Installation still requires an authenticated caller.
+export async function proxyPublicTemplateInspection(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method.toUpperCase() !== "POST") {
+    return Response.json({ error: "method not allowed" }, { status: 405 });
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/public/template-inspections`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return Response.json(
+      { error: "managed agents upstream must use HTTPS" },
+      { status: 503 },
+    );
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers: copyRequestHeaders(request),
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    return publicSuccessResponse(
+      upstream,
+      "POST",
+      "/template-inspections",
+      new URL(request.url).origin,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.upstream_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      { error: "managed agents service is unavailable" },
+      { status: 502 },
+    );
+  }
+}
+
 export async function proxyManagedAgents(
   request: Request,
   env: ManagedAgentsEnv,
@@ -2913,6 +3124,39 @@ export async function proxyManagedAgents(
     );
   }
   const headers = copyRequestHeaders(request);
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return Response.json(
+        { error: "expected a WebSocket upgrade" },
+        { status: 426 },
+      );
+    }
+    target.searchParams.set("role", "client");
+    headers.set("upgrade", "websocket");
+    headers.set(
+      "x-opencomputer-agent-token",
+      await mintManagedAgentsAssertion(env.OC_MANAGED_AGENTS_SECRET, caller),
+    );
+    try {
+      const upstream = await fetch(target, { method: "GET", headers });
+      if (upstream.status !== 101 || !upstream.webSocket) {
+        return publicErrorResponse(upstream);
+      }
+      return relaySessionSocket(upstream.webSocket);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "managed_agents.upstream_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Response.json(
+        { error: "managed agents service is unavailable" },
+        { status: 502 },
+      );
+    }
+  }
   const memoryRoute = isMemoryRoute(method, suffix);
   if (memoryRoute) {
     for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
@@ -2952,6 +3196,34 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
+    if (
+      method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix) &&
+      upstream.status === 302
+    ) {
+      const value = upstream.headers.get("location");
+      let location: URL;
+      try {
+        location = new URL(value ?? "");
+      } catch {
+        throw new Error("Invalid workspace download redirect");
+      }
+      if (
+        location.protocol !== "https:" ||
+        location.username ||
+        location.password
+      ) {
+        throw new Error("Invalid workspace download redirect");
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: location.toString(),
+          "cache-control": "private, no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
     if (!upstream.ok) return publicErrorResponse(upstream);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (

@@ -99,6 +99,70 @@ describe("OpenComputer client", () => {
     expect(api.last().path).toBe("/api/managed-agents/sessions");
   });
 
+  it("sends externalReference on create and reads it back from the session, the row and the create answer", async () => {
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions": (call) => Response.json(
+        { session: { id: "ses_1", status: "connecting", createdAt: "t", externalReference: (call.body as { externalReference: string }).externalReference } },
+        { status: 201 },
+      ),
+      "GET /api/managed-agents/sessions/ses_1": () => Response.json({
+        id: "ses_1", agentId: "worker", deploymentId: "dep_1", status: "idle", source: "api", turns: [],
+        externalReference: "order/42", createdAt: "t", updatedAt: "t",
+      }),
+    });
+    const client = oc(api);
+    const created = await client.sessions.create({ agentId: "worker", externalReference: "order/42" }, { idempotencyKey: "k1" });
+    expect(api.last()).toMatchObject({ body: { agentId: "worker", externalReference: "order/42" }, headers: { "idempotency-key": "k1" } });
+    expect(created.session.externalReference).toBe("order/42");
+    expectTypeOf(created.session.externalReference).toEqualTypeOf<string | undefined>();
+    expect((await client.sessions.get("ses_1")).externalReference).toBe("order/42");
+  });
+
+  it("sends every exact filter of the list and walks all pages with iterate, stopping at nextCursor null", async () => {
+    const row = (id: string, externalReference?: string) => ({
+      id, projectId: "prj_1", agentId: "worker", deploymentId: "dep_1", environment: "development", source: "api", status: "idle",
+      labels: {}, ...(externalReference === undefined ? {} : { externalReference }), createdAt: "t", updatedAt: "t", revision: 1,
+      activity: { activeTurnId: null, queued: 0, lastSettledTurn: null }, result: null,
+    });
+    const pages: Record<string, { sessions: unknown[]; nextCursor: string | null }> = {
+      first: { sessions: [row("ses_5", "order/5"), row("ses_4")], nextCursor: "c2" },
+      c2: { sessions: [row("ses_3"), row("ses_2", "order/2")], nextCursor: "c3" },
+      c3: { sessions: [row("ses_1")], nextCursor: null },
+    };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions": (call) => {
+        const cursor = new URL(`https://x${call.path}`).searchParams.get("cursor") ?? "first";
+        return Response.json(pages[cursor]);
+      },
+    });
+    const filters = {
+      projectId: "prj_1", environment: "development" as const, agentId: "worker", status: "idle" as const,
+      deploymentId: "dep_1", externalReference: "order/5", createdAfter: "2026-09-24T00:00:00Z",
+      createdBefore: "2026-09-25T00:00:00Z", updatedAfter: "2026-09-24T12:00:00Z", labels: { team: "a" },
+    };
+    const page = await oc(api).sessions.list({ ...filters, limit: 2 });
+    expect(page.sessions[0]?.externalReference).toBe("order/5");
+    expect(page.sessions[1]).not.toHaveProperty("externalReference");
+    expect(Object.fromEntries(new URL(`https://x${api.last().path}`).searchParams.entries())).toEqual({
+      projectId: "prj_1", environment: "development", agentId: "worker", status: "idle", deploymentId: "dep_1",
+      externalReference: "order/5", createdAfter: "2026-09-24T00:00:00Z", createdBefore: "2026-09-25T00:00:00Z",
+      updatedAfter: "2026-09-24T12:00:00Z", "label.team": "a", limit: "2",
+    });
+
+    const seen: string[] = [];
+    for await (const session of oc(api).sessions.iterate({ status: "idle", limit: 2 })) seen.push(session.id);
+    expect(seen).toEqual(["ses_5", "ses_4", "ses_3", "ses_2", "ses_1"]);
+    const cursors = api.calls.slice(1).map((call) => new URL(`https://x${call.path}`).searchParams.get("cursor"));
+    expect(cursors).toEqual([null, "c2", "c3"]);
+    for (const call of api.calls.slice(1)) {
+      expect(new URL(`https://x${call.path}`).searchParams.get("status")).toBe("idle");
+    }
+
+    const resumed: string[] = [];
+    for await (const session of oc(api).sessions.iterate({ cursor: "c3" })) resumed.push(session.id);
+    expect(resumed).toEqual(["ses_1"]);
+  });
+
   it("sends a turn with its key as the Idempotency-Key header, its mode and payload, and reads the receipt from 202 and 200", async () => {
     let duplicate = false;
     const api = fakeApi({
