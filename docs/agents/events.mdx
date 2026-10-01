@@ -47,6 +47,10 @@ unknown type as informational and keep reading.
 | `session.ended` | The session accepts no more turns; queued and running turns were marked cancelled. Memory revocation and remote cleanup may still be pending. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
 
+When the session was created with an [external
+reference](/agents/api#external-references), every `session.*` event's
+`data` also carries it as `externalReference`.
+
 `stopping` follows an [interrupt](/agents/api#end-and-interrupt) or an
 interrupt-mode turn: the session stays there until the stopped turn's
 commands are confirmed stopped or its computer is terminated, then `idle`
