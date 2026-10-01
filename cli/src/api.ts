@@ -676,15 +676,25 @@ export class OpenComputerClient {
     );
   }
 
-  async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {
+  async inspectTemplate(
+    repositoryUrl: string,
+    options?: { refresh?: boolean },
+  ): Promise<TemplateInspection> {
     const deadline = Date.now() + 10 * 60_000;
+    // `refresh` goes on the first request only: sending it while polling would
+    // restart the rebuild the flag kicked off.
+    let first = true;
     for (;;) {
       const result = await this.request<
         TemplateInspection | TemplateInspectionPreparing
       >("/api/managed-agents/template-inspections", {
         method: "POST",
-        body: JSON.stringify({ repositoryUrl }),
+        body: JSON.stringify({
+          repositoryUrl,
+          ...(first && options?.refresh ? { refresh: true } : {}),
+        }),
       });
+      first = false;
       if ((result as TemplateInspectionPreparing).status !== "preparing") {
         return result as TemplateInspection;
       }

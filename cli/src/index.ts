@@ -53,7 +53,7 @@ Usage:
   opencomputer init <directory|.>
   opencomputer template validate [directory] [--repository-url <url>] [--app-url <url>]
   opencomputer template build [directory] [--output <path>]
-  opencomputer template deploy <repository-url> [--project-name <name>] [--directory <path>]
+  opencomputer template deploy <repository-url> [--project-name <name>] [--directory <path>] [--refresh]
   opencomputer template clone <repository-url> --commit <sha> --project <id> [--directory <path>]
   opencomputer project clone <project-id> [--directory <path>]
   opencomputer link (--project <id|slug> | --create-project <name>)
