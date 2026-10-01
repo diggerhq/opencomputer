@@ -1349,6 +1349,10 @@ export class OpenComputerClient {
         permissions: Record<string, "read" | "write">;
       };
     }>;
+    linearConnections: Array<{
+      id: string;
+      provider: { kind: "linear-agent" };
+    }>;
     memory: MemoryDeclaration[];
     models: Array<{ provider: string; model: string }>;
     projectDeployment?: {

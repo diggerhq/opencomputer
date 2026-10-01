@@ -41,6 +41,7 @@ export interface BuiltAgentArtifact {
   connections: string[];
   httpConnections: HttpConnectionManifest[];
   githubConnections: GitHubConnectionManifest[];
+  linearConnections: LinearConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
   body: Buffer;
@@ -92,6 +93,19 @@ export interface GitHubConnectionManifest {
     permissions: Record<string, GitHubAppPermission>;
   };
 }
+
+/**
+ * `defineConnection({ id, provider: linearAgent() })`: Linear's GraphQL API as
+ * the agent's own Linear app. The provider has no options; the token is the
+ * environment's Linear connection bound to the agent, attached at egress.
+ */
+export interface LinearConnectionManifest {
+  id: string;
+  provider: { kind: "linear-agent" };
+}
+
+/** The platform's question tool. Selected with useTool("ask"); no defined tool may take the id. */
+const ASK_TOOL = "ask";
 
 export interface McpServerManifest {
   id: string;
@@ -2647,12 +2661,22 @@ const GITHUB_APP_PERMISSION_KEYS = new Set([
   "pull_requests",
 ]);
 
-function definedGitHubConnections(
+/**
+ * Connections whose provider the platform holds the credential for:
+ * `githubApp({ permissions })` and `linearAgent()`. Each must be written as
+ * an inline call in the `defineConnection()` literal, so the deployment can
+ * record the provider without running the module.
+ */
+function definedProviderConnections(
   source: string,
   path: string,
-): GitHubConnectionManifest[] {
+): {
+  github: GitHubConnectionManifest[];
+  linear: LinearConnectionManifest[];
+} {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   const definitions: GitHubConnectionManifest[] = [];
+  const linear: LinearConnectionManifest[] = [];
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -2672,6 +2696,23 @@ function definedGitHubConnections(
         objectProperty(input, "id"),
         "connection id",
       );
+      const providerCall =
+        ts.isCallExpression(providerExpression) &&
+        ts.isIdentifier(providerExpression.expression)
+          ? providerExpression
+          : undefined;
+      const providerName = providerCall
+        ? (providerCall.expression as ts.Identifier).text
+        : undefined;
+      if (
+        !providerCall ||
+        (providerName !== "githubApp" && providerName !== "linearAgent")
+      ) {
+        throw new Error(
+          `Connection ${id} provider must be an inline githubApp() or linearAgent() call`,
+        );
+      }
+      const providerLabel = providerName === "githubApp" ? "GitHub" : "Linear";
       for (const property of input.properties) {
         if (!ts.isPropertyAssignment(property)) {
           throw new Error(
@@ -2681,21 +2722,22 @@ function definedGitHubConnections(
         const name = staticPropertyName(property.name, `Connection ${id}`);
         if (name !== "id" && name !== "provider") {
           throw new Error(
-            `GitHub connection ${id} does not support the ${name} option`,
+            `${providerLabel} connection ${id} does not support the ${name} option`,
           );
         }
       }
-      if (
-        !ts.isCallExpression(providerExpression) ||
-        !ts.isIdentifier(providerExpression.expression) ||
-        providerExpression.expression.text !== "githubApp"
-      ) {
-        throw new Error(
-          `Connection ${id} provider must be an inline githubApp() call`,
-        );
+      if (providerName === "linearAgent") {
+        // The provider has no options: the Linear workspace and app are the
+        // environment's connection bound to the agent, never the source.
+        if (providerCall.arguments.length > 0) {
+          throw new Error(`Connection ${id} linearAgent() takes no options`);
+        }
+        linear.push({ id, provider: { kind: "linear-agent" } });
+        ts.forEachChild(node, visit);
+        return;
       }
       const options = literalCallArgument(
-        providerExpression,
+        providerCall,
         `Connection ${id} githubApp()`,
       );
       if (!options) {
@@ -2777,7 +2819,7 @@ function definedGitHubConnections(
     ts.forEachChild(node, visit);
   };
   visit(file);
-  return definitions;
+  return { github: definitions, linear };
 }
 
 interface DefinedTool {
@@ -3190,6 +3232,8 @@ export const githubApp = (options) => {
   }
   return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
 };
+export const linearAgent = () => Object.freeze({ kind: "linear-agent" });
+export const ASK_TOOL = "ask";
 export const callService = async (request) => {
   const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
   const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
@@ -3246,7 +3290,7 @@ export const listServices = async (options = {}) => {
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
   if (input.provider) {
-    if (input.provider.kind !== "github-app") throw new Error("defineConnection() received an unsupported provider");
+    if (input.provider.kind !== "github-app" && input.provider.kind !== "linear-agent") throw new Error("defineConnection() received an unsupported provider");
     return Object.freeze({ kind: "connection", id: connectionId, provider: input.provider });
   }
   const origin = new URL(input.origin);
@@ -3300,6 +3344,7 @@ export const defineMcpServer = (input) => {
 export const defineTool = (input) => {
   const toolId = id(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
+  if (toolId === ASK_TOOL) throw new Error("Tool id " + JSON.stringify(ASK_TOOL) + " is the platform's question tool; select it with useTool(" + JSON.stringify(ASK_TOOL) + ") and rename this tool");
   if (!String(input.description).trim()) throw new Error("defineTool requires a non-empty description");
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
@@ -3663,6 +3708,14 @@ the product or support surface presented to users.
       candidate.path,
       sourceResolver,
     );
+    // `ask` is the platform's question tool: the host registers it, and a
+    // defined tool of the same id would leave the model two tools under one
+    // name. defineTool() refuses it at load too; this fails the build first.
+    if (defined.some((tool) => tool.id === ASK_TOOL)) {
+      throw new Error(
+        `${candidate.path} defineTool(${JSON.stringify(ASK_TOOL)}): ${JSON.stringify(ASK_TOOL)} is the platform's question tool; select it with useTool(${JSON.stringify(ASK_TOOL)}) and rename this tool`,
+      );
+    }
     if (defined.length > 0) {
       reactiveTools.push(...defined.map((tool) => tool.id));
       gatedTools.push(
@@ -3720,10 +3773,20 @@ the product or support surface presented to users.
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
-  const githubConnections = sourceModules.flatMap((module) =>
-    definedGitHubConnections(module.source, module.path),
+  const providerConnections = sourceModules.map((module) =>
+    definedProviderConnections(module.source, module.path),
   );
-  const allConnections = [...httpConnections, ...githubConnections];
+  const githubConnections = providerConnections.flatMap(
+    (connections) => connections.github,
+  );
+  const linearConnections = providerConnections.flatMap(
+    (connections) => connections.linear,
+  );
+  const allConnections = [
+    ...httpConnections,
+    ...githubConnections,
+    ...linearConnections,
+  ];
   const duplicateConnection = allConnections.find(
     (connection, index) =>
       allConnections.findIndex(
@@ -3772,7 +3835,13 @@ the product or support surface presented to users.
   );
   const declaredMemory = new Set(memory.map((declaration) => declaration.id));
   const tools = [
-    ...new Set([...reactiveTools, ...literalHookIds(agentSource, "useTool")]),
+    ...new Set([
+      ...reactiveTools,
+      ...literalHookIds(agentSource, "useTool"),
+      // useTool(ASK_TOOL), the exported constant, selects the same tool as
+      // useTool("ask"); no defineTool() exists for it.
+      ...(/\buseTool\(\s*ASK_TOOL\s*\)/.test(agentSource) ? [ASK_TOOL] : []),
+    ]),
   ].sort();
   for (const id of literalHookIds(agentSource, "useMemory")) {
     if (!declaredMemory.has(id)) {
@@ -3816,6 +3885,7 @@ the product or support surface presented to users.
         ].sort(),
         httpConnections,
         githubConnections,
+        linearConnections,
         mcpServers: [
           ...new Set([
             ...mcpServerDefinitions.map((server) => server.id),
@@ -3866,12 +3936,14 @@ export async function buildAgentArtifact(
     connections?: string[];
     httpConnections?: HttpConnectionManifest[];
     githubConnections?: GitHubConnectionManifest[];
+    linearConnections?: LinearConnectionManifest[];
     memory?: MemoryDeclaration[];
     models?: Array<{ provider: string; model: string }>;
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const githubConnections = reactive.githubConnections ?? [];
+  const linearConnections = reactive.linearConnections ?? [];
   const memory = reactive.memory ?? [];
   const models = reactive.models ?? [];
   const body = Buffer.from(
@@ -3888,6 +3960,7 @@ export async function buildAgentArtifact(
     connections,
     httpConnections,
     githubConnections,
+    linearConnections,
     memory,
     models,
     body,

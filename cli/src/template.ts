@@ -7,6 +7,7 @@ import {
   readProjectResources,
   type GitHubConnectionManifest,
   type HttpConnectionManifest,
+  type LinearConnectionManifest,
   type MemoryDeclaration,
   type ProjectResourceManifest,
 } from "./project.js";
@@ -51,6 +52,7 @@ export interface TemplateBuildArtifact {
   connections: string[];
   httpConnections: HttpConnectionManifest[];
   githubConnections: GitHubConnectionManifest[];
+  linearConnections: LinearConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
 }
@@ -330,6 +332,7 @@ export async function buildTemplateProject(
       connections: built.connections,
       httpConnections: built.httpConnections,
       githubConnections: built.githubConnections,
+      linearConnections: built.linearConnections,
       memory: built.memory,
       models: built.models,
     });
