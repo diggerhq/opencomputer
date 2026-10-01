@@ -172,6 +172,15 @@ export interface SendTurnParams {
   mode?: TurnMode;
   /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON. */
   payload?: DataValue;
+  /**
+   * A per-turn host tool policy admitted with the turn, e.g.
+   * `{ version: 1, mode: "deny_all" }` or `{ version: 1, mode: "allow",
+   * allow: [{ tool: "sandbox_exec", maxCalls: 1, args: { command: "echo hi" } }] }`.
+   * Immutable once admitted: the API validates the document, enforces it
+   * before every tool dispatch for the turn, and binds it to the
+   * idempotency key — replaying the key with a different policy conflicts.
+   */
+  toolPolicy?: DataValue;
 }
 
 /** What a session's activity looks like from a list row. */

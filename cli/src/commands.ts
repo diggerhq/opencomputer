@@ -86,6 +86,18 @@ export interface GlobalOptions {
   json: boolean;
   verbose?: boolean;
   idempotencyKey?: string;
+  /** `--tool-policy` raw JSON: a per-turn tool policy admitted with the turn. */
+  toolPolicy?: string;
+}
+
+/** `--tool-policy` is JSON; the server validates the document itself. */
+export function parseToolPolicy(raw?: string): unknown {
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("--tool-policy must be a JSON document");
+  }
 }
 
 export function deploymentAlias(requestedAlias?: string): string {
@@ -611,6 +623,7 @@ async function sendAgentTurn(
   keep: boolean,
   json: boolean,
   idempotencyKey?: string,
+  toolPolicy?: unknown,
 ): Promise<{ turnId: string; output?: string }> {
   const existing = await client.events(sessionId, 0);
   let cursor = existing.at(-1)?.seq ?? 0;
@@ -628,7 +641,12 @@ async function sendAgentTurn(
     );
     cursor = connected.cursor;
   }
-  const turn = await client.createTurn(sessionId, prompt, idempotencyKey);
+  const turn = await client.createTurn(
+    sessionId,
+    prompt,
+    idempotencyKey,
+    toolPolicy,
+  );
   let streamedText = "";
   let completedText = "";
   const completed = await waitForEvent(
@@ -787,6 +805,7 @@ async function runAgent(
   verbose: boolean,
   idempotencyKey?: string,
   memory?: MemoryBindings,
+  toolPolicy?: unknown,
 ): Promise<unknown> {
   const created = await createSessionWithMemory(client, agent, memory);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -802,6 +821,7 @@ async function runAgent(
     created.session.id,
     prompt,
     idempotencyKey,
+    toolPolicy,
   );
   let streamed = false;
   let streamedText = "";
@@ -1406,6 +1426,8 @@ export async function runCommand(
       globals.json,
       globals.verbose === true,
       globals.idempotencyKey,
+      undefined,
+      parseToolPolicy(globals.toolPolicy),
     );
     const credits = await fetchCredits(client);
     if (globals.json) {
@@ -2698,6 +2720,7 @@ export async function runCommand(
           globals.verbose === true,
           globals.idempotencyKey,
           session.memory,
+          parseToolPolicy(globals.toolPolicy),
         );
         if (globals.json) {
           printJSON(
@@ -2770,6 +2793,7 @@ export async function runCommand(
         session.keep,
         globals.json,
         globals.idempotencyKey,
+        parseToolPolicy(globals.toolPolicy),
       );
       if (globals.json) {
         printJSON({ sessionId, ...result, status: "completed" });

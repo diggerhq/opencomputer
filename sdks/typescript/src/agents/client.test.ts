@@ -182,6 +182,14 @@ describe("OpenComputer client", () => {
       input: "Fix the login page.",
       payload: { repo: "acme/web", ref: "main" },
     });
+    await client.sessions.turns.send("ses_1", {
+      input: "Read only.",
+      toolPolicy: { version: 1, mode: "deny_all" },
+    });
+    expect(api.last().body).toEqual({
+      input: "Read only.",
+      toolPolicy: { version: 1, mode: "deny_all" },
+    });
     duplicate = true;
     expect(await client.sessions.turns.send("ses_1", { input: "again", mode: "steer" })).toEqual({
       turnId: "turn_1", status: "running", duplicate: true,
