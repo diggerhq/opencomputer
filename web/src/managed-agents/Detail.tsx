@@ -379,9 +379,16 @@ function PlaygroundChat({
       .slice(0, Math.max(room, 0))
     if (!accepted.length) return
     void Promise.all(accepted.map(imagePart))
-      .then((parts) =>
-        setImages((current) => [...current, ...parts].slice(0, IMAGE_LIMIT)),
-      )
+      .then((parts) => {
+        const unreadable = accepted.find((_, index) => !parts[index])
+        if (unreadable) {
+          setImageNotice(
+            `${unreadable.name || 'That file'} is not a PNG, JPEG, GIF or WebP image.`,
+          )
+        }
+        const readable = parts.filter((part) => part !== undefined)
+        setImages((current) => [...current, ...readable].slice(0, IMAGE_LIMIT))
+      })
       .catch((readError: unknown) =>
         notifyError("Couldn't read that image.", readError),
       )
