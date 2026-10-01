@@ -1,6 +1,6 @@
 ---
 title: "Connected services"
-description: "Call Google services, GitHub, and Linear with a credential the platform holds and refreshes"
+description: "Call Google services, GitHub, Linear, and Notion with a credential the platform holds and refreshes"
 ---
 
 Some credentials cannot be a secret you set. An OAuth token is short-lived,
@@ -57,7 +57,8 @@ connected. When several accounts are eligible, pass the label to select one;
 otherwise the call returns `409 connection_alias_required` and lists them.
 
 The provider segment in the URL is the grant, not the service — `google` for
-gmail, calendar, drive and sheets; `github` for GitHub; and `linear` for Linear.
+gmail, calendar, drive and sheets; `github` for GitHub; `linear` for Linear;
+`notion` for Notion; and `searchconsole` for Google Search Console.
 
 **Listing what is connected:**
 
@@ -127,8 +128,11 @@ without it, `listServices()` returns nothing.
 | `sheets` | `www.googleapis.com` | Google |
 | `github` | GitHub's API | GitHub |
 | `linear` | `api.linear.app/graphql` | Linear |
+| `notion` | `api.notion.com` | Notion |
+| `searchconsole` | `www.googleapis.com/webmasters/v3` | Google Search Console |
 
-The Google services share one grant; GitHub and Linear each have their own. A name outside that
+The Google services share one grant; GitHub, Linear, Notion, and Search Console
+each have their own. A name outside that
 list fails the build rather than the request.
 
 <Note>
@@ -215,6 +219,12 @@ Linear may report GraphQL errors in a successful HTTP response, so check both
 `response.ok` and `errors`. The Linear connection accepts only `POST /graphql`;
 other paths and methods fail at the broker.
 
+Notion allows reads of users, pages, blocks, databases, and data sources,
+`POST /v1/search`, database and data-source queries, and `POST /v1/pages`. It
+sends `notion-version: 2022-06-28` unless the request sets one. Search Console
+is read-only: site and sitemap listings, plus
+`POST /webmasters/v3/sites/{site}/searchAnalytics/query`.
+
 ## 4. Several accounts
 
 Accounts are connected and disconnected long after the artifact is built, so
@@ -250,7 +260,7 @@ export const sweep = defineTool({
 | `id` | The connection's id, for the disconnect route |
 | `label` | The alias it was connected under. Pass this as `label`. |
 | `displayName` | Who the account belongs to, e.g. the mailbox address |
-| `provider` | `google`, `github`, or `linear` |
+| `provider` | `google`, `github`, `linear`, `notion`, or `searchconsole` |
 | `scopes` | What was granted at consent |
 | `status` | `connected` accounts are usable |
 
@@ -265,7 +275,7 @@ A proxied request is not an unrestricted `fetch`.
 
 | | |
 | --- | --- |
-| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`; Linear is `POST` only |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`; Linear is `POST` only; Notion and Search Console allow only the routes listed above |
 | Request headers | Only `accept`, `content-type`, `if-match`, `if-none-match` |
 | Request body | 4 MB |
 | Response body | 4 MB |

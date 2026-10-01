@@ -105,6 +105,8 @@ export const SERVICE_CONNECTIONS = [
   "drive",
   "sheets",
   "linear",
+  "notion",
+  "searchconsole",
 ] as const;
 
 export function githubEnvironments(
@@ -1018,7 +1020,11 @@ export async function runCommand(
           `Target: Development\n\n`,
       );
     }
-    if (inspection.requirements.connections.length) {
+    if (
+      inspection.requirements.connections.some(
+        (requirement) => requirement.required !== false,
+      )
+    ) {
       throw new Error(
         "This template needs an interactive provider connection. Open its deploy URL in the dashboard to continue.",
       );

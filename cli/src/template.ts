@@ -80,6 +80,7 @@ export interface TemplateBuildBundle {
     connections: Array<{
       id: string;
       description?: string;
+      required: boolean;
     }>;
   };
 }
@@ -424,6 +425,7 @@ export async function buildTemplateProject(
           ...(requirement.description
             ? { description: requirement.description }
             : {}),
+          required: requirement.required ?? true,
         }),
       ),
     },

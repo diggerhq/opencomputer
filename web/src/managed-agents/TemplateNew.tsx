@@ -1,8 +1,22 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ExternalLink, FolderGit2, Loader2, Rocket } from 'lucide-react'
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  Check,
+  ExternalLink,
+  FolderGit2,
+  Loader2,
+  Plug,
+  Rocket,
+} from 'lucide-react'
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
+import { GithubMark } from '@/components/github-mark'
+import { ServiceLogo } from '@/components/service-logo'
 import { loginPathForReturn } from '@/lib/login-path'
 import { useAuth } from '@/hooks/useAuth'
 import { PageHeader } from '@/components/page-header'
@@ -20,9 +34,21 @@ import {
   finalizeManagedTemplateInstallation,
   getManagedTemplateInstallation,
   inspectManagedTemplate,
+  linkManagedAgentConnection,
   putAgentRuntimeVariable,
   putManagedProjectSecret,
 } from './api'
+import {
+  navigateAuthorizationWindow,
+  openAuthorizationWindow,
+} from './authorization-window'
+import {
+  loadTemplateConnections,
+  missingTemplateConnection,
+  templateConnectionConnected,
+  templateConnectionLinkable,
+  templateConnectionName,
+} from './template-connections'
 import { templateInspectionError } from './template-inspection-error'
 import {
   installedTemplateAgentId,
@@ -59,12 +85,56 @@ export default function TemplateNew() {
   const [projectName, setProjectName] = useState('')
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [variables, setVariables] = useState<Record<string, string>>({})
+  const [connectingProvider, setConnectingProvider] = useState<string>()
   const inspection = useQuery({
     queryKey: ['managed-template-inspection', repositoryUrl],
     queryFn: () => inspectManagedTemplate(repositoryUrl),
     enabled: validRepository,
     retry: false,
   })
+  const connectionRequirements = inspection.data?.requirements.connections ?? []
+  const connections = useQuery({
+    queryKey: ['managed-template-connections'],
+    queryFn: loadTemplateConnections,
+    enabled: !anonymous && connectionRequirements.length > 0,
+    refetchInterval: (query) =>
+      connectingProvider &&
+      !templateConnectionConnected(
+        { provider: connectingProvider },
+        query.state.data ?? [],
+      )
+        ? 3_000
+        : false,
+  })
+
+  function connect(provider: string) {
+    let authorizationWindow: Window
+    try {
+      authorizationWindow = openAuthorizationWindow()
+    } catch (error) {
+      notifyError("Couldn't start the connection.", error)
+      return
+    }
+    setConnectingProvider(provider)
+    void linkManagedAgentConnection(provider, provider)
+      .then((result) => {
+        if (result.authorizationUrl) {
+          navigateAuthorizationWindow(
+            authorizationWindow,
+            result.authorizationUrl,
+          )
+          return
+        }
+        authorizationWindow.close()
+        setConnectingProvider(undefined)
+        void connections.refetch()
+      })
+      .catch((error: unknown) => {
+        authorizationWindow.close()
+        setConnectingProvider(undefined)
+        notifyError("Couldn't start the connection.", error)
+      })
+  }
 
   useEffect(() => {
     if (!inspection.data || projectName) return
@@ -232,6 +302,10 @@ export default function TemplateNew() {
   const missingSecret = reviewed.requirements.secrets.some(
     (requirement) => requirement.required && !secrets[requirement.name],
   )
+  const missingConnection = missingTemplateConnection(
+    reviewed.requirements.connections,
+    connections.data ?? [],
+  )
 
   return (
     <form className="space-y-6" onSubmit={submit}>
@@ -344,6 +418,77 @@ export default function TemplateNew() {
           ))}
         </PanelContent>
       </Panel>
+      {reviewed.requirements.connections.length ? (
+        <Panel>
+          <PanelHeader>
+            <PanelTitle>Connect accounts</PanelTitle>
+          </PanelHeader>
+          <PanelContent className="space-y-3">
+            {reviewed.requirements.connections.map((requirement) => {
+              const provider = requirement.provider
+              const connected = templateConnectionConnected(
+                requirement,
+                connections.data ?? [],
+              )
+              const connecting = connectingProvider === provider && !connected
+              return (
+                <div
+                  key={requirement.id}
+                  className="flex items-center gap-3 text-sm"
+                >
+                  <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
+                    {provider === 'github' ? (
+                      <GithubMark className="size-4" />
+                    ) : provider === 'linear' ? (
+                      <ServiceLogo service="linear" className="size-4" />
+                    ) : (
+                      <Plug className="size-4" aria-hidden />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">
+                      {templateConnectionName(provider)}
+                      {requirement.required ? '' : ' (optional)'}
+                    </p>
+                    {requirement.description ? (
+                      <p className="text-muted-foreground text-xs">
+                        {requirement.description}
+                      </p>
+                    ) : null}
+                  </div>
+                  {connected ? (
+                    <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
+                      <Check className="size-3.5" aria-hidden />
+                      Connected
+                    </span>
+                  ) : templateConnectionLinkable(provider) ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={anonymous || connecting}
+                      onClick={() => connect(provider)}
+                    >
+                      {connecting ? <Loader2 className="animate-spin" /> : null}
+                      {connecting ? 'Waiting…' : 'Connect'}
+                    </Button>
+                  ) : (
+                    <Button asChild variant="outline" size="sm">
+                      <Link
+                        to="/managed-agents/connections"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open Connections
+                      </Link>
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </PanelContent>
+        </Panel>
+      ) : null}
       <div className="flex justify-end">
         <Button
           type="submit"
@@ -351,6 +496,7 @@ export default function TemplateNew() {
             !anonymous &&
             (!projectName.trim() ||
               missingSecret ||
+              missingConnection ||
               missingRequiredVariable ||
               install.isPending)
           }

@@ -763,7 +763,9 @@ export type ManagedService =
   | "drive"
   | "sheets"
   | "github"
-  | "linear";
+  | "linear"
+  | "notion"
+  | "searchconsole";
 
 export interface ServiceRequest {
   /** Which service. `google` is accepted as an alias for `gmail`. */
@@ -815,8 +817,11 @@ export async function callService(request: ServiceRequest): Promise<Response> {
   // The provider segment routes the supervisor; the service in the body is what
   // the platform resolves a credential for. GitHub and Google are separate
   // providers with separate grants, so they cannot be collapsed.
-  const provider =
-    service === "github" || service === "linear" ? service : "google";
+  const provider = ["github", "linear", "notion", "searchconsole"].includes(
+    service,
+  )
+    ? service
+    : "google";
   const response = await fetch(`${base.replace(/\/$/, "")}/${provider}/fetch`, {
     method: "POST",
     headers: {
@@ -874,7 +879,7 @@ async function unwrapServiceResponse(response: Response): Promise<Response> {
 /** A service account the platform holds a credential for, as listed. */
 export interface ConnectedService {
   readonly id: string;
-  /** `google`, `github`, or `linear` — the grant, not the API being called. */
+  /** `google`, `github`, `linear`, `notion`, or `searchconsole` — the grant, not the API being called. */
   readonly provider: string;
   /** The alias this account was connected under. Pass it as `label`. */
   readonly label: string;

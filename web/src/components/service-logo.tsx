@@ -1,7 +1,7 @@
 import { Plug } from 'lucide-react'
 
 type ServiceLogoProps = {
-  service?: 'gmail' | 'calendar' | 'drive' | 'sheets' | 'linear'
+  service?: string
   className?: string
 }
 
@@ -34,9 +34,12 @@ const logos = {
 } as const
 
 export function ServiceLogo({ service, className }: ServiceLogoProps) {
-  if (!service) return <Plug className={className} aria-hidden />
+  const logo =
+    service && Object.prototype.hasOwnProperty.call(logos, service)
+      ? logos[service as keyof typeof logos]
+      : undefined
+  if (!logo) return <Plug className={className} aria-hidden />
 
-  const logo = logos[service]
   return (
     <svg
       className={className}

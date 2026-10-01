@@ -834,6 +834,8 @@ const MANAGED_SERVICE_PROVIDERS: Readonly<Record<string, string>> = {
   sheets: "google",
   github: "github",
   linear: "linear",
+  notion: "notion",
+  searchconsole: "searchconsole",
 };
 
 function declaredServiceProviders(agentSource: string): string[] {
@@ -3197,7 +3199,7 @@ export const callService = async (request) => {
   if (!request?.path?.startsWith("/")) throw new Error("Service requests require an absolute path");
   const service = String(request.service ?? "").trim().toLowerCase();
   if (!service) throw new Error("A service request needs a service");
-  const provider = service === "github" || service === "linear" ? service : "google";
+  const provider = ["github", "linear", "notion", "searchconsole"].includes(service) ? service : "google";
   const root = base.endsWith("/") ? base.slice(0, -1) : base;
   const response = await fetch(root + "/" + provider + "/fetch", {
     method: "POST",
