@@ -2389,9 +2389,6 @@ async function deploySourceAgent(
       githubConnections: Array.isArray(body.githubConnections)
         ? body.githubConnections
         : [],
-      linearConnections: Array.isArray(body.linearConnections)
-        ? body.linearConnections
-        : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,
       ...(body.projectDeployment && typeof body.projectDeployment === "object"

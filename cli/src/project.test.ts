@@ -361,7 +361,6 @@ export default function Agent() {
       connections: string[];
       httpConnections: unknown[];
       githubConnections: unknown[];
-      linearConnections: unknown[];
       mcpServers: string[];
       mcpServerDefinitions: Array<{
         id: string;
@@ -381,7 +380,6 @@ export default function Agent() {
       connections: [],
       httpConnections: [],
       githubConnections: [],
-      linearConnections: [],
       mcpServers: ["docs"],
       mcpServerDefinitions: [{ id: "docs", url: "https://mcp.example.com/" }],
       memory: [],
@@ -1025,95 +1023,14 @@ export default defineConnection({
   }
 });
 
-test("the compiler records a Linear agent connection and the ask tool", async () => {
-  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-linear-agent-"));
+test("useTool(\"ask\") selects the platform's question tool without a definition", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-ask-select-"));
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
-    await mkdir(resolve(initialized.agentRoot, "connections"), {
-      recursive: true,
-    });
-    await writeFile(
-      resolve(initialized.agentRoot, "connections", "linear.ts"),
-      `import { defineConnection, linearAgent } from "@opencomputer/agent";
-
-export const linear = defineConnection({
-  id: "linear",
-  provider: linearAgent(),
-});
-`,
-    );
-    await writeFile(
-      resolve(initialized.agentRoot, "agent.ts"),
-      `import { useConnection, useInput, useTool } from "@opencomputer/agent";
-import { linear } from "./connections/linear.js";
-
-export default function Agent() {
-  useConnection(linear);
-  useTool("ask");
-  return useInput().answer ? "Act on the answer." : "Ask before acting.";
-}
-`,
-    );
-
-    const built = await buildAgentArtifact(initialized.agentRoot);
-    // The id counts as a declared connection, as a GitHub one does: the
-    // backend admits a provider connection only when `connections` names it.
-    assert.deepEqual(built.connections, ["linear"]);
-    assert.deepEqual(built.httpConnections, []);
-    assert.deepEqual(built.githubConnections, []);
-    assert.deepEqual(built.linearConnections, [
-      { id: "linear", provider: { kind: "linear-agent" } },
-    ]);
-    const runtimeRoot = await agentRuntimeDirectory(initialized.agentRoot);
-    const manifest = JSON.parse(
-      await readFile(
-        resolve(runtimeRoot, ".opencomputer", "reactive.json"),
-        "utf8",
-      ),
-    ) as { linearConnections: unknown[]; tools: string[] };
-    assert.deepEqual(manifest.linearConnections, built.linearConnections);
-    // `ask` has no defineTool(); the literal selection is what records it.
-    assert.deepEqual(manifest.tools, ["ask"]);
-
-    // The emitted shim is what the bundled agent imports at run time.
-    const shim = (await import(
-      `${pathToFileURL(resolve(runtimeRoot, "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
-    )) as {
-      ASK_TOOL: string;
-      linearAgent: () => { kind: string };
-      defineConnection: (input: Record<string, unknown>) => {
-        kind: string;
-        id: string;
-        provider: { kind: string };
-      };
-    };
-    assert.equal(shim.ASK_TOOL, "ask");
-    assert.deepEqual(
-      shim.defineConnection({ id: "linear", provider: shim.linearAgent() }),
-      { kind: "connection", id: "linear", provider: { kind: "linear-agent" } },
-    );
-    assert.throws(
-      () => shim.defineConnection({ id: "x", provider: { kind: "jira" } }),
-      /unsupported provider/,
-    );
-
-    // useTool(ASK_TOOL) selects the same tool as the literal.
-    await writeFile(
-      resolve(initialized.agentRoot, "agent.ts"),
-      `import { ASK_TOOL, useConnection, useTool } from "@opencomputer/agent";
-import { linear } from "./connections/linear.js";
-
-export default function Agent() {
-  useConnection(linear);
-  useTool(ASK_TOOL);
-  return "Ask before acting.";
-}
-`,
-    );
-    await buildAgentArtifact(initialized.agentRoot);
-    assert.deepEqual(
-      (
+    const tools = async () => {
+      await buildAgentArtifact(initialized.agentRoot);
+      return (
         JSON.parse(
           await readFile(
             resolve(
@@ -1124,75 +1041,38 @@ export default function Agent() {
             "utf8",
           ),
         ) as { tools: string[] }
-      ).tools,
-      ["ask"],
-    );
-  } finally {
-    await rm(parent, { recursive: true, force: true });
-  }
-});
-
-test("the compiler rejects Linear connections it cannot record as written", async () => {
-  const parent = await mkdtemp(
-    resolve(tmpdir(), "opencomputer-linear-invalid-"),
-  );
-  const root = resolve(parent, "app");
-  try {
-    const initialized = await initializeAgentProject(root);
-    await mkdir(resolve(initialized.agentRoot, "connections"), {
-      recursive: true,
-    });
-    const connection = resolve(
-      initialized.agentRoot,
-      "connections",
-      "linear.ts",
-    );
+      ).tools;
+    };
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
-      `import "./connections/linear.js";
-export default function Agent() { return "Use Linear."; }
+      `import { useInput, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  useTool("ask");
+  return useInput().answer ? "Act on the answer." : "Ask before acting.";
+}
 `,
     );
-    const rejects = async (source: string, pattern: RegExp) => {
-      await writeFile(connection, source);
-      await assert.rejects(buildAgentArtifact(initialized.agentRoot), pattern);
-    };
-    await rejects(
-      `import { defineConnection, linearAgent } from "@opencomputer/agent";
-export default defineConnection({
-  id: "linear",
-  provider: linearAgent({ workspace: "acme" }),
-});
+    // `ask` has no defineTool(); the literal selection is what records it.
+    assert.deepEqual(await tools(), ["ask"]);
+
+    // useTool(ASK_TOOL) selects the same tool as the literal, and the
+    // emitted shim exports the constant the bundled agent imports.
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { ASK_TOOL, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  useTool(ASK_TOOL);
+  return "Ask before acting.";
+}
 `,
-      /Connection linear linearAgent\(\) takes no options/,
     );
-    await rejects(
-      `import { defineConnection, linearAgent } from "@opencomputer/agent";
-const provider = linearAgent();
-export default defineConnection({ id: "linear", provider: provider });
-`,
-      /provider must be an inline githubApp\(\) or linearAgent\(\) call/,
-    );
-    await rejects(
-      `import { defineConnection, linearAgent } from "@opencomputer/agent";
-export default defineConnection({
-  id: "linear",
-  provider: linearAgent(),
-  origin: "https://api.linear.app",
-});
-`,
-      /Linear connection linear does not support the origin option/,
-    );
-    await rejects(
-      `import { defineConnection, githubApp, linearAgent } from "@opencomputer/agent";
-export const linear = defineConnection({ id: "work", provider: linearAgent() });
-export const github = defineConnection({
-  id: "work",
-  provider: githubApp({ permissions: { contents: "read" } }),
-});
-`,
-      /Connection id "work" is defined more than once/,
-    );
+    assert.deepEqual(await tools(), ["ask"]);
+    const shim = (await import(
+      `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    )) as { ASK_TOOL: string };
+    assert.equal(shim.ASK_TOOL, "ask");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

@@ -3107,9 +3107,6 @@ describe("managed agents proxy", () => {
                 },
               },
             ],
-            linearConnections: [
-              { id: "linear", provider: { kind: "linear-agent" } },
-            ],
             memory: [
               {
                 id: "requirements",
@@ -3172,9 +3169,6 @@ describe("managed agents proxy", () => {
             },
           },
         },
-      ],
-      linearConnections: [
-        { id: "linear", provider: { kind: "linear-agent" } },
       ],
       memory: [
         {

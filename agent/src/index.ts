@@ -276,20 +276,6 @@ export interface GitHubConnectionDefinition extends ConnectionReference {
   readonly provider: GitHubAppProvider;
 }
 
-export interface LinearAgentProvider {
-  readonly kind: "linear-agent";
-}
-
-/**
- * Linear's GraphQL API as this agent's own Linear app: `POST /graphql` on
- * `https://api.linear.app`, with the app's token attached on the way out.
- * The token is the environment's Linear connection for this agent; the
- * agent never sees it.
- */
-export interface LinearConnectionDefinition extends ConnectionReference {
-  readonly provider: LinearAgentProvider;
-}
-
 export interface McpServerDefinition extends ResourceReference {
   readonly kind: "mcp";
   readonly url: string;
@@ -842,16 +828,6 @@ export function githubApp(options: {
 }
 
 /**
- * The agent's own Linear app as a connection provider. Requests go to
- * Linear's GraphQL API with the token of the Linear connection bound to this
- * agent in the session's environment; with it the agent writes documents,
- * sub-issues, comments and status changes as itself.
- */
-export function linearAgent(): LinearAgentProvider {
-  return Object.freeze({ kind: "linear-agent" });
-}
-
-/**
  * A service the platform holds an OAuth credential for.
  *
  * `defineConnection` covers the case where WE hold the secret: the egress proxy
@@ -892,6 +868,8 @@ export interface ServiceRequest {
 
 /**
  * Call a service the platform is connected to on this session's behalf.
+ * In a session started from a Linear agent connection, `service: "linear"`
+ * acts as the agent's own Linear app.
  *
  * Returns the upstream response, so a caller reads status and body exactly as
  * it would from `fetch` — a 404 from the service arrives as a 404, not as an
@@ -1071,11 +1049,6 @@ interface GitHubConnectionInput {
   provider: GitHubAppProvider;
 }
 
-interface LinearConnectionInput {
-  id: string;
-  provider: LinearAgentProvider;
-}
-
 export function defineConnection(
   input: HttpConnectionInput,
 ): HttpConnectionDefinition;
@@ -1083,25 +1056,14 @@ export function defineConnection(
   input: GitHubConnectionInput,
 ): GitHubConnectionDefinition;
 export function defineConnection(
-  input: LinearConnectionInput,
-): LinearConnectionDefinition;
-export function defineConnection(
-  input: HttpConnectionInput | GitHubConnectionInput | LinearConnectionInput,
-):
-  | HttpConnectionDefinition
-  | GitHubConnectionDefinition
-  | LinearConnectionDefinition {
+  input: HttpConnectionInput | GitHubConnectionInput,
+): HttpConnectionDefinition | GitHubConnectionDefinition {
   const id = identifier(input.id, "defineConnection");
   if ("provider" in input) {
-    const kind = input.provider?.kind;
-    if (kind !== "github-app" && kind !== "linear-agent") {
+    if (input.provider?.kind !== "github-app") {
       throw new Error("defineConnection() received an unsupported provider");
     }
-    return Object.freeze({
-      kind: "connection",
-      id,
-      provider: input.provider,
-    }) as GitHubConnectionDefinition | LinearConnectionDefinition;
+    return Object.freeze({ kind: "connection", id, provider: input.provider });
   }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") {

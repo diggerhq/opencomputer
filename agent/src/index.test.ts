@@ -9,7 +9,6 @@ import {
   documentMemory,
   githubApp,
   httpMemory,
-  linearAgent,
   useConnection,
   useInput,
   useMemory,
@@ -600,17 +599,6 @@ test("defineTool refuses a result tool that waits for approval", () => {
       } as unknown as Parameters<typeof defineTool>[0]),
     /waits for approval cannot be the result tool/,
   );
-});
-
-test("linearAgent defines a frozen connection to the agent's own Linear app", () => {
-  const connection = defineConnection({ id: "linear", provider: linearAgent() });
-  assert.deepEqual(JSON.parse(JSON.stringify(connection)), {
-    kind: "connection",
-    id: "linear",
-    provider: { kind: "linear-agent" },
-  });
-  assert.ok(Object.isFrozen(connection));
-  assert.ok(Object.isFrozen(connection.provider));
 });
 
 test("defineTool reserves the question tool's id", () => {
