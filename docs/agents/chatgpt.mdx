@@ -23,20 +23,16 @@ in to. ChatGPT never sees the key: it holds an access token for the app, and
 the app calls OpenComputer on your behalf. Revoke the key from the dashboard to
 disconnect every ChatGPT conversation at once.
 
-You can instead expand **Use an API key instead** and paste an existing
-`osb_` key, for example one scoped to a single organization you created for
-ChatGPT.
-
 ## What ChatGPT can do
 
 | Tool | What it does |
 | --- | --- |
 | `list_agents` | Lists the agents in your organization and whether each is deployed. |
 | `run_agent` | Starts a new session with an agent and sends the first message. Use `agent@development` to target the development alias. |
-| `send_message` | Sends a follow-up to an existing session. `mode` can be `queue` (default), `steer`, or `interrupt`. |
+| `send_message` | Sends a follow-up to an existing session. `mode` can be `queue` (default) or `steer`. |
 | `get_session` | Shows a session's status and recent turns. |
 | `list_sessions` | Lists recent sessions, optionally filtered by agent or status. |
-| `interrupt_session` | Stops the running turn; the session stays open. |
+| `interrupt_session` | Stops the running turn; the session stays open. ChatGPT asks before running it. |
 | `end_session` | Ends a session for good. ChatGPT asks before running it. |
 
 `run_agent` and `send_message` wait up to about 25 seconds for the agent's

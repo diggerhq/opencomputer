@@ -54,6 +54,7 @@ function consentPage(
   details: Awaited<ReturnType<Env["OAUTH_PROVIDER"]["describeConsent"]>>,
   handle: string,
   headers: Headers,
+  allowApiKey: boolean,
 ): Response {
   const name = escapeHtml(details.clientName);
   const publisher = details.clientDomain
@@ -76,13 +77,7 @@ function consentPage(
         <form method="post" action="/authorize"><input type="hidden" name="handle" value="${h}">
           <button class="secondary" name="action" value="deny">Cancel</button></form>
       </div>
-      <details><summary>Use an API key instead</summary>
-        <form method="post" action="/authorize" class="stack" style="margin-top:10px">
-          <input type="hidden" name="handle" value="${h}">
-          <input type="password" name="api_key" placeholder="osb_…" autocomplete="off" required>
-          <button class="secondary" name="action" value="api_key">Connect with key</button>
-        </form>
-      </details>
+      ${allowApiKey ? apiKeyForm(h) : ""}
     </div>`,
     headers,
   );
@@ -126,7 +121,7 @@ async function showConsent(req: Request, env: Env): Promise<Response> {
   const request = await oauth.parseAuthRequest(req);
   const details = await oauth.describeConsent(request);
   const consent = await oauth.beginConsent(request);
-  return consentPage(details, consent.handle, consent.headers);
+  return consentPage(details, consent.handle, consent.headers, apiKeyConnectEnabled(env));
 }
 
 async function readForm(req: Request): Promise<FormData | null> {
@@ -153,7 +148,7 @@ async function submitConsent(req: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 302, headers: denied.headers });
   }
 
-  if (action === "api_key") {
+  if (action === "api_key" && apiKeyConnectEnabled(env)) {
     const apiKey = String(form.get("api_key") ?? "").trim();
     const identity = apiKey.startsWith("osb_") && apiKey.length <= 512 ? await accounts(req, env).whoami(apiKey) : null;
     if (!identity) {
@@ -225,6 +220,16 @@ function landing(env: Env): Response {
   );
 }
 
+const apiKeyConnectEnabled = (env: Env): boolean => env.ALLOW_API_KEY_CONNECT === "true";
+
+const apiKeyForm = (handle: string): string => `<details><summary>Use an API key instead</summary>
+        <form method="post" action="/authorize" class="stack" style="margin-top:10px">
+          <input type="hidden" name="handle" value="${handle}">
+          <input type="password" name="api_key" placeholder="osb_…" autocomplete="off" required>
+          <button class="secondary" name="action" value="api_key">Connect with key</button>
+        </form>
+      </details>`;
+
 export async function handleDefault(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   try {
@@ -233,6 +238,9 @@ export async function handleDefault(req: Request, env: Env): Promise<Response> {
     if (url.pathname === "/authorize/poll" && req.method === "POST") return await pollLogin(req, env);
     if (url.pathname === "/" && req.method === "GET") return landing(env);
     if (url.pathname === "/healthz") return new Response("ok");
+    if (url.pathname === "/.well-known/openai-apps-challenge" && env.OPENAI_APPS_CHALLENGE) {
+      return new Response(env.OPENAI_APPS_CHALLENGE, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
     return new Response("Not found", { status: 404 });
   } catch (error) {
     if (error instanceof AuthorizationError && error.redirectTo) return Response.redirect(error.redirectTo, 302);

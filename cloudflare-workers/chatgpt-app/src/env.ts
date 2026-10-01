@@ -12,6 +12,10 @@ export interface Env {
    * user's IP so the edge's per-caller login rate limits apply per user, not per Worker.
    */
   API_EDGE?: Fetcher;
+  /** "true" offers pasting an OpenComputer API key on the consent page. Off in production. */
+  ALLOW_API_KEY_CONNECT?: string;
+  /** Token served at /.well-known/openai-apps-challenge for OpenAI plugin domain verification. */
+  OPENAI_APPS_CHALLENGE?: string;
 }
 
 /**

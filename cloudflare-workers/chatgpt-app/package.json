@@ -8,7 +8,8 @@
     "deploy": "node -e \"throw new Error('choose an explicit environment; production is deploy:production')\"",
     "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package:plugin": "rm -f opencomputer-plugin.zip && cd plugin && zip -qr ../opencomputer-plugin.zip . -x '.*'"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.1",

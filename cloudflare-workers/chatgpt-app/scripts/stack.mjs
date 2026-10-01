@@ -75,6 +75,7 @@ workers_dev = true
 [vars]
 PUBLIC_URL = "${publicUrl}"
 OPENCOMPUTER_API_URL = "${stack.apiEdgeUrl}"
+ALLOW_API_KEY_CONNECT = "true"
 
 [[kv_namespaces]]
 binding = "OAUTH_KV"

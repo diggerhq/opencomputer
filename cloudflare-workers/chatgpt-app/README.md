@@ -8,7 +8,11 @@ agents. Public docs: `docs/agents/chatgpt.mdx`.
   server from `@cloudflare/workers-oauth-provider` (PKCE S256, dynamic client registration, client
   ID metadata documents, `iss` in authorization responses, RFC 9728 resource metadata).
 - `/authorize` connects an OpenComputer account by reusing the CLI device login
-  (`/auth/cli/device` → an `osb_` key named "ChatGPT"), or by pasting an existing `osb_` key.
+  (`/auth/cli/device` → an `osb_` key named "ChatGPT"). With `ALLOW_API_KEY_CONNECT = "true"`
+  (preview stacks only) it also accepts a pasted `osb_` key; OpenAI's plugin guidelines forbid
+  collecting API keys, so production leaves it off.
+- `/.well-known/openai-apps-challenge` — returns `OPENAI_APPS_CHALLENGE` (a Worker secret) for
+  the plugin portal's domain verification.
 
 The OpenComputer key is stored only inside the encrypted OAuth grant props. ChatGPT holds opaque
 access/refresh tokens; tool results and the widget never contain the key. MCP tools call the
@@ -39,3 +43,10 @@ node scripts/stack.mjs devin-<name> destroy
 
 Production deploys only via `npm run deploy:production`; fill in the production KV namespace id
 and route in `wrangler.toml` first.
+
+## Plugin directory submission
+
+`plugin/` is the package uploaded to the [OpenAI plugin portal](https://platform.openai.com/plugins):
+`plugin.json` (listing, five positive and three negative review cases), `mcp.json` (production MCP
+URL) and `assets/`. `npm run package:plugin` writes `opencomputer-plugin.zip`. Reviewer credentials
+and the demo video URL are entered in the portal, never in the package.

@@ -125,7 +125,7 @@ async function startAuthorization(browser: Browser) {
   expect(html).toContain("ChatGPT &#60;script&#62;");
   expect(html).not.toContain("<script>\"");
   const handle = /name="handle" value="([^"]+)"/.exec(html)![1]!;
-  return { client_id, verifier, handle };
+  return { client_id, verifier, handle, html };
 }
 
 async function exchangeCode(browser: Browser, location: string, clientId: string, verifier: string) {
@@ -161,7 +161,8 @@ async function callListAgents(browser: Browser, accessToken: string) {
   return (await response.json()) as { result: { structuredContent: unknown } };
 }
 
-const env = (): Env => ({ OAUTH_KV: memoryKV(), PUBLIC_URL: ORIGIN, OPENCOMPUTER_API_URL: API }) as Env;
+const env = (extra: Partial<Env> = { ALLOW_API_KEY_CONNECT: "true" }): Env =>
+  ({ OAUTH_KV: memoryKV(), PUBLIC_URL: ORIGIN, OPENCOMPUTER_API_URL: API, ...extra }) as Env;
 const form = (fields: Record<string, string>) => ({
   method: "POST",
   headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
@@ -218,6 +219,22 @@ describe("connect flow", () => {
     expect(ok.status).toBe(302);
     const tokens = await exchangeCode(browser, ok.headers.get("location")!, client_id, verifier);
     expect((await callListAgents(browser, tokens.access_token)).result.structuredContent).toBeTruthy();
+  });
+
+  it("offers sign-in only when API-key connect is off", async () => {
+    mockOpenComputer();
+    const browser = new Browser(env({}));
+    const { handle, html } = await startAuthorization(browser);
+    expect(html).not.toContain('name="api_key"');
+    const posted = await browser.fetch("/authorize", form({ handle, action: "api_key", api_key: "osb_secret" }));
+    expect(posted.status).toBe(400);
+  });
+
+  it("serves the OpenAI domain-verification token when configured", async () => {
+    expect((await new Browser(env({})).fetch("/.well-known/openai-apps-challenge")).status).toBe(404);
+    const res = await new Browser(env({ OPENAI_APPS_CHALLENGE: "tok_123" })).fetch("/.well-known/openai-apps-challenge");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("tok_123");
   });
 
   it("accepts an organization key that has no user", async () => {

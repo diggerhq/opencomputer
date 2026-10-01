@@ -160,11 +160,11 @@ export function createMcpServer(oc: OpenComputer, options: ToolOptions = {}): Mc
       title: "Send message",
       description:
         "Send a follow-up message to an existing agent session. By default it queues behind the running turn; " +
-        "mode 'interrupt' stops the running turn first and 'steer' redirects it.",
+        "mode 'steer' redirects the running turn instead. To stop the running turn, use interrupt_session.",
       inputSchema: {
         sessionId,
         input,
-        mode: z.enum(["queue", "steer", "interrupt"]).optional().describe("Default queue."),
+        mode: z.enum(["queue", "steer"]).optional().describe("Default queue."),
         waitSeconds,
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
@@ -229,7 +229,7 @@ export function createMcpServer(oc: OpenComputer, options: ToolOptions = {}): Mc
       title: "Interrupt session",
       description: "Stop the turn an agent session is running. The session stays open; the next queued message starts.",
       inputSchema: { sessionId },
-      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
       _meta: plainMeta("Interrupting…", "Interrupted"),
     },
     ({ sessionId: id }) =>
