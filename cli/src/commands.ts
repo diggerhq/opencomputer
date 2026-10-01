@@ -1000,6 +1000,7 @@ export async function runCommand(
     const projectNameOption = option(args, "--project-name");
     const directoryOption = option(args, "--directory");
     const confirmed = flag(args, "--yes");
+    const refresh = flag(args, "--refresh");
     const repositoryUrl = args.shift();
     if (!repositoryUrl) {
       throw new Error("A GitHub repository URL is required");
@@ -1007,6 +1008,7 @@ export async function runCommand(
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const inspection = await client.inspectTemplate(
       normalizeTemplateRepositoryUrl(repositoryUrl),
+      { refresh },
     );
     if (!globals.json) {
       process.stdout.write(
