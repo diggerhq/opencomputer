@@ -250,8 +250,13 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   )
     ? SLACK_SETUP_ERROR_MESSAGES[backendCode]
     : undefined;
+  const linearMessage = Object.hasOwn(LINEAR_ERROR_MESSAGES, backendCode)
+    ? LINEAR_ERROR_MESSAGES[backendCode]
+    : undefined;
   if (slackSetupMessage) {
     message = slackSetupMessage;
+  } else if (linearMessage) {
+    message = linearMessage;
   } else if (missingTemplateManifest) {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
@@ -320,6 +325,15 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
       ? { setupId: backendError.setupId }
       : {};
+  // A Linear conflict names the connection it concerns, so the caller can
+  // continue from it (disconnect it, or list and resume).
+  const linearConnection =
+    (backendCode === "linear_already_connected" ||
+      backendCode === "linear_connection_changed") &&
+    typeof backendError?.connectionId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(backendError.connectionId)
+      ? { connectionId: backendError.connectionId }
+      : {};
   // Workspace export refusals say whether the same Idempotency-Key may be
   // retried and which export record the refusal was written to.
   const exportOutcome: Record<string, unknown> = {};
@@ -337,7 +351,13 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   }
   return new Response(
     JSON.stringify({
-      error: { code: publicCode, message, ...setupId, ...exportOutcome },
+      error: {
+        code: publicCode,
+        message,
+        ...setupId,
+        ...linearConnection,
+        ...exportOutcome,
+      },
     }),
     { status: upstream.status, headers },
   );
@@ -785,6 +805,91 @@ function publicSlackSetup(value: unknown): Record<string, unknown> {
     ),
     createdAt: setup.createdAt,
     updatedAt: setup.updatedAt,
+  };
+}
+
+// Linear agent connections (work 037, design 018 "Connection"). One
+// connection per (project, environment, agent); the webhook URL carries the
+// connection's secret token, so every response is no-store.
+const LINEAR_PROJECT_CONNECTIONS_ROUTE =
+  /^\/projects\/[^/]+\/linear\/connections$/;
+const LINEAR_CONNECTION_ROUTE = /^\/linear\/connections\/[^/]+$/;
+const LINEAR_CREDENTIALS_ROUTE = /^\/linear\/connections\/[^/]+\/credentials$/;
+const LINEAR_AUTHORIZE_ROUTE = /^\/linear\/connections\/[^/]+\/authorize$/;
+
+function isLinearConnectionRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) ||
+    (method === "PUT" && LINEAR_CREDENTIALS_ROUTE.test(suffix)) ||
+    (method === "POST" && LINEAR_AUTHORIZE_ROUTE.test(suffix)) ||
+    (method === "DELETE" && LINEAR_CONNECTION_ROUTE.test(suffix))
+  );
+}
+
+function isLinearRouteSuffix(suffix: string): boolean {
+  return (
+    suffix.startsWith("/linear/") ||
+    /^\/projects\/[^/]+\/linear(?:\/|$)/.test(suffix)
+  );
+}
+
+const LINEAR_ERROR_MESSAGES: Record<string, string> = {
+  linear_connector_unavailable:
+    "Linear connections are not available right now.",
+  linear_connection_not_found: "That Linear connection does not exist.",
+  linear_already_connected:
+    "This agent already has a Linear connection in this environment. Disconnect it before creating another.",
+  linear_connection_changed:
+    "This connection changed while the request was in flight. List the connections and continue from there.",
+  linear_credentials_required:
+    "Paste the app's client ID, client secret and webhook signing secret before authorizing.",
+  invalid_linear_credentials:
+    "Expected clientId, clientSecret and signingSecret as copied from the Linear app.",
+  linear_app_already_connected:
+    "This Linear app is already connected to another agent or environment. Create a separate app for each.",
+  linear_connection_connected:
+    "This connection is authorized with a different Linear app. Disconnect it first.",
+  invalid_linear_app_name: "The Linear app name must be 1 to 64 characters.",
+  linear_app_name_reserved:
+    'Linear does not allow app names that contain "Linear". Choose another name.',
+};
+
+/** A Linear connection by whitelist: never its credentials or account. */
+function publicLinearConnection(value: unknown): Record<string, unknown> {
+  const connection = record(value) ?? {};
+  const teams = record(connection.teams);
+  const health = record(connection.health);
+  return {
+    id: connection.id,
+    projectId: connection.projectId,
+    environment: connection.environment,
+    agentId: connection.agentId,
+    name: connection.name,
+    status: connection.status,
+    clientId: connection.clientId,
+    appUserId: connection.appUserId,
+    organizationId: connection.organizationId,
+    webhookUrl: connection.webhookUrl,
+    createAppUrl: connection.createAppUrl,
+    verifiedAt: connection.verifiedAt,
+    verificationError: connection.verificationError,
+    lastEventAt: connection.lastEventAt,
+    ...(teams
+      ? { teams: { allPublic: teams.allPublic === true, teamIds: strings(teams.teamIds) } }
+      : {}),
+    ...(health
+      ? {
+          health: {
+            state: health.state,
+            message: health.message,
+            lastEventAt: health.lastEventAt,
+          },
+        }
+      : {}),
+    revision: connection.revision,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
   };
 }
 
@@ -1908,6 +2013,33 @@ function publicSuccessBody(
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix)) {
     return { run: publicScheduleRun(body.run) };
   }
+  if (method === "POST" && LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) {
+    return {
+      connectionId: body.connectionId,
+      webhookUrl: body.webhookUrl,
+      createAppUrl: body.createAppUrl,
+      connection: publicLinearConnection(body.connection),
+    };
+  }
+  if (method === "GET" && LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) {
+    return {
+      connections: Array.isArray(body.connections)
+        ? body.connections.map(publicLinearConnection)
+        : [],
+    };
+  }
+  if (method === "PUT" && LINEAR_CREDENTIALS_ROUTE.test(suffix)) {
+    return { connection: publicLinearConnection(body.connection) };
+  }
+  if (method === "POST" && LINEAR_AUTHORIZE_ROUTE.test(suffix)) {
+    return { authorizeUrl: body.authorizeUrl, expiresAt: body.expiresAt };
+  }
+  if (method === "DELETE" && LINEAR_CONNECTION_ROUTE.test(suffix)) {
+    return {
+      connection: publicLinearConnection(body.connection),
+      revoked: body.revoked === true,
+    };
+  }
   if (method === "POST" && suffix === "/channels/slack/connections") {
     return {
       connection: publicChannel(body.connection),
@@ -2204,7 +2336,8 @@ async function publicSuccessResponse(
   if (
     suffix.includes("/webhooks") ||
     suffix.includes("/event-subscriptions") ||
-    suffix.startsWith("/channels/slack/setups")
+    suffix.startsWith("/channels/slack/setups") ||
+    isLinearRouteSuffix(suffix)
   ) {
     headers.set("cache-control", "no-store");
   }
@@ -2511,6 +2644,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/schedule-runs") return true;
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix))
     return true;
+  // Linear agent connections: only the contract's routes.
+  if (isLinearRouteSuffix(suffix)) return isLinearConnectionRoute(method, suffix);
   // Automated Slack setup: only the contract's routes, before the /channels
   // catch-all below can admit anything else under the prefix.
   if (suffix.startsWith("/channels/slack/setups")) {
@@ -2637,15 +2772,17 @@ export async function handleManagedGitHubCallback(
 }
 
 /**
- * Slack's OAuth redirect for apps created by the automated setup. The exact
- * public URL is registered on every generated app, so it forwards the query
- * verbatim and never reinterprets it. The backend resolves the single-use
+ * A provider's OAuth redirect, forwarded to the backend's callback. The exact
+ * public URL is registered with the provider, so the query goes through
+ * verbatim and is never reinterpreted. The backend resolves the single-use
  * state and answers with a redirect into the project's Connections tab, or
  * a no-store HTML page for a malformed state; both pass through unchanged.
  */
-export async function handleManagedSlackCallback(
+async function forwardProviderCallback(
   request: Request,
   env: ManagedAgentsEnv,
+  upstreamPath: string,
+  provider: string,
 ): Promise<Response> {
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
@@ -2654,11 +2791,11 @@ export async function handleManagedSlackCallback(
   const base = (
     env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
   ).replace(/\/+$/, "");
-  const target = new URL(
-    `${base}/v1/channels/slack/oauth/callback${requestURL.search}`,
-  );
+  const target = new URL(`${base}${upstreamPath}${requestURL.search}`);
   if (target.protocol !== "https:" && target.hostname !== "localhost") {
-    return new Response("Slack connection is unavailable", { status: 503 });
+    return new Response(`${provider} connection is unavailable`, {
+      status: 503,
+    });
   }
   try {
     const upstream = await fetch(target, { redirect: "manual" });
@@ -2685,11 +2822,41 @@ export async function handleManagedSlackCallback(
       headers,
     });
   } catch {
-    return new Response("Slack connection is temporarily unavailable", {
+    return new Response(`${provider} connection is temporarily unavailable`, {
       status: 502,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
+}
+
+/** Slack's OAuth redirect for apps created by the automated setup. */
+export async function handleManagedSlackCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  return forwardProviderCallback(
+    request,
+    env,
+    "/v1/channels/slack/oauth/callback",
+    "Slack",
+  );
+}
+
+/**
+ * Linear's OAuth redirect for a project's Linear agent connection. The
+ * backend builds this URL into every authorize link (its default is the
+ * Slack callback's sibling, `/api/managed-agents/linear/callback`).
+ */
+export async function handleManagedLinearCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  return forwardProviderCallback(
+    request,
+    env,
+    "/v1/linear/oauth/callback",
+    "Linear",
+  );
 }
 
 function channelConnectionPage(
