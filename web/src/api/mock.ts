@@ -1589,6 +1589,15 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
+  const renameMatch = path.match(/^\/api-keys\/([^/]+)$/)
+  if (method === 'PATCH' && renameMatch) {
+    const body = typeof options.body === 'string' ? options.body : '{}'
+    const { name } = JSON.parse(body) as { name?: string }
+    const key = apiKeys.find((k) => k.id === renameMatch[1])
+    if (!key) throw new ApiError('Not found', 404)
+    key.name = name ?? key.name
+    return key as T
+  }
   if (method === 'PUT' && path === '/me/preferences') {
     const body = typeof options.body === 'string' ? options.body : '{}'
     const updates = JSON.parse(body) as Partial<

@@ -6,6 +6,7 @@ import {
   createAPIKey,
   deleteAPIKey,
   getAPIKeys,
+  renameAPIKey,
   type APIKey,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -36,6 +37,8 @@ export default function APIKeys() {
   const [newKeyName, setNewKeyName] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [toRevoke, setToRevoke] = useState<APIKey | null>(null)
+  const [toRename, setToRename] = useState<APIKey | null>(null)
+  const [renameValue, setRenameValue] = useState('')
 
   const createMutation = useMutation({
     mutationFn: (name: string) => createAPIKey(name),
@@ -46,6 +49,16 @@ export default function APIKeys() {
       void queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     },
     onError: (error) => notifyError("Couldn't create the API key.", error),
+  })
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      renameAPIKey(id, name),
+    onSuccess: () => {
+      setToRename(null)
+      void queryClient.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+    onError: (error) => notifyError("Couldn't rename the key.", error),
   })
 
   const deleteMutation = useMutation({
@@ -94,14 +107,27 @@ export default function APIKeys() {
       header: '',
       align: 'right',
       cell: (k) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
-          onClick={() => setToRevoke(k)}
-        >
-          Revoke
-        </Button>
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="underline-offset-2 hover:bg-transparent hover:underline"
+            onClick={() => {
+              setToRename(k)
+              setRenameValue(k.name)
+            }}
+          >
+            Rename
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
+            onClick={() => setToRevoke(k)}
+          >
+            Revoke
+          </Button>
+        </div>
       ),
     },
   ]
@@ -206,6 +232,55 @@ export default function APIKeys() {
                 disabled={createMutation.isPending || !newKeyName.trim()}
               >
                 {createMutation.isPending ? 'Creating…' : 'Create key'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={toRename !== null}
+        onOpenChange={(open) => !open && setToRename(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename API key</DialogTitle>
+            <DialogDescription>
+              Give the key a new name. This doesn&apos;t change the key itself.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (toRename && renameValue.trim()) {
+                renameMutation.mutate({
+                  id: toRename.id,
+                  name: renameValue.trim(),
+                })
+              }
+            }}
+          >
+            <Field label="Key name" htmlFor="rename-key-name">
+              <Input
+                id="rename-key-name"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                placeholder="e.g. Production"
+              />
+            </Field>
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setToRename(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={renameMutation.isPending || !renameValue.trim()}
+              >
+                {renameMutation.isPending ? 'Renaming…' : 'Rename key'}
               </Button>
             </DialogFooter>
           </form>
