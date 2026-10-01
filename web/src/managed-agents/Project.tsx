@@ -5,11 +5,12 @@ import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import ManagedAgentDetail from './Detail'
+import { ManagedProjectSettings } from './Settings'
 import { getManagedProject } from './api'
 import { selectedProjectAgentId } from './project-context'
 
 export default function ProjectDetail() {
-  const { projectId = '', projectAgentId } = useParams()
+  const { projectId = '', projectAgentId, tab } = useParams()
   const location = useLocation()
   const project = useQuery({
     queryKey: ['managed-project', projectId],
@@ -50,6 +51,11 @@ export default function ProjectDetail() {
     project.data.project.agents,
   )
   if (!agentId) {
+    // Deploying from GitHub is how an empty project gets its first agent, so
+    // Settings must be reachable before any agent exists.
+    if (tab === 'settings') {
+      return <ManagedProjectSettings projectId={project.data.project.id} />
+    }
     return (
       <Panel>
         <EmptyState

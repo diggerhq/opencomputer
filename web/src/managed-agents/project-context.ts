@@ -34,10 +34,15 @@ export function requestedProjectAgentId(
   return agents.find((agent) => agent.id === requested)?.id
 }
 
+/**
+ * `environment` is a deployment alias: `development`, `production`, or a pull
+ * request preview such as `pr-12`, which the playground keeps targeting when
+ * the agent changes.
+ */
 export function projectContextSearch(
   search: string,
   agentId: string | undefined,
-  environment: ProjectEnvironment,
+  environment: string,
 ) {
   const next = new URLSearchParams(search)
   if (agentId) next.set('agent', agentId)

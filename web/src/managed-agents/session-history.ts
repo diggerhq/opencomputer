@@ -3,7 +3,6 @@ import type {
   ManagedAgentEvent,
   ManagedAgentSession,
 } from './api'
-import type { ProjectEnvironment } from './project-context'
 
 export function sessionsForEnvironment<
   T extends Pick<ManagedAgentSession, 'deploymentId'>,
@@ -11,7 +10,7 @@ export function sessionsForEnvironment<
   sessions: T[],
   deployments: ManagedAgentDeployment[],
   agentId: string | undefined,
-  environment: ProjectEnvironment,
+  environment: string,
 ): T[] {
   const deploymentIds = new Set(
     deployments

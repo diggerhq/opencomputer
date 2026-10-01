@@ -88,6 +88,7 @@ import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
   handleAgentWebhookInvocation,
   handleManagedGitHubCallback,
+  handleManagedGitHubWebhook,
   handleManagedSlackCallback,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
@@ -5552,6 +5553,12 @@ export default {
       req.method === "GET"
     ) {
       return handleManagedGitHubCallback(req, env);
+    }
+    if (
+      path === "/api/managed-agents/github/webhooks" &&
+      req.method === "POST"
+    ) {
+      return handleManagedGitHubWebhook(req, env);
     }
     // Slack's OAuth redirect for apps created by the automated setup. This
     // exact URL is registered on every generated app; the backend answers
