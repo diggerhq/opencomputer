@@ -14,6 +14,7 @@ class FakeStatement {
     private readonly halted: number | null,
     private readonly haltedAt: number | null,
     private readonly usagePlan: string,
+    private readonly plan: string,
   ) {}
 
   bind(orgID: string): this {
@@ -29,6 +30,7 @@ class FakeStatement {
           is_halted: this.halted,
           halted_at: this.haltedAt,
           usage_plan: this.usagePlan,
+          plan: this.plan,
         }) as T | null;
   }
 }
@@ -37,14 +39,15 @@ function env(
   halted: number | null,
   haltedAt: number | null = null,
   usagePlan = "base",
+  plan = "free",
 ) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
         expect(sql).toBe(
-          "SELECT is_halted, halted_at, usage_plan FROM orgs WHERE id = ?1",
+          "SELECT is_halted, halted_at, usage_plan, plan FROM orgs WHERE id = ?1",
         );
-        return new FakeStatement(halted, haltedAt, usagePlan);
+        return new FakeStatement(halted, haltedAt, usagePlan, plan);
       },
     } as unknown as D1Database,
   };
@@ -136,6 +139,22 @@ describe("managed-agent credit admission", () => {
       ).resolves.toBeNull();
     },
   );
+
+  it("keeps an existing Pro org eligible before its usage-plan projection", async () => {
+    await expect(
+      getManagedAgentBillingAdmission(
+        env(1, 1_789_707_077, "base", "pro"),
+        "org_test",
+      ),
+    ).resolves.toEqual({
+      allowed: true,
+      isHalted: true,
+      haltedAt: 1_789_707_077,
+      reason: null,
+      paid: true,
+      modelAccess: "fallback",
+    });
+  });
 
   it("hard-stops an exhausted base org with the upgrade 402", async () => {
     const request = new Request(
