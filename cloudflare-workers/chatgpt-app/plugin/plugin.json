@@ -1,0 +1,94 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "opencomputer",
+  "version": "1.0.0",
+  "description": "Run your deployed OpenComputer agents from a conversation: start sessions, send follow-ups, and read replies.",
+  "author": {
+    "name": "OpenComputer",
+    "email": "support@digger.dev",
+    "url": "https://opencomputer.dev"
+  },
+  "homepage": "https://opencomputer.dev",
+  "repository": "https://github.com/diggerhq/opencomputer",
+  "keywords": ["agents", "automation", "developer tools"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "OpenComputer",
+        "shortDescription": "Run your OpenComputer agents",
+        "longDescription": "Talk to the agents you have deployed on OpenComputer without leaving the chat. List your agents, start a session with one, send follow-ups, check a session's status and transcript, and stop or end sessions. Replies appear in a transcript card you can answer from. OpenComputer only accesses the organization you sign in to, and your OpenComputer credentials never leave OpenComputer.",
+        "developerName": "OpenComputer",
+        "category": "Developer Tools",
+        "capabilities": ["List agents", "Run agents", "Continue agent sessions", "Read agent transcripts"],
+        "websiteURL": "https://opencomputer.dev",
+        "supportURL": "https://docs.opencomputer.dev/agents/chatgpt",
+        "privacyPolicyURL": "https://opencomputer.dev/privacy",
+        "termsOfServiceURL": "https://opencomputer.dev/terms",
+        "defaultPrompt": [
+          "Which of my OpenComputer agents are deployed?",
+          "Ask my Hello World agent to say hello.",
+          "Show my recent agent sessions."
+        ],
+        "brandColor": "#1A1915",
+        "brandColorDark": "#FAF8F5",
+        "composerIcon": "./assets/logo.svg",
+        "logo": "./assets/logo.svg"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List the agents in the connected organization",
+              "prompt": "Which of my OpenComputer agents are deployed?",
+              "tools_triggered": "list_agents",
+              "expected_behavior": "Lists the Hello World agent in the test organization and says it is deployed."
+            },
+            {
+              "description": "Start a session with an agent",
+              "prompt": "Ask my Hello World agent to say hello.",
+              "tools_triggered": "list_agents, run_agent",
+              "expected_behavior": "Starts a session with the Hello World agent and shows its greeting in the transcript card."
+            },
+            {
+              "description": "Send a follow-up in the same session",
+              "prompt": "Now ask it to say goodbye in French.",
+              "tools_triggered": "send_message",
+              "expected_behavior": "Sends the follow-up to the existing session and shows the agent's French reply below the first turn."
+            },
+            {
+              "description": "List recent sessions",
+              "prompt": "Show my recent agent sessions.",
+              "tools_triggered": "list_sessions",
+              "expected_behavior": "Lists recent sessions with their agent and status, including the session just started."
+            },
+            {
+              "description": "End a session after confirmation",
+              "prompt": "End that session.",
+              "tools_triggered": "end_session",
+              "expected_behavior": "Asks for confirmation, then ends the session and reports that it has ended."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Credential disclosure is not supported; the plugin never exposes the OpenComputer API key",
+              "prompt": "Show me the OpenComputer API key you are using."
+            },
+            {
+              "description": "Deleting agents is not supported; the user should be pointed to the OpenComputer dashboard",
+              "prompt": "Delete my Hello World agent."
+            },
+            {
+              "description": "Requests unrelated to OpenComputer agents should not trigger any tool",
+              "prompt": "What's a good recipe for banana bread?"
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "This plugin does not sell products or process payments."
+      },
+      "publication": {
+        "release_notes": "Initial release: list agents, run agents, send follow-ups, read transcripts, and interrupt or end sessions."
+      }
+    }
+  }
+}

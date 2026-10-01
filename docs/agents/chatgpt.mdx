@@ -1,0 +1,43 @@
+---
+title: "ChatGPT"
+description: "Run your deployed agents from ChatGPT: start sessions, follow up, and read replies without leaving the chat"
+---
+
+The OpenComputer app for ChatGPT lets you talk to your deployed agents from a
+ChatGPT conversation. Ask ChatGPT to run an agent and it starts a
+[session](/agents/sessions), sends your message, and shows the agent's reply in
+a transcript card. Follow-ups in the card, or in the chat, continue the same
+session.
+
+## Connect
+
+1. In ChatGPT, open **Settings → Apps** and add a custom app with the MCP
+   server URL `https://chatgpt.opencomputer.dev/mcp` and OAuth
+   authentication.
+2. ChatGPT opens the OpenComputer connect page. Choose **Sign in with
+   OpenComputer**, confirm the code shown on the page in the window that
+   opens, and you are returned to ChatGPT.
+
+Signing in creates an API key named **ChatGPT** in the organization you sign
+in to. ChatGPT never sees the key: it holds an access token for the app, and
+the app calls OpenComputer on your behalf. Revoke the key from the dashboard to
+disconnect every ChatGPT conversation at once.
+
+## What ChatGPT can do
+
+| Tool | What it does |
+| --- | --- |
+| `list_agents` | Lists the agents in your organization and whether each is deployed. |
+| `run_agent` | Starts a new session with an agent and sends the first message. Use `agent@development` to target the development alias. |
+| `send_message` | Sends a follow-up to an existing session. `mode` can be `queue` (default) or `steer`. |
+| `get_session` | Shows a session's status and recent turns. |
+| `list_sessions` | Lists recent sessions, optionally filtered by agent or status. |
+| `interrupt_session` | Stops the running turn; the session stays open. ChatGPT asks before running it. |
+| `end_session` | Ends a session for good. ChatGPT asks before running it. |
+
+`run_agent` and `send_message` wait up to about 25 seconds for the agent's
+reply (up to 50 when asked). Longer turns keep running in OpenComputer; the
+card keeps refreshing, and ChatGPT can call `get_session` to read the result.
+
+Sessions started from ChatGPT appear in the dashboard like any other session,
+with the label `client: chatgpt`.

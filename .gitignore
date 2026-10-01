@@ -98,3 +98,5 @@ cloudflare-workers/api-edge/wrangler.ci.toml
 .dev.vars*
 !.dev.vars.example
 cloudflare-workers/api-edge/wrangler.*.generated.jsonc
+cloudflare-workers/chatgpt-app/wrangler.*.generated.toml
+cloudflare-workers/chatgpt-app/opencomputer-plugin.zip
