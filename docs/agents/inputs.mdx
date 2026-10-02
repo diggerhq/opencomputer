@@ -27,6 +27,8 @@ interface AgentInput {
   readonly source: InputSource;
   readonly text?: string;
   readonly payload?: DataValue;
+  readonly answer?: QuestionAnswer;
+  readonly steering?: readonly HeldInput[];
 }
 ```
 
@@ -35,6 +37,8 @@ interface AgentInput {
 | `source` | How the work entered the session: `user`, `channel`, `schedule`, `webhook`, `subagent`, `system` or `event` |
 | `text` | Optional human-readable message |
 | `payload` | Optional structured JSON value supplied by the source |
+| `answer` | Present only when this input answers the question an earlier turn asked; see [Answers and steering](#answers-and-steering) |
+| `steering` | Inputs written while that question was open that did not answer it, in order |
 
 `DataValue` means any JSON-compatible value: `null`, a boolean, number,
 string, array, or object. Both `text` and `payload` are optional, so check them
@@ -52,6 +56,31 @@ the `connectionId`, and the Slack `workspaceId`, `conversationId` and `userId`
 when Slack supplies them. An agent serving one workspace can ignore all of
 this; an agent behind a shared Slack app uses it to decide whose records to
 read.
+
+A message from a [Linear connection](/agents/linear) also arrives with
+`source: "channel"`, with `channel.provider` set to `linear`,
+`channel.workspaceId` the Linear workspace, `channel.conversationId` the
+Linear agent session and `channel.userId` the person who wrote the message.
+Its `payload` is a `LinearInputPayload`: the issue, the session, the thread's
+comments, your workspace's guidance for agents, and `origin`, which says
+whether the issue had a parent and whether this agent's own app created it.
+`origin` is read when the session starts and does not change afterwards. The
+fields are listed on [Linear agents](/agents/linear#what-the-agent-receives).
+
+```tsx
+import { useInput, type LinearInputPayload } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.source === "channel" && input.channel.provider === "linear") {
+    const linear = input.payload as unknown as LinearInputPayload;
+    return linear.origin.createdByAgent && linear.origin.parent
+      ? `Implement ${linear.issue.identifier}, part of ${linear.origin.parent.identifier}.`
+      : `Investigate ${linear.issue.identifier} and propose an approach.`;
+  }
+  return `Help with: ${input.text ?? "the current request"}`;
+}
+```
 
 ## Adapt to the source
 
@@ -133,11 +162,57 @@ The platform attests where the input came from through `source`; the
 included message is another agent's output and is data to reason about, not
 instructions to follow.
 
+## Answers and steering
+
+A turn can end with a question: the agent selects the
+[`ask`](/agents/tools#ask-a-question) tool and the model calls it. The
+reply is the next input, from any source, with `answer` set:
+
+| Field | Meaning |
+| --- | --- |
+| `answer.questionId` | The question this input answers |
+| `answer.text` | What the person wrote or selected |
+| `answer.value` | The chosen option's `value`, when the text matched an option by value or label |
+
+Input that arrives while the question is open without answering it does not
+run a turn of its own. It is held and delivered with the answer as
+`steering`, in the order it arrived:
+
+| Field | Meaning |
+| --- | --- |
+| `text`, `payload`, `channel` | The held input, as it would have arrived on its own |
+| `receivedAt` | When OpenComputer received it |
+| `providerTime` | When the provider says it was written, when it says |
+
+Read `steering` before acting on the answer. A constraint written while the
+question was open can change what a "go" means, and the agent should revise
+its proposal rather than act on an answer the steering has overtaken.
+
+```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.answer) {
+    const held = (input.steering ?? []).map((item) => `- ${item.text ?? ""}`).join("\n");
+    return `The person answered: ${input.answer.value ?? input.answer.text}.${
+      held ? `\nWritten meanwhile, read before acting:\n${held}` : ""
+    }`;
+  }
+  useTool("ask");
+  return "Read the request, propose a plan, and ask before making changes.";
+}
+```
+
+`answer` and `steering` sit beside `payload`, not inside it, so they read the
+same from every source and never collide with an application's payload.
+
 ## Input is not a prompt UI
 
-`useInput()` only reads admitted input. It does not pause the session to ask a
-person a question. The durable conversation and later messages are managed by
-the [session](/agents/sessions).
+`useInput()` only reads admitted input. It does not itself pause the session
+to ask a person a question; a turn asks with the [`ask`](/agents/tools#ask-a-question)
+tool, and the answer arrives as a later input. The durable conversation and
+later messages are managed by the [session](/agents/sessions).
 
 Input payload also differs from [session data](/agents/session-data): a payload
 belongs to the current input, while session data can persist across renders.

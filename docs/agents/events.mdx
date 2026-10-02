@@ -70,9 +70,9 @@ remote cleanup continues in the background.
 | `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
 | `turn.interrupted` | This turn requested interruption of the running turns | `interruptedTurnIds` |
 | `turn.started` | The runtime began the turn | none |
-| `turn.completed` | The turn finished and the session is idle again | none |
+| `turn.completed` | The turn finished and the session is idle again | none, or `outcome: "question"` and `questionId` when the turn ended by [asking](#questions) |
 | `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
-| `turn.cancelled` | The turn was cancelled by an interrupt or session end | `reason`: `interrupted` or `session_ended`; optional `replacementTurnId`, `settledAfterMs`, `operationsSettled`, `computerTerminated` |
+| `turn.cancelled` | The turn was cancelled by an interrupt or session end, held behind a question, or stopped from Linear | `reason`: `interrupted`, `session_ended`, `held` or `stopped`; optional `replacementTurnId`, `settledAfterMs`, `operationsSettled`, `computerTerminated`; `questionId` with `held`; `discarded: true` on a queued turn a stop discarded |
 
 For an interrupt that waits for commands, `settledAfterMs` records the wait,
 `operationsSettled` counts the settled commands, and `computerTerminated`
@@ -80,6 +80,10 @@ says whether stopping required terminating the computer. Cancellation with
 `reason: "session_ended"` has no settlement fields: it records the session's
 decision to end, before remote cleanup finishes. Immediate-cancellation
 sessions also omit these fields; see [End and interrupt](/agents/api#end-and-interrupt).
+
+A turn that was queued behind a turn that asked a question is cancelled
+with `reason: "held"` and the `questionId`: its input did not run on its own
+and is delivered with the answer as `steering`.
 
 #### Public failures
 
@@ -116,6 +120,21 @@ only when one happened.
 | `sandbox_failed` | The sandbox could not run the turn | |
 | `model_stream_failed` | The model call failed before it finished, or its response stream broke; when it was retried, the retry failed too | `model`: the model id, when known |
 | `agent_failed` | Any other failure | |
+
+### Questions
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question); the asking turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text |
+| `question.answered` | A turn answering the question was admitted | `questionId`, `answer`: `{ questionId, text, value? }` |
+| `question.closed` | The question closed without an answer | `questionId`, `reason`: `stopped` |
+
+`turn.completed` with `outcome: "question"` is the turn's terminal event, so a
+consumer that knows only completed turns reads an asking turn correctly, and
+[outcome subscriptions](/agents/api#event-subscriptions) deliver it as a
+completed turn. The open question is also on the session as
+[`question`](/agents/sessions#questions). A question closes with `stopped`
+when the session is stopped from [Linear](/agents/linear#stop).
 
 ### Messages
 

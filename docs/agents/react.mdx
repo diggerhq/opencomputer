@@ -45,7 +45,7 @@ The hook needs these [management API](/agents/api) routes, relative to its
 | Route | Purpose |
 | --- | --- |
 | `GET /sessions/<id>/events?after=<seq>` | Read conversation history and new events |
-| `POST /sessions/<id>/turns` | Submit `{ input, idempotencyKey, payload? }` |
+| `POST /sessions/<id>/turns` | Submit `{ input, idempotencyKey, payload?, answers? }` |
 | `POST /sessions/<id>/interrupt` | Request Stop for the running turn |
 
 Authenticate each request and check access to the session before forwarding
@@ -179,6 +179,7 @@ confirms that message instead of adding a second one.
 | --- | --- |
 | `idempotencyKey` | One key per submission, reused on retries. Without it, **each call** generates a new key and can admit a new turn. |
 | `payload` | Structured JSON available to the agent as `useInput().payload`, beside the text |
+| `answers` | The id of the open question this input answers; `answer()` sets it |
 
 `send` rejects with a `SendError`. Rejection alone does **not** establish
 whether a turn was admitted:
@@ -219,6 +220,7 @@ to distinguish queued work from running and settled turns:
 | `toolCalls` | `{ callId, tool, title, input?, output?, status }` in start order; values are decoded JSON |
 | `result` | This turn's latest committed [result-tool output](/agents/tools#the-session-result), if any; ordinary tool output does not become a result |
 | `failure` | `{ code, message }` from `turn.failed` |
+| `outcome` | `"question"` when the turn completed by asking |
 
 Reporting a result does not finish a turn. The session's latest result may
 also belong to an earlier turn; see [result provenance](/agents/sessions)
@@ -236,6 +238,38 @@ includes this hook instance's unsettled admission receipts. After reopening,
 a queued turn is visible in `turns` but does not by itself set `isRunning`.
 Use `turns` for queued/running counts and the [session API](/agents/api#sessions)
 for session status.
+
+## Answer a question
+
+An agent can end a turn by [asking a question](/agents/tools#ask-a-question).
+The hook exposes the open question as `question`, `{ id, text, options,
+turnId? }`, or `null`, and `answer(questionId, text, options?)` sends the
+reply. The asking turn's `outcome` is `"question"`.
+
+```tsx
+const { question, answer } = useAgent({ sessionId, basePath: "/api/agent" });
+
+{question ? (
+  <section>
+    <p>{question.text}</p>
+    {question.options.map((option) => (
+      <button
+        key={option.value}
+        onClick={() => void answer(question.id, option.value, { idempotencyKey: `${question.id}:${option.value}` })}
+      >
+        {option.label}
+      </button>
+    ))}
+  </section>
+) : null}
+```
+
+`answer(id, text, options)` is `send(text, { ...options, answers: id })`
+and resolves with the same receipt. `options` is empty for a free-text
+question; answer it with the person's text. `question` clears when the
+log records `question.answered` or `question.closed` for it. Answering a
+question that is no longer open rejects with a `SendError` whose code is
+`question_stale`; the hook's `question` shows the current one.
 
 ## Stop and reopen
 
@@ -330,6 +364,8 @@ code.
 | `turns` | Turns with status, input, messages, tool calls, result and failure |
 | `send(text, options?)` | Submit a turn; resolve with a receipt or reject with `SendError` |
 | `stop()` | Request an interrupt; rejects with `SendError` on a failed request, settlement arrives in `turns` |
+| `question` | The open question, `{ id, text, options, turnId? }`, or `null` |
+| `answer(questionId, text, options?)` | Answer the open question; same receipt and errors as `send` |
 | `sessionId` | Attached session, or the created one after the first send |
 | `isRunning` | Running activity or this instance's unsettled admissions; not a session status |
 | `isReplaying` | Attach mode: existing history is still loading |

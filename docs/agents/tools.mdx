@@ -271,6 +271,59 @@ For Google services, GitHub, or Linear, the credential belongs to whoever
 connected the account and the platform refreshes it — call those with
 [`callService`](/agents/services) instead.
 
+## Ask a question
+
+`ask` is the platform's question tool. Select it with `useTool("ask")` when a
+turn may need to stop and ask a person before going on:
+
+```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  if (input.answer) {
+    return `The answer was ${input.answer.value ?? input.answer.text}. Proceed accordingly.`;
+  }
+  useTool("ask");
+  return "Read the request, propose an approach, and ask whether to go ahead.";
+}
+```
+
+The model calls it with:
+
+| Field | Bounds |
+| --- | --- |
+| `text` | The question, 1 to 4000 characters |
+| `options` | Optional, at most six `{ label, value }` choices; each `label` and `value` 1 to 80 characters |
+
+Calling `ask` ends the turn with an open question. The turn completes with
+`outcome: "question"`, the session's `question` holds what was asked, and
+`question.asked` is recorded in the [event log](/agents/events#questions).
+The reply arrives as the next input with
+[`answer`](/agents/inputs#answers-and-steering) set, and anything written
+meanwhile arrives with it as `steering`. A session has at most one open
+question; the turn that interprets the answer may ask again.
+
+How the question reaches a person depends on where the session lives: an
+application answers it through the [API](/agents/api#turns) or the
+[React hook](/agents/react#answer-a-question), and a
+[Linear](/agents/linear#ask-a-question) session shows it in the thread with
+the options as buttons.
+
+`ask` records that the agent asked. It does not undo or forbid anything the
+turn did before asking. A turn meant only to propose should select `ask` and
+tools that cannot write, and select the writing tools on the turn that
+carries the answer.
+
+The id `ask` is reserved: `defineTool({ name: "ask" })` is refused, both by
+`defineTool` and by the CLI's build. `ask` runs on the default runtime for new deployments;
+sessions with `executionMode: "microvm"` cannot select it.
+
+`ask` is different from [waiting for a person](#wait-for-a-person-before-writing):
+`ask` ends a turn with an open question the agent reasons about when it is
+answered, while an approval tool records one exact write that runs, unchanged,
+once someone approves it.
+
 ## Wait for a person before writing
 
 Some writes should not happen because a model decided they should. Such a tool

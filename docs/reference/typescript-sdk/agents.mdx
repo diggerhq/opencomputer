@@ -122,7 +122,8 @@ its contents affect application correctness or access.
 
 `create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`,
 `labels` and `externalReference` as [documented](/agents/api#create). `turns.send` takes `input`,
-`idempotencyKey`, `mode` and `payload`; both `create` and `turns.send` send
+`idempotencyKey`, `mode`, `payload` and `answers`, the id of the open
+[question](/agents/sessions#questions) the input answers; both `create` and `turns.send` send
 the key as the `Idempotency-Key` header. The receipt carries the turn's
 persisted `status`: `queued` or `running` for a new turn, and for a repeated
 key the existing turn's status, `completed`, `failed` or `cancelled` once it

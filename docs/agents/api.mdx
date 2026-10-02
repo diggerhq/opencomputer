@@ -137,8 +137,9 @@ not active in the named environment), `402 insufficient_credits`.
 | `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `externalReference` | The reference given at creation; absent when none was given |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
-| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`, and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
+| `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`; `outcome: "question"` on a completed turn that ended by asking; and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
+| `question` | The open [question](/agents/sessions#questions) the agent asked with `ask`, or `null`: `{ id, text, options, askedAt }`, `options` an array of `{ label, value }`, empty for free text. Independent of `result`. |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 
@@ -323,6 +324,7 @@ are present they must be equal, else `400 invalid_turn`.
 | `idempotencyKey` | Optional. The key in body form, for a proxied browser send; equal to the header when both are present. |
 | `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: interrupt running turns and run next, with the [same settlement behavior](#end-and-interrupt) as the interrupt route. |
 | `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
+| `answers` | Optional. The id of the session's open [question](/agents/sessions#questions). The input answers it, and the agent reads it as [`useInput().answer`](/agents/inputs#answers-and-steering). |
 
 The response is `202 { turnId, status, duplicate }` for a new turn and
 `200` with `duplicate: true` when the key had already created one. `status`
@@ -339,8 +341,21 @@ idempotency_conflict` and admits nothing. A retry after a lost reply is
 therefore safe with the same body, and a different request never lands on
 another request's key.
 
+While the session has an open question, a turn sent without `answers` is
+held rather than run: the response is `202 { status: "held", duplicate }`
+with no `turnId`. The held input is delivered with the answer, in order, as
+the answering turn's `steering`. A repeat of its key after the answer returns
+the answering turn's receipt; after the session is stopped from
+[Linear](/agents/linear#stop), it returns `status: "discarded"`.
+
+A turn with `answers` resolves the question and runs as the answer, in one
+step, idempotent on its key. Naming a question that is not the open one, or
+answering when none is open, is `409 question_stale`; read the session and
+answer its current question.
+
 Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KB),
 `402 insufficient_credits`, `409 idempotency_conflict`,
+`409 question_stale`,
 `409 memory_admission_pending` (retry the session creation with its key
 first), `409 memory_admission_rejected` (the session is ended; create a new
 one).
@@ -508,6 +523,50 @@ when the subscription is deleted or the destination has ended.
 The delivered event names identifiers and the outcome; a completed turn's
 final message is included, bounded to 16 KB. The receiving agent should
 treat that text as data about another agent's work, not as instructions.
+
+## Linear connections
+
+A [Linear connection](/agents/linear) binds a Linear app in your workspace to
+one agent in one environment. The dashboard drives these routes; they need an
+organization API key, and project-scoped keys are refused.
+
+| Operation | Method and path | Body or query | Success |
+| --- | --- | --- | --- |
+| Create | `POST /projects/<p>/linear/connections` | `{ name, environment, agentId }` | `201` with `{ connectionId, webhookUrl, createAppUrl, connection }`; `200` when a pending connection for that binding already exists |
+| List | `GET /projects/<p>/linear/connections` | Optional `?environment=` | `200` with `{ connections }` |
+| Set credentials | `PUT /linear/connections/<id>/credentials` | `{ clientId, clientSecret, signingSecret }`, as copied from the Linear app | `200` with `{ connection }` |
+| Authorize | `POST /linear/connections/<id>/authorize` | None | `200` with `{ authorizeUrl, expiresAt }` |
+| Disconnect | `DELETE /linear/connections/<id>` | None | `200` with `{ connection, revoked }` |
+
+`createAppUrl` opens Linear's create-app page prefilled with the name, the
+callback URL and `webhookUrl`. `webhookUrl` contains the connection's secret;
+treat it as a credential. `authorizeUrl` is Linear's consent page for the app;
+a workspace admin completes it, and Linear returns to OpenComputer's callback,
+which stores the tokens and redirects to the project's Connections tab.
+`revoked` on a disconnect says whether Linear confirmed the token revocation.
+
+A connection is `{ id, projectId, environment, agentId, name, status,
+clientId, appUserId, organizationId, webhookUrl, createAppUrl, verifiedAt,
+verificationError, lastEventAt, teams, health, revision, createdAt,
+updatedAt }`. It never carries a secret or a token. `status` is `pending`,
+`connected`, `disconnected` or `revoked`. `health` is `{ state, message,
+lastEventAt? }`, with `state` one of `awaiting_credentials`,
+`awaiting_authorization`, `waiting_for_first_delegation`, `receiving` or
+`revoked`. `teams` is `{ allPublic, teamIds }`, the teams the app can see.
+
+| Code | Meaning |
+| --- | --- |
+| `400 invalid_environment`, `400 invalid_agent` | `environment` must be `development` or `production`; `agentId` must name an agent of the project |
+| `400 invalid_linear_app_name` | The name must be 1 to 64 characters |
+| `400 linear_app_name_reserved` | Linear does not allow app names that contain "Linear" |
+| `400 invalid_linear_credentials` | `clientId`, `clientSecret` and `signingSecret` are all required |
+| `404 linear_connection_not_found` | No such connection, or it was disconnected |
+| `409 linear_already_connected` | The agent already has a connection in this environment; `error.connectionId` names it |
+| `409 linear_app_already_connected` | That Linear app is connected to another agent or environment; create a separate app |
+| `409 linear_connection_connected` | The connection is authorized with a different Linear app; disconnect it first |
+| `409 linear_credentials_required` | Set the credentials before authorizing |
+| `409 linear_connection_changed` | Another request changed the connection; list the connections and continue; `error.connectionId` names it |
+| `503 linear_connector_unavailable` | Linear connections are not available right now |
 
 ## Projects, agents and deployments
 
