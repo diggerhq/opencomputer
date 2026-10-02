@@ -24,16 +24,17 @@ separate connections with separate apps.
 
 After the project's deployment is synchronized:
 
-1. Open the project in the dashboard and select **Development** or
-   **Production**.
-2. Open **Connections** and, in the Linear panel, choose **Create Linear
-   agent**. Enter the name people will see in Linear. Linear does not allow
-   app names that contain "Linear".
-3. OpenComputer allocates the connection and its webhook URL, then opens
-   Linear's create-app page prefilled with the name, the callback URL, and
-   webhooks enabled on the webhook URL shown in the dashboard for agent
-   session, permission change and authorization events. Create the app. It is
-   private to your workspace.
+1. Open the project in the dashboard and its **Connections** tab. The Linear
+   panel has one row for Development and one for Production, each for the
+   agent deployed there.
+2. On the row's environment, choose **Create Linear agent**. Enter the name
+   people will see in Linear. Linear does not allow app names that contain
+   "Linear".
+3. OpenComputer allocates the connection and its webhook URL. Choose **Open
+   Linear to create the app**: Linear's create-app page opens prefilled with
+   the name, the callback URL, and webhooks enabled on the webhook URL shown
+   in the dashboard for agent session, permission change and authorization
+   events. Create the app. It is private to your workspace.
 4. Copy the app's **client ID**, **client secret** and **webhook signing
    secret** from Linear and paste them into the dashboard.
 5. Choose **Authorize in Linear** and approve the installation. A workspace
@@ -45,11 +46,11 @@ The panel then shows the connection's health:
 
 | State | Shown as | Meaning |
 | --- | --- | --- |
-| `awaiting_credentials` | Create the app in Linear, then paste its credentials | The connection exists; the app's credentials are not stored yet |
-| `awaiting_authorization` | Authorize the app in Linear to finish setup | Credentials are stored; the app is not installed yet |
+| `awaiting_credentials` | Setup in progress (**Continue setup**) | The connection exists; the app's credentials are not stored yet |
+| `awaiting_authorization` | Ready to authorize (**Authorize in Linear**) | Credentials are stored; the app is not installed yet |
 | `waiting_for_first_delegation` | Waiting for the first delegation | The app is installed; no event from Linear has arrived yet |
 | `receiving` | First session received | A real Linear event reached the agent; the time of the latest one is shown |
-| `revoked` | The app's access was revoked in Linear | Authorize it again to reconnect |
+| `revoked` | Access revoked (**Authorize in Linear**) | Authorize it again to reconnect |
 
 Delegate an issue to the agent, or mention it, to confirm delivery. The
 connection also records which teams the app can see, and follows the changes
