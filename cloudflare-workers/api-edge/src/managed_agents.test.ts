@@ -4,6 +4,7 @@ import {
   handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
   handleManagedGitHubCallback,
+  handleManagedLinearCallback,
   handleManagedSlackCallback,
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
@@ -4084,6 +4085,337 @@ describe("managed agents proxy", () => {
     });
   });
 
+  describe("questions", () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+    const question = {
+      id: "q_turn-1_call-1",
+      text: "Ship the small fix or the refactor? Messages typed meanwhile are held.",
+      options: [
+        { label: "Small fix", value: "small" },
+        { label: "Refactor", value: "refactor" },
+      ],
+      askedAt: "2026-10-02T10:00:00.000Z",
+    };
+
+    it("forwards answers on a turn unchanged and maps question_stale to 409", async () => {
+      const body = {
+        input: "Small fix",
+        idempotencyKey: "answer-1",
+        answers: question.id,
+      };
+      const fetchSpy = vi.fn(async () =>
+        Response.json(
+          { turnId: "turn-2", status: "queued", duplicate: false },
+          { status: 202 },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(202);
+      const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+        URL,
+        RequestInit,
+      ];
+      expect(String(target)).toBe(
+        "https://managedagents.test/v1/sessions/session-1/turns",
+      );
+      expect(await new Response(init.body).text()).toBe(JSON.stringify(body));
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "question_stale",
+                message: "question q_old is not the open question",
+                accountId: "acct_private",
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+      const stale = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...body, answers: "q_old" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({
+        error: {
+          code: "question_stale",
+          message:
+            "That question is no longer open. Read the session's current question and answer that one.",
+        },
+      });
+    });
+
+    it("forwards a dismiss of the open question and returns the sanitized session", async () => {
+      const fetchSpy = vi.fn(async () =>
+        Response.json({
+          id: "session-1",
+          status: "idle",
+          accountId: "acct_private",
+          turns: [],
+          question: null,
+        }),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const dismiss = (method: string) =>
+        proxyManagedAgents(
+          new Request(
+            `https://app.opencomputer.dev/api/managed-agents/sessions/session-1/questions/${question.id}/dismiss`,
+            { method },
+          ),
+          env,
+          caller,
+          "/api/managed-agents",
+        );
+      const response = await dismiss("POST");
+      expect(response.status).toBe(200);
+      const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+      expect(String(target)).toBe(
+        `https://managedagents.test/v1/sessions/session-1/questions/${question.id}/dismiss`,
+      );
+      expect(init.method).toBe("POST");
+      expect(await response.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        turns: [],
+        question: null,
+      });
+
+      // Only POST, and only on a named question.
+      expect((await dismiss("GET")).status).toBe(404);
+      const bare = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/questions/dismiss",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(bare.status).toBe(404);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes a held receipt through with its question and no turn", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { status: "held", questionId: question.id, heldId: "held_1", duplicate: false, accountId: "acct_private" },
+            { status: 202 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ input: "Keep the old endpoint" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        status: "held",
+        questionId: question.id,
+        heldId: "held_1",
+        duplicate: false,
+      });
+    });
+
+    it("passes the open question and a turn's outcome through the session snapshot", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            id: "session-1",
+            status: "idle",
+            accountId: "acct_private",
+            question,
+            turns: [
+              {
+                id: "turn-1",
+                input: "Fix the flaky test.",
+                mode: "queue",
+                status: "completed",
+                outcome: "question",
+                runtimeId: "runtime_private",
+                createdAt: "2026-10-02T09:59:00.000Z",
+                updatedAt: "2026-10-02T10:00:00.000Z",
+              },
+            ],
+            createdAt: "2026-10-02T09:59:00.000Z",
+            updatedAt: "2026-10-02T10:00:00.000Z",
+          }),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        question,
+        turns: [
+          {
+            id: "turn-1",
+            input: "Fix the flaky test.",
+            mode: "queue",
+            status: "completed",
+            outcome: "question",
+            createdAt: "2026-10-02T09:59:00.000Z",
+            updatedAt: "2026-10-02T10:00:00.000Z",
+          },
+        ],
+        createdAt: "2026-10-02T09:59:00.000Z",
+        updatedAt: "2026-10-02T10:00:00.000Z",
+      });
+
+      // A session with no open question answers null, not absent.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({ id: "session-1", status: "idle", question: null }),
+        ),
+      );
+      const closed = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(await closed.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        question: null,
+      });
+    });
+
+    it("keeps the question events and the asking turn's outcome on public events", async () => {
+      const event = (
+        seq: number,
+        type: string,
+        data: Record<string, unknown>,
+      ) => ({
+        id: `event-${seq}`,
+        seq,
+        timestamp: "2026-10-02T10:00:00.000Z",
+        sessionId: "session-1",
+        turnId: seq < 3 ? "turn-1" : "turn-2",
+        type,
+        data,
+      });
+      const answer = {
+        questionId: question.id,
+        text: "Small fix",
+        value: "small",
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            events: [
+              event(1, "question.asked", {
+                questionId: question.id,
+                text: question.text,
+                options: question.options,
+              }),
+              event(2, "turn.completed", {
+                outcome: "question",
+                questionId: question.id,
+              }),
+              event(3, "question.answered", {
+                questionId: question.id,
+                answer,
+                accountId: "acct_private",
+              }),
+              event(4, "question.closed", {
+                questionId: "q_turn-2_call-1",
+                reason: "replaced",
+              }),
+            ],
+          }),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(200);
+      const { events } = (await response.json()) as {
+        events: Array<{ type: string; data: unknown }>;
+      };
+      expect(events.map(({ type, data }) => ({ type, data }))).toEqual([
+        {
+          type: "question.asked",
+          data: {
+            questionId: question.id,
+            text: question.text,
+            options: question.options,
+          },
+        },
+        {
+          type: "turn.completed",
+          data: { outcome: "question", questionId: question.id },
+        },
+        {
+          type: "question.answered",
+          data: { questionId: question.id, answer },
+        },
+        {
+          type: "question.closed",
+          data: { questionId: "q_turn-2_call-1", reason: "replaced" },
+        },
+      ]);
+    });
+  });
+
   // Review finding 8 (2026-09-15): the detail route used to strip
   // reserved-looking keys from every nested object, so an application result
   // that happened to contain userId, a nested runtimeId or artifact came back
@@ -5596,5 +5928,477 @@ describe("managed agents proxy", () => {
           "Tool module exported an unregistered tool: sk-ant-api03-0123456789abcdefghijklmnop",
       }),
     ).toEqual({ code: "tool_failed", message: "A tool failed." });
+  });
+});
+
+describe("Linear agent connections", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const env = {
+    MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    OC_MANAGED_AGENTS_SECRET: "test-secret",
+  };
+  const caller = { orgID: "org_test", userID: "user_test" };
+  const webhookUrl =
+    "https://managedagents.test/v1/webhooks/linear/lc_0123456789abcdef0123456789abcdef/" +
+    "a".repeat(64);
+  const createAppUrl =
+    "https://linear.app/settings/api/applications/new?distribution=private";
+  const backendConnection = {
+    id: "lc_0123456789abcdef0123456789abcdef",
+    projectId: "prj_test",
+    environment: "production",
+    agentId: "triage",
+    name: "Triage",
+    status: "pending",
+    webhookUrl,
+    createAppUrl,
+    revision: 1,
+    createdAt: "2026-10-02T00:00:00.000Z",
+    updatedAt: "2026-10-02T00:00:00.000Z",
+    accountId: "private_org",
+    clientSecret: "never",
+    accessToken: "never",
+  };
+
+  function send(path: string, init?: RequestInit) {
+    return proxyManagedAgents(
+      new Request(`https://app.opencomputer.dev/api/managed-agents${path}`, init),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+  }
+
+  function forwarded(fetchMock: ReturnType<typeof vi.fn>) {
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const headers = new Headers(init.headers);
+    return { target: target.toString(), init, headers };
+  }
+
+  it("creates a connection for a project and returns its URLs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json(
+        {
+          connectionId: backendConnection.id,
+          webhookUrl,
+          createAppUrl,
+          connection: backendConnection,
+        },
+        { status: 201 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await send("/projects/prj_test/linear/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Triage",
+        environment: "production",
+        agentId: "triage",
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      connectionId: backendConnection.id,
+      webhookUrl,
+      createAppUrl,
+      connection: {
+        id: backendConnection.id,
+        projectId: "prj_test",
+        environment: "production",
+        agentId: "triage",
+        name: "Triage",
+        status: "pending",
+        webhookUrl,
+        createAppUrl,
+        revision: 1,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("private_org");
+    expect(JSON.stringify(body)).not.toContain("never");
+
+    const { target, init, headers } = forwarded(fetchMock);
+    expect(target).toBe(
+      "https://managedagents.test/v1/projects/prj_test/linear/connections",
+    );
+    expect(init.method).toBe("POST");
+    expect(headers.get("content-type")).toBe("application/json");
+    const token = headers.get("x-opencomputer-agent-token") ?? "";
+    expect(decodePayload(token)).toMatchObject({
+      org_id: "org_test",
+      user_id: "user_test",
+    });
+    expect(await new Response(init.body).json()).toEqual({
+      name: "Triage",
+      environment: "production",
+      agentId: "triage",
+    });
+  });
+
+  it("lists a project's connections with health and forwards the environment", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        connections: [
+          {
+            ...backendConnection,
+            status: "connected",
+            clientId: "client-id",
+            appUserId: "app-user",
+            organizationId: "org-linear",
+            verifiedAt: "2026-10-02T00:01:00.000Z",
+            lastEventAt: "2026-10-02T00:02:00.000Z",
+            teams: { allPublic: false, teamIds: ["team_1"], secret: "x" },
+            health: {
+              state: "receiving",
+              message: "First session received",
+              lastEventAt: "2026-10-02T00:02:00.000Z",
+              internal: "x",
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await send(
+      "/projects/prj_test/linear/connections?environment=production",
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = (await response.json()) as {
+      connections: Record<string, unknown>[];
+    };
+    expect(body.connections).toHaveLength(1);
+    expect(body.connections[0]).toMatchObject({
+      id: backendConnection.id,
+      status: "connected",
+      clientId: "client-id",
+      appUserId: "app-user",
+      organizationId: "org-linear",
+      webhookUrl,
+      teams: { allPublic: false, teamIds: ["team_1"] },
+      health: {
+        state: "receiving",
+        message: "First session received",
+        lastEventAt: "2026-10-02T00:02:00.000Z",
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(/private_org|never|internal|secret/);
+    const { target, init, headers } = forwarded(fetchMock);
+    expect(target).toBe(
+      "https://managedagents.test/v1/projects/prj_test/linear/connections?environment=production",
+    );
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
+  });
+
+  it("forwards pasted credentials and never echoes them", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        connection: {
+          ...backendConnection,
+          clientId: "client-id",
+          clientSecret: "client-secret",
+          signingSecret: "signing-secret",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const credentials = {
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      signingSecret: "signing-secret",
+    };
+
+    const response = await send(
+      `/linear/connections/${backendConnection.id}/credentials`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(credentials),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain("client-secret");
+    expect(text).not.toContain("signing-secret");
+    expect(JSON.parse(text)).toMatchObject({
+      connection: { id: backendConnection.id, clientId: "client-id" },
+    });
+    const { target, init, headers } = forwarded(fetchMock);
+    expect(target).toBe(
+      `https://managedagents.test/v1/linear/connections/${backendConnection.id}/credentials`,
+    );
+    expect(init.method).toBe("PUT");
+    expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
+    expect(await new Response(init.body).json()).toEqual(credentials);
+  });
+
+  it("issues the authorization URL", async () => {
+    const authorizeUrl =
+      "https://linear.app/oauth/authorize?client_id=client-id&actor=app&state=opaque&redirect_uri=https%3A%2F%2Fapp.opencomputer.dev%2Fapi%2Fmanaged-agents%2Flinear%2Fcallback";
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        authorizeUrl,
+        expiresAt: "2026-10-02T00:10:00.000Z",
+        nonce: "private",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await send(
+      `/linear/connections/${backendConnection.id}/authorize`,
+      { method: "POST" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      authorizeUrl,
+      expiresAt: "2026-10-02T00:10:00.000Z",
+    });
+    const { target, init } = forwarded(fetchMock);
+    expect(target).toBe(
+      `https://managedagents.test/v1/linear/connections/${backendConnection.id}/authorize`,
+    );
+    expect(init.method).toBe("POST");
+  });
+
+  it("deletes a connection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        connection: { ...backendConnection, status: "disconnected" },
+        revoked: true,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await send(`/linear/connections/${backendConnection.id}`, {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      connection: { id: backendConnection.id, status: "disconnected" },
+      revoked: true,
+    });
+    const { target, init } = forwarded(fetchMock);
+    expect(target).toBe(
+      `https://managedagents.test/v1/linear/connections/${backendConnection.id}`,
+    );
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("admits only the contract's Linear routes", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const [method, path] of [
+      ["GET", `/linear/connections/${backendConnection.id}`],
+      ["PUT", `/linear/connections/${backendConnection.id}`],
+      ["GET", `/linear/connections/${backendConnection.id}/credentials`],
+      ["GET", `/linear/connections/${backendConnection.id}/authorize`],
+      ["DELETE", "/projects/prj_test/linear/connections"],
+      ["GET", "/linear/oauth/callback?state=x&code=y"],
+      ["POST", `/webhooks/linear/${backendConnection.id}/${"a".repeat(64)}`],
+      ["POST", "/projects/prj_test/linear/connections/extra"],
+    ] as const) {
+      const response = await send(path, { method });
+      expect(response.status, `${method} ${path}`).toBe(404);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses without project access, keeping the backend's code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              error: {
+                code: "project_archived",
+                message: "Restore the project before starting new work",
+              },
+            },
+            { status: 409 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          Response.json(
+            { error: { code: "project_not_found", message: "Project not found" } },
+            { status: 404 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              error: {
+                code: "forbidden",
+                message: "Project tokens cannot manage Linear connections",
+              },
+            },
+            { status: 403 },
+          ),
+        ),
+    );
+
+    const archived = await send("/projects/prj_old/linear/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Triage", environment: "production", agentId: "triage" }),
+    });
+    expect(archived.status).toBe(409);
+    await expect(archived.json()).resolves.toEqual({
+      error: {
+        code: "project_archived",
+        message: "Restore this project before connecting Linear.",
+      },
+    });
+
+    const listed = await send("/projects/prj_other/linear/connections");
+    expect(listed.status).toBe(404);
+    await expect(listed.json()).resolves.toEqual({
+      error: {
+        code: "project_not_found",
+        message: "That project does not exist.",
+      },
+    });
+
+    const authorized = await send(
+      `/linear/connections/${backendConnection.id}/authorize`,
+      { method: "POST" },
+    );
+    expect(authorized.status).toBe(403);
+    await expect(authorized.json()).resolves.toEqual({
+      error: {
+        code: "forbidden",
+        message:
+          "Project-scoped API keys cannot create or change Linear connections. Use an organization API key.",
+      },
+    });
+  });
+
+  it("maps Linear conflicts to curated messages with the connection id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: "linear_already_connected",
+              message: "backend wording",
+              connectionId: backendConnection.id,
+              accountId: "private_org",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const response = await send("/projects/prj_test/linear/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Triage", environment: "production", agentId: "triage" }),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "linear_already_connected",
+        message:
+          "This agent already has a Linear connection in this environment. Disconnect it before creating another.",
+        connectionId: backendConnection.id,
+      },
+    });
+  });
+
+  it("passes the OAuth callback redirect through with its location", async () => {
+    const location =
+      "https://app.opencomputer.dev/projects/prj_test/connections?environment=production&linear=connected&connection=lc_0123456789abcdef0123456789abcdef";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location, "set-cookie": "private=1" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleManagedLinearCallback(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/linear/callback?code=oauth-code&state=opaque",
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(location);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://managedagents.test/v1/linear/oauth/callback?code=oauth-code&state=opaque",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual({ redirect: "manual" });
+  });
+
+  it("passes the OAuth callback's error page through without a location", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("<html>Linear connection failed</html>", {
+          status: 400,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            location: "https://app.opencomputer.dev/projects/prj_test",
+          },
+        }),
+      ),
+    );
+
+    const response = await handleManagedLinearCallback(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/linear/callback?state=broken",
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.text()).resolves.toContain("Linear connection failed");
+  });
+
+  it("refuses to forward the OAuth callback over plain HTTP or with another method", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const insecure = await handleManagedLinearCallback(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/linear/callback?code=c&state=s",
+      ),
+      { MANAGED_AGENTS_API_URL: "http://managedagents.test" },
+    );
+    expect(insecure.status).toBe(503);
+
+    const posted = await handleManagedLinearCallback(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/linear/callback",
+        { method: "POST" },
+      ),
+      { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+    );
+    expect(posted.status).toBe(405);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

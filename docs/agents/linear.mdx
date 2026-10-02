@@ -1,0 +1,130 @@
+---
+title: "Linear connections"
+description: "Make a deployed agent a teammate people delegate issues to and mention in Linear"
+---
+
+Connect an agent to Linear and people can delegate issues to it and mention it.
+It appears under your Linear app's name and icon. Its tool calls and replies
+appear in the issue's thread. You write no webhook or Linear client code.
+
+```tsx
+import { useInput } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  return `You are a teammate in Linear. Work on this and reply in the thread:\n\n${input.text ?? ""}`;
+}
+```
+
+## Connect
+
+1. In the project's **Connections** tab, choose **Create Linear agent** on the
+   environment's row and name it. Names can't contain "Linear".
+2. Choose **Open Linear to create the app**. The page is prefilled; create the app.
+3. Paste the app's client ID, client secret and webhook signing secret.
+4. Choose **Authorize in Linear**. A workspace admin must approve.
+5. Delegate an issue to the agent. The panel shows **First session received**.
+
+Each environment needs its own Linear app. Linear access tokens never reach the
+agent, its logs or the browser.
+
+## Talking to it
+
+- **Delegate an issue** or **mention it** in a comment to start a session.
+- **Reply in the session's thread** to continue, even after it finished.
+
+A top-level comment without a mention is not delivered. Anyone on the team can
+reply; the agent answers the thread, not a person.
+
+## What it receives
+
+Each message is a [channel input](/agents/inputs) with
+`channel.provider: "linear"`. `text` is the message; for the first one it is
+Linear's prompt context, or `<identifier>: <title>` without one. `payload` is a
+`LinearInputPayload`:
+
+| Field | Meaning |
+| --- | --- |
+| `issue` | `{ id, identifier, title, description, url, team }` |
+| `origin` | `{ parent?, createdByAgent }`, read when the session starts and fixed for its life; `createdByAgent` is true when this agent's Linear app created the issue, whoever delegated it |
+| `action` | `created` for the first message, `prompted` after |
+| `session` | `{ id, url?, creator? }`; `creator` is the person responsible, absent when automation started it |
+| `promptContext`, `comment`, `previousComments`, `guidance` | The thread and your workspace's agent guidance, as Linear sent them |
+
+## What it writes
+
+| The agent | Linear shows |
+| --- | --- |
+| Receives a session | "Reading the issue.", at once |
+| Calls a tool | An action with a short subject such as a file path, never full arguments or output |
+| Finishes its turn | The final message as a response, or "Done." without one |
+| Calls `ask` | A question awaiting input, options as buttons |
+| Is stopped | An error: "Stopped." |
+| Fails | An error: "OpenComputer could not complete this request." |
+
+A GitHub pull request URL in the final message becomes the session's link.
+
+## Ask before acting
+
+```tsx
+import { useInput, useService, useTool } from "@opencomputer/agent";
+import { applyPlan } from "./tools/apply-plan"; // a defineTool that calls Linear
+
+export default function Agent() {
+  useService("linear");
+  const input = useInput();
+  if (!input.answer) {
+    useTool("ask");
+    return `Propose a plan, then ask whether to go:\n\n${input.text ?? ""}`;
+  }
+  useTool(applyPlan);
+  return `You were told "${input.answer.text}". If that means go, do it.`;
+}
+```
+
+Any reply after the question is the answer, `input.answer`. Linear holds
+messages typed while the agent works and releases them only when it finishes,
+so they arrive after the answer as ordinary turns and `input.steering` is
+usually empty; a stop discards them. Say so in the question, so people send
+constraints before answering.
+
+## Stop
+
+Linear's stop button interrupts the turn, discards queued messages and closes
+any open question. A later reply continues the same session.
+
+## Call Linear
+
+Declare the service in the agent and call Linear's GraphQL API from a tool:
+
+```tsx
+// in the agent component
+useService("linear");
+
+// in a tool
+const response = await callService({
+  service: "linear",
+  method: "POST",
+  path: "/graphql",
+  body: JSON.stringify({ query, variables }),
+});
+```
+
+In sessions started from Linear, the call acts as the agent's own Linear app.
+In a session a person started (the playground, your app), it acts as that
+person's [connected Linear account](/agents/services). Only `POST /graphql` is
+allowed. Issues the agent delegates to itself start new
+sessions with `origin.createdByAgent: true`. For code, connect the project's
+[GitHub App](/agents/github).
+
+## Disconnect
+
+Choose **Disconnect** in the Linear panel. The app stays in your Linear
+workspace; delete it there if you no longer need it.
+
+## Limits
+
+- One connection per agent per environment, and one per Linear app.
+- No concurrency limit: every delegated issue runs its own session.
+- `ask` isn't available in sessions with `executionMode: "microvm"`.
+- Stopping a session doesn't stop issues it delegated.

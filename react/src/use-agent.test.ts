@@ -758,3 +758,192 @@ test("attach exposes turns with their tool activity and result, the same after a
   await again.unmount();
   await view.unmount();
 });
+
+// A session with an open question: the turns route holds input sent
+// without `answers` and records it in the log; dismiss closes the question
+// and runs what was held.
+function questionSession(prefix: string) {
+  const log: AgentEvent[] = [];
+  const calls: Call[] = [];
+  const append = (event: Omit<AgentEvent, "seq">) => {
+    log.push({ ...event, seq: log.length + 1 });
+  };
+  let held = 0;
+  let turns = 0;
+  let dismissFails = false;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), "http://app.test");
+    const call: Call = {
+      method: init?.method ?? "GET",
+      path: `${url.pathname}${url.search}`,
+      headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) as Record<string, unknown> } : {}),
+    };
+    calls.push(call);
+    const path = url.pathname.slice(prefix.length);
+    if (call.method === "POST" && path === "/sessions") {
+      append({ type: "runtime.connected", data: {} });
+      return Response.json({ session: { id: "ses-q" } }, { status: 201 });
+    }
+    if (call.method === "GET" && path === "/sessions/ses-q/events") {
+      const after = Number(url.searchParams.get("after") ?? "0");
+      return Response.json({ events: log.filter((event) => event.seq > after).slice(0, 3) });
+    }
+    if (call.method === "POST" && path === "/sessions/ses-q/resume") {
+      append({ type: "runtime.connected", data: {} });
+      return Response.json({ id: "ses-q", status: "idle" });
+    }
+    if (call.method === "POST" && path === "/sessions/ses-q/suspend") {
+      return Response.json({ id: "ses-q", status: "suspended" });
+    }
+    if (call.method === "POST" && path === "/sessions/ses-q/turns") {
+      const open = [...log].reverse().find((event) => event.type.startsWith("question."));
+      const questionId = open?.type === "question.asked" ? String(open.data.questionId) : undefined;
+      if (questionId && call.body?.answers === undefined) {
+        held += 1;
+        append({ type: "message.held", data: { heldId: `h${String(held)}`, questionId, input: call.body?.input } });
+        return Response.json({ status: "held", questionId, duplicate: false }, { status: 202 });
+      }
+      turns += 1;
+      const turnId = `t${String(turns)}`;
+      append({ turnId, type: "message.received", data: { input: call.body?.input, mode: "queue" } });
+      append({ turnId, type: "turn.started", data: {} });
+      if (questionId) {
+        append({ turnId, type: "question.answered", data: { questionId, answer: { questionId, text: call.body?.input } } });
+        for (let index = 1; index <= held; index += 1) {
+          append({ type: "message.delivered", data: { heldId: `h${String(index)}`, questionId, answerTurnId: turnId } });
+        }
+        append({ turnId, type: "message.completed", data: { text: "On it." } });
+        append({ turnId, type: "turn.completed", data: {} });
+      } else {
+        append({ turnId, type: "question.asked", data: { questionId: `q${String(turns)}`, text: "Plan first, or go?", options: [] } });
+        append({ turnId, type: "turn.completed", data: { outcome: "question", questionId: `q${String(turns)}` } });
+      }
+      return Response.json({ turnId, status: "running", duplicate: false }, { status: 202 });
+    }
+    const dismissed = /^\/sessions\/ses-q\/questions\/([^/]+)\/dismiss$/.exec(path);
+    if (call.method === "POST" && dismissed) {
+      if (dismissFails) {
+        return Response.json({ error: { code: "question_stale", message: "That question is no longer open." } }, { status: 409 });
+      }
+      const questionId = decodeURIComponent(dismissed[1]!);
+      append({ type: "question.closed", data: { questionId, reason: "dismissed" } });
+      for (let index = 1; index <= held; index += 1) {
+        turns += 1;
+        append({ type: "message.delivered", data: { heldId: `h${String(index)}`, questionId, answerTurnId: `t${String(turns)}` } });
+      }
+      return Response.json({ id: "ses-q", status: "idle" });
+    }
+    return Response.json({ error: { code: "not_found", message: `no route ${call.method} ${path}` } }, { status: 404 });
+  };
+  return {
+    log,
+    calls,
+    fetch,
+    append,
+    failDismiss: () => {
+      dismissFails = true;
+    },
+  };
+}
+
+test("attach shows a held message from the log, then its delivery after a dismiss", async (t) => {
+  const session = questionSession("/app/agent");
+  session.append({ turnId: "t0", type: "question.asked", data: { questionId: "q0", text: "Go?", options: [] } });
+  session.append({ turnId: "t0", type: "turn.completed", data: { outcome: "question", questionId: "q0" } });
+  const view = mount(t, { sessionId: "ses-q", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying && result.question?.id === "q0", "open question");
+
+  let receipt: SendReceipt | undefined;
+  await act(async () => {
+    receipt = await view.result().send("Keep the old endpoint");
+  });
+  assert.deepEqual(receipt, { sessionId: "ses-q", questionId: "q0", status: "held", duplicate: false });
+  // Nothing is minted locally: the message appears when the log says so.
+  assert.equal(view.result().messages.some((message) => message.id.startsWith("held:q0")), false);
+  const held = await view.until((result) => result.messages.length === 1, "held message");
+  assert.deepEqual(held.messages, [
+    { id: "held:h1", role: "user", text: "Keep the old endpoint", held: { questionId: "q0", status: "held" } },
+  ]);
+  assert.equal(held.isRunning, false);
+
+  await act(async () => {
+    await view.result().dismiss("q0");
+  });
+  assert.equal(
+    session.calls.some((call) => call.method === "POST" && call.path === "/app/agent/sessions/ses-q/questions/q0/dismiss"),
+    true,
+  );
+  const dismissed = await view.until((result) => result.question === null, "question closed");
+  const delivered = await view.until((result) => result.messages[0]?.held?.status === "delivered", "delivered");
+  assert.deepEqual(delivered.messages[0]?.held, { questionId: "q0", status: "delivered", answerTurnId: "t1" });
+  assert.equal(dismissed.error, undefined);
+  await view.unmount();
+});
+
+test("dismiss rejects with the platform's code and sets error", async (t) => {
+  const session = questionSession("/app/agent");
+  session.append({ turnId: "t0", type: "question.asked", data: { questionId: "q0", text: "Go?", options: [] } });
+  session.failDismiss();
+  const view = mount(t, { sessionId: "ses-q", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => result.question?.id === "q0", "open question");
+  let failure: unknown;
+  await act(async () => {
+    failure = await view.result().dismiss("q0").catch((cause: unknown) => cause);
+  });
+  assert.ok(failure instanceof SendError);
+  assert.equal(failure.code, "question_stale");
+  assert.equal(failure.status, 409);
+  assert.equal(view.result().error, "That question is no longer open.");
+  assert.equal(view.result().question?.id, "q0");
+  await view.unmount();
+});
+
+test("create mode follows the question: asked, a held send, then the answer", async (t) => {
+  const session = questionSession("/api/opencomputer/managed-agents");
+  const view = mount(t, { agent: "planner@development", fetch: session.fetch });
+  await view.render();
+
+  await act(async () => {
+    await view.result().send("Fix the login page");
+  });
+  assert.deepEqual(view.result().question, { id: "q1", text: "Plan first, or go?", options: [], turnId: "t1" });
+  assert.equal(view.result().turns[0]?.outcome, "question");
+
+  // A held receipt on the existing session is a receipt, not a failure.
+  let receipt: SendReceipt | undefined;
+  await act(async () => {
+    receipt = await view.result().send("Keep the old endpoint");
+  });
+  assert.deepEqual(receipt, { sessionId: "ses-q", questionId: "q1", status: "held", duplicate: false });
+  let result = view.result();
+  assert.equal(result.error, undefined);
+  assert.equal(result.isRunning, false);
+  assert.equal(result.question?.id, "q1");
+  assert.deepEqual(
+    result.messages.map((message) => [message.role, message.text, message.held?.status]),
+    [
+      ["user", "Fix the login page", undefined],
+      ["assistant", "", undefined],
+      ["user", "Keep the old endpoint", "held"],
+    ],
+  );
+  assert.equal(result.messages[2]?.id, "held:h1");
+
+  await act(async () => {
+    await view.result().answer("q1", "go");
+  });
+  result = view.result();
+  assert.equal(result.question, null);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.messages[2]?.held, { questionId: "q1", status: "delivered", answerTurnId: "t2" });
+  assert.deepEqual(result.messages.slice(3).map((message) => [message.role, message.text]), [
+    ["user", "go"],
+    ["assistant", "On it."],
+  ]);
+  const answerTurn = session.calls.find((call) => call.method === "POST" && call.body?.answers === "q1");
+  assert.equal(answerTurn?.body?.input, "go");
+  await view.unmount();
+});
