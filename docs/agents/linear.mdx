@@ -259,53 +259,37 @@ started from Linear reach GitHub through it.
 ## A minimal agent
 
 ```tsx
-// agent.ts
-import {
-  useInput,
-  useService,
-  useTool,
-  type LinearInputPayload,
-} from "@opencomputer/agent";
-import { createSubIssue } from "./tools/create-sub-issue";
+import { useInput } from "@opencomputer/agent";
 
 export default function Agent() {
   const input = useInput();
-  useService("linear");
-
-  if (input.source !== "channel" || input.channel.provider !== "linear") {
-    return `Help with: ${input.text ?? "the current request"}`;
-  }
-  const linear = input.payload as unknown as LinearInputPayload;
-  const issue = `${linear.issue.identifier} "${linear.issue.title}" (team ${linear.issue.team.id}, issue id ${linear.issue.id})`;
-
-  if (input.answer) {
-    useTool(createSubIssue);
-    const steering = (input.steering ?? [])
-      .map((held) => `- ${held.text ?? ""}`)
-      .join("\n");
-    return [
-      `You are working on ${issue}.`,
-      `Your question was answered: ${input.answer.value ?? input.answer.text}.`,
-      steering
-        ? `These messages were written before the answer and may change what it means:\n${steering}`
-        : "",
-      "If the answer is go, create the sub-issues you proposed. Otherwise revise the proposal.",
-    ].join("\n\n");
-  }
-
-  useTool("ask");
-  return [
-    `You were asked to help with ${issue}.`,
-    input.text ?? "",
-    "Propose how to split this into sub-issues, then call ask with the options go and revise.",
-    "Say that messages typed while you were working are still held, so they should be sent before answering.",
-  ].join("\n\n");
+  return `You are a teammate in Linear. Work on this and reply in the thread:\n\n${input.text ?? ""}`;
 }
 ```
 
-The first turn can only read its input and ask; creating sub-issues is
-selected only on the turn that carries the answer. `ask` records a question;
-what a turn can do before it asks is decided by the tools that turn selects.
+Connect it from the Linear panel and delegate an issue to it. Its final
+message becomes the response in the issue's thread.
+
+## Ask before acting
+
+```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+import { createSubIssues } from "./tools/create-sub-issues";
+
+export default function Agent() {
+  const input = useInput();
+  if (!input.answer) {
+    useTool("ask");
+    return `Propose a plan for this issue, then ask whether to go:\n\n${input.text ?? ""}`;
+  }
+  useTool(createSubIssues);
+  return `You were told "${input.answer.text}". If that means go, carry out your plan.`;
+}
+```
+
+The first turn can only ask; the tool that writes is selected only on the
+turn that carries the answer. Messages written while the question was open
+arrive with the answer in `input.steering`.
 
 ## Disconnect
 
