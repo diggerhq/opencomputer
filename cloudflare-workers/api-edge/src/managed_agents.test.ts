@@ -4175,6 +4175,89 @@ describe("managed agents proxy", () => {
       });
     });
 
+    it("forwards a dismiss of the open question and returns the sanitized session", async () => {
+      const fetchSpy = vi.fn(async () =>
+        Response.json({
+          id: "session-1",
+          status: "idle",
+          accountId: "acct_private",
+          turns: [],
+          question: null,
+        }),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const dismiss = (method: string) =>
+        proxyManagedAgents(
+          new Request(
+            `https://app.opencomputer.dev/api/managed-agents/sessions/session-1/questions/${question.id}/dismiss`,
+            { method },
+          ),
+          env,
+          caller,
+          "/api/managed-agents",
+        );
+      const response = await dismiss("POST");
+      expect(response.status).toBe(200);
+      const [target, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+      expect(String(target)).toBe(
+        `https://managedagents.test/v1/sessions/session-1/questions/${question.id}/dismiss`,
+      );
+      expect(init.method).toBe("POST");
+      expect(await response.json()).toEqual({
+        id: "session-1",
+        status: "idle",
+        turns: [],
+        question: null,
+      });
+
+      // Only POST, and only on a named question.
+      expect((await dismiss("GET")).status).toBe(404);
+      const bare = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/questions/dismiss",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(bare.status).toBe(404);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("words held_inputs_full for the caller", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { error: { code: "held_inputs_full", message: "held inputs exceed 65536 bytes for q_1" } },
+            { status: 409 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ input: "One more constraint" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "held_inputs_full",
+          message:
+            "Too many messages are waiting on the agent's question. Answer or dismiss the question, then send again.",
+        },
+      });
+    });
+
     it("passes a held receipt through with its question and no turn", async () => {
       vi.stubGlobal(
         "fetch",
@@ -6174,6 +6257,17 @@ describe("Linear agent connections", () => {
         .fn()
         .mockResolvedValueOnce(
           Response.json(
+            {
+              error: {
+                code: "project_archived",
+                message: "Restore the project before starting new work",
+              },
+            },
+            { status: 409 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          Response.json(
             { error: { code: "project_not_found", message: "Project not found" } },
             { status: 404 },
           ),
@@ -6191,12 +6285,25 @@ describe("Linear agent connections", () => {
         ),
     );
 
+    const archived = await send("/projects/prj_old/linear/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Triage", environment: "production", agentId: "triage" }),
+    });
+    expect(archived.status).toBe(409);
+    await expect(archived.json()).resolves.toEqual({
+      error: {
+        code: "project_archived",
+        message: "Restore this project before connecting Linear.",
+      },
+    });
+
     const listed = await send("/projects/prj_other/linear/connections");
     expect(listed.status).toBe(404);
     await expect(listed.json()).resolves.toEqual({
       error: {
         code: "project_not_found",
-        message: "The requested agent resource was not found.",
+        message: "That project does not exist.",
       },
     });
 
@@ -6208,7 +6315,8 @@ describe("Linear agent connections", () => {
     await expect(authorized.json()).resolves.toEqual({
       error: {
         code: "forbidden",
-        message: "The agent request was not authorized.",
+        message:
+          "Project-scoped API keys cannot create or change Linear connections. Use an organization API key.",
       },
     });
   });

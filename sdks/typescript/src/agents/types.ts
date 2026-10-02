@@ -64,6 +64,15 @@ export interface SessionQuestion {
   askedAt: string;
 }
 
+/**
+ * Why a question closed without an answer: `stopped` (a stop in the channel;
+ * held inputs are discarded), `dismissed` (`sessions.questions.dismiss`; held
+ * inputs run as ordinary turns), `ended` (the session ended; nothing runs),
+ * `undeliverable` (the question could never be shown; held inputs run as
+ * ordinary turns).
+ */
+export type QuestionClosedReason = "stopped" | "dismissed" | "ended" | "undeliverable" | (string & {});
+
 /** How an input answered a question; `value` when the text matched an option by value or label. */
 export interface QuestionAnswer {
   questionId: string;
@@ -376,12 +385,48 @@ export type SessionEvent =
     })
   | (EventBase & { type: "question.asked"; data: { questionId: string; text: string; options: QuestionOption[] } })
   | (EventBase & { type: "question.answered"; data: { questionId: string; answer: QuestionAnswer } })
-  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: "stopped" | (string & {}) } })
+  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: QuestionClosedReason } })
+  | (EventBase & {
+      type: "message.held";
+      /** An input sent while `questionId` was open, without answering it. */
+      data: { questionId: string; heldId?: string; input: string; payload?: DataValue };
+    })
+  | (EventBase & {
+      type: "message.delivered";
+      /** The held input reached the agent: as `steering` on the answer turn, or as its own turn. */
+      data: { questionId: string; heldId?: string; answerTurnId: string };
+    })
+  | (EventBase & {
+      type: "message.discarded";
+      /** The held input never reached the agent; `reason` is why (`stopped`, `ended`). */
+      data: { questionId: string; heldId?: string; reason: string };
+    })
+  | (EventBase & {
+      type: "delivery.failed";
+      /** A channel activity the platform could not post; the session proceeded past it. */
+      data: {
+        channel: string;
+        activityId: string;
+        kind: string;
+        contentType: string;
+        state: string;
+        attempts: number;
+        error: string;
+        agentSessionId?: string;
+        questionId?: string;
+        retrying?: boolean;
+      };
+    })
   | (EventBase & { type: "turn.failed"; data: Failure })
   | (EventBase & {
       type: "turn.cancelled";
       data: {
-        reason: "interrupted" | (string & {});
+        /** `held`: the turn was queued when a question was asked; its input waits on `questionId`. */
+        reason: "interrupted" | "held" | (string & {});
+        /** Set with `reason: "held"`: the question the turn's input waits on. */
+        questionId?: string;
+        /** `true` when the held input was dropped (a stop closed the question) and never reaches the agent. */
+        discarded?: boolean;
         replacementTurnId?: string;
         /** How long after the interrupt the turn settled, once the commands it had started were stopped. */
         settledAfterMs?: number;

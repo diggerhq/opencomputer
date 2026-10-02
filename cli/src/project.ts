@@ -505,10 +505,10 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.6.0",
+          "@opencomputer/agent": "^0.8.0",
           ...(spa
             ? {
-                "@opencomputer/react": "^0.2.0",
+                "@opencomputer/react": "^0.4.0",
                 react: "^19.2.0",
                 "react-dom": "^19.2.0",
               }
