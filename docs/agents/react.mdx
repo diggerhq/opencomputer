@@ -273,7 +273,9 @@ question that is no longer open rejects with a `SendError` whose code is
 
 While a question is open, `send` without `answers` resolves with a held
 receipt, `{ status: "held", questionId }` and no `turnId`: the message stays
-in `messages` and reaches the agent with the answer.
+in `messages`, rebuilt from the log's `message.held` events after a reload,
+and reaches the agent with the answer. `dismiss(questionId)` closes the
+question without an answer; held messages then run as ordinary turns.
 
 ## Stop and reopen
 
@@ -370,6 +372,7 @@ code.
 | `stop()` | Request an interrupt; rejects with `SendError` on a failed request, settlement arrives in `turns` |
 | `question` | The open question, `{ id, text, options, turnId? }`, or `null` |
 | `answer(questionId, text, options?)` | Answer the open question; same receipt and errors as `send` |
+| `dismiss(questionId)` | Close the open question without an answer |
 | `sessionId` | Attached session, or the created one after the first send |
 | `isRunning` | Running activity or this instance's unsettled admissions; not a session status |
 | `isReplaying` | Attach mode: existing history is still loading |

@@ -59,6 +59,7 @@ deployment it was created on; see [Sessions and turns](/agents/sessions).
 | Labels | `PATCH /sessions/<id>/labels` | `200` with the session |
 | End | `POST /sessions/<id>/end` | `200` with the ended session |
 | Interrupt | `POST /sessions/<id>/interrupt` | `200` with the session |
+| Dismiss a question | `POST /sessions/<id>/questions/<questionId>/dismiss` | `200`; see [Questions](#questions) |
 
 ### Create
 
@@ -341,24 +342,35 @@ idempotency_conflict` and admits nothing. A retry after a lost reply is
 therefore safe with the same body, and a different request never lands on
 another request's key.
 
-While the session has an open question, a turn sent without `answers` is
-held rather than run: the response is `202 { status: "held", duplicate }`
-with no `turnId`. The held input is delivered with the answer, in order, as
-the answering turn's `steering`. A repeat of its key after the answer returns
-the answering turn's receipt; after the session is stopped from
-[Linear](/agents/linear#stop), it returns `status: "discarded"`.
-
-A turn with `answers` resolves the question and runs as the answer, in one
-step, idempotent on its key. Naming a question that is not the open one, or
-answering when none is open, is `409 question_stale`; read the session and
-answer its current question.
-
 Codes: `400 invalid_turn`, `400 invalid_payload` (over 32 KB),
 `402 insufficient_credits`, `409 idempotency_conflict`,
-`409 question_stale`,
+`409 question_stale`, `409 held_inputs_full` (answer or dismiss first),
 `409 memory_admission_pending` (retry the session creation with its key
 first), `409 memory_admission_rejected` (the session is ended; create a new
 one).
+
+### Questions
+
+While the session has an open [question](/agents/sessions#questions), a turn
+sent without `answers` is held rather than run: the response is
+`202 { status: "held", questionId, duplicate }` with no `turnId`, and `200`
+for a repeated key. The held input is delivered with the answer, in order, as
+the answering turn's `steering`, up to a bounded number and 64 KiB; the rest
+run as ordinary turns after it. A repeat of its key after delivery returns the
+receipt of the turn that carried it; after a [Linear](/agents/linear#stop)
+stop, it returns `status: "discarded"`. A turn already queued when the
+question was asked keeps its `turnId` and settles as `cancelled` with
+reason `held` and the `questionId`.
+
+A turn with `answers` resolves the question and runs as the answer, in one
+step, idempotent on its key; the same key with a different `answers` is
+`409 idempotency_conflict`. Naming a question that is not the open one, or
+answering when none is open, is `409 question_stale`; read the session and
+answer its current question.
+
+`POST /sessions/<id>/questions/<questionId>/dismiss` closes the open question
+with reason `dismissed`; its held inputs run as ordinary turns, in order.
+Ending the session closes it with `ended`. Interrupt does not close it.
 
 ### Start work from an application
 
@@ -527,8 +539,9 @@ treat that text as data about another agent's work, not as instructions.
 ## Linear connections
 
 A [Linear connection](/agents/linear) binds a Linear app in your workspace to
-one agent in one environment. The dashboard drives these routes; they need an
-organization API key, and project-scoped keys are refused.
+one agent in one environment. The dashboard drives these routes. A
+project-scoped key may list its own project's connections; every other route
+needs an organization API key and is `403 forbidden` otherwise.
 
 | Operation | Method and path | Body or query | Success |
 | --- | --- | --- | --- |
@@ -539,7 +552,9 @@ organization API key, and project-scoped keys are refused.
 | Disconnect | `DELETE /linear/connections/<id>` | None | `200` with `{ connection, revoked }` |
 
 `createAppUrl` opens Linear's create-app page prefilled with the name, the
-callback URL and `webhookUrl`. `webhookUrl` contains the connection's secret;
+callback URL and `webhookUrl`. Creating again for a pending binding resets it
+with the new name and a new `webhookUrl`, so an earlier `createAppUrl` stops
+working. `webhookUrl` contains the connection's secret;
 treat it as a credential. `authorizeUrl` is Linear's consent page for the app;
 a workspace admin completes it, and Linear returns to OpenComputer's callback,
 which stores the tokens and redirects to the project's Connections tab.
@@ -560,7 +575,10 @@ lastEventAt? }`, with `state` one of `awaiting_credentials`,
 | `400 invalid_linear_app_name` | The name must be 1 to 64 characters |
 | `400 linear_app_name_reserved` | Linear does not allow app names that contain "Linear" |
 | `400 invalid_linear_credentials` | `clientId`, `clientSecret` and `signingSecret` are all required |
+| `403 forbidden` | A project-scoped key on a route other than List |
+| `404 project_not_found` | No such project for this key |
 | `404 linear_connection_not_found` | No such connection, or it was disconnected |
+| `409 project_archived` | Restore the project before creating a connection |
 | `409 linear_already_connected` | The agent already has a connection in this environment; `error.connectionId` names it |
 | `409 linear_app_already_connected` | That Linear app is connected to another agent or environment; create a separate app |
 | `409 linear_connection_connected` | The connection is authorized with a different Linear app; disconnect it first |

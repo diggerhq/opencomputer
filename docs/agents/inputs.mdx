@@ -60,12 +60,14 @@ read.
 A message from a [Linear connection](/agents/linear) also arrives with
 `source: "channel"`, with `channel.provider` set to `linear`,
 `channel.workspaceId` the Linear workspace, `channel.conversationId` the
-Linear agent session and `channel.userId` the person who wrote the message.
+Linear agent session and `channel.userId` the person who wrote the message
+(on the first message, the session's creator; absent when automation started
+it).
 Its `payload` is a `LinearInputPayload`: the issue, the session, the thread's
 comments, your workspace's guidance for agents, and `origin`, which says
 whether the issue had a parent and whether this agent's own app created it.
 `origin` is read when the session starts and does not change afterwards. The
-fields are listed on [Linear agents](/agents/linear#what-it-receives).
+fields are listed on [Linear connections](/agents/linear#what-it-receives).
 
 ```tsx
 import { useInput, type LinearInputPayload } from "@opencomputer/agent";
@@ -176,7 +178,9 @@ reply is the next input, from any source, with `answer` set:
 
 Input that arrives while the question is open without answering it does not
 run a turn of its own. It is held and delivered with the answer as
-`steering`, in the order it arrived:
+`steering`, in the order it arrived; past a bounded number of items or 64 KiB,
+the rest run as ordinary turns after the answer. In Linear, `steering` is
+usually empty; see [Ask before acting](/agents/linear#ask-before-acting).
 
 | Field | Meaning |
 | --- | --- |
