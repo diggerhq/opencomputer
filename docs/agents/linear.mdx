@@ -1,262 +1,11 @@
 ---
 title: "Linear agents"
-description: "Connect a deployed agent to Linear as a teammate people delegate issues to and mention"
+description: "Make a deployed agent a teammate people delegate issues to and mention in Linear"
 ---
 
-A Linear connection makes a deployed agent a member of your Linear workspace.
-People delegate issues to it and mention it in comments, under the name and
-icon you give its Linear app. Each conversation is a Linear agent session with
-its own activity thread on the issue, and OpenComputer runs it as one session
-of your agent.
-
-There is no webhook handler, Linear client or reply code to write. The agent
-reads each message with [`useInput()`](/agents/inputs), its tool calls and
-final message are posted to the thread as Linear activities, and it can stop
-and ask a question with [`ask`](/agents/tools#ask-a-question). When it needs
-more than its thread (a document, a sub-issue, a status change), it calls
-Linear through the managed [`linear` service](/agents/services) as its own app.
-
-The connection is a Linear app created in your workspace and bound to one
-agent in one environment of a project. Development and Production are
-separate connections with separate apps.
-
-## Connect Linear
-
-After the project's deployment is synchronized:
-
-1. Open the project in the dashboard and its **Connections** tab. The Linear
-   panel has one row for Development and one for Production, each for the
-   agent deployed there.
-2. On the row's environment, choose **Create Linear agent**. Enter the name
-   people will see in Linear. Linear does not allow app names that contain
-   "Linear".
-3. OpenComputer allocates the connection and its webhook URL. Choose **Open
-   Linear to create the app**: Linear's create-app page opens prefilled with
-   the name, the callback URL, and webhooks enabled on the webhook URL shown
-   in the dashboard for agent session, permission change and authorization
-   events. Create the app. It is private to your workspace.
-4. Copy the app's **client ID**, **client secret** and **webhook signing
-   secret** from Linear and paste them into the dashboard.
-5. Choose **Authorize in Linear** and approve the installation. A workspace
-   admin must complete this step. The app is installed as an app user with
-   permission to read, write, be delegated issues and be mentioned. You are
-   returned to the same project and environment.
-
-The panel then shows the connection's health:
-
-| State | Shown as | Meaning |
-| --- | --- | --- |
-| `awaiting_credentials` | Setup in progress (**Continue setup**) | The connection exists; the app's credentials are not stored yet |
-| `awaiting_authorization` | Ready to authorize (**Authorize in Linear**) | Credentials are stored; the app is not installed yet |
-| `waiting_for_first_delegation` | Waiting for the first delegation | The app is installed; no event from Linear has arrived yet |
-| `receiving` | First session received | A real Linear event reached the agent; the time of the latest one is shown |
-| `revoked` | Access revoked (**Authorize in Linear**) | Authorize it again to reconnect |
-
-Delegate an issue to the agent, or mention it, to confirm delivery. The
-connection also records which teams the app can see, and follows the changes
-Linear reports to that access.
-
-Credentials and tokens are stored encrypted. Linear's access tokens expire
-daily and OpenComputer refreshes them; no token reaches the agent, its logs or
-the browser.
-
-## Where people talk to it
-
-- **Delegate an issue** to the agent. This opens an agent session on the issue.
-- **Mention the agent** in a comment. This opens a separate agent session on
-  that comment's thread.
-- **Reply in the session's thread.** A reply continues that session, including
-  after the agent has finished.
-
-A top-level comment that does not mention the agent is not delivered to it.
-An issue can carry several agent sessions, one per delegation or mentioned
-thread; each is its own OpenComputer session. When a reply arrives for a
-session that has ended in OpenComputer, a new session continues the same
-Linear thread.
-
-Sessions started from Linear belong to the connection, not to the person who
-wrote the message. Anyone on the team can reply in the thread, and the agent
-answers the thread.
-
-Linear needs to see the agent respond within seconds. OpenComputer accepts
-each event before answering Linear and posts a short first activity itself,
-before your agent's runtime starts, so a slow start shows as a working agent
-rather than an unresponsive one.
-
-## What the agent receives
-
-A message from Linear arrives as a [channel input](/agents/inputs):
-`source: "channel"`, with `channel.provider` set to `"linear"`. `text` is
-Linear's prompt context for the first message of a session (the issue, the
-thread and your workspace's guidance for agents, as Linear writes it), and the
-message body for every later one.
-
-| Field | Meaning |
-| --- | --- |
-| `channel.connectionId` | The Linear connection the message arrived on |
-| `channel.workspaceId` | The Linear workspace |
-| `channel.conversationId` | The Linear agent session |
-| `channel.userId` | The Linear user who wrote the message |
-
-`payload` is a `LinearInputPayload`, exported by `@opencomputer/agent`:
-
-| Field | Meaning |
-| --- | --- |
-| `action` | `created` for the message that opened the session, `prompted` for a later one |
-| `issue` | `{ id, identifier, title, description, url, team: { id, key, name } }`, as this message carried it |
-| `origin.parent` | `{ id, identifier }` of the issue's parent, when it had one |
-| `origin.createdByAgent` | `true` when this agent's own Linear app created the issue |
-| `session` | `{ id, url, creator? }`; `creator` is the person responsible for the session and is absent when automation started it |
-| `promptContext` | Linear's prompt context, when the session began with a delegation or mention |
-| `comment` | `{ id, body }`, the thread's root comment, when the session is a comment thread |
-| `previousComments` | Earlier comments of that thread, as Linear sent them |
-| `guidance` | Your workspace and team guidance for agents, as Linear sent it |
-
-`origin` is read from Linear when the session starts and never changes for
-that session. A parent can be changed in Linear later; `origin` still says
-what was true when the work began, so a decision the agent made from it on the
-first message holds on every later one. `issue` is the issue as each message
-delivered it. OpenComputer attaches no role or meaning to these facts. An
-agent can, for example, treat an issue its own app created under a parent as
-work it already planned and act on it directly, and treat everything else as
-a request to investigate first.
-
-Linear's workspace and team guidance is the natural place for conventions
-that apply to every agent in your workspace; it reaches the agent in `text`
-and `guidance` without any code.
-
-## What the agent writes
-
-The agent does not post to Linear itself. OpenComputer turns the session into
-Linear activities, in order, on the agent session's thread:
-
-| The agent | Appears in Linear as |
-| --- | --- |
-| Calls a tool | An action with the tool's name, a one-line summary of what it did and a one-line result, after the call returns |
-| Works on a long call | An occasional "Still working." thought, so the session does not go stale |
-| Finishes its turn | A response with the final message |
-| Ends its turn with `ask` | A question awaiting input, with any options as buttons |
-| Fails | An error: "OpenComputer could not complete this request." |
-| Is stopped | An error: "Stopped." |
-
-Raw tool arguments and outputs are never copied to Linear. The full trace stays
-in the session's [event log](/agents/events) in OpenComputer. Tool activity is
-limited to one per call and one every few seconds per session.
-
-When the final message contains a GitHub pull request URL, it is set as the
-session's external link, which Linear shows as the pull request.
-
-## Ask a question
-
-A turn can end with a question instead of a final answer. Select the
-platform's [`ask`](/agents/tools#ask-a-question) tool; when the model calls
-it, the turn ends and Linear shows the session as awaiting input. Options are
-rendered as buttons. Linear shows them only while the session is awaiting
-input, and a click sends the option's `value` as the reply.
-
-The reply arrives as the next input with `answer` set:
-`{ questionId, text, value? }`, where `value` is the chosen option's value when
-the reply matches an option by value or label. Whether a message answers the
-question is decided by when it was written in Linear, not when it arrived: a
-message written after the question answers it.
-
-### Messages written while the agent works
-
-Linear holds a message someone types while the agent is working, and offers to
-send it. It releases held messages only when the agent finishes with a response
-or an error, not when it asks a question. So a constraint typed while the agent
-was working reaches the agent before the answer only if the person sends it
-before answering; otherwise it arrives after the answer turn, as an ordinary
-message.
-
-Messages written before the question and delivered while it is open never
-answer it. They are held and delivered with the answer, in order, as
-`steering`. Read them before acting on the answer: they may change what the
-answer should mean.
-
-Write questions that say this, for example "Messages you typed while I was
-working are still held; send them before answering."
-
-## Stop
-
-The stop control in Linear stops the agent at once:
-
-- the running turn is interrupted;
-- queued and held messages for that session are discarded;
-- an open question is closed;
-- the thread shows "Stopped." once the interrupt has settled.
-
-Stop ends the turn, not the session. A later reply in the same thread starts a
-new turn on the same session. Stop applies to that session only; issues the
-agent delegated from it keep running.
-
-## Call Linear from the agent
-
-The thread is written for you. For anything else (a document, sub-issues, a
-status change, a comment elsewhere), declare the managed `linear` service and
-call Linear's GraphQL API with [`callService`](/agents/services). In a session
-started from a Linear connection, the call acts as the agent's own Linear app,
-with the connection's token attached by the platform.
-
-```tsx
-// tools/create-sub-issue.ts
-import { callService, defineTool } from "@opencomputer/agent";
-
-export const createSubIssue = defineTool({
-  name: "create_sub_issue",
-  description: "Create a sub-issue under a Linear issue",
-  input: {
-    type: "object",
-    properties: {
-      teamId: { type: "string" },
-      parentId: { type: "string" },
-      title: { type: "string" },
-      description: { type: "string" },
-    },
-    required: ["teamId", "parentId", "title"],
-    additionalProperties: false,
-  },
-  async run({ input, signal }) {
-    const response = await callService({
-      service: "linear",
-      method: "POST",
-      path: "/graphql",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        query: `mutation Create($input: IssueCreateInput!) {
-          issueCreate(input: $input) { success issue { id identifier url } }
-        }`,
-        variables: { input },
-      }),
-      signal,
-    });
-    const result = (await response.json()) as {
-      data?: { issueCreate?: { issue?: { id: string; identifier: string; url: string } } };
-      errors?: Array<{ message: string }>;
-    };
-    if (!response.ok || result.errors?.length) {
-      throw new Error(result.errors?.[0]?.message ?? `linear: ${response.status}`);
-    }
-    return result.data?.issueCreate?.issue ?? null;
-  },
-});
-```
-
-Only `POST /graphql` is accepted. In a session the connection owns, the
-`linear` service resolves to the app and nothing else: no person's connected
-Linear account is used, and a `label` is ignored. The deployment must declare
-`useService("linear")`. The same code in a session someone started from your
-application uses that person's connected Linear account instead, as described
-on [Connected services](/agents/services).
-
-Delegating an issue to the agent's own app user, for example with
-`issueCreate` and a `delegateId`, opens a new agent session on that issue,
-which arrives as a new `created` message with `origin.createdByAgent: true`.
-
-To work on code, connect the project's [GitHub App](/agents/github); sessions
-started from Linear reach GitHub through it.
-
-## A minimal agent
+Connect an agent to Linear and people can delegate issues to it and mention it,
+under the name you give it. Its tool calls and replies appear in the issue's
+thread. You write no webhook or Linear client code.
 
 ```tsx
 import { useInput } from "@opencomputer/agent";
@@ -267,49 +16,99 @@ export default function Agent() {
 }
 ```
 
-Connect it from the Linear panel and delegate an issue to it. Its final
-message becomes the response in the issue's thread.
+## Connect
+
+1. In the project's **Connections** tab, choose **Create Linear agent** on the
+   environment's row and name it. Names can't contain "Linear".
+2. Choose **Open Linear to create the app**. The page is prefilled; create the app.
+3. Paste the app's client ID, client secret and webhook signing secret.
+4. Choose **Authorize in Linear**. A workspace admin must approve.
+5. Delegate an issue to the agent. The panel shows **First session received**.
+
+Each environment needs its own Linear app. Tokens never reach the agent, its
+logs or the browser.
+
+## Talking to it
+
+- **Delegate an issue** or **mention it** in a comment to start a session.
+- **Reply in the session's thread** to continue, even after it finished.
+
+A top-level comment without a mention is not delivered. Anyone on the team can
+reply; the agent answers the thread, not a person.
+
+## What it receives
+
+Each message is a [channel input](/agents/inputs) with
+`channel.provider: "linear"`. `text` is the message, or Linear's prompt
+context for the first one. `payload` is a `LinearInputPayload`:
+
+| Field | Meaning |
+| --- | --- |
+| `issue` | `{ id, identifier, title, description, url, team }` |
+| `origin` | `{ parent?, createdByAgent }`, read when the session starts and fixed for its life |
+| `action` | `created` for the first message, `prompted` after |
+| `session`, `comment`, `previousComments`, `guidance` | The thread and your workspace's agent guidance, as Linear sent them |
+
+## What it writes
+
+| The agent | Linear shows |
+| --- | --- |
+| Calls a tool | An action with a one-line summary (never raw arguments) |
+| Finishes its turn | The final message as a response |
+| Calls `ask` | A question awaiting input, options as buttons |
+| Fails or is stopped | An error |
+
+A GitHub pull request URL in the final message becomes the session's link.
 
 ## Ask before acting
 
 ```tsx
-import { useInput, useTool } from "@opencomputer/agent";
-import { createSubIssues } from "./tools/create-sub-issues";
-
 export default function Agent() {
   const input = useInput();
   if (!input.answer) {
     useTool("ask");
-    return `Propose a plan for this issue, then ask whether to go:\n\n${input.text ?? ""}`;
+    return `Propose a plan, then ask whether to go:\n\n${input.text ?? ""}`;
   }
   useTool(createSubIssues);
-  return `You were told "${input.answer.text}". If that means go, carry out your plan.`;
+  return `You were told "${input.answer.text}". If that means go, do it.`;
 }
 ```
 
-The first turn can only ask; the tool that writes is selected only on the
-turn that carries the answer. Messages written while the question was open
-arrive with the answer in `input.steering`.
+The reply arrives with `input.answer`. Messages written in the meantime arrive
+with it in `input.steering`. Linear holds messages typed while the agent works
+until it finishes, so tell people to send them before answering.
+
+## Stop
+
+Linear's stop button interrupts the turn, discards queued messages and closes
+any open question. A later reply continues the same session.
+
+## Call Linear
+
+For documents, sub-issues or status changes, declare `useService("linear")`
+and call Linear's GraphQL API. The call acts as the agent's own Linear app.
+
+```tsx
+const response = await callService({
+  service: "linear",
+  method: "POST",
+  path: "/graphql",
+  body: JSON.stringify({ query, variables }),
+});
+```
+
+Only `POST /graphql` is allowed. Issues the agent delegates to itself start new
+sessions with `origin.createdByAgent: true`. For code, connect the project's
+[GitHub App](/agents/github).
 
 ## Disconnect
 
-Choose **Disconnect** in the Linear panel. OpenComputer stops accepting events
-for the connection, revokes the app's token in Linear and removes the binding,
-so the agent and environment can be connected again. The Linear app itself
-stays in your workspace; delete it in Linear if you no longer need it.
+Choose **Disconnect** in the Linear panel. The app stays in your Linear
+workspace; delete it there if you no longer need it.
 
-If an admin revokes the app's access in Linear, the connection is marked
-revoked and receives nothing until it is authorized again from the panel.
+## Limits
 
-## Current limits
-
-- One Linear connection per agent per environment, and one connection per
-  Linear app. To connect a second agent or environment, create a separate app.
-- There is no per-connection concurrency limit. Every delegated issue and
-  mentioned thread runs its own session, so a large delegated backlog runs
-  many sessions at once.
-- `ask` runs on the default runtime for new deployments; sessions with
-  `executionMode: "microvm"` cannot select it.
-- Stopping a session does not stop issues it delegated, and cancelling an
-  issue in Linear does not stop its session.
-- The app is private to the workspace it was created in.
+- One connection per agent per environment, and one per Linear app.
+- No concurrency limit: every delegated issue runs its own session.
+- `ask` isn't available on the `microvm` runtime.
+- Stopping a session doesn't stop issues it delegated.
