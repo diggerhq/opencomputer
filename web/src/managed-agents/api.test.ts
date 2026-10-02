@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/api/client'
 import {
+  authorizeManagedLinearConnection,
   collectManagedAgentEventPages,
+  createManagedLinearConnection,
+  disconnectManagedLinearConnection,
   displayManagedAgentName,
+  listManagedLinearConnections,
+  setManagedLinearCredentials,
   fetchManagedAgentWorkspaceObject,
   managedAgentModelRoute,
   managedAgentRenderDebug,
@@ -141,5 +147,171 @@ describe('managedAgentModelRoute', () => {
     expect(
       managedAgentModelRoute({ ...event, type: 'agent.rendered' }),
     ).toBeUndefined()
+  })
+})
+
+describe('Linear connections', () => {
+  const connection = {
+    id: 'lc_1',
+    projectId: 'prj_1',
+    environment: 'development',
+    agentId: 'coder',
+    name: 'Patch',
+    status: 'pending',
+    webhookUrl: 'https://hooks.example.test/v1/webhooks/linear/lc_1/token',
+    createAppUrl: 'https://linear.app/settings/api/applications/new?name=Patch',
+    health: {
+      state: 'awaiting_credentials',
+      message: 'Create the app in Linear, then paste its credentials.',
+    },
+    revision: 1,
+    createdAt: '2026-10-02T00:00:00.000Z',
+    updatedAt: '2026-10-02T00:00:00.000Z',
+  }
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  it('lists a project’s connections, optionally for one environment', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() =>
+        Promise.resolve(json({ connections: [connection] })),
+      )
+
+    expect(await listManagedLinearConnections('prj 1')).toEqual([connection])
+    await listManagedLinearConnections('prj_1', 'production')
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/dashboard/managed-agents/projects/prj%201/linear/connections',
+      '/api/dashboard/managed-agents/projects/prj_1/linear/connections?environment=production',
+    ])
+  })
+
+  it('creates a connection for an agent and environment', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      json(
+        {
+          connectionId: 'lc_1',
+          webhookUrl: connection.webhookUrl,
+          createAppUrl: connection.createAppUrl,
+          connection,
+        },
+        201,
+      ),
+    )
+
+    const created = await createManagedLinearConnection({
+      projectId: 'prj_1',
+      environment: 'development',
+      agentId: 'coder',
+      name: 'Patch',
+    })
+
+    expect(created.createAppUrl).toBe(connection.createAppUrl)
+    const [url, init] = fetch.mock.calls[0]
+    expect(url).toBe(
+      '/api/dashboard/managed-agents/projects/prj_1/linear/connections',
+    )
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      name: 'Patch',
+      environment: 'development',
+      agentId: 'coder',
+    })
+  })
+
+  it('sends the credentials once and keeps only the redacted connection', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      json({
+        connection: {
+          ...connection,
+          clientId: 'client-id',
+          // Never sent by the platform; the schema drops unknown fields anyway.
+          clientSecret: 'client-secret',
+          health: { state: 'awaiting_authorization', message: 'Authorize.' },
+        },
+      }),
+    )
+
+    const updated = await setManagedLinearCredentials('lc_1', {
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      signingSecret: 'signing-secret',
+    })
+
+    expect(updated.health?.state).toBe('awaiting_authorization')
+    expect(JSON.stringify(updated)).not.toContain('client-secret')
+    const [url, init] = fetch.mock.calls[0]
+    expect(url).toBe(
+      '/api/dashboard/managed-agents/linear/connections/lc_1/credentials',
+    )
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      signingSecret: 'signing-secret',
+    })
+  })
+
+  it('asks for an authorization link and disconnects', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        json({
+          authorizeUrl: 'https://linear.app/oauth/authorize?client_id=c',
+          expiresAt: '2026-10-02T00:10:00.000Z',
+        }),
+      )
+      .mockResolvedValueOnce(
+        json({
+          connection: { ...connection, status: 'disconnected' },
+          revoked: true,
+        }),
+      )
+
+    expect(
+      (await authorizeManagedLinearConnection('lc_1')).authorizeUrl,
+    ).toContain('linear.app/oauth/authorize')
+    expect((await disconnectManagedLinearConnection('lc_1')).revoked).toBe(true)
+    expect(fetch.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      [
+        '/api/dashboard/managed-agents/linear/connections/lc_1/authorize',
+        'POST',
+      ],
+      ['/api/dashboard/managed-agents/linear/connections/lc_1', 'DELETE'],
+    ])
+  })
+
+  it('surfaces the platform’s error code and message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      json(
+        {
+          error: {
+            code: 'linear_app_name_reserved',
+            message:
+              'Linear does not allow app names that contain "Linear". Choose another name.',
+          },
+        },
+        400,
+      ),
+    )
+
+    const failure = await createManagedLinearConnection({
+      projectId: 'prj_1',
+      environment: 'development',
+      agentId: 'coder',
+      name: 'Linear helper',
+    }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(ApiError)
+    expect(failure).toMatchObject({
+      status: 400,
+      type: 'linear_app_name_reserved',
+      message:
+        'Linear does not allow app names that contain "Linear". Choose another name.',
+    })
   })
 })
