@@ -80,6 +80,13 @@ export interface Turn {
   status: TurnStatus;
   /** `question` on a completed turn that ended by asking. */
   outcome?: TurnOutcome;
+  /**
+   * Why a cancelled turn ended. `held`: it was queued behind a turn that
+   * asked a question, and its input reaches the agent with the answer, as
+   * `steering`; `questionId` names that question.
+   */
+  reason?: string;
+  questionId?: string;
   /** The structured input sent with the turn. */
   payload?: DataValue;
   /** Present when an event subscription selected the turn's outcome. */
@@ -369,7 +376,7 @@ export type SessionEvent =
     })
   | (EventBase & { type: "question.asked"; data: { questionId: string; text: string; options: QuestionOption[] } })
   | (EventBase & { type: "question.answered"; data: { questionId: string; answer: QuestionAnswer } })
-  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: "stopped" | "replaced" | (string & {}) } })
+  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: "stopped" | (string & {}) } })
   | (EventBase & { type: "turn.failed"; data: Failure })
   | (EventBase & {
       type: "turn.cancelled";

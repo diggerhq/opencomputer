@@ -232,6 +232,8 @@ export const turn: Shape<Turn> = object({
   mode: oneOf("queue", "steer", "interrupt"),
   status: stringAs<TurnStatus>(),
   outcome: optional(stringAs<TurnOutcome>()),
+  reason: optional(string),
+  questionId: optional(string),
   payload: optional(jsonValue),
   deliveries: optional(array(turnOutcomeDelivery)),
   createdAt: string,
