@@ -116,7 +116,8 @@ its contents affect application correctness or access.
 | `sessions.end(id)` | `POST /sessions/<id>/end` | The ended session |
 | `sessions.interrupt(id)` | `POST /sessions/<id>/interrupt` | The session |
 | `sessions.setLabels(id, { set?, unset? })` | `PATCH /sessions/<id>/labels` | The session |
-| `sessions.turns.send(id, params)` | `POST /sessions/<id>/turns` | `{ turnId, status, duplicate }` |
+| `sessions.turns.send(id, params)` | `POST /sessions/<id>/turns` | `{ turnId, status, duplicate }`, or a held receipt |
+| `sessions.questions.dismiss(id, questionId)` | `POST /sessions/<id>/questions/<questionId>/dismiss` | Closes the open question with `dismissed` |
 | `sessions.events.list(id, { after? })` | `GET /sessions/<id>/events` | The events with `seq` greater than `after`, up to 500 |
 | `sessions.startOnDocument(params)` | `PUT` the document, then `POST /sessions` | `{ document, session }` with `created` on each |
 

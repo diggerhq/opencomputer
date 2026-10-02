@@ -115,14 +115,28 @@ question.
 While a question is open, a turn sent without `answers` does not run on its
 own. It is held, and delivered with the answer, in order, as `steering`, so
 the turn that interprets the answer sees every constraint written in the
-meantime. The API answers a held input with `status: "held"`; see
-[Turns](/agents/api#turns). A turn already queued behind the asking turn is
-held the same way.
+meantime. `steering` carries a bounded number of held inputs, up to 64 KiB;
+the rest run as ordinary turns after the answer, in order. The API answers a
+held input with `202 { status: "held", questionId }` and no `turnId`; see
+[Turns](/agents/api#turns). A turn already queued behind the asking turn
+settles as `cancelled` with reason `held` and keeps its turn id. Held inputs
+are in the [event log](/agents/events#questions) as `message.held`, then
+`message.delivered` or `message.discarded`.
 
 One question is open at a time. The answering turn may ask again, which opens
-a new question. A question closes without an answer only when the session is
-stopped from [Linear](/agents/linear#stop), which also discards the held
-inputs.
+a new question. A question closes without an answer with
+`question.closed { reason }`:
+
+| `reason` | Cause | Held inputs |
+| --- | --- | --- |
+| `stopped` | The session was stopped from [Linear](/agents/linear#stop) | Discarded |
+| `dismissed` | [Dismiss](/agents/api#questions) was called | Run as ordinary turns, in order |
+| `ended` | The session was ended | Not run |
+| `undeliverable` | The question could not be posted to Linear | Run as ordinary turns, in order |
+
+Interrupting a turn does not close a question. In Linear, messages typed
+while the agent works usually arrive after the answer; see
+[Ask before acting](/agents/linear#ask-before-acting).
 
 ## Durability and recovery
 

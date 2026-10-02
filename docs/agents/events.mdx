@@ -127,14 +127,18 @@ only when one happened.
 | --- | --- | --- |
 | `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question); the asking turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text |
 | `question.answered` | A turn answering the question was admitted | `questionId`, `answer`: `{ questionId, text, value? }` |
-| `question.closed` | The question closed without an answer | `questionId`, `reason`: `stopped` |
+| `question.closed` | The question closed without an answer | `questionId`, `reason`: `stopped`, `dismissed`, `ended` or `undeliverable` |
+| `message.held` | An input sent without `answers` was held behind the open question | `questionId` and the held input |
+| `message.delivered` | A held input was delivered, as `steering` or as an ordinary turn | `turnId`: the turn that carried it |
+| `message.discarded` | A held input will not run | none |
 
 `turn.completed` with `outcome: "question"` is the turn's terminal event, so a
 consumer that knows only completed turns reads an asking turn correctly, and
 [outcome subscriptions](/agents/api#event-subscriptions) deliver it as a
 completed turn. The open question is also on the session as
-[`question`](/agents/sessions#questions). A question closes with `stopped`
-when the session is stopped from [Linear](/agents/linear#stop).
+[`question`](/agents/sessions#questions), where each closure `reason` is
+explained. A held input is recorded once, however often its key is repeated,
+so a client can rebuild held messages after a reload.
 
 ### Messages
 

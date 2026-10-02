@@ -301,7 +301,8 @@ Calling `ask` ends the turn with an open question. The turn completes with
 `question.asked` is recorded in the [event log](/agents/events#questions).
 The reply arrives as the next input with
 [`answer`](/agents/inputs#answers-and-steering) set, and anything written
-meanwhile arrives with it as `steering`. A session has at most one open
+meanwhile arrives with it as `steering`, within
+[bounds](/agents/sessions#questions). A session has at most one open
 question; the turn that interprets the answer may ask again.
 
 How the question reaches a person depends on where the session lives: an

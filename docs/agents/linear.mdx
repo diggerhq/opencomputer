@@ -1,11 +1,11 @@
 ---
-title: "Linear agents"
+title: "Linear connections"
 description: "Make a deployed agent a teammate people delegate issues to and mention in Linear"
 ---
 
-Connect an agent to Linear and people can delegate issues to it and mention it,
-under the name you give it. Its tool calls and replies appear in the issue's
-thread. You write no webhook or Linear client code.
+Connect an agent to Linear and people can delegate issues to it and mention it.
+It appears under your Linear app's name and icon. Its tool calls and replies
+appear in the issue's thread. You write no webhook or Linear client code.
 
 ```tsx
 import { useInput } from "@opencomputer/agent";
@@ -25,8 +25,8 @@ export default function Agent() {
 4. Choose **Authorize in Linear**. A workspace admin must approve.
 5. Delegate an issue to the agent. The panel shows **First session received**.
 
-Each environment needs its own Linear app. Tokens never reach the agent, its
-logs or the browser.
+Each environment needs its own Linear app. Linear access tokens never reach the
+agent, its logs or the browser.
 
 ## Talking to it
 
@@ -39,47 +39,54 @@ reply; the agent answers the thread, not a person.
 ## What it receives
 
 Each message is a [channel input](/agents/inputs) with
-`channel.provider: "linear"`. `text` is the message, or Linear's prompt
-context for the first one. `payload` is a `LinearInputPayload`:
+`channel.provider: "linear"`. `text` is the message; for the first one it is
+Linear's prompt context, or `<identifier>: <title>` without one. `payload` is a
+`LinearInputPayload`:
 
 | Field | Meaning |
 | --- | --- |
 | `issue` | `{ id, identifier, title, description, url, team }` |
-| `origin` | `{ parent?, createdByAgent }`, read when the session starts and fixed for its life |
+| `origin` | `{ parent?, createdByAgent }`, read when the session starts and fixed for its life; `createdByAgent` is true when this agent's Linear app created the issue, whoever delegated it |
 | `action` | `created` for the first message, `prompted` after |
-| `session`, `comment`, `previousComments`, `guidance` | The thread and your workspace's agent guidance, as Linear sent them |
+| `session` | `{ id, url?, creator? }`; `creator` is the person responsible, absent when automation started it |
+| `promptContext`, `comment`, `previousComments`, `guidance` | The thread and your workspace's agent guidance, as Linear sent them |
 
 ## What it writes
 
 | The agent | Linear shows |
 | --- | --- |
-| Calls a tool | An action with a one-line summary (never raw arguments) |
-| Finishes its turn | The final message as a response |
+| Receives a session | "Reading the issue.", at once |
+| Calls a tool | An action with a short subject such as a file path, never full arguments or output |
+| Finishes its turn | The final message as a response, or "Done." without one |
 | Calls `ask` | A question awaiting input, options as buttons |
-| Fails or is stopped | An error |
+| Is stopped | An error: "Stopped." |
+| Fails | An error: "OpenComputer could not complete this request." |
 
 A GitHub pull request URL in the final message becomes the session's link.
 
 ## Ask before acting
 
 ```tsx
-import { useInput, useTool } from "@opencomputer/agent";
-import { createSubIssues } from "./tools/create-sub-issues"; // a defineTool that writes
+import { useInput, useService, useTool } from "@opencomputer/agent";
+import { applyPlan } from "./tools/apply-plan"; // a defineTool that calls Linear
 
 export default function Agent() {
+  useService("linear");
   const input = useInput();
   if (!input.answer) {
     useTool("ask");
     return `Propose a plan, then ask whether to go:\n\n${input.text ?? ""}`;
   }
-  useTool(createSubIssues);
+  useTool(applyPlan);
   return `You were told "${input.answer.text}". If that means go, do it.`;
 }
 ```
 
-The reply arrives with `input.answer`. Messages written in the meantime arrive
-with it in `input.steering`. Linear holds messages typed while the agent works
-until it finishes, so tell people to send them before answering.
+Any reply after the question is the answer, `input.answer`. Linear holds
+messages typed while the agent works and releases them only when it finishes,
+so they arrive after the answer as ordinary turns and `input.steering` is
+usually empty; a stop discards them. Say so in the question, so people send
+constraints before answering.
 
 ## Stop
 
@@ -88,11 +95,10 @@ any open question. A later reply continues the same session.
 
 ## Call Linear
 
-For documents, sub-issues or status changes, declare the service in the agent
-and call Linear's GraphQL API from a tool:
+Declare the service in the agent and call Linear's GraphQL API from a tool:
 
 ```tsx
-// agent.ts
+// in the agent component
 useService("linear");
 
 // in a tool
