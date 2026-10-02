@@ -57,7 +57,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.equal(packageJSON.scripts.dev, undefined);
     assert.equal(packageJSON.scripts["dev:web"], undefined);
     assert.equal(packageJSON.scripts.deploy, "opencomputer deploy");
-    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.6.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.8.0");
     assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.7.0");
     assert.equal(packageJSON.devDependencies["@types/node"], undefined);
@@ -288,7 +288,7 @@ test("init can explicitly include a separately-run React app", async () => {
       session: "opencomputer session",
       deploy: "opencomputer deploy",
     });
-    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.2.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.4.0");
     assert.equal(packageJSON.dependencies.react, "^19.2.0");
     assert.equal(packageJSON.devDependencies.vite, "^8.0.0");
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.7.0");
