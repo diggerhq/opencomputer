@@ -98,6 +98,7 @@ import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
+import { ManagedProjectLinear } from './Linear'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
   projectCloneCommand,
@@ -1378,6 +1379,7 @@ export default function ManagedAgentDetail({
             projectId={project.project.id}
             environment={environment}
           />
+          <ManagedProjectLinear projectId={project.project.id} />
         </div>
       ) : null}
     </div>

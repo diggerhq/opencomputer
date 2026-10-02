@@ -454,6 +454,74 @@ const slackSetupAuthorizationSchema = z.object({
   expiresAt: z.string(),
 })
 
+// Linear agent connections (docs/agents/linear.mdx). One per project
+// environment and agent. The record never carries the app's secrets or
+// tokens; its webhook URL does carry the connection's ingress token, so the
+// panel shows it masked.
+export const LINEAR_CONNECTION_STATUSES = [
+  'pending',
+  'connected',
+  'revoked',
+  'disconnected',
+] as const
+export const LINEAR_HEALTH_STATES = [
+  'awaiting_credentials',
+  'awaiting_authorization',
+  'waiting_for_first_delegation',
+  'receiving',
+  'revoked',
+] as const
+
+const linearConnectionSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  name: z.string(),
+  status: z.enum(LINEAR_CONNECTION_STATUSES),
+  clientId: z.string().optional(),
+  appUserId: z.string().optional(),
+  organizationId: z.string().optional(),
+  webhookUrl: z.string().url().optional(),
+  createAppUrl: z.string().url().optional(),
+  verifiedAt: z.string().optional(),
+  verificationError: z.string().optional(),
+  lastEventAt: z.string().optional(),
+  teams: z
+    .object({ allPublic: z.boolean(), teamIds: z.array(z.string()) })
+    .optional(),
+  health: z
+    .object({
+      state: z.enum(LINEAR_HEALTH_STATES),
+      message: z.string(),
+      lastEventAt: z.string().optional(),
+    })
+    .optional(),
+  revision: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+const linearConnectionResponseSchema = z.object({
+  connection: linearConnectionSchema,
+})
+const linearConnectionsResponseSchema = z.object({
+  connections: z.array(linearConnectionSchema),
+})
+const linearCreateResponseSchema = z.object({
+  connectionId: z.string(),
+  webhookUrl: z.string().url(),
+  createAppUrl: z.string().url(),
+  connection: linearConnectionSchema,
+})
+const linearAuthorizeResponseSchema = z.object({
+  authorizeUrl: z.string().url(),
+  expiresAt: z.string(),
+})
+const linearDisconnectResponseSchema = z.object({
+  connection: linearConnectionSchema,
+  revoked: z.boolean(),
+})
+
 const connectionsResponseSchema = z.object({
   connections: z.array(connectionSchema),
 })
@@ -795,6 +863,8 @@ export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedSlackSetup = z.infer<typeof slackSetupSchema>
 export type ManagedSlackSetupPhase = ManagedSlackSetup['phase']
 export type ManagedSlackSetupAction = ManagedSlackSetup['actions'][number]
+export type ManagedLinearConnection = z.infer<typeof linearConnectionSchema>
+export type ManagedLinearHealthState = (typeof LINEAR_HEALTH_STATES)[number]
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
@@ -1575,6 +1645,87 @@ export async function disconnectManagedAgentSlack(connectionId: string) {
     `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
     { method: 'DELETE' },
     channelSchema,
+  )
+}
+
+/** The project's Linear connections with health, for one environment or both. */
+export async function listManagedLinearConnections(
+  projectId: string,
+  environment?: 'development' | 'production',
+) {
+  const query = environment
+    ? `?${new URLSearchParams({ environment }).toString()}`
+    : ''
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/linear/connections${query}`,
+      undefined,
+      linearConnectionsResponseSchema,
+    )
+  ).connections
+}
+
+/**
+ * Allocate a pending connection for an agent in one environment. The answer
+ * carries the webhook URL and Linear's prefilled create-app link; calling it
+ * again for a binding that is still pending starts that setup over.
+ */
+export async function createManagedLinearConnection(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId: string
+  name: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/linear/connections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        environment: input.environment,
+        agentId: input.agentId,
+      }),
+    },
+    linearCreateResponseSchema,
+  )
+}
+
+/**
+ * The Linear app's client ID, client secret and webhook signing secret. They
+ * are sent once and never returned; the answer is the redacted connection.
+ */
+export async function setManagedLinearCredentials(
+  connectionId: string,
+  credentials: {
+    clientId: string
+    clientSecret: string
+    signingSecret: string
+  },
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/credentials`,
+      { method: 'PUT', body: JSON.stringify(credentials) },
+      linearConnectionResponseSchema,
+    )
+  ).connection
+}
+
+/** A fresh authorization link for the connection's app; earlier ones stop working. */
+export async function authorizeManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/authorize`,
+    { method: 'POST' },
+    linearAuthorizeResponseSchema,
+  )
+}
+
+/** Revoke the app's access, remove the binding; the webhook URL stops working. */
+export async function disconnectManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+    linearDisconnectResponseSchema,
   )
 }
 
