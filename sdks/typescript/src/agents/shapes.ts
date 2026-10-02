@@ -321,12 +321,14 @@ const turnReceiptFields = object({
   status: nonEmptyString,
   duplicate: optional(boolean),
   questionId: optional(string),
+  heldId: optional(string),
 });
 
 /** A turn, or an input held behind an open question (`held` / `discarded` with `questionId`, no turn). */
 export const turnReceipt: Shape<ReturnType<typeof turnReceiptFields>> = (value, path) => {
   const receipt = turnReceiptFields(value, path);
-  const held = (receipt.status === "held" || receipt.status === "discarded") && !!receipt.questionId;
+  const held =
+    (receipt.status === "held" || receipt.status === "discarded") && !!receipt.questionId && !!receipt.heldId;
   if (receipt.turnId === undefined && !held) {
     throw new ShapeError(at(path, "turnId"), "a string, or a held receipt with questionId");
   }

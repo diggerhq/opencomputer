@@ -218,7 +218,7 @@ describe("OpenComputer client", () => {
   });
 
   it("returns a held receipt, without a turn, for input sent while a question is open", async () => {
-    let body: Record<string, unknown> = { status: "held", questionId: "q_1", duplicate: false };
+    let body: Record<string, unknown> = { status: "held", questionId: "q_1", heldId: "held_1", duplicate: false };
     const api = fakeApi({
       "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json(body, { status: 202 }),
     });
@@ -226,9 +226,10 @@ describe("OpenComputer client", () => {
     expect(await client.sessions.turns.send("ses_1", { input: "Keep the old endpoint." })).toEqual({
       status: "held",
       questionId: "q_1",
+      heldId: "held_1",
       duplicate: false,
     });
-    body = { status: "held", duplicate: false };
+    body = { status: "held", questionId: "q_1", duplicate: false };
     await expect(client.sessions.turns.send("ses_1", { input: "again" })).rejects.toThrow();
   });
 
@@ -275,7 +276,8 @@ describe("OpenComputer client", () => {
     type Data<T extends string> = Extract<SessionEvent, { type: T; data: { questionId?: unknown } }>["data"];
     expectTypeOf<Data<"message.held">["input"]>().toEqualTypeOf<string>();
     expectTypeOf<Data<"message.delivered">["answerTurnId"]>().toEqualTypeOf<string>();
-    expectTypeOf<Data<"message.discarded">["reason"]>().toEqualTypeOf<string>();
+    expectTypeOf<"ended">().toMatchTypeOf<Data<"message.discarded">["reason"]>();
+    expectTypeOf<Data<"message.delivered">["as"]>().toEqualTypeOf<"steering" | "answer" | "turn">();
     expectTypeOf<Data<"delivery.failed">["activityId"]>().toEqualTypeOf<string>();
     expectTypeOf<Data<"turn.cancelled">["questionId"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<Data<"turn.cancelled">["discarded"]>().toEqualTypeOf<boolean | undefined>();

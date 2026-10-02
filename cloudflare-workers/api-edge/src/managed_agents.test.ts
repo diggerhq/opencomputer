@@ -4225,45 +4225,12 @@ describe("managed agents proxy", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("words held_inputs_full for the caller", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () =>
-          Response.json(
-            { error: { code: "held_inputs_full", message: "held inputs exceed 65536 bytes for q_1" } },
-            { status: 409 },
-          ),
-        ),
-      );
-      const response = await proxyManagedAgents(
-        new Request(
-          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ input: "One more constraint" }),
-          },
-        ),
-        env,
-        caller,
-        "/api/managed-agents",
-      );
-      expect(response.status).toBe(409);
-      expect(await response.json()).toEqual({
-        error: {
-          code: "held_inputs_full",
-          message:
-            "Too many messages are waiting on the agent's question. Answer or dismiss the question, then send again.",
-        },
-      });
-    });
-
     it("passes a held receipt through with its question and no turn", async () => {
       vi.stubGlobal(
         "fetch",
         vi.fn(async () =>
           Response.json(
-            { status: "held", questionId: question.id, duplicate: false, accountId: "acct_private" },
+            { status: "held", questionId: question.id, heldId: "held_1", duplicate: false, accountId: "acct_private" },
             { status: 202 },
           ),
         ),
@@ -4285,6 +4252,7 @@ describe("managed agents proxy", () => {
       expect(await response.json()).toEqual({
         status: "held",
         questionId: question.id,
+        heldId: "held_1",
         duplicate: false,
       });
     });

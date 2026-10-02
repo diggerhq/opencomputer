@@ -262,9 +262,6 @@ async function publicErrorResponse(
       : undefined;
   if (slackSetupMessage) {
     message = slackSetupMessage;
-  } else if (backendCode === "held_inputs_full") {
-    message =
-      "Too many messages are waiting on the agent's question. Answer or dismiss the question, then send again.";
   } else if (linearMessage) {
     message = linearMessage;
   } else if (missingTemplateManifest) {
@@ -2134,6 +2131,7 @@ function publicSuccessBody(
       status: body.status,
       duplicate: body.duplicate,
       ...(typeof body.questionId === "string" ? { questionId: body.questionId } : {}),
+      ...(typeof body.heldId === "string" ? { heldId: body.heldId } : {}),
     };
   }
   if (method === "GET" && suffix === "/billing/sessions") {

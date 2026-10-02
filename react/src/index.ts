@@ -94,6 +94,8 @@ export interface SendReceipt {
   turnId?: string;
   /** Set when the input was held: the question it waits on. */
   questionId?: string;
+  /** Set when the input was held: its id, the same one its `message.held` event carries. */
+  heldId?: string;
   /**
    * The turn's persisted status: `queued` behind earlier turns or `running`
    * at once for a new turn; for a retried key, whatever the existing turn
@@ -232,8 +234,8 @@ function asSendError(cause: unknown): SendError {
 /** The documented admission reply, checked before it becomes a receipt. */
 function turnAdmission(
   body: unknown,
-): { turnId?: string; questionId?: string; status: TurnStatus; duplicate: boolean } {
-  const reply = body as { turnId?: unknown; questionId?: unknown; status?: unknown; duplicate?: unknown } | null;
+): { turnId?: string; questionId?: string; heldId?: string; status: TurnStatus; duplicate: boolean } {
+  const reply = body as { turnId?: unknown; questionId?: unknown; heldId?: unknown; status?: unknown; duplicate?: unknown } | null;
   if (!reply || typeof reply.status !== "string" || !reply.status) {
     throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
   }
@@ -247,7 +249,12 @@ function turnAdmission(
     typeof reply.questionId === "string" &&
     reply.questionId
   ) {
-    return { questionId: reply.questionId, status: reply.status as TurnStatus, duplicate };
+    return {
+      questionId: reply.questionId,
+      ...(typeof reply.heldId === "string" && reply.heldId ? { heldId: reply.heldId } : {}),
+      status: reply.status as TurnStatus,
+      duplicate,
+    };
   }
   throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
 }

@@ -115,6 +115,7 @@ export class Turns {
     return {
       status: answer.body.status as "held" | "discarded",
       questionId: answer.body.questionId as string,
+      heldId: answer.body.heldId as string,
       duplicate,
     };
   }

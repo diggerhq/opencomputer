@@ -209,6 +209,8 @@ export interface HeldTurnReceipt {
   status: "held" | "discarded";
   /** The question the input is waiting on. */
   questionId: string;
+  /** The held input's id; its `message.held` / `message.delivered` events carry the same one. */
+  heldId: string;
   /** `true` when the `idempotencyKey` had already been received. */
   duplicate: boolean;
   turnId?: undefined;
@@ -389,17 +391,34 @@ export type SessionEvent =
   | (EventBase & {
       type: "message.held";
       /** An input sent while `questionId` was open, without answering it. */
-      data: { questionId: string; heldId?: string; input: string; payload?: DataValue };
+      data: {
+        questionId: string;
+        heldId: string;
+        input: string;
+        payload?: DataValue;
+        receivedAt: string;
+        /** When the provider says it was written (Linear's prompt time). */
+        providerTime?: string;
+        /** Set when a turn already queued behind the asking turn was held. */
+        turnId?: string;
+      };
     })
   | (EventBase & {
       type: "message.delivered";
       /** The held input reached the agent: as `steering` on the answer turn, or as its own turn. */
-      data: { questionId: string; heldId?: string; answerTurnId: string };
+      data: {
+        questionId: string;
+        heldId: string;
+        /** The turn that carried it: the answer turn for steering or the answer, its own turn otherwise. */
+        answerTurnId: string;
+        turnId: string;
+        as: "steering" | "answer" | "turn";
+      };
     })
   | (EventBase & {
       type: "message.discarded";
       /** The held input never reached the agent; `reason` is why (`stopped`, `ended`). */
-      data: { questionId: string; heldId?: string; reason: string };
+      data: { questionId: string; heldId: string; reason: "stopped" | "ended" | (string & {}) };
     })
   | (EventBase & {
       type: "delivery.failed";
@@ -409,9 +428,19 @@ export type SessionEvent =
         activityId: string;
         kind: string;
         contentType: string;
-        state: string;
+        state: "failed_transient" | "failed_permanent" | "invalidated" | "dropped" | (string & {});
         attempts: number;
-        error: string;
+        /** A fixed code, never the provider's message. */
+        error:
+          | "provider_unavailable"
+          | "provider_rejected"
+          | "connection_not_found"
+          | "connection_pending"
+          | "connection_disconnected"
+          | "connection_revoked"
+          | "session_superseded"
+          | (string & {});
+        turnId?: string;
         agentSessionId?: string;
         questionId?: string;
         retrying?: boolean;
