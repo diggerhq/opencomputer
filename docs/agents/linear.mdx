@@ -63,6 +63,9 @@ A GitHub pull request URL in the final message becomes the session's link.
 ## Ask before acting
 
 ```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+import { createSubIssues } from "./tools/create-sub-issues"; // a defineTool that writes
+
 export default function Agent() {
   const input = useInput();
   if (!input.answer) {
@@ -85,10 +88,14 @@ any open question. A later reply continues the same session.
 
 ## Call Linear
 
-For documents, sub-issues or status changes, declare `useService("linear")`
-and call Linear's GraphQL API. The call acts as the agent's own Linear app.
+For documents, sub-issues or status changes, declare the service in the agent
+and call Linear's GraphQL API from a tool:
 
 ```tsx
+// agent.ts
+useService("linear");
+
+// in a tool
 const response = await callService({
   service: "linear",
   method: "POST",
@@ -97,7 +104,10 @@ const response = await callService({
 });
 ```
 
-Only `POST /graphql` is allowed. Issues the agent delegates to itself start new
+In sessions started from Linear, the call acts as the agent's own Linear app.
+In a session a person started (the playground, your app), it acts as that
+person's [connected Linear account](/agents/services). Only `POST /graphql` is
+allowed. Issues the agent delegates to itself start new
 sessions with `origin.createdByAgent: true`. For code, connect the project's
 [GitHub App](/agents/github).
 
@@ -110,5 +120,5 @@ workspace; delete it there if you no longer need it.
 
 - One connection per agent per environment, and one per Linear app.
 - No concurrency limit: every delegated issue runs its own session.
-- `ask` isn't available on the `microvm` runtime.
+- `ask` isn't available in sessions with `executionMode: "microvm"`.
 - Stopping a session doesn't stop issues it delegated.
