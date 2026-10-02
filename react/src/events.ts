@@ -28,6 +28,29 @@ export interface AgentMessage {
   turnId?: string;
   /** Set on an assistant message while its turn is still producing text. */
   streaming?: boolean;
+  /**
+   * Set on a user message held behind an open question, from `message.held`;
+   * its `status` follows the log to `delivered` or `discarded`.
+   */
+  held?: HeldInput;
+}
+
+/**
+ * Where a held input stands: `held` while its question is open, `delivered`
+ * once it reached the agent (with the answer, or as its own turn after a
+ * dismiss), `discarded` when a stop or the session's end dropped it.
+ */
+export type HeldStatus = "held" | "delivered" | "discarded";
+
+/** A user message sent while a question was open, without answering it. */
+export interface HeldInput {
+  /** The question the input waited on. */
+  questionId: string;
+  status: HeldStatus;
+  /** The turn that carried the input to the agent, once `delivered`. */
+  answerTurnId?: string;
+  /** Why it was `discarded`, as the log gives it. */
+  reason?: string;
 }
 
 /** A `memory.saved` event: a save the session observed succeeding. */
@@ -70,6 +93,25 @@ export interface ToolCall {
   status: ToolCallStatus;
 }
 
+/** One choice of a question; a selection sends `value` back. */
+export interface QuestionOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * The question the session is waiting on, from `question.asked`; cleared by
+ * `question.answered` or `question.closed` for the same id.
+ */
+export interface Question {
+  id: string;
+  text: string;
+  /** Empty when the answer is free text. */
+  options: QuestionOption[];
+  /** The turn that asked. */
+  turnId?: string;
+}
+
 /** The public failure a `turn.failed` event carries. */
 export interface TurnFailure {
   code: string;
@@ -93,6 +135,8 @@ export interface Turn {
    */
   result?: DataValue;
   failure?: TurnFailure;
+  /** `"question"` when the turn completed by asking; the session's `question` holds what it asked. */
+  outcome?: "question";
 }
 
 /** What the timeline keeps per turn; `Turn` adds the messages. */
@@ -103,6 +147,7 @@ export interface TurnRecord {
   toolCalls: ToolCall[];
   result?: DataValue;
   failure?: TurnFailure;
+  outcome?: "question";
   /** The `seq` of the first event that named the turn; orders the turns. */
   seq: number;
 }
@@ -114,6 +159,8 @@ export interface SessionTimeline {
   cursor: number;
   /** Every turn the log has recorded, by id, as of the cursor. */
   turns: Record<string, TurnRecord>;
+  /** The open question, or null. */
+  question: Question | null;
   isRunning: boolean;
   ended: boolean;
 }
@@ -124,6 +171,7 @@ export function emptyTimeline(): SessionTimeline {
     memorySaves: [],
     cursor: 0,
     turns: {},
+    question: null,
     isRunning: false,
     ended: false,
   };
@@ -251,7 +299,12 @@ export function applyTurnEvent(
       next = { ...current, status: "running" };
       break;
     case "turn.completed":
-      next = { ...current, status: "completed", toolCalls: settleToolCalls(current.toolCalls, "completed") };
+      next = {
+        ...current,
+        status: "completed",
+        toolCalls: settleToolCalls(current.toolCalls, "completed"),
+        ...(fields.outcome === "question" ? { outcome: "question" as const } : {}),
+      };
       break;
     case "turn.failed":
       next = {
@@ -377,6 +430,13 @@ export function applyEvent(
           : message,
       );
       return next;
+    case "question.asked":
+    case "question.answered":
+    case "question.closed":
+    case "message.held":
+    case "message.delivered":
+    case "message.discarded":
+      return applyQuestionEvent(next, event);
     case "memory.saved": {
       const save = memorySaveFromEvent(event);
       if (save) next.memorySaves = [...timeline.memorySaves, save];
@@ -392,6 +452,95 @@ export function applyEvent(
       return next;
     default:
       return next;
+  }
+}
+
+function heldMessageId(event: AgentEvent, heldId: string): string {
+  if (heldId) return `held:${heldId}`;
+  return event.id ? `held:${event.id}` : `event:${String(event.seq)}`;
+}
+
+/**
+ * The question lifecycle and the inputs held behind it: `question.asked`
+ * opens the question, `question.answered` and `question.closed` for the same
+ * id clear it; `message.held` adds the held input to the conversation and
+ * `message.delivered` / `message.discarded` move it along. The one reduction
+ * of these events, applied by `applyEvent` and by the hook in create mode,
+ * so both modes agree. Ignores every other event; does not move the cursor.
+ */
+export function applyQuestionEvent(
+  timeline: SessionTimeline,
+  event: AgentEvent,
+): SessionTimeline {
+  const fields = event.data ?? {};
+  switch (event.type) {
+    case "question.asked": {
+      const options = Array.isArray(fields.options)
+        ? fields.options.flatMap((option: unknown) => {
+            const entry = option as { label?: unknown; value?: unknown } | null;
+            return entry && typeof entry.label === "string" && typeof entry.value === "string"
+              ? [{ label: entry.label, value: entry.value }]
+              : [];
+          })
+        : [];
+      return {
+        ...timeline,
+        question: {
+          id: text(fields.questionId),
+          text: text(fields.text),
+          options,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+        },
+      };
+    }
+    case "question.answered":
+    case "question.closed":
+      return timeline.question?.id === text(fields.questionId)
+        ? { ...timeline, question: null }
+        : timeline;
+    case "message.held":
+      return {
+        ...timeline,
+        messages: upsert(timeline.messages, {
+          id: heldMessageId(event, text(fields.heldId)),
+          role: "user",
+          text: text(fields.input),
+          held: { questionId: text(fields.questionId), status: "held" },
+        }),
+      };
+    case "message.delivered":
+    case "message.discarded": {
+      const heldId = text(fields.heldId);
+      const questionId = text(fields.questionId);
+      const delivered = event.type === "message.delivered";
+      const answerTurnId = text(fields.answerTurnId) || event.turnId || "";
+      const reason = text(fields.reason);
+      // The event names its held input; without a name it settles every
+      // input still held under its question.
+      const matches = (message: AgentMessage) =>
+        heldId
+          ? message.id === `held:${heldId}`
+          : message.held?.status === "held" && (!questionId || message.held.questionId === questionId);
+      if (!timeline.messages.some(matches)) return timeline;
+      return {
+        ...timeline,
+        messages: timeline.messages.map((message) =>
+          matches(message) && message.held
+            ? {
+                ...message,
+                held: {
+                  questionId: message.held.questionId,
+                  status: delivered ? "delivered" : "discarded",
+                  ...(delivered && answerTurnId ? { answerTurnId } : {}),
+                  ...(!delivered && reason ? { reason } : {}),
+                },
+              }
+            : message,
+        ),
+      };
+    }
+    default:
+      return timeline;
   }
 }
 

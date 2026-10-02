@@ -98,6 +98,7 @@ export class Turns {
     const body: Record<string, unknown> = { input: params.input };
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
+    if (params.answers !== undefined) body.answers = params.answers;
     const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
       body,
       headers: params.idempotencyKey !== undefined ? { "idempotency-key": params.idempotencyKey } : undefined,
@@ -106,10 +107,16 @@ export class Turns {
     // The receipt says what the platform persisted. A repeated key answers
     // with the existing turn, which may have settled since; mapping that to
     // "queued" told a retrying caller its finished work was waiting.
+    const duplicate = answer.body.duplicate ?? answer.status === 200;
+    if (answer.body.turnId !== undefined) {
+      return { turnId: answer.body.turnId, status: answer.body.status, duplicate };
+    }
+    // Held behind the open question: no turn, the question instead (the shape checked it).
     return {
-      turnId: answer.body.turnId,
-      status: answer.body.status,
-      duplicate: answer.body.duplicate ?? answer.status === 200,
+      status: answer.body.status as "held" | "discarded",
+      questionId: answer.body.questionId as string,
+      heldId: answer.body.heldId as string,
+      duplicate,
     };
   }
 }
@@ -130,13 +137,35 @@ export class Events {
   }
 }
 
+export class Questions {
+  constructor(private readonly http: Http) {}
+
+  /**
+   * `POST /sessions/<id>/questions/<questionId>/dismiss`: closes the open
+   * question without an answer (`question.closed` with reason `dismissed`);
+   * inputs held behind it run as ordinary turns, in order. Repeating it is
+   * harmless; naming a question that is not the open one is `409
+   * question_stale`. Answers with the session.
+   */
+  dismiss(sessionId: string, questionId: string, options: CallOptions = {}): Promise<Session> {
+    return this.http.request(
+      "POST",
+      `/sessions/${segment(sessionId)}/questions/${segment(questionId)}/dismiss`,
+      shapes.session,
+      { signal: options.signal },
+    );
+  }
+}
+
 export class Sessions {
   readonly turns: Turns;
   readonly events: Events;
+  readonly questions: Questions;
 
   constructor(private readonly http: Http) {
     this.turns = new Turns(http);
     this.events = new Events(http);
+    this.questions = new Questions(http);
   }
 
   /** `POST /sessions`: creates a session without a turn. `created` is false when the key had already created it. */

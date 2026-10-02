@@ -652,6 +652,34 @@ async function handleDeleteAPIKey(_req: Request, env: DashboardEnv, caller: Call
   return new Response(null, { status: 204 });
 }
 
+async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {
+  const body = await req.json<{ name?: unknown }>().catch(() => ({} as { name?: unknown }));
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return json({ error: "name is required" }, 400);
+
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, key_prefix, scopes, last_used, expires_at, created_at
+       FROM api_keys WHERE id = ?1 AND org_id = ?2`,
+  ).bind(keyID, caller.orgID).first<{
+    id: string; key_prefix: string; scopes: string;
+    last_used: number | null; expires_at: number | null; created_at: number;
+  }>();
+  if (!row) return json({ error: "api key not found" }, 404);
+
+  await env.OPENCOMPUTER_DB.prepare(`UPDATE api_keys SET name = ?1 WHERE id = ?2 AND org_id = ?3`)
+    .bind(name, keyID, caller.orgID).run();
+  return json({
+    id: row.id,
+    orgId: caller.orgID,
+    name,
+    keyPrefix: row.key_prefix,
+    scopes: row.scopes.split(",").map((s) => s.trim()).filter(Boolean),
+    lastUsed: epochToISO(row.last_used),
+    expiresAt: epochToISO(row.expires_at),
+    createdAt: epochToISORequired(row.created_at),
+  });
+}
+
 // ── sessions list (cross-cell) ───────────────────────────────────────────
 
 async function handleListSessions(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
@@ -1123,6 +1151,7 @@ export async function handleDashboard(
   {
     const m = sub.match(/^\/api-keys\/([^/]+)$/);
     if (m && method === "DELETE") return handleDeleteAPIKey(req, env, caller, m[1]);
+    if (m && method === "PATCH") return handleRenameAPIKey(req, env, caller, m[1]);
   }
 
   // ── sessions: cross-cell list, then per-cell proxy ─────────────────────

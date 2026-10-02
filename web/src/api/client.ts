@@ -273,6 +273,13 @@ export const createAPIKey = (name: string) =>
     S.CreatedAPIKeySchema,
   )
 
+export const renameAPIKey = (keyId: string, name: string) =>
+  apiFetch(
+    `/api-keys/${keyId}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+    S.APIKeySchema,
+  )
+
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
 

@@ -66,12 +66,77 @@ These describe different parts of a session:
 | `status` and `activity` | Is work queued, running, stopping or finished?                                                                                                                                  |
 | `labels`                | How does your application organize the session? A ticket ID or `archived` label is your convention; changing it does not stop work.                                             |
 | `result`                | What did the agent last report? Its `data` is validated against the [result tool's](/agents/tools#the-session-result) output schema; `turnId` and `callId` identify the report. |
+| `question`              | Is the agent waiting on a person? The open [question](#questions), or `null`.                                                                                                   |
 
 A report does not finish a turn, and each report replaces the whole result.
 Later work can run, fail or be cancelled while an earlier result remains.
 For a review queue, check current activity, the last settled turn's status,
 and whether `result.turnId` matches that turn before treating the report as
 ready. Your application decides what the reported data means.
+
+## Questions
+
+A turn can end by asking. When the agent calls the
+[`ask`](/agents/tools#ask-a-question) tool, the turn completes with
+`outcome: "question"` and the session's `question` is set:
+
+```json
+{
+  "question": {
+    "id": "<question-id>",
+    "text": "Plan first, or go ahead?",
+    "options": [{ "label": "Go", "value": "go" }, { "label": "Plan first", "value": "plan" }],
+    "askedAt": "2026-10-02T10:00:00.000Z"
+  }
+}
+```
+
+`options` is empty for a free-text question. `question` is `null` when
+nothing is open, and it is independent of `result`: a session can hold a
+result and an open question at the same time. A consumer that only knows
+completed turns still reads an asking turn correctly, because its status is
+`completed`.
+
+Answer by sending a turn that names the question with `answers`:
+
+```ts
+await oc.sessions.turns.send(sessionId, {
+  input: "Go",
+  answers: session.question!.id,
+  idempotencyKey: "answer-1",
+});
+```
+
+The agent reads the reply as [`useInput().answer`](/agents/inputs#answers-and-steering).
+Naming a question that is not the open one is refused with
+`409 question_stale`; read the session again and answer its current
+question.
+
+While a question is open, a turn sent without `answers` does not run on its
+own. It is held, and delivered with the answer, in order, as `steering`, so
+the turn that interprets the answer sees every constraint written in the
+meantime. `steering` carries a bounded number of held inputs, up to 64 KiB;
+the rest run as ordinary turns after the answer, in order. The API answers a
+held input with `202 { status: "held", questionId }` and no `turnId`; see
+[Turns](/agents/api#turns). A turn already queued behind the asking turn
+settles as `cancelled` with reason `held` and keeps its turn id. Held inputs
+are in the [event log](/agents/events#questions) as `message.held`, then
+`message.delivered` or `message.discarded`.
+
+One question is open at a time. The answering turn may ask again, which opens
+a new question. A question closes without an answer with
+`question.closed { reason }`:
+
+| `reason` | Cause | Held inputs |
+| --- | --- | --- |
+| `stopped` | The session was stopped from [Linear](/agents/linear#stop) | Discarded |
+| `dismissed` | [Dismiss](/agents/api#questions) was called | Run as ordinary turns, in order |
+| `ended` | The session was ended | Not run |
+| `undeliverable` | The question could not be posted to Linear | Run as ordinary turns, in order |
+
+Interrupting a turn does not close a question. In Linear, messages typed
+while the agent works usually arrive after the answer; see
+[Ask before acting](/agents/linear#ask-before-acting).
 
 ## Durability and recovery
 

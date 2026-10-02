@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.3.0
+
+- `@opencomputer/sdk/agents`: questions. `Session.question` is the question
+  the agent asked with `ask`, or `null` (`SessionQuestion`); a turn that
+  ended by asking completes with `outcome: "question"` (`TurnOutcome`).
+  `turns.send(id, { input, answers: questionId })` answers it; naming a
+  question that is not the open one is `409 question_stale`.
+  `sessions.questions.dismiss(id, questionId)` closes it without an answer.
+- `TurnReceipt` is now a union: `AdmittedTurnReceipt` (`turnId`, `status`,
+  `duplicate`) or `HeldTurnReceipt` (`status: "held" | "discarded"`,
+  `questionId`, `duplicate`, no `turnId`) for input sent while a question is
+  open without answering it. Code that read `receipt.turnId` as a string
+  narrows on it first (`if (receipt.turnId !== undefined)`); a session that
+  never asks returns only admitted receipts. The React hook's matching
+  change is `@opencomputer/react` 0.4.0, where `SendReceipt.turnId` becomes
+  optional and `questionId` is set on a held receipt.
+- A turn queued when a question was asked settles as `cancelled` with
+  `reason: "held"` and `questionId`, on the turn and on its `turn.cancelled`
+  event (`discarded: true` when a stop dropped its input).
+- Events: `question.asked`, `question.answered`, `question.closed` with
+  `reason` `stopped | dismissed | ended | undeliverable`
+  (`QuestionClosedReason`); `message.held`, then `message.delivered` or
+  `message.discarded`, for each held input; `delivery.failed` for a channel
+  activity the platform could not post.
+
+## 2.2.0
+
+- `@opencomputer/sdk/agents`: `sessions.list` takes exact filters
+  (`SessionFilters`: `projectId`, `environment`, `agentId`, `status`, `deploymentId`,
+  `externalReference`, `createdAfter`, `createdBefore`, `updatedAfter`,
+  `labels`) and a `cursor`, and returns `nextCursor` (`null` on the last
+  page); `sessions.iterate` walks every page. `externalReference` on
+  `sessions.create` is your opaque reference to the session, returned on
+  the session, its list row and its `session.*` events, and part of the
+  creation identity.
+
 ## 2.1.2
 
 - `@opencomputer/sdk/agents`: the transport called `fetch` as a method of the client, which a native fetch refuses with `Illegal invocation` in workerd; it is now called as a plain function. Found by the Development proof of a Worker without Node compatibility. No API change.

@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { OpenComputer } from "./client.js";
 import { OpenComputerError } from "./errors.js";
+import type { SessionEvent } from "./types.js";
 
 interface Call { method: string; path: string; headers: Record<string, string>; body?: unknown }
 
@@ -188,6 +189,100 @@ describe("OpenComputer client", () => {
     });
     expect(api.last().headers["idempotency-key"]).toBeUndefined();
     expect(api.last().body).toEqual({ input: "again", mode: "steer" });
+  });
+
+  it("answers the open question by naming it, and reads the question from the session", async () => {
+    const question = { id: "q_1", text: "Plan first, or go?", options: [{ label: "Go", value: "go" }], askedAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/ses_1": () =>
+        Response.json({
+          id: "ses_1",
+          agentId: "worker",
+          deploymentId: "dep_1",
+          status: "idle",
+          source: "api",
+          turns: [{ id: "turn_1", input: "Fix it.", mode: "queue", status: "completed", outcome: "question", createdAt: "t", updatedAt: "t" }],
+          question,
+          createdAt: "t",
+          updatedAt: "t",
+        }),
+      "POST /api/managed-agents/sessions/ses_1/turns": () =>
+        Response.json({ turnId: "turn_2", status: "queued", duplicate: false }, { status: 202 }),
+    });
+    const client = oc(api);
+    const session = await client.sessions.get("ses_1");
+    expect(session.question).toEqual(question);
+    expect(session.turns[0]?.outcome).toBe("question");
+    await client.sessions.turns.send("ses_1", { input: "go", answers: "q_1" });
+    expect(api.last().body).toEqual({ input: "go", answers: "q_1" });
+  });
+
+  it("returns a held receipt, without a turn, for input sent while a question is open", async () => {
+    let body: Record<string, unknown> = { status: "held", questionId: "q_1", heldId: "held_1", duplicate: false };
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json(body, { status: 202 }),
+    });
+    const client = oc(api);
+    expect(await client.sessions.turns.send("ses_1", { input: "Keep the old endpoint." })).toEqual({
+      status: "held",
+      questionId: "q_1",
+      heldId: "held_1",
+      duplicate: false,
+    });
+    body = { status: "held", questionId: "q_1", duplicate: false };
+    await expect(client.sessions.turns.send("ses_1", { input: "again" })).rejects.toThrow();
+  });
+
+  it("dismisses the open question on its route and answers with the session", async () => {
+    const session = { id: "ses_1", agentId: "worker", deploymentId: "dep_1", status: "idle", source: "api", turns: [], question: null, createdAt: "t", updatedAt: "t" };
+    let stale = false;
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions/ses_1/questions/q%201/dismiss": () =>
+        stale
+          ? Response.json({ error: { code: "question_stale", message: "That question is no longer open." } }, { status: 409 })
+          : Response.json(session),
+    });
+    const client = oc(api);
+    const dismissed = await client.sessions.questions.dismiss("ses_1", "q 1");
+    expect(dismissed.question).toBeNull();
+    expect(api.last()).toMatchObject({ method: "POST", path: "/api/managed-agents/sessions/ses_1/questions/q%201/dismiss" });
+    expect(api.last().body).toBeUndefined();
+    stale = true;
+    const failure = await client.sessions.questions.dismiss("ses_1", "q 1").catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(OpenComputerError);
+    expect(failure).toMatchObject({ code: "question_stale", status: 409 });
+  });
+
+  it("reads the held-input events, delivery failures and a held turn's cancellation", async () => {
+    const base = { sessionId: "ses_1", timestamp: "t" };
+    const events = [
+      { ...base, id: "e1", seq: 1, type: "message.held", data: { questionId: "q_1", heldId: "h_1", input: "Keep the old endpoint." } },
+      { ...base, id: "e2", seq: 2, turnId: "turn_2", type: "turn.cancelled", data: { reason: "held", questionId: "q_1", discarded: false } },
+      { ...base, id: "e3", seq: 3, type: "question.closed", data: { questionId: "q_1", reason: "dismissed" } },
+      { ...base, id: "e4", seq: 4, type: "message.delivered", data: { questionId: "q_1", heldId: "h_1", answerTurnId: "turn_3" } },
+      { ...base, id: "e5", seq: 5, type: "message.discarded", data: { questionId: "q_2", heldId: "h_2", reason: "stopped" } },
+      {
+        ...base,
+        id: "e6",
+        seq: 6,
+        type: "delivery.failed",
+        data: { channel: "linear", activityId: "a_1", agentSessionId: "as_1", kind: "terminal", contentType: "response", state: "failed", attempts: 1, error: "400", questionId: "q_1" },
+      },
+    ];
+    const api = fakeApi({ "GET /api/managed-agents/sessions/ses_1/events": () => Response.json({ events }) });
+    const read = await oc(api).sessions.events.list("ses_1");
+    expect(read).toEqual(events);
+    // The catch-all member keeps unknown types readable, so check the named members by type.
+    type Data<T extends string> = Extract<SessionEvent, { type: T; data: { questionId?: unknown } }>["data"];
+    expectTypeOf<Data<"message.held">["input"]>().toEqualTypeOf<string>();
+    expectTypeOf<Data<"message.delivered">["answerTurnId"]>().toEqualTypeOf<string>();
+    expectTypeOf<"ended">().toMatchTypeOf<Data<"message.discarded">["reason"]>();
+    expectTypeOf<Data<"message.delivered">["as"]>().toEqualTypeOf<"steering" | "answer" | "turn">();
+    expectTypeOf<Data<"delivery.failed">["activityId"]>().toEqualTypeOf<string>();
+    expectTypeOf<Data<"turn.cancelled">["questionId"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<Data<"turn.cancelled">["discarded"]>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<"dismissed">().toMatchTypeOf<Data<"question.closed">["reason"]>();
+    expectTypeOf<"undeliverable">().toMatchTypeOf<Data<"question.closed">["reason"]>();
   });
 
   it("reads the event log from a cursor", async () => {

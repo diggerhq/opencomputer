@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyEvents,
+  applyQuestionEvent,
   applyTurnEvent,
   emptyTimeline,
   failureMessage,
@@ -13,6 +14,7 @@ import {
   type AgentMessage,
   type DataValue,
   type MemorySave,
+  type Question,
   type SessionTimeline,
   type Turn,
   type TurnStatus,
@@ -29,7 +31,11 @@ export {
   type AgentEvent,
   type AgentMessage,
   type DataValue,
+  type HeldInput,
+  type HeldStatus,
   type MemorySave,
+  type Question,
+  type QuestionOption,
   type SessionTimeline,
   type ToolCall,
   type ToolCallStatus,
@@ -77,10 +83,19 @@ export interface AttachAgentOptions extends CommonOptions {
 
 export type UseAgentOptions = CreateAgentOptions | AttachAgentOptions;
 
-/** What `send` resolves with: the platform admitted the input as a turn. */
+/**
+ * What `send` resolves with: the platform admitted the input as a turn, or,
+ * while the agent's question is open, held it (`status: "held"`, no `turnId`,
+ * `questionId` set) to reach the agent with the answer.
+ */
 export interface SendReceipt {
   sessionId: string;
-  turnId: string;
+  /** Absent when the input was held behind an open question. */
+  turnId?: string;
+  /** Set when the input was held: the question it waits on. */
+  questionId?: string;
+  /** Set when the input was held: its id, the same one its `message.held` event carries. */
+  heldId?: string;
   /**
    * The turn's persisted status: `queued` behind earlier turns or `running`
    * at once for a new turn; for a retried key, whatever the existing turn
@@ -103,6 +118,11 @@ export interface SendOptions {
   idempotencyKey?: string;
   /** Structured input the agent reads as `useInput().payload`, beside the text. */
   payload?: DataValue;
+  /**
+   * The id of the open question this input answers. `answer()` sets it.
+   * Naming a question that is no longer open is refused with `question_stale`.
+   */
+  answers?: string;
 }
 
 /**
@@ -147,6 +167,21 @@ export interface UseAgentResult {
    * settlement, which arrives through `turns`.
    */
   stop: () => Promise<void>;
+  /**
+   * The question the agent is waiting on, or null. While it is open, input
+   * sent with `send` is held and reaches the agent with the answer.
+   */
+  question: Question | null;
+  /** Answers the question with that id: `send(text, { answers: questionId })`. */
+  answer: (questionId: string, text: string, options?: Omit<SendOptions, "answers">) => Promise<SendReceipt>;
+  /**
+   * Closes the question with that id without answering it. Inputs held
+   * behind it then run as ordinary turns, in order. Rejects with a
+   * `SendError` (`question_stale` when it is no longer the open question)
+   * after setting `error`; the question clears when the log's
+   * `question.closed` arrives.
+   */
+  dismiss: (questionId: string) => Promise<void>;
   sessionId: string | undefined;
   /** A turn is running in the log, or a locally admitted turn has not settled. Queued replay alone is false. */
   isRunning: boolean;
@@ -197,18 +232,31 @@ function asSendError(cause: unknown): SendError {
 }
 
 /** The documented admission reply, checked before it becomes a receipt. */
-function turnAdmission(body: unknown): { turnId: string; status: TurnStatus; duplicate: boolean } {
-  const reply = body as { turnId?: unknown; status?: unknown; duplicate?: unknown } | null;
-  if (
-    !reply ||
-    typeof reply.turnId !== "string" ||
-    !reply.turnId ||
-    typeof reply.status !== "string" ||
-    !reply.status
-  ) {
+function turnAdmission(
+  body: unknown,
+): { turnId?: string; questionId?: string; heldId?: string; status: TurnStatus; duplicate: boolean } {
+  const reply = body as { turnId?: unknown; questionId?: unknown; heldId?: unknown; status?: unknown; duplicate?: unknown } | null;
+  if (!reply || typeof reply.status !== "string" || !reply.status) {
     throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
   }
-  return { turnId: reply.turnId, status: reply.status as TurnStatus, duplicate: reply.duplicate === true };
+  const duplicate = reply.duplicate === true;
+  if (typeof reply.turnId === "string" && reply.turnId) {
+    return { turnId: reply.turnId, status: reply.status as TurnStatus, duplicate };
+  }
+  // Held behind the open question: no turn, the question instead.
+  if (
+    (reply.status === "held" || reply.status === "discarded") &&
+    typeof reply.questionId === "string" &&
+    reply.questionId
+  ) {
+    return {
+      questionId: reply.questionId,
+      ...(typeof reply.heldId === "string" && reply.heldId ? { heldId: reply.heldId } : {}),
+      status: reply.status as TurnStatus,
+      duplicate,
+    };
+  }
+  throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
 }
 
 export function useAgent(
@@ -375,6 +423,9 @@ export function useAgent(
               ...(sendOptions.payload !== undefined
                 ? { payload: sendOptions.payload }
                 : {}),
+              ...(sendOptions.answers !== undefined
+                ? { answers: sendOptions.answers }
+                : {}),
             }),
           },
         ),
@@ -403,7 +454,13 @@ export function useAgent(
       setError(undefined);
       try {
         const receipt = await admitTurn(activeSession, prompt, sendOptions);
+        if (receipt.turnId === undefined) {
+          // Held behind the open question: the log's `message.held` puts
+          // the message in the conversation, and its later state.
+          return receipt;
+        }
         if (current()) {
+          const turnId = receipt.turnId;
           // The log's message.received for this turn carries the same id,
           // so it confirms this message instead of duplicating it. Whether
           // the turn is still running is the log's call, not this reply's.
@@ -411,22 +468,22 @@ export function useAgent(
           commit({
             ...timeline,
             messages: upsert(timeline.messages, {
-              id: inputMessageId(receipt.turnId),
+              id: inputMessageId(turnId),
               role: "user",
               text: prompt,
-              turnId: receipt.turnId,
+              turnId,
             }),
           });
           // A receipt that already reports a settled turn is not a pending
           // admission, whether or not the log has caught up with it.
           if (
             !isSettledStatus(receipt.status) &&
-            !isSettledTurn(timelineRef.current, receipt.turnId)
+            !isSettledTurn(timelineRef.current, turnId)
           ) {
             setAdmitted((pending) =>
-              pending.includes(receipt.turnId)
+              pending.includes(turnId)
                 ? pending
-                : [...pending, receipt.turnId],
+                : [...pending, turnId],
             );
           }
         }
@@ -494,18 +551,28 @@ export function useAgent(
           );
         }
         let streamed = "";
-        const waitFor = async (terminal: (event: AgentEvent) => boolean) => {
+        // Reads the log from the cursor until `terminal` matches, or, without
+        // one, until a page comes back empty.
+        const waitFor = async (terminal?: (event: AgentEvent) => boolean) => {
           for (;;) {
             const result = await request<{ events: AgentEvent[] }>(
               `/sessions/${encodeURIComponent(activeSession!)}/events?after=${String(cursorRef.current)}`,
             );
+            if (!terminal && !result.events.length) return undefined;
             for (const event of result.events) {
+              if (event.seq <= cursorRef.current) continue;
               cursorRef.current = Math.max(cursorRef.current, event.seq);
               optionsRef.current.onEvent?.(event);
-              // Turn activity is reduced from the log here as in attach mode;
-              // the messages are streamed into the two local placeholders.
+              // Turn activity and the question lifecycle are reduced from the
+              // log here as in attach mode; the turn's messages are streamed
+              // into the two local placeholders.
               const current = timelineRef.current;
-              commit({ ...current, turns: applyTurnEvent(current.turns, event) });
+              commit(
+                applyQuestionEvent(
+                  { ...current, turns: applyTurnEvent(current.turns, event) },
+                  event,
+                ),
+              );
               if (event.type === "message.delta") {
                 streamed += String(event.data.text ?? "");
                 updateMessages((messages) =>
@@ -533,34 +600,46 @@ export function useAgent(
                   optionsRef.current.onMemorySaved?.(save);
                 }
               }
-              if (terminal(event)) return event;
+              if (terminal?.(event)) return event;
             }
             if (result.events.length) {
               commit({ ...timelineRef.current, cursor: cursorRef.current });
             }
-            await new Promise((done) => setTimeout(done, 500));
+            if (terminal) await new Promise((done) => setTimeout(done, 500));
           }
         };
         await waitFor((event) => event.type === "runtime.connected");
         receipt = await admitTurn(activeSession, prompt, sendOptions);
-        // The placeholders belong to the admitted turn from here on, so the
-        // turn's messages are its own.
         const { turnId } = receipt;
-        updateMessages((messages) =>
-          messages.map((message) =>
-            message.id === userMessage.id || message.id === assistantId
-              ? { ...message, turnId }
-              : message,
-          ),
-        );
-        const completed = await waitFor(
-          (event) =>
-            event.type === "turn.completed" ||
-            event.type === "turn.failed" ||
-            event.type === "turn.cancelled",
-        );
-        if (completed.type === "turn.failed") {
-          throw new Error(String(completed.data.message ?? "Agent failed"));
+        if (turnId === undefined) {
+          // Held behind the session's open question: no turn runs, so the
+          // placeholders go; the log's `message.held` puts the message in
+          // the conversation.
+          updateMessages((messages) =>
+            messages.filter(
+              (message) => message.id !== userMessage.id && message.id !== assistantId,
+            ),
+          );
+          await waitFor();
+        } else {
+          // The placeholders belong to the admitted turn from here on, so the
+          // turn's messages are its own.
+          updateMessages((messages) =>
+            messages.map((message) =>
+              message.id === userMessage.id || message.id === assistantId
+                ? { ...message, turnId }
+                : message,
+            ),
+          );
+          const completed = await waitFor(
+            (event) =>
+              event.type === "turn.completed" ||
+              event.type === "turn.failed" ||
+              event.type === "turn.cancelled",
+          );
+          if (completed?.type === "turn.failed") {
+            throw new Error(String(completed.data.message ?? "Agent failed"));
+          }
         }
         await request(
           `/sessions/${encodeURIComponent(activeSession)}/suspend`,
@@ -629,6 +708,31 @@ export function useAgent(
     }
   }, [request]);
 
+  const answer = useCallback(
+    (questionId: string, value: string, answerOptions: Omit<SendOptions, "answers"> = {}) =>
+      send(value, { ...answerOptions, answers: questionId }),
+    [send],
+  );
+
+  const dismiss = useCallback(
+    async (questionId: string) => {
+      const activeSession = sessionRef.current;
+      if (!activeSession) return;
+      setError(undefined);
+      try {
+        await request(
+          `/sessions/${encodeURIComponent(activeSession)}/questions/${encodeURIComponent(questionId)}/dismiss`,
+          { method: "POST" },
+        );
+      } catch (cause) {
+        const failure = asSendError(cause);
+        if (sessionRef.current === activeSession) setError(failure.message);
+        throw failure;
+      }
+    },
+    [request],
+  );
+
   const turns = useMemo(() => turnsOf(timeline), [timeline]);
 
   return {
@@ -636,6 +740,9 @@ export function useAgent(
     turns,
     send,
     stop,
+    question: timeline.question,
+    answer,
+    dismiss,
     sessionId,
     isRunning: timeline.isRunning || admitted.length > 0,
     isReplaying,
