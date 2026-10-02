@@ -28,6 +28,29 @@ export interface AgentMessage {
   turnId?: string;
   /** Set on an assistant message while its turn is still producing text. */
   streaming?: boolean;
+  /**
+   * Set on a user message held behind an open question, from `message.held`;
+   * its `status` follows the log to `delivered` or `discarded`.
+   */
+  held?: HeldInput;
+}
+
+/**
+ * Where a held input stands: `held` while its question is open, `delivered`
+ * once it reached the agent (with the answer, or as its own turn after a
+ * dismiss), `discarded` when a stop or the session's end dropped it.
+ */
+export type HeldStatus = "held" | "delivered" | "discarded";
+
+/** A user message sent while a question was open, without answering it. */
+export interface HeldInput {
+  /** The question the input waited on. */
+  questionId: string;
+  status: HeldStatus;
+  /** The turn that carried the input to the agent, once `delivered`. */
+  answerTurnId?: string;
+  /** Why it was `discarded`, as the log gives it. */
+  reason?: string;
 }
 
 /** A `memory.saved` event: a save the session observed succeeding. */
@@ -407,27 +430,13 @@ export function applyEvent(
           : message,
       );
       return next;
-    case "question.asked": {
-      const options = Array.isArray(fields.options)
-        ? fields.options.flatMap((option: unknown) => {
-            const entry = option as { label?: unknown; value?: unknown } | null;
-            return entry && typeof entry.label === "string" && typeof entry.value === "string"
-              ? [{ label: entry.label, value: entry.value }]
-              : [];
-          })
-        : [];
-      next.question = {
-        id: text(fields.questionId),
-        text: text(fields.text),
-        options,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-      };
-      return next;
-    }
+    case "question.asked":
     case "question.answered":
     case "question.closed":
-      if (timeline.question?.id === text(fields.questionId)) next.question = null;
-      return next;
+    case "message.held":
+    case "message.delivered":
+    case "message.discarded":
+      return applyQuestionEvent(next, event);
     case "memory.saved": {
       const save = memorySaveFromEvent(event);
       if (save) next.memorySaves = [...timeline.memorySaves, save];
@@ -443,6 +452,95 @@ export function applyEvent(
       return next;
     default:
       return next;
+  }
+}
+
+function heldMessageId(event: AgentEvent, heldId: string): string {
+  if (heldId) return `held:${heldId}`;
+  return event.id ? `held:${event.id}` : `event:${String(event.seq)}`;
+}
+
+/**
+ * The question lifecycle and the inputs held behind it: `question.asked`
+ * opens the question, `question.answered` and `question.closed` for the same
+ * id clear it; `message.held` adds the held input to the conversation and
+ * `message.delivered` / `message.discarded` move it along. The one reduction
+ * of these events, applied by `applyEvent` and by the hook in create mode,
+ * so both modes agree. Ignores every other event; does not move the cursor.
+ */
+export function applyQuestionEvent(
+  timeline: SessionTimeline,
+  event: AgentEvent,
+): SessionTimeline {
+  const fields = event.data ?? {};
+  switch (event.type) {
+    case "question.asked": {
+      const options = Array.isArray(fields.options)
+        ? fields.options.flatMap((option: unknown) => {
+            const entry = option as { label?: unknown; value?: unknown } | null;
+            return entry && typeof entry.label === "string" && typeof entry.value === "string"
+              ? [{ label: entry.label, value: entry.value }]
+              : [];
+          })
+        : [];
+      return {
+        ...timeline,
+        question: {
+          id: text(fields.questionId),
+          text: text(fields.text),
+          options,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+        },
+      };
+    }
+    case "question.answered":
+    case "question.closed":
+      return timeline.question?.id === text(fields.questionId)
+        ? { ...timeline, question: null }
+        : timeline;
+    case "message.held":
+      return {
+        ...timeline,
+        messages: upsert(timeline.messages, {
+          id: heldMessageId(event, text(fields.heldId)),
+          role: "user",
+          text: text(fields.input),
+          held: { questionId: text(fields.questionId), status: "held" },
+        }),
+      };
+    case "message.delivered":
+    case "message.discarded": {
+      const heldId = text(fields.heldId);
+      const questionId = text(fields.questionId);
+      const delivered = event.type === "message.delivered";
+      const answerTurnId = text(fields.answerTurnId) || event.turnId || "";
+      const reason = text(fields.reason);
+      // The event names its held input; without a name it settles every
+      // input still held under its question.
+      const matches = (message: AgentMessage) =>
+        heldId
+          ? message.id === `held:${heldId}`
+          : message.held?.status === "held" && (!questionId || message.held.questionId === questionId);
+      if (!timeline.messages.some(matches)) return timeline;
+      return {
+        ...timeline,
+        messages: timeline.messages.map((message) =>
+          matches(message) && message.held
+            ? {
+                ...message,
+                held: {
+                  questionId: message.held.questionId,
+                  status: delivered ? "delivered" : "discarded",
+                  ...(delivered && answerTurnId ? { answerTurnId } : {}),
+                  ...(!delivered && reason ? { reason } : {}),
+                },
+              }
+            : message,
+        ),
+      };
+    }
+    default:
+      return timeline;
   }
 }
 
