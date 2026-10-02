@@ -2109,10 +2109,13 @@ function publicSuccessBody(
     };
   }
   if (method === "POST" && /\/turns$/.test(suffix)) {
+    // An input held behind an open question has no turn yet: its receipt
+    // names the question instead (status "held", or "discarded" after a stop).
     return {
-      turnId: body.turnId,
+      ...(typeof body.turnId === "string" ? { turnId: body.turnId } : {}),
       status: body.status,
       duplicate: body.duplicate,
+      ...(typeof body.questionId === "string" ? { questionId: body.questionId } : {}),
     };
   }
   if (method === "GET" && suffix === "/billing/sessions") {

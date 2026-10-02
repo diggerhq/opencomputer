@@ -4175,6 +4175,37 @@ describe("managed agents proxy", () => {
       });
     });
 
+    it("passes a held receipt through with its question and no turn", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { status: "held", questionId: question.id, duplicate: false, accountId: "acct_private" },
+            { status: 202 },
+          ),
+        ),
+      );
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/turns",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ input: "Keep the old endpoint" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({
+        status: "held",
+        questionId: question.id,
+        duplicate: false,
+      });
+    });
+
     it("passes the open question and a turn's outcome through the session snapshot", async () => {
       vi.stubGlobal(
         "fetch",

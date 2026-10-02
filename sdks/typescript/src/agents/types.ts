@@ -178,8 +178,27 @@ export interface CreateSessionParams {
   externalReference?: string;
 }
 
-/** Turn admission, as `POST /sessions/<id>/turns` answers it. */
-export interface TurnReceipt {
+/**
+ * Turn admission, as `POST /sessions/<id>/turns` answers it: a turn, or an
+ * input held behind the session's open question.
+ */
+export type TurnReceipt = AdmittedTurnReceipt | HeldTurnReceipt;
+
+/**
+ * An input sent while a question was open, without `answers`. It runs no turn
+ * of its own: it reaches the agent with the answer, as `steering`. `discarded`
+ * when a stop ended the question first.
+ */
+export interface HeldTurnReceipt {
+  status: "held" | "discarded";
+  /** The question the input is waiting on. */
+  questionId: string;
+  /** `true` when the `idempotencyKey` had already been received. */
+  duplicate: boolean;
+  turnId?: undefined;
+}
+
+export interface AdmittedTurnReceipt {
   turnId: string;
   /**
    * The turn's persisted status: `queued` behind earlier turns or `running`

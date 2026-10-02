@@ -107,10 +107,15 @@ export class Turns {
     // The receipt says what the platform persisted. A repeated key answers
     // with the existing turn, which may have settled since; mapping that to
     // "queued" told a retrying caller its finished work was waiting.
+    const duplicate = answer.body.duplicate ?? answer.status === 200;
+    if (answer.body.turnId !== undefined) {
+      return { turnId: answer.body.turnId, status: answer.body.status, duplicate };
+    }
+    // Held behind the open question: no turn, the question instead (the shape checked it).
     return {
-      turnId: answer.body.turnId,
-      status: answer.body.status,
-      duplicate: answer.body.duplicate ?? answer.status === 200,
+      status: answer.body.status as "held" | "discarded",
+      questionId: answer.body.questionId as string,
+      duplicate,
     };
   }
 }

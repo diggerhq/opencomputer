@@ -271,6 +271,10 @@ log records `question.answered` or `question.closed` for it. Answering a
 question that is no longer open rejects with a `SendError` whose code is
 `question_stale`; the hook's `question` shows the current one.
 
+While a question is open, `send` without `answers` resolves with a held
+receipt, `{ status: "held", questionId }` and no `turnId`: the message stays
+in `messages` and reaches the agent with the answer.
+
 ## Stop and reopen
 
 `stop()` requests an interrupt without spending a model turn. It resolves

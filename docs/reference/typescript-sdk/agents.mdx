@@ -128,7 +128,10 @@ the key as the `Idempotency-Key` header. The receipt carries the turn's
 persisted `status`: `queued` or `running` for a new turn, and for a repeated
 key the existing turn's status, `completed`, `failed` or `cancelled` once it
 has settled, with `duplicate: true`. The client maps nothing, so a retry
-after a lost reply learns what became of the turn. `list` takes the exact
+after a lost reply learns what became of the turn. An input sent while a
+question is open, without `answers`, runs no turn: its receipt is
+`{ status: "held", questionId, duplicate }` with no `turnId` (`"discarded"`
+once a stop ended the question). `list` takes the exact
 filters of [`GET /sessions`](/agents/api#get-and-list): `project` or
 `projectId`, `environment`, `agent` or `agentId`, `status`, `deploymentId`,
 `externalReference`, `createdAfter`, `createdBefore`, `updatedAfter`,

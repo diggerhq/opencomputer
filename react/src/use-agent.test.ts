@@ -758,3 +758,29 @@ test("attach exposes turns with their tool activity and result, the same after a
   await again.unmount();
   await view.unmount();
 });
+
+test("attach keeps a message held behind an open question in the conversation", async (t) => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), "http://app.test");
+    if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/events")) {
+      return Response.json({ events: [] });
+    }
+    if (init?.method === "POST" && url.pathname.endsWith("/turns")) {
+      return Response.json({ status: "held", questionId: "q-1", duplicate: false }, { status: 202 });
+    }
+    return Response.json({}, { status: 404 });
+  };
+  const view = mount(t, { sessionId: "ses-held", basePath: "/app/agent", fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying, "empty history");
+
+  let receipt: SendReceipt | undefined;
+  await act(async () => {
+    receipt = await view.result().send("Keep the old endpoint");
+  });
+  assert.deepEqual(receipt, { sessionId: "ses-held", questionId: "q-1", status: "held", duplicate: false });
+  const held = view.result();
+  assert.equal(held.isRunning, false);
+  assert.deepEqual(held.messages, [{ id: "held:q-1:0", role: "user", text: "Keep the old endpoint" }]);
+  await view.unmount();
+});

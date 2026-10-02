@@ -216,6 +216,21 @@ describe("OpenComputer client", () => {
     expect(api.last().body).toEqual({ input: "go", answers: "q_1" });
   });
 
+  it("returns a held receipt, without a turn, for input sent while a question is open", async () => {
+    let body: Record<string, unknown> = { status: "held", questionId: "q_1", duplicate: false };
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json(body, { status: 202 }),
+    });
+    const client = oc(api);
+    expect(await client.sessions.turns.send("ses_1", { input: "Keep the old endpoint." })).toEqual({
+      status: "held",
+      questionId: "q_1",
+      duplicate: false,
+    });
+    body = { status: "held", duplicate: false };
+    await expect(client.sessions.turns.send("ses_1", { input: "again" })).rejects.toThrow();
+  });
+
   it("reads the event log from a cursor", async () => {
     const events = [{ id: "e1", seq: 1, timestamp: "t", sessionId: "ses_1", type: "session.created", data: { agentId: "worker", deploymentId: "dep_1" } }];
     const api = fakeApi({ "GET /api/managed-agents/sessions/ses_1/events": () => Response.json({ events }) });

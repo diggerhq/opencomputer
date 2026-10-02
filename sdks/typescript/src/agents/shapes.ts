@@ -314,11 +314,22 @@ export const sessionPage: Shape<SessionPage> = (value, path) => {
   return { sessions: page.sessions, nextCursor: page.nextCursor ?? null };
 };
 
-export const turnReceipt = object({
-  turnId: string,
+const turnReceiptFields = object({
+  turnId: optional(string),
   status: nonEmptyString,
   duplicate: optional(boolean),
+  questionId: optional(string),
 });
+
+/** A turn, or an input held behind an open question (`held` / `discarded` with `questionId`, no turn). */
+export const turnReceipt: Shape<ReturnType<typeof turnReceiptFields>> = (value, path) => {
+  const receipt = turnReceiptFields(value, path);
+  const held = (receipt.status === "held" || receipt.status === "discarded") && !!receipt.questionId;
+  if (receipt.turnId === undefined && !held) {
+    throw new ShapeError(at(path, "turnId"), "a string, or a held receipt with questionId");
+  }
+  return receipt;
+};
 
 /**
  * One log entry. `seq`, `type` and `data` are what a reader keys on and are

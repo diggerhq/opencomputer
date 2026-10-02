@@ -80,10 +80,17 @@ export interface AttachAgentOptions extends CommonOptions {
 
 export type UseAgentOptions = CreateAgentOptions | AttachAgentOptions;
 
-/** What `send` resolves with: the platform admitted the input as a turn. */
+/**
+ * What `send` resolves with: the platform admitted the input as a turn, or,
+ * while the agent's question is open, held it (`status: "held"`, no `turnId`,
+ * `questionId` set) to reach the agent with the answer.
+ */
 export interface SendReceipt {
   sessionId: string;
-  turnId: string;
+  /** Absent when the input was held behind an open question. */
+  turnId?: string;
+  /** Set when the input was held: the question it waits on. */
+  questionId?: string;
   /**
    * The turn's persisted status: `queued` behind earlier turns or `running`
    * at once for a new turn; for a retried key, whatever the existing turn
@@ -212,18 +219,26 @@ function asSendError(cause: unknown): SendError {
 }
 
 /** The documented admission reply, checked before it becomes a receipt. */
-function turnAdmission(body: unknown): { turnId: string; status: TurnStatus; duplicate: boolean } {
-  const reply = body as { turnId?: unknown; status?: unknown; duplicate?: unknown } | null;
-  if (
-    !reply ||
-    typeof reply.turnId !== "string" ||
-    !reply.turnId ||
-    typeof reply.status !== "string" ||
-    !reply.status
-  ) {
+function turnAdmission(
+  body: unknown,
+): { turnId?: string; questionId?: string; status: TurnStatus; duplicate: boolean } {
+  const reply = body as { turnId?: unknown; questionId?: unknown; status?: unknown; duplicate?: unknown } | null;
+  if (!reply || typeof reply.status !== "string" || !reply.status) {
     throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
   }
-  return { turnId: reply.turnId, status: reply.status as TurnStatus, duplicate: reply.duplicate === true };
+  const duplicate = reply.duplicate === true;
+  if (typeof reply.turnId === "string" && reply.turnId) {
+    return { turnId: reply.turnId, status: reply.status as TurnStatus, duplicate };
+  }
+  // Held behind the open question: no turn, the question instead.
+  if (
+    (reply.status === "held" || reply.status === "discarded") &&
+    typeof reply.questionId === "string" &&
+    reply.questionId
+  ) {
+    return { questionId: reply.questionId, status: reply.status as TurnStatus, duplicate };
+  }
+  throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
 }
 
 export function useAgent(
@@ -421,7 +436,23 @@ export function useAgent(
       setError(undefined);
       try {
         const receipt = await admitTurn(activeSession, prompt, sendOptions);
-        if (current()) {
+        if (current() && receipt.turnId === undefined) {
+          // Held behind the open question: no turn will echo it back, so the
+          // message stays in the conversation as sent. It reaches the agent
+          // with the answer.
+          const timeline = timelineRef.current;
+          commit({
+            ...timeline,
+            messages: upsert(timeline.messages, {
+              id: `held:${receipt.questionId}:${timeline.messages.length}`,
+              role: "user",
+              text: prompt,
+            }),
+          });
+          return receipt;
+        }
+        if (current() && receipt.turnId !== undefined) {
+          const turnId = receipt.turnId;
           // The log's message.received for this turn carries the same id,
           // so it confirms this message instead of duplicating it. Whether
           // the turn is still running is the log's call, not this reply's.
@@ -429,22 +460,22 @@ export function useAgent(
           commit({
             ...timeline,
             messages: upsert(timeline.messages, {
-              id: inputMessageId(receipt.turnId),
+              id: inputMessageId(turnId),
               role: "user",
               text: prompt,
-              turnId: receipt.turnId,
+              turnId,
             }),
           });
           // A receipt that already reports a settled turn is not a pending
           // admission, whether or not the log has caught up with it.
           if (
             !isSettledStatus(receipt.status) &&
-            !isSettledTurn(timelineRef.current, receipt.turnId)
+            !isSettledTurn(timelineRef.current, turnId)
           ) {
             setAdmitted((pending) =>
-              pending.includes(receipt.turnId)
+              pending.includes(turnId)
                 ? pending
-                : [...pending, receipt.turnId],
+                : [...pending, turnId],
             );
           }
         }
@@ -564,6 +595,10 @@ export function useAgent(
         // The placeholders belong to the admitted turn from here on, so the
         // turn's messages are its own.
         const { turnId } = receipt;
+        if (!turnId) {
+          // A new session has no question, so nothing can be held.
+          throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
+        }
         updateMessages((messages) =>
           messages.map((message) =>
             message.id === userMessage.id || message.id === assistantId
