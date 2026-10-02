@@ -206,7 +206,10 @@ const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
   workspace_export_failed: "The workspace export failed.",
 };
 
-async function publicErrorResponse(upstream: Response): Promise<Response> {
+async function publicErrorResponse(
+  upstream: Response,
+  suffix?: string,
+): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
     body &&
@@ -252,9 +255,16 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     : undefined;
   const linearMessage = Object.hasOwn(LINEAR_ERROR_MESSAGES, backendCode)
     ? LINEAR_ERROR_MESSAGES[backendCode]
-    : undefined;
+    : suffix !== undefined &&
+        isLinearRouteSuffix(suffix) &&
+        Object.hasOwn(LINEAR_ROUTE_ERROR_MESSAGES, backendCode)
+      ? LINEAR_ROUTE_ERROR_MESSAGES[backendCode]
+      : undefined;
   if (slackSetupMessage) {
     message = slackSetupMessage;
+  } else if (backendCode === "held_inputs_full") {
+    message =
+      "Too many messages are waiting on the agent's question. Answer or dismiss the question, then send again.";
   } else if (linearMessage) {
     message = linearMessage;
   } else if (missingTemplateManifest) {
@@ -853,6 +863,14 @@ const LINEAR_ERROR_MESSAGES: Record<string, string> = {
   invalid_linear_app_name: "The Linear app name must be 1 to 64 characters.",
   linear_app_name_reserved:
     'Linear does not allow app names that contain "Linear". Choose another name.',
+};
+
+// Shared codes worded for the Linear connection routes that return them.
+const LINEAR_ROUTE_ERROR_MESSAGES: Record<string, string> = {
+  forbidden:
+    "Project-scoped API keys cannot create or change Linear connections. Use an organization API key.",
+  project_not_found: "That project does not exist.",
+  project_archived: "Restore this project before connecting Linear.",
 };
 
 /** A Linear connection by whitelist: never its credentials or account. */
@@ -2140,7 +2158,9 @@ function publicSuccessBody(
     (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
     (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) ||
     (method === "POST" &&
-      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
+      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix)) ||
+    (method === "POST" &&
+      /^\/sessions\/[^/]+\/questions\/[^/]+\/dismiss$/.test(suffix))
   ) {
     return publicSessionSnapshot(body);
   }
@@ -2720,6 +2740,13 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
     /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
       suffix,
     )
+  ) {
+    return true;
+  }
+  // Closes the open question without an answer.
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/questions\/[^/]+\/dismiss$/.test(suffix)
   ) {
     return true;
   }
@@ -3397,7 +3424,7 @@ export async function proxyManagedAgents(
         },
       });
     }
-    if (!upstream.ok) return publicErrorResponse(upstream);
+    if (!upstream.ok) return publicErrorResponse(upstream, suffix);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (
       /^\/projects\/[^/]+\/source-archive$/.test(suffix) ||
