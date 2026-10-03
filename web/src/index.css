@@ -221,8 +221,9 @@
 }
 
 /* Dark theme — the warm-light palette inverted, not a generic cool-dark.
-   Hues stay at 36–40 (paper/ink warmth) so the shell reads as the same
-   product at night; surfaces go background → panel → inset as *lighter*
+   Hues stay at 36–40 (paper/ink warmth) and the ramp is lifted off pure
+   black (bg ~12%) so the shell reads as the same product at night rather
+   than a void; surfaces go background → panel → inset as *lighter*
    steps (light mode's inset-darker relationship mirrors to raised-darker).
    Status solids brighten for AA text on their now-dark tints; code and
    terminal surfaces keep their existing warm-dark values since they're
@@ -230,73 +231,73 @@
 .dark {
   color-scheme: dark;
 
-  --background: hsl(36 10% 8%);
+  --background: hsl(36 8% 12%);
   --foreground: hsl(40 12% 90%);
 
-  --card: hsl(36 9% 11%);
+  --card: hsl(36 7% 15%);
   --card-foreground: hsl(40 12% 90%);
-  --popover: hsl(36 9% 11%);
+  --popover: hsl(36 7% 15%);
   --popover-foreground: hsl(40 12% 90%);
-  --panel: hsl(36 9% 11%);
-  --panel-2: hsl(36 8% 15%);
+  --panel: hsl(36 7% 15%);
+  --panel-2: hsl(36 6% 18%);
 
-  --secondary: hsl(36 7% 16%);
+  --secondary: hsl(36 6% 19%);
   --secondary-foreground: hsl(40 12% 90%);
-  --muted: hsl(36 7% 16%);
-  --accent: hsl(36 7% 16%);
+  --muted: hsl(36 6% 19%);
+  --accent: hsl(36 6% 19%);
   --accent-foreground: hsl(40 12% 90%);
 
-  --muted-foreground: hsl(40 6% 62%); /* ~7:1 on background */
+  --muted-foreground: hsl(40 6% 62%); /* ~6:1 on background */
 
-  --border: hsl(36 7% 19%);
-  --input: hsl(36 7% 25%);
+  --border: hsl(36 6% 22%);
+  --input: hsl(36 6% 28%);
   --ring: hsl(40 8% 60%);
 
-  --row-hover: hsl(36 7% 14%);
-  --row-selected: hsl(36 8% 18%);
+  --row-hover: hsl(36 6% 17%);
+  --row-selected: hsl(36 7% 21%);
 
   --primary: hsl(40 12% 90%);
-  --primary-foreground: hsl(36 10% 8%);
+  --primary-foreground: hsl(36 8% 12%);
 
   --destructive: hsl(0 62% 50%);
   --destructive-foreground: hsl(0 0% 100%);
 
   --status-running: hsl(142 55% 50%);
-  --status-running-bg: hsl(142 35% 14%);
+  --status-running-bg: hsl(142 30% 16%);
   --status-stopped: hsl(40 6% 65%);
-  --status-stopped-bg: hsl(40 8% 16%);
+  --status-stopped-bg: hsl(40 8% 19%);
   --status-hibernated: hsl(222 65% 70%);
-  --status-hibernated-bg: hsl(222 35% 17%);
+  --status-hibernated-bg: hsl(222 30% 19%);
   --status-error: hsl(0 70% 65%);
-  --status-error-bg: hsl(0 40% 17%);
+  --status-error-bg: hsl(0 35% 19%);
   --status-pending: hsl(38 85% 60%);
-  --status-pending-bg: hsl(38 45% 16%);
+  --status-pending-bg: hsl(38 40% 18%);
 
   /* Code blocks sit a step above the shell bg so they still read as a
      distinct surface; the terminal stays near-black (recessed). */
-  --code: hsl(36 9% 11%);
+  --code: hsl(36 8% 15%);
   --code-foreground: hsl(40 12% 88%);
   --code-muted: hsl(40 6% 54%);
-  --code-border: hsl(36 8% 19%);
-  --terminal: hsl(36 13% 7%);
+  --code-border: hsl(36 7% 22%);
+  --terminal: hsl(36 13% 8%);
 
   /* Charts — neutral paper ramp (dark → light), inverted from light mode */
   --chart-1: hsl(40 12% 85%);
   --chart-2: hsl(40 10% 65%);
   --chart-3: hsl(40 7% 50%);
-  --chart-4: hsl(36 6% 33%);
-  --chart-5: hsl(36 6% 22%);
+  --chart-4: hsl(36 6% 36%);
+  --chart-5: hsl(36 6% 26%);
 
-  --sidebar: hsl(36 9% 9%);
+  --sidebar: hsl(36 8% 10%);
   --sidebar-foreground: hsl(40 12% 90%);
-  --sidebar-border: hsl(36 7% 19%);
-  --sidebar-accent: hsl(36 7% 15%);
+  --sidebar-border: hsl(36 6% 22%);
+  --sidebar-accent: hsl(36 6% 18%);
   --sidebar-accent-foreground: hsl(40 12% 90%);
 
   /* Overlays need real elevation on dark — the light-tinted shadow is
-     invisible against a near-black shell. */
+     invisible against a dark shell. */
   --shadow-overlay:
-    0 10px 30px -12px rgb(0 0 0 / 0.55), 0 1px 3px -1px rgb(0 0 0 / 0.4);
+    0 10px 30px -12px rgb(0 0 0 / 0.5), 0 1px 3px -1px rgb(0 0 0 / 0.35);
 }
 
 @layer base {
