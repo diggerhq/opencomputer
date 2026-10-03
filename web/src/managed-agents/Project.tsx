@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import ManagedAgentDetail from './Detail'
 import { getManagedProject } from './api'
 import { selectedProjectAgentId } from './project-context'
+import { projectViewState } from './project-state'
 
 export default function ProjectDetail() {
   const { projectId = '', projectAgentId } = useParams()
@@ -18,14 +19,36 @@ export default function ProjectDetail() {
     refetchInterval: 1_500,
   })
 
-  if (project.isLoading) {
+  const state = projectViewState(project)
+
+  if (state === 'loading') {
     return (
       <div className="flex min-h-64 items-center justify-center">
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
       </div>
     )
   }
-  if (!project.data || project.isError) {
+  if (state === 'unavailable') {
+    return (
+      <Panel>
+        <EmptyState
+          icon={FolderKanban}
+          title="This project is temporarily unavailable"
+          description={
+            project.error instanceof Error
+              ? project.error.message
+              : 'Try loading the project again.'
+          }
+          action={
+            <Button variant="outline" onClick={() => void project.refetch()}>
+              Try again
+            </Button>
+          }
+        />
+      </Panel>
+    )
+  }
+  if (state === 'not-found' || !project.data) {
     return (
       <Panel>
         <EmptyState
