@@ -7,6 +7,7 @@ import {
   readFile,
   rm,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,7 +36,13 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-type Fixture = { path: string; bytes: Uint8Array; served?: Uint8Array };
+type Fixture = {
+  path: string;
+  bytes: Uint8Array;
+  served?: Uint8Array;
+  /** When true the fake download answer carries no expected digest. */
+  omitDigest?: boolean;
+};
 
 function fakeClient(fixtures: Fixture[]): WorkspaceClient & {
   exports: string[];
@@ -74,6 +81,7 @@ function fakeClient(fixtures: Fixture[]): WorkspaceClient & {
         mediaType: "application/octet-stream",
         url: `https://downloads.example/${encodeURIComponent(filePath)}`,
         expiresAt: "2026-01-01T00:05:00.000Z",
+        ...(fixture.omitDigest ? {} : { sha256: sha256(fixture.bytes) }),
       };
     },
     async workspaceFileContent(download: WorkspaceDownload) {
@@ -135,7 +143,7 @@ test("localPathFor never escapes the destination root", () => {
   assert.throws(() => localPathFor(root, "a/../../x"), /outside/);
 });
 
-test("download streams direct and computes a local hash", async () => {
+test("download streams direct and verifies against the supplied digest", async () => {
   const bytes = new TextEncoder().encode("hello evidence");
   const client = fakeClient([{ path: "out/a.txt", bytes }]);
   await withDirectory(async (dir) => {
@@ -149,8 +157,80 @@ test("download streams direct and computes a local hash", async () => {
     assert.deepEqual(client.exports, []);
     assert.equal(result.size, bytes.length);
     assert.equal(result.sha256, sha256(bytes));
+    assert.equal(result.verified, true);
     assert.equal(await readFile(destination, "utf8"), "hello evidence");
     assert.deepEqual(await readdir(dir), ["a.txt"]);
+  });
+});
+
+test("same-size corrupted content is rejected and preserves the destination", async () => {
+  const bytes = new TextEncoder().encode("abc");
+  const client = fakeClient([
+    { path: "a.txt", bytes, served: new TextEncoder().encode("xyz") },
+  ]);
+  await withDirectory(async (dir) => {
+    const destination = path.join(dir, "a.txt");
+    await writeFile(destination, "previous");
+    await assert.rejects(
+      downloadWorkspaceFile(client, sessionId, "a.txt", destination),
+      /do not match the expected SHA-256/,
+    );
+    assert.equal(await readFile(destination, "utf8"), "previous");
+    assert.deepEqual(await readdir(dir), ["a.txt"]);
+  });
+});
+
+test("a download without a server digest succeeds but is marked unverified", async () => {
+  const bytes = new TextEncoder().encode("fresh");
+  const client = fakeClient([{ path: "fresh.txt", bytes, omitDigest: true }]);
+  await withDirectory(async (dir) => {
+    const destination = path.join(dir, "fresh.txt");
+    const result = await downloadWorkspaceFile(
+      client,
+      sessionId,
+      "fresh.txt",
+      destination,
+    );
+    assert.equal(result.sha256, sha256(bytes));
+    assert.equal(result.verified, false);
+    assert.equal(await readFile(destination, "utf8"), "fresh");
+  });
+});
+
+test("a zero-byte file verifies against its empty-content digest", async () => {
+  const client = fakeClient([{ path: "empty.txt", bytes: new Uint8Array(0) }]);
+  await withDirectory(async (dir) => {
+    const destination = path.join(dir, "empty.txt");
+    const result = await downloadWorkspaceFile(
+      client,
+      sessionId,
+      "empty.txt",
+      destination,
+    );
+    assert.equal(result.sha256, sha256(new Uint8Array(0)));
+    assert.equal(result.verified, true);
+    assert.equal((await readFile(destination)).length, 0);
+  });
+});
+
+test("--all commits earlier files but publishes no corrupt one or .part leftovers", async () => {
+  const client = fakeClient([
+    { path: "a/good.txt", bytes: new TextEncoder().encode("good") },
+    {
+      path: "z/bad.txt",
+      bytes: new TextEncoder().encode("abc"),
+      served: new TextEncoder().encode("xyz"),
+    },
+  ]);
+  await withDirectory(async (dir) => {
+    await assert.rejects(downloadWorkspace(client, sessionId, dir), /SHA-256/);
+    assert.equal(await readFile(path.join(dir, "a", "good.txt"), "utf8"), "good");
+    const leftover: string[] = [];
+    for (const entry of await readdir(dir, { recursive: true })) {
+      leftover.push(String(entry));
+    }
+    // "z" stays as an empty directory; nothing with a .part suffix remains.
+    assert.deepEqual(leftover.sort(), ["a", "a/good.txt", "z"].sort());
   });
 });
 

@@ -2804,7 +2804,7 @@ async function runSessionFiles(
 ) {
   const printDownload = (result: DownloadResult) => {
     process.stdout.write(
-      `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256})\n`,
+      `${result.path} -> ${result.destination} (${formatSize(result.size)}, sha256 ${result.sha256}${result.verified ? "" : " unverified"})\n`,
     );
   };
   const action =

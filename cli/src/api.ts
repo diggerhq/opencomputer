@@ -1650,6 +1650,13 @@ export type WorkspaceDownload = WorkspaceFile & {
   mediaType: string;
   url: string;
   expiresAt: string;
+  /**
+   * Expected SHA-256 of the bytes the signed URL serves, present only when
+   * the server can vouch for them — a retained manifest covering this exact
+   * snapshot. Absent on older servers or unretained snapshots; callers must
+   * not treat a locally computed hash as verification in that case.
+   */
+  sha256?: string;
 };
 
 type WorkspaceFilePage = {
