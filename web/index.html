@@ -4,8 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="theme-color" content="#161513" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#f8f6f1"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#161513"
+    />
     <title>OpenComputer</title>
+    <script>
+      // Apply the saved theme before first paint; falls back to the OS
+      // preference when the user has never toggled.
+      var stored = localStorage.getItem('oc.theme')
+      var dark = stored
+        ? stored === 'dark'
+        : matchMedia('(prefers-color-scheme: dark)').matches
+      document.documentElement.classList.toggle('dark', dark)
+    </script>
   </head>
   <body>
     <div id="root"></div>

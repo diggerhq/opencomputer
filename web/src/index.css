@@ -1,5 +1,5 @@
 /* ============================================================
-   OpenComputer dashboard — design tokens (light, ink-on-paper)
+   OpenComputer dashboard — design tokens (light + warm dark)
    Brand source: opencomputer-site-v1/src/index.css + Mintlify docs.
 
    The legacy "Void Glass" theme.css is gone; Tailwind Preflight is on (the
@@ -114,7 +114,11 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 4px);
+}
 
+/* Non-inline so the overlay shadow resolves through var(--shadow-overlay) at
+   runtime and .dark can deepen it below. */
+@theme {
   /* Soft, diffuse elevation for overlays (dialogs, menus, sheets) — large
      blur + negative spread + low opacity, warm-ink tinted, so it reads as a
      gentle lift rather than a crude default drop shadow. */
@@ -129,6 +133,8 @@
    the pairs the dashboard actually uses (body >=4.5:1, large/UI >=3:1).
    ------------------------------------------------------------------ */
 :root {
+  color-scheme: light;
+
   /* Brand base (verbatim from opencomputer-site-v1) */
   --background: hsl(40 33% 97%); /* paper #f8f6f1 */
   --foreground: hsl(45 8% 8%); /* ink */
@@ -214,35 +220,84 @@
      Use Tailwind z-* utilities per this scale; do not invent z-9999. */
 }
 
-/* Dark mode is deferred for this effort but kept wired (darkMode: class).
-   Placeholder neutral-dark values so the mechanism is testable later. */
+/* Dark theme — the warm-light palette inverted, not a generic cool-dark.
+   Hues stay at 36–40 (paper/ink warmth) and the ramp is lifted off pure
+   black (bg ~12%) so the shell reads as the same product at night rather
+   than a void; surfaces go background → panel → inset as *lighter*
+   steps (light mode's inset-darker relationship mirrors to raised-darker).
+   Status solids brighten for AA text on their now-dark tints; code and
+   terminal surfaces keep their existing warm-dark values since they're
+   already the app's own dark. */
 .dark {
-  --background: hsl(240 10% 8%);
-  --foreground: hsl(40 10% 92%);
-  --card: hsl(240 10% 11%);
-  --card-foreground: hsl(40 10% 92%);
-  --popover: hsl(240 10% 11%);
-  --popover-foreground: hsl(40 10% 92%);
-  --panel: hsl(240 10% 11%);
-  --panel-2: hsl(240 8% 14%);
-  --primary: hsl(40 10% 92%);
-  --primary-foreground: hsl(240 10% 8%);
-  --secondary: hsl(240 8% 16%);
-  --secondary-foreground: hsl(40 10% 92%);
-  --muted: hsl(240 8% 16%);
-  --muted-foreground: hsl(40 6% 64%);
-  --accent: hsl(240 8% 16%);
-  --accent-foreground: hsl(40 10% 92%);
-  --border: hsl(240 8% 18%);
-  --input: hsl(240 8% 22%);
-  --ring: hsl(40 10% 70%);
-  --row-hover: hsl(240 8% 13%);
-  --row-selected: hsl(240 8% 17%);
-  --sidebar: hsl(240 10% 10%);
-  --sidebar-foreground: hsl(40 10% 92%);
-  --sidebar-border: hsl(240 8% 18%);
-  --sidebar-accent: hsl(240 8% 16%);
-  --sidebar-accent-foreground: hsl(40 10% 92%);
+  color-scheme: dark;
+
+  --background: hsl(36 8% 12%);
+  --foreground: hsl(40 12% 90%);
+
+  --card: hsl(36 7% 15%);
+  --card-foreground: hsl(40 12% 90%);
+  --popover: hsl(36 7% 15%);
+  --popover-foreground: hsl(40 12% 90%);
+  --panel: hsl(36 7% 15%);
+  --panel-2: hsl(36 6% 18%);
+
+  --secondary: hsl(36 6% 19%);
+  --secondary-foreground: hsl(40 12% 90%);
+  --muted: hsl(36 6% 19%);
+  --accent: hsl(36 6% 19%);
+  --accent-foreground: hsl(40 12% 90%);
+
+  --muted-foreground: hsl(40 6% 62%); /* ~6:1 on background */
+
+  --border: hsl(36 6% 22%);
+  --input: hsl(36 6% 28%);
+  --ring: hsl(40 8% 60%);
+
+  --row-hover: hsl(36 6% 17%);
+  --row-selected: hsl(36 7% 21%);
+
+  --primary: hsl(40 12% 90%);
+  --primary-foreground: hsl(36 8% 12%);
+
+  --destructive: hsl(0 62% 50%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --status-running: hsl(142 55% 50%);
+  --status-running-bg: hsl(142 30% 16%);
+  --status-stopped: hsl(40 6% 65%);
+  --status-stopped-bg: hsl(40 8% 19%);
+  --status-hibernated: hsl(222 65% 70%);
+  --status-hibernated-bg: hsl(222 30% 19%);
+  --status-error: hsl(0 70% 65%);
+  --status-error-bg: hsl(0 35% 19%);
+  --status-pending: hsl(38 85% 60%);
+  --status-pending-bg: hsl(38 40% 18%);
+
+  /* Code blocks sit a step above the shell bg so they still read as a
+     distinct surface; the terminal stays near-black (recessed). */
+  --code: hsl(36 8% 15%);
+  --code-foreground: hsl(40 12% 88%);
+  --code-muted: hsl(40 6% 54%);
+  --code-border: hsl(36 7% 22%);
+  --terminal: hsl(36 13% 8%);
+
+  /* Charts — neutral paper ramp (dark → light), inverted from light mode */
+  --chart-1: hsl(40 12% 85%);
+  --chart-2: hsl(40 10% 65%);
+  --chart-3: hsl(40 7% 50%);
+  --chart-4: hsl(36 6% 36%);
+  --chart-5: hsl(36 6% 26%);
+
+  --sidebar: hsl(36 8% 10%);
+  --sidebar-foreground: hsl(40 12% 90%);
+  --sidebar-border: hsl(36 6% 22%);
+  --sidebar-accent: hsl(36 6% 18%);
+  --sidebar-accent-foreground: hsl(40 12% 90%);
+
+  /* Overlays need real elevation on dark — the light-tinted shadow is
+     invisible against a dark shell. */
+  --shadow-overlay:
+    0 10px 30px -12px rgb(0 0 0 / 0.5), 0 1px 3px -1px rgb(0 0 0 / 0.35);
 }
 
 @layer base {
