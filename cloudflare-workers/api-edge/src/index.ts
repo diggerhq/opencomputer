@@ -72,6 +72,7 @@ import {
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
+import { shouldBypassDevScaleBilling } from "./dev_scale_billing_bypass";
 import { runModelMeter } from "./model_meter";
 import {
   enforceManagedAgentCreditGate,
@@ -5576,20 +5577,23 @@ export default {
       const scopeError = provisionScopeGate(caller, path);
       if (scopeError) return scopeError;
       if (path === "/api/managed-agents/sessions" && req.method === "POST") {
-        try {
-          const billing = await enableManagedBilling(env, caller.orgID);
-          if (billing.status === "halted") {
-            return insufficientManagedAgentCredits(req);
-          }
-          if (billing.status !== "active") {
+        const bypassBilling = await shouldBypassDevScaleBilling(req, env, caller.orgID);
+        if (!bypassBilling) {
+          try {
+            const billing = await enableManagedBilling(env, caller.orgID);
+            if (billing.status === "halted") {
+              return insufficientManagedAgentCredits(req);
+            }
+            if (billing.status !== "active") {
+              return json({ error: "managed model billing is unavailable" }, 503);
+            }
+          } catch (error) {
+            console.error(
+              `managed-agents: model billing admission failed org=${caller.orgID}`,
+              error,
+            );
             return json({ error: "managed model billing is unavailable" }, 503);
           }
-        } catch (error) {
-          console.error(
-            `managed-agents: model billing admission failed org=${caller.orgID}`,
-            error,
-          );
-          return json({ error: "managed model billing is unavailable" }, 503);
         }
       } else {
         const creditError = await enforceManagedAgentCreditGate(
