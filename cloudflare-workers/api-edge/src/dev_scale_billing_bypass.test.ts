@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEV_SCALE_ADMISSION_HEADER,
   DEV_SCALE_ADMISSION_VALUE,
+  isMarkedDevScaleAdmission,
   shouldBypassDevScaleBilling,
 } from "./dev_scale_billing_bypass";
 
@@ -35,5 +36,10 @@ describe("development scale billing bypass", () => {
     await expect(
       shouldBypassDevScaleBilling(request(), { ...env, WORKER_ENV: "prod" }, "org_scale"),
     ).resolves.toBe(false);
+  });
+
+  it("recognizes the marked request before caller authentication", async () => {
+    await expect(isMarkedDevScaleAdmission(request(), env)).resolves.toBe(true);
+    await expect(isMarkedDevScaleAdmission(request(undefined, false), env)).resolves.toBe(false);
   });
 });

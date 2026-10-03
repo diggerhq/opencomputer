@@ -72,7 +72,10 @@ import {
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
-import { shouldBypassDevScaleBilling } from "./dev_scale_billing_bypass";
+import {
+  isMarkedDevScaleAdmission,
+  shouldBypassDevScaleBilling,
+} from "./dev_scale_billing_bypass";
 import { runModelMeter } from "./model_meter";
 import {
   enforceManagedAgentCreditGate,
@@ -91,6 +94,8 @@ import {
   handleManagedGitHubCallback,
   handleManagedSlackCallback,
   handleManagedAgentChannelConnection,
+  mintManagedAgentsAssertion,
+  proxyDevScaleAdmission,
   proxyManagedAgents,
 } from "./managed_agents";
 
@@ -5570,12 +5575,40 @@ export default {
       path === "/api/managed-agents" ||
       path.startsWith("/api/managed-agents/")
     ) {
+      if (
+        path === "/api/managed-agents/sessions" &&
+        req.method === "POST" &&
+        req.headers.has("x-opencomputer-agent-token") &&
+        (await isMarkedDevScaleAdmission(req, env))
+      ) {
+        return proxyDevScaleAdmission(req, env);
+      }
       const caller = await authenticate(req, env, ctx);
       if (!caller) {
         return json({ error: "missing or invalid API key" }, 401);
       }
       const scopeError = provisionScopeGate(caller, path);
       if (scopeError) return scopeError;
+      if (
+        path === "/api/managed-agents/dev-scale-token" &&
+        req.method === "POST"
+      ) {
+        if (!(await shouldBypassDevScaleBilling(req, env, caller.orgID))) {
+          return json({ error: "route not found" }, 404);
+        }
+        if (!env.OC_MANAGED_AGENTS_SECRET) {
+          return json({ error: "managed agents are not configured" }, 503);
+        }
+        const lifetimeSeconds = 1_800;
+        return json({
+          token: await mintManagedAgentsAssertion(
+            env.OC_MANAGED_AGENTS_SECRET,
+            caller,
+            lifetimeSeconds,
+          ),
+          expiresAt: new Date(Date.now() + lifetimeSeconds * 1_000).toISOString(),
+        });
+      }
       if (path === "/api/managed-agents/sessions" && req.method === "POST") {
         const bypassBilling = await shouldBypassDevScaleBilling(req, env, caller.orgID);
         if (!bypassBilling) {

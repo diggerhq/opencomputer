@@ -55,6 +55,16 @@ describe("managed agents proxy", () => {
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
   });
 
+  it("supports a longer dev benchmark assertion lifetime", async () => {
+    const token = await mintManagedAgentsAssertion(
+      "test-secret",
+      { orgID: "org_test", userID: "user_test" },
+      1_800,
+    );
+    const payload = decodePayload(token);
+    expect(Number(payload.exp) - Number(payload.iat)).toBe(1_800);
+  });
+
   it("exposes only the safe organization runtime profile label", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({

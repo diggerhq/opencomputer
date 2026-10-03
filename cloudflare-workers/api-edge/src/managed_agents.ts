@@ -75,6 +75,7 @@ function b64url(value: ArrayBuffer | Uint8Array): string {
 export async function mintManagedAgentsAssertion(
   secret: string,
   caller: ManagedAgentsCaller,
+  lifetimeSeconds = 120,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
@@ -84,7 +85,7 @@ export async function mintManagedAgentsAssertion(
     sub: caller.orgID,
     org_id: caller.orgID,
     iat: now,
-    exp: now + 120,
+    exp: now + lifetimeSeconds,
   };
   if (caller.userID) payload.user_id = caller.userID;
   if (caller.role) payload.role = caller.role;
@@ -105,6 +106,36 @@ export async function mintManagedAgentsAssertion(
     encoder.encode(signingInput),
   );
   return `${signingInput}.${b64url(signature)}`;
+}
+
+export async function proxyDevScaleAdmission(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  const assertion = request.headers.get("x-opencomputer-agent-token");
+  if (!assertion) return Response.json({ error: "missing benchmark assertion" }, { status: 401 });
+  const base = (env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL).replace(/\/+$/, "");
+  const headers = copyRequestHeaders(request);
+  headers.set("x-opencomputer-agent-token", assertion);
+  try {
+    const upstream = await fetch(`${base}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    return publicSuccessResponse(upstream, "POST", "/sessions", new URL(request.url).origin, false);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.dev_scale_upstream_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json({ error: "managed agents service is unavailable" }, { status: 502 });
+  }
 }
 
 function copyRequestHeaders(request: Request): Headers {
