@@ -92,6 +92,14 @@ The running development process synchronizes both agents. In the dashboard,
 the project-level environment selector switches between `development` and
 `production`; the playground has a separate agent selector.
 
+Each local agent deploys as one cloud agent: the first listed member keeps the
+project's agent id, and every other member's id is `<agent-id>--<local-id>`.
+CLI commands that act on one agent (`session create`, `secrets`, `env`,
+`doctor`) take `--agent <cloud-agent-id>` and resolve the matching local
+source from `project.ts`; pass `--local-agent <local-id>` when the mapping is
+not one-to-one. With several agents, a command that needs one local source
+asks for the choice instead of picking the first agent.
+
 ## Inspect the project
 
 The current project dashboard provides:

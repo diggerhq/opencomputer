@@ -15,6 +15,7 @@ import { Cron } from "croner";
 import { build as bundle } from "esbuild";
 import ts from "typescript";
 
+import { compilerError } from "./compiler-error.js";
 import {
   defineMemory,
   documentMemory,
@@ -1450,20 +1451,26 @@ function literalObjectEntries(
 ): Array<[string, ts.Expression]> {
   return object.properties.map((property): [string, ts.Expression] => {
     if (ts.isSpreadAssignment(property)) {
-      throw new Error(
+      throw compilerError(
         `${label} cannot spread ${property.expression.getText()}; write each option as a literal property`,
+        "literal_required",
+        property,
       );
     }
     if (ts.isShorthandPropertyAssignment(property)) {
       const name = property.name.text;
       if (identifiers.includes(name)) return [name, property.name];
-      throw new Error(
+      throw compilerError(
         `${label} cannot use the shorthand property ${name}; write ${name} as a literal property`,
+        "literal_required",
+        property,
       );
     }
     if (!ts.isPropertyAssignment(property)) {
-      throw new Error(
+      throw compilerError(
         `${label} cannot use methods or accessors; write each option as a literal property`,
+        "literal_required",
+        property,
       );
     }
     return [staticPropertyName(property.name, label), property.initializer];
@@ -1482,7 +1489,11 @@ function literalCallArgument(
     !argument ||
     !ts.isObjectLiteralExpression(argument)
   ) {
-    throw new Error(`${label} requires one object literal argument`);
+    throw compilerError(
+      `${label} requires one object literal argument`,
+      "literal_required",
+      call,
+    );
   }
   return argument;
 }
@@ -1688,7 +1699,11 @@ function literalStringValue(
   label: string,
 ): string {
   if (!expression || !ts.isStringLiteralLike(expression)) {
-    throw new Error(`${label} must be a string literal`);
+    throw compilerError(
+      `${label} must be a string literal`,
+      "literal_required",
+      expression,
+    );
   }
   return expression.text;
 }
@@ -1698,7 +1713,11 @@ function literalStringArray(
   label: string,
 ): string[] {
   if (!expression || !ts.isArrayLiteralExpression(expression)) {
-    throw new Error(`${label} must be an array literal`);
+    throw compilerError(
+      `${label} must be an array literal`,
+      "literal_required",
+      expression,
+    );
   }
   return expression.elements.map((element) =>
     literalStringValue(element, `${label} item`),
@@ -1707,7 +1726,11 @@ function literalStringArray(
 
 function staticPropertyName(name: ts.PropertyName, label: string): string {
   if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
-  throw new Error(`${label} must use static property names`);
+  throw compilerError(
+    `${label} must use static property names`,
+    "literal_required",
+    name,
+  );
 }
 
 function defaultExportCall(
