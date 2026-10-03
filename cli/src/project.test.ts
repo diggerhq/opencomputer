@@ -63,7 +63,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.equal(packageJSON.devDependencies["@types/node"], undefined);
     assert.match(
       await readFile(resolve(root, "README.md"), "utf8"),
-      /Deploy agent changes to Development \(Cloud\)[\s\S]*npm run deploy -- --watch[\s\S]*opencomputer\/\.env\.example[\s\S]*--value-stdin/,
+      /First run, in order:[\s\S]*npx opencomputer login[\s\S]*npx opencomputer link --create-project[\s\S]*npm run deploy -- --watch[\s\S]*opencomputer\/\.env\.example[\s\S]*--value-stdin/,
     );
     assert.match(
       await readFile(resolve(root, "opencomputer", ".env.example"), "utf8"),
