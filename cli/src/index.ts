@@ -70,7 +70,8 @@ Usage:
       [--limit <1-100>] [--cursor <next-cursor>]
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
-  opencomputer session send <session-id> <prompt> [--keep]
+  opencomputer session send <session-id> <prompt> [--image <path>]... [--keep]
+      --image attaches a PNG, JPEG, GIF or WebP file (up to 5 MB, 4 per prompt)
   opencomputer session end <session-id>
   opencomputer session files [ls] <session-id>
       lists the files under the session's /workspace
@@ -116,7 +117,7 @@ Usage:
   opencomputer channels status [--agent <agent>] [--environment development|production]
   opencomputer sessions tail <session-id> [--after <cursor>] [--no-follow]
   opencomputer deploy [--alias development|production] [--watch]
-  opencomputer run <agent> <prompt> [--keep]
+  opencomputer run <agent> <prompt> [--image <path>]... [--keep]
 
 Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)
