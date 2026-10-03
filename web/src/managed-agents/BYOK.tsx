@@ -17,6 +17,10 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  projectEnvironments,
+  type ProjectEnvironmentMode,
+} from './project-context'
+import {
   PLAN_OFFERS,
   trackUpsellClicked,
   trackUpsellShown,
@@ -39,7 +43,14 @@ import {
   type ModelRouteProviderChoice,
 } from './byok-config'
 
-export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
+export function ManagedProjectBYOK({
+  projectId,
+  environmentMode,
+}: {
+  projectId: string
+  environmentMode: ProjectEnvironmentMode
+}) {
+  const environments = projectEnvironments(environmentMode)
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const [confirmRemoveRoute, setConfirmRemoveRoute] = useState(false)
@@ -92,7 +103,7 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
   const removeRoute = useMutation({
     mutationFn: () =>
       Promise.all(
-        (['development', 'production'] as const).map((environment) =>
+        environments.map((environment) =>
           deleteManagedModelRoute({ projectId, environment }),
         ),
       ),
@@ -112,7 +123,7 @@ export function ManagedProjectBYOK({ projectId }: { projectId: string }) {
         ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
       })
       return Promise.all(
-        (['development', 'production'] as const).map((environment) =>
+        environments.map((environment) =>
           putManagedModelRoute({
             projectId,
             environment,

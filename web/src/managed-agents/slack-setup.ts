@@ -454,7 +454,7 @@ export function slackSlotsForEnvironment(input: {
   project: ManagedProjectOverview['project']
   deployments: ManagedAgentDeployment[]
   channels: ManagedAgentChannel[]
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
 }): SlackSlot[] {
   const projectAgentIds = new Set(input.project.agents.map((agent) => agent.id))
   const live = input.channels.filter(

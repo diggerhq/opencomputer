@@ -230,7 +230,7 @@ export default defineSchedule({
   id: "weekday-hygiene",
   cron: "0 9 * * 1-5",
   timezone: "America/Los_Angeles",
-  enabled: ["development", "production"],
+  enabled: ["default", "development", "production"],
   overlap: "skip",
   dispatch: {
     text: "Run feature flag hygiene.",
@@ -246,7 +246,7 @@ export default defineSchedule({
         agentId: "hello-world",
         cron: "0 9 * * 1-5",
         timezone: "America/Los_Angeles",
-        enabled: ["development", "production"],
+        enabled: ["default", "development", "production"],
         overlap: "skip",
         dispatch: {
           text: "Run feature flag hygiene.",

@@ -3,7 +3,12 @@ import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { completeManagedModelAccess, putManagedModelAccessBinding } from './api'
+import {
+  completeManagedModelAccess,
+  getManagedProject,
+  putManagedModelAccessBinding,
+} from './api'
+import { projectEnvironmentMode, projectEnvironments } from './project-context'
 import {
   MODEL_ACCESS_PROJECT_KEY,
   MODEL_ACCESS_RETURN_TO_KEY,
@@ -39,14 +44,16 @@ export default function ModelAccessCallback() {
       .then(async () => {
         const projectId = sessionStorage.getItem(MODEL_ACCESS_PROJECT_KEY)
         if (projectId) {
+          const { project } = await getManagedProject(projectId)
           await Promise.all(
-            (['development', 'production'] as const).map((environment) =>
-              putManagedModelAccessBinding({
-                projectId,
-                provider: 'openai',
-                environment,
-                enabled: true,
-              }),
+            projectEnvironments(projectEnvironmentMode(project)).map(
+              (environment) =>
+                putManagedModelAccessBinding({
+                  projectId,
+                  provider: 'openai',
+                  environment,
+                  enabled: true,
+                }),
             ),
           )
         }
