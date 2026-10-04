@@ -2,34 +2,59 @@
 
 > Build, test, and deploy serverless agents as code with OpenComputer.
 
-## Serverless Agents
+## Getting started
 
-- [Overview](https://docs.opencomputer.dev/agents/overview.md): Build, test, and deploy agents as code.
-- [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create a project and sync its first agent to Development (Cloud).
+- [Serverless Agents](https://docs.opencomputer.dev/agents/overview.md): Define reactive agents in TypeScript and run them in the OpenComputer cloud.
+- [How it works](https://docs.opencomputer.dev/agents/mental-model.md): A mental model for agent functions, the managed harness, durable sessions, capabilities, and triggers.
+- [Quickstart](https://docs.opencomputer.dev/agents/quickstart.md): Create an agent project and sync it to Development (Cloud).
 - [Projects and agents](https://docs.opencomputer.dev/agents/projects.md): Organize multiple cloud agents in one project.
-- [Cloud development](https://docs.opencomputer.dev/agents/development.md): Sync agent code to Development while your application runs locally.
+
+## Concepts
+
+- [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions and capabilities from the current input.
+- [Sessions and turns](https://docs.opencomputer.dev/agents/sessions.md): Understand durable conversations and multi-turn agent work.
+- [Memory](https://docs.opencomputer.dev/agents/memory.md): Read and save notes across sessions.
+- [Database](https://docs.opencomputer.dev/agents/database.md): A durable SQL database shared by every session in a project environment.
+- [Schedules](https://docs.opencomputer.dev/agents/schedules.md): Run an agent from a code-defined cron schedule.
+- [Agent webhooks](https://docs.opencomputer.dev/agents/webhooks.md): Start an agent session from an external service.
+- [Agent capabilities](https://docs.opencomputer.dev/agents/capabilities.md): Choose tools, MCP servers, skills, subagents, memory and outbound connections.
+- [Secrets and runtime variables](https://docs.opencomputer.dev/agents/secrets.md): Configure managed outbound credentials and agent runtime environment variables.
+- [Connected services](https://docs.opencomputer.dev/agents/services.md): Call Google services, GitHub, and Linear with a credential the platform holds and refreshes.
+- [GitHub App connections](https://docs.opencomputer.dev/agents/github.md): Give an agent direct Git and GitHub API access with the managed OpenComputer App.
+- [Slack connections](https://docs.opencomputer.dev/agents/slack.md): Connect a deployed agent to Slack from the dashboard so people can talk to it in threads.
+- [Linear connections](https://docs.opencomputer.dev/agents/linear.md): Make a deployed agent a teammate people delegate issues to and mention in Linear.
+- [Bring your own model account (BYOK)](https://docs.opencomputer.dev/agents/byok.md): Use a Codex account for model inference in Serverless Agents.
 - [Deployments and environments](https://docs.opencomputer.dev/agents/deployments.md): Understand development, production, immutable deployments, and aliases.
-- [Reactive agents](https://docs.opencomputer.dev/agents/reactive-agents.md): Render instructions, models, tools, subagents, and MCP servers from code.
-- [Sessions and turns](https://docs.opencomputer.dev/agents/sessions.md): Create and inspect durable conversations.
-- [Management API](https://docs.opencomputer.dev/agents/api.md): Create sessions, send turns, read the event log and manage memory, webhooks and projects over HTTP with an API key.
-- [Session events](https://docs.opencomputer.dev/agents/events.md): Every event type in the durable session log, its data fields, and the seq cursor rules.
-- [React integration](https://docs.opencomputer.dev/agents/react.md): Attach a React application to server-created sessions with useAgent, proxying three routes under your own authentication.
-- [Agent capabilities](https://docs.opencomputer.dev/agents/capabilities.md): Choose between tools, MCP servers, skills, subagents, and outbound connections.
-- [Secrets and outbound requests](https://docs.opencomputer.dev/agents/secrets.md): Store scoped secrets and inject them only into declared outbound requests.
+
+## Build an application
+
+- [React integration](https://docs.opencomputer.dev/agents/react.md): Create sessions on your server; attach, submit work and reopen them with useAgent.
+- [Serverless Agents client](https://docs.opencomputer.dev/reference/typescript-sdk/agents.md): Create sessions, submit work and read results from your application's server.
+- [Management API](https://docs.opencomputer.dev/agents/api.md): Create sessions, send turns, read the event log and manage projects over HTTP.
+- [Session events](https://docs.opencomputer.dev/agents/events.md): The durable event log every session keeps and every consumer reads.
+
+## Agent API
+
 - [Agent hooks](https://docs.opencomputer.dev/agents/hooks.md): Compose agent capabilities with reactive hooks.
-- [Inputs](https://docs.opencomputer.dev/agents/inputs.md): Read text, structured payloads, and input sources with `useInput()`.
-- [Models](https://docs.opencomputer.dev/agents/models.md): Select a managed model with `useModel()`.
-- [Tools](https://docs.opencomputer.dev/agents/tools.md): Define TypeScript tools and expose them with `useTool()`.
-- [MCP servers](https://docs.opencomputer.dev/agents/mcp.md): Attach managed HTTPS MCP servers with `useMcpServer()`.
+- [Inputs](https://docs.opencomputer.dev/agents/inputs.md): Read text, structured payloads, and input sources with useInput.
+- [Models](https://docs.opencomputer.dev/agents/models.md): Select a model with useModel.
+- [Tools](https://docs.opencomputer.dev/agents/tools.md): Define TypeScript tools and expose them with useTool.
+- [MCP servers](https://docs.opencomputer.dev/agents/mcp.md): Attach managed HTTPS MCP servers with useMcpServer.
 - [Skills](https://docs.opencomputer.dev/agents/skills.md): Package reusable instructions and supporting resources with an agent.
-- [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with `useSubagent()`.
-- [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with `useSessionData()`.
-- [Memory](https://docs.opencomputer.dev/agents/memory.md): Read and save shared notes with useMemory, resource declarations and session bindings.
-- [Document memory](https://docs.opencomputer.dev/agents/document-memory.md): Built-in storage, hook and tool contracts, owner API, access, conflicts and limits.
-- [Memory providers](https://docs.opencomputer.dev/agents/memory-providers.md): Provider responsibilities and the proposed HTTP provider contract.
-- [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect each agent turn.
-- [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect and follow agent and outbound-request logs.
+- [Subagents](https://docs.opencomputer.dev/agents/subagents.md): Let an agent delegate focused work with useSubagent.
+- [Session data](https://docs.opencomputer.dev/agents/session-data.md): Read durable per-session values with useSessionData.
+- [Document memory](https://docs.opencomputer.dev/agents/document-memory.md): Configuration, session bindings, tools and owner APIs.
+- [Memory providers](https://docs.opencomputer.dev/agents/memory-providers.md): Provider responsibilities, document memory and the proposed HTTP contract.
+
+## Test and operate
+
+- [Playground and debugging](https://docs.opencomputer.dev/agents/playground.md): Test deployments and inspect what the agent received for each turn.
+- [Logs](https://docs.opencomputer.dev/agents/logs.md): Inspect agent output and outbound-request activity from the OpenComputer CLI.
 
 ## Examples
 
-- [GTM engineer](https://docs.opencomputer.dev/agents/examples/gtm-engineer.md): Start from a scheduled go-to-market agent that researches opportunities with Exa and keeps every action in dry-run mode.
+- [GTM engineer](https://docs.opencomputer.dev/agents/examples/gtm-engineer.md): A scheduled go-to-market agent that researches opportunities with Exa and keeps every action in dry-run mode.
+- [Feature flag hygiene](https://docs.opencomputer.dev/agents/examples/feature-flag-hygiene.md): Inspect Unleash flags, find safe cleanup candidates, and open focused pull requests.
+- [A coding agent in Slack](https://docs.opencomputer.dev/agents/examples/slack-coder.md): Deploy a coding teammate that takes work from Slack and opens draft pull requests.
+- [Pull Request Reviewer](https://docs.opencomputer.dev/agents/examples/pr-review.md): Fetch a PR through a managed GitHub connection, review it, and post inline comments on request.
+- [Add high-value regression tests](https://docs.opencomputer.dev/agents/examples/test-coverage.md): Review recent merges and open focused, test-only pull requests for material coverage gaps.
