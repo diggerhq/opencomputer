@@ -636,7 +636,7 @@ const renderDebugSchema = z.object({
   instructionsHash: z.string(),
   instructions: z.string(),
   enabledTools: z.array(z.string()),
-  enabledSubagents: z.array(z.string()),
+  enabledSubagents: z.array(z.string()).optional(),
   requiredConnections: z.array(z.string()),
   enabledMcpServers: z.array(z.string()),
   input: z.object({ source: z.string(), text: z.string().optional() }),

@@ -327,7 +327,6 @@ test("the code-first compiler records hook resources without config files", asyn
   useInput,
   useMcpServer,
   useModel,
-  useSubagent,
   useTool,
 } from "@opencomputer/agent";
 
@@ -340,7 +339,6 @@ export default function Agent() {
   const input = useInput();
   useModel("anthropic/claude-sonnet-4.6");
   useTool("search-docs");
-  useSubagent("researcher");
   if (input.text?.includes("docs")) useMcpServer(docs);
   return "Help with the request.";
 }
@@ -357,7 +355,6 @@ export default function Agent() {
       version: number;
       tools: string[];
       toolModules: string[];
-      subagents: string[];
       connections: string[];
       httpConnections: unknown[];
       githubConnections: unknown[];
@@ -376,7 +373,6 @@ export default function Agent() {
       tools: ["search-docs"],
       gatedTools: [],
       toolModules: [],
-      subagents: ["researcher"],
       connections: [],
       httpConnections: [],
       githubConnections: [],

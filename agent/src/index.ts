@@ -729,7 +729,6 @@ interface AgentHooks {
   useModel(model: ModelSelection): void;
   useTool(tool: string | ResourceReference): void;
   useConnection(connection: string | ResourceReference): void;
-  useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
   /** Optional: the declaration is extracted at build time, so a host
@@ -1742,8 +1741,6 @@ export const useConnection = (connection: string | ResourceReference): void =>
  */
 export const useService = (service: string): void =>
   hooks().useService?.(service);
-export const useSubagent = (agent: string | ResourceReference): void =>
-  hooks().useSubagent(agent);
 export const useMcpServer = (server: string | ResourceReference): void =>
   hooks().useMcpServer(server);
 export function useSessionData<T extends DataValue>(
