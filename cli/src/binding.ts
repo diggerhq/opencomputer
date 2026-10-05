@@ -1,5 +1,6 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 
 import type { ManagedProject, OpenComputerClient } from "./api.js";
 import type { ResolvedConfig } from "./config.js";
@@ -15,9 +16,70 @@ export interface ProjectBinding {
   agentId: string;
 }
 
+export type ProjectChoice =
+  | { project: ManagedProject }
+  | { createProjectName: string };
+
+/** Asked for a choice when an unlinked app names no project; absent means fail with the link hint. */
+export type ProjectChooser = (input: {
+  projects: readonly ManagedProject[];
+  suggestedName: string;
+}) => Promise<ProjectChoice>;
+
 export interface ProjectBindingOptions {
   project?: string;
   createProjectName?: string;
+  choose?: ProjectChooser;
+}
+
+/** A terminal picker over the account's projects, or undefined when stdin/stdout is not a TTY. */
+export function interactiveProjectChooser(): ProjectChooser | undefined {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
+  return async ({ projects, suggestedName }) => {
+    const terminal = createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+    try {
+      process.stderr.write("This app is not linked to a cloud project.\n");
+      let createIndex = 1;
+      if (projects.length) {
+        for (const [index, project] of projects.entries()) {
+          process.stderr.write(
+            `  ${String(index + 1).padStart(2)}) ${project.name} (${project.slug})\n`,
+          );
+        }
+        createIndex = projects.length + 1;
+        process.stderr.write(
+          `  ${String(createIndex).padStart(2)}) Create a new project\n`,
+        );
+        for (;;) {
+          const answer = (
+            await terminal.question(`Project [1-${createIndex}]: `)
+          ).trim();
+          const index = Number.parseInt(answer, 10);
+          if (Number.isInteger(index) && index >= 1 && index < createIndex) {
+            return { project: projects[index - 1]! };
+          }
+          if (index === createIndex) break;
+          const matched = projects.find(
+            (project) => project.slug === answer || project.id === answer,
+          );
+          if (matched) return { project: matched };
+          process.stderr.write(
+            `Enter a number between 1 and ${createIndex}, or a project id or slug.\n`,
+          );
+        }
+      }
+      const name =
+        (
+          await terminal.question(`New project name [${suggestedName}]: `)
+        ).trim() || suggestedName;
+      return { createProjectName: name };
+    } finally {
+      terminal.close();
+    }
+  };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -184,6 +246,14 @@ export async function ensureProjectBinding(
     throw new Error(`Project ${options.project} was not found in this account.`);
   }
   let createName = options.createProjectName;
+  if (!project && !createName && options.choose) {
+    const choice = await options.choose({
+      projects,
+      suggestedName: basename(projectRoot),
+    });
+    if ("project" in choice) project = choice.project;
+    else createName = choice.createProjectName;
+  }
   if (!project && createName) {
     const slug = agentIdFromName(createName);
     project = projects.find((candidate) => candidate.slug === slug);
