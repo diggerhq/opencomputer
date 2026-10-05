@@ -14,12 +14,13 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
-  addManagedGitHubConnection,
   attachManagedGitHub,
+  connectManagedGitHub,
   disconnectManagedGitHub,
   getManagedGitHubStatus,
 } from './api'
 import { launchAuthorizationWindow } from './authorization-window'
+import { githubConnectionLabel } from './github-connection'
 
 export function ManagedProjectGitHub({
   projectId,
@@ -155,13 +156,13 @@ export function ManagedProjectGitHub({
                     >
                       {availableConnections.map((connection) => (
                         <option key={connection.id} value={connection.id}>
-                          {connection.accountLogin}
+                          {githubConnectionLabel(connection)}
                         </option>
                       ))}
                     </select>
                   ) : (
                     <span className="text-sm font-medium">
-                      {availableConnections[0].accountLogin}
+                      {githubConnectionLabel(availableConnections[0])}
                     </span>
                   )}
                   <Button
@@ -182,7 +183,10 @@ export function ManagedProjectGitHub({
                   onClick={() => {
                     setAddingConnection(true)
                     void launchAuthorizationWindow(() =>
-                      addManagedGitHubConnection('install'),
+                      connectManagedGitHub({
+                        projectId,
+                        environments: [environment],
+                      }).then((connection) => connection.installUrl),
                     )
                       .catch((error: unknown) =>
                         notifyError(
