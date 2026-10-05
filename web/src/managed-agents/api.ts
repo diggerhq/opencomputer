@@ -2156,6 +2156,14 @@ export function managedAgentModelRoute(event: ManagedAgentEvent) {
   return parsed.success ? parsed.data : undefined
 }
 
+export function latestManagedAgentModelRoute(events: ManagedAgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const route = managedAgentModelRoute(events[index])
+    if (route) return route
+  }
+  return undefined
+}
+
 export async function getManagedAgentSession(sessionId: string) {
   return apiFetch(
     `/managed-agents/sessions/${encodeURIComponent(sessionId)}`,
