@@ -26,7 +26,6 @@ needs it.
 | `useCurrentInput()` | Alias for `useInput()` |
 | `useModel(model)` | Selects a model using `provider/model` notation |
 | `useTool(tool)` | Makes a named or code-defined tool available |
-| `useSubagent(agent)` | Makes another project agent available as a subagent |
 | `useMcpServer(server)` | Attaches a managed HTTPS MCP server |
 | `useSessionData(key)` | Reads a value previously stored in the current session |
 | `useMemory(memory)` | Reads bound memory and selects its permitted tools |
@@ -41,7 +40,6 @@ and source metadata.
 import {
   useInput,
   useModel,
-  useSubagent,
   useTool,
 } from "@opencomputer/agent";
 
@@ -51,7 +49,6 @@ export default function Agent() {
 
   if (input.text?.includes("research")) {
     useTool("web-search");
-    useSubagent("researcher");
   }
 
   return "Answer directly. Research and verify when those capabilities exist.";
@@ -137,5 +134,5 @@ source or the React application.
 
 Continue with [Agent hooks](/agents/hooks), then use the focused guides for
 [inputs](/agents/inputs), [models](/agents/models), [tools](/agents/tools),
-[MCP servers](/agents/mcp), [skills](/agents/skills),
-[subagents](/agents/subagents), and [session data](/agents/session-data).
+[MCP servers](/agents/mcp), [skills](/agents/skills), and
+[session data](/agents/session-data).

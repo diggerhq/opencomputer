@@ -398,12 +398,6 @@ export function DebugInspector({
               </div>
               <div>
                 <p className="text-muted-foreground mb-1.5 text-[10px] uppercase">
-                  Subagents
-                </p>
-                <ResourceList values={selected.render.enabledSubagents} />
-              </div>
-              <div>
-                <p className="text-muted-foreground mb-1.5 text-[10px] uppercase">
                   Skills
                 </p>
                 <ResourceList values={[]} />

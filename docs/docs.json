@@ -72,7 +72,6 @@
               "agents/tools",
               "agents/mcp",
               "agents/skills",
-              "agents/subagents",
               "agents/session-data",
               "agents/document-memory",
               "agents/memory-providers"
