@@ -24,11 +24,33 @@ From the project directory:
 npm run deploy -- --alias production
 ```
 
-Every deploy first runs `opencomputer doctor`, a local static scan for invalid
-connection origins, misplaced tools, and missing secret declarations, and then
-prints the project it resolved and the cloud id each local agent deploys as.
-Run `opencomputer doctor --json` directly to get structured diagnostics, with
-the same resolution under `resolution`, before invoking a deployment agent.
+Every deploy first runs `opencomputer doctor`, a local check for invalid
+connection origins, misplaced tools, and missing secret declarations that also
+compiles every agent declared in `project.ts` exactly as deployment and secret
+upload do, and then prints the project it resolved and the cloud id each local
+agent deploys as. A connection whose `id`, `origin`, `method`, or `pathPrefix`
+is not written as a literal is reported here, before anything reaches the
+cloud. Run `opencomputer doctor --json` directly to get structured diagnostics,
+with the same resolution under `resolution`, before invoking a deployment
+agent. Each diagnostic carries a stable `code`, the `file`, `line` and
+`column` where known, and the `agent` it belongs to:
+
+```json
+{
+  "code": "literal_required",
+  "severity": "error",
+  "file": "opencomputer/agents/billing/agent.ts",
+  "line": 6,
+  "column": 15,
+  "agent": { "localId": "billing", "agentId": "app--billing" },
+  "message": "connection billing-api pathPrefix must be a string literal",
+  "hint": "Write the value as a literal in the declaration; ..."
+}
+```
+
+Check one member of a multi-agent project with `opencomputer doctor --agent
+<cloud-agent-id>` or `--local-agent <local-agent-id>`; the result names it
+under `resolution.selected`.
 
 The CLI builds the current source, creates an immutable deployment, and moves
 the `production` alias to it. Development remains available for further work.
