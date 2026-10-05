@@ -25,6 +25,7 @@ import {
   getManagedAgentSession,
   getManagedAgentSessionEvents,
   getManagedProject,
+  latestManagedAgentModelRoute,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
 import { SessionFiles } from './SessionFiles'
@@ -105,6 +106,7 @@ export default function ManagedSessionDetail() {
   }
 
   const sessionPath = `/projects/${encodeURIComponent(projectId)}/sessions`
+  const modelRoute = latestManagedAgentModelRoute(events.data ?? [])
 
   return (
     <div className="space-y-5">
@@ -127,7 +129,7 @@ export default function ManagedSessionDetail() {
         completed={session.data.status === 'completed'}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Panel className="p-4">
           <p className="text-muted-foreground text-xs">Status</p>
           <div className="mt-2">
@@ -148,6 +150,14 @@ export default function ManagedSessionDetail() {
           <p className="text-muted-foreground text-xs">Updated</p>
           <p className="mt-2 text-sm font-medium">
             {formatDate(session.data.updatedAt)}
+          </p>
+        </Panel>
+        <Panel className="p-4">
+          <p className="text-muted-foreground text-xs">Effective model</p>
+          <p className="mt-2 font-mono text-xs font-medium break-all">
+            {modelRoute?.effective
+              ? `${modelRoute.effective.provider}/${modelRoute.effective.model}`
+              : 'Not resolved yet'}
           </p>
         </Panel>
       </div>
