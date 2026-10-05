@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, Loader2, Unplug } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { Label, Select } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
 import {
   Panel,
@@ -20,7 +21,10 @@ import {
   getManagedGitHubStatus,
 } from './api'
 import { launchAuthorizationWindow } from './authorization-window'
-import { githubConnectionLabel } from './github-connection'
+import {
+  githubConnectionDetails,
+  githubConnectionLabel,
+} from './github-connection'
 
 export function ManagedProjectGitHub({
   projectId,
@@ -43,12 +47,11 @@ export function ManagedProjectGitHub({
   const availableConnections = (status.data?.connections ?? []).filter(
     (connection) => connection.state === 'active',
   )
-  const connectionId =
+  const selectedConnection =
     availableConnections.find(
       (connection) => connection.id === selectedConnectionId,
-    )?.id ??
-    availableConnections[0]?.id ??
-    ''
+    ) ?? availableConnections[0]
+  const connectionId = selectedConnection?.id ?? ''
   const attach = useMutation({
     mutationFn: () =>
       attachManagedGitHub({ projectId, environment, connectionId }),
@@ -145,27 +148,33 @@ export function ManagedProjectGitHub({
                 No GitHub installation is connected to {environment}.
               </p>
               {availableConnections.length ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {availableConnections.length > 1 ? (
-                    <select
+                <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div className="min-w-0 flex-1 sm:max-w-md">
+                    <Label htmlFor={`github-connection-${environment}`}>
+                      GitHub organization
+                    </Label>
+                    <Select
+                      id={`github-connection-${environment}`}
                       value={connectionId}
-                      onChange={(event) =>
-                        setSelectedConnectionId(event.target.value)
-                      }
-                      className="border-input bg-background h-9 rounded-md border px-3 text-sm"
-                    >
-                      {availableConnections.map((connection) => (
-                        <option key={connection.id} value={connection.id}>
-                          {githubConnectionLabel(connection)}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="text-sm font-medium">
-                      {githubConnectionLabel(availableConnections[0])}
-                    </span>
-                  )}
+                      onValueChange={setSelectedConnectionId}
+                      options={availableConnections.map((connection) => ({
+                        value: connection.id,
+                        label: githubConnectionLabel(connection),
+                        hint:
+                          connection.repositorySelection === 'all'
+                            ? 'All repositories'
+                            : 'Selected repositories',
+                      }))}
+                      className="mt-1.5 h-9"
+                    />
+                    {selectedConnection ? (
+                      <p className="text-muted-foreground mt-1.5 text-xs">
+                        {githubConnectionDetails(selectedConnection)}
+                      </p>
+                    ) : null}
+                  </div>
                   <Button
+                    className="sm:shrink-0"
                     disabled={!connectionId || attach.isPending}
                     onClick={() => attach.mutate()}
                   >
@@ -174,7 +183,7 @@ export function ManagedProjectGitHub({
                     ) : (
                       <GithubMark className="size-4" />
                     )}
-                    Attach GitHub connection
+                    Attach
                   </Button>
                 </div>
               ) : (
