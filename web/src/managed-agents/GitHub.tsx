@@ -27,7 +27,7 @@ export function ManagedProjectGitHub({
   environment,
 }: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
 }) {
   const queryClient = useQueryClient()
   const [selectedConnectionId, setSelectedConnectionId] = useState('')

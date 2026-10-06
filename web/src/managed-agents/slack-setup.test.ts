@@ -19,6 +19,7 @@ const project: ManagedProjectOverview['project'] = {
   id: 'prj_1',
   slug: 'slack-coder',
   name: 'slack-coder',
+  environmentMode: 'legacy',
   environments: [
     {
       name: 'development',

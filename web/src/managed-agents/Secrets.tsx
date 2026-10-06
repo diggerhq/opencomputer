@@ -21,7 +21,7 @@ import {
   putManagedProjectSecret,
 } from './api'
 
-type Environment = 'development' | 'production'
+type Environment = 'default' | 'development' | 'production'
 
 function parseOrigins(value: string) {
   return [...new Set(value.split(/[\s,]+/).map((part) => part.trim()))].filter(

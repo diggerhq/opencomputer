@@ -121,7 +121,9 @@ export default function ProjectsHome() {
                     <p className="text-muted-foreground mt-0.5 text-xs">
                       {project.agents.length}{' '}
                       {project.agents.length === 1 ? 'agent' : 'agents'} ·{' '}
-                      {project.environments.length} environments
+                      {project.environments.length === 1
+                        ? 'single environment'
+                        : `${project.environments.length} environments`}
                     </p>
                   </div>
                   <Button
