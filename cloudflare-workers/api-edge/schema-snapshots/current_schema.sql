@@ -298,6 +298,18 @@ CREATE TABLE secret_stores (
   updated_at       INTEGER NOT NULL
 );
 
+CREATE TABLE signup_attribution (
+  user_id        TEXT PRIMARY KEY REFERENCES users(id),
+  entry          TEXT NOT NULL,            -- browser | cli | invite
+  channel        TEXT NOT NULL,            -- see Channel
+  first_source   TEXT, first_medium TEXT, first_campaign TEXT, first_term TEXT, first_content TEXT,
+  first_referrer TEXT, first_landing TEXT, first_touch_at INTEGER,
+  last_source    TEXT, last_medium  TEXT, last_campaign  TEXT, last_term  TEXT, last_content  TEXT,
+  last_referrer  TEXT, last_landing  TEXT, last_touch_at  INTEGER,
+  gclid          TEXT, fbclid TEXT,
+  created_at     INTEGER NOT NULL
+);
+
 CREATE TABLE templates (
   id               TEXT PRIMARY KEY,
   org_id           TEXT,                          -- NULL = public template
@@ -440,6 +452,8 @@ CREATE UNIQUE INDEX idx_secret_entries_unique ON secret_store_entries(store_id, 
 CREATE INDEX idx_secret_stores_org ON secret_stores(org_id);
 
 CREATE UNIQUE INDEX idx_secret_stores_unique ON secret_stores(org_id, name);
+
+CREATE INDEX idx_signup_attribution_created ON signup_attribution(created_at);
 
 CREATE INDEX idx_templates_public ON templates(is_public) WHERE is_public = 1;
 
