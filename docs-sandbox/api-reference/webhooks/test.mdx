@@ -1,0 +1,34 @@
+---
+title: 'Test Webhook'
+api: 'POST /api/webhooks/{id}/test'
+---
+
+Enqueue a sample event to exercise your endpoint. It sends a real, signed message of a concrete type
+the destination is subscribed to (the first of its `eventTypes`, defaulting to `sandbox.created`),
+carrying the **normal delivery envelope** with `event.data.test = true` — so you exercise your real
+verifier and parser. Delivery is **asynchronous** — this returns once the message is accepted; check
+[deliveries](/api-reference/webhooks/deliveries-list) for the outcome.
+
+<Note>
+The sample is published through your org's webhook app, so it is **not** isolated to this one
+destination: any other destination subscribed to the same event type (and matching scope) also
+receives it (likewise marked `event.data.test = true`).
+</Note>
+
+See [Webhooks](/sandboxes/webhooks).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "ok": true,
+  "eventType": "sandbox.created",
+  "messageId": "msg_2aB…"
+}
+```
+</ResponseExample>
+
+`messageId` is the delivery's message id — find its attempt under [deliveries](/api-reference/webhooks/deliveries-list).

@@ -1,0 +1,15 @@
+---
+title: 'Delete Webhook'
+api: 'DELETE /api/webhooks/{id}'
+---
+
+Delete a destination. It stops receiving events, drops out of [list](/api-reference/webhooks/list), and its delivery-provider endpoint is removed. Delivery history for a deleted destination is no longer queryable. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>

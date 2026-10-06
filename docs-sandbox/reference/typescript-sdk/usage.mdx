@@ -1,0 +1,297 @@
+---
+title: "Usage & Tags"
+description: "Query sandbox usage, group by tag, and manage sandbox tags"
+---
+
+Use `Usage` for billing-aligned usage queries and per-sandbox
+time-series drilldowns. Use `Tags` to set and read sandbox tags used
+by the usage aggregator.
+
+<Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
+```typescript
+import { Usage, Tags } from "@opencomputer/sdk";
+
+const usage = new Usage("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);
+const tags = new Tags("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);
+```
+
+The `apiUrl` may include or omit `/api`; both
+`https://app.opencomputer.dev` and `https://app.opencomputer.dev/api`
+work.
+
+## `usage.forSandbox(sandboxId, opts?)`
+
+Return 1-minute memory points plus envelope totals for one sandbox.
+[HTTP API ->](/api-reference/usage/get-sandbox-usage)
+
+<ParamField body="sandboxId" type="string" required>
+  Sandbox ID.
+</ParamField>
+
+<ParamField body="from" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  1 hour.
+</ParamField>
+
+<ParamField body="to" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 30 days.
+</ParamField>
+
+**Returns:** `Promise<SandboxUsageResponse>`
+
+```typescript
+const r = await usage.forSandbox("sb-abc123", {
+  from: "2026-05-27T00:00:00Z",
+  to: "2026-05-27T01:00:00Z",
+});
+
+const utilization =
+  r.totals.memoryAllocatedGbSeconds === 0
+    ? 0
+    : r.totals.memoryUsedGbSeconds / r.totals.memoryAllocatedGbSeconds;
+
+console.log(`${(utilization * 100).toFixed(0)}% memory utilization`);
+
+for (const point of r.points) {
+  // point.ts, point.allocatedMemoryMb, point.usedMemoryMbAvg
+  // are ready to render as chart series.
+}
+```
+
+## `usage.bySandbox(opts?)`
+
+Rank sandboxes by usage for an organization. [HTTP API ->](/api-reference/usage/get-usage)
+
+<ParamField body="from" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  30 days.
+</ParamField>
+
+<ParamField body="to" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 90 days.
+</ParamField>
+
+<ParamField body="filter" type="Record<string, string>">
+  Tag filters. Keys are dimensions such as `"tag:team"`. Values are
+  exact tag values, comma-separated OR values, or `""` to match
+  sandboxes without that tag key.
+</ParamField>
+
+<ParamField body="sort" type="string">
+  `"-memoryGbSeconds"` (default) or `"-diskOverageGbSeconds"`.
+</ParamField>
+
+<ParamField body="limit" type="number">
+  Max rows per page. Default 50, max 500.
+</ParamField>
+
+<ParamField body="cursor" type="string">
+  Cursor returned by the previous page's `nextCursor`.
+</ParamField>
+
+**Returns:** `Promise<UsageBySandboxResponse>`
+
+```typescript
+const page = await usage.bySandbox({
+  from: "2026-05-01T00:00:00Z",
+  to: "2026-06-01T00:00:00Z",
+  filter: { "tag:team": "payments" },
+  limit: 20,
+});
+
+for (const item of page.items) {
+  console.log(item.sandboxId, item.memoryGbSeconds, item.tags);
+}
+
+if (page.nextCursor) {
+  const next = await usage.bySandbox({
+    from: "2026-05-01T00:00:00Z",
+    to: "2026-06-01T00:00:00Z",
+    filter: { "tag:team": "payments" },
+    cursor: page.nextCursor,
+  });
+}
+```
+
+## `usage.byTag(tagKey, opts?)`
+
+Group usage by the value of one tag key. Tag keys may contain `:`.
+[HTTP API ->](/api-reference/usage/get-usage)
+
+<ParamField body="tagKey" type="string" required>
+  Tag key to group by, for example `"team"` or `"team:subsystem"`.
+</ParamField>
+
+<ParamField body="filter" type="Record<string, string>">
+  Optional tag filters applied before grouping.
+</ParamField>
+
+<ParamField body="from" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  30 days.
+</ParamField>
+
+<ParamField body="to" type="string">
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 90 days.
+</ParamField>
+
+<ParamField body="sort" type="string">
+  `"-memoryGbSeconds"` (default) or `"-diskOverageGbSeconds"`.
+</ParamField>
+
+<ParamField body="limit" type="number">
+  Max rows per page. Default 50, max 500.
+</ParamField>
+
+<ParamField body="cursor" type="string">
+  Cursor returned by the previous page's `nextCursor`.
+</ParamField>
+
+**Returns:** `Promise<UsageByTagResponse>`
+
+```typescript
+const byTeam = await usage.byTag("team", {
+  filter: { "tag:env": "prod" },
+});
+
+for (const row of byTeam.items) {
+  console.log(row.tagValue, row.memoryGbSeconds, row.sandboxCount);
+}
+
+console.log("untagged", byTeam.untagged.memoryGbSeconds);
+
+const bySubsystem = await usage.byTag("team:subsystem");
+```
+
+## `tags.set(sandboxId, tags)`
+
+Replace the full tag set for a sandbox. Partial updates are not
+supported: read, modify, then write the full map. [HTTP API ->](/api-reference/sandboxes/set-tags)
+
+<ParamField body="sandboxId" type="string" required>
+  Sandbox ID.
+</ParamField>
+
+<ParamField body="tags" type="Record<string, string>" required>
+  Flat tag map. `{}` clears all tags.
+</ParamField>
+
+**Returns:** `Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }>`
+
+```typescript
+await tags.set("sb-abc123", {
+  team: "payments",
+  env: "prod",
+  "team:subsystem": "checkout",
+});
+```
+
+## `tags.get(sandboxId)`
+
+Read the current tag set for a sandbox. [HTTP API ->](/api-reference/sandboxes/get-tags)
+
+**Returns:** `Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }>`
+
+```typescript
+const current = await tags.get("sb-abc123");
+console.log(current.tags);
+```
+
+## `tags.listKeys()`
+
+List tag keys seen in the organization, with counts for tagged
+sandboxes and distinct values. [HTTP API ->](/api-reference/usage/list-tags)
+
+**Returns:** `Promise<TagKeyInfo[]>`
+
+```typescript
+const keys = await tags.listKeys();
+for (const key of keys) {
+  console.log(key.key, key.sandboxCount, key.valueCount);
+}
+```
+
+## Units
+
+All `*GbSeconds` fields are **GiB-seconds**. For example, a sandbox
+provisioned at `4096` MiB for one minute reports `240`
+`memoryAllocatedGbSeconds`.
+
+`memoryAllocatedGbSeconds` is billing-aligned provisioned memory.
+`memoryUsedGbSeconds` is measured resident memory from the worker
+collector, so it can lag by a few minutes after a sandbox starts.
+
+## Types
+
+<Accordion title="SandboxUsageResponse">
+```typescript
+interface SandboxUsageResponse {
+  sandboxId: string;
+  alias?: string;
+  from: string;
+  to: string;
+  totals: SandboxUsageTotals;
+  points: SandboxUsagePoint[];
+}
+```
+</Accordion>
+
+<Accordion title="SandboxUsagePoint">
+```typescript
+interface SandboxUsagePoint {
+  ts: string;
+  memoryAllocatedGbSeconds: number;
+  memoryUsedGbSeconds: number;
+  uptimeSeconds: number;
+  allocatedMemoryMb: number;
+  usedMemoryMbAvg: number;
+  usedMemoryMbPeak: number;
+}
+```
+</Accordion>
+
+<Accordion title="SandboxUsageTotals">
+```typescript
+interface SandboxUsageTotals {
+  memoryAllocatedGbSeconds: number;
+  memoryUsedGbSeconds: number;
+  uptimeSeconds: number;
+  memoryAllocatedPeakMb: number;
+  memoryUsedPeakMb: number;
+}
+```
+</Accordion>
+
+<Accordion title="UsageSandboxItem">
+```typescript
+interface UsageSandboxItem {
+  sandboxId: string;
+  alias?: string;
+  status?: string;
+  tags: Record<string, string>;
+  tagsLastUpdatedAt: string | null;
+  memoryGbSeconds: number;
+  diskOverageGbSeconds: number;
+}
+```
+</Accordion>
+
+<Accordion title="UsageTagItem">
+```typescript
+interface UsageTagItem {
+  tagKey: string;
+  tagValue: string;
+  memoryGbSeconds: number;
+  diskOverageGbSeconds: number;
+  sandboxCount: number;
+}
+```
+</Accordion>

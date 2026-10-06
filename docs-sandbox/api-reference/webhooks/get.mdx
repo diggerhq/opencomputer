@@ -1,0 +1,26 @@
+---
+title: 'Get Webhook'
+api: 'GET /api/webhooks/{id}'
+---
+
+Fetch one webhook destination. The response carries `hasSecret` (not the secret itself); fetch the secret value any time via `GET /api/webhooks/{id}/secret` → `{ "secret": "whsec_…" }`. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "id": "whk_3f9a2c",
+  "name": "prod",
+  "url": "https://app.example.com/oc-webhook",
+  "eventTypes": ["sandbox.stopped"],
+  "sandboxId": null,
+  "enabled": true,
+  "hasSecret": true,
+  "createdAt": "2026-06-24T12:00:00Z",
+  "updatedAt": "2026-06-24T12:00:00Z"
+}
+```
+</ResponseExample>

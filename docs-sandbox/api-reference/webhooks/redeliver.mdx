@@ -1,0 +1,24 @@
+---
+title: 'Redeliver'
+api: 'POST /api/webhooks/{id}/deliveries/{deliveryId}/redeliver'
+---
+
+Re-send a message to the endpoint. The redelivery carries the **same** `svix-id`, so a receiver that dedupes treats it as the same message. Use it when the original never landed. See [Webhooks](/sandboxes/webhooks#deliveries).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ParamField path="deliveryId" type="string" required>
+  Message id (`msg_…`, from [list deliveries](/api-reference/webhooks/deliveries-list)).
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "ok": true
+}
+```
+</ResponseExample>
+
+The new attempt appears under [deliveries](/api-reference/webhooks/deliveries-list).

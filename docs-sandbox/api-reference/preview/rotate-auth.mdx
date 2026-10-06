@@ -1,0 +1,31 @@
+---
+title: 'Rotate Preview-URL Auth Token'
+api: 'POST /api/sandboxes/{id}/preview/rotate'
+---
+
+Mint a new bearer token for the sandbox's preview-URL auth gate. The old token stops working immediately — there is no zero-downtime dual-token mode, so roll the new token out to your caller before discarding the old one.
+
+If the sandbox was originally created without [`previewAuth`](/api-reference/sandboxes/create), this call installs a token and starts enforcing the gate from that point on.
+
+The plaintext is returned exactly once in the response. Only the SHA-256 hash is persisted server-side; the server cannot show you the token again later.
+
+<ParamField path="id" type="string" required>
+  Sandbox ID
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI",
+  "scheme": "bearer"
+}
+```
+</ResponseExample>
+
+### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | Sandbox not found, or owned by a different org |
+| `410` | Sandbox is `stopped` or `error` |
+| `503` | Database not configured (combined-mode CP without PG) |
