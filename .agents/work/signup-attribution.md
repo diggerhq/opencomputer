@@ -27,7 +27,7 @@ design: .agents/design/signup-attribution.md
       "attempt": 2,
       "sessionId": "6a5a5a53-380a-10bc-6aea-4996586301d3",
       "branch": "agent/signup-attribution--web",
-      "state": "running"
+      "state": "landed"
     }
   ]
 }
@@ -55,33 +55,22 @@ Decisions taken (design §Decisions): 1a 2b 3a 4a 5a 6a 7a.
 Files: `cloudflare-workers/api-edge/src/attribution.ts`, `attribution.test.ts`, `index.ts`,
 `migrations/0010_signup_attribution.sql`, `schema-snapshots/current_schema.sql`, `wrangler.toml`, `wrangler.prod.toml`.
 
-Done when: see build record (edge@2). Checks: `cd cloudflare-workers/api-edge && NODE_ENV=development npm ci && npx vitest run`.
+Checks: `cd cloudflare-workers/api-edge && NODE_ENV=development npm ci && npx vitest run`.
 
-### web — SPA capture (design C1, C2)
+### web — SPA capture (design C1, C2) — web@1 merged, web@2 landed
 
-Files:
-- `web/src/lib/attribution.ts`
-- `web/src/lib/attribution.test.ts`
-- `web/src/main.tsx`
+Files: `web/src/lib/attribution.ts`, `web/src/lib/attribution.test.ts`, `web/src/main.tsx`.
 
-Done when:
-- `computeTouch` / `mergeCookie` implement the **amended** C1 exactly as the edge does
-  (`cloudflare-workers/api-edge/src/attribution.ts` is canonical): touch when any `utm_*` key
-  is present (even empty) or non-empty `gclid`/`fbclid` or external referrer; `ref` null for
-  internal/absent/unparseable referrers; click ids trimmed, case kept, ≤100; the 2048-byte
-  cap on `oc_attr=<value>` with the slim-`lt` → slim-`ft` → drop-`lt` rule; malformed cookie
-  replaced. Tests cover each rule.
-- `recordTouch()` writes `document.cookie` with `Domain=.opencomputer.dev` when the host ends
-  with `opencomputer.dev`, host-only otherwise, `Path=/; Max-Age=7776000; SameSite=Lax; Secure`
-  (omit Secure on `http:`).
-- `main.tsx` calls `recordTouch()` once before `posthog.init`; a thrown error is swallowed.
-- typecheck, tests, and eslint **on this stream's three files** pass (`eslint .` is broken on `main`).
+Done when: `computeTouch` / `mergeCookie` match the amended C1 exactly as the edge implements it;
+`recordTouch()` sets the cookie on `.opencomputer.dev` (host-only elsewhere), 90 d, Lax, Secure;
+`main.tsx` calls it once before `posthog.init`; typecheck, tests, and eslint on the three files pass.
 
-Checks: `cd web && NODE_ENV=development npm ci --include=dev && npm run typecheck && npx eslint src/lib/attribution.ts src/lib/attribution.test.ts src/main.tsx && npm test`
+Checks: `cd web && NODE_ENV=development npm ci --include=dev && npm run typecheck && npx eslint src/lib/attribution.ts src/lib/attribution.test.ts src/main.tsx && NODE_ENV=development npx vitest run`
+(`NODE_ENV=development` must also be set for vitest: React's `act` is absent in production builds.)
 
 ## Order
 
-`edge` ✔ merged · `web@1` merged · `web@2` aligns web to the amended C1, from `agent/signup-attribution`.
+`edge` ✔ · `web@1` ✔ · `web@2` (alignment) → integrate → review.
 
 ## Verification
 
@@ -105,15 +94,19 @@ Read `kevin-state`, then `where_are_we` for this thread.
   Checks pass: 19 files / 327 tests (25 new), `tsc --noEmit` clean. Amendments accepted:
   `ctx` inside the 6th param `SignupAttributionContext`; C1/C4/C5 gaps resolved as the edge
   implements them — folded into the design (b10dc5b). `NODE_ENV=development` needed for checks.
-- 2026-10-06 — `web@1` **landed**: 072f495 (`web/src/lib/attribution.ts` + tests), 53f5880
-  (`main.tsx` hook). typecheck ✔, 68 files / 355 tests ✔, its three files lint clean ✔;
-  `npm run lint` reports 17 pre-existing `react-hooks/*` errors in unrelated files, identical
-  on the base — **judged passing for this stream**, lint scoped to its files from now on.
-  **Diverges from the edge on C1** (both wrote rules the draft left open): web requires
-  non-empty `utm_*` values (edge: any key); web fills `ref` for internal referrers on tagged
-  touches (edge: null); web caps click ids at 200 (edge: 100); web has no 2 KB slimming rule.
-  → design C1 amended to the edge's rules; `web@2` dispatched to align. Merging `web@1` first
-  so the integration branch carries the hook; `web@2` builds on it.
+- 2026-10-06 — `web@1` **landed → merged** (32e23c0): 072f495 (`web/src/lib/attribution.ts` + tests),
+  53f5880 (`main.tsx` hook). typecheck ✔, 355 tests ✔, its files lint clean ✔; `npm run lint`
+  reports 17 pre-existing `react-hooks/*` errors in unrelated files, identical on the base —
+  judged passing for this stream. Diverged from the edge on C1 (empty-utm test, internal `ref`,
+  click-id cap 200 vs 100, no 2 KB slimming) → design C1 amended; `web@2` dispatched.
+- 2026-10-06 — `web@2`: the implementer's turn **failed** with "Network connection lost" and no
+  report, but a57ffeb "Align SPA oc_attr capture with the edge's C1 rules" was pushed to
+  `agent/signup-attribution--web` (2 files, +257/−84). Lead verified on that branch:
+  `tsc -b` ✔, eslint on the three files ✔, `NODE_ENV=development npx vitest run` 68 files /
+  365 tests ✔ (attribution: 34). Spot-checked: `hasUTM` on any `utm_` key, internal-host test,
+  100/200 caps, 2048-byte cap with slim-`lt` → slim-`ft` → drop-`lt`. **Judged landed**; merging.
+  (A first run without `NODE_ENV=development` showed 39 `act is not a function` failures in
+  unrelated UI tests — environment, not code.)
 - Note for the PR: `web/` lint is broken on `main` independently of this work.
 
 ## Prompts
