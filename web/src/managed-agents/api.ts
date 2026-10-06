@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
+import { managedAgentEventSchema, type ManagedAgentEvent } from './events'
+import {
+  ManagedAgentEventStream,
+  ManagedAgentEventStreamTimeout,
+} from './live-events'
 import {
   Sha256,
   ZipWriter,
@@ -449,6 +454,74 @@ const slackSetupAuthorizationSchema = z.object({
   expiresAt: z.string(),
 })
 
+// Linear agent connections (docs/agents/linear.mdx). One per project
+// environment and agent. The record never carries the app's secrets or
+// tokens; its webhook URL does carry the connection's ingress token, so the
+// panel shows it masked.
+export const LINEAR_CONNECTION_STATUSES = [
+  'pending',
+  'connected',
+  'revoked',
+  'disconnected',
+] as const
+export const LINEAR_HEALTH_STATES = [
+  'awaiting_credentials',
+  'awaiting_authorization',
+  'waiting_for_first_delegation',
+  'receiving',
+  'revoked',
+] as const
+
+const linearConnectionSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['development', 'production']),
+  agentId: z.string(),
+  name: z.string(),
+  status: z.enum(LINEAR_CONNECTION_STATUSES),
+  clientId: z.string().optional(),
+  appUserId: z.string().optional(),
+  organizationId: z.string().optional(),
+  webhookUrl: z.string().url().optional(),
+  createAppUrl: z.string().url().optional(),
+  verifiedAt: z.string().optional(),
+  verificationError: z.string().optional(),
+  lastEventAt: z.string().optional(),
+  teams: z
+    .object({ allPublic: z.boolean(), teamIds: z.array(z.string()) })
+    .optional(),
+  health: z
+    .object({
+      state: z.enum(LINEAR_HEALTH_STATES),
+      message: z.string(),
+      lastEventAt: z.string().optional(),
+    })
+    .optional(),
+  revision: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+const linearConnectionResponseSchema = z.object({
+  connection: linearConnectionSchema,
+})
+const linearConnectionsResponseSchema = z.object({
+  connections: z.array(linearConnectionSchema),
+})
+const linearCreateResponseSchema = z.object({
+  connectionId: z.string(),
+  webhookUrl: z.string().url(),
+  createAppUrl: z.string().url(),
+  connection: linearConnectionSchema,
+})
+const linearAuthorizeResponseSchema = z.object({
+  authorizeUrl: z.string().url(),
+  expiresAt: z.string(),
+})
+const linearDisconnectResponseSchema = z.object({
+  connection: linearConnectionSchema,
+  revoked: z.boolean(),
+})
+
 const connectionsResponseSchema = z.object({
   connections: z.array(connectionSchema),
 })
@@ -553,15 +626,7 @@ const sessionCreateSchema = z.object({
   deployment: deploymentSchema.optional(),
 })
 
-const eventSchema = z.object({
-  id: z.string().optional(),
-  seq: z.number(),
-  timestamp: z.string().optional(),
-  sessionId: z.string().optional(),
-  turnId: z.string().optional(),
-  type: z.string(),
-  data: z.record(z.string(), z.unknown()),
-})
+const eventSchema = managedAgentEventSchema
 
 const renderDebugSchema = z.object({
   renderId: z.string(),
@@ -571,7 +636,7 @@ const renderDebugSchema = z.object({
   instructionsHash: z.string(),
   instructions: z.string(),
   enabledTools: z.array(z.string()),
-  enabledSubagents: z.array(z.string()),
+  enabledSubagents: z.array(z.string()).optional(),
   requiredConnections: z.array(z.string()),
   enabledMcpServers: z.array(z.string()),
   input: z.object({ source: z.string(), text: z.string().optional() }),
@@ -773,7 +838,7 @@ export type ManagedRuntimeProfile = z.infer<typeof managedRuntimeProfileSchema>
 export type ManagedProject = z.infer<typeof projectSchema>
 export type ManagedProjectOverview = z.infer<typeof projectOverviewSchema>
 export type ManagedAgentDeployment = z.infer<typeof deploymentSchema>
-export type ManagedAgentEvent = z.infer<typeof eventSchema>
+export type { ManagedAgentEvent } from './events'
 export type ManagedAgentRenderDebug = z.infer<typeof renderDebugSchema>
 export type ManagedAgentModelRoute = z.infer<typeof modelRouteSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
@@ -798,6 +863,8 @@ export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedSlackSetup = z.infer<typeof slackSetupSchema>
 export type ManagedSlackSetupPhase = ManagedSlackSetup['phase']
 export type ManagedSlackSetupAction = ManagedSlackSetup['actions'][number]
+export type ManagedLinearConnection = z.infer<typeof linearConnectionSchema>
+export type ManagedLinearHealthState = (typeof LINEAR_HEALTH_STATES)[number]
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
@@ -1581,6 +1648,87 @@ export async function disconnectManagedAgentSlack(connectionId: string) {
   )
 }
 
+/** The project's Linear connections with health, for one environment or both. */
+export async function listManagedLinearConnections(
+  projectId: string,
+  environment?: 'development' | 'production',
+) {
+  const query = environment
+    ? `?${new URLSearchParams({ environment }).toString()}`
+    : ''
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/linear/connections${query}`,
+      undefined,
+      linearConnectionsResponseSchema,
+    )
+  ).connections
+}
+
+/**
+ * Allocate a pending connection for an agent in one environment. The answer
+ * carries the webhook URL and Linear's prefilled create-app link; calling it
+ * again for a binding that is still pending starts that setup over.
+ */
+export async function createManagedLinearConnection(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  agentId: string
+  name: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/linear/connections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        environment: input.environment,
+        agentId: input.agentId,
+      }),
+    },
+    linearCreateResponseSchema,
+  )
+}
+
+/**
+ * The Linear app's client ID, client secret and webhook signing secret. They
+ * are sent once and never returned; the answer is the redacted connection.
+ */
+export async function setManagedLinearCredentials(
+  connectionId: string,
+  credentials: {
+    clientId: string
+    clientSecret: string
+    signingSecret: string
+  },
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/credentials`,
+      { method: 'PUT', body: JSON.stringify(credentials) },
+      linearConnectionResponseSchema,
+    )
+  ).connection
+}
+
+/** A fresh authorization link for the connection's app; earlier ones stop working. */
+export async function authorizeManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/authorize`,
+    { method: 'POST' },
+    linearAuthorizeResponseSchema,
+  )
+}
+
+/** Revoke the app's access, remove the binding; the webhook URL stops working. */
+export async function disconnectManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+    linearDisconnectResponseSchema,
+  )
+}
+
 export async function getManagedAgentDeployment(deploymentId: string) {
   return apiFetch(
     `/managed-agents/deployments/${encodeURIComponent(deploymentId)}`,
@@ -1600,22 +1748,33 @@ export async function getManagedAgentDeployments(agentId: string) {
 }
 
 /**
- * The newest page of session rows, filtered by the API rather than here.
- * Rows are ordered by creation time; one page of a hundred is what the
- * agent view shows.
+ * One page of session rows, newest first, filtered by the API rather than
+ * here. `nextCursor` is null on the last page; pass it back as `cursor` to
+ * continue with the same filters.
  */
-export async function getManagedAgentSessions(
-  agentId?: string,
-  options: { projectId?: string } = {},
+export function getManagedAgentSessionsPage(
+  options: { agentId?: string; projectId?: string; cursor?: string } = {},
 ) {
   const query = new URLSearchParams({ limit: '100' })
-  if (agentId) query.set('agent', agentId)
+  if (options.agentId) query.set('agent', options.agentId)
   if (options.projectId) query.set('project', options.projectId)
-  const { sessions } = await apiFetch(
+  if (options.cursor) query.set('cursor', options.cursor)
+  return apiFetch(
     `/managed-agents/sessions?${query.toString()}`,
     undefined,
     sessionsResponseSchema,
   )
+}
+
+/** The newest page of session rows; what the single-agent view shows. */
+export async function getManagedAgentSessions(
+  agentId?: string,
+  options: { projectId?: string } = {},
+) {
+  const { sessions } = await getManagedAgentSessionsPage({
+    agentId,
+    projectId: options.projectId,
+  })
   return sessions
 }
 
@@ -1668,9 +1827,31 @@ const workspaceExportResponseSchema = z.object({
   export: z.object({ id: z.string(), state: z.string() }).optional(),
   artifact: workspaceArtifactSchema.nullable(),
 })
+const workspaceDownloadResponseSchema = z.object({
+  url: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value)
+      return url.protocol === 'https:' && !url.username && !url.password
+    }),
+  expiresAt: z.string(),
+})
+const workspaceFileDownloadResponseSchema =
+  workspaceDownloadResponseSchema.extend({
+    path: z.string(),
+    size: z.number(),
+    etag: z.string().nullable(),
+    versionId: z.string().nullable(),
+    lastModified: z.string().nullable(),
+    mediaType: z.string(),
+  })
 
 export type ManagedWorkspaceFile = z.infer<typeof workspaceFileSchema>
 export type ManagedWorkspaceArtifact = z.infer<typeof workspaceArtifactSchema>
+export type ManagedWorkspaceDownload = z.infer<
+  typeof workspaceFileDownloadResponseSchema
+>
 
 /** Every file the agent wrote under /workspace, across all list pages. */
 export async function getManagedAgentWorkspaceFiles(sessionId: string) {
@@ -1699,6 +1880,25 @@ export async function getManagedAgentWorkspaceArtifacts(sessionId: string) {
   ).artifacts
 }
 
+export function authorizeManagedAgentWorkspaceDownload(
+  sessionId: string,
+  path: string,
+) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+    workspaceFileDownloadResponseSchema,
+  )
+}
+
+/** A normal browser download: same-origin auth redirects to signed CloudFront. */
+export function managedAgentWorkspaceBrowserDownloadPath(
+  sessionId: string,
+  path: string,
+) {
+  return `/api/dashboard/managed-agents/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`
+}
+
 /** Provider-side export: retains and hashes the file, returns its manifest. */
 export async function exportManagedAgentWorkspaceFile(
   sessionId: string,
@@ -1715,10 +1915,55 @@ export async function exportManagedAgentWorkspaceFile(
   return result.artifact
 }
 
-export function managedAgentWorkspaceArtifactContentPath(
+export function managedAgentWorkspaceArtifactDownloadPath(
   artifact: Pick<ManagedWorkspaceArtifact, 'sessionId' | 'id'>,
 ) {
-  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/content`
+  return `/managed-agents/sessions/${encodeURIComponent(artifact.sessionId)}/workspace/exports/${encodeURIComponent(artifact.id)}/download`
+}
+
+/** Fetches a signed object without sending dashboard credentials to storage. */
+export async function fetchManagedAgentWorkspaceObject(
+  url: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(url, {
+    credentials: 'omit',
+    redirect: 'error',
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Workspace object download failed (${response.status})`)
+  }
+  return response
+}
+
+async function streamManagedWorkspaceDownload(
+  download: ManagedWorkspaceDownload,
+  write: (chunk: Uint8Array) => Promise<void>,
+) {
+  const response = await fetchManagedAgentWorkspaceObject(download.url)
+  if (!response.body) throw new Error('Workspace file response had no body')
+  const reader = response.body.getReader()
+  let received = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > download.size) {
+        throw new Error(`Download exceeded ${download.size} bytes`)
+      }
+      await write(value)
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  if (received !== download.size) {
+    throw new Error(`Downloaded ${received} bytes, expected ${download.size}`)
+  }
 }
 
 /**
@@ -1733,10 +1978,14 @@ export async function streamManagedAgentWorkspaceArtifact(
   write: (chunk: Uint8Array) => Promise<void>,
   signal?: AbortSignal,
 ) {
-  const response = await apiFetchResponse(
-    managedAgentWorkspaceArtifactContentPath(artifact),
+  const handoff = await apiFetch(
+    managedAgentWorkspaceArtifactDownloadPath(artifact),
     { signal },
+    workspaceDownloadResponseSchema,
   )
+  // This second request is deliberately unauthenticated. The signed query is
+  // the authorization; platform cookies and headers must not reach storage.
+  const response = await fetchManagedAgentWorkspaceObject(handoff.url, signal)
   if (!response.body) throw new Error('Artifact response had no body')
   const hash = new Sha256()
   let received = 0
@@ -1813,42 +2062,52 @@ function archiveBytes(entries: Array<{ path: string; size: number }>) {
 export async function downloadManagedAgentWorkspaceArchive(
   name: string,
   expected: Array<{ path: string; size: number }>,
-  resolve: () => Promise<ManagedWorkspaceArtifact[]>,
+  resolve: (file: {
+    path: string
+    size: number
+  }) => Promise<ManagedWorkspaceDownload>,
   onProgress?: (done: number, total: number) => void,
 ) {
   const sink = await openDownloadSink(name)
   const zip = new ZipWriter(sink)
-  let artifacts: ManagedWorkspaceArtifact[]
+  const downloads: ManagedWorkspaceDownload[] = []
   try {
     assertSinkCapacity(sink, archiveBytes(expected))
-    artifacts = await resolve()
-    assertSinkCapacity(sink, archiveBytes(artifacts))
-    for (const [index, artifact] of artifacts.entries()) {
-      onProgress?.(index, artifacts.length)
-      await zip.beginEntry(artifact.path, new Date(artifact.exportedAt))
-      await streamManagedAgentWorkspaceArtifact(artifact, (chunk) =>
+    for (const [index, file] of expected.entries()) {
+      onProgress?.(index, expected.length)
+      const download = await resolve(file)
+      if (download.path !== file.path) {
+        throw new Error(`Workspace download path changed from ${file.path}`)
+      }
+      downloads.push(download)
+      await zip.beginEntry(
+        download.path,
+        download.lastModified ? new Date(download.lastModified) : new Date(),
+      )
+      await streamManagedWorkspaceDownload(download, (chunk) =>
         zip.write(chunk),
       )
       await zip.endEntry()
     }
-    onProgress?.(artifacts.length, artifacts.length)
+    onProgress?.(expected.length, expected.length)
     await zip.finish()
   } catch (error) {
     await zip.abort(error).catch(() => undefined)
     throw error
   }
-  return artifacts
+  return downloads
 }
 
 export async function getManagedAgentSessionEvents(
   sessionId: string,
   after = 0,
+  signal?: AbortSignal,
 ) {
   return collectManagedAgentEventPages(async (cursor) => {
     return (
       await apiFetch(
         `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-        undefined,
+        signal ? { signal } : undefined,
         eventsResponseSchema,
       )
     ).events
@@ -1895,6 +2154,14 @@ export function managedAgentModelRoute(event: ManagedAgentEvent) {
   if (event.type !== 'model.route_resolved') return undefined
   const parsed = modelRouteSchema.safeParse(event.data)
   return parsed.success ? parsed.data : undefined
+}
+
+export function latestManagedAgentModelRoute(events: ManagedAgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const route = managedAgentModelRoute(events[index])
+    if (route) return route
+  }
+  return undefined
 }
 
 export async function getManagedAgentSession(sessionId: string) {
@@ -2037,38 +2304,32 @@ export async function deleteManagedMemoryDocument(
   })
 }
 
-async function sleep(milliseconds: number) {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds))
-}
-
-export function nextAgentEventDeadline(
-  deadline: number,
-  timeoutMs: number,
-  receivedEvents: number,
-  now = Date.now(),
+export function openManagedAgentEventStream(
+  sessionId: string,
+  after: number,
+  signal?: AbortSignal,
 ) {
-  return receivedEvents > 0 ? now + timeoutMs : deadline
+  return new ManagedAgentEventStream(sessionId, after, {
+    fetchEvents: getManagedAgentSessionEvents,
+    signal,
+  })
 }
 
+// `timeoutMs` is an inactivity deadline: multi-step agents can run for longer
+// than one fixed window while continuing to stream useful progress.
 async function waitForAgentEvent(
   sessionId: string,
   after: number,
-  terminal: (event: z.infer<typeof eventSchema>) => boolean,
-  onEvent: (event: z.infer<typeof eventSchema>) => void,
+  terminal: (event: ManagedAgentEvent) => boolean,
+  onEvent: (event: ManagedAgentEvent) => void,
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  let deadline = Date.now() + timeoutMs
-  let cursor = after
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const { events } = await apiFetch(
-      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-      { signal },
-      eventsResponseSchema,
-    )
-    for (const event of events) {
-      cursor = Math.max(cursor, event.seq)
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const stream = openManagedAgentEventStream(sessionId, after, signal)
+  try {
+    for (;;) {
+      const event = await stream.next(timeoutMs)
       onEvent(event)
       if (
         event.type === 'runtime.disconnected' ||
@@ -2082,14 +2343,16 @@ async function waitForAgentEvent(
               : 'The agent runtime disconnected.',
         )
       }
-      if (terminal(event)) return { event, cursor }
+      if (terminal(event)) return { event, cursor: event.seq }
     }
-    // Treat timeoutMs as an inactivity deadline. Multi-step agents can run for
-    // longer than one fixed window while continuing to stream useful progress.
-    deadline = nextAgentEventDeadline(deadline, timeoutMs, events.length)
-    await sleep(600)
+  } catch (error) {
+    if (error instanceof ManagedAgentEventStreamTimeout) {
+      throw new Error('Timed out waiting for the agent.')
+    }
+    throw error
+  } finally {
+    stream.close()
   }
-  throw new Error('Timed out waiting for the agent.')
 }
 
 export async function runManagedAgent(

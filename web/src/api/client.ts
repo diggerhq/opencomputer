@@ -211,6 +211,19 @@ export async function logout(): Promise<void> {
   window.location.replace(dest)
 }
 
+// Rotate the session cookie so an open tab keeps a sliding expiry instead of
+// hitting the fixed TTL mid-page. Best-effort: not every backend serves the
+// route, and a failure here just means the next 401 sends the user through
+// the normal login round-trip.
+export async function refreshSession(): Promise<void> {
+  if (import.meta.env.VITE_PREVIEW === '1') return
+  try {
+    await fetch('/auth/refresh', { method: 'POST', credentials: 'include' })
+  } catch {
+    // ignore
+  }
+}
+
 // API functions
 export const getMe = () => apiFetch('/me', {}, S.MeResponseSchema)
 
@@ -258,6 +271,13 @@ export const createAPIKey = (name: string) =>
     '/api-keys',
     { method: 'POST', body: JSON.stringify({ name }) },
     S.CreatedAPIKeySchema,
+  )
+
+export const renameAPIKey = (keyId: string, name: string) =>
+  apiFetch(
+    `/api-keys/${keyId}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+    S.APIKeySchema,
   )
 
 export const deleteAPIKey = (keyId: string) =>

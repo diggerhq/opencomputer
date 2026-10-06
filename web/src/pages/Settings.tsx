@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
-import { useAuth } from '@/hooks/useAuth'
+import { ME_QUERY_KEY, useAuth } from '@/hooks/useAuth'
 import { organizationPlanLabel } from '@/lib/plan-label'
 import {
   deleteCustomDomain,
@@ -130,7 +130,7 @@ export default function Settings() {
   const navigationMutation = useMutation({
     mutationFn: (updates: NavigationPreferenceUpdate) =>
       updateNavigationPreferences(updates),
-    onSuccess: (updated) => queryClient.setQueryData(['me'], updated),
+    onSuccess: (updated) => queryClient.setQueryData(ME_QUERY_KEY, updated),
     onError: (e) => notifyError("Couldn't save navigation settings.", e),
   })
 

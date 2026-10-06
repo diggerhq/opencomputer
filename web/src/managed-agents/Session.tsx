@@ -11,6 +11,7 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
 import {
   Panel,
   PanelContent,
@@ -24,6 +25,7 @@ import {
   getManagedAgentSession,
   getManagedAgentSessionEvents,
   getManagedProject,
+  latestManagedAgentModelRoute,
 } from './api'
 import { AgentMarkdown } from './AgentMarkdown'
 import { SessionFiles } from './SessionFiles'
@@ -104,6 +106,7 @@ export default function ManagedSessionDetail() {
   }
 
   const sessionPath = `/projects/${encodeURIComponent(projectId)}/sessions`
+  const modelRoute = latestManagedAgentModelRoute(events.data ?? [])
 
   return (
     <div className="space-y-5">
@@ -121,7 +124,12 @@ export default function ManagedSessionDetail() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <PostSessionUpsell
+        sessionId={session.data.id}
+        completed={session.data.status === 'completed'}
+      />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Panel className="p-4">
           <p className="text-muted-foreground text-xs">Status</p>
           <div className="mt-2">
@@ -142,6 +150,14 @@ export default function ManagedSessionDetail() {
           <p className="text-muted-foreground text-xs">Updated</p>
           <p className="mt-2 text-sm font-medium">
             {formatDate(session.data.updatedAt)}
+          </p>
+        </Panel>
+        <Panel className="p-4">
+          <p className="text-muted-foreground text-xs">Effective model</p>
+          <p className="mt-2 font-mono text-xs font-medium break-all">
+            {modelRoute?.effective
+              ? `${modelRoute.effective.provider}/${modelRoute.effective.model}`
+              : 'Not resolved yet'}
           </p>
         </Panel>
       </div>
@@ -255,7 +271,7 @@ export default function ManagedSessionDetail() {
                         {turn.input}
                       </p>
                       {payload !== undefined ? (
-                        <details className="ml-auto mt-2 max-w-2xl">
+                        <details className="mt-2 ml-auto max-w-2xl">
                           <summary className="text-muted-foreground cursor-pointer text-xs">
                             Payload
                           </summary>

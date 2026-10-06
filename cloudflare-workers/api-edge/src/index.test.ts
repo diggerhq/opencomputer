@@ -517,3 +517,58 @@ describe("/api/managed-agents/slack/callback — unauthenticated mount", () => {
     );
   });
 });
+
+describe("/api/managed-agents/linear — public mounts", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Linear redirects here with no OpenComputer credentials; the backend puts
+  // this URL in every authorize link, so the mount stays above the API-key
+  // check and forwards the query untouched.
+  it("forwards Linear's redirect to the backend callback without an API key", async () => {
+    const location =
+      "https://app.opencomputer.dev/projects/prj_test/connections?environment=production&linear=connected&connection=lc_1";
+    const fetchSpy = vi.fn(
+      async (_target: URL | RequestInfo, _init?: RequestInit) =>
+        new Response(null, { status: 302, headers: { location } }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resp = await worker.fetch(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/linear/callback?state=x&code=y",
+      ),
+      { ...env, MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+      ctx,
+    );
+
+    expect(resp.status).toBe(302);
+    expect(resp.headers.get("location")).toBe(location);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0].toString()).toBe(
+      "https://managedagents.test/v1/linear/oauth/callback?state=x&code=y",
+    );
+  });
+
+  it("requires an API key for the connection routes", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resp = await worker.fetch(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test/linear/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Triage", environment: "production", agentId: "triage" }),
+        },
+      ),
+      { ...env, MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+      ctx,
+    );
+
+    expect(resp.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

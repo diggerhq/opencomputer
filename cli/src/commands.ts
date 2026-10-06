@@ -11,6 +11,13 @@ import {
   type MemoryDocumentMeta,
 } from "./api.js";
 import { login, logout } from "./auth.js";
+import {
+  creditsFooter,
+  creditsSummary,
+  fetchCredits,
+  formatBilling,
+  upgradeUrlFor,
+} from "./billing.js";
 import { codexLogin } from "./codex-oauth.js";
 import { resolveConfig } from "./config.js";
 import {
@@ -32,6 +39,7 @@ import {
 import {
   developmentAgentReference,
   parseSessionCommand,
+  parseSessionListOptions,
   resolveProjectAgent,
 } from "./session-command.js";
 import {
@@ -425,9 +433,13 @@ function printSession(
           .map(([key, value]) => `${key}=${value}`)
           .join(",")
       : "";
+  const reference =
+    session.externalReference !== undefined
+      ? `  ref=${session.externalReference}`
+      : "";
   process.stdout.write(
     `${session.id}  ${session.status.padEnd(15)}  ` +
-      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}\n`,
+      `${session.agentId ?? "—"}  ${deployment.slice(0, 12)}${labels}${reference}\n`,
   );
 }
 
@@ -988,6 +1000,7 @@ export async function runCommand(
     const projectNameOption = option(args, "--project-name");
     const directoryOption = option(args, "--directory");
     const confirmed = flag(args, "--yes");
+    const refresh = flag(args, "--refresh");
     const repositoryUrl = args.shift();
     if (!repositoryUrl) {
       throw new Error("A GitHub repository URL is required");
@@ -995,6 +1008,7 @@ export async function runCommand(
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
     const inspection = await client.inspectTemplate(
       normalizeTemplateRepositoryUrl(repositoryUrl),
+      { refresh },
     );
     if (!globals.json) {
       process.stdout.write(
@@ -1183,6 +1197,39 @@ export async function runCommand(
     return;
   }
 
+  if (command === "billing" || command === "credits") {
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await client.credits();
+    if (globals.json) printJSON(status);
+    else if (!status) {
+      process.stdout.write(
+        `This organization is not on prepaid credits. Manage billing at ${config.apiUrl}/billing\n`,
+      );
+    } else process.stdout.write(formatBilling(status));
+    return;
+  }
+
+  if (command === "upgrade") {
+    const plan = args.shift() ?? "pro";
+    if (plan !== "pro" && plan !== "max") {
+      throw new Error("Usage: opencomputer upgrade [pro|max]");
+    }
+    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const status = await fetchCredits(client);
+    const url = upgradeUrlFor(status, config.apiUrl, plan);
+    if (globals.json) {
+      printJSON({ plan, url, credits: creditsSummary(status) });
+    } else {
+      const offer = status?.plans.find((p) => p.id === plan);
+      process.stdout.write(
+        `Open this link to upgrade to ${plan === "pro" ? "Pro" : "Max"}` +
+          (offer ? ` ($${offer.priceUsd}/mo, $${offer.creditsUsd.toLocaleString("en-US")} in credits every month)` : "") +
+          `:\n\n  ${url}\n\nCheckout completes in the browser; the CLI resumes working as soon as the plan is active.\n`,
+      );
+    }
+    return;
+  }
+
   if (command === "init") {
     const spa = flag(args, "--spa");
     const agentOnly = flag(args, "--agent-only");
@@ -1362,7 +1409,17 @@ export async function runCommand(
       globals.verbose === true,
       globals.idempotencyKey,
     );
-    if (globals.json) printJSON(result);
+    const credits = await fetchCredits(client);
+    if (globals.json) {
+      const summary = creditsSummary(credits);
+      printJSON(
+        summary
+          ? { ...(result as Record<string, unknown>), credits: summary }
+          : result,
+      );
+    } else {
+      process.stderr.write(creditsFooter(credits));
+    }
     return;
   }
 
@@ -2595,12 +2652,16 @@ export async function runCommand(
     const session = parseSessionCommand(args);
     const sessionArgs = session.args;
     if (session.action === "list") {
-      const cursor = option(sessionArgs, "--cursor");
+      const filters = parseSessionListOptions(sessionArgs);
       if (sessionArgs.length)
         throw new Error(`Unexpected argument: ${sessionArgs[0]}`);
-      // One page of rows, newest created first. The page carries the
-      // cursor of the next one; `--cursor` continues from it.
-      const page = await client.sessions(cursor ? { cursor } : {});
+      // One page of rows, newest created first, narrowed by the exact
+      // filters. The page carries the cursor of the next one; `--cursor`
+      // continues from it with the same filters.
+      const page = await client.sessions({
+        ...filters,
+        ...(session.agent ? { agent: session.agent } : {}),
+      });
       if (globals.json) printJSON(page);
       else if (!page.sessions.length) process.stdout.write("No sessions.\n");
       else {

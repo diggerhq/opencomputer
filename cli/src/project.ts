@@ -93,6 +93,9 @@ export interface GitHubConnectionManifest {
   };
 }
 
+/** The platform's question tool. Selected with useTool("ask"); no defined tool may take the id. */
+const ASK_TOOL = "ask";
+
 export interface McpServerManifest {
   id: string;
   url: string;
@@ -502,10 +505,10 @@ export default function Agent() {
           deploy: "opencomputer deploy",
         },
         dependencies: {
-          "@opencomputer/agent": "^0.6.0",
+          "@opencomputer/agent": "^0.8.0",
           ...(spa
             ? {
-                "@opencomputer/react": "^0.2.0",
+                "@opencomputer/react": "^0.4.0",
                 react: "^19.2.0",
                 "react-dom": "^19.2.0",
               }
@@ -3190,6 +3193,7 @@ export const githubApp = (options) => {
   }
   return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
 };
+export const ASK_TOOL = "ask";
 export const callService = async (request) => {
   const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
   const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
@@ -3300,6 +3304,7 @@ export const defineMcpServer = (input) => {
 export const defineTool = (input) => {
   const toolId = id(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
+  if (toolId === ASK_TOOL) throw new Error("Tool id " + JSON.stringify(ASK_TOOL) + " is the platform's question tool; select it with useTool(" + JSON.stringify(ASK_TOOL) + ") and rename this tool");
   if (!String(input.description).trim()) throw new Error("defineTool requires a non-empty description");
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
@@ -3398,7 +3403,6 @@ export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useConnection = (connection) => hooks().useConnection(connection);
 export const useService = (service) => hooks().useService?.(service);
-export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
 `;
@@ -3663,6 +3667,14 @@ the product or support surface presented to users.
       candidate.path,
       sourceResolver,
     );
+    // `ask` is the platform's question tool: the host registers it, and a
+    // defined tool of the same id would leave the model two tools under one
+    // name. defineTool() refuses it at load too; this fails the build first.
+    if (defined.some((tool) => tool.id === ASK_TOOL)) {
+      throw new Error(
+        `${candidate.path} defineTool(${JSON.stringify(ASK_TOOL)}): ${JSON.stringify(ASK_TOOL)} is the platform's question tool; select it with useTool(${JSON.stringify(ASK_TOOL)}) and rename this tool`,
+      );
+    }
     if (defined.length > 0) {
       reactiveTools.push(...defined.map((tool) => tool.id));
       gatedTools.push(
@@ -3772,7 +3784,13 @@ the product or support surface presented to users.
   );
   const declaredMemory = new Set(memory.map((declaration) => declaration.id));
   const tools = [
-    ...new Set([...reactiveTools, ...literalHookIds(agentSource, "useTool")]),
+    ...new Set([
+      ...reactiveTools,
+      ...literalHookIds(agentSource, "useTool"),
+      // useTool(ASK_TOOL), the exported constant, selects the same tool as
+      // useTool("ask"); no defineTool() exists for it.
+      ...(/\buseTool\(\s*ASK_TOOL\s*\)/.test(agentSource) ? [ASK_TOOL] : []),
+    ]),
   ].sort();
   for (const id of literalHookIds(agentSource, "useMemory")) {
     if (!declaredMemory.has(id)) {
@@ -3804,7 +3822,6 @@ the product or support surface presented to users.
         // The result tool and the schema the host validates its output
         // against before committing it as the session's result.
         ...(resultTool ? { resultTool } : {}),
-        subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
         // reads one list, and a provider grant absent from it makes every
         // connected mailbox invisible to listServices().

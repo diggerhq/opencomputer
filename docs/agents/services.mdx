@@ -215,6 +215,22 @@ Linear may report GraphQL errors in a successful HTTP response, so check both
 `response.ok` and `errors`. The Linear connection accepts only `POST /graphql`;
 other paths and methods fail at the broker.
 
+### Linear in sessions started from Linear
+
+Which credential a call uses follows who owns the session. In a session
+someone started, `service: "linear"` uses a Linear account connected as
+above. In a session started from a [Linear agent connection](/agents/linear),
+the session belongs to the connection, and `service: "linear"` resolves to
+that connection's own Linear app: the call acts as the agent, under the name
+people delegate to, with the app's token attached by the platform.
+
+- No person's connected Linear account is used in those sessions, and there
+  is no fallback to one; a `label` is ignored.
+- The deployment must declare `useService("linear")`.
+- Only `POST /graphql` is accepted, as everywhere.
+
+The agent's code is the same in both kinds of session.
+
 ## 4. Several accounts
 
 Accounts are connected and disconnected long after the artifact is built, so
