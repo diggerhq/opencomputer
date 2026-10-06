@@ -20,7 +20,7 @@ design: .agents/design/signup-attribution.md
       "attempt": 2,
       "sessionId": "1cb61bdf-43b5-a73a-92e5-b1aa84d8e3ce",
       "branch": "agent/signup-attribution--edge",
-      "state": "landed"
+      "state": "merged"
     },
     {
       "stream": "web",
