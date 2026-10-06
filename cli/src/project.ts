@@ -3410,7 +3410,6 @@ export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
 export const useConnection = (connection) => hooks().useConnection(connection);
 export const useService = (service) => hooks().useService?.(service);
-export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
 `;
@@ -3830,7 +3829,6 @@ the product or support surface presented to users.
         // The result tool and the schema the host validates its output
         // against before committing it as the session's result.
         ...(resultTool ? { resultTool } : {}),
-        subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
         // reads one list, and a provider grant absent from it makes every
         // connected mailbox invisible to listServices().

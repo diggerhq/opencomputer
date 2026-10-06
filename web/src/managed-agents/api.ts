@@ -639,7 +639,7 @@ const renderDebugSchema = z.object({
   instructionsHash: z.string(),
   instructions: z.string(),
   enabledTools: z.array(z.string()),
-  enabledSubagents: z.array(z.string()),
+  enabledSubagents: z.array(z.string()).optional(),
   requiredConnections: z.array(z.string()),
   enabledMcpServers: z.array(z.string()),
   input: z.object({ source: z.string(), text: z.string().optional() }),
@@ -2160,6 +2160,14 @@ export function managedAgentModelRoute(event: ManagedAgentEvent) {
   if (event.type !== 'model.route_resolved') return undefined
   const parsed = modelRouteSchema.safeParse(event.data)
   return parsed.success ? parsed.data : undefined
+}
+
+export function latestManagedAgentModelRoute(events: ManagedAgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const route = managedAgentModelRoute(events[index])
+    if (route) return route
+  }
+  return undefined
 }
 
 export async function getManagedAgentSession(sessionId: string) {

@@ -61,6 +61,7 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   getManagedAgentSessionsPage,
+  latestManagedAgentModelRoute,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -339,6 +340,7 @@ function PlaygroundChat({
     debugEvents.data ?? events,
     agentWorking,
   )
+  const modelRoute = latestManagedAgentModelRoute(inspectorEvents)
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -413,12 +415,22 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {agentWorking ? (
-            <div className="text-muted-foreground flex items-center gap-2 text-xs">
-              <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
-              Agent is working
-            </div>
-          ) : null}
+          <div className="flex items-center gap-3">
+            {modelRoute?.effective ? (
+              <span
+                className="text-muted-foreground font-mono text-[10px]"
+                title="Effective model resolved for this session"
+              >
+                {modelRoute.effective.provider}/{modelRoute.effective.model}
+              </span>
+            ) : null}
+            {agentWorking ? (
+              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+                <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
+                Agent is working
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div

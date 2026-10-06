@@ -9,6 +9,7 @@ import {
   listManagedLinearConnections,
   setManagedLinearCredentials,
   fetchManagedAgentWorkspaceObject,
+  latestManagedAgentModelRoute,
   managedAgentModelRoute,
   managedAgentRenderDebug,
 } from './api'
@@ -147,6 +148,41 @@ describe('managedAgentModelRoute', () => {
     expect(
       managedAgentModelRoute({ ...event, type: 'agent.rendered' }),
     ).toBeUndefined()
+  })
+
+  it('returns the most recent route for latestManagedAgentModelRoute', () => {
+    const routeEvent = (seq: number, model: string) => ({
+      id: `event-${seq}`,
+      seq,
+      timestamp: '2026-08-24T00:00:00.000Z',
+      sessionId: 'session-1',
+      type: 'model.route_resolved',
+      data: {
+        requested: { provider: 'openrouter', model },
+        effective: { provider: 'openrouter', model },
+        runtime: 'workerd',
+        access: { type: 'managed' },
+        openComputerModelChargeUsd: null,
+      },
+    })
+    const other = {
+      id: 'event-3',
+      seq: 3,
+      timestamp: '2026-08-24T00:00:00.000Z',
+      sessionId: 'session-1',
+      type: 'runtime.log',
+      data: { message: 'hi' },
+    }
+
+    expect(
+      latestManagedAgentModelRoute([
+        routeEvent(1, 'anthropic/claude-sonnet-4.5'),
+        other,
+        routeEvent(4, 'anthropic/claude-sonnet-4.6'),
+      ])?.effective?.model,
+    ).toBe('anthropic/claude-sonnet-4.6')
+    expect(latestManagedAgentModelRoute([other])).toBeUndefined()
+    expect(latestManagedAgentModelRoute([])).toBeUndefined()
   })
 })
 
