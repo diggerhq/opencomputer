@@ -15,6 +15,7 @@ import {
   DefaultErrorFallback,
 } from './components/error-boundary'
 import { reloadForStaleChunk } from './lib/chunk-reload'
+import { recordTouch } from './lib/attribution'
 import { ME_QUERY_KEY } from './hooks/useAuth'
 import { ApiError } from './api/errors'
 import './index.css'
@@ -42,6 +43,15 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+// Sign-up attribution: record this landing's source into the shared `oc_attr`
+// cookie once, on first load, before PostHog starts. Best-effort — attribution
+// must never break the dashboard.
+try {
+  recordTouch()
+} catch {
+  // ignore
+}
 
 const PH_TOKEN = import.meta.env.VITE_PUBLIC_POSTHOG_PROJECT_TOKEN
 const PH_HOST = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
