@@ -20,7 +20,7 @@ design: .agents/design/signup-attribution.md
       "attempt": 2,
       "sessionId": "1cb61bdf-43b5-a73a-92e5-b1aa84d8e3ce",
       "branch": "agent/signup-attribution--edge",
-      "state": "running"
+      "state": "landed"
     },
     {
       "stream": "web",
@@ -78,7 +78,7 @@ Done when:
   same table; wrangler files document the three new vars in the existing comment style.
 - Existing tests still pass.
 
-Checks: `cd cloudflare-workers/api-edge && npm ci && npx vitest run`
+Checks: `cd cloudflare-workers/api-edge && NODE_ENV=development npm ci && npx vitest run`
 
 Depends on: nothing (contract C1 is in the design).
 
@@ -100,7 +100,8 @@ Done when:
 
 Checks: `cd web && npm ci && npm run typecheck && npm run lint && npm test`
 
-Depends on: nothing.
+Depends on: nothing. **After landing, the lead compares it with the edge's C1 choices
+(build record, edge@2 amendments) and re-dispatches `web@2` to align if it diverges.**
 
 ## Order
 
@@ -124,8 +125,26 @@ Read `kevin-state`, then `where_are_we` for this thread.
 
 - 2026-10-06 — `edge@1` **blocked**, nothing landed: the implementer's sandbox shell returned
   `ThrottlingException: Rate exceeded` on every command (5 attempts, including `true`); no clone,
-  no branch, no checks. Lead's shell works again → re-dispatched as `edge@2` from
-  `agent/signup-attribution` (branch `agent/signup-attribution--edge` did not exist).
+  no branch, no checks. Lead's shell works again → re-dispatched as `edge@2`.
+- 2026-10-06 — `edge@2` **landed** on `agent/signup-attribution--edge`: 8147938 (migration 0010 +
+  snapshot), a823bda (record attribution on user creation and `/auth/login`), 2ccc274 (Worker var
+  docs). Checks pass: 19 files / 327 tests (25 new in `attribution.test.ts`), `tsc --noEmit` clean.
+  Amendments reported (contract choices the design left open — the C1 ones bind the `web` stream):
+  - Checks need `NODE_ENV=development` (sandbox exports production; `npm ci` then drops vitest). Plan updated.
+  - `ctx` rides inside the 6th param `SignupAttributionContext {cookie, req, ctx?}` rather than a
+    7th param; `authCallback`/`authCLIExchange` take `ctx` from the fetch handler. **Accepted.**
+  - C1: `ref` is `null` for internal or unparseable referrers.
+  - C1: `gclid`/`fbclid` trimmed, ≤100 chars, **not** lowercased (case-sensitive ids).
+  - C1: 2 KB cap applies to the full `oc_attr=<urlencoded>` string; over it, slim `lt`, then `ft`
+    (drop term/cnt/lp, cut ref to host), then drop `lt`; `ft` always keeps t/src/med/cmp.
+  - C1: "external = host not ending in opencomputer.dev" applied literally; on dev hosts a same-host
+    referrer counts as a touch. Prod unaffected; left as is.
+  - C4: `utm_source` matches the host table by name or host-without-.com; referrer hosts match search
+    engines on any DNS label (`www.google.co.uk`), social on equal-or-subdomain. A `src` not in the
+    table with no `ref` → `other` (src check precedes ref check).
+  - C5: PostHog/Plausible props use the first touch (fallback last), the same touch that decides the
+    channel; `gclid`/`fbclid` columns likewise. Plausible XFF falls back to `CF-Connecting-IP`.
+  - Insert is `ON CONFLICT(user_id) DO NOTHING`; CLI ignores any cookie; a failed insert skips emits.
 - `web@1` running.
 
 ## Prompts
