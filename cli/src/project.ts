@@ -3552,6 +3552,10 @@ the product or support surface presented to users.
   issue trackers, or support channels.
 - Use the question tool when structured clarification is useful. OpenComputer
   delivers it through the current chat and resumes when the user replies.
+- Clone repositories and do file-heavy scratch work under \`repos/\` — that
+  path is backed by fast local disk. The rest of the workspace is a network
+  filesystem, slow for builds and file trees; keep only finished artifacts
+  there.
 
 `,
   );
