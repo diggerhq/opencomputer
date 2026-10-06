@@ -307,9 +307,10 @@ question; the turn that interprets the answer may ask again.
 
 How the question reaches a person depends on where the session lives: an
 application answers it through the [API](/agents/api#turns) or the
-[React hook](/agents/react#answer-a-question), and a
-[Linear](/agents/linear#ask-before-acting) session shows it in the thread with
-the options as buttons.
+[React hook](/agents/react#answer-a-question); a
+[Slack](/agents/slack#questions) or [Linear](/agents/linear#ask-before-acting)
+session shows it in the thread with the options as buttons, and a click or a
+typed reply answers it.
 
 `ask` records that the agent asked. It does not undo or forbid anything the
 turn did before asking. A turn meant only to propose should select `ask` and
