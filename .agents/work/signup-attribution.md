@@ -13,7 +13,23 @@ design: .agents/design/signup-attribution.md
   "version": 2,
   "leadSessionId": "ses_eecc59d7bffd4gjXixa38bDjNW",
   "threadId": "1791323950.009919",
-  "streams": []
+  "subscriptionId": "evs_0b56c81ad9024838acb5dd2772c41f69",
+  "streams": [
+    {
+      "stream": "edge",
+      "attempt": 1,
+      "sessionId": "1327b8af-5328-d68a-ca61-d0485470eb50",
+      "branch": "agent/signup-attribution--edge",
+      "state": "running"
+    },
+    {
+      "stream": "web",
+      "attempt": 1,
+      "sessionId": "5a71358a-0bac-fc3e-bb93-70cb9195dea4",
+      "branch": "agent/signup-attribution--web",
+      "state": "running"
+    }
+  ]
 }
 ```
 
