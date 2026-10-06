@@ -27,7 +27,7 @@ design: .agents/design/signup-attribution.md
       "attempt": 2,
       "sessionId": "6a5a5a53-380a-10bc-6aea-4996586301d3",
       "branch": "agent/signup-attribution--web",
-      "state": "landed"
+      "state": "merged"
     }
   ]
 }
