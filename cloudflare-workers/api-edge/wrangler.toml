@@ -161,6 +161,15 @@ deleted_classes = ["VmSession"]
 # over the already-shared SESSION_JWT_SECRET (minted by the CP, re-derived here).
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
+#   Sign-up attribution (src/attribution.ts) — each emit is skipped while its var
+#   is unset; the D1 signup_attribution row is written either way:
+#   POSTHOG_PROJECT_TOKEN — PostHog project API key (phc_…, the same public token
+#                            web/ initialises posthog-js with); server-side
+#                            `signed_up` capture on each new user.
+#   POSTHOG_HOST           — PostHog ingest host (default https://us.i.posthog.com).
+#   PLAUSIBLE_DOMAIN       — Plausible site domain (opencomputer.dev) for the
+#                            server-side `Signup` goal. The site must NOT also fire
+#                            `Signup`, or Plausible double counts.
 
 # Edge-native autumn billing: every 5 min, meter autumn orgs' usage_samples to
 # Autumn + halt on exhaustion (src/autumn_meter.ts). One place, not per-cell.
