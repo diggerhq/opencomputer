@@ -19,7 +19,8 @@ vi.mock('./api', () => api)
 vi.mock('./authorization-window', () => authorization)
 
 const { ManagedProjectGitHub } = await import('./GitHub')
-const { githubConnectionLabel } = await import('./github-connection')
+const { githubConnectionDetails, githubConnectionLabel } =
+  await import('./github-connection')
 
 async function settle(until: () => boolean, label: string) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -109,13 +110,16 @@ describe('ManagedProjectGitHub', () => {
     })
   })
 
-  it('distinguishes installations for the same GitHub account', () => {
-    expect(
-      githubConnectionLabel({
-        accountLogin: 'diggerhq',
-        githubInstallationId: 164620985,
-        repositorySelection: 'selected',
-      }),
-    ).toBe('diggerhq · installation 164620985 · selected repositories')
+  it('keeps installation metadata secondary to the account name', () => {
+    const connection = {
+      accountLogin: 'diggerhq',
+      githubInstallationId: 164620985,
+      repositorySelection: 'selected' as const,
+    }
+
+    expect(githubConnectionLabel(connection)).toBe('diggerhq')
+    expect(githubConnectionDetails(connection)).toBe(
+      'Selected repositories · Installation 164620985',
+    )
   })
 })
