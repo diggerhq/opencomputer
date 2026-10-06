@@ -57,6 +57,7 @@ import {
 } from "./create_context_cache";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
+import { loginAttributionSetCookie, recordSignupAttribution, type AttributionEnv } from "./attribution";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
   receiveAgentSecurityNotification,
@@ -94,7 +95,7 @@ import {
   proxyManagedAgents,
 } from "./managed_agents";
 
-export interface Env extends DashboardEnv, AgentFeedbackEnv {
+export interface Env extends DashboardEnv, AgentFeedbackEnv, AttributionEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -3768,7 +3769,16 @@ async function authLogin(req: Request, env: Env): Promise<Response> {
   // a /do?action=… deferred action). Only same-origin paths survive validation.
   const returnTo = safeReturnTo(reqURL.searchParams.get("returnTo"));
   if (returnTo) authURL.searchParams.set("state", JSON.stringify({ returnTo }));
-  return Response.redirect(authURL.toString(), 302);
+  // Sign-up attribution (C3): a deep link straight to /auth/login with utm_*
+  // or an external Referer never renders the SPA, so record its touch here.
+  const headers = new Headers({ location: authURL.toString() });
+  try {
+    const attrCookie = loginAttributionSetCookie(req, Math.floor(Date.now() / 1000));
+    if (attrCookie) headers.append("set-cookie", attrCookie);
+  } catch {
+    // Attribution must never break login.
+  }
+  return new Response(null, { status: 302, headers });
 }
 
 /**
@@ -3814,6 +3824,18 @@ export async function acceptPendingInvitations(
 }
 
 /**
+ * Sign-up attribution context for provisionWorkOSIdentity. The browser
+ * callback passes its Cookie header (carrying `oc_attr`); the CLI exchange
+ * passes `cookie: null`. `ctx` keeps the analytics emits alive past the
+ * response (see recordSignupAttribution).
+ */
+interface SignupAttributionContext {
+  cookie: string | null;
+  req: Request;
+  ctx?: ExecutionContext;
+}
+
+/**
  * Upserts the WorkOS user and guarantees at least one local membership.
  * Browser login deliberately preserves its historical "first membership"
  * selection; CLI login uses the deterministic policy in work 031 §3.2.
@@ -3824,6 +3846,7 @@ async function provisionWorkOSIdentity(
   profile: WorkOSProfile,
   workosOrgID: string | undefined,
   selection: IdentitySelection,
+  attribution: SignupAttributionContext,
 ): Promise<ProvisionedIdentity> {
   const nowSec = Math.floor(Date.now() / 1000);
   const displayName =
@@ -3835,9 +3858,12 @@ async function provisionWorkOSIdentity(
     .bind(profile.id)
     .first<{ id: string; email: string; name: string | null }>();
 
+  // True only when this call actually created the user row. `!userRow` alone
+  // is not enough: the email-conflict upsert below re-links an existing user.
+  let createdUser = false;
   if (!userRow) {
     const candidateID = crypto.randomUUID();
-    await env.OPENCOMPUTER_DB.prepare(
+    const inserted = await env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO users (
          id,
          email,
@@ -3859,6 +3885,7 @@ async function provisionWorkOSIdentity(
       .bind(profile.id)
       .first<{ id: string; email: string; name: string | null }>();
     if (!userRow) throw new Error("workos user upsert did not resolve");
+    createdUser = inserted?.meta?.changes === 1 && userRow.id === candidateID;
   }
 
   const userID = userRow.id;
@@ -3973,6 +4000,21 @@ async function provisionWorkOSIdentity(
   // first-time invitee ends up with both orgs. Browser login lands in the
   // invited team; CLI login re-runs its deterministic selection policy.
   const invitedOrgID = await acceptPendingInvitations(env, userID, profile.email, nowSec);
+  if (createdUser) {
+    // Best-effort: recordSignupAttribution never throws, the guard is belt
+    // and braces so attribution can never fail a login.
+    try {
+      await recordSignupAttribution(env, attribution.ctx, {
+        userID,
+        entry: invitedOrgID ? "invite" : selection,
+        cookie: attribution.cookie,
+        req: attribution.req,
+        nowSec,
+      });
+    } catch {
+      console.error(`signup attribution: failed for ${userID}`);
+    }
+  }
   if (invitedOrgID) {
     if (selection === "browser") {
       orgRow = (await selectMembershipByOrg(invitedOrgID)) ?? orgRow;
@@ -3995,7 +4037,7 @@ async function provisionWorkOSIdentity(
   };
 }
 
-async function authCallback(req: Request, env: Env): Promise<Response> {
+async function authCallback(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const reqURL = new URL(req.url);
   const code = reqURL.searchParams.get("code");
   if (!code) return json({ error: "missing code" }, 400);
@@ -4027,6 +4069,7 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
     profile,
     tokenBody.organization_id ?? profile.organization_id,
     "browser",
+    { cookie: req.headers.get("cookie"), req, ctx },
   );
 
   // Mint session JWT — same signing secret as cap-token but a different
@@ -4377,7 +4420,7 @@ function providerErrorCode(body: Record<string, unknown> | null): string {
   return typeof body?.error === "string" ? body.error : "";
 }
 
-async function authCLIExchange(req: Request, env: Env): Promise<Response> {
+async function authCLIExchange(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const requestID = crypto.randomUUID();
   const startedAt = Date.now();
   const finish = (
@@ -4501,7 +4544,7 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
 
   let identity: ProvisionedIdentity;
   try {
-    identity = await provisionWorkOSIdentity(req, env, typedProfile, workosOrgID, "cli");
+    identity = await provisionWorkOSIdentity(req, env, typedProfile, workosOrgID, "cli", { cookie: null, req, ctx });
   } catch {
     return finish(cliAuthError("account_provisioning_unavailable", 503), "provisioning_error");
   }
@@ -5516,7 +5559,7 @@ export default {
       return authCLIStart(req, env);
     }
     if (path === "/auth/cli/device/exchange") {
-      return authCLIExchange(req, env);
+      return authCLIExchange(req, env, ctx);
     }
     if (path === "/auth/cli/credential") {
       return authCLIRevoke(req, env);
@@ -5524,7 +5567,7 @@ export default {
 
     // Browser auth flow.
     if (path === "/auth/login")    { if (req.method === "GET")  return authLogin(req, env); }
-    if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env); }
+    if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
     if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 
