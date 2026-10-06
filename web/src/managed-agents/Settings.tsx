@@ -21,6 +21,7 @@ import {
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { notifyError, notifySuccess } from '@/lib/errors'
@@ -98,6 +99,8 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
   const [pickedConnectionId, setConnectionId] = useState('')
   const [pickedRepository, setRepositoryFullName] = useState('')
   const [pickedBranch, setBranch] = useState('')
+  // null = untouched (derive from the saved source); '' = user cleared it.
+  const [pickedPath, setPath] = useState<string | null>(null)
   const [previewsEnabled, setPreviewsEnabled] = useState(true)
   const [addingConnection, setAddingConnection] = useState(false)
 
@@ -134,6 +137,11 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
       ? source?.branch
       : selectedRepository?.defaultBranch) ||
     ''
+  const path =
+    pickedPath ??
+    (selectedRepository && selectedRepository === savedRepository
+      ? (source?.path ?? '')
+      : '')
 
   const branches = useQuery({
     queryKey: [
@@ -163,6 +171,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
           fullName: selectedRepository.fullName,
         },
         branch,
+        path: path.trim() || null,
         previewsEnabled,
       })
     },
@@ -270,6 +279,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                 <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
                   <GitBranch className="size-3.5" />
                   {source.branch}
+                  {source.path ? ` in ${source.path}` : ''}
                   {' · '}
                   {source.previewsEnabled
                     ? 'PR previews on'
@@ -307,6 +317,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                     setConnectionId('')
                     setRepositoryFullName('')
                     setBranch('')
+                    setPath(null)
                     setPreviewsEnabled(source.previewsEnabled)
                     setEditing(true)
                   }}
@@ -439,6 +450,17 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                     <option value={branch}>{branch || 'No branches'}</option>
                   )}
                 </select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="deployment-source-path">
+                  Directory <span className="text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                  id="deployment-source-path"
+                  value={path}
+                  placeholder="Repository root"
+                  onChange={(event) => setPath(event.target.value)}
+                />
               </div>
               <div className="flex items-center gap-3 self-end pb-2">
                 <Switch

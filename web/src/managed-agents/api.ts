@@ -1098,6 +1098,7 @@ const deploymentSourceSchema = z.object({
     url: z.string(),
   }),
   branch: z.string(),
+  path: z.string().nullable(),
   previewsEnabled: z.boolean(),
   connection: z
     .object({
@@ -1152,6 +1153,7 @@ export async function setManagedDeploymentSource(input: {
   connectionId: string
   repository: { id: number; fullName: string }
   branch: string
+  path?: string | null
   previewsEnabled: boolean
 }) {
   const { projectId, ...body } = input
