@@ -110,14 +110,55 @@ describe('computeTouch', () => {
     ).toEqual(touch())
   })
 
-  it('keeps an internal referrer on a tagged touch', () => {
+  it('leaves ref null for an internal referrer on a tagged touch', () => {
     expect(
       computeTouch(
         'https://app.opencomputer.dev/?utm_source=newsletter',
         'https://opencomputer.dev/blog/post?ref=1',
         NOW,
       ),
-    ).toEqual(touch({ src: 'newsletter', ref: 'opencomputer.dev/blog/post' }))
+    ).toEqual(touch({ src: 'newsletter' }))
+    expect(
+      computeTouch(
+        'https://app.opencomputer.dev/?utm_source=newsletter',
+        'https://WWW.OpenComputer.dev/',
+        NOW,
+      ),
+    ).toEqual(touch({ src: 'newsletter' }))
+  })
+
+  it('leaves ref null for an absent or unparseable referrer on a tagged touch', () => {
+    expect(
+      computeTouch('https://app.opencomputer.dev/?utm_source=x', '', NOW),
+    ).toEqual(touch({ src: 'x' }))
+    expect(
+      computeTouch(
+        'https://app.opencomputer.dev/?utm_source=x',
+        'not a url',
+        NOW,
+      ),
+    ).toEqual(touch({ src: 'x' }))
+  })
+
+  it('keeps the port of an external referrer', () => {
+    expect(
+      computeTouch(
+        'https://app.opencomputer.dev/',
+        'http://localhost:5173/a?b=1#c',
+        NOW,
+      ),
+    ).toEqual(touch({ ref: 'localhost:5173/a' }))
+  })
+
+  it('trims click ids, keeps their case and cuts them to 100 characters', () => {
+    const long = 'Ab'.repeat(80)
+    const result = computeTouch(
+      `https://app.opencomputer.dev/?gclid=%20${long}%20&fbclid=${long}`,
+      '',
+      NOW,
+    )!
+    expect(result.gclid).toBe(long.slice(0, 100))
+    expect(result.fbclid).toBe(long.slice(0, 100))
   })
 
   it('caps utm fields at 100 and urls at 200 characters', () => {
@@ -132,9 +173,18 @@ describe('computeTouch', () => {
     expect(result.lp).toHaveLength(200)
   })
 
-  it('treats empty parameters as absent', () => {
+  it('treats an empty utm_* key as a touch with a null field', () => {
     expect(
       computeTouch('https://app.opencomputer.dev/?utm_source=%20', '', NOW),
+    ).toEqual(touch())
+    expect(
+      computeTouch('https://app.opencomputer.dev/?utm_medium=', '', NOW),
+    ).toEqual(touch())
+  })
+
+  it('treats empty click ids as absent', () => {
+    expect(
+      computeTouch('https://app.opencomputer.dev/?gclid=%20&fbclid=', '', NOW),
     ).toBeNull()
   })
 
@@ -179,13 +229,14 @@ describe('mergeCookie', () => {
     ['bad encoding', '%E0%A4%A'],
     ['wrong version', encodeURIComponent('{"v":2,"ft":{},"lt":{}}')],
     ['missing ft', encodeURIComponent('{"v":1,"lt":{"t":1}}')],
+    ['not an object', encodeURIComponent('[1]')],
     [
-      'bad field type',
+      'non-finite t',
       encodeURIComponent(
         JSON.stringify({
           v: 1,
-          ft: touch({ src: 5 as unknown as string }),
-          lt: touch(),
+          ft: { ...touch(), t: 'x' },
+          lt: { ...touch(), t: null },
         }),
       ),
     ],
@@ -204,6 +255,98 @@ describe('mergeCookie', () => {
       JSON.stringify({ v: 1, ft: { ...touch(), extra: 'x' }, lt: touch() }),
     )
     expect(parseCookie(mergeCookie(existing, touch()))?.ft).toEqual(touch())
+  })
+
+  it('cuts stored string fields to their caps and nulls non-strings', () => {
+    const existing = encodeURIComponent(
+      JSON.stringify({
+        v: 1,
+        ft: {
+          ...touch(),
+          t: 1_790_000_000.9,
+          src: 'S'.repeat(150),
+          ref: 'r'.repeat(250),
+          gclid: 'G'.repeat(150),
+          med: 5,
+        },
+        lt: touch(),
+      }),
+    )
+    expect(parseCookie(existing)?.ft).toEqual(
+      touch({
+        src: 'S'.repeat(100),
+        ref: 'r'.repeat(200),
+        gclid: 'G'.repeat(100),
+      }),
+    )
+  })
+})
+
+describe('mergeCookie size cap', () => {
+  const big = (t: number, tag: string): Touch => ({
+    t,
+    src: tag.repeat(100),
+    med: 'm'.repeat(100),
+    cmp: 'c'.repeat(100),
+    term: '€'.repeat(100),
+    cnt: '€'.repeat(100),
+    ref: 'ref.example/' + '€'.repeat(188),
+    lp: 'app.opencomputer.dev/' + '€'.repeat(179),
+    gclid: 'g'.repeat(100),
+    fbclid: 'f'.repeat(100),
+  })
+  const slimmed = (t: Touch): Touch => ({
+    ...t,
+    term: null,
+    cnt: null,
+    lp: null,
+    ref: t.ref === null ? null : t.ref.split('/')[0],
+  })
+  const fitsCap = (raw: string) =>
+    new TextEncoder().encode(`oc_attr=${raw}`).length <= 2048
+
+  it('leaves a cookie under the cap untouched', () => {
+    const first = touch({ src: 'twitter', term: 'x', cnt: 'y' })
+    const raw = mergeCookie(null, first)
+    expect(fitsCap(raw)).toBe(true)
+    expect(decode(raw)).toEqual({ v: 1, ft: first, lt: first })
+  })
+
+  it('slims lt first', () => {
+    const first = touch({ src: 'twitter', ref: 't.co/abc' })
+    const next = big(1_790_000_100, 'n')
+    const raw = mergeCookie(mergeCookie(null, first), next)
+    expect(fitsCap(raw)).toBe(true)
+    expect(decode(raw)).toEqual({ v: 1, ft: first, lt: slimmed(next) })
+  })
+
+  it('then slims ft, keeping its t/src/med/cmp', () => {
+    const first = big(1_790_000_000, 'f')
+    const next = big(1_790_000_100, 'n')
+    const raw = mergeCookie(mergeCookie(null, first), next)
+    expect(fitsCap(raw)).toBe(true)
+    expect(decode(raw)).toEqual({
+      v: 1,
+      ft: slimmed(first),
+      lt: slimmed(next),
+    })
+  })
+
+  it('then drops lt', () => {
+    // A host-only ref survives slimming, so two slimmed touches overflow.
+    const host = '€'.repeat(80)
+    const first = { ...big(1_790_000_000, 'f'), ref: host }
+    const next = { ...big(1_790_000_100, 'n'), ref: host }
+    const raw = mergeCookie(mergeCookie(null, first), next)
+    expect(fitsCap(raw)).toBe(true)
+    expect(decode(raw)).toEqual({ v: 1, ft: slimmed(first), lt: null })
+    const kept = (decode(raw) as { ft: Touch }).ft
+    expect([kept.t, kept.src, kept.med, kept.cmp]).toEqual([
+      first.t,
+      first.src,
+      first.med,
+      first.cmp,
+    ])
   })
 })
 
