@@ -20,7 +20,7 @@ design: .agents/design/signup-attribution.md
       "attempt": 1,
       "sessionId": "1327b8af-5328-d68a-ca61-d0485470eb50",
       "branch": "agent/signup-attribution--edge",
-      "state": "running"
+      "state": "blocked"
     },
     {
       "stream": "web",
@@ -122,8 +122,13 @@ Read `kevin-state`, then `where_are_we` for this thread.
 
 ## Build record
 
-(empty)
+- 2026-10-06 — `edge@1` **blocked**, nothing landed: the implementer's sandbox shell returned
+  `ThrottlingException: Rate exceeded` on every command (5 attempts, including `true`); no clone,
+  no branch, no checks. Lead's shell works again → re-dispatched as `edge@2` from
+  `agent/signup-attribution` (branch `agent/signup-attribution--edge` did not exist).
+- `web@1` running.
 
 ## Prompts
 
 - "plausible exists on the site you just cant see it because you dont have access to it, but yes go ahead, just let me know once you're done what needs to be done to the site" → decisions 1a 2b 3a 4a 5a 6a 7a; this plan v2
+- "go" → dispatch `edge@1`, `web@1` (7c3d251)
