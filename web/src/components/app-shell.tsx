@@ -1,4 +1,4 @@
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import {
   Link,
   NavLink,
@@ -31,7 +31,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { getAutumnBilling, logout } from '@/api/client'
+import { logout } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -48,13 +48,27 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { ThemeToggle } from '@/components/theme-toggle'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
+import { useCreditState } from '@/hooks/useCreditState'
+import {
+  BASE_GRANT_CENTS,
+  PLAN_OFFERS,
+  billingOnrampV2Enabled,
+  formatUsd,
+  trackUpsellClicked,
+  trackUpsellShown,
+  upgradeHref,
+} from '@/lib/billing-onramp'
 import { getManagedProject } from '@/managed-agents/api'
 import {
+  projectEnvironmentMode,
   projectEnvironmentSearch,
+  resolveProjectEnvironment,
   type ProjectEnvironment,
+  type ProjectEnvironmentMode,
 } from '@/managed-agents/project-context'
 import { managedAgentsNav, type NavGroup } from './app-shell-nav'
 
@@ -147,10 +161,12 @@ function projectIdFromPath(pathname: string): string | undefined {
 
 function ManagedProjectContext({
   projectName,
+  mode,
   environment,
   onChange,
 }: {
   projectName?: string
+  mode: ProjectEnvironmentMode
   environment: ProjectEnvironment
   onChange: (environment: ProjectEnvironment) => void
 }) {
@@ -159,6 +175,15 @@ function ManagedProjectContext({
       <div className="text-muted-foreground flex min-w-0 items-center gap-2 font-mono text-sm">
         <span className="text-muted-foreground/50">/</span>
         <span>Loading project…</span>
+      </div>
+    )
+  }
+  // A single-mode project has one scope, so there is nothing to switch.
+  if (mode === 'single') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 font-mono text-sm">
+        <span className="text-muted-foreground/50">/</span>
+        <span className="truncate font-medium">{projectName}</span>
       </div>
     )
   }
@@ -405,6 +430,8 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
+      <SidebarCreditMeter onNavigate={onNavigate} />
+
       <div className="border-t p-3">
         {managedAgentsExperimentEnabled ? (
           <ManagedProfileMenu onNavigate={onNavigate} />
@@ -433,33 +460,178 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
-// Org-wide halt notice. Prepaid (autumn) orgs that exhaust credits get halted
+// Always-visible balance for prepaid orgs that haven't subscribed yet, so the
+// first "you should pay" moment isn't the hard stop. Paid plans and legacy
+// orgs (404 on /billing/autumn) render nothing.
+function SidebarCreditMeter({ onNavigate }: { onNavigate?: () => void }) {
+  const { usagePlan, creditsRemainingCents, isLow, isHalted } = useCreditState()
+  const visible =
+    billingOnrampV2Enabled &&
+    usagePlan === 'base' &&
+    creditsRemainingCents !== undefined
+  useEffect(() => {
+    if (visible)
+      trackUpsellShown({
+        surface: 'sidebar_meter',
+        plan: 'pro',
+        usagePlan,
+        creditsRemainingCents,
+      })
+    // Fire once per mount; balance changes shouldn't re-count an impression.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+  if (!visible) return null
+  const grant = Math.max(BASE_GRANT_CENTS, creditsRemainingCents)
+  const pct = Math.max(0, Math.min(100, (creditsRemainingCents / grant) * 100))
+  return (
+    <div className="border-t px-3 py-3">
+      <div className="text-muted-foreground flex items-center justify-between font-mono text-[11px]">
+        <span>Free credits</span>
+        <span
+          className={cn(
+            isHalted && 'text-destructive',
+            isLow && 'text-amber-600',
+          )}
+        >
+          {formatUsd(creditsRemainingCents)} left
+        </span>
+      </div>
+      <div className="bg-secondary mt-1.5 h-1 overflow-hidden rounded-full">
+        <div
+          className={cn(
+            'h-full rounded-full',
+            isHalted ? 'bg-destructive' : isLow ? 'bg-amber-500' : 'bg-primary',
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <Link
+        to={upgradeHref('pro')}
+        onClick={() => {
+          trackUpsellClicked({
+            surface: 'sidebar_meter',
+            plan: 'pro',
+            usagePlan,
+            creditsRemainingCents,
+          })
+          onNavigate?.()
+        }}
+        className="text-foreground mt-2 block text-xs font-medium underline-offset-2 hover:underline"
+      >
+        Upgrade to Pro — ${PLAN_OFFERS.pro.creditsUsd}/mo of credits for $
+        {PLAN_OFFERS.pro.priceUsd}
+      </Link>
+    </div>
+  )
+}
+
+// Org-wide credit notice. Prepaid (autumn) orgs that exhaust credits get halted
 // (sandboxes hibernate); show a banner everywhere except Billing so users know
-// why things paused and where to resolve it. Legacy orgs 404 on /billing/autumn
-// → no data → no banner.
+// why things paused and where to resolve it. Below the low-credit threshold the
+// banner is an amber nudge instead. Legacy orgs 404 on /billing/autumn → no
+// data → no banner.
 function HaltBanner() {
   const location = useLocation()
-  const { data } = useQuery({
-    queryKey: ['autumn-billing'],
-    queryFn: getAutumnBilling,
-    retry: false,
-    refetchInterval: (q) => (q.state.error ? false : 30_000),
-  })
-  const halted = data?.isHalted ?? false
-  if (!halted || location.pathname.startsWith('/billing')) return null
+  const {
+    isHalted,
+    isLow,
+    modelFallback,
+    usagePlan,
+    creditsRemainingCents,
+    upgradePlan,
+  } = useCreditState()
+  const onBilling = location.pathname.startsWith('/billing')
+  const state = isHalted ? 'halted' : isLow ? 'low' : null
+  useEffect(() => {
+    if (state && !onBilling)
+      trackUpsellShown({
+        surface: state === 'halted' ? 'halt_banner' : 'low_credit_banner',
+        plan: upgradePlan,
+        usagePlan,
+        creditsRemainingCents,
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, onBilling])
+  if (!state || onBilling) return null
+  const offer = PLAN_OFFERS[upgradePlan]
+  const planName = upgradePlan === 'pro' ? 'Pro' : 'Max'
+  const click = () =>
+    trackUpsellClicked({
+      surface: state === 'halted' ? 'halt_banner' : 'low_credit_banner',
+      plan: upgradePlan,
+      usagePlan,
+      creditsRemainingCents,
+    })
+  if (state === 'low') {
+    return (
+      <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
+        <CircleAlert className="size-4 shrink-0" />
+        <span>
+          {formatUsd(creditsRemainingCents ?? 0)} of credits left — sessions
+          pause at $0.{' '}
+          <Link
+            to={upgradeHref(upgradePlan)}
+            onClick={click}
+            className="font-semibold underline underline-offset-2"
+          >
+            Upgrade to {planName}
+          </Link>{' '}
+          for ${offer.creditsUsd}/mo of credits at ${offer.priceUsd}/mo.
+        </span>
+      </div>
+    )
+  }
+  if (modelFallback) {
+    return (
+      <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
+        <CircleAlert className="size-4 shrink-0" />
+        <span>
+          You&apos;ve used this month&apos;s credits — agents keep running on an
+          open-weight model (GLM).{' '}
+          <Link
+            to="/billing"
+            onClick={click}
+            className="font-semibold underline underline-offset-2"
+          >
+            Top up
+          </Link>{' '}
+          to switch back to your selected models.
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="border-destructive/40 bg-status-error-bg text-destructive flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium sm:px-8">
       <CircleAlert className="size-4 shrink-0" />
       <span>
-        Your agent sessions and sandboxes are paused — you&apos;re out of
-        prepaid credits.{' '}
-        <Link
-          to="/billing"
-          className="font-semibold underline underline-offset-2"
-        >
-          Top up &amp; turn on auto-recharge
-        </Link>{' '}
-        to resume.
+        Your agent sessions are paused — you&apos;re out of prepaid credits.{' '}
+        {billingOnrampV2Enabled ? (
+          <>
+            <Link
+              to={upgradeHref(upgradePlan)}
+              onClick={click}
+              className="font-semibold underline underline-offset-2"
+            >
+              Upgrade to {planName} (${offer.priceUsd}/mo, ${offer.creditsUsd}{' '}
+              credits)
+            </Link>{' '}
+            or{' '}
+            <Link to="/billing" className="underline underline-offset-2">
+              top up
+            </Link>{' '}
+            to resume.
+          </>
+        ) : (
+          <>
+            <Link
+              to="/billing"
+              className="font-semibold underline underline-offset-2"
+            >
+              Top up &amp; turn on auto-recharge
+            </Link>{' '}
+            to resume.
+          </>
+        )}
       </span>
     </div>
   )
@@ -478,10 +650,22 @@ export default function AppShell() {
     queryFn: () => getManagedProject(projectId!),
     enabled: Boolean(projectId),
   })
-  const environment: ProjectEnvironment =
-    new URLSearchParams(location.search).get('environment') === 'production'
-      ? 'production'
-      : 'development'
+  const mode = projectEnvironmentMode(project.data?.project)
+  const resolved = resolveProjectEnvironment(mode, location.search)
+  const environment: ProjectEnvironment = resolved.ok
+    ? resolved.environment
+    : 'default'
+  // An older `?environment=development` bookmark on a single-mode project
+  // lands on the environmentless URL once the project's mode is known.
+  const canonicalSearch =
+    project.data && resolved.ok ? resolved.canonicalSearch : undefined
+  useEffect(() => {
+    if (canonicalSearch === undefined) return
+    void navigate(
+      { pathname: location.pathname, search: canonicalSearch },
+      { replace: true },
+    )
+  }, [canonicalSearch, location.pathname, navigate])
   function changeProjectEnvironment(nextEnvironment: ProjectEnvironment) {
     void navigate(
       {
@@ -504,11 +688,15 @@ export default function AppShell() {
           <div className="flex min-w-0 items-center px-6">
             <ManagedProjectContext
               projectName={project.data?.project.name}
+              mode={mode}
               environment={environment}
               onChange={changeProjectEnvironment}
             />
           </div>
         ) : null}
+        <div className="ml-auto flex items-center px-4">
+          <ThemeToggle />
+        </div>
       </header>
 
       {/* Desktop sidebar (below the top bar) */}
@@ -539,10 +727,14 @@ export default function AppShell() {
         {projectId ? (
           <ManagedProjectContext
             projectName={project.data?.project.name}
+            mode={mode}
             environment={environment}
             onChange={changeProjectEnvironment}
           />
         ) : null}
+        <div className="ml-auto">
+          <ThemeToggle />
+        </div>
       </header>
 
       {/* Main content */}

@@ -60,7 +60,7 @@ export function ManagedAgentWebhooks({
   projectId: string
   agentId: string
   agentName: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   deployed: boolean
 }) {
   const queryClient = useQueryClient()
@@ -274,7 +274,9 @@ export function ManagedAgentWebhooks({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="webhook-identity">Delivery identity (optional)</Label>
+            <Label htmlFor="webhook-identity">
+              Delivery identity (optional)
+            </Label>
             <Input
               id="webhook-identity"
               value={identity}
@@ -284,8 +286,8 @@ export function ManagedAgentWebhooks({
             />
             <p className="text-muted-foreground text-xs">
               Where a delivery&apos;s identity is read when the sender sets no
-              Idempotency-Key, so a provider&apos;s retry does not start a second
-              session. A header name, or a JSON Pointer into the body.
+              Idempotency-Key, so a provider&apos;s retry does not start a
+              second session. A header name, or a JSON Pointer into the body.
             </p>
           </div>
           <DialogFooter>

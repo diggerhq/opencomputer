@@ -43,6 +43,7 @@ import type {
   SessionCreated,
   SessionEvent,
   SessionPage,
+  SessionSummary,
   SetLabelsParams,
   TurnReceipt,
   UpdateWebhookParams,
@@ -62,9 +63,9 @@ export interface CallOptions {
 export interface CreateSessionOptions extends CallOptions {
   /**
    * At most 256 characters. The same key with the same agent (or the same
-   * pinned deployment), environment and memory bindings returns the
-   * existing session with the deployment it started on, after a redeploy
-   * too; anything else under the key is `409 idempotency_conflict`.
+   * pinned deployment), environment, memory bindings and `externalReference`
+   * returns the existing session with the deployment it started on, after a
+   * redeploy too; anything else under the key is `409 idempotency_conflict`.
    */
   idempotencyKey?: string;
 }
@@ -97,6 +98,7 @@ export class Turns {
     const body: Record<string, unknown> = { input: params.input };
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
+    if (params.answers !== undefined) body.answers = params.answers;
     const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
       body,
       headers: params.idempotencyKey !== undefined ? { "idempotency-key": params.idempotencyKey } : undefined,
@@ -105,10 +107,16 @@ export class Turns {
     // The receipt says what the platform persisted. A repeated key answers
     // with the existing turn, which may have settled since; mapping that to
     // "queued" told a retrying caller its finished work was waiting.
+    const duplicate = answer.body.duplicate ?? answer.status === 200;
+    if (answer.body.turnId !== undefined) {
+      return { turnId: answer.body.turnId, status: answer.body.status, duplicate };
+    }
+    // Held behind the open question: no turn, the question instead (the shape checked it).
     return {
-      turnId: answer.body.turnId,
-      status: answer.body.status,
-      duplicate: answer.body.duplicate ?? answer.status === 200,
+      status: answer.body.status as "held" | "discarded",
+      questionId: answer.body.questionId as string,
+      heldId: answer.body.heldId as string,
+      duplicate,
     };
   }
 }
@@ -129,13 +137,35 @@ export class Events {
   }
 }
 
+export class Questions {
+  constructor(private readonly http: Http) {}
+
+  /**
+   * `POST /sessions/<id>/questions/<questionId>/dismiss`: closes the open
+   * question without an answer (`question.closed` with reason `dismissed`);
+   * inputs held behind it run as ordinary turns, in order. Repeating it is
+   * harmless; naming a question that is not the open one is `409
+   * question_stale`. Answers with the session.
+   */
+  dismiss(sessionId: string, questionId: string, options: CallOptions = {}): Promise<Session> {
+    return this.http.request(
+      "POST",
+      `/sessions/${segment(sessionId)}/questions/${segment(questionId)}/dismiss`,
+      shapes.session,
+      { signal: options.signal },
+    );
+  }
+}
+
 export class Sessions {
   readonly turns: Turns;
   readonly events: Events;
+  readonly questions: Questions;
 
   constructor(private readonly http: Http) {
     this.turns = new Turns(http);
     this.events = new Events(http);
+    this.questions = new Questions(http);
   }
 
   /** `POST /sessions`: creates a session without a turn. `created` is false when the key had already created it. */
@@ -154,15 +184,39 @@ export class Sessions {
   }
 
   /**
-   * `GET /sessions`: rows ordered by `createdAt` descending then `id`, with
-   * `nextCursor` for the next page. Sort the pages you hold by `updatedAt`
-   * for recent activity first.
+   * `GET /sessions`: one page of rows matching the exact filters, ordered by
+   * `createdAt` descending then `id` ascending, with `nextCursor` for the
+   * next page and `null` on the last. A cursor is bound to the filters it
+   * was issued with; sending it with different filters is `400
+   * invalid_cursor`. Sort the pages you hold by `updatedAt` for recent
+   * activity first, or use `iterate` to walk every page.
    */
   list(query: ListSessionsQuery = {}, options: CallOptions = {}): Promise<SessionPage> {
     const { labels, ...rest } = query;
     const q: Record<string, string | number | undefined> = { ...rest };
     for (const [key, value] of Object.entries(labels ?? {})) q[`label.${key}`] = value;
     return this.http.request("GET", "/sessions", shapes.sessionPage, { query: q, signal: options.signal });
+  }
+
+  /**
+   * Every row matching the filters, page by page, until `nextCursor` is
+   * `null`. `limit` is the page size; `cursor` is where to start. Paging is
+   * live: a session created while you iterate appears only if it sorts
+   * after your position.
+   *
+   * ```ts
+   * for await (const row of oc.sessions.iterate({ status: "idle", limit: 100 })) {
+   *   console.log(row.id, row.externalReference);
+   * }
+   * ```
+   */
+  async *iterate(query: ListSessionsQuery = {}, options: CallOptions = {}): AsyncGenerator<SessionSummary, void, undefined> {
+    let cursor = query.cursor;
+    do {
+      const page = await this.list({ ...query, cursor }, options);
+      yield* page.sessions;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
   }
 
   /** `POST /sessions/<id>/end`: cancels queued and running turns and revokes memory writes. */

@@ -13,6 +13,8 @@ class FakeStatement {
   constructor(
     private readonly halted: number | null,
     private readonly haltedAt: number | null,
+    private readonly usagePlan: string,
+    private readonly plan: string,
   ) {}
 
   bind(orgID: string): this {
@@ -24,16 +26,28 @@ class FakeStatement {
     expect(this.orgID).toBe("org_test");
     return (this.halted === null
       ? null
-      : { is_halted: this.halted, halted_at: this.haltedAt }) as T | null;
+      : {
+          is_halted: this.halted,
+          halted_at: this.haltedAt,
+          usage_plan: this.usagePlan,
+          plan: this.plan,
+        }) as T | null;
   }
 }
 
-function env(halted: number | null, haltedAt: number | null = null) {
+function env(
+  halted: number | null,
+  haltedAt: number | null = null,
+  usagePlan = "base",
+  plan = "free",
+) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
-        expect(sql).toBe("SELECT is_halted, halted_at FROM orgs WHERE id = ?1");
-        return new FakeStatement(halted, haltedAt);
+        expect(sql).toBe(
+          "SELECT is_halted, halted_at, usage_plan, plan FROM orgs WHERE id = ?1",
+        );
+        return new FakeStatement(halted, haltedAt, usagePlan, plan);
       },
     } as unknown as D1Database,
   };
@@ -78,6 +92,8 @@ describe("managed-agent credit admission", () => {
       isHalted: true,
       haltedAt: 1_789_707_077,
       reason: "insufficient_credits",
+      paid: false,
+      modelAccess: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(null), "org_test"),
@@ -86,7 +102,71 @@ describe("managed-agent credit admission", () => {
       isHalted: false,
       haltedAt: null,
       reason: null,
+      paid: false,
+      modelAccess: "full",
     });
+    await expect(
+      getManagedAgentBillingAdmission(env(0, null, "pro"), "org_test"),
+    ).resolves.toEqual({
+      allowed: true,
+      isHalted: false,
+      haltedAt: null,
+      reason: null,
+      paid: true,
+      modelAccess: "full",
+    });
+  });
+
+  it.each(["pro", "max"])(
+    "admits an exhausted %s org onto the fallback model",
+    async (plan) => {
+      await expect(
+        getManagedAgentBillingAdmission(env(1, 1_789_707_077, plan), "org_test"),
+      ).resolves.toEqual({
+        allowed: true,
+        isHalted: true,
+        haltedAt: 1_789_707_077,
+        reason: null,
+        paid: true,
+        modelAccess: "fallback",
+      });
+      const request = new Request(
+        "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+        { method: "POST" },
+      );
+      await expect(
+        enforceManagedAgentCreditGate(request, env(1, 1_789_707_077, plan), "org_test"),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it("keeps an existing Pro org eligible before its usage-plan projection", async () => {
+    await expect(
+      getManagedAgentBillingAdmission(
+        env(1, 1_789_707_077, "base", "pro"),
+        "org_test",
+      ),
+    ).resolves.toEqual({
+      allowed: true,
+      isHalted: true,
+      haltedAt: 1_789_707_077,
+      reason: null,
+      paid: true,
+      modelAccess: "fallback",
+    });
+  });
+
+  it("hard-stops an exhausted base org with the upgrade 402", async () => {
+    const request = new Request(
+      "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+      { method: "POST" },
+    );
+    const response = await enforceManagedAgentCreditGate(
+      request,
+      env(1, 1_789_707_077, "base"),
+      "org_test",
+    );
+    expect(response?.status).toBe(402);
   });
 
   it("returns a typed, actionable 402", async () => {
@@ -94,14 +174,15 @@ describe("managed-agent credit admission", () => {
       new Request("https://mo-oc-dev.com/api/managed-agents/sessions"),
     );
     expect(response.status).toBe(402);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "insufficient_credits",
-        message:
-          "Insufficient prepaid credits. Top up or enable automatic top-up: https://mo-oc-dev.com/billing",
-        actionUrl: "https://mo-oc-dev.com/billing",
-      },
+    const body = (await response.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({
+      code: "insufficient_credits",
+      actionUrl: "https://mo-oc-dev.com/billing",
+      billingUrl: "https://mo-oc-dev.com/billing",
+      upgradeUrl: "https://mo-oc-dev.com/billing?plan=pro",
     });
+    expect(body.error.message).toContain("https://mo-oc-dev.com/billing?plan=pro");
+    expect(body.error.message).toContain("do not retry");
   });
 
   it("allows active organizations and fails open when D1 is unavailable", async () => {

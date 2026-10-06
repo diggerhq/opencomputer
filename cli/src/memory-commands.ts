@@ -75,13 +75,18 @@ export async function memoryResources(
   for (const deploymentId of deploymentIds) {
     const deployment = await client.deployment(deploymentId);
     for (const declaration of deployment.memory ?? []) {
-      if (typeof declaration.id !== "string" || byResource.has(declaration.id)) {
+      if (
+        typeof declaration.id !== "string" ||
+        byResource.has(declaration.id)
+      ) {
         continue;
       }
       byResource.set(declaration.id, {
         id: declaration.id,
         provider: {
-          ...(declaration.provider?.kind ? { kind: declaration.provider.kind } : {}),
+          ...(declaration.provider?.kind
+            ? { kind: declaration.provider.kind }
+            : {}),
           ...(typeof declaration.provider?.maxBytes === "number"
             ? { maxBytes: declaration.provider.maxBytes }
             : {}),
@@ -119,6 +124,11 @@ export function shellWord(value: string): string {
  * project's Development by default), the same summary, and a path the
  * shell reads back whatever it contains.
  */
+/** `--environment` for a legacy scope; single-mode projects refuse the flag, so `default` says nothing. */
+function environmentFlag(environment: MemoryEnvironment): string[] {
+  return environment === "default" ? [] : ["--environment", environment];
+}
+
 export function memoryEditResumeCommand(input: {
   projectId: string;
   resource: string;
@@ -133,8 +143,7 @@ export function memoryEditResumeCommand(input: {
     shellWord(input.id),
     "--project",
     shellWord(input.projectId),
-    "--environment",
-    input.environment,
+    ...environmentFlag(input.environment),
     ...(input.summary !== undefined
       ? ["--summary", shellWord(input.summary)]
       : []),
@@ -169,9 +178,7 @@ export async function saveMemoryEdit(
     await draft?.discard();
     return document;
   } catch (error) {
-    const kept = draft
-      ? { editedTextPath: draft.path }
-      : {};
+    const kept = draft ? { editedTextPath: draft.path } : {};
     const resume = draft
       ? ` Your edited text is kept at ${draft.path}; save it with ` +
         `\`${memoryEditResumeCommand({ ...input, draftPath: draft.path })}\`.`
@@ -181,15 +188,19 @@ export async function saveMemoryEdit(
       throw new CLIError(
         "memory_save_unconfirmed",
         `${input.resource}/${input.id} may or may not have been saved: ${failure.message}`,
-        `Run \`opencomputer memory show ${shellWord(input.resource)} ${shellWord(input.id)} --project ${shellWord(input.projectId)} --environment ${input.environment}\` to see whether the revision changed before saving again.` +
+        `Run \`opencomputer memory show ${shellWord(input.resource)} ${shellWord(input.id)} --project ${shellWord(input.projectId)}${environmentFlag(
+          input.environment,
+        )
+          .map((word) => ` ${word}`)
+          .join(
+            "",
+          )}\` to see whether the revision changed before saving again.` +
           resume,
         { ...kept, expectedRevision: input.etag },
       );
     }
     if (error.status === 412) {
-      const latest = await client
-        .memoryDocument(input)
-        .catch(() => null);
+      const latest = await client.memoryDocument(input).catch(() => null);
       throw new CLIError(
         "memory_conflict",
         `${input.resource}/${input.id} changed since you opened it` +
@@ -263,14 +274,24 @@ export async function ensureMemoryDocuments(
         title: binding.id,
         text: "",
       });
-      ensured.push({ resource, id: binding.id, created: true, revision: document.revision });
+      ensured.push({
+        resource,
+        id: binding.id,
+        created: true,
+        revision: document.revision,
+      });
       continue;
     } catch (error) {
       if (!(error instanceof APIError && error.status === 412)) throw error;
     }
     try {
       const { document } = await client.memoryDocument(target);
-      ensured.push({ resource, id: binding.id, created: false, revision: document.revision });
+      ensured.push({
+        resource,
+        id: binding.id,
+        created: false,
+        revision: document.revision,
+      });
     } catch (error) {
       if (error instanceof APIError && error.status === 404) {
         throw new CLIError(

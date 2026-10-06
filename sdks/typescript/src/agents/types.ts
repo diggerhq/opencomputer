@@ -8,8 +8,14 @@
 import type { MemoryBindings, SessionMemoryBinding } from "./memory.js";
 import type { TurnOutcomeDelivery } from "./event-subscriptions.js";
 
-/** Development and Production are separate environments of a project. */
-export type Environment = "development" | "production";
+/**
+ * A project's environment scopes. A single-environment project has one
+ * `default` scope; a legacy project has separate Development and Production.
+ */
+export type Environment = "default" | "development" | "production";
+
+/** How a project scopes its environments; missing on older responses means `legacy`. */
+export type ProjectEnvironmentMode = "single" | "legacy";
 
 /**
  * A JSON value: what a turn payload, a tool input or output, and a result
@@ -43,6 +49,43 @@ export type TurnMode = "queue" | "steer" | "interrupt";
 
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | (string & {});
 
+/** What a settled turn came to beyond its status. `question`: a completed turn that ended by asking. */
+export type TurnOutcome = "question" | (string & {});
+
+/** One choice of a question; a selection sends `value` back. */
+export interface QuestionOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * The question a session is waiting on, asked by the agent with `ask`.
+ * Answer it with `turns.send(id, { input, answers: question.id })`.
+ */
+export interface SessionQuestion {
+  id: string;
+  text: string;
+  /** Empty when the question is free text. */
+  options: QuestionOption[];
+  askedAt: string;
+}
+
+/**
+ * Why a question closed without an answer: `stopped` (a stop in the channel;
+ * held inputs are discarded), `dismissed` (`sessions.questions.dismiss`; held
+ * inputs run as ordinary turns), `ended` (the session ended; nothing runs),
+ * `undeliverable` (the question could never be shown; held inputs run as
+ * ordinary turns).
+ */
+export type QuestionClosedReason = "stopped" | "dismissed" | "ended" | "undeliverable" | (string & {});
+
+/** How an input answered a question; `value` when the text matched an option by value or label. */
+export interface QuestionAnswer {
+  questionId: string;
+  text: string;
+  value?: string;
+}
+
 /** One entry of a session's `turns`. */
 export interface Turn {
   id: string;
@@ -50,6 +93,15 @@ export interface Turn {
   input: string;
   mode: TurnMode;
   status: TurnStatus;
+  /** `question` on a completed turn that ended by asking. */
+  outcome?: TurnOutcome;
+  /**
+   * Why a cancelled turn ended. `held`: it was queued behind a turn that
+   * asked a question, and its input reaches the agent with the answer, as
+   * `steering`; `questionId` names that question.
+   */
+  reason?: string;
+  questionId?: string;
   /** The structured input sent with the turn. */
   payload?: DataValue;
   /** Present when an event subscription selected the turn's outcome. */
@@ -96,10 +148,14 @@ export interface Session {
   labels?: SessionLabels;
   /** When the labels last changed. */
   labelsUpdatedAt?: string;
+  /** Your opaque reference from `create`, returned as given; absent when none was set. */
+  externalReference?: string;
   /** Monotonic; every listed mutation increments it. */
   revision?: number;
   /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
+  /** The question the session is waiting on, or `null`. Independent of `result`. */
+  question?: SessionQuestion | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,10 +189,40 @@ export interface CreateSessionParams {
   source?: SessionSource;
   /** Applied at creation and ignored on an idempotent replay. */
   labels?: SessionLabels;
+  /**
+   * Your opaque reference to the session (an order id, a ticket key): at most
+   * 256 bytes of UTF-8, no control characters, stored as given and never shown
+   * to the agent. Returned on the session, its list row and its `session.*`
+   * events, and filterable by exact match with `list({ externalReference })`.
+   * Part of the creation identity: a replay of the same `idempotencyKey`
+   * with a different reference is `409 idempotency_conflict`.
+   */
+  externalReference?: string;
 }
 
-/** Turn admission, as `POST /sessions/<id>/turns` answers it. */
-export interface TurnReceipt {
+/**
+ * Turn admission, as `POST /sessions/<id>/turns` answers it: a turn, or an
+ * input held behind the session's open question.
+ */
+export type TurnReceipt = AdmittedTurnReceipt | HeldTurnReceipt;
+
+/**
+ * An input sent while a question was open, without `answers`. It runs no turn
+ * of its own: it reaches the agent with the answer, as `steering`. `discarded`
+ * when a stop ended the question first.
+ */
+export interface HeldTurnReceipt {
+  status: "held" | "discarded";
+  /** The question the input is waiting on. */
+  questionId: string;
+  /** The held input's id; its `message.held` / `message.delivered` events carry the same one. */
+  heldId: string;
+  /** `true` when the `idempotencyKey` had already been received. */
+  duplicate: boolean;
+  turnId?: undefined;
+}
+
+export interface AdmittedTurnReceipt {
   turnId: string;
   /**
    * The turn's persisted status: `queued` behind earlier turns or `running`
@@ -161,6 +247,13 @@ export interface SendTurnParams {
   mode?: TurnMode;
   /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON. */
   payload?: DataValue;
+  /**
+   * The id of the open question this input answers; the agent reads it as
+   * `useInput().answer`. Naming any other question is `409 question_stale`.
+   * Without it, input sent while a question is open is held and delivered
+   * with the answer, not run on its own.
+   */
+  answers?: string;
 }
 
 /** What a session's activity looks like from a list row. */
@@ -185,6 +278,8 @@ export interface SessionSummary {
   source: SessionSource;
   status: SessionStatus;
   labels?: SessionLabels;
+  /** Present when the session was created with one. */
+  externalReference?: string;
   createdAt: string;
   updatedAt: string;
   revision?: number;
@@ -192,16 +287,40 @@ export interface SessionSummary {
   result?: SessionResult | null;
 }
 
-/** Filters and paging for `GET /sessions`; any other parameter is `400 invalid_query`. */
-export interface ListSessionsQuery {
+/**
+ * Exact-match filters for `GET /sessions`; any other parameter is
+ * `400 invalid_query`. Filters narrow the sessions your key can already see,
+ * never widen them.
+ */
+export interface SessionFilters {
+  /** Project id or slug. */
   project?: string;
+  /** Same filter as `project`. */
+  projectId?: string;
   environment?: Environment;
+  /** Agent id. */
   agent?: string;
+  /** Same filter as `agent`. */
+  agentId?: string;
   status?: SessionStatus;
+  deploymentId?: string;
+  /** The exact `externalReference` the session was created with. */
+  externalReference?: string;
+  /** RFC 3339 timestamp; sessions created at or after it. */
+  createdAfter?: string;
+  /** RFC 3339 timestamp; sessions created strictly before it. */
+  createdBefore?: string;
+  /** RFC 3339 timestamp; sessions last updated at or after it. */
+  updatedAfter?: string;
   /** Up to three equality filters, sent as `label.<key>=<value>`. */
   labels?: SessionLabels;
+}
+
+/** Filters and paging for `GET /sessions`. */
+export interface ListSessionsQuery extends SessionFilters {
+  /** `nextCursor` of the previous page; valid only with the same filters. */
   cursor?: string;
-  /** Default 50, at most 100. */
+  /** Page size: default 50, at most 100. */
   limit?: number;
 }
 
@@ -267,12 +386,82 @@ export type SessionEvent =
   | (EventBase & { type: "turn.steered"; data: { activeTurnId: string } })
   | (EventBase & { type: "turn.interrupted"; data: { interruptedTurnIds: string[] } })
   | (EventBase & { type: "turn.started"; data: Record<string, never> })
-  | (EventBase & { type: "turn.completed"; data: Record<string, never> })
+  | (EventBase & {
+      type: "turn.completed";
+      /** Empty, or `{ outcome: "question", questionId }` when the turn ended by asking. */
+      data: { outcome?: TurnOutcome; questionId?: string };
+    })
+  | (EventBase & { type: "question.asked"; data: { questionId: string; text: string; options: QuestionOption[] } })
+  | (EventBase & { type: "question.answered"; data: { questionId: string; answer: QuestionAnswer } })
+  | (EventBase & { type: "question.closed"; data: { questionId: string; reason: QuestionClosedReason } })
+  | (EventBase & {
+      type: "message.held";
+      /** An input sent while `questionId` was open, without answering it. */
+      data: {
+        questionId: string;
+        heldId: string;
+        input: string;
+        payload?: DataValue;
+        receivedAt: string;
+        /** When the provider says it was written (Linear's prompt time). */
+        providerTime?: string;
+        /** Set when a turn already queued behind the asking turn was held. */
+        turnId?: string;
+      };
+    })
+  | (EventBase & {
+      type: "message.delivered";
+      /** The held input reached the agent: as `steering` on the answer turn, or as its own turn. */
+      data: {
+        questionId: string;
+        heldId: string;
+        /** The turn that carried it: the answer turn for steering or the answer, its own turn otherwise. */
+        answerTurnId: string;
+        turnId: string;
+        as: "steering" | "answer" | "turn";
+      };
+    })
+  | (EventBase & {
+      type: "message.discarded";
+      /** The held input never reached the agent; `reason` is why (`stopped`, `ended`). */
+      data: { questionId: string; heldId: string; reason: "stopped" | "ended" | (string & {}) };
+    })
+  | (EventBase & {
+      type: "delivery.failed";
+      /** A channel activity the platform could not post; the session proceeded past it. */
+      data: {
+        channel: string;
+        activityId: string;
+        kind: string;
+        contentType: string;
+        state: "failed_transient" | "failed_permanent" | "invalidated" | "dropped" | (string & {});
+        attempts: number;
+        /** A fixed code, never the provider's message. */
+        error:
+          | "provider_unavailable"
+          | "provider_rejected"
+          | "connection_not_found"
+          | "connection_pending"
+          | "connection_disconnected"
+          | "connection_revoked"
+          | "session_superseded"
+          | (string & {});
+        turnId?: string;
+        agentSessionId?: string;
+        questionId?: string;
+        retrying?: boolean;
+      };
+    })
   | (EventBase & { type: "turn.failed"; data: Failure })
   | (EventBase & {
       type: "turn.cancelled";
       data: {
-        reason: "interrupted" | (string & {});
+        /** `held`: the turn was queued when a question was asked; its input waits on `questionId`. */
+        reason: "interrupted" | "held" | (string & {});
+        /** Set with `reason: "held"`: the question the turn's input waits on. */
+        questionId?: string;
+        /** `true` when the held input was dropped (a stop closed the question) and never reaches the agent. */
+        discarded?: boolean;
         replacementTurnId?: string;
         /** How long after the interrupt the turn settled, once the commands it had started were stopped. */
         settledAfterMs?: number;
@@ -373,6 +562,7 @@ export interface Project {
   id: string;
   slug: string;
   name: string;
+  environmentMode?: ProjectEnvironmentMode;
   environments: ProjectEnvironment[];
   agents: Array<{ id: string; name: string }>;
   createdAt: string;
@@ -382,6 +572,7 @@ export interface Project {
 export interface CreateProjectParams {
   name: string;
   slug?: string;
+  environmentMode?: ProjectEnvironmentMode;
 }
 
 /** What `GET /projects/<p>` returns. */

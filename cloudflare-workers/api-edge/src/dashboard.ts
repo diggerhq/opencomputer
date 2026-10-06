@@ -34,8 +34,12 @@ import {
   listAgentSecurityNotifications,
 } from "./agent_security_notifications";
 import { createAPIKey } from "./api_keys";
-import { proxyManagedAgents } from "./managed_agents";
+import {
+  proxyManagedAgents,
+  proxyPublicTemplateInspection,
+} from "./managed_agents";
 import { enableManagedBilling } from "./model_billing";
+import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -546,15 +550,30 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   if (!email) return json({ error: "email required" }, 400);
   if (!["owner", "admin", "member"].includes(role)) return json({ error: "invalid role" }, 400);
 
+  const now = Math.floor(Date.now() / 1000);
   // WorkOS invitation send. Returns the WorkOS invitation ID we mirror in D1.
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+  // Orgs provisioned at the edge have no WorkOS org yet; create one lazily so
+  // WorkOS can deliver the invitation email.
+  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT name, workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ name: string; workos_org_id: string | null }>();
+  let workosOrgID = org?.workos_org_id ?? null;
+  if (org && !workosOrgID) {
+    const created = await workosCreateOrg(env, org.name);
+    if (created) {
+      await env.OPENCOMPUTER_DB.prepare(`UPDATE orgs SET workos_org_id = ?1, updated_at = ?2 WHERE id = ?3 AND workos_org_id IS NULL`)
+        .bind(created, now, caller.orgID).run();
+      // A concurrent invite may have won the conditional update; always invite
+      // into whichever WorkOS org is actually recorded.
+      const stored = await env.OPENCOMPUTER_DB.prepare(`SELECT workos_org_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ workos_org_id: string | null }>();
+      workosOrgID = stored?.workos_org_id ?? created;
+    }
+  }
   let workosInviteID: string | null = null;
-  if (org?.workos_org_id) {
+  if (workosOrgID) {
     try {
       const r = await fetch("https://api.workos.com/user_management/invitations", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
-        body: JSON.stringify({ email, organization_id: org.workos_org_id, expires_in_days: 7, role_slug: role }),
+        body: JSON.stringify({ email, organization_id: workosOrgID, expires_in_days: 7, role_slug: role }),
       });
       if (r.ok) {
         const data = await r.json<{ id: string }>();
@@ -568,7 +587,6 @@ async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Cal
   }
 
   const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
   await env.OPENCOMPUTER_DB.prepare(
     `INSERT INTO invitations (id, org_id, email, role, invited_by, workos_invitation_id, status, expires_at, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)`,
@@ -632,6 +650,34 @@ async function handleCreateAPIKey(req: Request, env: DashboardEnv, caller: Calle
 async function handleDeleteAPIKey(_req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {
   await env.OPENCOMPUTER_DB.prepare(`DELETE FROM api_keys WHERE id = ?1 AND org_id = ?2`).bind(keyID, caller.orgID).run();
   return new Response(null, { status: 204 });
+}
+
+async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {
+  const body = await req.json<{ name?: unknown }>().catch(() => ({} as { name?: unknown }));
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return json({ error: "name is required" }, 400);
+
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, key_prefix, scopes, last_used, expires_at, created_at
+       FROM api_keys WHERE id = ?1 AND org_id = ?2`,
+  ).bind(keyID, caller.orgID).first<{
+    id: string; key_prefix: string; scopes: string;
+    last_used: number | null; expires_at: number | null; created_at: number;
+  }>();
+  if (!row) return json({ error: "api key not found" }, 404);
+
+  await env.OPENCOMPUTER_DB.prepare(`UPDATE api_keys SET name = ?1 WHERE id = ?2 AND org_id = ?3`)
+    .bind(name, keyID, caller.orgID).run();
+  return json({
+    id: row.id,
+    orgId: caller.orgID,
+    name,
+    keyPrefix: row.key_prefix,
+    scopes: row.scopes.split(",").map((s) => s.trim()).filter(Boolean),
+    lastUsed: epochToISO(row.last_used),
+    expiresAt: epochToISO(row.expires_at),
+    createdAt: epochToISORequired(row.created_at),
+  });
 }
 
 // ── sessions list (cross-cell) ───────────────────────────────────────────
@@ -864,6 +910,25 @@ async function handleListAgentSubscriptions(_req: Request, env: DashboardEnv, ca
 
 // ── WorkOS helpers ───────────────────────────────────────────────────────
 
+async function workosCreateOrg(env: DashboardEnv, name: string): Promise<string | null> {
+  try {
+    const r = await fetch("https://api.workos.com/organizations", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.WORKOS_API_KEY}` },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) {
+      console.error(`workos org create returned ${r.status}: ${await r.text()}`);
+      return null;
+    }
+    const data = await r.json<{ id?: string }>();
+    return data.id ?? null;
+  } catch (e) {
+    console.error("workos org create threw", e);
+    return null;
+  }
+}
+
 async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: string): Promise<void> {
   await fetch(`https://api.workos.com/organizations/${workosOrgID}`, {
     method: "PUT",
@@ -954,18 +1019,28 @@ export async function handleDashboard(
   _ctx: ExecutionContext,
   path: string,
 ): Promise<Response> {
-  const caller = await authDashboard(req, env);
-  if (!caller) return json({ error: "unauthenticated" }, 401);
-
   // /api/dashboard/* — strip the prefix for routing.
   const sub = path.replace(/^\/api\/dashboard/, "");
   const method = req.method.toUpperCase();
+
+  const caller = await authDashboard(req, env);
+  if (!caller) {
+    // Template preview is the one anonymous entry point: visitors can see
+    // a template's deploy form before signing up.
+    if (sub === "/managed-agents/template-inspections" && method === "POST") {
+      return proxyPublicTemplateInspection(req, env);
+    }
+    return json({ error: "unauthenticated" }, 401);
+  }
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
     if (sub === "/managed-agents/sessions" && method === "POST") {
       try {
         const billing = await enableManagedBilling(env, caller.orgID);
+        if (billing.status === "halted") {
+          return insufficientManagedAgentCredits(req);
+        }
         if (billing.status !== "active") {
           return json({ error: "managed model billing is unavailable" }, 503);
         }
@@ -1076,6 +1151,7 @@ export async function handleDashboard(
   {
     const m = sub.match(/^\/api-keys\/([^/]+)$/);
     if (m && method === "DELETE") return handleDeleteAPIKey(req, env, caller, m[1]);
+    if (m && method === "PATCH") return handleRenameAPIKey(req, env, caller, m[1]);
   }
 
   // ── sessions: cross-cell list, then per-cell proxy ─────────────────────

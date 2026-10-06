@@ -37,6 +37,16 @@ class FakeStatement {
       if (!this.db.user) return null;
       return this.db.user as T;
     }
+    if (this.sql.includes("FROM api_keys WHERE id")) {
+      return {
+        id: "key-1",
+        key_prefix: "osb_abcd",
+        scopes: "sandbox:*",
+        last_used: null,
+        expires_at: null,
+        created_at: 1700000000,
+      } as T;
+    }
     if (
       this.sql.includes("FROM api_keys WHERE key_hash") ||
       this.sql.includes("FROM api_keys k")
@@ -58,6 +68,9 @@ class FakeStatement {
   }
 
   async all<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes("FROM invitations")) {
+      return { results: this.db.pendingInvitations as T[] };
+    }
     if (this.sql.includes("JOIN org_memberships")) {
       return { results: this.db.memberships as T[] };
     }
@@ -88,6 +101,7 @@ class FakeStatement {
 class FakeDB {
   executed: CapturedStatement[] = [];
   memberships: FakeMembership[];
+  pendingInvitations: { id: string; org_id: string; role: string }[] = [];
   user: { id: string; email: string; name: string } | null;
 
   constructor(
@@ -112,6 +126,10 @@ class FakeDB {
 
   prepare(sql: string): FakeStatement {
     return new FakeStatement(this, sql);
+  }
+
+  async batch(stmts: FakeStatement[]): Promise<Record<string, never>[]> {
+    return Promise.all(stmts.map((s) => s.run()));
   }
 }
 
@@ -509,6 +527,58 @@ describe("CLI device authorization edge contract", () => {
     expect(insert?.args[1]).toBe(mappedOrgID);
   });
 
+  it("accepts pending invitations for the login email and lands in the invited org", async () => {
+    const teamOrgID = "44444444-4444-4444-8444-444444444444";
+    const db = new FakeDB([
+      {
+        id: orgID,
+        name: "Personal",
+        plan: "free",
+        is_personal: 1,
+        workos_org_id: null,
+        membership_created_at: 1,
+        org_created_at: 1,
+      },
+    ]);
+    db.pendingInvitations = [{ id: "inv-1", org_id: teamOrgID, role: "admin" }];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "Igor@Example.com", first_name: "Igor" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+
+    const membershipInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO org_memberships"));
+    expect(membershipInsert?.sql).toContain("status = 'pending'");
+    expect(membershipInsert?.args.slice(0, 3)).toEqual([teamOrgID, userID, "admin"]);
+    expect(membershipInsert?.args[4]).toBe("inv-1");
+    const accepted = db.executed.find((entry) => entry.sql.includes("SET status = 'accepted'"));
+    expect(accepted?.args[1]).toBe("inv-1");
+  });
+
+  it("still provisions a personal workspace for a first-login invitee", async () => {
+    const teamOrgID = "44444444-4444-4444-8444-444444444444";
+    const db = new FakeDB([], null);
+    db.pendingInvitations = [{ id: "inv-1", org_id: teamOrgID, role: "member" }];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "new-workos-user", email: "new@example.com", first_name: "New" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-ipcountry": "US" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+
+    const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
+    expect(orgInsert).toBeDefined();
+    const memberships = db.executed.filter((entry) => entry.sql.includes("INSERT INTO org_memberships"));
+    expect(memberships.map((m) => m.args[0])).toEqual([orgInsert?.args[0], teamOrgID]);
+  });
+
   it("provisions a first-login user, personal org, owner membership, and key", async () => {
     const db = new FakeDB([], null);
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
@@ -658,5 +728,60 @@ describe("CLI identity and credential lifecycle", () => {
       entry.sql.includes("INSERT INTO api_keys") && entry.args[5] === "Dashboard key"
     );
     expect(insert?.args).not.toContain(body.key);
+  });
+
+  it("renames a dashboard API key scoped to the caller's org", async () => {
+    const db = new FakeDB();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const callback = await worker.fetch(
+      request("/auth/callback?code=browser-code"),
+      testEnv(db),
+      ctx,
+    );
+    const cookie = callback.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(cookie).toMatch(/^oc_session=/);
+
+    const resp = await worker.fetch(request("/api/dashboard/api-keys/key-1", {
+      method: "PATCH",
+      headers: {
+        cookie: cookie ?? "",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "  Renamed key  " }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+    const body = await resp.json<Record<string, unknown>>();
+    expect(body.name).toBe("Renamed key");
+    expect(body.key).toBeUndefined();
+    const update = db.executed.find((entry) =>
+      entry.sql.includes("UPDATE api_keys SET name")
+    );
+    expect(update?.args).toEqual(["Renamed key", "key-1", orgID]);
+  });
+
+  it("rejects a dashboard API key rename without a name", async () => {
+    const db = new FakeDB();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const callback = await worker.fetch(
+      request("/auth/callback?code=browser-code"),
+      testEnv(db),
+      ctx,
+    );
+    const cookie = callback.headers.get("set-cookie")?.split(";", 1)[0];
+
+    const resp = await worker.fetch(request("/api/dashboard/api-keys/key-1", {
+      method: "PATCH",
+      headers: {
+        cookie: cookie ?? "",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "   " }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(400);
+    expect(db.executed.some((entry) => entry.sql.includes("UPDATE api_keys"))).toBe(false);
   });
 });

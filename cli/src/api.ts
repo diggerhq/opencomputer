@@ -19,13 +19,24 @@ export interface ManagedAgentSummary {
   updatedAt: string;
 }
 
+/** Canonical environment scopes. Single-mode projects have only `default`. */
+export type ProjectEnvironment = "default" | "development" | "production";
+
+export type ProjectEnvironmentMode = "single" | "legacy";
+
 export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /**
+   * `single` projects have one current deployment and no environment choice;
+   * `legacy` projects keep Development and Production. Servers that predate
+   * the field omit it, which means legacy.
+   */
+  environmentMode?: ProjectEnvironmentMode;
   /** One row per project agent and environment: that member's active deployment there. */
   environments: Array<{
-    name: "development" | "production";
+    name: ProjectEnvironment;
     agentId?: string;
     activeDeploymentId?: string;
     updatedAt: string;
@@ -65,7 +76,7 @@ export interface ManagedAgentEvent {
 export interface ManagedSecretMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   allowedOrigins: string[];
   createdAt: string;
@@ -85,7 +96,7 @@ export interface ManagedGitHubInstallation {
 
 export interface ManagedGitHubStatus {
   environments: Array<{
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     state: "not_connected" | "active" | "suspended" | "deleted";
     installation?: ManagedGitHubInstallation;
   }>;
@@ -130,7 +141,7 @@ export interface ModelAccessConnection {
 export interface ModelAccessBinding {
   organizationId: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   provider: "anthropic" | "openai";
   connectionId: string;
   enabled: boolean;
@@ -142,7 +153,7 @@ export interface ModelAccessBinding {
 export interface ModelRoute {
   id: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   connectionId: string;
   model: string;
@@ -155,7 +166,7 @@ export interface ModelRoute {
 export interface AgentRuntimeVariableMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   createdAt: string;
   updatedAt: string;
@@ -230,7 +241,7 @@ export interface TemplateInstallation {
 export interface ManagedAgentWebhook {
   id: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId: string;
   name: string;
   enabled: boolean;
@@ -249,7 +260,7 @@ export interface ManagedAgentLog {
   timestamp: string;
   level: "info" | "warn" | "error";
   event: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId: string;
   deploymentId: string;
   sessionId: string;
@@ -285,6 +296,8 @@ export interface ManagedSessionSnapshot {
   agentId?: string;
   deploymentId?: string;
   microvmState?: string;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt?: string;
   updatedAt?: string;
   turns?: Array<{
@@ -302,10 +315,12 @@ export interface ManagedSessionSummary {
   projectId: string;
   agentId: string;
   deploymentId: string;
-  environment: "development" | "production" | null;
+  environment: ProjectEnvironment | null;
   source: string;
   status: string;
   labels: Record<string, string>;
+  /** The caller's own reference from creation, when one was given. */
+  externalReference?: string;
   createdAt: string;
   updatedAt: string;
   revision: number;
@@ -327,10 +342,23 @@ export interface ManagedSessionPage {
   nextCursor: string | null;
 }
 
-export type MemoryEnvironment = "development" | "production";
+/** Exact-match filters and paging of `GET /sessions` (docs/agents/api.mdx, "Get and list"). */
+export interface ManagedSessionListOptions {
+  status?: string;
+  /** The agent's id. */
+  agent?: string;
+  externalReference?: string;
+  /** `nextCursor` of the previous page; only valid with the same filters. */
+  cursor?: string;
+  /** Page size, default 50, at most 100. */
+  limit?: number;
+}
+
+export type MemoryEnvironment = ProjectEnvironment;
 
 export type MemoryWriter =
-  { kind: "owner" } | { kind: "agent"; sessionId: string };
+  | { kind: "owner" }
+  | { kind: "agent"; sessionId: string };
 
 /** One document's metadata, as the list route returns it (no text). */
 export interface MemoryDocumentMeta {
@@ -396,20 +424,40 @@ export class APIError extends Error {
     readonly status: number,
     /** The typed reason from `{ error: { code } }` when the API sent one. */
     readonly code?: string,
+    /** Where the human can resolve the error (e.g. billing checkout). */
+    readonly actionUrl?: string,
   ) {
     super(message);
   }
 }
 
-function errorCode(body: unknown): string | undefined {
-  if (body && typeof body === "object") {
-    const error = (body as Record<string, unknown>).error;
-    if (error && typeof error === "object") {
-      const code = (error as Record<string, unknown>).code;
-      if (typeof code === "string") return code;
-    }
+// The API sends typed fields either nested under `error: { code, ... }`
+// (managed-agents routes) or flat beside a string `error` (sandbox routes).
+function errorField(body: unknown, field: string): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  const error = record.error;
+  if (error && typeof error === "object") {
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "string") return value;
   }
-  return undefined;
+  const flat = record[field];
+  return typeof flat === "string" ? flat : undefined;
+}
+
+function errorCode(body: unknown): string | undefined {
+  return errorField(body, "code");
+}
+
+export interface CreditsStatus {
+  usagePlan: "base" | "pro" | "max";
+  creditsRemainingCents: number;
+  lowCreditThresholdCents: number;
+  isLow: boolean;
+  isHalted: boolean;
+  billingUrl: string;
+  upgradeUrl: string;
+  plans: Array<{ id: "pro" | "max"; priceUsd: number; creditsUsd: number }>;
 }
 
 function errorMessage(body: unknown, status: number): string {
@@ -493,6 +541,7 @@ export class OpenComputerClient {
         errorMessage(body, response.status),
         response.status,
         errorCode(body),
+        errorField(body, "upgradeUrl") ?? errorField(body, "actionUrl"),
       );
     }
     return response;
@@ -507,6 +556,18 @@ export class OpenComputerClient {
     if (response.status === 204) return undefined as T;
     const body: unknown = await response.json().catch(() => undefined);
     return body as T;
+  }
+
+  /** Prepaid credit status; `null` for orgs without a credit meter (legacy billing). */
+  async credits(): Promise<CreditsStatus | null> {
+    try {
+      return await this.request<CreditsStatus>("/api/billing/credits");
+    } catch (error) {
+      if (error instanceof APIError && (error.status === 404 || error.status === 503)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   startLogin() {
@@ -565,10 +626,18 @@ export class OpenComputerClient {
     return result.projects;
   }
 
-  createProject(name: string, slug: string) {
+  createProject(
+    name: string,
+    slug: string,
+    environmentMode?: ProjectEnvironmentMode,
+  ) {
     return this.request<ManagedProject>("/api/managed-agents/projects", {
       method: "POST",
-      body: JSON.stringify({ name, slug }),
+      body: JSON.stringify({
+        name,
+        slug,
+        ...(environmentMode ? { environmentMode } : {}),
+      }),
     });
   }
 
@@ -586,7 +655,7 @@ export class OpenComputerClient {
 
   connectGitHub(input: {
     projectId: string;
-    environments?: Array<"development" | "production">;
+    environments?: Array<ProjectEnvironment>;
   }) {
     return this.request<{ installUrl: string; authorizeUrl: string }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
@@ -601,7 +670,7 @@ export class OpenComputerClient {
 
   attachGitHub(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     connectionId: string;
   }) {
     return this.request<{ attached: boolean }>(
@@ -618,7 +687,7 @@ export class OpenComputerClient {
 
   disconnectGitHub(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
   }) {
     return this.request<void>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github?environment=${input.environment}`,
@@ -626,15 +695,25 @@ export class OpenComputerClient {
     );
   }
 
-  async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {
+  async inspectTemplate(
+    repositoryUrl: string,
+    options?: { refresh?: boolean },
+  ): Promise<TemplateInspection> {
     const deadline = Date.now() + 10 * 60_000;
+    // `refresh` goes on the first request only: sending it while polling would
+    // restart the rebuild the flag kicked off.
+    let first = true;
     for (;;) {
       const result = await this.request<
         TemplateInspection | TemplateInspectionPreparing
       >("/api/managed-agents/template-inspections", {
         method: "POST",
-        body: JSON.stringify({ repositoryUrl }),
+        body: JSON.stringify({
+          repositoryUrl,
+          ...(first && options?.refresh ? { refresh: true } : {}),
+        }),
       });
+      first = false;
       if ((result as TemplateInspectionPreparing).status !== "preparing") {
         return result as TemplateInspection;
       }
@@ -676,7 +755,7 @@ export class OpenComputerClient {
 
   async secrets(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<ManagedSecretMetadata[]> {
     const query = new URLSearchParams();
@@ -693,7 +772,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
     allowedOrigins: string[];
   }) {
@@ -714,7 +793,7 @@ export class OpenComputerClient {
   deleteSecret(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -852,7 +931,7 @@ export class OpenComputerClient {
 
   putModelRoute(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     connectionId: string;
     model: string;
     agentId?: string;
@@ -874,7 +953,7 @@ export class OpenComputerClient {
 
   deleteModelRoute(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     return this.request<void>(
@@ -928,7 +1007,7 @@ export class OpenComputerClient {
   putModelAccessBinding(input: {
     projectId: string;
     provider: "anthropic" | "openai";
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     enabled: boolean;
   }) {
     return this.request<ModelAccessBinding>(
@@ -939,7 +1018,7 @@ export class OpenComputerClient {
 
   async runtimeVariables(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<AgentRuntimeVariableMetadata[]> {
     const query = new URLSearchParams();
@@ -958,7 +1037,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     return this.request<AgentRuntimeVariableMetadata>(
@@ -977,7 +1056,7 @@ export class OpenComputerClient {
   deleteRuntimeVariable(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -990,7 +1069,7 @@ export class OpenComputerClient {
 
   async webhooks(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<ManagedAgentWebhook[]> {
     const query = new URLSearchParams();
@@ -1006,7 +1085,7 @@ export class OpenComputerClient {
   createWebhook(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId: string;
     identity?: string;
   }) {
@@ -1074,12 +1153,12 @@ export class OpenComputerClient {
 
   async databaseQuery(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     sql: string;
     parameters?: Array<string | number | boolean | null>;
   }): Promise<DatabaseResult> {
     const response = await this.request<{
-      environment: "development" | "production";
+      environment: ProjectEnvironment;
       result: DatabaseResult;
     }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`,
@@ -1237,7 +1316,7 @@ export class OpenComputerClient {
   logs(input: {
     agentId?: string;
     sessionId?: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     after?: string;
     limit?: number;
   }) {
@@ -1337,9 +1416,14 @@ export class OpenComputerClient {
 
   /** One page of session rows, newest created first; pass `cursor` for the next page. */
   async sessions(
-    options: { cursor?: string; limit?: number } = {},
+    options: ManagedSessionListOptions = {},
   ): Promise<ManagedSessionPage> {
     const query = new URLSearchParams();
+    if (options.status) query.set("status", options.status);
+    if (options.agent) query.set("agentId", options.agent);
+    if (options.externalReference !== undefined) {
+      query.set("externalReference", options.externalReference);
+    }
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
     const suffix = query.size ? `?${query.toString()}` : "";
@@ -1434,6 +1518,48 @@ export class OpenComputerClient {
     return result.artifacts;
   }
 
+  async workspaceDownload(
+    sessionId: string,
+    path: string,
+  ): Promise<WorkspaceDownload> {
+    return this.request<WorkspaceDownload>(
+      this.workspacePath(sessionId, "/download"),
+      { method: "POST", body: JSON.stringify({ path }) },
+    );
+  }
+
+  async workspaceFileContent(
+    download: WorkspaceDownload,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const downloadSignal = workspaceContentSignal(signal);
+    const location = new URL(download.url);
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
+  }
+
   /** Provider-side export: retains and hashes the file, returns its manifest. */
   async exportWorkspaceFile(
     sessionId: string,
@@ -1471,17 +1597,54 @@ export class OpenComputerClient {
    * Raw bytes of a retained artifact; callers verify size and SHA-256. The
    * request always carries the one-hour deadline, combined with `signal`.
    */
-  workspaceArtifactContent(
+  async workspaceArtifactContent(
     artifact: Pick<WorkspaceArtifact, "sessionId" | "id">,
     signal?: AbortSignal,
   ): Promise<Response> {
-    return this.response(
+    const downloadSignal = workspaceContentSignal(signal);
+    const handoff = await this.request<{ url: string; expiresAt: string }>(
       this.workspacePath(
         artifact.sessionId,
-        `/exports/${encodeURIComponent(artifact.id)}/content`,
+        `/exports/${encodeURIComponent(artifact.id)}/download`,
       ),
-      { signal: workspaceContentSignal(signal) },
+      { signal: downloadSignal },
     );
+    let location: URL;
+    try {
+      location = new URL(handoff.url);
+    } catch {
+      throw new APIError(
+        "Workspace download did not provide a valid signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    if (
+      location.protocol !== "https:" ||
+      location.username ||
+      location.password
+    ) {
+      throw new APIError(
+        "Workspace download did not provide a secure signed location.",
+        502,
+        "workspace_export_failed",
+      );
+    }
+    // Never forward the OpenComputer API key to object storage. The signed
+    // query authorizes this exact immutable object for a few minutes.
+    const response = await fetch(location, {
+      method: "GET",
+      redirect: "error",
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      throw new APIError(
+        `Workspace object download failed (${response.status}).`,
+        response.status,
+        "workspace_export_failed",
+      );
+    }
+    return response;
   }
 }
 
@@ -1499,6 +1662,13 @@ export type WorkspaceFile = {
   size: number;
   lastModified: string | null;
   etag: string | null;
+};
+
+export type WorkspaceDownload = WorkspaceFile & {
+  versionId: string | null;
+  mediaType: string;
+  url: string;
+  expiresAt: string;
 };
 
 type WorkspaceFilePage = {

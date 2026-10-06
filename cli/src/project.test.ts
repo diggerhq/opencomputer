@@ -57,7 +57,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.equal(packageJSON.scripts.dev, undefined);
     assert.equal(packageJSON.scripts["dev:web"], undefined);
     assert.equal(packageJSON.scripts.deploy, "opencomputer deploy");
-    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.6.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/agent"], "^0.8.0");
     assert.equal(packageJSON.dependencies["@opencomputer/react"], undefined);
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.7.0");
     assert.equal(packageJSON.devDependencies["@types/node"], undefined);
@@ -230,7 +230,7 @@ export default defineSchedule({
   id: "weekday-hygiene",
   cron: "0 9 * * 1-5",
   timezone: "America/Los_Angeles",
-  enabled: ["development", "production"],
+  enabled: ["default", "development", "production"],
   overlap: "skip",
   dispatch: {
     text: "Run feature flag hygiene.",
@@ -246,7 +246,7 @@ export default defineSchedule({
         agentId: "hello-world",
         cron: "0 9 * * 1-5",
         timezone: "America/Los_Angeles",
-        enabled: ["development", "production"],
+        enabled: ["default", "development", "production"],
         overlap: "skip",
         dispatch: {
           text: "Run feature flag hygiene.",
@@ -288,7 +288,7 @@ test("init can explicitly include a separately-run React app", async () => {
       session: "opencomputer session",
       deploy: "opencomputer deploy",
     });
-    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.2.0");
+    assert.equal(packageJSON.dependencies["@opencomputer/react"], "^0.4.0");
     assert.equal(packageJSON.dependencies.react, "^19.2.0");
     assert.equal(packageJSON.devDependencies.vite, "^8.0.0");
     assert.equal(packageJSON.devDependencies["@opencomputer/cli"], "^0.7.0");
@@ -327,7 +327,6 @@ test("the code-first compiler records hook resources without config files", asyn
   useInput,
   useMcpServer,
   useModel,
-  useSubagent,
   useTool,
 } from "@opencomputer/agent";
 
@@ -340,7 +339,6 @@ export default function Agent() {
   const input = useInput();
   useModel("anthropic/claude-sonnet-4.6");
   useTool("search-docs");
-  useSubagent("researcher");
   if (input.text?.includes("docs")) useMcpServer(docs);
   return "Help with the request.";
 }
@@ -357,7 +355,6 @@ export default function Agent() {
       version: number;
       tools: string[];
       toolModules: string[];
-      subagents: string[];
       connections: string[];
       httpConnections: unknown[];
       githubConnections: unknown[];
@@ -376,7 +373,6 @@ export default function Agent() {
       tools: ["search-docs"],
       gatedTools: [],
       toolModules: [],
-      subagents: ["researcher"],
       connections: [],
       httpConnections: [],
       githubConnections: [],
@@ -1017,6 +1013,117 @@ export default defineConnection({
     await assert.rejects(
       buildAgentArtifact(initialized.agentRoot),
       /does not support the administration permission/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("useTool(\"ask\") selects the platform's question tool without a definition", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-ask-select-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    const tools = async () => {
+      await buildAgentArtifact(initialized.agentRoot);
+      return (
+        JSON.parse(
+          await readFile(
+            resolve(
+              await agentRuntimeDirectory(initialized.agentRoot),
+              ".opencomputer",
+              "reactive.json",
+            ),
+            "utf8",
+          ),
+        ) as { tools: string[] }
+      ).tools;
+    };
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useInput, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  useTool("ask");
+  return useInput().answer ? "Act on the answer." : "Ask before acting.";
+}
+`,
+    );
+    // `ask` has no defineTool(); the literal selection is what records it.
+    assert.deepEqual(await tools(), ["ask"]);
+
+    // useTool(ASK_TOOL) selects the same tool as the literal, and the
+    // emitted shim exports the constant the bundled agent imports.
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { ASK_TOOL, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  useTool(ASK_TOOL);
+  return "Ask before acting.";
+}
+`,
+    );
+    assert.deepEqual(await tools(), ["ask"]);
+    const shim = (await import(
+      `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+    )) as { ASK_TOOL: string };
+    assert.equal(shim.ASK_TOOL, "ask");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the tool id ask is reserved for the platform's question tool", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-ask-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "ask.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const ask = defineTool({
+  name: "ask",
+  description: "Ask the user.",
+  async run() {
+    return "asked";
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { ask } from "./tools/ask.js";
+
+export default function Agent() {
+  useTool(ask);
+  return "Ask.";
+}
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /tools\/ask\.ts defineTool\("ask"\): "ask" is the platform's question tool; select it with useTool\("ask"\)/,
+    );
+
+    // The runtime shim refuses it too, so a definition the compiler could
+    // not read still fails at load.
+    const path = resolve(parent, "shim.js");
+    await writeFile(path, agentApiRuntimeSource());
+    const shim = (await import(
+      `${pathToFileURL(path).href}?test=${crypto.randomUUID()}`
+    )) as { defineTool: (input: Record<string, unknown>) => unknown };
+    assert.throws(
+      () =>
+        shim.defineTool({
+          name: "ask",
+          description: "Ask the user.",
+          run: async () => "asked",
+        }),
+      /"ask" is the platform's question tool/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });

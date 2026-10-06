@@ -217,7 +217,10 @@ const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
   workspace_export_failed: "The workspace export failed.",
 };
 
-async function publicErrorResponse(upstream: Response): Promise<Response> {
+async function publicErrorResponse(
+  upstream: Response,
+  suffix?: string,
+): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
     body &&
@@ -267,10 +270,19 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   )
     ? DEPLOYMENT_SOURCE_ERROR_MESSAGES[backendCode]
     : undefined;
+  const linearMessage = Object.hasOwn(LINEAR_ERROR_MESSAGES, backendCode)
+    ? LINEAR_ERROR_MESSAGES[backendCode]
+    : suffix !== undefined &&
+        isLinearRouteSuffix(suffix) &&
+        Object.hasOwn(LINEAR_ROUTE_ERROR_MESSAGES, backendCode)
+      ? LINEAR_ROUTE_ERROR_MESSAGES[backendCode]
+      : undefined;
   if (slackSetupMessage) {
     message = slackSetupMessage;
   } else if (deploymentSourceMessage) {
     message = deploymentSourceMessage;
+  } else if (linearMessage) {
+    message = linearMessage;
   } else if (missingTemplateManifest) {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
@@ -278,7 +290,11 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message =
       backendCode === "invalid_agent_name"
         ? "Agent names must use lowercase letters, numbers, and hyphens."
-        : "The agent request was invalid.";
+        : backendCode === "invalid_external_reference"
+          ? "externalReference must be a non-empty string of at most 256 bytes of UTF-8 without control characters."
+          : backendCode === "invalid_cursor"
+            ? "The cursor is invalid or was issued for different filters. Start again from the first page."
+            : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -291,6 +307,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
         backendMessage || "The deployment selects an unavailable model.";
     } else if (backendCode === "database_not_provisioned") {
       message = "Redeploy this project to provision its database.";
+    } else if (backendCode === "question_stale") {
+      message =
+        "That question is no longer open. Read the session's current question and answer that one.";
     } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
@@ -332,6 +351,15 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
       ? { setupId: backendError.setupId }
       : {};
+  // A Linear conflict names the connection it concerns, so the caller can
+  // continue from it (disconnect it, or list and resume).
+  const linearConnection =
+    (backendCode === "linear_already_connected" ||
+      backendCode === "linear_connection_changed") &&
+    typeof backendError?.connectionId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(backendError.connectionId)
+      ? { connectionId: backendError.connectionId }
+      : {};
   // Workspace export refusals say whether the same Idempotency-Key may be
   // retried and which export record the refusal was written to.
   const exportOutcome: Record<string, unknown> = {};
@@ -349,7 +377,13 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   }
   return new Response(
     JSON.stringify({
-      error: { code: publicCode, message, ...setupId, ...exportOutcome },
+      error: {
+        code: publicCode,
+        message,
+        ...setupId,
+        ...linearConnection,
+        ...exportOutcome,
+      },
     }),
     { status: upstream.status, headers },
   );
@@ -593,6 +627,9 @@ function publicProject(value: unknown): Record<string, unknown> {
     id: project.id,
     slug: project.slug,
     name: project.name,
+    // Projects that predate the mode column are legacy dual-environment
+    // projects; a single-mode project is only ever reported as such.
+    environmentMode: project.environmentMode === "single" ? "single" : "legacy",
     environments: Array.isArray(project.environments)
       ? stripPrivateValues(project.environments)
       : [],
@@ -797,6 +834,99 @@ function publicSlackSetup(value: unknown): Record<string, unknown> {
     ),
     createdAt: setup.createdAt,
     updatedAt: setup.updatedAt,
+  };
+}
+
+// Linear agent connections (work 037, design 018 "Connection"). One
+// connection per (project, environment, agent); the webhook URL carries the
+// connection's secret token, so every response is no-store.
+const LINEAR_PROJECT_CONNECTIONS_ROUTE =
+  /^\/projects\/[^/]+\/linear\/connections$/;
+const LINEAR_CONNECTION_ROUTE = /^\/linear\/connections\/[^/]+$/;
+const LINEAR_CREDENTIALS_ROUTE = /^\/linear\/connections\/[^/]+\/credentials$/;
+const LINEAR_AUTHORIZE_ROUTE = /^\/linear\/connections\/[^/]+\/authorize$/;
+
+function isLinearConnectionRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) ||
+    (method === "PUT" && LINEAR_CREDENTIALS_ROUTE.test(suffix)) ||
+    (method === "POST" && LINEAR_AUTHORIZE_ROUTE.test(suffix)) ||
+    (method === "DELETE" && LINEAR_CONNECTION_ROUTE.test(suffix))
+  );
+}
+
+function isLinearRouteSuffix(suffix: string): boolean {
+  return (
+    suffix.startsWith("/linear/") ||
+    /^\/projects\/[^/]+\/linear(?:\/|$)/.test(suffix)
+  );
+}
+
+const LINEAR_ERROR_MESSAGES: Record<string, string> = {
+  linear_connector_unavailable:
+    "Linear connections are not available right now.",
+  linear_connection_not_found: "That Linear connection does not exist.",
+  linear_already_connected:
+    "This agent already has a Linear connection in this environment. Disconnect it before creating another.",
+  linear_connection_changed:
+    "This connection changed while the request was in flight. List the connections and continue from there.",
+  linear_credentials_required:
+    "Paste the app's client ID, client secret and webhook signing secret before authorizing.",
+  invalid_linear_credentials:
+    "Expected clientId, clientSecret and signingSecret as copied from the Linear app.",
+  linear_app_already_connected:
+    "This Linear app is already connected to another agent or environment. Create a separate app for each.",
+  linear_connection_connected:
+    "This connection is authorized with a different Linear app. Disconnect it first.",
+  invalid_linear_app_name: "The Linear app name must be 1 to 64 characters.",
+  linear_app_name_reserved:
+    'Linear does not allow app names that contain "Linear". Choose another name.',
+};
+
+// Shared codes worded for the Linear connection routes that return them.
+const LINEAR_ROUTE_ERROR_MESSAGES: Record<string, string> = {
+  forbidden:
+    "Project-scoped API keys cannot create or change Linear connections. Use an organization API key.",
+  project_not_found: "That project does not exist.",
+  project_archived: "Restore this project before connecting Linear.",
+};
+
+/** A Linear connection by whitelist: never its credentials or account. */
+function publicLinearConnection(value: unknown): Record<string, unknown> {
+  const connection = record(value) ?? {};
+  const teams = record(connection.teams);
+  const health = record(connection.health);
+  return {
+    id: connection.id,
+    projectId: connection.projectId,
+    environment: connection.environment,
+    agentId: connection.agentId,
+    name: connection.name,
+    status: connection.status,
+    clientId: connection.clientId,
+    appUserId: connection.appUserId,
+    organizationId: connection.organizationId,
+    webhookUrl: connection.webhookUrl,
+    createAppUrl: connection.createAppUrl,
+    verifiedAt: connection.verifiedAt,
+    verificationError: connection.verificationError,
+    lastEventAt: connection.lastEventAt,
+    ...(teams
+      ? { teams: { allPublic: teams.allPublic === true, teamIds: strings(teams.teamIds) } }
+      : {}),
+    ...(health
+      ? {
+          health: {
+            state: health.state,
+            message: health.message,
+            lastEventAt: health.lastEventAt,
+          },
+        }
+      : {}),
+    revision: connection.revision,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
   };
 }
 
@@ -1114,6 +1244,19 @@ function publicSessionSnapshot(value: unknown): unknown {
   );
 }
 
+/**
+ * The caller's own `externalReference`, when the session has one. The value is
+ * the caller's opaque string and is read from the source, never from a
+ * stripped copy, for the same reason labels are.
+ */
+function ownerExternalReference(
+  source: Record<string, unknown>,
+): { externalReference: string } | Record<never, never> {
+  return typeof source.externalReference === "string"
+    ? { externalReference: source.externalReference }
+    : {};
+}
+
 /** One list row as documented: nothing private is in it, and the labels and result are the owner's. */
 function publicSessionSummary(value: unknown): unknown {
   const source = record(value);
@@ -1128,6 +1271,7 @@ function publicSessionSummary(value: unknown): unknown {
     source: row.source,
     status: row.status,
     labels: ownerLabels(source),
+    ...ownerExternalReference(source),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     revision: row.revision,
@@ -1402,13 +1546,114 @@ function publicEventData(
   value: unknown,
 ): Record<string, unknown> {
   if (type.startsWith("runtime.") && type !== "runtime.log") return {};
-  if (type === "session.failed" || type === "turn.failed") {
+  if (type === "session.failed") {
+    return {
+      ...publicFailure(value),
+      ...ownerExternalReference(record(value) ?? {}),
+    };
+  }
+  if (type === "turn.failed") {
     return { ...publicFailure(value) };
   }
   const data = record(value) ?? {};
   return Object.fromEntries(
     Object.entries(data).filter(([key]) => !PRIVATE_EVENT_KEYS.has(key)),
   );
+}
+
+export function publicEvent(value: unknown): Record<string, unknown> {
+  const event = record(value) ?? {};
+  const type = typeof event.type === "string" ? event.type : "";
+  return {
+    id: event.id,
+    seq: event.seq,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    turnId: event.turnId,
+    type,
+    data: publicEventData(type, event.data),
+  };
+}
+
+const SESSION_CONNECT_ROUTE = /^\/sessions\/[^/]+\/connect$/;
+
+// Live session stream. The browser opens a WebSocket against the edge; the
+// edge opens the backend's client socket and relays frames, applying the same
+// redaction as GET /events to every event. Only keepalive pings travel
+// upstream: turns are admitted over REST, where the credit gate lives.
+function relaySessionSocket(upstream: WebSocket): Response {
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+  server.accept();
+  upstream.accept();
+
+  const closeBoth = (code: number, reason: string) => {
+    for (const socket of [server, upstream]) {
+      try {
+        socket.close(code, reason);
+      } catch {
+        // Already closed.
+      }
+    }
+  };
+
+  upstream.addEventListener("message", (message) => {
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(
+        JSON.parse(
+          typeof message.data === "string"
+            ? message.data
+            : new TextDecoder().decode(message.data as ArrayBuffer),
+        ),
+      );
+    } catch {
+      return;
+    }
+    if (!frame) return;
+    if (frame.type === "event") {
+      server.send(
+        JSON.stringify({ type: "event", event: publicEvent(frame.event) }),
+      );
+    } else if (frame.type === "ready" || frame.type === "pong") {
+      server.send(JSON.stringify(frame));
+    } else if (frame.type === "error") {
+      server.send(
+        JSON.stringify({
+          type: "error",
+          code: typeof frame.code === "string" ? frame.code : "stream_error",
+          message: "The session stream reported an error.",
+        }),
+      );
+    }
+  });
+  upstream.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  upstream.addEventListener("error", () => closeBoth(1011, "upstream error"));
+
+  server.addEventListener("message", (message) => {
+    if (typeof message.data !== "string") return;
+    let frame: Record<string, unknown> | null = null;
+    try {
+      frame = record(JSON.parse(message.data));
+    } catch {
+      return;
+    }
+    if (frame?.type === "ping") upstream.send(JSON.stringify({ type: "ping" }));
+  });
+  server.addEventListener("close", (event) =>
+    closeBoth(
+      event.code === 1005 || event.code === 1006 ? 1000 : event.code,
+      event.reason,
+    ),
+  );
+  server.addEventListener("error", () => closeBoth(1011, "client error"));
+
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 function publicTemplateInspection(value: unknown): Record<string, unknown> {
@@ -1808,6 +2053,33 @@ function publicSuccessBody(
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix)) {
     return { run: publicScheduleRun(body.run) };
   }
+  if (method === "POST" && LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) {
+    return {
+      connectionId: body.connectionId,
+      webhookUrl: body.webhookUrl,
+      createAppUrl: body.createAppUrl,
+      connection: publicLinearConnection(body.connection),
+    };
+  }
+  if (method === "GET" && LINEAR_PROJECT_CONNECTIONS_ROUTE.test(suffix)) {
+    return {
+      connections: Array.isArray(body.connections)
+        ? body.connections.map(publicLinearConnection)
+        : [],
+    };
+  }
+  if (method === "PUT" && LINEAR_CREDENTIALS_ROUTE.test(suffix)) {
+    return { connection: publicLinearConnection(body.connection) };
+  }
+  if (method === "POST" && LINEAR_AUTHORIZE_ROUTE.test(suffix)) {
+    return { authorizeUrl: body.authorizeUrl, expiresAt: body.expiresAt };
+  }
+  if (method === "DELETE" && LINEAR_CONNECTION_ROUTE.test(suffix)) {
+    return {
+      connection: publicLinearConnection(body.connection),
+      revoked: body.revoked === true,
+    };
+  }
   if (method === "POST" && suffix === "/channels/slack/connections") {
     return {
       connection: publicChannel(body.connection),
@@ -1864,6 +2136,7 @@ function publicSuccessBody(
         executionMode: session.executionMode,
         status: session.status,
         createdAt: session.createdAt,
+        ...ownerExternalReference(session),
       },
       deployment: body.deployment
         ? publicDeployment(body.deployment)
@@ -1872,28 +2145,18 @@ function publicSuccessBody(
   }
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return {
-      events: Array.isArray(body.events)
-        ? body.events.map((value) => {
-            const event = record(value) ?? {};
-            const type = typeof event.type === "string" ? event.type : "";
-            return {
-              id: event.id,
-              seq: event.seq,
-              timestamp: event.timestamp,
-              sessionId: event.sessionId,
-              turnId: event.turnId,
-              type,
-              data: publicEventData(type, event.data),
-            };
-          })
-        : [],
+      events: Array.isArray(body.events) ? body.events.map(publicEvent) : [],
     };
   }
   if (method === "POST" && /\/turns$/.test(suffix)) {
+    // An input held behind an open question has no turn yet: its receipt
+    // names the question instead (status "held", or "discarded" after a stop).
     return {
-      turnId: body.turnId,
+      ...(typeof body.turnId === "string" ? { turnId: body.turnId } : {}),
       status: body.status,
       duplicate: body.duplicate,
+      ...(typeof body.questionId === "string" ? { questionId: body.questionId } : {}),
+      ...(typeof body.heldId === "string" ? { heldId: body.heldId } : {}),
     };
   }
   if (method === "GET" && suffix === "/billing/sessions") {
@@ -1918,7 +2181,9 @@ function publicSuccessBody(
     (method === "GET" && /^\/sessions\/[^/]+$/.test(suffix)) ||
     (method === "PATCH" && /^\/sessions\/[^/]+\/labels$/.test(suffix)) ||
     (method === "POST" &&
-      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix))
+      /^\/sessions\/[^/]+\/(resume|end|terminate|interrupt)$/.test(suffix)) ||
+    (method === "POST" &&
+      /^\/sessions\/[^/]+\/questions\/[^/]+\/dismiss$/.test(suffix))
   ) {
     return publicSessionSnapshot(body);
   }
@@ -1931,6 +2196,37 @@ function publicSuccessBody(
         ? body.files.map(publicWorkspaceFile)
         : [],
       nextCursor: typeof body.nextCursor === "string" ? body.nextCursor : null,
+    };
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.path !== "string" ||
+      typeof body.size !== "number" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return {
+      path: body.path,
+      size: body.size,
+      etag: typeof body.etag === "string" ? body.etag : null,
+      versionId: typeof body.versionId === "string" ? body.versionId : null,
+      lastModified:
+        typeof body.lastModified === "string" ? body.lastModified : null,
+      mediaType:
+        typeof body.mediaType === "string"
+          ? body.mediaType
+          : "application/octet-stream",
+      url: url.toString(),
+      expiresAt: body.expiresAt,
     };
   }
   if (
@@ -1958,6 +2254,22 @@ function publicSuccessBody(
         : {}),
       artifact: body.artifact ? publicWorkspaceArtifact(body.artifact) : null,
     };
+  }
+  if (
+    method === "GET" &&
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+\/download$/.test(suffix)
+  ) {
+    const url = typeof body.url === "string" ? new URL(body.url) : null;
+    if (
+      !url ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw new Error("Invalid workspace download authorization");
+    }
+    return { url: url.toString(), expiresAt: body.expiresAt };
   }
   throw new Error("Unsupported managed agents response");
 }
@@ -2070,7 +2382,8 @@ async function publicSuccessResponse(
   if (
     suffix.includes("/webhooks") ||
     suffix.includes("/event-subscriptions") ||
-    suffix.startsWith("/channels/slack/setups")
+    suffix.startsWith("/channels/slack/setups") ||
+    isLinearRouteSuffix(suffix)
   ) {
     headers.set("cache-control", "no-store");
   }
@@ -2403,6 +2716,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/schedule-runs") return true;
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix))
     return true;
+  // Linear agent connections: only the contract's routes.
+  if (isLinearRouteSuffix(suffix)) return isLinearConnectionRoute(method, suffix);
   // Automated Slack setup: only the contract's routes, before the /channels
   // catch-all below can admit anything else under the prefix.
   if (suffix.startsWith("/channels/slack/setups")) {
@@ -2450,9 +2765,16 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && /^\/sessions\/[^/]+\/events$/.test(suffix)) {
     return true;
   }
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) return true;
   if (
     method === "GET" &&
     /^\/sessions\/[^/]+\/workspace\/files$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix)
   ) {
     return true;
   }
@@ -2464,7 +2786,16 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     method === "GET" &&
-    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/content)?$/.test(suffix)
+    /^\/sessions\/[^/]+\/workspace\/exports\/[^/]+(?:\/(?:content|download))?$/.test(
+      suffix,
+    )
+  ) {
+    return true;
+  }
+  // Closes the open question without an answer.
+  if (
+    method === "POST" &&
+    /^\/sessions\/[^/]+\/questions\/[^/]+\/dismiss$/.test(suffix)
   ) {
     return true;
   }
@@ -2578,15 +2909,17 @@ export async function handleManagedGitHubWebhook(
 }
 
 /**
- * Slack's OAuth redirect for apps created by the automated setup. The exact
- * public URL is registered on every generated app, so it forwards the query
- * verbatim and never reinterprets it. The backend resolves the single-use
+ * A provider's OAuth redirect, forwarded to the backend's callback. The exact
+ * public URL is registered with the provider, so the query goes through
+ * verbatim and is never reinterpreted. The backend resolves the single-use
  * state and answers with a redirect into the project's Connections tab, or
  * a no-store HTML page for a malformed state; both pass through unchanged.
  */
-export async function handleManagedSlackCallback(
+async function forwardProviderCallback(
   request: Request,
   env: ManagedAgentsEnv,
+  upstreamPath: string,
+  provider: string,
 ): Promise<Response> {
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
@@ -2595,11 +2928,11 @@ export async function handleManagedSlackCallback(
   const base = (
     env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
   ).replace(/\/+$/, "");
-  const target = new URL(
-    `${base}/v1/channels/slack/oauth/callback${requestURL.search}`,
-  );
+  const target = new URL(`${base}${upstreamPath}${requestURL.search}`);
   if (target.protocol !== "https:" && target.hostname !== "localhost") {
-    return new Response("Slack connection is unavailable", { status: 503 });
+    return new Response(`${provider} connection is unavailable`, {
+      status: 503,
+    });
   }
   try {
     const upstream = await fetch(target, { redirect: "manual" });
@@ -2626,11 +2959,41 @@ export async function handleManagedSlackCallback(
       headers,
     });
   } catch {
-    return new Response("Slack connection is temporarily unavailable", {
+    return new Response(`${provider} connection is temporarily unavailable`, {
       status: 502,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
+}
+
+/** Slack's OAuth redirect for apps created by the automated setup. */
+export async function handleManagedSlackCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  return forwardProviderCallback(
+    request,
+    env,
+    "/v1/channels/slack/oauth/callback",
+    "Slack",
+  );
+}
+
+/**
+ * Linear's OAuth redirect for a project's Linear agent connection. The
+ * backend builds this URL into every authorize link (its default is the
+ * Slack callback's sibling, `/api/managed-agents/linear/callback`).
+ */
+export async function handleManagedLinearCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  return forwardProviderCallback(
+    request,
+    env,
+    "/v1/linear/oauth/callback",
+    "Linear",
+  );
 }
 
 function channelConnectionPage(
@@ -2874,7 +3237,12 @@ export async function handleAgentWebhookInvocation(
       typeof agentId === "string" &&
       typeof environment === "string" &&
       typeof sessionId === "string"
-        ? `${url.origin}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?agent=${encodeURIComponent(agentId)}&environment=${encodeURIComponent(environment)}`
+        ? `${url.origin}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?agent=${encodeURIComponent(agentId)}${
+            // The single `default` scope is the dashboard's environmentless URL.
+            environment === "default"
+              ? ""
+              : `&environment=${encodeURIComponent(environment)}`
+          }`
         : undefined;
     return Response.json(
       {
@@ -2900,6 +3268,55 @@ export async function handleAgentWebhookInvocation(
           message: "Webhook service is unavailable.",
         },
       },
+      { status: 502 },
+    );
+  }
+}
+
+// Anonymous template preview: the dashboard shows a template's deploy form
+// before sign-up, so inspection is proxied without an org assertion to the
+// backend's public route. Installation still requires an authenticated caller.
+export async function proxyPublicTemplateInspection(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method.toUpperCase() !== "POST") {
+    return Response.json({ error: "method not allowed" }, { status: 405 });
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/public/template-inspections`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return Response.json(
+      { error: "managed agents upstream must use HTTPS" },
+      { status: 503 },
+    );
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers: copyRequestHeaders(request),
+      body: request.body,
+      redirect: "manual",
+    });
+    if (!upstream.ok) return publicErrorResponse(upstream);
+    return publicSuccessResponse(
+      upstream,
+      "POST",
+      "/template-inspections",
+      new URL(request.url).origin,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "managed_agents.upstream_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return Response.json(
+      { error: "managed agents service is unavailable" },
       { status: 502 },
     );
   }
@@ -3019,6 +3436,39 @@ export async function proxyManagedAgents(
     );
   }
   const headers = copyRequestHeaders(request);
+  if (method === "GET" && SESSION_CONNECT_ROUTE.test(suffix)) {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return Response.json(
+        { error: "expected a WebSocket upgrade" },
+        { status: 426 },
+      );
+    }
+    target.searchParams.set("role", "client");
+    headers.set("upgrade", "websocket");
+    headers.set(
+      "x-opencomputer-agent-token",
+      await mintManagedAgentsAssertion(env.OC_MANAGED_AGENTS_SECRET, caller),
+    );
+    try {
+      const upstream = await fetch(target, { method: "GET", headers });
+      if (upstream.status !== 101 || !upstream.webSocket) {
+        return publicErrorResponse(upstream);
+      }
+      return relaySessionSocket(upstream.webSocket);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "managed_agents.upstream_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Response.json(
+        { error: "managed agents service is unavailable" },
+        { status: 502 },
+      );
+    }
+  }
   const memoryRoute = isMemoryRoute(method, suffix);
   if (memoryRoute) {
     for (const name of MEMORY_CONDITIONAL_REQUEST_HEADERS) {
@@ -3058,7 +3508,35 @@ export async function proxyManagedAgents(
   try {
     const upstream = await fetch(target, init);
     if (memoryRoute) return memoryResponse(upstream, method, suffix);
-    if (!upstream.ok) return publicErrorResponse(upstream);
+    if (
+      method === "GET" &&
+      /^\/sessions\/[^/]+\/workspace\/download$/.test(suffix) &&
+      upstream.status === 302
+    ) {
+      const value = upstream.headers.get("location");
+      let location: URL;
+      try {
+        location = new URL(value ?? "");
+      } catch {
+        throw new Error("Invalid workspace download redirect");
+      }
+      if (
+        location.protocol !== "https:" ||
+        location.username ||
+        location.password
+      ) {
+        throw new Error("Invalid workspace download redirect");
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: location.toString(),
+          "cache-control": "private, no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
+    if (!upstream.ok) return publicErrorResponse(upstream, suffix);
     if (upstream.status === 204) return new Response(null, { status: 204 });
     if (
       /^\/projects\/[^/]+\/source-archive$/.test(suffix) ||

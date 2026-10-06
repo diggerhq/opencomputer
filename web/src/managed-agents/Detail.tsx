@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { isDynamicToolUIPart, type DynamicToolUIPart, type UIMessage } from 'ai'
 import {
   Link,
@@ -31,6 +35,7 @@ import {
   Panel,
   PanelContent,
   PanelDescription,
+  PanelFooter,
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
@@ -56,6 +61,8 @@ import {
   getManagedAgentSessionEvents,
   getManagedAgents,
   getManagedAgentSessions,
+  getManagedAgentSessionsPage,
+  latestManagedAgentModelRoute,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -64,12 +71,23 @@ import {
   type ManagedProjectOverview,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
+import { useLiveSessionEvents } from './use-live-session-events'
+import { PostSessionUpsell } from '@/components/post-session-upsell'
+import { useCreditState } from '@/hooks/useCreditState'
+import {
+  PLAN_OFFERS,
+  billingOnrampV2Enabled,
+  trackUpsellClicked,
+  upgradeHref,
+} from '@/lib/billing-onramp'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import {
   projectContextSearch,
+  projectEnvironmentMode,
   requestedProjectAgentId,
+  resolveProjectEnvironment,
 } from './project-context'
 import {
   playgroundSessionIdFromSearch,
@@ -84,6 +102,7 @@ import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
+import { ManagedProjectLinear } from './Linear'
 import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
@@ -290,7 +309,6 @@ function PlaygroundChat({
     queryKey: ['managed-agent-session-events', liveSessionId],
     queryFn: () => getManagedAgentSessionEvents(liveSessionId!),
     enabled: Boolean(liveSessionId),
-    refetchInterval: 1_000,
   })
   useEffect(() => {
     liveSessionIdRef.current = liveSessionId
@@ -319,6 +337,16 @@ function PlaygroundChat({
     running ||
     session?.status === 'running' ||
     session?.status === 'waiting_runtime'
+  const credits = useCreditState()
+  const halted = credits.sessionsBlocked
+  const turnFinished =
+    !agentWorking && status === 'ready' && messages.length > 0
+  const inspectorEvents = useLiveSessionEvents(
+    liveSessionId,
+    debugEvents.data ?? events,
+    agentWorking,
+  )
+  const modelRoute = latestManagedAgentModelRoute(inspectorEvents)
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -340,7 +368,7 @@ function PlaygroundChat({
 
   const send = () => {
     const input = prompt.trim()
-    if (!input || admitting) return
+    if (!input || admitting || halted) return
     if (agentWorking) {
       const sessionId = liveSessionId
       if (!sessionId) {
@@ -393,12 +421,22 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {agentWorking ? (
-            <div className="text-muted-foreground flex items-center gap-2 text-xs">
-              <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
-              Agent is working
-            </div>
-          ) : null}
+          <div className="flex items-center gap-3">
+            {modelRoute?.effective ? (
+              <span
+                className="text-muted-foreground font-mono text-[10px]"
+                title="Effective model resolved for this session"
+              >
+                {modelRoute.effective.provider}/{modelRoute.effective.model}
+              </span>
+            ) : null}
+            {agentWorking ? (
+              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+                <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
+                Agent is working
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div
@@ -466,7 +504,43 @@ function PlaygroundChat({
         </div>
 
         <div className="bg-panel shrink-0 border-t p-4">
-          {error ? (
+          {liveSessionId ? (
+            <PostSessionUpsell
+              sessionId={liveSessionId}
+              completed={turnFinished}
+              className="mb-3"
+            />
+          ) : null}
+          {halted ? (
+            <p className="text-destructive mb-2 text-xs">
+              Out of credits — this agent can&apos;t run until you{' '}
+              <Link
+                to={upgradeHref(credits.upgradePlan)}
+                className="font-medium underline"
+                onClick={() =>
+                  trackUpsellClicked({
+                    surface: 'session_composer',
+                    plan: credits.upgradePlan,
+                    usagePlan: credits.usagePlan,
+                    creditsRemainingCents: credits.creditsRemainingCents,
+                  })
+                }
+              >
+                upgrade to {credits.upgradePlan === 'max' ? 'Max' : 'Pro'} — $
+                {PLAN_OFFERS[credits.upgradePlan].priceUsd}/mo
+              </Link>
+              {billingOnrampV2Enabled ? (
+                <>
+                  {' '}
+                  or{' '}
+                  <Link to="/billing" className="underline">
+                    top up
+                  </Link>
+                </>
+              ) : null}
+              .
+            </p>
+          ) : error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>
           ) : null}
           {admissionNotice ? (
@@ -505,7 +579,7 @@ function PlaygroundChat({
                     variant={
                       inputMode === 'interrupt' ? 'destructive' : 'default'
                     }
-                    disabled={!prompt.trim() || admitting}
+                    disabled={!prompt.trim() || admitting || halted}
                     onClick={send}
                   >
                     {admitting ? (
@@ -517,7 +591,11 @@ function PlaygroundChat({
                   </Button>
                 </div>
               ) : (
-                <Button size="sm" disabled={!prompt.trim()} onClick={send}>
+                <Button
+                  size="sm"
+                  disabled={!prompt.trim() || halted}
+                  onClick={send}
+                >
                   <Send /> Send
                 </Button>
               )}
@@ -526,7 +604,7 @@ function PlaygroundChat({
         </div>
       </div>
       <DebugInspector
-        events={debugEvents.data ?? events}
+        events={inspectorEvents}
         deploymentId={session?.deploymentId}
         sessionId={liveSessionId}
         sessionLive={agentWorking}
@@ -589,14 +667,20 @@ export default function ManagedAgentDetail({
       : 'playground'
     : standaloneTab
   const requestedEnvironment = searchParams.get('environment') ?? ''
-  const environment =
-    requestedEnvironment === 'production' ? 'production' : 'development'
   // A pull request preview (`pr-<n>`) is a deployment alias, not an
   // environment: only the playground targets it, everything else stays on
-  // development.
+  // the project's working scope.
   const previewAlias = PREVIEW_ALIAS.test(requestedEnvironment)
     ? requestedEnvironment
     : undefined
+  const environmentMode = projectEnvironmentMode(project?.project)
+  const resolvedEnvironment = resolveProjectEnvironment(
+    environmentMode,
+    searchParams.toString(),
+  )
+  const environment = resolvedEnvironment.ok
+    ? resolvedEnvironment.environment
+    : 'default'
   const playgroundAlias = previewAlias ?? environment
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
@@ -650,12 +734,50 @@ export default function ManagedAgentDetail({
     queryFn: () => getManagedAgentSessions(agentId),
     refetchInterval: 5_000,
   })
-  const projectSessions = useQuery({
+  // The loaded pages re-walk from the newest cursor so the chain stays
+  // contiguous and every loaded row refreshes, at an interval that grows with
+  // the page count so polling stays at roughly one request per five seconds.
+  // Once more than one page is open, a separate newest-page poll keeps the
+  // head of the list at the five-second cadence.
+  const projectSessions = useInfiniteQuery({
     queryKey: ['managed-agent-sessions', 'project', projectId],
-    queryFn: () => getManagedAgentSessions(undefined, { projectId }),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      getManagedAgentSessionsPage({
+        projectId,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      5_000 * Math.max(1, query.state.data?.pages.length ?? 1),
+  })
+  const projectSessionPageCount = projectSessions.data?.pages.length ?? 0
+  const newestProjectSessions = useQuery({
+    queryKey: ['managed-agent-sessions', 'project', projectId, 'newest'],
+    queryFn: () => getManagedAgentSessionsPage({ projectId }),
+    enabled: Boolean(projectId) && projectSessionPageCount > 1,
     refetchInterval: 5_000,
   })
+  const projectSessionRows = useMemo(() => {
+    const seen = new Set<string>()
+    const rows: ManagedAgentSessionSummary[] = []
+    for (const session of [
+      ...(newestProjectSessions.data?.sessions ?? []),
+      ...(projectSessions.data?.pages.flatMap((page) => page.sessions) ?? []),
+    ]) {
+      if (seen.has(session.id)) continue
+      seen.add(session.id)
+      rows.push(session)
+    }
+    return rows
+  }, [newestProjectSessions.data, projectSessions.data])
+  const loadMoreProjectSessions = async () => {
+    const result = await projectSessions.fetchNextPage()
+    if (result.isError) {
+      notifyError("Couldn't load more sessions.", result.error)
+    }
+  }
   const environmentSessions = project
     ? sessionsForEnvironment(
         sessions.data ?? [],
@@ -670,7 +792,7 @@ export default function ManagedAgentDetail({
   const externalSessions = (
     project
       ? sessionsForEnvironment(
-          projectSessions.data ?? [],
+          projectSessionRows,
           project.deployments,
           sessionsAgentFilter,
           environment,
@@ -693,7 +815,7 @@ export default function ManagedAgentDetail({
     queryKey: ['managed-agent-session-events', selectedPlaygroundId],
     queryFn: () => getManagedAgentSessionEvents(selectedPlaygroundId!),
     enabled: Boolean(selectedPlaygroundId),
-    refetchInterval: 1_000,
+    refetchInterval: 5_000,
   })
   // The list carries rows; the open session's turns come from its own route.
   const selectedPlaygroundSession = useQuery({
@@ -831,6 +953,43 @@ export default function ManagedAgentDetail({
       ),
     )
 
+  if (project && !resolvedEnvironment.ok && previewAlias === undefined) {
+    return (
+      <div className="space-y-5">
+        <PageHeader
+          title={project.project.name}
+          description="Single environment"
+        />
+        <Panel>
+          <EmptyState
+            icon={Bot}
+            title="This project has a single environment"
+            description={`“${resolvedEnvironment.requested}” is not an environment of this project (single_environment_project). Use a separate project for a distinct ${resolvedEnvironment.requested} target.`}
+            action={
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={{
+                    pathname: location.pathname,
+                    search: projectContextSearch(
+                      location.search,
+                      requestedProjectAgentId(
+                        location.search,
+                        project.project.agents,
+                      ),
+                      'default',
+                    ),
+                  }}
+                >
+                  Open the project
+                </Link>
+              </Button>
+            }
+          />
+        </Panel>
+      </div>
+    )
+  }
+
   return (
     <div
       className={cn(
@@ -846,7 +1005,7 @@ export default function ManagedAgentDetail({
         }
         description={
           project
-            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'} · development and production environments`
+            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'}${environmentMode === 'legacy' ? ' · development and production environments' : ''}`
             : activeDeployment.data
               ? `Active deployment · ${activeDeployment.data.alias}`
               : 'Loading active deployment…'
@@ -995,7 +1154,11 @@ export default function ManagedAgentDetail({
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Debug playground"
-            description={`Create the starter locally, then sync it directly to ${environment}.`}
+            description={
+              environmentMode === 'single'
+                ? 'Create the starter locally, then sync it to this project.'
+                : `Create the starter locally, then sync it directly to ${environment}.`
+            }
             action={
               <div className="flex max-w-xl flex-col items-center gap-3">
                 <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">
@@ -1224,6 +1387,21 @@ export default function ManagedAgentDetail({
               />
             }
           />
+          {project && projectSessions.hasNextPage ? (
+            <PanelFooter>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={projectSessions.isFetchingNextPage}
+                onClick={() => void loadMoreProjectSessions()}
+              >
+                {projectSessions.isFetchingNextPage ? (
+                  <Loader2 className="animate-spin" />
+                ) : null}
+                Load more
+              </Button>
+            </PanelFooter>
+          ) : null}
         </Panel>
       ) : null}
 
@@ -1285,7 +1463,10 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'byok' && project ? (
-        <ManagedProjectBYOK projectId={project.project.id} />
+        <ManagedProjectBYOK
+          projectId={project.project.id}
+          environmentMode={environmentMode}
+        />
       ) : null}
 
       {activeTab === 'settings' && project ? (
@@ -1302,6 +1483,7 @@ export default function ManagedAgentDetail({
             projectId={project.project.id}
             environment={environment}
           />
+          <ManagedProjectLinear projectId={project.project.id} />
         </div>
       ) : null}
     </div>

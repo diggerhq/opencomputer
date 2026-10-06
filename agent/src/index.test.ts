@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ASK_TOOL,
   bearer,
   defineConnection,
   defineMemory,
@@ -597,5 +598,18 @@ test("defineTool refuses a result tool that waits for approval", () => {
         apply: () => ({}),
       } as unknown as Parameters<typeof defineTool>[0]),
     /waits for approval cannot be the result tool/,
+  );
+});
+
+test("defineTool reserves the question tool's id", () => {
+  assert.equal(ASK_TOOL, "ask");
+  assert.throws(
+    () =>
+      defineTool({
+        name: "ask",
+        description: "Ask something.",
+        run: () => "asked",
+      }),
+    /platform's question tool/,
   );
 });

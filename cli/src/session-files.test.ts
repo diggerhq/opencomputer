@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { APIError, type WorkspaceArtifact, type WorkspaceFile } from "./api.js";
+import {
+  APIError,
+  type WorkspaceArtifact,
+  type WorkspaceDownload,
+  type WorkspaceFile,
+} from "./api.js";
 import {
   VerificationError,
   downloadWorkspace,
@@ -59,6 +64,22 @@ function fakeClient(fixtures: Fixture[]): WorkspaceClient & {
     },
     async workspaceArtifacts() {
       return fixtures.map(artifactFor);
+    },
+    async workspaceDownload(_session, filePath) {
+      const fixture = byPath.get(filePath);
+      if (!fixture) throw new Error(`no such file ${filePath}`);
+      return {
+        ...files.find((file) => file.path === filePath)!,
+        versionId: `version-${filePath}`,
+        mediaType: "application/octet-stream",
+        url: `https://downloads.example/${encodeURIComponent(filePath)}`,
+        expiresAt: "2026-01-01T00:05:00.000Z",
+      };
+    },
+    async workspaceFileContent(download: WorkspaceDownload) {
+      const fixture = byPath.get(download.path);
+      if (!fixture) throw new Error("unknown workspace file");
+      return new Response(new Uint8Array(fixture.served ?? fixture.bytes));
     },
     async exportWorkspaceFile(_session, filePath) {
       const fixture = byPath.get(filePath);
@@ -114,7 +135,7 @@ test("localPathFor never escapes the destination root", () => {
   assert.throws(() => localPathFor(root, "a/../../x"), /outside/);
 });
 
-test("download exports first, then saves the verified bytes", async () => {
+test("download streams direct and computes a local hash", async () => {
   const bytes = new TextEncoder().encode("hello evidence");
   const client = fakeClient([{ path: "out/a.txt", bytes }]);
   await withDirectory(async (dir) => {
@@ -125,7 +146,7 @@ test("download exports first, then saves the verified bytes", async () => {
       "out/a.txt",
       destination,
     );
-    assert.deepEqual(client.exports, ["out/a.txt"]);
+    assert.deepEqual(client.exports, []);
     assert.equal(result.size, bytes.length);
     assert.equal(result.sha256, sha256(bytes));
     assert.equal(await readFile(destination, "utf8"), "hello evidence");
@@ -134,7 +155,6 @@ test("download exports first, then saves the verified bytes", async () => {
 });
 
 for (const [name, served] of [
-  ["corrupted", new TextEncoder().encode("hello EVIDENCE")],
   ["truncated", new TextEncoder().encode("hello")],
   ["oversized", new TextEncoder().encode("hello evidence and more")],
 ] as const) {
@@ -181,7 +201,7 @@ test("an ended session falls back to its retained artifacts", async () => {
   const client: WorkspaceClient = {
     ...base,
     workspaceFiles: gone,
-    exportWorkspaceFile: gone,
+    workspaceDownload: gone,
   };
   await withDirectory(async (dir) => {
     const single = await downloadWorkspaceFile(

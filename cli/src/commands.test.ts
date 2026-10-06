@@ -11,6 +11,7 @@ import {
   shouldBindModelAccessProject,
   validateGitHubConnectionChoice,
 } from "./commands.js";
+import { CLIError } from "./errors.js";
 
 test("agent event progress refreshes the inactivity deadline", () => {
   assert.equal(nextAgentEventDeadline(10_000, 3_000, 0, 9_000), 10_000);
@@ -21,6 +22,16 @@ test("one-shot deploy defaults to development and production stays explicit", ()
   assert.equal(deploymentAlias(), "development");
   assert.equal(deploymentAlias("development"), "development");
   assert.equal(deploymentAlias("production"), "production");
+});
+
+test("single-mode deploy is environmentless and refuses --alias", () => {
+  assert.equal(deploymentAlias(undefined, "single"), "default");
+  assert.throws(
+    () => deploymentAlias("production", "single"),
+    (error: unknown) =>
+      error instanceof CLIError && error.code === "single_environment_project",
+  );
+  assert.throws(() => deploymentAlias("development", "single"), /single environment/);
 });
 
 test("model access binds the explicit or current linked project", () => {
@@ -46,6 +57,11 @@ test("GitHub App connections target both environments unless one is explicit", (
   assert.throws(
     () => githubEnvironments("staging"),
     /development or production/,
+  );
+  assert.deepEqual(githubEnvironments(undefined, "single"), ["default"]);
+  assert.throws(
+    () => githubEnvironments("production", "single"),
+    /single environment/,
   );
 });
 
