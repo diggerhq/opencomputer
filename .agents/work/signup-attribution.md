@@ -17,10 +17,10 @@ design: .agents/design/signup-attribution.md
   "streams": [
     {
       "stream": "edge",
-      "attempt": 1,
-      "sessionId": "1327b8af-5328-d68a-ca61-d0485470eb50",
+      "attempt": 2,
+      "sessionId": "1cb61bdf-43b5-a73a-92e5-b1aa84d8e3ce",
       "branch": "agent/signup-attribution--edge",
-      "state": "blocked"
+      "state": "running"
     },
     {
       "stream": "web",
