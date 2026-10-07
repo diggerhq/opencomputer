@@ -195,6 +195,21 @@ export const CreditsSchema = z.object({
   isPersonal: z.boolean(),
 })
 
+export const SlackConnectStatusSchema = z.object({
+  available: z.boolean(),
+  eligible: z.boolean(),
+  email: z.string().nullable(),
+  channelName: z.string().nullable(),
+  invitedAt: z.string().nullable(),
+})
+
+export const SlackConnectInviteSchema = z.object({
+  email: z.string(),
+  channelName: z.string(),
+  invitedAt: z.string(),
+  alreadyInvited: z.boolean(),
+})
+
 export const BillingStateSchema = z.object({
   plan: z.string(),
   stripeCreditCents: z.number(),
@@ -1384,6 +1399,8 @@ export type OrgMember = z.infer<typeof OrgMemberSchema>
 export type OrgInvitation = z.infer<typeof OrgInvitationSchema>
 export type Credits = z.infer<typeof CreditsSchema>
 export type BillingState = z.infer<typeof BillingStateSchema>
+export type SlackConnectStatus = z.infer<typeof SlackConnectStatusSchema>
+export type SlackConnectInvite = z.infer<typeof SlackConnectInviteSchema>
 export type AutumnAutoTopup = z.infer<typeof AutumnAutoTopupSchema>
 export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type AgentSessionUsageRow = z.infer<typeof AgentSessionUsageRowSchema>
