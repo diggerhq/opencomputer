@@ -28,6 +28,8 @@ export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /** The canonical cloud id of the project's primary agent. */
+  agentId: string;
   /**
    * `single` projects have one current deployment and no environment choice;
    * `legacy` projects keep Development and Production. Servers that predate
