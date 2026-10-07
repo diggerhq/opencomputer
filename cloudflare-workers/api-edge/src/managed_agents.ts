@@ -666,6 +666,7 @@ function publicProjectServiceAttachment(
   const attachment = record(value) ?? {};
   return {
     projectId: attachment.projectId,
+    service: attachment.service,
     provider: attachment.provider,
     label: attachment.label,
     connectionId: attachment.connectionId,

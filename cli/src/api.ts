@@ -123,6 +123,7 @@ export interface ServiceConnection {
 
 export interface ProjectServiceAttachment {
   projectId: string;
+  service: string;
   provider: string;
   label: string;
   connectionId: string;
@@ -879,6 +880,17 @@ export class OpenComputerClient {
       {
         method: "POST",
         body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "POST",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
       },
     );
   }
@@ -892,6 +904,17 @@ export class OpenComputerClient {
       {
         method: "DELETE",
         body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "DELETE",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
       },
     );
   }

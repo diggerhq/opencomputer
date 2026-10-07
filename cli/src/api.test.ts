@@ -15,6 +15,7 @@ test("project service connections use project-scoped attachment routes", async (
       if (request.method === "DELETE") return new Response(null, { status: 204 });
       return Response.json({
         projectId: "prj_1",
+        service: "linear",
         provider: "linear",
         label: "default",
         connectionId: "conn_1",
@@ -27,16 +28,24 @@ test("project service connections use project-scoped attachment routes", async (
   const client = new OpenComputerClient({
     apiUrl: "https://app.opencomputer.dev",
     apiKey: "test",
-  });
+  }, "setup");
 
   await client.projectServiceConnections("prj_1");
   await client.attachProjectServiceConnection({
     projectId: "prj_1",
     connectionId: "conn_1",
   });
+  await client.attachProjectServiceConnection({
+    projectId: "prj_1",
+    connectionId: "conn_2",
+  });
   await client.detachProjectServiceConnection({
     projectId: "prj_1",
     connectionId: "conn_1",
+  });
+  await client.detachProjectServiceConnection({
+    projectId: "prj_1",
+    connectionId: "conn_2",
   });
 
   assert.deepEqual(
@@ -44,11 +53,23 @@ test("project service connections use project-scoped attachment routes", async (
     [
       ["GET", "/api/managed-agents/projects/prj_1/service-connections"],
       ["POST", "/api/managed-agents/projects/prj_1/service-connections"],
+      ["POST", "/api/managed-agents/projects/prj_1/service-connections"],
+      ["DELETE", "/api/managed-agents/projects/prj_1/service-connections"],
       ["DELETE", "/api/managed-agents/projects/prj_1/service-connections"],
     ],
   );
   assert.deepEqual(await requests[1]!.json(), { connectionId: "conn_1" });
-  assert.deepEqual(await requests[2]!.json(), { connectionId: "conn_1" });
+  assert.deepEqual(await requests[2]!.json(), { connectionId: "conn_2" });
+  assert.deepEqual(await requests[3]!.json(), { connectionId: "conn_1" });
+  assert.deepEqual(await requests[4]!.json(), { connectionId: "conn_2" });
+  assert.notEqual(
+    requests[1]!.headers.get("idempotency-key"),
+    requests[2]!.headers.get("idempotency-key"),
+  );
+  assert.notEqual(
+    requests[3]!.headers.get("idempotency-key"),
+    requests[4]!.headers.get("idempotency-key"),
+  );
 });
 
 test("reconnect asks the backend to preserve and reauthorize the logical connection", async (context) => {

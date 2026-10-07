@@ -998,6 +998,7 @@ describe("managed agents proxy", () => {
       Response.json({
         organizationId: "org_test",
         projectId: "prj_test",
+        service: "linear",
         provider: "openai",
         environment: "development",
         enabled: false,
