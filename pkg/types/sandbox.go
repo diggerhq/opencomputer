@@ -3,6 +3,8 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -169,6 +171,49 @@ var AllowedResourceTiers = []ResourceTier{
 	{MemoryMB: 16384, VCPUs: 4},
 }
 
+// MaxSelfServeVCPUs is the vCPU count of the largest self-serve tier.
+func MaxSelfServeVCPUs() int {
+	max := 0
+	for _, t := range AllowedResourceTiers {
+		if t.VCPUs > max {
+			max = t.VCPUs
+		}
+	}
+	return max
+}
+
+// AllowedMemoryMBList renders the self-serve memory sizes for error messages.
+func AllowedMemoryMBList() string {
+	parts := make([]string, 0, len(AllowedResourceTiers))
+	for _, t := range AllowedResourceTiers {
+		parts = append(parts, strconv.Itoa(t.MemoryMB))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// AllowedCPUCountList renders the distinct self-serve vCPU counts for error messages.
+func AllowedCPUCountList() string {
+	parts := make([]string, 0, len(AllowedResourceTiers))
+	seen := map[int]bool{}
+	for _, t := range AllowedResourceTiers {
+		if seen[t.VCPUs] {
+			continue
+		}
+		seen[t.VCPUs] = true
+		parts = append(parts, strconv.Itoa(t.VCPUs))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// AllowedTierList renders the self-serve cpuCount/memoryMB pairs for error messages.
+func AllowedTierList() string {
+	parts := make([]string, 0, len(AllowedResourceTiers))
+	for _, t := range AllowedResourceTiers {
+		parts = append(parts, fmt.Sprintf("%d/%d", t.VCPUs, t.MemoryMB))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // IsNetworkEnabled returns the effective NetworkEnabled value, defaulting to
 // true when unset. Direct deref is unsafe because older persisted configs and
 // clients that omit the field produce nil.
@@ -205,7 +250,7 @@ func ValidateMemoryMB(memoryMB int) (vcpus int, err error) {
 			return t.VCPUs, nil
 		}
 	}
-	return 0, fmt.Errorf("memoryMB must be one of: 1024, 4096, 8192, 16384 (got %d)", memoryMB)
+	return 0, fmt.Errorf("memoryMB must be one of: %s (got %d)", AllowedMemoryMBList(), memoryMB)
 }
 
 // ValidateCPUCount checks that cpuCount matches an allowed tier and returns the corresponding memoryMB.
@@ -215,15 +260,15 @@ func ValidateCPUCount(cpuCount int) (memoryMB int, err error) {
 	if cpuCount == 0 {
 		return 0, nil
 	}
-	if cpuCount > 4 {
-		return 0, fmt.Errorf("cpuCount=%d exceeds the largest self-serve tier (4 vCPU). Contact us for enterprise sizing.", cpuCount)
+	if maxVCPUs := MaxSelfServeVCPUs(); cpuCount > maxVCPUs {
+		return 0, fmt.Errorf("cpuCount=%d exceeds the largest self-serve tier (%d vCPU). Contact us for enterprise sizing.", cpuCount, maxVCPUs)
 	}
 	for _, t := range AllowedResourceTiers {
 		if cpuCount == t.VCPUs {
 			return t.MemoryMB, nil
 		}
 	}
-	return 0, fmt.Errorf("cpuCount must be one of: 1, 2, 4 (got %d)", cpuCount)
+	return 0, fmt.Errorf("cpuCount must be one of: %s (got %d)", AllowedCPUCountList(), cpuCount)
 }
 
 // ValidateResourceTier validates and normalizes CPU/memory on a SandboxConfig.
@@ -248,13 +293,21 @@ func ValidateResourceTier(cfg *SandboxConfig) error {
 		cfg.MemoryMB = mem
 		return nil
 	}
-	// Both set — verify they match a tier
+	// Both set — verify they match a tier. Check each axis against the
+	// self-serve ceiling first so an enterprise-sized request gets the
+	// contact-us answer rather than a list it cannot pick from.
+	if _, err := ValidateMemoryMB(cfg.MemoryMB); err != nil {
+		return err
+	}
+	if _, err := ValidateCPUCount(cfg.CpuCount); err != nil {
+		return err
+	}
 	for _, t := range AllowedResourceTiers {
 		if cfg.MemoryMB == t.MemoryMB && cfg.CpuCount == t.VCPUs {
 			return nil
 		}
 	}
-	return fmt.Errorf("cpuCount %d and memoryMB %d do not match an allowed tier; valid combinations: 1/1024, 1/4096, 2/8192, 4/16384, 8/32768, 16/65536", cfg.CpuCount, cfg.MemoryMB)
+	return fmt.Errorf("cpuCount %d and memoryMB %d do not match an allowed tier; CPU is allocated in proportion to memory, so pick a tier by memoryMB and omit cpuCount. Valid cpuCount/memoryMB combinations: %s", cfg.CpuCount, cfg.MemoryMB, AllowedTierList())
 }
 
 // SandboxListResponse is the response for listing sandboxes.
