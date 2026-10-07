@@ -121,6 +121,17 @@ export interface ServiceConnection {
   status: string;
 }
 
+export interface ProjectServiceAttachment {
+  projectId: string;
+  service: string;
+  provider: string;
+  label: string;
+  connectionId: string;
+  connection: ServiceConnection;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ModelAccessConnection {
   id: string;
   organizationId: string;
@@ -823,7 +834,11 @@ export class OpenComputerClient {
    * no credential passes through the CLI, and the person consenting never
    * signs in to OpenComputer.
    */
-  linkServiceConnection(input: { service: string; label?: string }) {
+  linkServiceConnection(input: {
+    service: string;
+    label?: string;
+    reconnect?: boolean;
+  }) {
     const provider =
       input.service === "github" || input.service === "linear"
         ? input.service
@@ -840,8 +855,68 @@ export class OpenComputerClient {
       body: JSON.stringify({
         service: input.service,
         ...(input.label ? { label: input.label } : {}),
+        ...(input.reconnect ? { reconnect: true } : {}),
       }),
     });
+  }
+
+  async projectServiceConnections(
+    projectId: string,
+  ): Promise<ProjectServiceAttachment[]> {
+    const result = await this.request<{
+      attachments: ProjectServiceAttachment[];
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/service-connections`,
+    );
+    return result.attachments ?? [];
+  }
+
+  attachProjectServiceConnection(input: {
+    projectId: string;
+    connectionId: string;
+  }) {
+    return this.request<ProjectServiceAttachment>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+      {
+        method: "POST",
+        body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "POST",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
+      },
+    );
+  }
+
+  detachProjectServiceConnection(input: {
+    projectId: string;
+    connectionId: string;
+  }) {
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "DELETE",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
+      },
+    );
   }
 
   /**
