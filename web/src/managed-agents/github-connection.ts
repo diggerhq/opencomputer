@@ -9,3 +9,17 @@ export function githubConnectionLabel(connection: {
       : 'selected repositories'
   return `${connection.accountLogin} · installation ${connection.githubInstallationId} · ${repositories}`
 }
+
+export function githubInstallationSettingsUrl(connection: {
+  accountLogin: string
+  accountType: string
+  githubInstallationId: number
+}) {
+  const installation = encodeURIComponent(
+    String(connection.githubInstallationId),
+  )
+  if (connection.accountType.toLowerCase() === 'organization') {
+    return `https://github.com/organizations/${encodeURIComponent(connection.accountLogin)}/settings/installations/${installation}`
+  }
+  return `https://github.com/settings/installations/${installation}`
+}
