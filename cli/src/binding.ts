@@ -152,14 +152,16 @@ function bindingFor(
   config: ResolvedConfig,
   project: ManagedProject,
 ): ProjectBinding {
-  const agent = project.agents[0];
-  if (!agent) throw new Error(`Project ${project.name} has no agent to bind.`);
+  const agentId = project.agentId?.trim();
+  if (!agentId) {
+    throw new Error(`Project ${project.name} has no primary agent to bind.`);
+  }
   return {
     version: 1,
     apiUrl: config.apiUrl,
     projectId: project.id,
     projectName: project.name,
-    agentId: agent.id,
+    agentId,
   };
 }
 

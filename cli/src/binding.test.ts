@@ -13,6 +13,7 @@ function project(): ManagedProject {
     id: "prj_existing",
     slug: "existing-project",
     name: "Existing project",
+    agentId: "agent-cloud",
     environmentMode: "legacy",
     agents: [{ id: "agent-cloud", name: "Hello World" }],
     environments: [
@@ -69,6 +70,37 @@ test("link persists the selected project and later commands reuse its binding", 
     );
     assert.deepEqual(reused, selected);
     assert.equal(creates, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("project binding uses the canonical primary agent regardless of agent list order", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const reordered: ManagedProject = {
+      ...project(),
+      agents: [
+        { id: "agent-cloud--summarizer", name: "Summarizer" },
+        { id: "agent-cloud", name: "Primary" },
+      ],
+    };
+    const selected = await ensureProjectBinding(
+      {
+        async projects() {
+          return [reordered];
+        },
+        async createProject() {
+          throw new Error("unexpected create");
+        },
+      },
+      { apiUrl: "https://app.opencomputer.dev" },
+      initialized.agentRoot,
+      { project: reordered.id },
+    );
+
+    assert.equal(selected.agentId, "agent-cloud");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -154,6 +186,7 @@ test("--project resolves a project for one command without rewriting the saved b
       id: "prj_other",
       slug: "other-project",
       name: "Other project",
+      agentId: "other-agent",
       environmentMode: "single",
       agents: [{ id: "other-agent", name: "Other" }],
     };
