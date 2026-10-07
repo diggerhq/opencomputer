@@ -7,7 +7,7 @@ import {
 } from './onboarding'
 
 describe('managed-agent onboarding commands', () => {
-  it('uses the CLI initializer and watched cloud deployment for a new account', () => {
+  it('uses the CLI initializer, terminal login, and watched cloud deployment for a new account', () => {
     expect(createStartCommand('hello-world')).toBe(
       'npx @opencomputer/cli init hello-world',
     )
@@ -15,6 +15,7 @@ describe('managed-agent onboarding commands', () => {
       'npx @opencomputer/cli init hello-world',
       'cd hello-world',
       'npm install',
+      'npx --package @opencomputer/cli opencomputer login',
       'npm run deploy -- --watch',
     ])
   })
@@ -24,6 +25,7 @@ describe('managed-agent onboarding commands', () => {
       "npx @opencomputer/cli init 'support agent'",
       "cd 'support agent'",
       'npm install',
+      'npx --package @opencomputer/cli opencomputer login',
       'npm run deploy -- --watch',
     ])
   })
@@ -34,6 +36,7 @@ describe('managed-agent onboarding commands', () => {
         'npx @opencomputer/cli init hello-world',
         'cd hello-world',
         'npm install',
+        'npx --package @opencomputer/cli opencomputer login',
         'npm run deploy -- --watch',
       ].join('\n'),
     )
@@ -41,7 +44,7 @@ describe('managed-agent onboarding commands', () => {
 
   it('copies the complete onboarding flow as one guarded shell command', () => {
     expect(starterCopyCommand('hello-world')).toBe(
-      'npx @opencomputer/cli init hello-world && cd hello-world && npm install && npm run deploy -- --watch',
+      'npx @opencomputer/cli init hello-world && cd hello-world && npm install && npx --package @opencomputer/cli opencomputer login && npm run deploy -- --watch',
     )
   })
 })
