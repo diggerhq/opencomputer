@@ -175,6 +175,30 @@ describe('ManagedProjectLinear', () => {
     expect(api.listManagedLinearConnections).toHaveBeenCalledWith('prj_1')
   })
 
+  it('shows only default for a single-environment project', async () => {
+    api.getManagedProject.mockResolvedValue({
+      ...project,
+      project: {
+        ...project.project,
+        environmentMode: 'single',
+        environments: [
+          {
+            name: 'default',
+            agentId: 'coder',
+            activeDeploymentId: 'dep_default',
+            updatedAt: '2026-10-02T00:00:00.000Z',
+          },
+        ],
+      },
+    })
+
+    render('/projects/prj_1/connections')
+    await settle(() => text().includes('Create Linear agent'), 'the row')
+    expect(text()).toContain('default · Coder')
+    expect(text()).not.toContain('Deploy an agent to development')
+    expect(text()).not.toContain('Deploy an agent to production')
+  })
+
   it('walks name → create app → credentials → authorize, keeping secrets out of every cache', async () => {
     render()
     await settle(() => text().includes('Create Linear agent'), 'the rows')

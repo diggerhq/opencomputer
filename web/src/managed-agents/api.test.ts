@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import {
+  attachManagedProjectServiceConnection,
   authorizeManagedLinearConnection,
   collectManagedAgentEventPages,
   createManagedLinearConnection,
   disconnectManagedLinearConnection,
   displayManagedAgentName,
+  detachManagedProjectServiceConnection,
+  listManagedProjectServiceConnections,
   listManagedLinearConnections,
   setManagedLinearCredentials,
   fetchManagedAgentWorkspaceObject,
@@ -348,6 +351,73 @@ describe('Linear connections', () => {
       type: 'linear_app_name_reserved',
       message:
         'Linear does not allow app names that contain "Linear". Choose another name.',
+    })
+  })
+})
+
+describe('Project service connections', () => {
+  const connection = {
+    id: 'conn_linear',
+    kind: 'tool',
+    provider: 'linear',
+    label: 'linear',
+    agentId: '',
+    alias: '',
+    displayName: 'OpenComputer',
+    scopes: ['read'],
+    status: 'connected',
+    createdAt: '2026-10-07T00:00:00.000Z',
+    updatedAt: '2026-10-07T00:00:00.000Z',
+  }
+  const attachment = {
+    projectId: 'prj_1',
+    service: 'linear',
+    provider: 'linear',
+    label: 'linear',
+    connectionId: connection.id,
+    connection,
+    createdAt: '2026-10-07T00:00:00.000Z',
+    updatedAt: '2026-10-07T00:00:00.000Z',
+  }
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  it('lists, attaches, and detaches through the project route', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ attachments: [attachment] }))
+      .mockResolvedValueOnce(json(attachment, 201))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    expect(await listManagedProjectServiceConnections('prj 1')).toEqual([
+      attachment,
+    ])
+    expect(
+      await attachManagedProjectServiceConnection({
+        projectId: 'prj 1',
+        connectionId: connection.id,
+      }),
+    ).toEqual(attachment)
+    await detachManagedProjectServiceConnection({
+      projectId: 'prj 1',
+      connectionId: connection.id,
+    })
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/dashboard/managed-agents/projects/prj%201/service-connections',
+      '/api/dashboard/managed-agents/projects/prj%201/service-connections',
+      '/api/dashboard/managed-agents/projects/prj%201/service-connections',
+    ])
+    expect(fetch.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ connectionId: connection.id }),
+    })
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({
+      method: 'DELETE',
+      body: JSON.stringify({ connectionId: connection.id }),
     })
   })
 })

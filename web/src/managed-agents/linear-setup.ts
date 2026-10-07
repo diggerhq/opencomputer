@@ -1,4 +1,9 @@
 import type { ManagedLinearConnection, ManagedProjectOverview } from './api'
+import {
+  projectEnvironmentMode,
+  projectEnvironments,
+  type ProjectEnvironment,
+} from './project-context'
 
 /**
  * Linear agent connections: the pure parts of Project Connections → Linear.
@@ -6,11 +11,7 @@ import type { ManagedLinearConnection, ManagedProjectOverview } from './api'
  * in the browser (docs/agents/linear.mdx).
  */
 
-export type LinearEnvironment = 'development' | 'production'
-export const LINEAR_ENVIRONMENTS: readonly LinearEnvironment[] = [
-  'development',
-  'production',
-]
+export type LinearEnvironment = ProjectEnvironment
 
 // ---------------------------------------------------------------------------
 // The agent's name. It becomes the Linear app's name, which is how people see,
@@ -184,22 +185,24 @@ export function linearRowsForProject(
   project: ManagedProjectOverview['project'],
   connections: readonly ManagedLinearConnection[],
 ): LinearRow[] {
-  return LINEAR_ENVIRONMENTS.map((environment) => {
-    const agentId = project.environments.find(
-      (candidate) =>
-        candidate.name === environment &&
-        candidate.agentId &&
-        candidate.activeDeploymentId,
-    )?.agentId
-    const live = connections.filter(
-      (connection) =>
-        connection.environment === environment &&
-        connection.status !== 'disconnected',
-    )
-    const connection =
-      live.find((candidate) => candidate.agentId === agentId) ?? live[0]
-    return { environment, agentId, connection }
-  })
+  return projectEnvironments(projectEnvironmentMode(project)).map(
+    (environment) => {
+      const agentId = project.environments.find(
+        (candidate) =>
+          candidate.name === environment &&
+          candidate.agentId &&
+          candidate.activeDeploymentId,
+      )?.agentId
+      const live = connections.filter(
+        (connection) =>
+          connection.environment === environment &&
+          connection.status !== 'disconnected',
+      )
+      const connection =
+        live.find((candidate) => candidate.agentId === agentId) ?? live[0]
+      return { environment, agentId, connection }
+    },
+  )
 }
 
 export type LinearRowAction = 'create' | 'continue' | 'authorize'
