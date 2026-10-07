@@ -93,14 +93,19 @@ export function requestedProjectAgentId(
  * URL default and is never written to the query, so single-mode URLs stay
  * environmentless and cross-project links carry no legacy environment.
  */
-function isUrlDefault(environment: ProjectEnvironment) {
+function isUrlDefault(environment: string) {
   return environment === 'development' || environment === 'default'
 }
 
+/**
+ * `environment` is a deployment alias: `development`, `production`, or a pull
+ * request preview such as `pr-12`, which the playground keeps targeting when
+ * the agent changes.
+ */
 export function projectContextSearch(
   search: string,
   agentId: string | undefined,
-  environment: ProjectEnvironment,
+  environment: string,
 ) {
   const next = new URLSearchParams(search)
   if (agentId) next.set('agent', agentId)

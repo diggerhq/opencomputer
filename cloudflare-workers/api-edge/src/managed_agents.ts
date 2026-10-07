@@ -181,6 +181,17 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This setup no longer owns the connection. Use Set up manually or start again.",
 };
 
+const DEPLOYMENT_SOURCE_ERROR_MESSAGES: Record<string, string> = {
+  invalid_deployment_source:
+    "Choose a GitHub connection, a repository, and a branch name.",
+  branch_not_found:
+    "That branch was not found in the repository, or the GitHub connection cannot read it.",
+  deployment_source_not_found:
+    "Connect a repository and branch before deploying.",
+  preview_not_found: "That preview no longer exists.",
+  invalid_preview: "Preview names look like pr-<number>.",
+};
+
 /** Fixed public wording per workspace export code; upstream messages may
  * name buckets or object keys and are never forwarded. */
 const WORKSPACE_EXPORT_ERROR_MESSAGES: Record<string, string> = {
@@ -253,6 +264,12 @@ async function publicErrorResponse(
   )
     ? SLACK_SETUP_ERROR_MESSAGES[backendCode]
     : undefined;
+  const deploymentSourceMessage = Object.hasOwn(
+    DEPLOYMENT_SOURCE_ERROR_MESSAGES,
+    backendCode,
+  )
+    ? DEPLOYMENT_SOURCE_ERROR_MESSAGES[backendCode]
+    : undefined;
   const linearMessage = Object.hasOwn(LINEAR_ERROR_MESSAGES, backendCode)
     ? LINEAR_ERROR_MESSAGES[backendCode]
     : suffix !== undefined &&
@@ -262,6 +279,8 @@ async function publicErrorResponse(
       : undefined;
   if (slackSetupMessage) {
     message = slackSetupMessage;
+  } else if (deploymentSourceMessage) {
+    message = deploymentSourceMessage;
   } else if (linearMessage) {
     message = linearMessage;
   } else if (missingTemplateManifest) {
@@ -1811,6 +1830,9 @@ function publicSuccessBody(
     /^\/github(?:\/connect)?$/.test(suffix) ||
     /^\/projects\/[^/]+\/github(?:\/(?:connect|attach|repositories))?$/.test(
       suffix,
+    ) ||
+    /^\/projects\/[^/]+\/deployment-source(?:\/(?:branches|repositories|deploy))?$/.test(
+      suffix,
     )
   ) {
     return stripPrivateValues(body);
@@ -2617,6 +2639,32 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/deployment-source$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/deployment-source\/(branches|repositories)$/.test(
+      suffix,
+    )
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/deployment-source\/deploy$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "DELETE" &&
+    /^\/projects\/[^/]+\/deployment-source\/previews\/[^/]+$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
   ) {
     return true;
@@ -2799,6 +2847,64 @@ export async function handleManagedGitHubCallback(
       status: 502,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
+  }
+}
+
+/**
+ * GitHub App webhook deliveries (push and pull_request) for repositories
+ * connected as a project's deployment source. The raw body and GitHub's
+ * signature headers are forwarded untouched; the backend verifies the HMAC
+ * against the webhook secret before acting, so nothing is trusted here.
+ */
+export async function handleManagedGitHubWebhook(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/github/webhooks`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return new Response("GitHub webhooks are unavailable", { status: 503 });
+  }
+  const headers = new Headers();
+  for (const name of [
+    "content-type",
+    "x-github-event",
+    "x-github-delivery",
+    "x-github-hook-id",
+    "x-github-hook-installation-target-id",
+    "x-github-hook-installation-target-type",
+    "x-hub-signature-256",
+  ]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      headers,
+      body: await request.arrayBuffer(),
+    });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type":
+          upstream.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store",
+      },
+    });
+  } catch {
+    return new Response(
+      JSON.stringify({ error: { code: "github_webhook_unavailable" } }),
+      {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }
 }
 
