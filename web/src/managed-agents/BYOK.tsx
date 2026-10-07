@@ -38,7 +38,11 @@ import {
   hasBYOKPlanAccess,
   MODEL_ROUTE_MODEL_SUGGESTIONS,
   MODEL_ROUTE_PROVIDER_DEFAULTS,
+  MODEL_ROUTE_PROVIDER_ORDER,
+  MODEL_ROUTE_PROVIDER_PRESETS,
   modelConnectionLabel,
+  modelRouteConnectionRequest,
+  modelRouteNeedsBaseUrl,
   SUBSCRIPTION_ROUTE_AVAILABILITY,
   type ModelRouteProviderChoice,
 } from './byok-config'
@@ -63,6 +67,8 @@ export function ManagedProjectBYOK({
     MODEL_ROUTE_PROVIDER_DEFAULTS[DEFAULT_MODEL_ROUTE_PROVIDER].model,
   )
   const [routeFallback, setRouteFallback] = useState<'fail' | 'managed'>('fail')
+  const providerPreset = MODEL_ROUTE_PROVIDER_PRESETS[apiProvider]
+  const needsBaseUrl = modelRouteNeedsBaseUrl(apiProvider)
   const canManageConnection = user?.capabilities?.manageMembers !== false
   const connectionQueryKey = ['managed-model-access-connections']
   const routeQueryKey = ['managed-model-routes', projectId]
@@ -117,11 +123,9 @@ export function ManagedProjectBYOK({
   })
   const configureApiRoute = useMutation({
     mutationFn: async () => {
-      const connection = await connectManagedModelApiKey({
-        provider: apiProvider,
-        apiKey,
-        ...(apiProvider === 'openai_compatible' ? { baseUrl } : {}),
-      })
+      const connection = await connectManagedModelApiKey(
+        modelRouteConnectionRequest({ provider: apiProvider, apiKey, baseUrl }),
+      )
       return Promise.all(
         environments.map((environment) =>
           putManagedModelRoute({
@@ -218,9 +222,10 @@ export function ManagedProjectBYOK({
           <div>
             <PanelTitle>Bring your own model</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
-              Send every new session through your OpenRouter or
-              OpenAI-compatible API key. This project route overrides useModel()
-              and also works when agent code selects no model.
+              Pick a provider and paste its API key. Every new session in this
+              project then uses that provider and model: the route overrides
+              useModel() and also applies when agent code selects no model, so
+              agent code needs no changes.
             </PanelDescription>
           </div>
         </PanelHeader>
@@ -291,10 +296,11 @@ export function ManagedProjectBYOK({
                     )
                   }}
                 >
-                  <option value="openrouter">OpenRouter API key</option>
-                  <option value="openai_compatible">
-                    Custom OpenAI-compatible API
-                  </option>
+                  {MODEL_ROUTE_PROVIDER_ORDER.map((id) => (
+                    <option key={id} value={id}>
+                      {MODEL_ROUTE_PROVIDER_PRESETS[id].label}
+                    </option>
+                  ))}
                   {SUBSCRIPTION_ROUTE_AVAILABILITY.map((provider) => (
                     <option
                       key={provider.id}
@@ -323,8 +329,11 @@ export function ManagedProjectBYOK({
                     <option key={model} value={model} />
                   ))}
                 </datalist>
+                <span className="text-muted-foreground block text-xs">
+                  {providerPreset.keyHint}
+                </span>
               </label>
-              {apiProvider === 'openai_compatible' ? (
+              {needsBaseUrl ? (
                 <label className="space-y-1 text-sm">
                   <span className="font-medium">Base URL</span>
                   <input
@@ -337,7 +346,7 @@ export function ManagedProjectBYOK({
                 </label>
               ) : null}
               <label className="space-y-1 text-sm">
-                <span className="font-medium">API key</span>
+                <span className="font-medium">{providerPreset.keyLabel}</span>
                 <input
                   className="border-input bg-background h-9 w-full rounded-md border px-3"
                   type="password"
@@ -363,7 +372,7 @@ export function ManagedProjectBYOK({
                 <Button
                   disabled={
                     !routeModel ||
-                    (apiProvider === 'openai_compatible' && !baseUrl) ||
+                    (needsBaseUrl && !baseUrl) ||
                     !apiKey ||
                     configureApiRoute.isPending
                   }
