@@ -19,7 +19,8 @@ vi.mock('./api', () => api)
 vi.mock('./authorization-window', () => authorization)
 
 const { ManagedProjectGitHub } = await import('./GitHub')
-const { githubConnectionLabel } = await import('./github-connection')
+const { githubConnectionLabel, githubInstallationSettingsUrl } =
+  await import('./github-connection')
 
 async function settle(until: () => boolean, label: string) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -117,5 +118,24 @@ describe('ManagedProjectGitHub', () => {
         repositorySelection: 'selected',
       }),
     ).toBe('diggerhq · installation 164620985 · selected repositories')
+  })
+
+  it('links to the settings page that can grant more repositories', () => {
+    expect(
+      githubInstallationSettingsUrl({
+        accountLogin: 'diggerhq',
+        accountType: 'Organization',
+        githubInstallationId: 164620985,
+      }),
+    ).toBe(
+      'https://github.com/organizations/diggerhq/settings/installations/164620985',
+    )
+    expect(
+      githubInstallationSettingsUrl({
+        accountLogin: 'octocat',
+        accountType: 'User',
+        githubInstallationId: 42,
+      }),
+    ).toBe('https://github.com/settings/installations/42')
   })
 })

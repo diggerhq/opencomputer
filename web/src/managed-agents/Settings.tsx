@@ -39,6 +39,7 @@ import {
   type ManagedGitBuild,
 } from './api'
 import { launchAuthorizationWindow } from './authorization-window'
+import { githubInstallationSettingsUrl } from './github-connection'
 
 const selectClassName =
   'border-input bg-background h-9 min-w-48 rounded-md border px-3 text-sm disabled:opacity-50'
@@ -113,6 +114,9 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
     : undefined
   const connectionId =
     pickedConnectionId || savedConnectionId || activeConnections[0]?.id || ''
+  const activeConnection = activeConnections.find(
+    (connection) => connection.id === connectionId,
+  )
 
   const repositories = useQuery({
     queryKey: ['managed-deployment-source-repos', projectId, connectionId],
@@ -252,9 +256,8 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
             <PanelTitle>Deploy from GitHub</PanelTitle>
             <PanelDescription className="mt-1 max-w-2xl">
               Connect a repository and pick a branch. Every push to that branch
-              builds the project and publishes it to the development
-              environment; pull requests against it get their own preview
-              environment.
+              builds and publishes the project; pull requests against it get
+              their own preview deployment.
             </PanelDescription>
           </div>
           {source ? (
@@ -403,7 +406,29 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                 </select>
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="deployment-source-repository">Repository</Label>
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="deployment-source-repository">
+                    Repository
+                  </Label>
+                  {activeConnection?.repositorySelection === 'selected' ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="sm"
+                      className="h-auto px-0 text-xs"
+                      asChild
+                    >
+                      <a
+                        href={githubInstallationSettingsUrl(activeConnection)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Add more repositories
+                        <ExternalLink className="size-3" />
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
                 <select
                   id="deployment-source-repository"
                   className={selectClassName}
@@ -453,7 +478,8 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="deployment-source-path">
-                  Directory <span className="text-muted-foreground">(optional)</span>
+                  Directory{' '}
+                  <span className="text-muted-foreground">(optional)</span>
                 </Label>
                 <Input
                   id="deployment-source-path"
@@ -469,7 +495,7 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                   onCheckedChange={setPreviewsEnabled}
                 />
                 <Label htmlFor="deployment-source-previews">
-                  Preview environment for every pull request
+                  Preview deployment for every pull request
                 </Label>
               </div>
               <div className="flex items-center gap-2 sm:col-span-2">
