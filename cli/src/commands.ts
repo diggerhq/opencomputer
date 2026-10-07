@@ -1617,6 +1617,7 @@ export async function runCommand(
     scopes?: string[];
   }): string {
     if (connection.provider === "github") return "github";
+    if (connection.provider === "linear") return "linear";
     const scopes = (connection.scopes ?? []).join(" ");
     if (scopes.includes("/auth/calendar")) return "calendar";
     if (scopes.includes("/auth/spreadsheets")) return "sheets";
@@ -1759,6 +1760,34 @@ export async function runCommand(
     // open, and the token is minted and refreshed server-side.
     const action = args.shift();
 
+    const findConnection = async (target: string, service?: string) => {
+      const connections = await client.serviceConnections();
+      let matches = connections.filter(
+        (connection) => connection.label === target || connection.id === target,
+      );
+      if (service) {
+        matches = matches.filter(
+          (connection) => serviceOfConnection(connection) === service,
+        );
+      }
+      if (!matches.length) {
+        throw new Error(
+          `No connection named ${JSON.stringify(target)}${service ? ` for ${service}` : ""}. ` +
+            `Run \`opencomputer connection list\` to see them.`,
+        );
+      }
+      if (matches.length > 1) {
+        const services = [...new Set(matches.map(serviceOfConnection))];
+        throw new Error(
+          `${matches.length} connections use the alias ${JSON.stringify(target)}` +
+            (services.length > 1
+              ? ` — add --service <${services.join("|")}> to choose one.`
+              : `. Use the connection id instead; \`opencomputer connection list\` shows them.`),
+        );
+      }
+      return matches[0]!;
+    };
+
     if (action === "add" || action === "connect") {
       const service = args.shift();
       if (service === "github") {
@@ -1839,6 +1868,34 @@ export async function runCommand(
     }
 
     if (action === "list" || action === "ls" || action === undefined) {
+      const projectReference = option(args, "--project");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if (projectReference) {
+        const project = await selectedProject(
+          client,
+          config,
+          projectReference === "current" ? undefined : projectReference,
+        );
+        const attachments = await client.projectServiceConnections(
+          project.projectId,
+        );
+        if (globals.json) {
+          printJSON(attachments);
+          return;
+        }
+        if (!attachments.length) {
+          process.stdout.write("No service connections are attached to this project.\n");
+          return;
+        }
+        for (const attachment of attachments) {
+          process.stdout.write(
+            `${attachment.label.padEnd(18)} ${attachment.provider.padEnd(7)} ` +
+              `${attachment.connection.status.padEnd(10)} ` +
+              `${(attachment.connection.displayName ?? "").padEnd(26)} ${attachment.connectionId}\n`,
+          );
+        }
+        return;
+      }
       const listed = await client.serviceConnections();
       // The listing route does not re-check with the provider, so an account
       // authorized minutes ago can still read `pending`. The status route does
@@ -1881,6 +1938,123 @@ export async function runCommand(
       return;
     }
 
+    if (action === "status") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error(
+          "Use `opencomputer connection status <alias|connection-id>`",
+        );
+      }
+      const service = option(args, "--service");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connection = await findConnection(target, service);
+      const resolved = service ?? serviceOfConnection(connection);
+      const status = await client.serviceConnectionStatus({
+        service: resolved,
+        label: connection.label,
+      });
+      if (globals.json) printJSON({ ...connection, ...status });
+      else
+        process.stdout.write(
+          `${connection.label} (${resolved}): ${status.status}\n`,
+        );
+      return;
+    }
+
+    if (action === "reconnect") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error(
+          "Use `opencomputer connection reconnect <alias|connection-id>`",
+        );
+      }
+      const service = option(args, "--service");
+      const noWait = flag(args, "--no-wait");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connection = await findConnection(target, service);
+      const resolved = service ?? serviceOfConnection(connection);
+      const result = await client.linkServiceConnection({
+        service: resolved,
+        label: connection.label,
+        reconnect: true,
+      });
+      if (globals.json) {
+        printJSON(result);
+        return;
+      }
+      process.stdout.write(
+        `Reconnect ${resolved} as "${connection.label}" by opening:\n\n  ${result.authorizationUrl}\n\n`,
+      );
+      if (noWait) return;
+      const deadline = result.expiresAt
+        ? Date.parse(result.expiresAt)
+        : Date.now() + 5 * 60_000;
+      process.stdout.write("Waiting for authorization… (Ctrl-C to stop)\n");
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        try {
+          const status = await client.serviceConnectionStatus({
+            service: resolved,
+            label: connection.label,
+          });
+          if (status.status === "connected") {
+            process.stdout.write(
+              `Reconnected ${resolved} as "${connection.label}".\n`,
+            );
+            return;
+          }
+        } catch {
+          // Keep waiting through transient reconciliation errors.
+        }
+      }
+      process.stdout.write(
+        "Still not authorized. Run `opencomputer connection status " +
+          `${connection.label} --service ${resolved}\` to check.\n`,
+      );
+      return;
+    }
+
+    if (action === "attach" || action === "detach") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error(
+          `Use \`opencomputer connection ${action} <alias|connection-id>\``,
+        );
+      }
+      const service = option(args, "--service");
+      const projectReference = option(args, "--project");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connection = await findConnection(target, service);
+      const project = await selectedProject(
+        client,
+        config,
+        projectReference === "current" ? undefined : projectReference,
+      );
+      if (action === "attach") {
+        const attachment = await client.attachProjectServiceConnection({
+          projectId: project.projectId,
+          connectionId: connection.id,
+        });
+        if (globals.json) printJSON(attachment);
+        else
+          process.stdout.write(
+            `Attached ${connection.label} (${serviceOfConnection(connection)}) to project ${project.projectId}.\n`,
+          );
+      } else {
+        await client.detachProjectServiceConnection({
+          projectId: project.projectId,
+          connectionId: connection.id,
+        });
+        if (globals.json)
+          printJSON({ detached: connection.id, projectId: project.projectId });
+        else
+          process.stdout.write(
+            `Detached ${connection.label} (${serviceOfConnection(connection)}) from project ${project.projectId}.\n`,
+          );
+      }
+      return;
+    }
+
     if (action === "remove" || action === "disconnect") {
       const target = args.shift();
       if (!target) {
@@ -1890,34 +2064,7 @@ export async function runCommand(
       }
       const service = option(args, "--service");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-      const connections = await client.serviceConnections();
-      // Accept either the alias a person remembers or the id the API returns.
-      let matches = connections.filter(
-        (connection) => connection.label === target || connection.id === target,
-      );
-      if (service) {
-        matches = matches.filter(
-          (connection) => serviceOfConnection(connection) === service,
-        );
-      }
-      if (!matches.length) {
-        throw new Error(
-          `No connection named ${JSON.stringify(target)}${service ? ` for ${service}` : ""}. ` +
-            `Run \`opencomputer connection list\` to see them.`,
-        );
-      }
-      if (matches.length > 1) {
-        // Deleting the wrong account is not recoverable from here, so narrow
-        // it or refuse. The id in `connection list` is always unambiguous.
-        const services = [...new Set(matches.map(serviceOfConnection))];
-        throw new Error(
-          `${matches.length} connections use the alias ${JSON.stringify(target)}` +
-            (services.length > 1
-              ? ` — add --service <${services.join("|")}> to choose one.`
-              : `. Remove it by connection id instead; \`opencomputer connection list\` shows them.`),
-        );
-      }
-      const connection = matches[0]!;
+      const connection = await findConnection(target, service);
       const resolved = service ?? serviceOfConnection(connection);
       await client.disconnectServiceConnection({
         service: resolved,
@@ -1929,7 +2076,9 @@ export async function runCommand(
       return;
     }
 
-    throw new Error("Use `opencomputer connection add|list|remove`.");
+    throw new Error(
+      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|remove`.",
+    );
   }
 
   if (command === "model-access") {

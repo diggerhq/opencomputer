@@ -660,6 +660,22 @@ function publicConnection(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicProjectServiceAttachment(
+  value: unknown,
+): Record<string, unknown> {
+  const attachment = record(value) ?? {};
+  return {
+    projectId: attachment.projectId,
+    service: attachment.service,
+    provider: attachment.provider,
+    label: attachment.label,
+    connectionId: attachment.connectionId,
+    connection: publicConnection(attachment.connection),
+    createdAt: attachment.createdAt,
+    updatedAt: attachment.updatedAt,
+  };
+}
+
 function publicModelAccessConnection(
   value: unknown,
   includeAdminMetadata: boolean,
@@ -1844,6 +1860,22 @@ function publicSuccessBody(
   ) {
     return stripPrivateValues(body);
   }
+  if (
+    method === "GET" &&
+    /^\/projects\/[^/]+\/service-connections$/.test(suffix)
+  ) {
+    return {
+      attachments: Array.isArray(body.attachments)
+        ? body.attachments.map(publicProjectServiceAttachment)
+        : [],
+    };
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/service-connections$/.test(suffix)
+  ) {
+    return publicProjectServiceAttachment(body);
+  }
   if (method === "GET" && /^\/projects\/[^/]+\/webhooks$/.test(suffix)) {
     return {
       webhooks: Array.isArray(body.webhooks)
@@ -2667,6 +2699,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (
     (method === "GET" || method === "PUT" || method === "DELETE") &&
     /^\/projects\/[^/]+\/secrets(?:\/[^/]+)?$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "POST" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/service-connections$/.test(suffix)
   ) {
     return true;
   }
