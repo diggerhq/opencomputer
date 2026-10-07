@@ -1406,6 +1406,45 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toContain("private-account");
   });
 
+  it("proxies project service attachment management", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        projectId: "prj_test",
+        provider: "linear",
+        label: "default",
+        connectionId: "conn_1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test/service-connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ connectionId: "conn_1" }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(target.toString()).toBe(
+      "https://managedagents.test/v1/projects/prj_test/service-connections",
+    );
+    expect(init.method).toBe("POST");
+    await expect(new Response(init.body).json()).resolves.toEqual({
+      connectionId: "conn_1",
+    });
+  });
+
   it("proxies bounded project database queries without exposing backend fields", async () => {
     const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
       Response.json({

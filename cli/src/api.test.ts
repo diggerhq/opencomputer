@@ -3,6 +3,92 @@ import test from "node:test";
 
 import { APIError, OpenComputerClient } from "./api.js";
 
+test("project service connections use project-scoped attachment routes", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "GET") return Response.json({ attachments: [] });
+      if (request.method === "DELETE") return new Response(null, { status: 204 });
+      return Response.json({
+        projectId: "prj_1",
+        provider: "linear",
+        label: "default",
+        connectionId: "conn_1",
+        connection: { id: "conn_1", provider: "linear", label: "default", status: "connected" },
+        createdAt: "2026-10-07T00:00:00.000Z",
+        updatedAt: "2026-10-07T00:00:00.000Z",
+      });
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+
+  await client.projectServiceConnections("prj_1");
+  await client.attachProjectServiceConnection({
+    projectId: "prj_1",
+    connectionId: "conn_1",
+  });
+  await client.detachProjectServiceConnection({
+    projectId: "prj_1",
+    connectionId: "conn_1",
+  });
+
+  assert.deepEqual(
+    requests.map((request) => [request.method, new URL(request.url).pathname]),
+    [
+      ["GET", "/api/managed-agents/projects/prj_1/service-connections"],
+      ["POST", "/api/managed-agents/projects/prj_1/service-connections"],
+      ["DELETE", "/api/managed-agents/projects/prj_1/service-connections"],
+    ],
+  );
+  assert.deepEqual(await requests[1]!.json(), { connectionId: "conn_1" });
+  assert.deepEqual(await requests[2]!.json(), { connectionId: "conn_1" });
+});
+
+test("reconnect asks the backend to preserve and reauthorize the logical connection", async (context) => {
+  let request: Request | undefined;
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      request = new Request(input, init);
+      return Response.json({
+        service: "linear",
+        label: "engineering",
+        status: "pending",
+        connectionId: "conn_1",
+        authorizationUrl: "https://connect.example/linear",
+      });
+    },
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+
+  await client.linkServiceConnection({
+    service: "linear",
+    label: "engineering",
+    reconnect: true,
+  });
+
+  assert.equal(
+    new URL(request!.url).pathname,
+    "/api/managed-agents/connections/linear/link",
+  );
+  assert.deepEqual(await request!.json(), {
+    service: "linear",
+    label: "engineering",
+    reconnect: true,
+  });
+});
+
 // Review reproduction (U6): the header names the operation the caller's key
 // stands for, not the request it was sent with. The body is the backend's
 // to compare; hashing it here turned a retry with different inputs into a
