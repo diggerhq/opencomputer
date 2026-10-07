@@ -65,11 +65,19 @@ Credentials and disconnecting are managed in the same place afterwards.
 
 When an agent calls [`ask`](/agents/tools#ask-a-question), the thread gets one
 message: the turn's text, then the question with one button per option.
-Clicking a button, or replying in the thread after the question, answers it.
-Messages sent before the question was posted reach the agent with the answer,
-as steering. Only the person the session is talking to can answer; other
-people's clicks are ignored. Once the question is answered or closed, the
-buttons are replaced by the choice or by "closed (reason)".
+
+On Slack a question does not hold the thread: typed replies are delivered as
+they come; the buttons answer until the agent's next reply. A message typed
+while the question is open runs as an ordinary turn, and the agent decides
+whether it answers the question, changes it, or is about something else. When
+the agent replies to such a message, the question closes as `superseded`: the
+card keeps its text, loses its buttons and reads "answered in the thread". If
+that reply asks again, the new question posts with it. An outcome delivered
+from another session does not close the question.
+
+Only the person the session is talking to can click an answer; other people's
+clicks are ignored. Once the question is answered or closed, the buttons are
+replaced by the choice or by "closed (reason)".
 
 ## Current limits
 
