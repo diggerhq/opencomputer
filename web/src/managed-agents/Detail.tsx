@@ -17,6 +17,7 @@ import {
   Bot,
   Check,
   ChevronRight,
+  CircleAlert,
   Clock3,
   Clipboard,
   GitCommitHorizontal,
@@ -827,8 +828,11 @@ export default function ManagedAgentDetail({
   const continuationCommand =
     project?.templateSource?.cloneReady &&
     projectCloneCommand(project.project.id)
+  const continuationError = project?.templateSource?.cloneError
   const continuationPreparing =
-    project?.templateSource && !project.templateSource.cloneReady
+    project?.templateSource &&
+    !project.templateSource.cloneReady &&
+    !continuationError
 
   const selectPlaygroundSession = (sessionId?: string) => {
     setAdoptedPlaygroundId(undefined)
@@ -1050,6 +1054,19 @@ export default function ManagedAgentDetail({
                 </div>
               </DialogContent>
             </Dialog>
+          ) : project && continuationError ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                notifyError(
+                  "Couldn't prepare the local checkout.",
+                  new Error(continuationError.message),
+                )
+              }
+            >
+              <CircleAlert /> Checkout failed
+            </Button>
           ) : project && continuationPreparing ? (
             <Button variant="outline" size="sm" disabled>
               <Loader2 className="animate-spin" /> Preparing local checkout

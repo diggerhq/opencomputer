@@ -829,6 +829,10 @@ const projectOverviewSchema = z.object({
       repositoryUrl: z.string().url(),
       commitSha: z.string().regex(/^[0-9a-f]{40}$/),
       cloneReady: z.boolean().optional().default(false),
+      // Why the local checkout never became ready (trigger task failed).
+      cloneError: z
+        .object({ stage: z.string(), message: z.string() })
+        .optional(),
     })
     .optional(),
   sessions: z.array(sessionSummarySchema),

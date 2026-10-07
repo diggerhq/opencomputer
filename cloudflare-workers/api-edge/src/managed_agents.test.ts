@@ -1752,6 +1752,109 @@ describe("managed agents proxy", () => {
     expect(JSON.stringify(body)).not.toMatch(/\/tmp\/|\/usr\/local|trigger/i);
   });
 
+  it("surfaces the backend's template build failure cause", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code: "template_build_failed",
+              message:
+                "opencomputer: repository is not public or does not exist",
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/template-inspections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            repositoryUrl: "https://github.com/diggerhq/private-repo",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "template_build_failed",
+        message: "opencomputer: repository is not public or does not exist",
+      },
+    });
+  });
+
+  it("exposes a template clone failure on a project overview", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          project: {
+            id: "prj_test",
+            slug: "example",
+            name: "Example",
+            environments: [],
+            agents: [{ id: "reviewer", name: "Reviewer" }],
+            createdAt: "2026-09-02",
+            updatedAt: "2026-09-02",
+          },
+          templateSource: {
+            repositoryUrl: "https://github.com/diggerhq/example",
+            commitSha: "a".repeat(40),
+            cloneReady: false,
+            cloneError: {
+              stage: "repository",
+              message: "clone failed: repository not found",
+            },
+          },
+          sessions: [],
+          deployments: [],
+          connections: [],
+          channels: [],
+          schedules: [],
+          files: [],
+          schema: {},
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/projects/prj_test",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      templateSource: {
+        cloneReady: false,
+        cloneError: {
+          stage: "repository",
+          message: "clone failed: repository not found",
+        },
+      },
+    });
+  });
+
   it("exposes a sanitized active deployment for agent details", async () => {
     vi.stubGlobal(
       "fetch",
