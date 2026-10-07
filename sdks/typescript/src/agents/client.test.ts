@@ -365,7 +365,7 @@ describe("OpenComputer client", () => {
 
   it("covers webhooks, event subscriptions and the repository listing", async () => {
     const webhook = { id: "wh_1", projectId: "prj_1", environment: "development", agentId: "worker", name: "gh", enabled: true, invocationUrl: "https://x/wh_1/tok", token: "tok", createdAt: "t", updatedAt: "t" };
-    const subscription = { id: "evs_1", projectId: "prj_1", events: ["turn.completed"], destination: { type: "session", sessionId: "ses_c" }, createdAt: "t" };
+    const subscription = { id: "evs_1", projectId: "prj_1", sourceLabels: { coordinator: "ses_c" }, events: ["turn.completed"], destination: { type: "session", sessionId: "ses_c" }, createdAt: "t" };
     const api = fakeApi({
       "GET /api/managed-agents/projects/prj_1/webhooks": () => Response.json({ webhooks: [webhook] }),
       "POST /api/managed-agents/projects/prj_1/webhooks": () => Response.json({ webhook }, { status: 201 }),
@@ -390,7 +390,14 @@ describe("OpenComputer client", () => {
     await projects.webhooks.delete("prj_1", "wh_1");
     expect(await projects.webhooks.requests("prj_1", "wh_1")).toEqual([{ id: "req_1" }]);
 
-    expect(await projects.eventSubscriptions.create("prj_1", { events: ["turn.completed"], destination: { type: "session", sessionId: "ses_c" } })).toEqual(subscription);
+    expect(
+      await projects.eventSubscriptions.create("prj_1", {
+        sourceLabels: { coordinator: "ses_c" },
+        events: ["turn.completed"],
+        destination: { type: "session", sessionId: "ses_c" },
+      }),
+    ).toEqual(subscription);
+    expect(api.last().body).toMatchObject({ sourceLabels: { coordinator: "ses_c" } });
     expect(await projects.eventSubscriptions.list("prj_1")).toEqual([subscription]);
     expect(await projects.eventSubscriptions.get("prj_1", "evs_1")).toEqual(subscription);
     await projects.eventSubscriptions.delete("prj_1", "evs_1");
@@ -448,6 +455,21 @@ describe("OpenComputer client", () => {
     expect(shape).toMatchObject({ code: "invalid_response", status: 200 });
     expect((shape as Error).message).toMatch(/turns/);
     expect(await client.sessions.get("extra")).toEqual({ ...session, nextThing: { added: true } });
+  });
+
+  it("reads sourceLabels on a subscription, checks they are strings, and accepts a subscription that has none", async () => {
+    const subscription = { id: "evs_1", projectId: "prj_1", events: ["turn.completed"], destination: { type: "session", sessionId: "ses_c" }, createdAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/projects/prj_1/event-subscriptions/evs_1": () => Response.json({ subscription: { ...subscription, sourceLabels: { team: "a" } } }),
+      "GET /api/managed-agents/projects/prj_1/event-subscriptions/wrong": () => Response.json({ subscription: { ...subscription, sourceLabels: { team: 1 } } }),
+      "GET /api/managed-agents/projects/prj_1/event-subscriptions/older": () => Response.json({ subscription }),
+    });
+    const { eventSubscriptions } = oc(api).projects;
+    expect((await eventSubscriptions.get("prj_1", "evs_1")).sourceLabels).toEqual({ team: "a" });
+    const wrong = await eventSubscriptions.get("prj_1", "wrong").catch((cause: unknown) => cause);
+    expect(wrong).toMatchObject({ code: "invalid_response", status: 200 });
+    expect((wrong as Error).message).toMatch(/sourceLabels/);
+    expect((await eventSubscriptions.get("prj_1", "older")).sourceLabels).toBeUndefined();
   });
 
   // `projectId` is on every session the API returns and an authorization

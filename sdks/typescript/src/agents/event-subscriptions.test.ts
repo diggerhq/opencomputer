@@ -60,4 +60,36 @@ describe("event subscription types", () => {
     >();
     expect(delivery.receipt?.turnId).toBe("turn-7");
   });
+
+  it("select source sessions by label", () => {
+    const body: CreateEventSubscriptionBody = {
+      events: ["turn.completed"],
+      destination: { type: "session", sessionId: "ses_coordinator" },
+      sourceLabels: { coordinator: "ses_coordinator" },
+    };
+    const subscription: EventSubscription = { id: "evs_2", projectId: "prj_1", ...body, createdAt: "t" };
+    expectTypeOf(subscription.sourceLabels).toEqualTypeOf<Record<string, string> | undefined>();
+    expect(subscription.sourceLabels).toEqual({ coordinator: "ses_coordinator" });
+  });
+
+  it("read the question a source turn asked and the source session's labels", () => {
+    const event: OutcomeEvent = {
+      id: "event_10",
+      type: "turn.completed",
+      sessionId: "ses_worker",
+      turnId: "turn-2",
+      agentId: "worker",
+      occurredAt: "2026-10-07T12:00:00.000Z",
+      result: { text: "Two ways to fix it.", truncated: false },
+      outcome: "question",
+      question: { id: "q_1", text: "Patch or rewrite?", options: [{ label: "Patch", value: "patch" }] },
+      labels: { coordinator: "ses_coordinator" },
+    };
+    expect(event.outcome).toBe("question");
+    expect(event.question?.options[0]?.value).toBe("patch");
+    expect(event.labels?.coordinator).toBe("ses_coordinator");
+    // @ts-expect-error a delivered question carries no askedAt.
+    const asked: OutcomeEvent["question"] = { id: "q_1", text: "t", options: [], askedAt: "t" };
+    expect(asked?.id).toBe("q_1");
+  });
 });

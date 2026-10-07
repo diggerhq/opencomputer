@@ -433,6 +433,7 @@ export const eventSubscription: Shape<EventSubscription> = object({
   id: string,
   projectId: string,
   agentId: optional(string),
+  sourceLabels: optional(labels),
   environment: optional(environment),
   events: array(outcomeEventType),
   destination: sessionDestination,
