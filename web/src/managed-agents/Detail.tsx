@@ -103,6 +103,7 @@ import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
 import { ManagedProjectLinear } from './Linear'
+import { ManagedProjectServiceConnections } from './ProjectServiceConnections'
 import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
@@ -1475,6 +1476,7 @@ export default function ManagedAgentDetail({
 
       {activeTab === 'connections' && project ? (
         <div className="space-y-5">
+          <ManagedProjectServiceConnections projectId={project.project.id} />
           <ManagedProjectGitHub
             projectId={project.project.id}
             environment={environment}

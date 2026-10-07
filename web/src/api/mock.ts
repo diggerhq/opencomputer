@@ -1251,6 +1251,22 @@ let managedProjects: Array<{
   },
 ]
 
+const previewServiceConnection = {
+  id: 'connection_google_preview',
+  kind: 'tool' as const,
+  provider: 'google',
+  label: 'gmail',
+  agentId: 'email-triage',
+  alias: 'production',
+  displayName: 'Gmail',
+  scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+  status: 'connected',
+  createdAt: new Date(BASE).toISOString(),
+  updatedAt: new Date(BASE).toISOString(),
+}
+
+let previewProjectServiceAttachments: Array<Record<string, unknown>> = []
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
@@ -1264,6 +1280,10 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ customized: false, displayName: 'OpenComputer default' }),
   ],
   [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
+  [
+    /^\/managed-agents\/projects\/[^/]+\/service-connections$/,
+    () => ({ attachments: previewProjectServiceAttachments }),
+  ],
   [/^\/managed-agents\/model-access\/connections$/, () => ({ data: [] })],
   [
     /^\/managed-agents\/projects\/[^/]+\/model-access\/bindings$/,
@@ -1285,20 +1305,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [
     /^\/managed-agents\/connections$/,
     () => ({
-      connections: [
-        {
-          id: 'connection_google_preview',
-          kind: 'tool',
-          provider: 'google',
-          label: 'gmail',
-          agentId: 'email-triage',
-          alias: 'production',
-          displayName: 'Gmail',
-          status: 'connected',
-          createdAt: new Date(BASE).toISOString(),
-          updatedAt: new Date(BASE).toISOString(),
-        },
-      ],
+      connections: [previewServiceConnection],
     }),
   ],
   [
@@ -1589,6 +1596,28 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
+  if (
+    /^\/managed-agents\/projects\/[^/]+\/service-connections$/.test(path) &&
+    (method === 'POST' || method === 'DELETE')
+  ) {
+    const projectId = path.split('/')[3] ?? 'prj_preview'
+    if (method === 'DELETE') {
+      previewProjectServiceAttachments = []
+      return undefined as T
+    }
+    const attachment = {
+      projectId,
+      service: 'gmail',
+      provider: 'google',
+      label: previewServiceConnection.label,
+      connectionId: previewServiceConnection.id,
+      connection: previewServiceConnection,
+      createdAt: new Date(BASE).toISOString(),
+      updatedAt: new Date(BASE).toISOString(),
+    }
+    previewProjectServiceAttachments = [attachment]
+    return attachment as T
+  }
   const renameMatch = path.match(/^\/api-keys\/([^/]+)$/)
   if (method === 'PATCH' && renameMatch) {
     const body = typeof options.body === 'string' ? options.body : '{}'

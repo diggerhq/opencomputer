@@ -370,6 +370,21 @@ const connectionSchema = z.object({
   updatedAt: z.string(),
 })
 
+const projectServiceAttachmentSchema = z.object({
+  projectId: z.string(),
+  service: z.string(),
+  provider: z.string(),
+  label: z.string(),
+  connectionId: z.string(),
+  connection: connectionSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const projectServiceAttachmentsSchema = z.object({
+  attachments: z.array(projectServiceAttachmentSchema),
+})
+
 const channelSchema = z.object({
   id: z.string(),
   channel: z.string(),
@@ -478,7 +493,7 @@ export const LINEAR_HEALTH_STATES = [
 const linearConnectionSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string(),
   name: z.string(),
   status: z.enum(LINEAR_CONNECTION_STATUSES),
@@ -861,6 +876,9 @@ export type ManagedMemoryDocumentRead = {
   etag: string
 }
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
+export type ManagedProjectServiceAttachment = z.infer<
+  typeof projectServiceAttachmentSchema
+>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
 export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
@@ -1494,6 +1512,43 @@ export async function getManagedAgentConnections() {
   ).connections.filter((connection) => connection.kind === 'tool')
 }
 
+export async function listManagedProjectServiceConnections(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/service-connections`,
+      undefined,
+      projectServiceAttachmentsSchema,
+    )
+  ).attachments
+}
+
+export async function attachManagedProjectServiceConnection(input: {
+  projectId: string
+  connectionId: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ connectionId: input.connectionId }),
+    },
+    projectServiceAttachmentSchema,
+  )
+}
+
+export async function detachManagedProjectServiceConnection(input: {
+  projectId: string
+  connectionId: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ connectionId: input.connectionId }),
+    },
+  )
+}
+
 export async function claimManagedAgentChannelIdentity(token: string) {
   return apiFetch(
     '/managed-agents/connections/channel-identity/link',
@@ -1806,7 +1861,7 @@ export async function disconnectManagedAgentSlack(connectionId: string) {
 /** The project's Linear connections with health, for one environment or both. */
 export async function listManagedLinearConnections(
   projectId: string,
-  environment?: 'development' | 'production',
+  environment?: 'default' | 'development' | 'production',
 ) {
   const query = environment
     ? `?${new URLSearchParams({ environment }).toString()}`
@@ -1827,7 +1882,7 @@ export async function listManagedLinearConnections(
  */
 export async function createManagedLinearConnection(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId: string
   name: string
 }) {
