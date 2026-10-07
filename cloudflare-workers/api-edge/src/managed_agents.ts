@@ -627,6 +627,8 @@ function publicProject(value: unknown): Record<string, unknown> {
     id: project.id,
     slug: project.slug,
     name: project.name,
+    // The canonical primary-agent id; `opencomputer link` binds checkouts to it.
+    ...(agentId ? { agentId } : {}),
     // Projects that predate the mode column are legacy dual-environment
     // projects; a single-mode project is only ever reported as such.
     environmentMode: project.environmentMode === "single" ? "single" : "legacy",
