@@ -1175,6 +1175,190 @@ export default function Agent() {
   }
 });
 
+const MANAGED_MONID_CONNECTION = {
+  id: "monid",
+  origin: "https://mcp.monid.ai",
+  pathPrefix: "/v1",
+  headers: {
+    Authorization: {
+      kind: "secret",
+      name: "MONID_API_KEY",
+      scope: "platform",
+      prefix: "Bearer ",
+    },
+  },
+};
+
+const MANAGED_MONID_SERVER = {
+  id: "monid",
+  url: "https://mcp.monid.ai/v1",
+  connection: "monid",
+};
+
+async function manifestFor(agentSource: string) {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-monid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(resolve(initialized.agentRoot, "agent.ts"), agentSource);
+    const runtime = await prepareAgent(initialized.agentRoot);
+    return JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as {
+      connections: string[];
+      httpConnections: unknown[];
+      mcpServers: string[];
+      mcpServerDefinitions: unknown[];
+    };
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+}
+
+test("monid() registers the managed catalog without any credential", async () => {
+  const manifest = await manifestFor(
+    `import { monid, useMcpServer } from "@opencomputer/agent";
+
+const tools = monid();
+export default function Agent() {
+  useMcpServer(tools);
+  return "Use the catalog.";
+}
+`,
+  );
+  assert.deepEqual(manifest.httpConnections, [MANAGED_MONID_CONNECTION]);
+  assert.deepEqual(manifest.mcpServerDefinitions, [MANAGED_MONID_SERVER]);
+  assert.deepEqual(manifest.connections, ["monid"]);
+  assert.deepEqual(manifest.mcpServers, ["monid"]);
+});
+
+test("useMcpServer(\"monid\") selects the same managed catalog", async () => {
+  const manifest = await manifestFor(
+    `import { useMcpServer } from "@opencomputer/agent";
+
+export default function Agent() {
+  useMcpServer("monid");
+  return "Use the catalog.";
+}
+`,
+  );
+  assert.deepEqual(manifest.httpConnections, [MANAGED_MONID_CONNECTION]);
+  assert.deepEqual(manifest.mcpServerDefinitions, [MANAGED_MONID_SERVER]);
+});
+
+test("monid() survives a re-export through a local module", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-monid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "lib"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "lib", "catalog.ts"),
+      `export { monid } from "@opencomputer/agent";\n`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { monid } from "./lib/catalog.js";
+import { useMcpServer } from "@opencomputer/agent";
+
+const tools = monid();
+export default function Agent() {
+  useMcpServer(tools);
+  return "Use the catalog.";
+}
+`,
+    );
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { httpConnections: unknown[]; mcpServerDefinitions: unknown[] };
+    assert.deepEqual(manifest.httpConnections, [MANAGED_MONID_CONNECTION]);
+    assert.deepEqual(manifest.mcpServerDefinitions, [MANAGED_MONID_SERVER]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("a useSecret platform scope survives into the deployment manifest", async () => {
+  const manifest = await manifestFor(
+    `import { bearer, defineConnection, useSecret } from "@opencomputer/agent";
+
+defineConnection({
+  id: "monid-http",
+  origin: "https://api.monid.ai",
+  pathPrefix: "/v1",
+  headers: { Authorization: bearer(useSecret("MONID_API_KEY", { scope: "platform" })) },
+});
+export default function Agent() {
+  return "Call the HTTP API.";
+}
+`,
+  );
+  assert.deepEqual(manifest.httpConnections, [
+    {
+      id: "monid-http",
+      origin: "https://api.monid.ai",
+      pathPrefix: "/v1",
+      headers: {
+        Authorization: {
+          kind: "secret",
+          name: "MONID_API_KEY",
+          scope: "platform",
+          prefix: "Bearer ",
+        },
+      },
+    },
+  ]);
+});
+
+test("a project's own monid definition wins over a string selection", async () => {
+  const manifest = await manifestFor(
+    `import { defineMcpServer, useMcpServer } from "@opencomputer/agent";
+
+const own = defineMcpServer({ id: "monid", url: "https://mcp.internal.example" });
+export default function Agent() {
+  useMcpServer("monid");
+  return "Use ours.";
+}
+`,
+  );
+  assert.deepEqual(manifest.mcpServerDefinitions, [
+    { id: "monid", url: "https://mcp.internal.example/" },
+  ]);
+  assert.deepEqual(manifest.httpConnections, []);
+});
+
+test("monid() rejects a user-declared monid resource", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-monid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { defineMcpServer, monid, useMcpServer } from "@opencomputer/agent";
+
+defineMcpServer({ id: "monid", url: "https://mcp.internal.example" });
+export default function Agent() {
+  useMcpServer(monid());
+  return "Conflict.";
+}
+`,
+    );
+    await assert.rejects(
+      () => prepareAgent(initialized.agentRoot),
+      /"monid" is reserved for the managed monid\(\) catalog/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("packaged tools can publish to a registered outbox by id", async () => {
   const parent = await mkdtemp(
     resolve(tmpdir(), "opencomputer-outbox-publish-"),

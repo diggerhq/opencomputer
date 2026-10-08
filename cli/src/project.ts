@@ -70,10 +70,11 @@ export interface HttpConnectionManifest {
         kind: "secret";
         name: string;
         /**
-         * Omitted means project-wide; "tenant" resolves per installation and
-         * "user" per person acted for.
+         * Omitted means project-wide; "tenant" resolves per installation,
+         * "user" per person acted for, and "platform" the platform's own
+         * credential.
          */
-        scope?: "tenant" | "user";
+        scope?: "tenant" | "user" | "platform";
         prefix?: string;
         suffix?: string;
       }
@@ -964,6 +965,241 @@ function definedMcpServers(
   };
   visit(file);
   return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/**
+ * The managed Monid catalog: one resource id covering the MCP endpoint and the
+ * connection that authenticates it. The credential is platform-scoped, so the
+ * deployment records that a platform secret is used, never a value — the
+ * platform substitutes its own key at the egress gateway.
+ */
+const MONID_RESOURCE_ID = "monid";
+
+const MANAGED_MONID_CONNECTION: HttpConnectionManifest = {
+  id: MONID_RESOURCE_ID,
+  origin: "https://mcp.monid.ai",
+  pathPrefix: "/v1",
+  headers: {
+    Authorization: {
+      kind: "secret",
+      name: "MONID_API_KEY",
+      scope: "platform",
+      prefix: "Bearer ",
+    },
+  },
+};
+
+const MANAGED_MONID_MCP_SERVER: McpServerManifest = {
+  id: MONID_RESOURCE_ID,
+  url: "https://mcp.monid.ai/v1",
+  connection: MONID_RESOURCE_ID,
+};
+
+/**
+ * Whether any module calls monid() as imported from @opencomputer/agent — a
+ * local function or an import from anywhere else that happens to share the
+ * name is not the platform helper. Re-exports through local modules are
+ * resolved, so `export { monid } from "@opencomputer/agent"` in a barrel file
+ * keeps the helper recognized at its call site.
+ */
+function agentCallsManagedMonid(
+  modules: ReadonlyArray<{ path: string; source: string }>,
+): boolean {
+  const paths = new Set(modules.map((module) => module.path));
+  const resolveLocal = (specifier: string, from: string): string | null => {
+    if (!specifier.startsWith(".")) return null;
+    // module paths are relative to the agent root with forward slashes.
+    const base = join(dirname(from), specifier).split("\\").join("/");
+    const candidates = [
+      base,
+      `${base}.ts`,
+      `${base}.js`,
+      `${base}.mjs`,
+      `${base}/index.ts`,
+      ...(base.endsWith(".js") ? [`${base.slice(0, -3)}.ts`] : []),
+    ];
+    return candidates.find((candidate) => paths.has(candidate)) ?? null;
+  };
+
+  interface MonidModule {
+    file: ts.SourceFile;
+    bound: Set<string>;
+    agentNamespaces: Set<string>;
+    exported: Set<string>;
+    /** import { x } / export { x } from a specifier: local/exported name -> (specifier, imported name). */
+    viaLocal: Array<{
+      specifier: string;
+      imported: string;
+      local: string;
+      exportAs: string | null;
+    }>;
+  }
+
+  const parsed = new Map<string, MonidModule>();
+  for (const { path, source } of modules) {
+    const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+    const module: MonidModule = {
+      file,
+      bound: new Set(),
+      agentNamespaces: new Set(),
+      exported: new Set(),
+      viaLocal: [],
+    };
+    for (const statement of file.statements) {
+      if (ts.isImportDeclaration(statement)) {
+        if (
+          statement.importClause?.isTypeOnly === true ||
+          !ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+          continue;
+        }
+        const specifier = statement.moduleSpecifier.text;
+        const clause = statement.importClause;
+        const named = clause?.namedBindings;
+        if (named && ts.isNamespaceImport(named) && specifier === AGENT_PACKAGE) {
+          module.agentNamespaces.add(named.name.text);
+        }
+        if (!named || !ts.isNamedImports(named)) continue;
+        for (const element of named.elements) {
+          if (element.isTypeOnly) continue;
+          const imported = (element.propertyName ?? element.name).text;
+          if (specifier === AGENT_PACKAGE) {
+            if (imported === "monid") module.bound.add(element.name.text);
+          } else {
+            module.viaLocal.push({
+              specifier,
+              imported,
+              local: element.name.text,
+              exportAs: null,
+            });
+          }
+        }
+      } else if (
+        ts.isExportDeclaration(statement) &&
+        statement.isTypeOnly !== true
+      ) {
+        const clause = statement.exportClause;
+        const specifier =
+          statement.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(statement.moduleSpecifier)
+            ? statement.moduleSpecifier.text
+            : null;
+        if (clause === undefined && specifier !== null) {
+          // export * from ... — the module re-exports every bound name of the
+          // target under its own name.
+          module.viaLocal.push({
+            specifier,
+            imported: "*",
+            local: "*",
+            exportAs: null,
+          });
+          continue;
+        }
+        if (!clause || !ts.isNamedExports(clause)) continue;
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          const sourceName = (element.propertyName ?? element.name).text;
+          const exportAs = element.name.text;
+          if (specifier === null) {
+            // export { name } — resolved after bound names settle.
+            module.viaLocal.push({
+              specifier: "",
+              imported: sourceName,
+              local: sourceName,
+              exportAs,
+            });
+          } else if (specifier === AGENT_PACKAGE) {
+            if (sourceName === "monid") module.exported.add(exportAs);
+          } else {
+            module.viaLocal.push({
+              specifier,
+              imported: sourceName,
+              local: sourceName,
+              exportAs,
+            });
+          }
+        }
+      }
+    }
+    parsed.set(path, module);
+  }
+
+  // Propagate bindings through local re-exports until stable.
+  let changed = true;
+  for (let rounds = modules.length + 1; changed && rounds > 0; rounds--) {
+    changed = false;
+    for (const [path, module] of parsed) {
+      for (const via of module.viaLocal) {
+        const source =
+          via.specifier === "" ? module : parsed.get(resolveLocal(via.specifier, path) ?? "");
+        if (!source) continue;
+        const boundHere = (name: string) =>
+          source.bound.has(name) ||
+          (name === "monid" && source.exported.has("monid")) ||
+          source.exported.has(name);
+        if (via.imported === "*") {
+          // export * — re-export every name the target binds to monid.
+          for (const name of source.exported) {
+            if (!module.exported.has(name)) {
+              module.exported.add(name);
+              changed = true;
+            }
+          }
+          continue;
+        }
+        if (boundHere(via.imported)) {
+          if (!module.bound.has(via.local)) {
+            module.bound.add(via.local);
+            changed = true;
+          }
+          if (via.exportAs !== null && !module.exported.has(via.exportAs)) {
+            module.exported.add(via.exportAs);
+            changed = true;
+          }
+        }
+      }
+      // export { name } of a name bound locally.
+      if (!module.bound.size) continue;
+      for (const via of module.viaLocal) {
+        if (
+          via.specifier === "" &&
+          via.exportAs !== null &&
+          module.bound.has(via.imported) &&
+          !module.exported.has(via.exportAs)
+        ) {
+          module.exported.add(via.exportAs);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  for (const module of parsed.values()) {
+    if (module.bound.size === 0 && module.agentNamespaces.size === 0) continue;
+    let calls = false;
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        if (
+          ts.isIdentifier(node.expression) &&
+          module.bound.has(node.expression.text)
+        ) {
+          calls = true;
+        }
+        if (
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          module.agentNamespaces.has(node.expression.expression.text) &&
+          node.expression.name.text === "monid"
+        ) {
+          calls = true;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(module.file);
+    if (calls) return true;
+  }
+  return false;
 }
 
 /**
@@ -2416,7 +2652,7 @@ export async function readProjectResources(
  */
 function secretFromExpression(expression: ts.Expression): {
   name: string;
-  scope?: "tenant" | "user";
+  scope?: "tenant" | "user" | "platform";
 } {
   if (
     !ts.isCallExpression(expression) ||
@@ -2434,8 +2670,15 @@ function secretFromExpression(expression: ts.Expression): {
   const scope = objectProperty(options, "scope");
   if (!scope) return { name };
   const value = literalStringValue(scope, "useSecret scope");
-  if (value !== "project" && value !== "tenant" && value !== "user") {
-    throw new Error(`useSecret scope must be "project", "tenant" or "user"`);
+  if (
+    value !== "project" &&
+    value !== "tenant" &&
+    value !== "user" &&
+    value !== "platform"
+  ) {
+    throw new Error(
+      `useSecret scope must be "project", "tenant", "user" or "platform"`,
+    );
   }
   return value === "project" ? { name } : { name, scope: value };
 }
@@ -2468,7 +2711,7 @@ function connectionHeaderValue(
     const result: {
       kind: "secret";
       name: string;
-      scope?: "tenant" | "user";
+      scope?: "tenant" | "user" | "platform";
       prefix?: string;
       suffix?: string;
     } = { kind: "secret", ...secretFromExpression(secret) };
@@ -3182,7 +3425,7 @@ function id(value, kind) {
 export const useSecret = (value, options = {}) => {
   const name = id(value, "useSecret");
   const scope = options.scope ?? "project";
-  if (scope !== "project" && scope !== "tenant" && scope !== "user") throw new Error('A secret scope must be "project", "tenant" or "user"');
+  if (scope !== "project" && scope !== "tenant" && scope !== "user" && scope !== "platform") throw new Error('A secret scope must be "project", "tenant", "user" or "platform"');
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
   return Object.freeze({ kind: "secret", id: name, scope });
 };
@@ -3308,6 +3551,11 @@ export const defineMcpServer = (input) => {
   if (url.protocol !== "https:") throw new Error("MCP server URLs must use HTTPS");
   return Object.freeze({ kind: "mcp", ...input, id: id(input.id, "defineMcpServer"), url: url.toString() });
 };
+export const monid = () => defineMcpServer({
+  id: "monid",
+  url: "https://mcp.monid.ai/v1",
+  connection: Object.freeze({ kind: "connection", id: "monid" }),
+});
 export const defineTool = (input) => {
   const toolId = id(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
@@ -3742,6 +3990,24 @@ the product or support surface presented to users.
   const githubConnections = sourceModules.flatMap((module) =>
     definedGitHubConnections(module.source, module.path),
   );
+  // The managed Monid catalog attaches when the agent calls monid(), or names
+  // "monid" as an MCP server — unless the project already defines a resource
+  // with that id, in which case the project's own wins for the string
+  // selection and only an explicit monid() call is a conflict.
+  const monidHelperCalls = agentCallsManagedMonid(sourceModules);
+  const monidRequested =
+    monidHelperCalls ||
+    sourceModules.some((module) =>
+      literalHookIds(module.source, "useMcpServer").includes(MONID_RESOURCE_ID),
+    );
+  const userMonidConnection = [...httpConnections, ...githubConnections].some(
+    (connection) => connection.id === MONID_RESOURCE_ID,
+  );
+  if (monidHelperCalls && userMonidConnection) {
+    throw new Error(
+      `Connection id ${JSON.stringify(MONID_RESOURCE_ID)} is reserved for the managed monid() catalog`,
+    );
+  }
   const allConnections = [...httpConnections, ...githubConnections];
   const duplicateConnection = allConnections.find(
     (connection, index) =>
@@ -3772,6 +4038,19 @@ the product or support surface presented to users.
   const mcpServerDefinitions = sourceModules.flatMap((module) =>
     definedMcpServers(module.source, module.path, connectionBindings),
   );
+  const userMonidServer = mcpServerDefinitions.some(
+    (server) => server.id === MONID_RESOURCE_ID,
+  );
+  if (monidHelperCalls && userMonidServer) {
+    throw new Error(
+      `MCP server id ${JSON.stringify(MONID_RESOURCE_ID)} is reserved for the managed monid() catalog`,
+    );
+  }
+  if (monidRequested && !userMonidConnection && !userMonidServer) {
+    httpConnections.push(MANAGED_MONID_CONNECTION);
+    allConnections.push(MANAGED_MONID_CONNECTION);
+    mcpServerDefinitions.push(MANAGED_MONID_MCP_SERVER);
+  }
   const duplicateMcpServer = mcpServerDefinitions.find(
     (server, index) =>
       mcpServerDefinitions.findIndex(

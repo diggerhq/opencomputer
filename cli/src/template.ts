@@ -339,6 +339,9 @@ export async function buildTemplateProject(
       compiledConnections.add(connection.id);
       for (const header of Object.values(connection.headers)) {
         if (typeof header === "string") continue;
+        // Platform-scoped secrets are supplied by the platform at the egress
+        // edge — never an install-time requirement the user is asked to enter.
+        if (header.scope === "platform") continue;
         const key = `${source.localId}:${header.name}`;
         const annotation = template.template.secrets[header.name];
         const requirement = secretRequirements.get(key) ?? {

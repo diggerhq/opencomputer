@@ -221,14 +221,17 @@ export interface ConnectionReference extends ResourceReference {
  * so one customer's agent cannot reach another customer's account. `user` is
  * narrower still — the credential of the particular person being acted for,
  * so the upstream applies its own permissions to them rather than to the
- * installation as a whole.
+ * installation as a whole. `platform` is the widest: a credential the platform
+ * itself holds, like the managed Monid catalog key. The platform pins the
+ * origins it may reach and substitutes it at the edge; no project, account, or
+ * agent ever sees the value.
  *
  * Nothing falls back. A `tenant` secret never reaches for the project's, and a
  * `user` secret never reaches for the installation's, because a credential
  * substituted when the right one is missing is exactly how one customer ends
  * up acting with another's authority.
  */
-export type SecretScope = "project" | "tenant" | "user";
+export type SecretScope = "project" | "tenant" | "user" | "platform";
 
 export interface SecretReference extends ResourceReference {
   readonly kind: "secret";
@@ -770,8 +773,15 @@ export function useSecret(
     );
   }
   const scope = options.scope ?? "project";
-  if (scope !== "project" && scope !== "tenant" && scope !== "user") {
-    throw new Error('A secret scope must be "project", "tenant" or "user"');
+  if (
+    scope !== "project" &&
+    scope !== "tenant" &&
+    scope !== "user" &&
+    scope !== "platform"
+  ) {
+    throw new Error(
+      'A secret scope must be "project", "tenant", "user" or "platform"',
+    );
   }
   return Object.freeze({ kind: "secret", id, scope });
 }
@@ -1202,6 +1212,27 @@ export function defineMcpServer(input: {
     id: identifier(input.id, "defineMcpServer"),
     url: url.toString(),
     ...(input.connection ? { connection: input.connection } : {}),
+  });
+}
+
+export const MONID_MCP_SERVER_ID = "monid";
+
+/**
+ * The managed Monid tool catalog.
+ *
+ * `useMcpServer(monid())` gives the agent Monid's whole catalog — the model
+ * discovers, prices, and runs a tool at run time instead of the deployment
+ * wiring each provider and its credential up front. The build registers the
+ * catalog's connection for this call; the platform holds the Monid key and
+ * substitutes it at the egress gateway, so neither the agent code nor the
+ * deployment ever holds a credential. Selecting `useMcpServer("monid")` names
+ * the same catalog.
+ */
+export function monid(): McpServerDefinition {
+  return defineMcpServer({
+    id: MONID_MCP_SERVER_ID,
+    url: "https://mcp.monid.ai/v1",
+    connection: Object.freeze({ kind: "connection", id: MONID_MCP_SERVER_ID }),
   });
 }
 
