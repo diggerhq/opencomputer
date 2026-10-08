@@ -93,6 +93,7 @@ import {
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
+  sessionsForDeploymentAlias,
   sessionsForEnvironment,
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
@@ -788,12 +789,19 @@ export default function ManagedAgentDetail({
     }
   }
   const environmentSessions = project
-    ? sessionsForEnvironment(
-        sessions.data ?? [],
-        project.deployments,
-        agentId,
-        playgroundAlias,
-      )
+    ? previewAlias
+      ? sessionsForDeploymentAlias(
+          sessions.data ?? [],
+          project.deployments,
+          agentId,
+          previewAlias,
+        )
+      : sessionsForEnvironment(
+          sessions.data ?? [],
+          project.deployments,
+          agentId,
+          environment,
+        )
     : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
     (session) => session.source === 'playground',

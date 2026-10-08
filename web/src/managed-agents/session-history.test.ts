@@ -7,6 +7,7 @@ import type {
 import {
   playgroundSessionIdFromSearch,
   playgroundSessionSearch,
+  sessionsForDeploymentAlias,
   sessionsForEnvironment,
   turnAssistantText,
   turnFailureReason,
@@ -47,7 +48,7 @@ function session(id: string, deploymentId: string): ManagedAgentSessionSummary {
   }
 }
 
-describe('sessionsForEnvironment', () => {
+describe('sessionsForDeploymentAlias', () => {
   it('keeps sessions from historical deployments in the selected environment', () => {
     const sessions = [
       session('old-development', 'dev-1'),
@@ -56,7 +57,7 @@ describe('sessionsForEnvironment', () => {
     ]
 
     expect(
-      sessionsForEnvironment(
+      sessionsForDeploymentAlias(
         sessions,
         [
           deployment('dev-1', 'development'),
@@ -71,7 +72,7 @@ describe('sessionsForEnvironment', () => {
 
   it('does not include another agent deployment', () => {
     expect(
-      sessionsForEnvironment(
+      sessionsForDeploymentAlias(
         [session('other', 'other-dev')],
         [deployment('other-dev', 'development', 'other-agent')],
         'reviewer',
@@ -82,7 +83,7 @@ describe('sessionsForEnvironment', () => {
 
   it('spans every agent in the environment when no agent is given', () => {
     expect(
-      sessionsForEnvironment(
+      sessionsForDeploymentAlias(
         [
           session('mine', 'dev-1'),
           session('other', 'other-dev'),
@@ -97,6 +98,36 @@ describe('sessionsForEnvironment', () => {
         'development',
       ).map(({ id }) => id),
     ).toEqual(['mine', 'other'])
+  })
+})
+
+describe('sessionsForEnvironment', () => {
+  it('uses the recorded environment when an active deployment retains a preview label', () => {
+    const reusedPreview = session('main-session', 'preview-3')
+    reusedPreview.environment = 'default'
+
+    expect(
+      sessionsForEnvironment(
+        [reusedPreview],
+        [deployment('preview-3', 'pr-3')],
+        'reviewer',
+        'default',
+      ).map(({ id }) => id),
+    ).toEqual(['main-session'])
+  })
+
+  it('falls back to deployment aliases for sessions without a recorded environment', () => {
+    const legacy = session('legacy-session', 'dev-1')
+    legacy.environment = null
+
+    expect(
+      sessionsForEnvironment(
+        [legacy],
+        [deployment('dev-1', 'development')],
+        'reviewer',
+        'development',
+      ).map(({ id }) => id),
+    ).toEqual(['legacy-session'])
   })
 })
 
