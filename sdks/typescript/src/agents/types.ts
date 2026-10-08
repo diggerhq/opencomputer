@@ -138,6 +138,8 @@ export interface Session {
   environment?: Environment;
   status: SessionStatus;
   source: SessionSource;
+  /** The display title: a `title` label you set, else the name the runtime generated, else the first turn's input. */
+  title?: string | null;
   /** How the runtime hosts the session, as the create response reports it. */
   executionMode?: string;
   /** Present when the session was created with bindings. */
@@ -277,6 +279,8 @@ export interface SessionSummary {
   environment?: Environment | null;
   source: SessionSource;
   status: SessionStatus;
+  /** Same resolution as `Session.title`; `null` while there is nothing to show. */
+  title?: string | null;
   labels?: SessionLabels;
   /** Present when the session was created with one. */
   externalReference?: string;

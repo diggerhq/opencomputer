@@ -419,7 +419,9 @@ function PlaygroundChat({
         <div className="flex items-center justify-between border-b px-5 py-3">
           <div>
             <p className="text-sm font-medium">
-              {session?.turns[0]?.input || 'New playground session'}
+              {session?.title ||
+                session?.turns[0]?.input ||
+                'New playground session'}
             </p>
             <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">
               {liveSessionId ?? 'A session is created when you send a message'}
@@ -1245,7 +1247,7 @@ export default function ManagedAgentDetail({
                     )}
                   >
                     <span className="block truncate text-xs font-medium">
-                      Playground session
+                      {session.title || 'Playground session'}
                     </span>
                     <span className="text-muted-foreground mt-0.5 block text-[10px]">
                       {sessionActivityLabel(session)} ·{' '}
