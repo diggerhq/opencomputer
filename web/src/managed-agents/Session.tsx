@@ -88,28 +88,34 @@ export default function ManagedSessionDetail() {
   })
 
   // Scroll-spy for the conversation minimap: the page scrolls, so the
-  // observer uses the viewport and the topmost on-screen turn wins.
+  // observer uses the viewport and the topmost on-screen turn wins. The
+  // effect depends on activeTab so it re-observes the remounted turn
+  // elements after leaving and returning to the Conversation tab.
   const turnEls = useRef<(HTMLElement | null)[]>([])
+  const visibleTurns = useRef<Set<number>>(new Set())
   const [activeTurn, setActiveTurn] = useState(0)
   const turnCount = session.data?.turns.length ?? 0
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue
-          const index = turnEls.current.indexOf(
-            entry.target as HTMLElement,
-          )
-          if (index >= 0) setActiveTurn(index)
+          const index = turnEls.current.indexOf(entry.target as HTMLElement)
+          if (index < 0) continue
+          if (entry.isIntersecting) visibleTurns.current.add(index)
+          else visibleTurns.current.delete(index)
+        }
+        if (visibleTurns.current.size > 0) {
+          setActiveTurn(Math.min(...visibleTurns.current))
         }
       },
       { rootMargin: '-15% 0px -65% 0px' },
     )
+    visibleTurns.current.clear()
     for (const el of turnEls.current) {
       if (el) observer.observe(el)
     }
     return () => observer.disconnect()
-  }, [turnCount])
+  }, [turnCount, activeTab])
 
   if (project.isLoading || session.isLoading) {
     return (
