@@ -2,9 +2,10 @@ import type {
   ManagedAgentDeployment,
   ManagedAgentEvent,
   ManagedAgentSession,
+  ManagedAgentSessionSummary,
 } from './api'
 
-export function sessionsForEnvironment<
+export function sessionsForDeploymentAlias<
   T extends Pick<ManagedAgentSession, 'deploymentId'>,
 >(
   sessions: T[],
@@ -22,6 +23,40 @@ export function sessionsForEnvironment<
       .map((deployment) => deployment.id),
   )
   return sessions.filter((session) => deploymentIds.has(session.deploymentId))
+}
+
+/**
+ * Sessions belong to their recorded environment, independently of which
+ * immutable deployment supplied their code. Older rows without an environment
+ * fall back to the deployment alias used before sessions recorded that scope.
+ */
+export function sessionsForEnvironment<
+  T extends Pick<
+    ManagedAgentSessionSummary,
+    'agentId' | 'deploymentId' | 'environment'
+  >,
+>(
+  sessions: T[],
+  deployments: ManagedAgentDeployment[],
+  agentId: string | undefined,
+  environment: string,
+): T[] {
+  const legacyDeploymentIds = new Set(
+    deployments
+      .filter(
+        (deployment) =>
+          (!agentId || deployment.agentId === agentId) &&
+          deployment.alias === environment,
+      )
+      .map((deployment) => deployment.id),
+  )
+  return sessions.filter(
+    (session) =>
+      (!agentId || session.agentId === agentId) &&
+      (session.environment !== null
+        ? session.environment === environment
+        : legacyDeploymentIds.has(session.deploymentId)),
+  )
 }
 
 export function playgroundSessionIdFromSearch(search: string) {
