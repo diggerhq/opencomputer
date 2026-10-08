@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
+  AlertTriangle,
   ExternalLink,
   GitBranch,
   GitPullRequest,
@@ -342,40 +343,41 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
               </div>
             </div>
           ) : activeConnections.length === 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <p className="text-muted-foreground max-w-2xl text-sm">
-                Install the OpenComputer GitHub App on the repository you want
-                to deploy from.
-              </p>
-              <Button
-                disabled={addingConnection}
-                onClick={() => {
-                  setAddingConnection(true)
-                  void launchAuthorizationWindow(() =>
-                    addManagedGitHubConnection('install'),
-                  )
-                    .then(() =>
-                      queryClient.invalidateQueries({
-                        queryKey: ['managed-github-connections'],
-                      }),
+            <EmptyState
+              icon={GitBranch}
+              title="Connect GitHub to deploy automatically"
+              description="Install the OpenComputer GitHub App on the repository you want to deploy from, then pick a branch."
+              action={
+                <Button
+                  disabled={addingConnection}
+                  onClick={() => {
+                    setAddingConnection(true)
+                    void launchAuthorizationWindow(() =>
+                      addManagedGitHubConnection('install'),
                     )
-                    .catch((error: unknown) =>
-                      notifyError(
-                        "Couldn't start the GitHub installation.",
-                        error,
-                      ),
-                    )
-                    .finally(() => setAddingConnection(false))
-                }}
-              >
-                {addingConnection ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <GithubMark className="size-4" />
-                )}
-                Add GitHub connection
-              </Button>
-            </div>
+                      .then(() =>
+                        queryClient.invalidateQueries({
+                          queryKey: ['managed-github-connections'],
+                        }),
+                      )
+                      .catch((error: unknown) =>
+                        notifyError(
+                          "Couldn't start the GitHub installation.",
+                          error,
+                        ),
+                      )
+                      .finally(() => setAddingConnection(false))
+                  }}
+                >
+                  {addingConnection ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <GithubMark className="size-4" />
+                  )}
+                  Add GitHub connection
+                </Button>
+              }
+            />
           ) : (
             <form
               className="grid gap-4 sm:grid-cols-2"
@@ -525,7 +527,8 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
             </form>
           )}
           {connections.data && !connections.data.app ? (
-            <p className="text-destructive text-sm">
+            <p className="border-destructive/30 bg-destructive/5 text-destructive flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden />
               The managed GitHub App is not configured in this environment.
             </p>
           ) : null}
