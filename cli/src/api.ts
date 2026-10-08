@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { ResolvedConfig } from "./config.js";
 import type { MemoryDeclaration, ProjectResourceManifest } from "./project.js";
+import type { TurnImage } from "./images.js";
 
 export interface OpenComputerIdentity {
   user_id: string | null;
@@ -1519,6 +1520,7 @@ export class OpenComputerClient {
     sessionId: string,
     input: string,
     idempotencyKey: string = crypto.randomUUID(),
+    attachments: TurnImage[] = [],
   ) {
     return this.request<{ turnId: string; duplicate: boolean }>(
       `/api/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
@@ -1527,6 +1529,7 @@ export class OpenComputerClient {
         body: JSON.stringify({
           input,
           idempotencyKey,
+          ...(attachments.length ? { attachments } : {}),
         }),
       },
     );
