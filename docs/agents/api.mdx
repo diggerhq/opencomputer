@@ -140,7 +140,7 @@ not active in the named environment), `402 insufficient_credits`.
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
 | `turns` | Every turn: `id`, `input`, `mode`, `status`, `createdAt`, `updatedAt`; `outcome: "question"` on a completed turn that ended by asking; and `deliveries` when an [event subscription](#event-subscriptions) selected its outcome |
 | `result` | The latest committed output of the agent's [result tool](/agents/tools#the-session-result), or `null`: `{ turnId, callId, reportedAt, data }`. `turnId` and `callId` name the call that reported `data`, so a reader can tell which turn it came from and whether a later turn changed things without reporting. A failed or cancelled turn never clears it. |
-| `question` | The open [question](/agents/sessions#questions) the agent asked with `ask`, or `null`: `{ id, text, options, askedAt }`, `options` an array of `{ label, value }`, empty for free text. Independent of `result`. |
+| `question` | The open [question](/agents/sessions#questions) the agent asked with `ask`, or `null`: `{ id, text, options, context?, askedAt }`, `options` an array of `{ label, value }`, empty for free text, `context` the Markdown the agent gave to help decide, when it gave one. Independent of `result`. |
 | `revision` | A counter that increases with every change to the session's status, turns, labels or result |
 | `createdAt`, `updatedAt` | Timestamps |
 
