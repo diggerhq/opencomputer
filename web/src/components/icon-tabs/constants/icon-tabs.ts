@@ -1,0 +1,1 @@
+export const ICON_TABS_INDICATOR_MS = 300;
