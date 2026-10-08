@@ -996,47 +996,210 @@ const MANAGED_MONID_MCP_SERVER: McpServerManifest = {
 };
 
 /**
- * Whether a module calls monid() as imported from @opencomputer/agent — a
+ * Whether any module calls monid() as imported from @opencomputer/agent — a
  * local function or an import from anywhere else that happens to share the
- * name is not the platform helper.
+ * name is not the platform helper. Re-exports through local modules are
+ * resolved, so `export { monid } from "@opencomputer/agent"` in a barrel file
+ * keeps the helper recognized at its call site.
  */
-function callsManagedMonid(source: string, path: string): boolean {
-  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-  const bound = new Set<string>();
-  for (const statement of file.statements) {
-    if (
-      !ts.isImportDeclaration(statement) ||
-      statement.isTypeOnly ||
-      !ts.isStringLiteral(statement.moduleSpecifier) ||
-      statement.moduleSpecifier.text !== AGENT_PACKAGE
-    ) {
-      continue;
-    }
-    const named = statement.importClause?.namedBindings;
-    if (!named || !ts.isNamedImports(named)) continue;
-    for (const specifier of named.elements) {
-      if (
-        !specifier.isTypeOnly &&
-        (specifier.propertyName ?? specifier.name).text === "monid"
+function agentCallsManagedMonid(
+  modules: ReadonlyArray<{ path: string; source: string }>,
+): boolean {
+  const paths = new Set(modules.map((module) => module.path));
+  const resolveLocal = (specifier: string, from: string): string | null => {
+    if (!specifier.startsWith(".")) return null;
+    // module paths are relative to the agent root with forward slashes.
+    const base = join(dirname(from), specifier).split("\\").join("/");
+    const candidates = [
+      base,
+      `${base}.ts`,
+      `${base}.js`,
+      `${base}.mjs`,
+      `${base}/index.ts`,
+      ...(base.endsWith(".js") ? [`${base.slice(0, -3)}.ts`] : []),
+    ];
+    return candidates.find((candidate) => paths.has(candidate)) ?? null;
+  };
+
+  interface MonidModule {
+    file: ts.SourceFile;
+    bound: Set<string>;
+    agentNamespaces: Set<string>;
+    exported: Set<string>;
+    /** import { x } / export { x } from a specifier: local/exported name -> (specifier, imported name). */
+    viaLocal: Array<{
+      specifier: string;
+      imported: string;
+      local: string;
+      exportAs: string | null;
+    }>;
+  }
+
+  const parsed = new Map<string, MonidModule>();
+  for (const { path, source } of modules) {
+    const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+    const module: MonidModule = {
+      file,
+      bound: new Set(),
+      agentNamespaces: new Set(),
+      exported: new Set(),
+      viaLocal: [],
+    };
+    for (const statement of file.statements) {
+      if (ts.isImportDeclaration(statement)) {
+        if (
+          statement.importClause?.isTypeOnly === true ||
+          !ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+          continue;
+        }
+        const specifier = statement.moduleSpecifier.text;
+        const clause = statement.importClause;
+        const named = clause?.namedBindings;
+        if (named && ts.isNamespaceImport(named) && specifier === AGENT_PACKAGE) {
+          module.agentNamespaces.add(named.name.text);
+        }
+        if (!named || !ts.isNamedImports(named)) continue;
+        for (const element of named.elements) {
+          if (element.isTypeOnly) continue;
+          const imported = (element.propertyName ?? element.name).text;
+          if (specifier === AGENT_PACKAGE) {
+            if (imported === "monid") module.bound.add(element.name.text);
+          } else {
+            module.viaLocal.push({
+              specifier,
+              imported,
+              local: element.name.text,
+              exportAs: null,
+            });
+          }
+        }
+      } else if (
+        ts.isExportDeclaration(statement) &&
+        statement.isTypeOnly !== true
       ) {
-        bound.add(specifier.name.text);
+        const clause = statement.exportClause;
+        const specifier =
+          statement.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(statement.moduleSpecifier)
+            ? statement.moduleSpecifier.text
+            : null;
+        if (clause === undefined && specifier !== null) {
+          // export * from ... — the module re-exports every bound name of the
+          // target under its own name.
+          module.viaLocal.push({
+            specifier,
+            imported: "*",
+            local: "*",
+            exportAs: null,
+          });
+          continue;
+        }
+        if (!clause || !ts.isNamedExports(clause)) continue;
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          const sourceName = (element.propertyName ?? element.name).text;
+          const exportAs = element.name.text;
+          if (specifier === null) {
+            // export { name } — resolved after bound names settle.
+            module.viaLocal.push({
+              specifier: "",
+              imported: sourceName,
+              local: sourceName,
+              exportAs,
+            });
+          } else if (specifier === AGENT_PACKAGE) {
+            if (sourceName === "monid") module.exported.add(exportAs);
+          } else {
+            module.viaLocal.push({
+              specifier,
+              imported: sourceName,
+              local: sourceName,
+              exportAs,
+            });
+          }
+        }
+      }
+    }
+    parsed.set(path, module);
+  }
+
+  // Propagate bindings through local re-exports until stable.
+  let changed = true;
+  for (let rounds = modules.length + 1; changed && rounds > 0; rounds--) {
+    changed = false;
+    for (const [path, module] of parsed) {
+      for (const via of module.viaLocal) {
+        const source =
+          via.specifier === "" ? module : parsed.get(resolveLocal(via.specifier, path) ?? "");
+        if (!source) continue;
+        const boundHere = (name: string) =>
+          source.bound.has(name) ||
+          (name === "monid" && source.exported.has("monid")) ||
+          source.exported.has(name);
+        if (via.imported === "*") {
+          // export * — re-export every name the target binds to monid.
+          for (const name of source.exported) {
+            if (!module.exported.has(name)) {
+              module.exported.add(name);
+              changed = true;
+            }
+          }
+          continue;
+        }
+        if (boundHere(via.imported)) {
+          if (!module.bound.has(via.local)) {
+            module.bound.add(via.local);
+            changed = true;
+          }
+          if (via.exportAs !== null && !module.exported.has(via.exportAs)) {
+            module.exported.add(via.exportAs);
+            changed = true;
+          }
+        }
+      }
+      // export { name } of a name bound locally.
+      if (!module.bound.size) continue;
+      for (const via of module.viaLocal) {
+        if (
+          via.specifier === "" &&
+          via.exportAs !== null &&
+          module.bound.has(via.imported) &&
+          !module.exported.has(via.exportAs)
+        ) {
+          module.exported.add(via.exportAs);
+          changed = true;
+        }
       }
     }
   }
-  if (bound.size === 0) return false;
-  let calls = false;
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      bound.has(node.expression.text)
-    ) {
-      calls = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return calls;
+
+  for (const module of parsed.values()) {
+    if (module.bound.size === 0 && module.agentNamespaces.size === 0) continue;
+    let calls = false;
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        if (
+          ts.isIdentifier(node.expression) &&
+          module.bound.has(node.expression.text)
+        ) {
+          calls = true;
+        }
+        if (
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          module.agentNamespaces.has(node.expression.expression.text) &&
+          node.expression.name.text === "monid"
+        ) {
+          calls = true;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(module.file);
+    if (calls) return true;
+  }
+  return false;
 }
 
 /**
@@ -3831,9 +3994,7 @@ the product or support surface presented to users.
   // "monid" as an MCP server — unless the project already defines a resource
   // with that id, in which case the project's own wins for the string
   // selection and only an explicit monid() call is a conflict.
-  const monidHelperCalls = sourceModules.some((module) =>
-    callsManagedMonid(module.source, module.path),
-  );
+  const monidHelperCalls = agentCallsManagedMonid(sourceModules);
   const monidRequested =
     monidHelperCalls ||
     sourceModules.some((module) =>

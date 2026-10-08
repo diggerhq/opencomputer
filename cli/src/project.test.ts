@@ -1249,6 +1249,42 @@ export default function Agent() {
   assert.deepEqual(manifest.mcpServerDefinitions, [MANAGED_MONID_SERVER]);
 });
 
+test("monid() survives a re-export through a local module", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-monid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "lib"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "lib", "catalog.ts"),
+      `export { monid } from "@opencomputer/agent";\n`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { monid } from "./lib/catalog.js";
+import { useMcpServer } from "@opencomputer/agent";
+
+const tools = monid();
+export default function Agent() {
+  useMcpServer(tools);
+  return "Use the catalog.";
+}
+`,
+    );
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { httpConnections: unknown[]; mcpServerDefinitions: unknown[] };
+    assert.deepEqual(manifest.httpConnections, [MANAGED_MONID_CONNECTION]);
+    assert.deepEqual(manifest.mcpServerDefinitions, [MANAGED_MONID_SERVER]);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("a useSecret platform scope survives into the deployment manifest", async () => {
   const manifest = await manifestFor(
     `import { bearer, defineConnection, useSecret } from "@opencomputer/agent";
