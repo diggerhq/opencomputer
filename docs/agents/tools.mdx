@@ -295,6 +295,11 @@ The model calls it with:
 | --- | --- |
 | `text` | The question, 1 to 4000 characters |
 | `options` | Optional, at most six `{ label, value }` choices; each `label` and `value` 1 to 80 characters |
+| `context` | Optional, at most 4000 characters of Markdown: what the person needs to know to decide |
+
+Use `context` for what the agent found and the trade-offs behind the
+question. On Slack it posts above the question, in the same message, in place
+of the text the asking turn wrote; Linear shows the question alone.
 
 Calling `ask` ends the turn with an open question. The turn completes with
 `outcome: "question"`, the session's `question` holds what was asked, and
