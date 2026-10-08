@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   Bot,
   Clock3,
   FolderDown,
+  ListTree,
   Loader2,
+  MessagesSquare,
   TerminalSquare,
 } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
@@ -20,6 +22,16 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
+import {
+  ChatMinimap,
+  ChatMinimapItem,
+} from '@/components/chat-minimap/components/chat-minimap'
+import {
+  IconTabs,
+  IconTabsList,
+  IconTabsTrigger,
+} from '@/components/icon-tabs/components/icon-tabs'
+import { Shimmer } from '@/components/shimmer/components/shimmer'
 import { Button } from '@/components/ui/button'
 import {
   getManagedAgentSession,
@@ -74,6 +86,30 @@ export default function ManagedSessionDetail() {
     enabled: Boolean(sessionId),
     refetchInterval: 1_000,
   })
+
+  // Scroll-spy for the conversation minimap: the page scrolls, so the
+  // observer uses the viewport and the topmost on-screen turn wins.
+  const turnEls = useRef<(HTMLElement | null)[]>([])
+  const [activeTurn, setActiveTurn] = useState(0)
+  const turnCount = session.data?.turns.length ?? 0
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue
+          const index = turnEls.current.indexOf(
+            entry.target as HTMLElement,
+          )
+          if (index >= 0) setActiveTurn(index)
+        }
+      },
+      { rootMargin: '-15% 0px -65% 0px' },
+    )
+    for (const el of turnEls.current) {
+      if (el) observer.observe(el)
+    }
+    return () => observer.disconnect()
+  }, [turnCount])
 
   if (project.isLoading || session.isLoading) {
     return (
@@ -199,42 +235,31 @@ export default function ManagedSessionDetail() {
         </Panel>
       ) : null}
 
-      <div
-        role="tablist"
-        aria-label="Session detail"
-        className="flex w-fit items-center gap-1 rounded-lg border p-1"
+      <IconTabs
+        value={activeTab}
+        onValueChange={(value) =>
+          setActiveTab(value as 'conversation' | 'events' | 'files')
+        }
+        className="w-fit"
       >
-        <Button
-          role="tab"
-          aria-selected={activeTab === 'conversation'}
-          variant={activeTab === 'conversation' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setActiveTab('conversation')}
-        >
-          Conversation
-        </Button>
-        <Button
-          role="tab"
-          aria-selected={activeTab === 'events'}
-          variant={activeTab === 'events' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setActiveTab('events')}
-        >
-          Events
-          <span className="text-[10px] opacity-70">
-            {events.data?.length ?? 0}
-          </span>
-        </Button>
-        <Button
-          role="tab"
-          aria-selected={activeTab === 'files'}
-          variant={activeTab === 'files' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setActiveTab('files')}
-        >
-          <FolderDown className="size-3.5" /> Files
-        </Button>
-      </div>
+        <IconTabsList aria-label="Session detail" value={activeTab}>
+          <IconTabsTrigger
+            icon={<MessagesSquare size={14} />}
+            value="conversation"
+          >
+            Conversation
+          </IconTabsTrigger>
+          <IconTabsTrigger icon={<ListTree size={14} />} value="events">
+            Events
+            <span className="text-[10px] opacity-70">
+              {events.data?.length ?? 0}
+            </span>
+          </IconTabsTrigger>
+          <IconTabsTrigger icon={<FolderDown size={14} />} value="files">
+            Files
+          </IconTabsTrigger>
+        </IconTabsList>
+      </IconTabs>
 
       {activeTab === 'conversation' ? (
         <Panel>
@@ -246,11 +271,13 @@ export default function ManagedSessionDetail() {
               </PanelDescription>
             </div>
           </PanelHeader>
-          <PanelContent className="space-y-8 px-6 py-7">
+          <PanelContent className="px-6 py-7">
             {session.data.turns.length === 0 ? (
               <p className="text-muted-foreground text-sm">No turns yet.</p>
             ) : (
-              session.data.turns.map((turn) => {
+              <div className="flex items-start gap-6">
+                <div className="min-w-0 flex-1 space-y-8">
+                  {session.data.turns.map((turn, turnIndex) => {
                 const responseText = turnAssistantText(
                   events.data ?? [],
                   turn.id,
@@ -262,7 +289,13 @@ export default function ManagedSessionDetail() {
                 const payload = turnPayload(events.data ?? [], turn.id)
                 const running = !['completed', 'failed'].includes(turn.status)
                 return (
-                  <div key={turn.id} className="space-y-6">
+                  <div
+                    key={turn.id}
+                    ref={(el) => {
+                      turnEls.current[turnIndex] = el
+                    }}
+                    className="scroll-mt-24 space-y-6"
+                  >
                     <div>
                       <p className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wider uppercase">
                         You
@@ -294,7 +327,7 @@ export default function ManagedSessionDetail() {
                                 className="size-3 animate-spin"
                                 aria-hidden
                               />
-                              Streaming response…
+                              <Shimmer>Streaming response…</Shimmer>
                             </p>
                           ) : null}
                         </div>
@@ -313,7 +346,29 @@ export default function ManagedSessionDetail() {
                     </div>
                   </div>
                 )
-              })
+              })}
+                </div>
+                <ChatMinimap
+                  side="left"
+                  className="sticky top-6 hidden shrink-0 lg:flex"
+                >
+                  {session.data.turns.map((turn, turnIndex) => (
+                    <ChatMinimapItem
+                      key={turn.id}
+                      active={turnIndex === activeTurn}
+                      title={turn.input}
+                      description={`Turn ${turnIndex + 1} · ${turn.status.replace(/_/g, ' ')}`}
+                      onClick={() => {
+                        setActiveTurn(turnIndex)
+                        turnEls.current[turnIndex]?.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'start',
+                        })
+                      }}
+                    />
+                  ))}
+                </ChatMinimap>
+              </div>
             )}
           </PanelContent>
         </Panel>

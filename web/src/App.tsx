@@ -28,6 +28,7 @@ const Billing = lazy(() => import('./pages/Billing'))
 const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
 const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
+const UiDemo = lazy(() => import('./pages/UiDemo'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
@@ -57,6 +58,9 @@ export default function App() {
         {/* Deferred-action executor — outside ProtectedRoute so the anonymous
             branch can fire analytics + capture returnTo before login. */}
         <Route path="do" element={<DeferredAction />} />
+        {/* Component playground — public so the design system can be previewed
+            without a backend session. */}
+        <Route path="ui-demo" element={<UiDemo />} />
         {/* Template links are shareable: anonymous visitors see the template
             and its deploy form, and sign up when they actually deploy. */}
         <Route element={<PublicTemplateRoute />}>
