@@ -70,10 +70,11 @@ export interface HttpConnectionManifest {
         kind: "secret";
         name: string;
         /**
-         * Omitted means project-wide; "tenant" resolves per installation and
-         * "user" per person acted for.
+         * Omitted means project-wide; "tenant" resolves per installation,
+         * "user" per person acted for, and "platform" the platform's own
+         * credential.
          */
-        scope?: "tenant" | "user";
+        scope?: "tenant" | "user" | "platform";
         prefix?: string;
         suffix?: string;
       }
@@ -964,6 +965,78 @@ function definedMcpServers(
   };
   visit(file);
   return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/**
+ * The managed Monid catalog: one resource id covering the MCP endpoint and the
+ * connection that authenticates it. The credential is platform-scoped, so the
+ * deployment records that a platform secret is used, never a value — the
+ * platform substitutes its own key at the egress gateway.
+ */
+const MONID_RESOURCE_ID = "monid";
+
+const MANAGED_MONID_CONNECTION: HttpConnectionManifest = {
+  id: MONID_RESOURCE_ID,
+  origin: "https://mcp.monid.ai",
+  pathPrefix: "/v1",
+  headers: {
+    Authorization: {
+      kind: "secret",
+      name: "MONID_API_KEY",
+      scope: "platform",
+      prefix: "Bearer ",
+    },
+  },
+};
+
+const MANAGED_MONID_MCP_SERVER: McpServerManifest = {
+  id: MONID_RESOURCE_ID,
+  url: "https://mcp.monid.ai/v1",
+  connection: MONID_RESOURCE_ID,
+};
+
+/**
+ * Whether a module calls monid() as imported from @opencomputer/agent — a
+ * local function or an import from anywhere else that happens to share the
+ * name is not the platform helper.
+ */
+function callsManagedMonid(source: string, path: string): boolean {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const bound = new Set<string>();
+  for (const statement of file.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      statement.isTypeOnly ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== AGENT_PACKAGE
+    ) {
+      continue;
+    }
+    const named = statement.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) continue;
+    for (const specifier of named.elements) {
+      if (
+        !specifier.isTypeOnly &&
+        (specifier.propertyName ?? specifier.name).text === "monid"
+      ) {
+        bound.add(specifier.name.text);
+      }
+    }
+  }
+  if (bound.size === 0) return false;
+  let calls = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      bound.has(node.expression.text)
+    ) {
+      calls = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return calls;
 }
 
 /**
@@ -2416,7 +2489,7 @@ export async function readProjectResources(
  */
 function secretFromExpression(expression: ts.Expression): {
   name: string;
-  scope?: "tenant" | "user";
+  scope?: "tenant" | "user" | "platform";
 } {
   if (
     !ts.isCallExpression(expression) ||
@@ -2434,8 +2507,15 @@ function secretFromExpression(expression: ts.Expression): {
   const scope = objectProperty(options, "scope");
   if (!scope) return { name };
   const value = literalStringValue(scope, "useSecret scope");
-  if (value !== "project" && value !== "tenant" && value !== "user") {
-    throw new Error(`useSecret scope must be "project", "tenant" or "user"`);
+  if (
+    value !== "project" &&
+    value !== "tenant" &&
+    value !== "user" &&
+    value !== "platform"
+  ) {
+    throw new Error(
+      `useSecret scope must be "project", "tenant", "user" or "platform"`,
+    );
   }
   return value === "project" ? { name } : { name, scope: value };
 }
@@ -2468,7 +2548,7 @@ function connectionHeaderValue(
     const result: {
       kind: "secret";
       name: string;
-      scope?: "tenant" | "user";
+      scope?: "tenant" | "user" | "platform";
       prefix?: string;
       suffix?: string;
     } = { kind: "secret", ...secretFromExpression(secret) };
@@ -3182,7 +3262,7 @@ function id(value, kind) {
 export const useSecret = (value, options = {}) => {
   const name = id(value, "useSecret");
   const scope = options.scope ?? "project";
-  if (scope !== "project" && scope !== "tenant" && scope !== "user") throw new Error('A secret scope must be "project", "tenant" or "user"');
+  if (scope !== "project" && scope !== "tenant" && scope !== "user" && scope !== "platform") throw new Error('A secret scope must be "project", "tenant", "user" or "platform"');
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) throw new Error("Invalid secret name " + JSON.stringify(name));
   return Object.freeze({ kind: "secret", id: name, scope });
 };
@@ -3308,6 +3388,11 @@ export const defineMcpServer = (input) => {
   if (url.protocol !== "https:") throw new Error("MCP server URLs must use HTTPS");
   return Object.freeze({ kind: "mcp", ...input, id: id(input.id, "defineMcpServer"), url: url.toString() });
 };
+export const monid = () => defineMcpServer({
+  id: "monid",
+  url: "https://mcp.monid.ai/v1",
+  connection: Object.freeze({ kind: "connection", id: "monid" }),
+});
 export const defineTool = (input) => {
   const toolId = id(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
@@ -3742,6 +3827,26 @@ the product or support surface presented to users.
   const githubConnections = sourceModules.flatMap((module) =>
     definedGitHubConnections(module.source, module.path),
   );
+  // The managed Monid catalog attaches when the agent calls monid(), or names
+  // "monid" as an MCP server — unless the project already defines a resource
+  // with that id, in which case the project's own wins for the string
+  // selection and only an explicit monid() call is a conflict.
+  const monidHelperCalls = sourceModules.some((module) =>
+    callsManagedMonid(module.source, module.path),
+  );
+  const monidRequested =
+    monidHelperCalls ||
+    sourceModules.some((module) =>
+      literalHookIds(module.source, "useMcpServer").includes(MONID_RESOURCE_ID),
+    );
+  const userMonidConnection = [...httpConnections, ...githubConnections].some(
+    (connection) => connection.id === MONID_RESOURCE_ID,
+  );
+  if (monidHelperCalls && userMonidConnection) {
+    throw new Error(
+      `Connection id ${JSON.stringify(MONID_RESOURCE_ID)} is reserved for the managed monid() catalog`,
+    );
+  }
   const allConnections = [...httpConnections, ...githubConnections];
   const duplicateConnection = allConnections.find(
     (connection, index) =>
@@ -3772,6 +3877,19 @@ the product or support surface presented to users.
   const mcpServerDefinitions = sourceModules.flatMap((module) =>
     definedMcpServers(module.source, module.path, connectionBindings),
   );
+  const userMonidServer = mcpServerDefinitions.some(
+    (server) => server.id === MONID_RESOURCE_ID,
+  );
+  if (monidHelperCalls && userMonidServer) {
+    throw new Error(
+      `MCP server id ${JSON.stringify(MONID_RESOURCE_ID)} is reserved for the managed monid() catalog`,
+    );
+  }
+  if (monidRequested && !userMonidConnection && !userMonidServer) {
+    httpConnections.push(MANAGED_MONID_CONNECTION);
+    allConnections.push(MANAGED_MONID_CONNECTION);
+    mcpServerDefinitions.push(MANAGED_MONID_MCP_SERVER);
+  }
   const duplicateMcpServer = mcpServerDefinitions.find(
     (server, index) =>
       mcpServerDefinitions.findIndex(
