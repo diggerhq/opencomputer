@@ -1287,6 +1287,9 @@ function publicSessionSummary(value: unknown): unknown {
     environment: row.environment ?? null,
     source: row.source,
     status: row.status,
+    // Resolved by the backend: an owner-set label, the generated name, or
+    // the first turn's input.
+    title: row.title ?? null,
     labels: ownerLabels(source),
     ...ownerExternalReference(source),
     createdAt: row.createdAt,

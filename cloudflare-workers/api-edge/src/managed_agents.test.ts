@@ -3602,6 +3602,7 @@ describe("managed agents proxy", () => {
         environment: "development",
         source: "api",
         status: "idle",
+        title: null,
         labels: { repo: "acme/api", user_id: "u-42", task: "t-1" },
         createdAt: "2026-09-15T00:00:00.000Z",
         updatedAt: "2026-09-15T00:01:00.000Z",
