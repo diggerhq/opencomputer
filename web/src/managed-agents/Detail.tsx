@@ -62,6 +62,7 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   getManagedAgentSessionsPage,
+  getManagedDeploymentSource,
   latestManagedAgentModelRoute,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
@@ -106,6 +107,7 @@ import { ManagedProjectLinear } from './Linear'
 import { ManagedProjectServiceConnections } from './ProjectServiceConnections'
 import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
+import { projectAgentPreviewReady } from './preview-state'
 import {
   projectCloneCommand,
   templateFirstRunPrompt,
@@ -688,6 +690,12 @@ export default function ManagedAgentDetail({
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
   const projectId = project?.project.id
+  const deploymentSource = useQuery({
+    queryKey: ['managed-deployment-source', projectId],
+    queryFn: () => getManagedDeploymentSource(projectId!),
+    enabled: Boolean(projectId && previewAlias),
+    refetchInterval: previewAlias ? 1_500 : false,
+  })
   // On the project Sessions tab the agent selector offers "All agents"; an
   // explicit ?agent= narrows it. Every other tab needs a concrete agent.
   const sessionsAgentFilter =
@@ -945,14 +953,12 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
     ...(project ? ([{ id: 'settings', label: 'Settings' }] as const) : []),
   ]
-  const previewDeployed =
-    previewAlias !== undefined &&
-    Boolean(
-      project?.deployments.some(
-        (deployment) =>
-          deployment.alias === previewAlias && deployment.agentId === agentId,
-      ),
-    )
+  const previewDeployed = projectAgentPreviewReady({
+    alias: previewAlias,
+    agentId,
+    deployments: project?.deployments ?? [],
+    previews: deploymentSource.data?.previews ?? [],
+  })
 
   if (project && !resolvedEnvironment.ok && previewAlias === undefined) {
     return (
