@@ -14,6 +14,7 @@ import {
   Package,
   Plug,
   Rocket,
+  Settings,
   Webhook,
   type LucideIcon,
 } from 'lucide-react'
@@ -104,6 +105,11 @@ export function managedAgentsNav(options: {
             label: 'Debug playground',
             icon: Bot,
             end: true,
+          },
+          {
+            to: `${projectPath}/settings`,
+            label: 'Settings',
+            icon: Settings,
           },
         ],
       },

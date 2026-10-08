@@ -59,6 +59,14 @@ otherwise the call returns `409 connection_alias_required` and lists them.
 The provider segment in the URL is the grant, not the service — `google` for
 gmail, calendar, drive and sheets; `github` for GitHub; and `linear` for Linear.
 
+`connection add` remains an alias for `connection connect`. If consent was
+revoked or the connected account must change, start a fresh OAuth flow without
+changing the logical connection or its project attachments:
+
+```bash
+opencomputer connection reconnect support --service gmail
+```
+
 **Listing what is connected:**
 
 <CodeGroup>
@@ -73,6 +81,37 @@ curl "$OC_API_URL/api/managed-agents/connections" \
   -H "x-api-key: $OPENCOMPUTER_API_KEY"
 ```
 </CodeGroup>
+
+## 2. Attach the account to a project
+
+By default a connected account is personal: calls resolve it from the person
+who started the session. That is useful in the playground, but channel sessions
+such as Slack have a channel principal rather than the project owner's user
+identity.
+
+Attach a connected account when it should be the project's shared service
+credential:
+
+```bash
+opencomputer connection attach default --service linear --project current
+opencomputer connection list --project current
+```
+
+The attachment applies to the whole project, including all of its agents and
+environments. An agent can use it only when its deployed code declares the
+service with `useService()`. The session principal is still retained as the
+actor for session ownership and audit; it no longer chooses the credential.
+
+Detach removes only the project grant. It does not disconnect the underlying
+OAuth account:
+
+```bash
+opencomputer connection detach default --service linear --project current
+```
+
+Removing the connection itself also removes its project attachments. Preview
+inheritance follows the project's attachment; a preview does not create a
+second OAuth connection.
 
 <Note>
 A connection that is not yet `connected` is re-checked with the provider each
@@ -101,7 +140,7 @@ curl -X DELETE \
 
 Every CLI command takes `--json` if you want to parse its output.
 
-## 2. Declare the service
+## 3. Declare the service
 
 ```tsx
 import { useService, useTool } from "@opencomputer/agent";
@@ -139,7 +178,7 @@ to run `git` and `gh` itself — that one injects a token into the sandbox rathe
 than proxying requests.
 </Note>
 
-## 3. Call it from a tool
+## 4. Call it from a tool
 
 `useService` goes in the agent; `callService` goes in a tool. An agent renders
 synchronously and cannot wait for a request.
@@ -215,7 +254,25 @@ Linear may report GraphQL errors in a successful HTTP response, so check both
 `response.ok` and `errors`. The Linear connection accepts only `POST /graphql`;
 other paths and methods fail at the broker.
 
-## 4. Several accounts
+### Linear in sessions started from Linear
+
+Which credential a call uses follows an explicit order. A session started from
+a [Linear agent connection](/agents/linear) always uses that connection's own
+Linear app. Otherwise, a project-attached Linear account wins; when the project
+has no Linear attachment, OpenComputer falls back to an eligible account owned
+by the session principal. In a session started from a Linear agent connection,
+the session belongs to the connection, and `service: "linear"` resolves to
+that connection's own Linear app: the call acts as the agent, under the name
+people delegate to, with the app's token attached by the platform.
+
+- No person's connected Linear account is used in those sessions, and there
+  is no fallback to one; a `label` is ignored.
+- The deployment must declare `useService("linear")`.
+- Only `POST /graphql` is accepted, as everywhere.
+
+The agent's code is the same in both kinds of session.
+
+## 5. Several accounts
 
 Accounts are connected and disconnected long after the artifact is built, so
 ask for them rather than naming them in source.
@@ -291,8 +348,9 @@ collections rather than asking for them in one call.
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
-| A connection stays `pending` | Nobody opened the link, or it expired | Send the link again with `connection add` |
-| A `connected` account returns `401` | Access was revoked at the provider; the stored status has not caught up | Reconnect it — `connection add` with the same label |
+| A connection stays `pending` | Nobody opened the link, or it expired | Run `connection reconnect` and send the new link |
+| It works in the playground but not Slack | The account is personal, so the Slack principal cannot resolve it | Attach it with `connection attach <alias> --service <name> --project current` |
+| A `connected` account returns `401` | Access was revoked at the provider; the stored status has not caught up | Run `connection reconnect` with the same label |
 | A header you set is ignored | It is not in the allowlist above | Nothing — it cannot be sent |
 | Throws *managed connections are unavailable* | No connection layer | You are running outside the platform |
 

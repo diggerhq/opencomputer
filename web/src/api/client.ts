@@ -273,6 +273,13 @@ export const createAPIKey = (name: string) =>
     S.CreatedAPIKeySchema,
   )
 
+export const renameAPIKey = (keyId: string, name: string) =>
+  apiFetch(
+    `/api-keys/${keyId}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+    S.APIKeySchema,
+  )
+
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
 
@@ -1081,7 +1088,7 @@ export const getModelAccessBindings = (projectId: string) =>
 export const putModelAccessBinding = (
   projectId: string,
   provider: 'anthropic' | 'openai',
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
   enabled: boolean,
 ) =>
   apiFetch(
@@ -1093,7 +1100,7 @@ export const putModelAccessBinding = (
 export const deleteModelAccessBinding = (
   projectId: string,
   provider: 'anthropic' | 'openai',
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) =>
   apiFetch<void>(
     `/v3/projects/${encodeURIComponent(projectId)}/model-access/bindings/${provider}/${environment}`,

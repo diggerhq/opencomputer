@@ -264,3 +264,102 @@ test("a terminal turn event settles every tool row without a completion, and the
   ]);
   assert.deepEqual(cancelled?.result, turn.result);
 });
+
+test("a turn that asks completes with outcome question and opens the question until it is answered", () => {
+  const asked = applyEvents(emptyTimeline(), [
+    { seq: 1, turnId: "t1", type: "message.received", data: { input: "Fix the login page." } },
+    { seq: 2, turnId: "t1", type: "turn.started", data: {} },
+    {
+      seq: 3,
+      turnId: "t1",
+      type: "question.asked",
+      data: { questionId: "q1", text: "Plan first, or go?", options: [{ label: "Go", value: "go" }, { bad: true }] },
+    },
+    { seq: 4, turnId: "t1", type: "turn.completed", data: { outcome: "question", questionId: "q1" } },
+  ]);
+  assert.deepEqual(asked.question, {
+    id: "q1",
+    text: "Plan first, or go?",
+    options: [{ label: "Go", value: "go" }],
+    turnId: "t1",
+  });
+  assert.equal(asked.isRunning, false);
+  const [first] = turnsOf(asked);
+  assert.equal(first?.status, "completed");
+  assert.equal(first?.outcome, "question");
+
+  const unrelated = applyEvents(asked, [
+    { seq: 5, turnId: "t2", type: "question.answered", data: { questionId: "q0", answer: { questionId: "q0", text: "go" } } },
+  ]);
+  assert.equal(unrelated.question?.id, "q1");
+  const answered = applyEvents(unrelated, [
+    { seq: 6, turnId: "t2", type: "question.answered", data: { questionId: "q1", answer: { questionId: "q1", text: "go", value: "go" } } },
+  ]);
+  assert.equal(answered.question, null);
+
+  const closed = applyEvents(asked, [
+    { seq: 5, type: "question.closed", data: { questionId: "q1", reason: "stopped" } },
+  ]);
+  assert.equal(closed.question, null);
+});
+
+test("held inputs come from the log and follow it to delivered or discarded", () => {
+  const asked: AgentEvent[] = [
+    { seq: 1, turnId: "t1", type: "question.asked", data: { questionId: "q1", text: "Go?", options: [] } },
+    { seq: 2, turnId: "t1", type: "turn.completed", data: { outcome: "question", questionId: "q1" } },
+    { seq: 3, type: "message.held", data: { heldId: "h1", questionId: "q1", input: "Keep the old endpoint" } },
+    { seq: 4, type: "message.held", data: { heldId: "h2", questionId: "q1", input: "And the tests" } },
+  ];
+  const held = applyEvents(emptyTimeline(), asked);
+  assert.deepEqual(held.messages, [
+    { id: "held:h1", role: "user", text: "Keep the old endpoint", held: { questionId: "q1", status: "held" } },
+    { id: "held:h2", role: "user", text: "And the tests", held: { questionId: "q1", status: "held" } },
+  ]);
+  // A replay of the same page changes nothing.
+  assert.deepEqual(applyEvents(held, asked), held);
+
+  const answered = applyEvents(held, [
+    { seq: 5, turnId: "t2", type: "question.answered", data: { questionId: "q1", answer: { questionId: "q1", text: "go" } } },
+    { seq: 6, type: "message.delivered", data: { heldId: "h1", questionId: "q1", answerTurnId: "t2" } },
+    { seq: 7, type: "message.delivered", data: { heldId: "h2", questionId: "q1", answerTurnId: "t3" } },
+  ]);
+  assert.equal(answered.question, null);
+  assert.deepEqual(
+    answered.messages.map((message) => [message.id, message.held]),
+    [
+      ["held:h1", { questionId: "q1", status: "delivered", answerTurnId: "t2" }],
+      ["held:h2", { questionId: "q1", status: "delivered", answerTurnId: "t3" }],
+    ],
+  );
+
+  // An event that names no held input settles every one still held under its question.
+  const stopped = applyEvents(held, [
+    { seq: 5, type: "question.closed", data: { questionId: "q1", reason: "stopped" } },
+    { seq: 6, type: "message.discarded", data: { questionId: "q1", reason: "stopped" } },
+  ]);
+  assert.equal(stopped.question, null);
+  assert.deepEqual(
+    stopped.messages.map((message) => message.held),
+    [
+      { questionId: "q1", status: "discarded", reason: "stopped" },
+      { questionId: "q1", status: "discarded", reason: "stopped" },
+    ],
+  );
+});
+
+test("a question closes for every documented reason, only for its own id", () => {
+  const asked = applyEvents(emptyTimeline(), [
+    { seq: 1, turnId: "t1", type: "question.asked", data: { questionId: "q1", text: "Go?", options: [] } },
+  ]);
+  for (const reason of ["stopped", "dismissed", "ended", "undeliverable"]) {
+    assert.equal(
+      applyEvents(asked, [{ seq: 2, type: "question.closed", data: { questionId: "q1", reason } }]).question,
+      null,
+      reason,
+    );
+  }
+  assert.equal(
+    applyEvents(asked, [{ seq: 2, type: "question.closed", data: { questionId: "q0", reason: "dismissed" } }]).question?.id,
+    "q1",
+  );
+});

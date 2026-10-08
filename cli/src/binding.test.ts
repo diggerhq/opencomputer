@@ -13,6 +13,8 @@ function project(): ManagedProject {
     id: "prj_existing",
     slug: "existing-project",
     name: "Existing project",
+    agentId: "agent-cloud",
+    environmentMode: "legacy",
     agents: [{ id: "agent-cloud", name: "Hello World" }],
     environments: [
       { name: "development", updatedAt: "2026-08-09T00:00:00.000Z" },
@@ -23,7 +25,7 @@ function project(): ManagedProject {
   };
 }
 
-test("first dev can select an existing project and later reuses its binding", async () => {
+test("link persists the selected project and later commands reuse its binding", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
   try {
     const initialized = await initializeAgentProject(root);
@@ -42,10 +44,11 @@ test("first dev can select an existing project and later reuses its binding", as
       client,
       config,
       initialized.agentRoot,
-      { project: "existing-project" },
+      { project: "existing-project", persist: true },
     );
     assert.equal(selected.projectId, "prj_existing");
     assert.equal(selected.agentId, "agent-cloud");
+    assert.equal(selected.environmentMode, "legacy");
     assert.equal((await readManifest(initialized.agentRoot)).id, "hello-world");
     const projectSource = await readFile(
       resolve(root, "opencomputer", "project.ts"),
@@ -53,9 +56,10 @@ test("first dev can select an existing project and later reuses its binding", as
     );
     assert.doesNotMatch(projectSource, /prj_existing|agent-cloud/);
     assert.match(projectSource, /name:/);
+    const { environmentMode: _mode, ...saved } = selected;
     assert.deepEqual(
       JSON.parse(await readFile(resolve(root, ".opencomputer", "project.json"), "utf8")),
-      selected,
+      saved,
     );
 
     const reused = await ensureProjectBinding(
@@ -66,6 +70,37 @@ test("first dev can select an existing project and later reuses its binding", as
     );
     assert.deepEqual(reused, selected);
     assert.equal(creates, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("project binding uses the canonical primary agent regardless of agent list order", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const reordered: ManagedProject = {
+      ...project(),
+      agents: [
+        { id: "agent-cloud--summarizer", name: "Summarizer" },
+        { id: "agent-cloud", name: "Primary" },
+      ],
+    };
+    const selected = await ensureProjectBinding(
+      {
+        async projects() {
+          return [reordered];
+        },
+        async createProject() {
+          throw new Error("unexpected create");
+        },
+      },
+      { apiUrl: "https://app.opencomputer.dev" },
+      initialized.agentRoot,
+      { project: reordered.id },
+    );
+
+    assert.equal(selected.agentId, "agent-cloud");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -140,4 +175,82 @@ test("cloud agent ids and the resolution a command prints", async () => {
       "Agent:   reviewer -> workbench--reviewer\n",
   );
   assert.match(describeResolution({ binding: null, localIds: ["worker"] }), /not linked/);
+});
+
+test("--project resolves a project for one command without rewriting the saved binding", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const other: ManagedProject = {
+      ...project(),
+      id: "prj_other",
+      slug: "other-project",
+      name: "Other project",
+      agentId: "other-agent",
+      environmentMode: "single",
+      agents: [{ id: "other-agent", name: "Other" }],
+    };
+    const client = {
+      async projects() {
+        return [project(), other];
+      },
+      async createProject() {
+        throw new Error("unexpected create");
+      },
+    };
+    const config = { apiUrl: "https://app.opencomputer.dev" };
+    const bindingPath = resolve(root, ".opencomputer", "project.json");
+
+    const overridden = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      project: "prj_other",
+    });
+    assert.equal(overridden.projectId, "prj_other");
+    assert.equal(overridden.environmentMode, "single");
+    await assert.rejects(readFile(bindingPath, "utf8"), /ENOENT/);
+
+    const linked = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      project: "existing-project",
+      persist: true,
+    });
+    assert.equal(linked.projectId, "prj_existing");
+    const saved = await readFile(bindingPath, "utf8");
+
+    const again = await ensureProjectBinding(client, config, initialized.agentRoot, {
+      project: "other-project",
+    });
+    assert.equal(again.projectId, "prj_other");
+    assert.equal(await readFile(bindingPath, "utf8"), saved);
+    assert.equal(
+      (await ensureProjectBinding(client, config, initialized.agentRoot)).projectId,
+      "prj_existing",
+    );
+    assert.doesNotMatch(saved, /environmentMode|apiKey|deployment/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("--project and --create-project cannot be combined", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-binding-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    await assert.rejects(
+      ensureProjectBinding(
+        {
+          async projects() {
+            return [project()];
+          },
+          async createProject() {
+            return project();
+          },
+        },
+        { apiUrl: "https://app.opencomputer.dev" },
+        initialized.agentRoot,
+        { project: "prj_existing", createProjectName: "New" },
+      ),
+      /cannot be combined/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

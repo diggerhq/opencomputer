@@ -5,11 +5,13 @@ import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import ManagedAgentDetail from './Detail'
+import { ManagedProjectServiceConnections } from './ProjectServiceConnections'
+import { ManagedProjectSettings } from './Settings'
 import { getManagedProject } from './api'
 import { selectedProjectAgentId } from './project-context'
 
 export default function ProjectDetail() {
-  const { projectId = '', projectAgentId } = useParams()
+  const { projectId = '', projectAgentId, tab } = useParams()
   const location = useLocation()
   const project = useQuery({
     queryKey: ['managed-project', projectId],
@@ -50,6 +52,16 @@ export default function ProjectDetail() {
     project.data.project.agents,
   )
   if (!agentId) {
+    // Project-scoped configuration must be reachable before an agent exists.
+    // Agent-specific GitHub, Slack and Linear panels remain in Detail.
+    if (tab === 'connections') {
+      return (
+        <ManagedProjectServiceConnections projectId={project.data.project.id} />
+      )
+    }
+    if (tab === 'settings') {
+      return <ManagedProjectSettings projectId={project.data.project.id} />
+    }
     return (
       <Panel>
         <EmptyState

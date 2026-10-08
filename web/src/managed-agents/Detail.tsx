@@ -25,6 +25,7 @@ import {
   Clock3,
   Clipboard,
   GitCommitHorizontal,
+  GitPullRequest,
   ImagePlus,
   Loader2,
   Pencil,
@@ -68,6 +69,8 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   getManagedAgentSessionsPage,
+  getManagedDeploymentSource,
+  latestManagedAgentModelRoute,
   type ManagedAgentEvent,
   type ManagedAgentInputMode,
   type ManagedAgentSession,
@@ -97,7 +100,9 @@ import { isNearScrollEnd } from './scroll-follow'
 import { createStartCommand, starterCommands } from './onboarding'
 import {
   projectContextSearch,
+  projectEnvironmentMode,
   requestedProjectAgentId,
+  resolveProjectEnvironment,
 } from './project-context'
 import {
   playgroundSessionIdFromSearch,
@@ -112,7 +117,11 @@ import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectDatabase } from './Database'
 import { ManagedProjectBYOK } from './BYOK'
 import { ManagedProjectGitHub } from './GitHub'
+import { ManagedProjectLinear } from './Linear'
+import { ManagedProjectServiceConnections } from './ProjectServiceConnections'
+import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
+import { projectAgentPreviewReady } from './preview-state'
 import {
   projectCloneCommand,
   templateFirstRunPrompt,
@@ -130,6 +139,7 @@ type DetailTab =
   | 'connections'
   | 'github'
   | 'byok'
+  | 'settings'
 
 export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'playground',
@@ -143,7 +153,10 @@ export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
   'connections',
   'github',
   'byok',
+  'settings',
 ])
+
+const PREVIEW_ALIAS = /^pr-[1-9][0-9]{0,8}$/
 
 const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
 
@@ -353,6 +366,7 @@ function PlaygroundChat({
     debugEvents.data ?? events,
     agentWorking,
   )
+  const modelRoute = latestManagedAgentModelRoute(inspectorEvents)
 
   useEffect(() => {
     if (!initialPrompt || session || initialPromptSentRef.current) return
@@ -472,12 +486,22 @@ function PlaygroundChat({
               {liveSessionId ?? 'A session is created when you send a message'}
             </p>
           </div>
-          {agentWorking ? (
-            <div className="text-muted-foreground flex items-center gap-2 text-xs">
-              <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
-              Agent is working
-            </div>
-          ) : null}
+          <div className="flex items-center gap-3">
+            {modelRoute?.effective ? (
+              <span
+                className="text-muted-foreground font-mono text-[10px]"
+                title="Effective model resolved for this session"
+              >
+                {modelRoute.effective.provider}/{modelRoute.effective.model}
+              </span>
+            ) : null}
+            {agentWorking ? (
+              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+                <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
+                Agent is working
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div
@@ -791,15 +815,33 @@ export default function ManagedAgentDetail({
       ? routeTab
       : 'playground'
     : standaloneTab
-  const environment =
-    searchParams.get('environment') === 'production'
-      ? 'production'
-      : 'development'
+  const requestedEnvironment = searchParams.get('environment') ?? ''
+  // A pull request preview (`pr-<n>`) is a deployment alias, not an
+  // environment: only the playground targets it, everything else stays on
+  // the project's working scope.
+  const previewAlias = PREVIEW_ALIAS.test(requestedEnvironment)
+    ? requestedEnvironment
+    : undefined
+  const environmentMode = projectEnvironmentMode(project?.project)
+  const resolvedEnvironment = resolveProjectEnvironment(
+    environmentMode,
+    searchParams.toString(),
+  )
+  const environment = resolvedEnvironment.ok
+    ? resolvedEnvironment.environment
+    : 'default'
+  const playgroundAlias = previewAlias ?? environment
   const requestedPlaygroundId = playgroundSessionIdFromSearch(location.search)
   const firstRunPrompt = templateFirstRunPrompt(location.state)
   const [newSessionKey, setNewSessionKey] = useState(() => crypto.randomUUID())
   const [adoptedPlaygroundId, setAdoptedPlaygroundId] = useState<string>()
   const projectId = project?.project.id
+  const deploymentSource = useQuery({
+    queryKey: ['managed-deployment-source', projectId],
+    queryFn: () => getManagedDeploymentSource(projectId!),
+    enabled: Boolean(projectId && previewAlias),
+    refetchInterval: previewAlias ? 1_500 : false,
+  })
   // On the project Sessions tab the agent selector offers "All agents"; an
   // explicit ?agent= narrows it. Every other tab needs a concrete agent.
   const sessionsAgentFilter =
@@ -896,7 +938,7 @@ export default function ManagedAgentDetail({
         sessions.data ?? [],
         project.deployments,
         agentId,
-        environment,
+        playgroundAlias,
       )
     : (sessions.data ?? [])
   const playgroundSessions = environmentSessions.filter(
@@ -1055,7 +1097,51 @@ export default function ManagedAgentDetail({
       ? ([{ id: 'connections', label: 'Connections' }] as const)
       : []),
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
+    ...(project ? ([{ id: 'settings', label: 'Settings' }] as const) : []),
   ]
+  const previewDeployed = projectAgentPreviewReady({
+    alias: previewAlias,
+    agentId,
+    deployments: project?.deployments ?? [],
+    previews: deploymentSource.data?.previews ?? [],
+  })
+
+  if (project && !resolvedEnvironment.ok && previewAlias === undefined) {
+    return (
+      <div className="space-y-5">
+        <PageHeader
+          title={project.project.name}
+          description="Single environment"
+        />
+        <Panel>
+          <EmptyState
+            icon={Bot}
+            title="This project has a single environment"
+            description={`“${resolvedEnvironment.requested}” is not an environment of this project (single_environment_project). Use a separate project for a distinct ${resolvedEnvironment.requested} target.`}
+            action={
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={{
+                    pathname: location.pathname,
+                    search: projectContextSearch(
+                      location.search,
+                      requestedProjectAgentId(
+                        location.search,
+                        project.project.agents,
+                      ),
+                      'default',
+                    ),
+                  }}
+                >
+                  Open the project
+                </Link>
+              </Button>
+            }
+          />
+        </Panel>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -1072,7 +1158,7 @@ export default function ManagedAgentDetail({
         }
         description={
           project
-            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'} · development and production environments`
+            ? `${project.project.agents.length} ${project.project.agents.length === 1 ? 'agent' : 'agents'}${environmentMode === 'legacy' ? ' · development and production environments' : ''}`
             : activeDeployment.data
               ? `Active deployment · ${activeDeployment.data.alias}`
               : 'Loading active deployment…'
@@ -1148,7 +1234,7 @@ export default function ManagedAgentDetail({
                 projectContextSearch(
                   location.search,
                   event.target.value || undefined,
-                  environment,
+                  activeTab === 'playground' ? playgroundAlias : environment,
                 ),
               )
               search.delete('session')
@@ -1199,14 +1285,33 @@ export default function ManagedAgentDetail({
         </div>
       ) : null}
 
+      {activeTab === 'playground' && project && previewAlias ? (
+        <p className="text-muted-foreground flex shrink-0 items-center gap-2 text-sm">
+          <GitPullRequest className="size-4" />
+          Testing preview <code className="text-xs">{previewAlias}</code>
+          {previewDeployed ? '' : ' · not deployed yet'}
+          <Link
+            to={`/projects/${encodeURIComponent(project.project.id)}/settings`}
+            className="underline"
+          >
+            Manage previews
+          </Link>
+        </p>
+      ) : null}
+
       {activeTab === 'playground' &&
       project &&
+      !previewAlias &&
       !projectEnvironment?.activeDeploymentId ? (
         <Panel>
           <EmptyState
             icon={Bot}
             title="Deploy the hello-world agent to use Debug playground"
-            description={`Create the starter locally, then sync it directly to ${environment}.`}
+            description={
+              environmentMode === 'single'
+                ? 'Create the starter locally, then sync it to this project.'
+                : `Create the starter locally, then sync it directly to ${environment}.`
+            }
             action={
               <div className="flex max-w-xl flex-col items-center gap-3">
                 <pre className="bg-foreground text-background max-w-full overflow-x-auto rounded-md px-4 py-3 text-left text-xs leading-6">
@@ -1300,9 +1405,9 @@ export default function ManagedAgentDetail({
               </div>
             ) : (
               <PlaygroundChat
-                key={`${environment}:${playgroundChatId}`}
-                chatId={`${environment}:${playgroundChatId}`}
-                agentId={project ? `${agentId}@${environment}` : agentId}
+                key={`${playgroundAlias}:${playgroundChatId}`}
+                chatId={`${playgroundAlias}:${playgroundChatId}`}
+                agentId={project ? `${agentId}@${playgroundAlias}` : agentId}
                 session={
                   selectedPlaygroundId
                     ? selectedPlaygroundSession.data
@@ -1511,11 +1616,19 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'byok' && project ? (
-        <ManagedProjectBYOK projectId={project.project.id} />
+        <ManagedProjectBYOK
+          projectId={project.project.id}
+          environmentMode={environmentMode}
+        />
+      ) : null}
+
+      {activeTab === 'settings' && project ? (
+        <ManagedProjectSettings projectId={project.project.id} />
       ) : null}
 
       {activeTab === 'connections' && project ? (
         <div className="space-y-5">
+          <ManagedProjectServiceConnections projectId={project.project.id} />
           <ManagedProjectGitHub
             projectId={project.project.id}
             environment={environment}
@@ -1524,6 +1637,7 @@ export default function ManagedAgentDetail({
             projectId={project.project.id}
             environment={environment}
           />
+          <ManagedProjectLinear projectId={project.project.id} />
         </div>
       ) : null}
     </div>

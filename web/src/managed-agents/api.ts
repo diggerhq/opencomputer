@@ -92,7 +92,9 @@ const deploymentSchema = z.object({
               agentId: z.string(),
               cron: z.string(),
               timezone: z.string(),
-              enabled: z.array(z.enum(['development', 'production'])),
+              enabled: z.array(
+                z.enum(['default', 'development', 'production']),
+              ),
               overlap: z.enum(['skip', 'allow']),
               dispatch: z.object({
                 text: z.string().optional(),
@@ -124,9 +126,10 @@ const projectSchema = z.object({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
+  environmentMode: z.enum(['single', 'legacy']).optional().default('legacy'),
   environments: z.array(
     z.object({
-      name: z.enum(['development', 'production']),
+      name: z.enum(['default', 'development', 'production']),
       agentId: z.string().optional(),
       activeDeploymentId: z.string().optional(),
       updatedAt: z.string(),
@@ -148,7 +151,7 @@ const databaseResultSchema = z.object({
   truncated: z.boolean(),
 })
 const databaseQueryResponseSchema = z.object({
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   result: databaseResultSchema,
 })
 
@@ -228,7 +231,7 @@ const templateInstallationSchema = z.object({
 const secretSchema = z.object({
   name: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string().optional(),
   allowedOrigins: z.array(z.string()),
   createdAt: z.string(),
@@ -278,7 +281,7 @@ const modelAccessConnectResponseSchema = z.object({
 
 const modelAccessBindingSchema = z.object({
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   provider: z.enum(['anthropic', 'openai']),
   connectionId: z.string(),
   enabled: z.boolean(),
@@ -293,7 +296,7 @@ const modelAccessBindingsResponseSchema = z.object({
 const projectModelRouteSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string().nullish(),
   connectionId: z.string(),
   model: z.string(),
@@ -310,7 +313,7 @@ const modelRoutesResponseSchema = z.object({
 const runtimeVariableSchema = z.object({
   name: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -334,7 +337,7 @@ const githubInstallationSchema = z.object({
 const githubStatusSchema = z.object({
   environments: z.array(
     z.object({
-      environment: z.enum(['development', 'production']),
+      environment: z.enum(['default', 'development', 'production']),
       state: z.enum(['not_connected', 'active', 'suspended', 'deleted']),
       installation: githubInstallationSchema.optional(),
     }),
@@ -365,6 +368,21 @@ const connectionSchema = z.object({
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+})
+
+const projectServiceAttachmentSchema = z.object({
+  projectId: z.string(),
+  service: z.string(),
+  provider: z.string(),
+  label: z.string(),
+  connectionId: z.string(),
+  connection: connectionSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const projectServiceAttachmentsSchema = z.object({
+  attachments: z.array(projectServiceAttachmentSchema),
 })
 
 const channelSchema = z.object({
@@ -424,7 +442,7 @@ const slackSetupSchema = z.object({
   requestKey: z.string(),
   projectId: z.string(),
   agentId: z.string(),
-  alias: z.enum(['development', 'production']),
+  alias: z.enum(['default', 'development', 'production']),
   channelId: z.string(),
   name: z.string(),
   connectionId: z.string(),
@@ -452,6 +470,74 @@ const slackSetupLookupSchema = z.object({ setup: slackSetupSchema.nullable() })
 const slackSetupAuthorizationSchema = z.object({
   authorizationUrl: z.string().url(),
   expiresAt: z.string(),
+})
+
+// Linear agent connections (docs/agents/linear.mdx). One per project
+// environment and agent. The record never carries the app's secrets or
+// tokens; its webhook URL does carry the connection's ingress token, so the
+// panel shows it masked.
+export const LINEAR_CONNECTION_STATUSES = [
+  'pending',
+  'connected',
+  'revoked',
+  'disconnected',
+] as const
+export const LINEAR_HEALTH_STATES = [
+  'awaiting_credentials',
+  'awaiting_authorization',
+  'waiting_for_first_delegation',
+  'receiving',
+  'revoked',
+] as const
+
+const linearConnectionSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  environment: z.enum(['default', 'development', 'production']),
+  agentId: z.string(),
+  name: z.string(),
+  status: z.enum(LINEAR_CONNECTION_STATUSES),
+  clientId: z.string().optional(),
+  appUserId: z.string().optional(),
+  organizationId: z.string().optional(),
+  webhookUrl: z.string().url().optional(),
+  createAppUrl: z.string().url().optional(),
+  verifiedAt: z.string().optional(),
+  verificationError: z.string().optional(),
+  lastEventAt: z.string().optional(),
+  teams: z
+    .object({ allPublic: z.boolean(), teamIds: z.array(z.string()) })
+    .optional(),
+  health: z
+    .object({
+      state: z.enum(LINEAR_HEALTH_STATES),
+      message: z.string(),
+      lastEventAt: z.string().optional(),
+    })
+    .optional(),
+  revision: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+const linearConnectionResponseSchema = z.object({
+  connection: linearConnectionSchema,
+})
+const linearConnectionsResponseSchema = z.object({
+  connections: z.array(linearConnectionSchema),
+})
+const linearCreateResponseSchema = z.object({
+  connectionId: z.string(),
+  webhookUrl: z.string().url(),
+  createAppUrl: z.string().url(),
+  connection: linearConnectionSchema,
+})
+const linearAuthorizeResponseSchema = z.object({
+  authorizeUrl: z.string().url(),
+  expiresAt: z.string(),
+})
+const linearDisconnectResponseSchema = z.object({
+  connection: linearConnectionSchema,
+  revoked: z.boolean(),
 })
 
 const connectionsResponseSchema = z.object({
@@ -489,7 +575,7 @@ const channelsResponseSchema = z.object({
 const scheduleSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string(),
   deploymentId: z.string(),
   cron: z.string(),
@@ -508,7 +594,7 @@ const scheduleRunSchema = z.object({
   id: z.string(),
   scheduleId: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   deploymentId: z.string(),
   scheduledAt: z.string(),
   manual: z.boolean(),
@@ -528,7 +614,7 @@ const scheduleRunResponseSchema = z.object({ run: scheduleRunSchema })
 const webhookSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  environment: z.enum(['development', 'production']),
+  environment: z.enum(['default', 'development', 'production']),
   agentId: z.string(),
   name: z.string(),
   enabled: z.boolean(),
@@ -568,7 +654,7 @@ const renderDebugSchema = z.object({
   instructionsHash: z.string(),
   instructions: z.string(),
   enabledTools: z.array(z.string()),
-  enabledSubagents: z.array(z.string()),
+  enabledSubagents: z.array(z.string()).optional(),
   requiredConnections: z.array(z.string()),
   enabledMcpServers: z.array(z.string()),
   input: z.object({ source: z.string(), text: z.string().optional() }),
@@ -665,7 +751,10 @@ const sessionSummarySchema = z.object({
   projectId: z.string(),
   agentId: z.string(),
   deploymentId: z.string(),
-  environment: z.enum(['development', 'production']).nullable().default(null),
+  environment: z
+    .enum(['default', 'development', 'production'])
+    .nullable()
+    .default(null),
   source: z
     .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
     .optional()
@@ -787,6 +876,9 @@ export type ManagedMemoryDocumentRead = {
   etag: string
 }
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
+export type ManagedProjectServiceAttachment = z.infer<
+  typeof projectServiceAttachmentSchema
+>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
 export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
@@ -795,6 +887,8 @@ export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 export type ManagedSlackSetup = z.infer<typeof slackSetupSchema>
 export type ManagedSlackSetupPhase = ManagedSlackSetup['phase']
 export type ManagedSlackSetupAction = ManagedSlackSetup['actions'][number]
+export type ManagedLinearConnection = z.infer<typeof linearConnectionSchema>
+export type ManagedLinearHealthState = (typeof LINEAR_HEALTH_STATES)[number]
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
@@ -930,7 +1024,7 @@ export type ManagedDatabaseResult = z.infer<typeof databaseResultSchema>
 
 export async function queryManagedProjectDatabase(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   sql: string
   parameters?: Array<string | number | boolean | null>
 }) {
@@ -960,7 +1054,7 @@ export async function getManagedGitHubStatus(projectId: string) {
 
 export async function connectManagedGitHub(input: {
   projectId: string
-  environments: Array<'development' | 'production'>
+  environments: Array<'default' | 'development' | 'production'>
 }) {
   return apiFetch(
     `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
@@ -987,7 +1081,7 @@ export async function addManagedGitHubConnection(mode: 'install' | 'existing') {
 
 export async function attachManagedGitHub(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   connectionId: string
 }) {
   return apiFetch(
@@ -1005,11 +1099,160 @@ export async function attachManagedGitHub(input: {
 
 export async function disconnectManagedGitHub(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
 }) {
   return apiFetch<void>(
     `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github?environment=${input.environment}`,
     { method: 'DELETE' },
+  )
+}
+
+const deploymentSourceSchema = z.object({
+  projectId: z.string(),
+  connectionId: z.string(),
+  repository: z.object({
+    id: z.number(),
+    fullName: z.string(),
+    url: z.string(),
+  }),
+  branch: z.string(),
+  path: z.string().nullable(),
+  previewsEnabled: z.boolean(),
+  connection: z
+    .object({
+      id: z.string(),
+      accountLogin: z.string(),
+      state: z.enum(['active', 'suspended', 'deleted']),
+    })
+    .nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const gitBuildSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  kind: z.enum(['branch', 'preview']),
+  alias: z.string(),
+  ref: z.string(),
+  commitSha: z.string(),
+  pullRequest: z
+    .object({ number: z.number(), title: z.string(), url: z.string() })
+    .optional(),
+  state: z.enum(['queued', 'building', 'ready', 'failed', 'removed']),
+  error: z.string().optional(),
+  previewUrl: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const deploymentSourceStatusSchema = z.object({
+  source: deploymentSourceSchema.nullable(),
+  builds: z.array(gitBuildSchema),
+  previews: z.array(gitBuildSchema),
+})
+
+export type ManagedDeploymentSource = z.infer<typeof deploymentSourceSchema>
+export type ManagedGitBuild = z.infer<typeof gitBuildSchema>
+export type ManagedDeploymentSourceStatus = z.infer<
+  typeof deploymentSourceStatusSchema
+>
+
+export async function getManagedDeploymentSource(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    undefined,
+    deploymentSourceStatusSchema,
+  )
+}
+
+export async function setManagedDeploymentSource(input: {
+  projectId: string
+  connectionId: string
+  repository: { id: number; fullName: string }
+  branch: string
+  path?: string | null
+  previewsEnabled: boolean
+}) {
+  const { projectId, ...body } = input
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    deploymentSourceStatusSchema,
+  )
+}
+
+export async function removeManagedDeploymentSource(projectId: string) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function deployManagedDeploymentSource(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/deployment-source/deploy`,
+    { method: 'POST' },
+    z.object({ build: gitBuildSchema }),
+  )
+}
+
+export async function removeManagedPreview(input: {
+  projectId: string
+  alias: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/previews/${encodeURIComponent(input.alias)}`,
+    { method: 'DELETE' },
+  )
+}
+
+const deploymentSourceRepositoriesSchema = z.object({
+  repositories: z.array(
+    z.object({
+      id: z.number(),
+      fullName: z.string(),
+      private: z.boolean(),
+      defaultBranch: z.string(),
+      archived: z.boolean(),
+    }),
+  ),
+  nextCursor: z.string().nullable(),
+})
+
+export type ManagedDeploymentSourceRepository = z.infer<
+  typeof deploymentSourceRepositoriesSchema
+>['repositories'][number]
+
+export async function listManagedDeploymentSourceRepositories(input: {
+  projectId: string
+  connectionId: string
+  cursor?: string | null
+}) {
+  const query = new URLSearchParams({ connectionId: input.connectionId })
+  if (input.cursor) query.set('cursor', input.cursor)
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/repositories?${query.toString()}`,
+    undefined,
+    deploymentSourceRepositoriesSchema,
+  )
+}
+
+export async function listManagedDeploymentSourceBranches(input: {
+  projectId: string
+  connectionId: string
+  repository: string
+}) {
+  const query = new URLSearchParams({
+    connectionId: input.connectionId,
+    repository: input.repository,
+  })
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/deployment-source/branches?${query.toString()}`,
+    undefined,
+    z.object({
+      branches: z.array(z.object({ name: z.string(), commitSha: z.string() })),
+    }),
   )
 }
 
@@ -1075,7 +1318,7 @@ export async function getManagedModelRoutes(projectId: string) {
 
 export async function putManagedModelRoute(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   connectionId: string
   model: string
   fallback: 'fail' | 'managed'
@@ -1098,7 +1341,7 @@ export async function putManagedModelRoute(input: {
 
 export async function deleteManagedModelRoute(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId?: string
 }) {
   return apiFetch<void>(
@@ -1151,7 +1394,7 @@ export async function getManagedModelAccessBindings(projectId: string) {
 export async function putManagedModelAccessBinding(input: {
   projectId: string
   provider: 'anthropic' | 'openai'
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   enabled: boolean
 }) {
   return apiFetch(
@@ -1163,7 +1406,7 @@ export async function putManagedModelAccessBinding(input: {
 
 export async function getManagedProjectSecrets(
   projectId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) {
   return (
     await apiFetch(
@@ -1176,7 +1419,7 @@ export async function getManagedProjectSecrets(
 
 export async function putManagedProjectSecret(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId?: string
   name: string
   value: string
@@ -1199,7 +1442,7 @@ export async function putManagedProjectSecret(input: {
 
 export async function deleteManagedProjectSecret(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId?: string
   name: string
 }) {
@@ -1213,7 +1456,7 @@ export async function deleteManagedProjectSecret(input: {
 
 export async function getAgentRuntimeVariables(
   projectId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) {
   return (
     await apiFetch(
@@ -1226,7 +1469,7 @@ export async function getAgentRuntimeVariables(
 
 export async function putAgentRuntimeVariable(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId?: string
   name: string
   value: string
@@ -1247,7 +1490,7 @@ export async function putAgentRuntimeVariable(input: {
 
 export async function deleteAgentRuntimeVariable(input: {
   projectId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   agentId?: string
   name: string
 }) {
@@ -1267,6 +1510,43 @@ export async function getManagedAgentConnections() {
       connectionsResponseSchema,
     )
   ).connections.filter((connection) => connection.kind === 'tool')
+}
+
+export async function listManagedProjectServiceConnections(projectId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/service-connections`,
+      undefined,
+      projectServiceAttachmentsSchema,
+    )
+  ).attachments
+}
+
+export async function attachManagedProjectServiceConnection(input: {
+  projectId: string
+  connectionId: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ connectionId: input.connectionId }),
+    },
+    projectServiceAttachmentSchema,
+  )
+}
+
+export async function detachManagedProjectServiceConnection(input: {
+  projectId: string
+  connectionId: string
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ connectionId: input.connectionId }),
+    },
+  )
 }
 
 export async function claimManagedAgentChannelIdentity(token: string) {
@@ -1333,7 +1613,7 @@ export async function getManagedAgentChannels() {
 export async function getManagedAgentSchedules(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
   return (
@@ -1348,7 +1628,7 @@ export async function getManagedAgentSchedules(
 export async function getManagedAgentScheduleRuns(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
   return (
@@ -1363,7 +1643,7 @@ export async function getManagedAgentScheduleRuns(
 export async function runManagedAgentSchedule(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
   scheduleId: string,
 ) {
   const query = new URLSearchParams({ projectId, agentId, environment })
@@ -1379,7 +1659,7 @@ export async function runManagedAgentSchedule(
 export async function getManagedAgentWebhooks(
   projectId: string,
   agentId: string,
-  environment: 'development' | 'production',
+  environment: 'default' | 'development' | 'production',
 ) {
   const query = new URLSearchParams({ agentId, environment })
   return (
@@ -1394,7 +1674,7 @@ export async function getManagedAgentWebhooks(
 export async function createManagedAgentWebhook(input: {
   projectId: string
   agentId: string
-  environment: 'development' | 'production'
+  environment: 'default' | 'development' | 'production'
   name: string
   identity?: string
 }) {
@@ -1499,7 +1779,7 @@ export async function completeManagedAgentSlack(
 
 export type ManagedSlackSetupTarget = {
   agentId: string
-  alias: 'development' | 'production'
+  alias: 'default' | 'development' | 'production'
   channelId?: string
 }
 
@@ -1575,6 +1855,87 @@ export async function disconnectManagedAgentSlack(connectionId: string) {
     `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
     { method: 'DELETE' },
     channelSchema,
+  )
+}
+
+/** The project's Linear connections with health, for one environment or both. */
+export async function listManagedLinearConnections(
+  projectId: string,
+  environment?: 'default' | 'development' | 'production',
+) {
+  const query = environment
+    ? `?${new URLSearchParams({ environment }).toString()}`
+    : ''
+  return (
+    await apiFetch(
+      `/managed-agents/projects/${encodeURIComponent(projectId)}/linear/connections${query}`,
+      undefined,
+      linearConnectionsResponseSchema,
+    )
+  ).connections
+}
+
+/**
+ * Allocate a pending connection for an agent in one environment. The answer
+ * carries the webhook URL and Linear's prefilled create-app link; calling it
+ * again for a binding that is still pending starts that setup over.
+ */
+export async function createManagedLinearConnection(input: {
+  projectId: string
+  environment: 'default' | 'development' | 'production'
+  agentId: string
+  name: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/linear/connections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        environment: input.environment,
+        agentId: input.agentId,
+      }),
+    },
+    linearCreateResponseSchema,
+  )
+}
+
+/**
+ * The Linear app's client ID, client secret and webhook signing secret. They
+ * are sent once and never returned; the answer is the redacted connection.
+ */
+export async function setManagedLinearCredentials(
+  connectionId: string,
+  credentials: {
+    clientId: string
+    clientSecret: string
+    signingSecret: string
+  },
+) {
+  return (
+    await apiFetch(
+      `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/credentials`,
+      { method: 'PUT', body: JSON.stringify(credentials) },
+      linearConnectionResponseSchema,
+    )
+  ).connection
+}
+
+/** A fresh authorization link for the connection's app; earlier ones stop working. */
+export async function authorizeManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}/authorize`,
+    { method: 'POST' },
+    linearAuthorizeResponseSchema,
+  )
+}
+
+/** Revoke the app's access, remove the binding; the webhook URL stops working. */
+export async function disconnectManagedLinearConnection(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/linear/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+    linearDisconnectResponseSchema,
   )
 }
 
@@ -2015,6 +2376,14 @@ export function managedAgentModelRoute(event: ManagedAgentEvent) {
   return parsed.success ? parsed.data : undefined
 }
 
+export function latestManagedAgentModelRoute(events: ManagedAgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const route = managedAgentModelRoute(events[index])
+    if (route) return route
+  }
+  return undefined
+}
+
 export async function getManagedAgentSession(sessionId: string) {
   return apiFetch(
     `/managed-agents/sessions/${encodeURIComponent(sessionId)}`,
@@ -2023,7 +2392,7 @@ export async function getManagedAgentSession(sessionId: string) {
   )
 }
 
-export type ManagedMemoryEnvironment = 'development' | 'production'
+export type ManagedMemoryEnvironment = 'default' | 'development' | 'production'
 
 /** The complete address of one document; every read and write names it in full. */
 export type ManagedMemoryDocumentTarget = {

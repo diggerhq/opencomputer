@@ -1,6 +1,6 @@
 ---
 title: "Agent capabilities"
-description: "Choose tools, MCP servers, skills, subagents, memory and outbound connections"
+description: "Choose tools, MCP servers, skills, memory and outbound connections"
 ---
 
 Capabilities give an agent something beyond its instructions and model. Choose
@@ -13,7 +13,6 @@ the narrowest capability that fits the job.
 | Connected service | Google services, GitHub, or Linear, on someone's connected account | OpenComputer attaches and refreshes the credential | `useService("gmail")`, then `callService()` in a tool |
 | MCP server | A service that already publishes a collection of tools | The remote MCP server | `useMcpServer(server)` |
 | Skill | A reusable procedure, checklist, or supporting files | The agent follows the loaded instructions | Place it under `skills/` |
-| Subagent | Delegating a focused task to another project agent | The delegated agent | `useSubagent(agentId)` |
 | HTTP connection | A constrained authenticated outbound request | OpenComputer sends the declared request | Call `defineConnection().fetch()` inside a tool |
 | GitHub App connection | Direct Git and GitHub API access to an installation | The agent sandbox uses a short-lived installation token | `useConnection(github)` |
 | Memory | Notes shared across sessions | OpenComputer stores documents; the agent reads and saves through memory tools | `useMemory(memory)` |
@@ -36,12 +35,6 @@ A tool performs an operation and returns structured data. A
 [skill](/agents/skills) teaches the agent how to approach a category of work.
 Many agents use both: the skill describes the workflow while tools perform the
 individual actions.
-
-## Tool or subagent?
-
-Use a tool for a bounded operation such as fetching an order. Use a
-[subagent](/agents/subagents) when the task benefits from its own instructions,
-model selection, capabilities, and working context.
 
 ## Session data or memory?
 

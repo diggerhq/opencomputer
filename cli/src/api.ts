@@ -20,13 +20,26 @@ export interface ManagedAgentSummary {
   updatedAt: string;
 }
 
+/** Canonical environment scopes. Single-mode projects have only `default`. */
+export type ProjectEnvironment = "default" | "development" | "production";
+
+export type ProjectEnvironmentMode = "single" | "legacy";
+
 export interface ManagedProject {
   id: string;
   slug: string;
   name: string;
+  /** The canonical cloud id of the project's primary agent. */
+  agentId: string;
+  /**
+   * `single` projects have one current deployment and no environment choice;
+   * `legacy` projects keep Development and Production. Servers that predate
+   * the field omit it, which means legacy.
+   */
+  environmentMode?: ProjectEnvironmentMode;
   /** One row per project agent and environment: that member's active deployment there. */
   environments: Array<{
-    name: "development" | "production";
+    name: ProjectEnvironment;
     agentId?: string;
     activeDeploymentId?: string;
     updatedAt: string;
@@ -66,7 +79,7 @@ export interface ManagedAgentEvent {
 export interface ManagedSecretMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   allowedOrigins: string[];
   createdAt: string;
@@ -86,7 +99,7 @@ export interface ManagedGitHubInstallation {
 
 export interface ManagedGitHubStatus {
   environments: Array<{
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     state: "not_connected" | "active" | "suspended" | "deleted";
     installation?: ManagedGitHubInstallation;
   }>;
@@ -107,6 +120,17 @@ export interface ServiceConnection {
   displayName?: string;
   scopes?: string[];
   status: string;
+}
+
+export interface ProjectServiceAttachment {
+  projectId: string;
+  service: string;
+  provider: string;
+  label: string;
+  connectionId: string;
+  connection: ServiceConnection;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ModelAccessConnection {
@@ -131,7 +155,7 @@ export interface ModelAccessConnection {
 export interface ModelAccessBinding {
   organizationId: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   provider: "anthropic" | "openai";
   connectionId: string;
   enabled: boolean;
@@ -143,7 +167,7 @@ export interface ModelAccessBinding {
 export interface ModelRoute {
   id: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   connectionId: string;
   model: string;
@@ -156,7 +180,7 @@ export interface ModelRoute {
 export interface AgentRuntimeVariableMetadata {
   name: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId?: string;
   createdAt: string;
   updatedAt: string;
@@ -231,7 +255,7 @@ export interface TemplateInstallation {
 export interface ManagedAgentWebhook {
   id: string;
   projectId: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId: string;
   name: string;
   enabled: boolean;
@@ -250,7 +274,7 @@ export interface ManagedAgentLog {
   timestamp: string;
   level: "info" | "warn" | "error";
   event: string;
-  environment: "development" | "production";
+  environment: ProjectEnvironment;
   agentId: string;
   deploymentId: string;
   sessionId: string;
@@ -305,7 +329,7 @@ export interface ManagedSessionSummary {
   projectId: string;
   agentId: string;
   deploymentId: string;
-  environment: "development" | "production" | null;
+  environment: ProjectEnvironment | null;
   source: string;
   status: string;
   labels: Record<string, string>;
@@ -344,7 +368,7 @@ export interface ManagedSessionListOptions {
   limit?: number;
 }
 
-export type MemoryEnvironment = "development" | "production";
+export type MemoryEnvironment = ProjectEnvironment;
 
 export type MemoryWriter =
   | { kind: "owner" }
@@ -616,10 +640,18 @@ export class OpenComputerClient {
     return result.projects;
   }
 
-  createProject(name: string, slug: string) {
+  createProject(
+    name: string,
+    slug: string,
+    environmentMode?: ProjectEnvironmentMode,
+  ) {
     return this.request<ManagedProject>("/api/managed-agents/projects", {
       method: "POST",
-      body: JSON.stringify({ name, slug }),
+      body: JSON.stringify({
+        name,
+        slug,
+        ...(environmentMode ? { environmentMode } : {}),
+      }),
     });
   }
 
@@ -637,7 +669,7 @@ export class OpenComputerClient {
 
   connectGitHub(input: {
     projectId: string;
-    environments?: Array<"development" | "production">;
+    environments?: Array<ProjectEnvironment>;
   }) {
     return this.request<{ installUrl: string; authorizeUrl: string }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
@@ -652,7 +684,7 @@ export class OpenComputerClient {
 
   attachGitHub(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     connectionId: string;
   }) {
     return this.request<{ attached: boolean }>(
@@ -669,7 +701,7 @@ export class OpenComputerClient {
 
   disconnectGitHub(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
   }) {
     return this.request<void>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github?environment=${input.environment}`,
@@ -677,15 +709,25 @@ export class OpenComputerClient {
     );
   }
 
-  async inspectTemplate(repositoryUrl: string): Promise<TemplateInspection> {
+  async inspectTemplate(
+    repositoryUrl: string,
+    options?: { refresh?: boolean },
+  ): Promise<TemplateInspection> {
     const deadline = Date.now() + 10 * 60_000;
+    // `refresh` goes on the first request only: sending it while polling would
+    // restart the rebuild the flag kicked off.
+    let first = true;
     for (;;) {
       const result = await this.request<
         TemplateInspection | TemplateInspectionPreparing
       >("/api/managed-agents/template-inspections", {
         method: "POST",
-        body: JSON.stringify({ repositoryUrl }),
+        body: JSON.stringify({
+          repositoryUrl,
+          ...(first && options?.refresh ? { refresh: true } : {}),
+        }),
       });
+      first = false;
       if ((result as TemplateInspectionPreparing).status !== "preparing") {
         return result as TemplateInspection;
       }
@@ -727,7 +769,7 @@ export class OpenComputerClient {
 
   async secrets(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<ManagedSecretMetadata[]> {
     const query = new URLSearchParams();
@@ -744,7 +786,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
     allowedOrigins: string[];
   }) {
@@ -765,7 +807,7 @@ export class OpenComputerClient {
   deleteSecret(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -793,7 +835,11 @@ export class OpenComputerClient {
    * no credential passes through the CLI, and the person consenting never
    * signs in to OpenComputer.
    */
-  linkServiceConnection(input: { service: string; label?: string }) {
+  linkServiceConnection(input: {
+    service: string;
+    label?: string;
+    reconnect?: boolean;
+  }) {
     const provider =
       input.service === "github" || input.service === "linear"
         ? input.service
@@ -810,8 +856,68 @@ export class OpenComputerClient {
       body: JSON.stringify({
         service: input.service,
         ...(input.label ? { label: input.label } : {}),
+        ...(input.reconnect ? { reconnect: true } : {}),
       }),
     });
+  }
+
+  async projectServiceConnections(
+    projectId: string,
+  ): Promise<ProjectServiceAttachment[]> {
+    const result = await this.request<{
+      attachments: ProjectServiceAttachment[];
+    }>(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/service-connections`,
+    );
+    return result.attachments ?? [];
+  }
+
+  attachProjectServiceConnection(input: {
+    projectId: string;
+    connectionId: string;
+  }) {
+    return this.request<ProjectServiceAttachment>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+      {
+        method: "POST",
+        body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "POST",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
+      },
+    );
+  }
+
+  detachProjectServiceConnection(input: {
+    projectId: string;
+    connectionId: string;
+  }) {
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ connectionId: input.connectionId }),
+        ...(this.idempotencyKey
+          ? {
+              headers: {
+                "idempotency-key": this.derivedIdempotencyKey(
+                  "DELETE",
+                  `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/service-connections`,
+                  input.connectionId,
+                ),
+              },
+            }
+          : {}),
+      },
+    );
   }
 
   /**
@@ -903,7 +1009,7 @@ export class OpenComputerClient {
 
   putModelRoute(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     connectionId: string;
     model: string;
     agentId?: string;
@@ -925,7 +1031,7 @@ export class OpenComputerClient {
 
   deleteModelRoute(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     return this.request<void>(
@@ -979,7 +1085,7 @@ export class OpenComputerClient {
   putModelAccessBinding(input: {
     projectId: string;
     provider: "anthropic" | "openai";
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     enabled: boolean;
   }) {
     return this.request<ModelAccessBinding>(
@@ -990,7 +1096,7 @@ export class OpenComputerClient {
 
   async runtimeVariables(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<AgentRuntimeVariableMetadata[]> {
     const query = new URLSearchParams();
@@ -1009,7 +1115,7 @@ export class OpenComputerClient {
     projectId: string;
     name: string;
     value: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     return this.request<AgentRuntimeVariableMetadata>(
@@ -1028,7 +1134,7 @@ export class OpenComputerClient {
   deleteRuntimeVariable(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId?: string;
   }) {
     const query = new URLSearchParams({ environment: input.environment });
@@ -1041,7 +1147,7 @@ export class OpenComputerClient {
 
   async webhooks(input: {
     projectId: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     agentId?: string;
   }): Promise<ManagedAgentWebhook[]> {
     const query = new URLSearchParams();
@@ -1057,7 +1163,7 @@ export class OpenComputerClient {
   createWebhook(input: {
     projectId: string;
     name: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     agentId: string;
     identity?: string;
   }) {
@@ -1125,12 +1231,12 @@ export class OpenComputerClient {
 
   async databaseQuery(input: {
     projectId: string;
-    environment: "development" | "production";
+    environment: ProjectEnvironment;
     sql: string;
     parameters?: Array<string | number | boolean | null>;
   }): Promise<DatabaseResult> {
     const response = await this.request<{
-      environment: "development" | "production";
+      environment: ProjectEnvironment;
       result: DatabaseResult;
     }>(
       `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/database/query`,
@@ -1288,7 +1394,7 @@ export class OpenComputerClient {
   logs(input: {
     agentId?: string;
     sessionId?: string;
-    environment?: "development" | "production";
+    environment?: ProjectEnvironment;
     after?: string;
     limit?: number;
   }) {

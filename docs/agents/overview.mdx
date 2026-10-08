@@ -22,8 +22,8 @@ export default function Agent() {
 
 The exported function is a reactive description of the agent. OpenComputer
 renders it for the current input and uses its return value as instructions for
-the managed agent loop. Hooks attach the model, tools, MCP servers, and
-subagents needed for that render. [Memory](/agents/memory) gives an agent
+the managed agent loop. Hooks attach the model, tools, and MCP servers
+needed for that render. [Memory](/agents/memory) gives an agent
 notes that outlive a session: project-scoped documents read at render, saved
 by the model through memory tools, and owned by you.
 
@@ -44,7 +44,7 @@ by the model through memory tools, and owned by you.
     Create sessions on your server and attach a React interface.
   </Card>
   <Card title="Capabilities" icon="shapes" href="/agents/capabilities">
-    Choose between tools, MCP servers, skills, and subagents.
+    Choose between tools, MCP servers, and skills.
   </Card>
   <Card title="Secrets" icon="key" href="/agents/secrets">
     Declare secret-backed connections without exposing credentials to agents.
@@ -78,7 +78,7 @@ configured agent to `development`.
 ## What is available today
 
 - TypeScript projects containing one or more agents
-- reactive instructions, model selection, tools, subagents, MCP
+- reactive instructions, model selection, tools, MCP
   servers, input metadata, session data reads, and document memory
 - cloud development with file watching and automatic synchronization
 - dashboard and CLI playground sessions

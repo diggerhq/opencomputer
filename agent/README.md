@@ -23,7 +23,7 @@ describe that call; they do not perform I/O or run the durable agent loop.
   `provider/model` spelling.
 - To select an OpenAI-native model that can use a project Codex subscription,
   use an explicit provider: `useModel({ provider: "openai", model: "gpt-5" })`.
-- `useTool()` and `useSubagent()` select declared capabilities.
+- `useTool()` selects declared capabilities.
 - `useSessionData()` reads the current durable session-data snapshot.
 - `useMcpServer()` conditionally selects a declared MCP server.
 - `useMemory()` reads the projection of a memory resource bound to the

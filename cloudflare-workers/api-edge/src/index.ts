@@ -88,7 +88,9 @@ import { createAPIKey, hashAPIKey } from "./api_keys";
 import {
   handleAgentWebhookInvocation,
   handleManagedGitHubCallback,
+  handleManagedGitHubWebhook,
   handleManagedSlackCallback,
+  handleManagedLinearCallback,
   handleManagedAgentChannelConnection,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -5553,6 +5555,12 @@ export default {
     ) {
       return handleManagedGitHubCallback(req, env);
     }
+    if (
+      path === "/api/managed-agents/github/webhooks" &&
+      req.method === "POST"
+    ) {
+      return handleManagedGitHubWebhook(req, env);
+    }
     // Slack's OAuth redirect for apps created by the automated setup. This
     // exact URL is registered on every generated app; the backend answers
     // with a redirect into the project's Connections tab.
@@ -5561,6 +5569,16 @@ export default {
       req.method === "GET"
     ) {
       return handleManagedSlackCallback(req, env);
+    }
+    // Linear's OAuth redirect for a project's Linear agent connection. The
+    // backend puts this exact URL in every authorize link and on the app it
+    // prefills (BLUE_LINEAR_OAUTH_REDIRECT_URI, default: the Slack callback's
+    // sibling); it answers with a redirect into the project's Connections tab.
+    if (
+      path === "/api/managed-agents/linear/callback" &&
+      req.method === "GET"
+    ) {
+      return handleManagedLinearCallback(req, env);
     }
     if (path.startsWith("/api/agent-webhooks/")) {
       return handleAgentWebhookInvocation(req, env);
