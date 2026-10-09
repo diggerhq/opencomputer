@@ -41,7 +41,7 @@ import {
 } from '@/components/panel'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -937,9 +937,9 @@ export default function ManagedAgentDetail({
           title="Agent not found"
           description="This agent is not available in your organization."
           action={
-            <Button asChild variant="outline">
-              <Link to="/">Back to projects</Link>
-            </Button>
+            <Link to="/" className={buttonVariants({ variant: 'outline' })}>
+              Back to projects
+            </Link>
           }
         />
       </Panel>
@@ -981,23 +981,22 @@ export default function ManagedAgentDetail({
             title="This project has a single environment"
             description={`“${resolvedEnvironment.requested}” is not an environment of this project (single_environment_project). Use a separate project for a distinct ${resolvedEnvironment.requested} target.`}
             action={
-              <Button asChild variant="outline" size="sm">
-                <Link
-                  to={{
-                    pathname: location.pathname,
-                    search: projectContextSearch(
+              <Link
+                to={{
+                  pathname: location.pathname,
+                  search: projectContextSearch(
+                    location.search,
+                    requestedProjectAgentId(
                       location.search,
-                      requestedProjectAgentId(
-                        location.search,
-                        project.project.agents,
-                      ),
-                      'default',
+                      project.project.agents,
                     ),
-                  }}
-                >
-                  Open the project
-                </Link>
-              </Button>
+                    'default',
+                  ),
+                }}
+                className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              >
+                Open the project
+              </Link>
             }
           />
         </Panel>
@@ -1070,9 +1069,12 @@ export default function ManagedAgentDetail({
               <Loader2 className="animate-spin" /> Preparing local checkout
             </Button>
           ) : !project ? (
-            <Button asChild variant="outline" size="sm">
-              <Link to="/">All projects</Link>
-            </Button>
+            <Link
+              to="/"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              All projects
+            </Link>
           ) : undefined
         }
         className={activeTab === 'playground' ? 'mb-0 shrink-0' : undefined}

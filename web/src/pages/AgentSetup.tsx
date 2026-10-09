@@ -40,7 +40,7 @@ import {
   AlertDescription,
   AlertTitle,
 } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 import {
@@ -257,9 +257,9 @@ export default function AgentSetup() {
               : 'Check that the agent exists and belongs to your account.'}
           </AlertDescription>
         </Alert>
-        <Button variant="outline" asChild>
-          <Link to="/agents">Back to agents</Link>
-        </Button>
+        <Link to="/agents" className={buttonVariants({ variant: 'outline' })}>
+          Back to agents
+        </Link>
       </div>
     )
   }
@@ -353,9 +353,12 @@ export default function AgentSetup() {
             />
           </div>
         </div>
-        <Button variant="ghost" size="sm" asChild>
-          <Link to={`/agents/${agentId}`}>Finish later</Link>
-        </Button>
+        <Link
+          to={`/agents/${agentId}`}
+          className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+        >
+          Finish later
+        </Link>
       </header>
 
       {slackNotice ? (
@@ -426,20 +429,22 @@ export default function AgentSetup() {
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 {presentation.action === 'open' && managedSlack?.open_url ? (
                   <>
-                    <Button asChild>
-                      <a
-                        href={managedSlack.open_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {presentation.label}
-                        <ExternalLink className="size-4" />
-                      </a>
-                    </Button>
+                    <a
+                      href={managedSlack.open_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={buttonVariants()}
+                    >
+                      {presentation.label}
+                      <ExternalLink className="size-4" />
+                    </a>
                     {activationSession ? (
-                      <Button variant="outline" asChild>
-                        <Link to={`/agents/${agentId}`}>View agent</Link>
-                      </Button>
+                      <Link
+                        to={`/agents/${agentId}`}
+                        className={buttonVariants({ variant: 'outline' })}
+                      >
+                        View agent
+                      </Link>
                     ) : null}
                   </>
                 ) : presentation.action === 'connect' ||
@@ -467,12 +472,10 @@ export default function AgentSetup() {
                         : presentation.label}
                   </Button>
                 ) : stage === 'failed' && deploymentHref ? (
-                  <Button asChild>
-                    <Link to={deploymentHref}>
-                      Review deployment
-                      <ChevronRight className="size-4" />
-                    </Link>
-                  </Button>
+                  <Link to={deploymentHref} className={buttonVariants()}>
+                    Review deployment
+                    <ChevronRight className="size-4" />
+                  </Link>
                 ) : managedSlackStatus === 'active' && stage === 'preparing' ? (
                   <span className="text-muted-foreground inline-flex items-center gap-2 text-sm">
                     <Loader2
@@ -635,17 +638,22 @@ export default function AgentSetup() {
                   </div>
                 )}
                 <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to={`/sessions/${activationSession.id}`}>
-                      Open session
-                      <ChevronRight className="size-4" />
-                    </Link>
-                  </Button>
-                  <Button size="sm" variant="ghost" asChild>
-                    <Link to={`/agents/${agentId}/sessions`}>
-                      All agent sessions
-                    </Link>
-                  </Button>
+                  <Link
+                    to={`/sessions/${activationSession.id}`}
+                    className={buttonVariants({
+                      variant: 'outline',
+                      size: 'sm',
+                    })}
+                  >
+                    Open session
+                    <ChevronRight className="size-4" />
+                  </Link>
+                  <Link
+                    to={`/agents/${agentId}/sessions`}
+                    className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+                  >
+                    All agent sessions
+                  </Link>
                 </div>
               </div>
             )}
@@ -732,12 +740,13 @@ export default function AgentSetup() {
             </details>
 
             <div className="flex justify-end">
-              <Button variant="ghost" size="sm" asChild>
-                <Link to={deploymentHref!}>
-                  View deployment details
-                  <ChevronRight className="size-4" />
-                </Link>
-              </Button>
+              <Link
+                to={deploymentHref!}
+                className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+              >
+                View deployment details
+                <ChevronRight className="size-4" />
+              </Link>
             </div>
           </PanelContent>
         </Panel>
@@ -758,9 +767,12 @@ export default function AgentSetup() {
               Retry status
             </Button>
             {deploymentHref ? (
-              <Button variant="ghost" size="sm" asChild>
-                <Link to={deploymentHref}>Open deployment</Link>
-              </Button>
+              <Link
+                to={deploymentHref}
+                className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+              >
+                Open deployment
+              </Link>
             ) : null}
           </div>
         </Alert>
@@ -798,11 +810,12 @@ export default function AgentSetup() {
             actions.
           </AlertDescription>
           <div className="mt-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link to={`/agents/${agentId}/deployments`}>
-                Open deployments
-              </Link>
-            </Button>
+            <Link
+              to={`/agents/${agentId}/deployments`}
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              Open deployments
+            </Link>
           </div>
         </Alert>
       )}

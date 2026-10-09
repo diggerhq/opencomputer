@@ -124,8 +124,8 @@ export default function DeferredAction() {
             This link isn&rsquo;t supported.
           </p>
           <p className="text-muted-foreground max-w-sm text-sm">
-            It may be from a newer version of the site. Head to your dashboard to
-            keep going.
+            It may be from a newer version of the site. Head to your dashboard
+            to keep going.
           </p>
           <Link
             to="/"

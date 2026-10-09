@@ -100,7 +100,8 @@ export function GuidedTour({
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
-      else if (e.key === 'ArrowRight' && i < steps.length - 1) setI((n) => n + 1)
+      else if (e.key === 'ArrowRight' && i < steps.length - 1)
+        setI((n) => n + 1)
       else if (e.key === 'ArrowLeft' && i > 0) setI((n) => n - 1)
     }
     window.addEventListener('keydown', onKey)
@@ -152,7 +153,8 @@ export function GuidedTour({
   const tabs = step.code ?? []
   const current = tabs[tab] ?? tabs[0]
   const copy = () => {
-    if (current) void navigator.clipboard.writeText(current.code).then(markCopied)
+    if (current)
+      void navigator.clipboard.writeText(current.code).then(markCopied)
   }
 
   return createPortal(
@@ -270,7 +272,11 @@ export function GuidedTour({
               </a>
             ) : null}
             {i > 0 ? (
-              <Button variant="ghost" size="sm" onClick={() => setI((n) => n - 1)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setI((n) => n - 1)}
+              >
                 <ArrowLeft className="size-3.5" />
                 Back
               </Button>

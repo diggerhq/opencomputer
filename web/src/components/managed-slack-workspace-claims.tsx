@@ -11,7 +11,7 @@ import {
   type ManagedSlackWorkspaceConnection,
 } from '@/api/client'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
@@ -147,11 +147,15 @@ export function ManagedSlackWorkspaceClaims({
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-1">
-                    <Button variant="outline" size="sm" asChild>
-                      <Link to={`/agents/${connection.agent.id}`}>
-                        Open agent
-                      </Link>
-                    </Button>
+                    <Link
+                      to={`/agents/${connection.agent.id}`}
+                      className={buttonVariants({
+                        variant: 'outline',
+                        size: 'sm',
+                      })}
+                    >
+                      Open agent
+                    </Link>
                     <Button
                       variant={onMoveHere ? 'outline' : 'ghost'}
                       size="sm"

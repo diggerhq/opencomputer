@@ -13,7 +13,8 @@ import {
 } from '@/components/panel'
 import { ServiceLogo } from '@/components/service-logo'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import {
   attachManagedProjectServiceConnection,
   detachManagedProjectServiceConnection,
@@ -151,9 +152,12 @@ export function ManagedProjectServiceConnections({
             matching useService() capability can use it.
           </PanelDescription>
         </div>
-        <Button asChild variant="outline">
-          <Link to="/connections">Manage connected accounts</Link>
-        </Button>
+        <Link
+          to="/connections"
+          className={buttonVariants({ variant: 'outline' })}
+        >
+          Manage connected accounts
+        </Link>
       </PanelHeader>
       {isLoading ? (
         <PanelContent className="text-muted-foreground flex min-h-20 items-center justify-center gap-2 text-sm">
@@ -284,9 +288,12 @@ export function ManagedProjectServiceConnections({
             Connect Linear, Gmail, Calendar, Drive, or Sheets first, then return
             here to attach the account to this project.
           </p>
-          <Button asChild className="mt-4" variant="outline">
-            <Link to="/connections">Add account connection</Link>
-          </Button>
+          <Link
+            to="/connections"
+            className={cn(buttonVariants({ variant: 'outline' }), 'mt-4')}
+          >
+            Add account connection
+          </Link>
         </PanelContent>
       )}
       {mutation.isError ? (

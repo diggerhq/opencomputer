@@ -36,7 +36,7 @@ import { ManualAgentForm } from '@/components/manual-agent-form'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
@@ -536,9 +536,15 @@ export function GettingStarted() {
                     <p className="text-muted-foreground text-sm">
                       API key ready. Existing secret values cannot be displayed.
                     </p>
-                    <Button size="sm" variant="outline" asChild>
-                      <Link to="/api-keys">Manage keys</Link>
-                    </Button>
+                    <Link
+                      to="/api-keys"
+                      className={buttonVariants({
+                        variant: 'outline',
+                        size: 'sm',
+                      })}
+                    >
+                      Manage keys
+                    </Link>
                   </div>
                 ) : null}
 
@@ -661,12 +667,18 @@ function ApiExample({
         </Button>
       </div>
 
-      <Button variant="outline" size="sm" className="mt-4" asChild>
-        <a href={docs} target="_blank" rel="noreferrer">
-          {docsLabel}
-          <ExternalLink className="size-3.5" aria-hidden />
-        </a>
-      </Button>
+      <a
+        href={docs}
+        target="_blank"
+        rel="noreferrer"
+        className={cn(
+          buttonVariants({ variant: 'outline', size: 'sm' }),
+          'mt-4',
+        )}
+      >
+        {docsLabel}
+        <ExternalLink className="size-3.5" aria-hidden />
+      </a>
     </article>
   )
 }

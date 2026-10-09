@@ -13,7 +13,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Panel, PanelContent } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   archiveManagedProject,
@@ -93,11 +93,9 @@ export default function ProjectsHome() {
         title="Projects"
         description="Choose a project to open its agent playground, deployments, sessions, and resources."
         actions={
-          <Button asChild>
-            <Link to="/new">
-              <Plus /> New project
-            </Link>
-          </Button>
+          <Link to="/new" className={buttonVariants()}>
+            <Plus /> New project
+          </Link>
         }
       />
 

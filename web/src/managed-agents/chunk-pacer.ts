@@ -55,7 +55,12 @@ export class UIMessageChunkPacer {
     if (isTextChunk(chunk)) {
       if (chunk.delta.length === 0) return
       const tail = this.queue[this.queue.length - 1]
-      if (tail && isTextChunk(tail) && tail.type === chunk.type && tail.id === chunk.id) {
+      if (
+        tail &&
+        isTextChunk(tail) &&
+        tail.type === chunk.type &&
+        tail.id === chunk.id
+      ) {
         this.queue[this.queue.length - 1] = {
           ...tail,
           delta: tail.delta + chunk.delta,

@@ -175,7 +175,14 @@ describe('openDownloadSink fallback', () => {
 describe('safeZipEntryName', () => {
   it('keeps relative paths and rejects escapes', () => {
     expect(safeZipEntryName('evidence/http 1.har')).toBe('evidence/http 1.har')
-    for (const bad of ['../x', '/etc/passwd', 'a//b', './a', 'C:/x', 'a\u0000b']) {
+    for (const bad of [
+      '../x',
+      '/etc/passwd',
+      'a//b',
+      './a',
+      'C:/x',
+      'a\u0000b',
+    ]) {
       expect(() => safeZipEntryName(bad)).toThrow(/Unsafe archive entry/)
     }
   })
