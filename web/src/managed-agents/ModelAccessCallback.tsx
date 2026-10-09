@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Panel, PanelContent } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import {
   completeManagedModelAccess,
   getManagedProject,
@@ -95,11 +96,12 @@ export default function ModelAccessCallback() {
             {message}
           </p>
           {status === 'failed' ? (
-            <Button asChild className="mt-6" variant="outline">
-              <Link to="/">
-                <CheckCircle2 /> Return to projects
-              </Link>
-            </Button>
+            <Link
+              to="/"
+              className={cn(buttonVariants({ variant: 'outline' }), 'mt-6')}
+            >
+              <CheckCircle2 /> Return to projects
+            </Link>
           ) : null}
         </PanelContent>
       </Panel>

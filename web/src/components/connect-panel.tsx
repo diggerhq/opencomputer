@@ -69,7 +69,11 @@ function CodeBlock({ code }: { code: string }) {
         onClick={copy}
         className="text-muted-foreground hover:text-foreground absolute top-2 right-2 z-10"
       >
-        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        {copied ? (
+          <Check className="size-3.5" />
+        ) : (
+          <Copy className="size-3.5" />
+        )}
         {copied ? 'Copied' : 'Copy'}
       </Button>
       <pre className="text-foreground overflow-x-auto px-3 py-3 pr-20 font-mono text-[12.5px] leading-relaxed">

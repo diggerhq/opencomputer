@@ -29,7 +29,7 @@ import {
   PanelTitle,
   PanelDescription,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Field, Input, Label } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
@@ -436,15 +436,14 @@ export default function Settings() {
             <DialogClose asChild>
               <Button variant="outline">Got it</Button>
             </DialogClose>
-            <Button asChild>
-              <a
-                href="https://cal.com/team/digger/opencomputer-founder-chat"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Book a call
-              </a>
-            </Button>
+            <a
+              href="https://cal.com/team/digger/opencomputer-founder-chat"
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants()}
+            >
+              Book a call
+            </a>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -460,7 +460,10 @@ export default function Credentials() {
             onSubmit={(e) => {
               e.preventDefault()
               if (toRotate && rotateKey.trim())
-                rotateMutation.mutate({ id: toRotate.id, key: rotateKey.trim() })
+                rotateMutation.mutate({
+                  id: toRotate.id,
+                  key: rotateKey.trim(),
+                })
             }}
           >
             <Field label="New API key" htmlFor="rotate-key">
@@ -469,7 +472,9 @@ export default function Credentials() {
                 type="password"
                 value={rotateKey}
                 onChange={(e) => setRotateKey(e.target.value)}
-                placeholder={KEY_HINT[toRotate?.provider ?? 'anthropic'] ?? 'sk-…'}
+                placeholder={
+                  KEY_HINT[toRotate?.provider ?? 'anthropic'] ?? 'sk-…'
+                }
               />
             </Field>
             <DialogFooter>

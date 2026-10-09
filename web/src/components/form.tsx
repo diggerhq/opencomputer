@@ -25,7 +25,10 @@ export function Select({
   // A `{ separator: true }` entry renders a divider between groups (e.g. models
   // grouped by provider) rather than a selectable item. An optional `hint` renders
   // right-aligned + muted (e.g. a timezone's UTC offset).
-  options: ({ value: string; label: string; hint?: string } | { separator: true })[]
+  options: (
+    | { value: string; label: string; hint?: string }
+    | { separator: true }
+  )[]
   id?: string
   placeholder?: string
   disabled?: boolean

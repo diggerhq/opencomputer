@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  createAgentHook,
-  getAgentHooks,
-  revokeAgentHook,
-} from './client'
+import { createAgentHook, getAgentHooks, revokeAgentHook } from './client'
 
 const agentId = 'agt_0123456789abcdef01234567'
 

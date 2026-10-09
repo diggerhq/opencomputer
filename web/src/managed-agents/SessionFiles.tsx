@@ -13,7 +13,7 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   authorizeManagedAgentWorkspaceDownload,
@@ -161,17 +161,19 @@ export function SessionFiles({
                   <span className="text-muted-foreground text-xs tabular-nums">
                     {formatBytes(file.size)}
                   </span>
-                  <Button asChild variant="outline" size="sm">
-                    <a
-                      href={managedAgentWorkspaceBrowserDownloadPath(
-                        sessionId,
-                        file.path,
-                      )}
-                    >
-                      <Download className="size-3.5" />
-                      Download
-                    </a>
-                  </Button>
+                  <a
+                    href={managedAgentWorkspaceBrowserDownloadPath(
+                      sessionId,
+                      file.path,
+                    )}
+                    className={buttonVariants({
+                      variant: 'outline',
+                      size: 'sm',
+                    })}
+                  >
+                    <Download className="size-3.5" />
+                    Download
+                  </a>
                 </div>
               )
             })}
@@ -271,17 +273,19 @@ export function WorkspaceFilesInspector({
                     <span className="text-muted-foreground text-[10px] tabular-nums">
                       {formatBytes(file.size)}
                     </span>
-                    <Button asChild variant="ghost" size="sm">
-                      <a
-                        href={managedAgentWorkspaceBrowserDownloadPath(
-                          sessionId,
-                          file.path,
-                        )}
-                        aria-label={`Download ${file.path}`}
-                      >
-                        <Download className="size-3.5" />
-                      </a>
-                    </Button>
+                    <a
+                      href={managedAgentWorkspaceBrowserDownloadPath(
+                        sessionId,
+                        file.path,
+                      )}
+                      aria-label={`Download ${file.path}`}
+                      className={buttonVariants({
+                        variant: 'ghost',
+                        size: 'sm',
+                      })}
+                    >
+                      <Download className="size-3.5" />
+                    </a>
                   </div>
                 )
               })}

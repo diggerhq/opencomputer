@@ -73,6 +73,8 @@
   --color-panel-2: var(--panel-2);
   --color-row-hover: var(--row-hover);
   --color-row-selected: var(--row-selected);
+  --color-shell: var(--shell);
+  --color-shell-border: var(--shell-border);
 
   /* Sidebar */
   --color-sidebar: var(--sidebar);
@@ -214,6 +216,10 @@
   --sidebar-accent: hsl(40 24% 92%);
   --sidebar-accent-foreground: hsl(45 8% 8%);
 
+  /* Notra UI table shell: the grey frame the body card sits in. */
+  --shell: hsl(40 22% 93%);
+  --shell-border: hsl(40 14% 85%);
+
   /* z-index convention (documentation): app chrome stays BELOW Radix
      overlays (which portal at z-50). header z-20 < sidebar z-30 <
      [Radix dropdown/dialog/popover z-50] < [sonner toaster z-[100]].
@@ -254,6 +260,9 @@
   --ring: hsl(40 8% 60%);
 
   --row-hover: hsl(36 6% 17%);
+
+  --shell: hsl(36 7% 15.5%);
+  --shell-border: hsl(36 6% 21%);
   --row-selected: hsl(36 7% 21%);
 
   --primary: hsl(40 12% 90%);
@@ -298,6 +307,74 @@
      invisible against a dark shell. */
   --shadow-overlay:
     0 10px 30px -12px rgb(0 0 0 / 0.5), 0 1px 3px -1px rgb(0 0 0 / 0.35);
+}
+
+/* Notra UI (ui.usenotra.com) support: toast status colours resolve to our
+   lifecycle tokens, and the Button loading / progress animations. */
+:root {
+  --success: var(--status-running);
+  --warning: var(--status-pending);
+  --info: var(--status-hibernated);
+}
+
+@theme inline {
+  --animate-button-swap-in: button-swap-in 280ms cubic-bezier(0.23, 1, 0.32, 1)
+    both;
+  --animate-button-swap-out: button-swap-out 360ms
+    cubic-bezier(0.45, 0, 0.25, 1) both;
+  --animate-button-dot: button-dot 1s ease-in-out infinite;
+  --animate-button-progress-out: button-progress-out 600ms ease-out both;
+}
+
+/* Both ends are explicit: the hidden layer also carries opacity-0, which an
+   implicit keyframe would pick up and skip the fade. */
+@keyframes button-swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.45em);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes button-swap-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-0.45em);
+    filter: blur(4px);
+  }
+}
+
+@keyframes button-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.45;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-0.3em);
+  }
+}
+
+@keyframes button-progress-out {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 @layer base {
