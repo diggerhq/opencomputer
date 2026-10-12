@@ -245,6 +245,8 @@ export default function Settings() {
 
             <ReadOnlyField label="Plan" value={plan} />
 
+            <ReadOnlyField label="Organization ID" value={org?.id ?? '—'} />
+
             <div className="flex items-center gap-3">
               <Button
                 onClick={() => saveMutation.mutate(name)}
