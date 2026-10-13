@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Plug, Plus, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
@@ -124,6 +124,12 @@ export default function ManagedAgentConnections() {
   const [connectionToRemove, setConnectionToRemove] =
     useState<ManagedAgentConnection>()
   const [removingConnection, setRemovingConnection] = useState(false)
+  const [pendingConnection, setPendingConnection] = useState<{
+    id: string
+    service: string
+  } | null>(null)
+  const pendingConnectionRef = useRef<{ id: string; service: string } | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const requestedService = searchParams.get('service')
   const requestedAlias = searchParams.get('alias') || 'default'
   const connections = useQuery({
@@ -144,6 +150,64 @@ export default function ManagedAgentConnections() {
       displayManagedAgentName(agent),
     ]),
   )
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+  }, [])
+
+  const startPolling = useCallback(
+    (connectionId: string, service: string, authorizationWindow: Window) => {
+      pendingConnectionRef.current = { id: connectionId, service }
+      setPendingConnection({ id: connectionId, service })
+      const provider =
+        service === 'github' || service === 'linear' ? service : 'google'
+      pollIntervalRef.current = setInterval(() => {
+        // If the popup closed without a successful redirect, stop waiting and
+        // let the user try again.
+        if (authorizationWindow.closed) {
+          stopPolling()
+          // Re-fetch in case the callback completed just before closing.
+          void connections.refetch().then(() => {
+            // If still pending after a close, surface failure.
+            const current = pendingConnectionRef.current
+            if (current) {
+              setPendingConnection(null)
+              pendingConnectionRef.current = null
+              setConnectionRequestState('failed')
+              setAddConnectionError(
+                'Authorization was not completed. Try again.',
+              )
+            }
+          })
+          return
+        }
+        void refreshManagedAgentConnection(provider, service, connectionId)
+          .then((result) => {
+            if (result.status === 'connected') {
+              stopPolling()
+              authorizationWindow.close()
+              setPendingConnection(null)
+              pendingConnectionRef.current = null
+              setConnectionRequestState('connected')
+              setAddConnectionOpen(false)
+              void connections.refetch()
+            }
+          })
+          .catch(() => {
+            // Ignore transient poll errors; keep polling.
+          })
+      }, 2000)
+    },
+    [connections, stopPolling],
+  )
+
+  // Clean up the polling interval on unmount.
+  useEffect(() => {
+    return stopPolling
+  }, [stopPolling])
 
   useEffect(() => {
     const token = searchParams.get('channel_link')
@@ -447,17 +511,26 @@ export default function ManagedAgentConnections() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">
-                      {displayResourceName(
-                        connection.label || connection.provider,
-                      )}
+                      {connection.displayName ||
+                        displayResourceName(
+                          connection.label || connection.provider,
+                        )}
                     </p>
                     <p className="text-muted-foreground truncate text-xs">
                       {connectionService(connection)}
                       {connection.displayName
-                        ? ` · ${connection.displayName}`
-                        : ''}
+                        ? null
+                        : connection.alias && connection.alias !== connection.label
+                          ? ` · ${connection.alias}`
+                          : null}
                       {agentName ? ` · ${agentName}` : ''}
                     </p>
+                    {connection.displayName && connection.label ? (
+                      <p className="text-muted-foreground truncate text-xs">
+                        Alias:{' '}
+                        <span className="font-mono">{connection.label}</span>
+                      </p>
+                    ) : null}
                   </div>
                   <StatusBadge status={connection.status} />
                   {service ? (
@@ -501,16 +574,24 @@ export default function ManagedAgentConnections() {
       <Dialog
         open={addConnectionOpen}
         onOpenChange={(open) => {
-          if (connectionRequestState === 'connecting') return
+          if (connectionRequestState === 'connecting' && pendingConnection) return
+          if (!open) {
+            stopPolling()
+            setPendingConnection(null)
+            pendingConnectionRef.current = null
+            setConnectionRequestState('idle')
+            setAddConnectionError(undefined)
+          }
           setAddConnectionOpen(open)
-          if (!open) setAddConnectionError(undefined)
         }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add connection</DialogTitle>
             <DialogDescription>
-              Choose a service and a memorable alias for this account.
+              {pendingConnection
+                ? 'Complete the authorization in the window that opened, then return here.'
+                : 'Choose a service and a memorable alias for this account.'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -539,6 +620,11 @@ export default function ManagedAgentConnections() {
                     navigateAuthorizationWindow(
                       authorizationWindow,
                       result.authorizationUrl,
+                    )
+                    startPolling(
+                      result.connectionId,
+                      newService,
+                      authorizationWindow,
                     )
                     return
                   }
@@ -612,7 +698,9 @@ export default function ManagedAgentConnections() {
                 {connectionRequestState === 'connecting' ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
                 ) : null}
-                Continue
+                {connectionRequestState === 'connecting' && pendingConnection
+                  ? 'Waiting for authorization…'
+                  : 'Continue'}
               </Button>
             </DialogFooter>
           </form>
