@@ -41,7 +41,7 @@ the `production` alias to it. Development remains available for further work.
 
 ## Choose a region
 
-By default an agent's sandboxes run in the United States. To run its sessions closer to
+By default, an agent's sessions run in the United States. To run them closer to
 your users or systems, set `region` in the agent's `opencomputer.toml` and
 deploy again:
 
@@ -52,18 +52,55 @@ name = "Support"
 region = "au"
 ```
 
-| Region | Where sessions run |
-| --- | --- |
-| `au` | Australia |
+### Allowed values
 
-The region applies to the agent's sandbox and its session state. It covers
-sessions started after the deploy; existing sessions stay where they started.
-Session state placement is best effort. Account-level data, such as project
-and deployment records, is not moved. An unsupported value fails the deploy
-with `unsupported_region`.
+| `region` | Sandbox runs in | Session state placed near |
+| --- | --- | --- |
+| omitted | United States | the first request (default) |
+| `"au"` | Sydney, Australia (AWS `ap-southeast-2`) | Oceania |
 
-Each agent in a project has its own `opencomputer.toml`, so agents in one
-project can run in different regions.
+- `au` is the only supported value for now. Values are lowercase and exact:
+  `"AU"`, `"aus"`, `"ap-southeast-2"` and `"us"` are all rejected.
+- The value must be a quoted string. `region = au` is rejected.
+- To go back to the default, remove the `region` line and deploy again.
+  There is no `"us"` value.
+
+An unsupported value stops the deploy before anything is uploaded:
+
+```text
+opencomputer.toml region "us" is not supported; use one of: au
+```
+
+The API rejects it too, with `400 unsupported_region`, if you call
+`POST /v1/deployments` directly.
+
+### What the region covers
+
+- **Sandbox.** The agent's sandbox, where `sandbox_exec` and other tools run,
+  is created in the region. Its outbound traffic leaves from that region too.
+- **Session state.** Session state is created near the region. This placement
+  is best effort.
+- **Not moved.** Account-level data, such as project and deployment records,
+  stays where it is.
+
+### Changing the region
+
+A region change applies to sessions started after the deploy. Existing
+sessions stay where they started. Each agent in a project has its own
+`opencomputer.toml`, so agents in one project can run in different regions.
+
+### Cold starts
+
+The first session after you deploy to a new region is slower to start. The
+agent's sandbox image has to be pulled into that region, and the first tool
+call can take a few minutes. Later sessions reuse the cached image and start
+much faster. To take the cold start before your users do, start one session
+that runs a command after the deploy. The sandbox starts only on the first tool
+call, so a session that only chats does not warm it:
+
+```sh
+opencomputer session "Run: echo ready"
+```
 
 ## Select an agent and environment
 
