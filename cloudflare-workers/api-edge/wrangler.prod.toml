@@ -160,7 +160,7 @@ WORKER_ENV = "prod"
 # Computer rollout (work 052): only the organizations listed (comma-separated
 # ids) see their computer until COMPUTER_ENABLED_FOR_ALL is "true".
 COMPUTER_ENABLED_FOR_ALL = "false"
-COMPUTER_ENABLED_ORGS = ""
+COMPUTER_ENABLED_ORGS = "be0cf06f-ef75-400a-851c-bfd1507a666e"
 # PoolStock sizing. SHARDS × TARGET must stay ≤ the cell's MicroVM pool
 # (OPENSANDBOX_MICROVM_POOL_TARGET on the CP) or every shard sits permanently
 # below low-water, restocks on every claim, and competes for a supply that can
