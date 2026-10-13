@@ -3062,7 +3062,7 @@ test("prepareAgent builds into a cache under node_modules, never into the agent'
   }
 });
 
-test("opencomputer.toml region is optional, accepts au, and rejects anything else", async () => {
+test("opencomputer.toml region is optional, accepts Modal regions, and rejects anything else", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "opencomputer-region-"));
   const manifest = (extra: string) =>
     writeFile(
@@ -3074,8 +3074,10 @@ test("opencomputer.toml region is optional, accepts au, and rejects anything els
     assert.equal((await readManifest(root)).region, undefined);
     await manifest('region = "au"\n');
     assert.equal((await readManifest(root)).region, "au");
+    await manifest('region = "eu-west"\n');
+    assert.equal((await readManifest(root)).region, "eu-west");
     await manifest('region = "us-east-1"\n');
-    await assert.rejects(readManifest(root), /region "us-east-1" is not supported; use one of: au/);
+    await assert.rejects(readManifest(root), /region "us-east-1" is not supported; use one of: us, eu, ap, /);
     await manifest("region = au\n");
     await assert.rejects(readManifest(root), /region must be a quoted string/);
   } finally {

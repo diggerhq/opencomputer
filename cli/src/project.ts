@@ -28,8 +28,34 @@ import {
   type MemoryProvider,
 } from "./memory.js";
 
-/** Regions a deployment may name in `opencomputer.toml` (work 057). */
-export const DEPLOYMENT_REGIONS = ["au"] as const;
+/**
+ * Regions a deployment may name in `opencomputer.toml` (work 057): Modal's
+ * sandbox regions, broad then narrow. The service keeps the same list.
+ */
+export const DEPLOYMENT_REGIONS = [
+  "us",
+  "eu",
+  "ap",
+  "us-east",
+  "us-central",
+  "us-south",
+  "us-west",
+  "eu-west",
+  "eu-north",
+  "eu-south",
+  "ap-northeast",
+  "ap-southeast",
+  "ap-south",
+  "ap-melbourne",
+  "jp",
+  "au",
+  "uk",
+  "ca",
+  "me",
+  "sa",
+  "af",
+  "mx",
+] as const;
 export type DeploymentRegion = (typeof DEPLOYMENT_REGIONS)[number];
 
 export interface AgentManifest {

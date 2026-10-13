@@ -41,9 +41,9 @@ the `production` alias to it. Development remains available for further work.
 
 ## Choose a region
 
-By default, an agent's sessions run in the United States. To run them closer to
-your users or systems, set `region` in the agent's `opencomputer.toml` and
-deploy again:
+By default, an agent's sandbox runs wherever capacity is available, usually in
+the United States. To run sessions closer to your users or systems, set
+`region` in the agent's `opencomputer.toml` and deploy again:
 
 ```toml
 schema = 1
@@ -54,21 +54,43 @@ region = "au"
 
 ### Allowed values
 
+`region` takes any of [Modal's sandbox regions](https://modal.com/docs/guide/region-selection).
+OpenComputer places the agent's sandbox in that region, and creates session
+state in the nearest Cloudflare location:
+
 | `region` | Sandbox runs in | Session state placed near |
 | --- | --- | --- |
-| omitted | United States | the first request (default) |
-| `"au"` | Sydney, Australia (AWS `ap-southeast-2`) | Oceania |
+| omitted | wherever capacity is available, usually the United States | the first request |
+| `"us"` | anywhere in the United States | eastern North America |
+| `"eu"` | anywhere in the European Economic Area | western Europe |
+| `"ap"` | anywhere in Asia-Pacific | Asia-Pacific |
+| `"us-east"`, `"us-central"`, `"us-south"` | that part of the United States | eastern North America |
+| `"us-west"` | western United States | western North America |
+| `"ca"` | Canada | eastern North America |
+| `"mx"` | Mexico | western North America |
+| `"eu-west"`, `"eu-south"` | that part of Europe | western Europe |
+| `"eu-north"` | northern Europe | eastern Europe |
+| `"uk"` | United Kingdom | western Europe |
+| `"ap-northeast"`, `"ap-southeast"`, `"ap-south"` | that part of Asia-Pacific | Asia-Pacific |
+| `"jp"` | Japan | Asia-Pacific |
+| `"au"`, `"ap-melbourne"` | Australia | Oceania |
+| `"me"` | Middle East | Middle East |
+| `"sa"` | South America | South America |
+| `"af"` | Africa | Africa |
 
-- `au` is the only supported value for now. Values are lowercase and exact:
-  `"AU"`, `"aus"`, `"ap-southeast-2"` and `"us"` are all rejected.
+A broad region (`us`, `eu`, `ap`) lets the sandbox run anywhere inside it, so
+it starts sooner when capacity is tight. A narrow region pins it more
+precisely.
+
+- Values are lowercase and exact. `"AU"` and cloud zone names such as
+  `"ap-southeast-2"` or `"us-east-1"` are rejected.
 - The value must be a quoted string. `region = au` is rejected.
 - To go back to the default, remove the `region` line and deploy again.
-  There is no `"us"` value.
 
 An unsupported value stops the deploy before anything is uploaded:
 
 ```text
-opencomputer.toml region "us" is not supported; use one of: au
+opencomputer.toml region "us-east-1" is not supported; use one of: us, eu, ap, us-east, …
 ```
 
 The API rejects it too, with `400 unsupported_region`, if you call

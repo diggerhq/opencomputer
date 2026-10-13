@@ -315,7 +315,7 @@ async function publicErrorResponse(
           : backendCode === "invalid_cursor"
             ? "The cursor is invalid or was issued for different filters. Start again from the first page."
             : backendCode === "unsupported_region"
-              ? 'The region in opencomputer.toml is not supported. Supported: "au".'
+              ? 'The region in opencomputer.toml is not supported. Use a Modal region, such as "us", "eu-west" or "au".'
               : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
