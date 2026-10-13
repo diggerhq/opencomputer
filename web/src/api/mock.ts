@@ -1535,6 +1535,16 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/members$/, () => orgMembers],
   [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
+  [
+    /^\/org\/slack-connect$/,
+    () => ({
+      available: true,
+      eligible: true,
+      email: me.email,
+      channelName: null,
+      invitedAt: null,
+    }),
+  ],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
@@ -1617,6 +1627,15 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
     /^\/managed-agents\/computer\/slack\/install$/,
     // Round-trips through the page's Slack return handling.
     () => ({ url: `${window.location.origin}/computer?slack=connected` }),
+  ],
+  [
+    /^\/org\/slack-connect\/invite$/,
+    () => ({
+      email: me.email,
+      channelName: 'oc-acme-preview',
+      invitedAt: new Date(BASE).toISOString(),
+      alreadyInvited: false,
+    }),
   ],
   [
     /^\/managed-agents\/projects$/,
