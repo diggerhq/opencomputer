@@ -76,6 +76,7 @@ async function registerBuiltDeployment(
     githubConnections: built.githubConnections,
     memory: built.memory,
     models: built.models,
+    ...(built.region ? { region: built.region } : {}),
     ...(projectDeployment ? { projectDeployment } : {}),
     source: {
       digest: built.digest,

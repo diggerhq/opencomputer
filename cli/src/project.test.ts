@@ -19,6 +19,7 @@ import {
   initializeAgentProject,
   agentRuntimeDirectory,
   prepareAgent,
+  readManifest,
   readProjectResources,
 } from "./project.js";
 
@@ -3056,6 +3057,27 @@ test("prepareAgent builds into a cache under node_modules, never into the agent'
       false,
     );
     assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("opencomputer.toml region is optional, accepts au, and rejects anything else", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-region-"));
+  const manifest = (extra: string) =>
+    writeFile(
+      resolve(root, "opencomputer.toml"),
+      `schema = 1\nid = "cypen"\nname = "Cypen"\n${extra}`,
+    );
+  try {
+    await manifest("");
+    assert.equal((await readManifest(root)).region, undefined);
+    await manifest('region = "au"\n');
+    assert.equal((await readManifest(root)).region, "au");
+    await manifest('region = "us-east-1"\n');
+    await assert.rejects(readManifest(root), /region "us-east-1" is not supported; use one of: au/);
+    await manifest("region = au\n");
+    await assert.rejects(readManifest(root), /region must be a quoted string/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

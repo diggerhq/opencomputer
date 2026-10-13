@@ -53,6 +53,7 @@ export interface TemplateBuildArtifact {
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
+  region?: string;
 }
 
 export interface TemplateBuildBundle {
@@ -332,6 +333,7 @@ export async function buildTemplateProject(
       githubConnections: built.githubConnections,
       memory: built.memory,
       models: built.models,
+      ...(built.region ? { region: built.region } : {}),
     });
     for (const connection of built.connections)
       compiledConnections.add(connection);

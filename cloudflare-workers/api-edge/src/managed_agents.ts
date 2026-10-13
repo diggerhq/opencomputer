@@ -314,7 +314,9 @@ async function publicErrorResponse(
           ? "externalReference must be a non-empty string of at most 256 bytes of UTF-8 without control characters."
           : backendCode === "invalid_cursor"
             ? "The cursor is invalid or was issued for different filters. Start again from the first page."
-            : "The agent request was invalid.";
+            : backendCode === "unsupported_region"
+              ? 'The region in opencomputer.toml is not supported. Supported: "au".'
+              : "The agent request was invalid.";
   } else if (upstream.status === 401 || upstream.status === 403) {
     message = "The agent request was not authorized.";
   } else if (upstream.status === 404) {
@@ -572,6 +574,7 @@ function publicDeployment(value: unknown): Record<string, unknown> {
     channels: strings(deployment.channels),
     connections: strings(deployment.connections),
     createdAt: deployment.createdAt,
+    ...(typeof deployment.region === "string" ? { region: deployment.region } : {}),
     ...(Array.isArray(deployment.models)
       ? {
           models: deployment.models.flatMap((value) => {
@@ -2623,6 +2626,8 @@ async function deploySourceAgent(
         : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,
+      // Validated by the service, which answers 400 unsupported_region (work 057).
+      ...(body.region !== undefined ? { region: body.region } : {}),
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
         ? { projectDeployment: body.projectDeployment }
         : {}),

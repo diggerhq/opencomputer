@@ -3108,6 +3108,7 @@ describe("managed agents proxy", () => {
               },
             ],
             createdAt: "2026-07-30T00:00:00.000Z",
+            region: "au",
             artifact: { bucket: "private-bucket" },
             imageArn: "arn:aws:private",
           },
@@ -3166,6 +3167,7 @@ describe("managed agents proxy", () => {
                 model: "anthropic/claude-sonnet-5",
               },
             ],
+            region: "au",
             source: {
               digest,
               size: source.length,
@@ -3230,7 +3232,12 @@ describe("managed agents proxy", () => {
         },
       ],
     });
-    expect(JSON.stringify(await response.json())).not.toMatch(
+    expect(
+      JSON.parse(String((fetchSpy.mock.calls[2]?.[1] as RequestInit).body)),
+    ).toMatchObject({ region: "au" });
+    const published = await response.json();
+    expect(published).toMatchObject({ region: "au" });
+    expect(JSON.stringify(published)).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,
     );
   });

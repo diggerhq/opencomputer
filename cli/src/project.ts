@@ -28,10 +28,16 @@ import {
   type MemoryProvider,
 } from "./memory.js";
 
+/** Regions a deployment may name in `opencomputer.toml` (work 057). */
+export const DEPLOYMENT_REGIONS = ["au"] as const;
+export type DeploymentRegion = (typeof DEPLOYMENT_REGIONS)[number];
+
 export interface AgentManifest {
   schema: 1;
   id: string;
   name: string;
+  /** Where the deployment's sessions run; absent means the platform default. */
+  region?: DeploymentRegion;
 }
 
 export interface BuiltAgentArtifact {
@@ -43,6 +49,7 @@ export interface BuiltAgentArtifact {
   githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
+  region?: DeploymentRegion;
   body: Buffer;
   digest: string;
   elapsedMs: number;
@@ -295,10 +302,23 @@ export async function readManifest(root: string): Promise<AgentManifest> {
       "opencomputer.toml must contain schema = 1 and a valid id and name",
     );
   }
+  const region = tomlString(source, "region");
+  if (/^\s*region\s*=/m.test(source) && region === undefined) {
+    throw new Error('opencomputer.toml region must be a quoted string, e.g. region = "au"');
+  }
+  if (
+    region !== undefined &&
+    !(DEPLOYMENT_REGIONS as readonly string[]).includes(region)
+  ) {
+    throw new Error(
+      `opencomputer.toml region ${JSON.stringify(region)} is not supported; use one of: ${DEPLOYMENT_REGIONS.join(", ")}`,
+    );
+  }
   return {
     schema: 1,
     id,
     name,
+    ...(region ? { region: region as DeploymentRegion } : {}),
   };
 }
 
@@ -3914,6 +3934,7 @@ export async function buildAgentArtifact(
     githubConnections,
     memory,
     models,
+    ...(manifest.region ? { region: manifest.region } : {}),
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
