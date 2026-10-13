@@ -39,6 +39,32 @@ the same resolution under `resolution`, before invoking a deployment agent.
 The CLI builds the current source, creates an immutable deployment, and moves
 the `production` alias to it. Development remains available for further work.
 
+## Choose a region
+
+By default an agent's sessions run in the United States. To run them closer to
+your users or systems, set `region` in the agent's `opencomputer.toml` and
+deploy again:
+
+```toml
+schema = 1
+id = "support"
+name = "Support"
+region = "au"
+```
+
+| Region | Where sessions run |
+| --- | --- |
+| `au` | Australia |
+
+The region applies to the agent's sandbox and its session state. It covers
+sessions started after the deploy; existing sessions stay where they started.
+Session state placement is best effort. Account-level data, such as project
+and deployment records, is not moved. An unsupported value fails the deploy
+with `unsupported_region`.
+
+Each agent in a project has its own `opencomputer.toml`, so agents in one
+project can run in different regions.
+
 ## Select an agent and environment
 
 Clients identify an agent with `agent-id@alias`:
