@@ -51,7 +51,8 @@
               "agents/slack",
               "agents/linear",
               "agents/byok",
-              "agents/deployments"
+              "agents/deployments",
+              "agents/regions"
             ]
           },
           {
