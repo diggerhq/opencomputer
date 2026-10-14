@@ -48,7 +48,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ErrorBoundary } from '@/components/error-boundary'
-import { ThemeToggle } from '@/components/theme-toggle'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
@@ -718,9 +717,6 @@ export default function AppShell() {
             />
           </div>
         ) : null}
-        <div className="ml-auto flex items-center px-4">
-          <ThemeToggle />
-        </div>
       </header>
 
       {/* Desktop sidebar (below the top bar) */}
@@ -756,9 +752,6 @@ export default function AppShell() {
             onChange={changeProjectEnvironment}
           />
         ) : null}
-        <div className="ml-auto">
-          <ThemeToggle />
-        </div>
       </header>
 
       {/* Main content */}
