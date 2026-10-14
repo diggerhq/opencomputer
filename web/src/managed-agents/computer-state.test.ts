@@ -278,17 +278,26 @@ describe('Slack install return', () => {
         new URLSearchParams('slack=error&reason=team_already_linked'),
       ),
     ).toEqual({ kind: 'already_linked', notified: false })
-    expect(alreadyLinkedCopy(true).body).toContain(
-      "We've messaged the person who set it up",
-    )
-    expect(alreadyLinkedCopy(false).body).toContain(
-      'Ask a teammate who uses it to invite you',
-    )
+    expect(
+      alreadyLinkedCopy({ notified: true, canMove: false }).body,
+    ).toContain("We've messaged the person who set it up")
+    expect(
+      alreadyLinkedCopy({ notified: false, canMove: false }).body,
+    ).toContain('Ask a teammate who uses it to invite you')
     for (const notified of [true, false]) {
-      expect(alreadyLinkedCopy(notified).headline).toBe(
+      expect(alreadyLinkedCopy({ notified, canMove: false }).headline).toBe(
         'Your team is already here.',
       )
     }
+    // Their own workspace, set up in another organization: no invite needed.
+    const own = alreadyLinkedCopy({
+      notified: false,
+      canMove: true,
+      teamName: 'Acme',
+    })
+    expect(own.headline).toBe('Acme is in your other organization.')
+    expect(own.body).toContain('Move it here')
+    expect(own.body).not.toContain('invite')
   })
 })
 

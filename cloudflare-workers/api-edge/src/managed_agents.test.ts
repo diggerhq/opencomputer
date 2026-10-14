@@ -6610,6 +6610,50 @@ describe("organization computer (work 052)", () => {
     await expect(response.json()).resolves.toEqual({ url });
   });
 
+  it("passes a refused install through without the holder", async () => {
+    const slack = {
+      installed: false,
+      alreadyLinked: { teamName: "Acme", notified: false, canMove: true },
+    };
+    const { response } = await call(
+      "GET",
+      "/computer",
+      Response.json({
+        ...computerStatus,
+        slack: {
+          ...slack,
+          alreadyLinked: { ...slack.alreadyLinked, holder: "org_private" },
+        },
+      }),
+    );
+    await expect(response.json()).resolves.toEqual({
+      ...computerStatus,
+      slack,
+    });
+  });
+
+  it("moves a refused install's workspace here and dismisses one", async () => {
+    const moved = await call(
+      "POST",
+      "/computer/slack/move",
+      Response.json(computerStatus),
+    );
+    expect(moved.response.status).toBe(200);
+    await expect(moved.response.json()).resolves.toEqual(computerStatus);
+    expect(moved.fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://managedagents.test/v1/computer/slack/move",
+    );
+    const dismissed = await call(
+      "DELETE",
+      "/computer/slack/already-linked",
+      new Response(null, { status: 204 }),
+    );
+    expect(dismissed.response.status).toBe(204);
+    expect(dismissed.fetchMock.mock.calls[0]?.[0].toString()).toBe(
+      "https://managedagents.test/v1/computer/slack/already-linked",
+    );
+  });
+
   it("answers an unlink with no content", async () => {
     const { response, fetchMock } = await call(
       "DELETE",

@@ -19,6 +19,10 @@ export function isComputerRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/computer/sessions") return true;
   if (method === "POST" && suffix === "/computer/slack/install") return true;
+  if (method === "POST" && suffix === "/computer/slack/move") return true;
+  if (method === "DELETE" && suffix === "/computer/slack/already-linked") {
+    return true;
+  }
   return method === "DELETE" && suffix === "/computer/slack";
 }
 
@@ -39,6 +43,8 @@ export const COMPUTER_ERROR_MESSAGES: Record<string, string> = {
     "No Slack workspace is linked to this organization.",
   computer_slack_already_linked:
     "That Slack workspace is already linked to another organization.",
+  computer_slack_move_unavailable:
+    "There is no Slack workspace to move here. Add OpenComputer to Slack again.",
 };
 
 /** Fallback copy for a computer route when the backend's code is unknown. */
@@ -82,6 +88,19 @@ function publicComputer(value: unknown): Record<string, unknown> | null {
   };
 }
 
+/** A refused install (another organization has the workspace); never names that organization. */
+function publicAlreadyLinked(value: unknown) {
+  const refusal = record(value);
+  if (!refusal || typeof refusal.teamName !== "string") return {};
+  return {
+    alreadyLinked: {
+      teamName: refusal.teamName,
+      notified: refusal.notified === true,
+      canMove: refusal.canMove === true,
+    },
+  };
+}
+
 function publicComputerStatus(body: Record<string, unknown>) {
   const slack = record(body.slack) ?? {};
   const github = record(body.github) ?? {};
@@ -96,6 +115,7 @@ function publicComputerStatus(body: Record<string, unknown>) {
       ...(typeof slack.botUserId === "string"
         ? { botUserId: slack.botUserId }
         : {}),
+      ...publicAlreadyLinked(slack.alreadyLinked),
     },
     github: {
       connected: github.connected === true,
@@ -152,7 +172,9 @@ export function publicComputerBody(
   value: unknown,
 ): unknown {
   const body = record(value) ?? {};
-  if (suffix === "/computer") return publicComputerStatus(body);
+  if (suffix === "/computer" || suffix === "/computer/slack/move") {
+    return publicComputerStatus(body);
+  }
   if (method === "GET" && suffix === "/computer/sessions") {
     return {
       sessions: Array.isArray(body.sessions)

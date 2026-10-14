@@ -34,6 +34,17 @@ export const computerStatusSchema = z.object({
     teamName: z.string().optional(),
     /** The app's bot user, to open a DM with it. */
     botUserId: z.string().optional(),
+    /**
+     * The last install was refused: the workspace is another organization's.
+     * `canMove`: this person linked it there and can move it here.
+     */
+    alreadyLinked: z
+      .object({
+        teamName: z.string(),
+        notified: z.boolean(),
+        canMove: z.boolean(),
+      })
+      .optional(),
   }),
   github: z.object({
     connected: z.boolean(),
@@ -117,4 +128,19 @@ export async function startComputerSlackInstall() {
 
 export async function unlinkComputerSlack() {
   await apiFetch('/managed-agents/computer/slack', { method: 'DELETE' })
+}
+
+/** Moves a refused install's workspace here from the person's other organization. */
+export async function moveComputerSlackHere() {
+  return apiFetch(
+    '/managed-agents/computer/slack/move',
+    { method: 'POST', body: '{}' },
+    computerStatusSchema,
+  )
+}
+
+export async function dismissComputerSlackAlreadyLinked() {
+  await apiFetch('/managed-agents/computer/slack/already-linked', {
+    method: 'DELETE',
+  })
 }
