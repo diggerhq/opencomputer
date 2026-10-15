@@ -1,0 +1,55 @@
+# api-edge — automations preview in Mo's CF account (b8f23cb8). Cloned from
+# wrangler.igor-dev.toml (see that file and .agents/reference/dev-edge-setup.md).
+# Deployments run on Modal via prod managedagents.
+# WorkOS staging: allowlist https://<worker>.workers.dev/auth/callback.
+
+name = "opencomputer-api-edge-automations-preview"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+compatibility_flags = ["nodejs_compat"]
+account_id = "b8f23cb87a7a6c64040d3134643da448"
+
+# Dashboard SPA assets (built from web/, staged into ./assets — gitignored).
+# Worker runs first on every request, handles /api,/auth,/webhooks, then falls
+# through to the SPA (index.html) for client-side routes.
+[assets]
+directory = "./assets"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer-automations-preview"
+database_id = "TBD"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "CLI_AUTH_START_RATE_LIMIT"
+namespace_id = "2026072411"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "CLI_AUTH_EXCHANGE_RATE_LIMIT"
+namespace_id = "2026072412"
+
+  [ratelimits.simple]
+  limit = 180
+  period = 60
+
+# CreditAccount DO is self-hosted by this worker (script_name defaults to self).
+[[durable_objects.bindings]]
+name = "CREDIT_ACCOUNT"
+class_name = "CreditAccount"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CreditAccount"]
+
+[vars]
+WORKER_ENV = "automations-preview"
+BURST_CELL_ID = ""
+MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
