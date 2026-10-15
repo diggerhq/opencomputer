@@ -80,8 +80,8 @@ export default function ProjectsHome() {
       <Panel>
         <EmptyState
           icon={FolderKanban}
-          title="Your projects are temporarily unavailable"
-          description="Try loading the projects page again."
+          title="Your automation projects are temporarily unavailable"
+          description="Try loading the automations page again."
           action={
             <Button variant="outline" onClick={() => void projects.refetch()}>
               Try again
@@ -117,8 +117,8 @@ export default function ProjectsHome() {
   return (
     <div className="space-y-8">
       <PageHeader
-        title="Projects"
-        description="Choose a project to open its agent playground, deployments, sessions, and resources."
+        title="Automation projects"
+        description="Open one to see its agent playground, deployments, sessions, and resources."
         actions={
           <Button asChild>
             <Link to="/new">

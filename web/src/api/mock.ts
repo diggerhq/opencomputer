@@ -1398,6 +1398,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ customized: false, displayName: 'OpenComputer default' }),
   ],
   [/^\/managed-agents\/projects$/, () => ({ projects: managedProjects })],
+  [/^\/managed-agents\/projects\?archived=true$/, () => ({ projects: [] })],
   [
     /^\/managed-agents\/projects\/[^/]+\/service-connections$/,
     () => ({ attachments: previewProjectServiceAttachments }),

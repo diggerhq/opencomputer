@@ -52,7 +52,7 @@ export function managedAgentsNav(options: {
         items: [
           {
             to: '/',
-            label: 'Back to all projects',
+            label: 'Back to all automations',
             icon: ArrowLeft,
           },
         ],
@@ -136,7 +136,7 @@ export function managedAgentsNav(options: {
           ? [{ to: '/computer', label: 'Computer', icon: Computer }]
           : []),
         ...(showProjects
-          ? [{ to: '/', label: 'Projects', icon: FolderKanban, end: true }]
+          ? [{ to: '/', label: 'Automations', icon: FolderKanban, end: true }]
           : []),
       ],
     })

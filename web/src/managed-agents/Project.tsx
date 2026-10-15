@@ -36,7 +36,7 @@ export default function ProjectDetail() {
           description="This project is not available in your organization."
           action={
             <Button asChild variant="outline">
-              <Link to="/">Back to projects</Link>
+              <Link to="/">Back to automations</Link>
             </Button>
           }
         />

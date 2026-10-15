@@ -15,7 +15,7 @@ describe('managed agents navigation', () => {
       hasProjects: true,
     })
     expect(nav.map((group) => group.items.map((item) => item.label))).toEqual([
-      ['Computer', 'Projects'],
+      ['Computer', 'Automations'],
       ['Connections'],
     ])
     expect(nav[0]?.items[0]).toMatchObject({
@@ -30,7 +30,7 @@ describe('managed agents navigation', () => {
     })
   })
 
-  it('keeps Projects out of the sidebar until the organization has one', () => {
+  it('keeps Automations out of the sidebar until the organization has one', () => {
     // A new organization's flow is its computer; projects are a side door.
     expect(
       managedAgentsNav({ ...defaults, computerEnabled: true }).map((group) =>
@@ -42,14 +42,14 @@ describe('managed agents navigation', () => {
   it('hides the computer from organizations without it (rollout flag)', () => {
     expect(
       managedAgentsNav(defaults)[0]?.items.map((item) => item.label),
-    ).toEqual(['Projects'])
+    ).toEqual(['Automations'])
   })
 
   it('shows project navigation only after a project is selected', () => {
     const nav = managedAgentsNav({ ...defaults, projectId: 'project one' })
 
     expect(nav[0]?.items.map((item) => item.label)).toEqual([
-      'Back to all projects',
+      'Back to all automations',
     ])
     expect(nav[1]?.items.map((item) => item.label)).toEqual([
       'Deployments',
