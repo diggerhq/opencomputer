@@ -20,7 +20,8 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -411,22 +412,18 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                     Repository
                   </Label>
                   {activeConnection?.repositorySelection === 'selected' ? (
-                    <Button
-                      type="button"
-                      variant="link"
-                      size="sm"
-                      className="h-auto px-0 text-xs"
-                      asChild
+                    <a
+                      href={githubInstallationSettingsUrl(activeConnection)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={cn(
+                        buttonVariants({ variant: 'link', size: 'sm' }),
+                        'h-auto px-0 text-xs',
+                      )}
                     >
-                      <a
-                        href={githubInstallationSettingsUrl(activeConnection)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Add more repositories
-                        <ExternalLink className="size-3" />
-                      </a>
-                    </Button>
+                      Add more repositories
+                      <ExternalLink className="size-3" />
+                    </a>
                   ) : null}
                 </div>
                 <select
@@ -591,14 +588,16 @@ export function ManagedProjectSettings({ projectId }: { projectId: string }) {
                     <div className="flex items-center gap-2">
                       <StatusBadge status={preview.state} />
                       {preview.state === 'ready' ? (
-                        <Button asChild size="sm" variant="outline">
-                          <Link
-                            to={`/projects/${encodeURIComponent(projectId)}?environment=${encodeURIComponent(preview.alias)}`}
-                          >
-                            <ExternalLink />
-                            Open preview
-                          </Link>
-                        </Button>
+                        <Link
+                          to={`/projects/${encodeURIComponent(projectId)}?environment=${encodeURIComponent(preview.alias)}`}
+                          className={buttonVariants({
+                            variant: 'outline',
+                            size: 'sm',
+                          })}
+                        >
+                          <ExternalLink />
+                          Open preview
+                        </Link>
                       ) : null}
                       <Button
                         size="sm"

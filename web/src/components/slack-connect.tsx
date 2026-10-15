@@ -20,7 +20,7 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Alert,
@@ -470,12 +470,15 @@ export function SlackConnect({
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
                 {canOpenSlack && managed?.open_url ? (
-                  <Button asChild size="sm">
-                    <a href={managed.open_url} target="_blank" rel="noreferrer">
-                      Open Slack
-                      <ExternalLink aria-hidden />
-                    </a>
-                  </Button>
+                  <a
+                    href={managed.open_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={buttonVariants({ size: 'sm' })}
+                  >
+                    Open Slack
+                    <ExternalLink aria-hidden />
+                  </a>
                 ) : null}
                 <Button
                   variant="ghost"
@@ -592,12 +595,18 @@ export function SlackConnect({
               </span>
               <div className="flex items-center gap-1">
                 {canOpenSlack && conn?.open_url ? (
-                  <Button asChild variant="outline" size="sm">
-                    <a href={conn.open_url} target="_blank" rel="noreferrer">
-                      Open Slack
-                      <ExternalLink aria-hidden />
-                    </a>
-                  </Button>
+                  <a
+                    href={conn.open_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={buttonVariants({
+                      variant: 'outline',
+                      size: 'sm',
+                    })}
+                  >
+                    Open Slack
+                    <ExternalLink aria-hidden />
+                  </a>
                 ) : null}
                 <Button
                   variant="ghost"

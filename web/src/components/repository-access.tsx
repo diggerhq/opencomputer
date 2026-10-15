@@ -34,7 +34,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -58,12 +58,15 @@ function ExternalAction({
   children: string
 }) {
   return (
-    <Button asChild size="sm" variant="outline">
-      <a href={href} target="_blank" rel="noreferrer">
-        {children}
-        <ArrowUpRight />
-      </a>
-    </Button>
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={buttonVariants({ variant: 'outline', size: 'sm' })}
+    >
+      {children}
+      <ArrowUpRight />
+    </a>
   )
 }
 

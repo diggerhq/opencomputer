@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Hourglass } from 'lucide-react'
 import type { SessionEvent } from '@/api/client'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import {
   bodyText,
   httpRequestPayloadText,
@@ -73,9 +74,12 @@ export function MessageBubble({
       </div>
       <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
       {outOfCredits ? (
-        <Button asChild size="sm" className="mt-2">
-          <Link to="/billing">Top up</Link>
-        </Button>
+        <Link
+          to="/billing"
+          className={cn(buttonVariants({ size: 'sm' }), 'mt-2')}
+        >
+          Top up
+        </Link>
       ) : null}
     </div>
   )

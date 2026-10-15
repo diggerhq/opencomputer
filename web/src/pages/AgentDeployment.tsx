@@ -28,7 +28,7 @@ import {
   AlertDescription,
   AlertTitle,
 } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   DeploymentLog,
@@ -291,12 +291,13 @@ export default function AgentDeployment() {
   if (deploymentQuery.isError || !deploymentQuery.data) {
     return (
       <div className="space-y-5">
-        <Button variant="ghost" size="sm" asChild>
-          <Link to={`/agents/${agentId}/deployments`}>
-            <ArrowLeft className="size-4" />
-            Back to deployments
-          </Link>
-        </Button>
+        <Link
+          to={`/agents/${agentId}/deployments`}
+          className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+        >
+          <ArrowLeft className="size-4" />
+          Back to deployments
+        </Link>
         <Alert variant="destructive">
           <AlertTitle>Deployment could not be loaded</AlertTitle>
           <AlertDescription>
@@ -415,26 +416,33 @@ export default function AgentDeployment() {
             </span>
             <div className="flex flex-wrap gap-2 sm:justify-end">
               {canViewCommit ? (
-                <Button variant="outline" size="sm" asChild>
-                  <a href={commitUrl} target="_blank" rel="noreferrer">
-                    <GitCommitHorizontal className="size-4" />
-                    View commit
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
+                <a
+                  href={commitUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                >
+                  <GitCommitHorizontal className="size-4" />
+                  View commit
+                  <ExternalLink className="size-3.5" />
+                </a>
               ) : null}
               {canOpenAgent ? (
-                <Button variant="outline" size="sm" asChild>
-                  <Link to={`/agents/${agentId}`}>Open agent</Link>
-                </Button>
+                <Link
+                  to={`/agents/${agentId}`}
+                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                >
+                  Open agent
+                </Link>
               ) : null}
               {canStartSession ? (
-                <Button variant="outline" size="sm" asChild>
-                  <Link to={`/agents/${agentId}/sessions`}>
-                    Start session
-                    <ArrowRight className="size-4" />
-                  </Link>
-                </Button>
+                <Link
+                  to={`/agents/${agentId}/sessions`}
+                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                >
+                  Start session
+                  <ArrowRight className="size-4" />
+                </Link>
               ) : null}
               {canDeployLatest ? (
                 <Button
@@ -458,16 +466,15 @@ export default function AgentDeployment() {
                 </Button>
               ) : null}
               {slackPresentation.action === 'open' && managedSlack?.open_url ? (
-                <Button size="sm" asChild>
-                  <a
-                    href={managedSlack.open_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open Slack
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
+                <a
+                  href={managedSlack.open_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={buttonVariants({ size: 'sm' })}
+                >
+                  Open Slack
+                  <ExternalLink className="size-3.5" />
+                </a>
               ) : slackPresentation.action === 'connect' ||
                 slackPresentation.action === 'reconnect' ||
                 slackPresentation.action === 'connecting' ? (

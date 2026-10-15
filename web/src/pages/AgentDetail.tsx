@@ -28,7 +28,7 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/form'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { StatusBadge } from '@/components/status-badge'
@@ -435,7 +435,7 @@ export default function AgentDetail() {
                   rel="noreferrer"
                   title={agent.invoke_url}
                   aria-label={`Open Agent URL for ${agent.id}`}
-                  className="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 whitespace-nowrap rounded-sm font-mono underline-offset-4 outline-none hover:underline focus-visible:ring-2"
+                  className="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 rounded-sm font-mono whitespace-nowrap underline-offset-4 outline-none hover:underline focus-visible:ring-2"
                 >
                   <span>{agent.invoke_url.replace(/^https:\/\//, '')}</span>
                   <ExternalLink className="size-3 shrink-0" aria-hidden />
@@ -461,31 +461,34 @@ export default function AgentDetail() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {setupComplete ? (
-              <Button asChild size="sm" variant="ghost">
-                <Link to={setupHref}>Setup</Link>
-              </Button>
+              <Link
+                to={setupHref}
+                className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+              >
+                Setup
+              </Link>
             ) : canStartNewSession ? (
-              <Button asChild size="sm" variant="outline">
-                <Link to={`${base}#playground`}>
-                  <Send className="size-4" />
-                  New session
-                </Link>
-              </Button>
+              <Link
+                to={`${base}#playground`}
+                className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              >
+                <Send className="size-4" />
+                New session
+              </Link>
             ) : null}
             {setupComplete ? (
-              <Button asChild size="sm">
-                <Link to={`${base}#playground`}>
-                  <Send className="size-4" />
-                  New session
-                </Link>
-              </Button>
+              <Link
+                to={`${base}#playground`}
+                className={buttonVariants({ size: 'sm' })}
+              >
+                <Send className="size-4" />
+                New session
+              </Link>
             ) : (
-              <Button asChild size="sm">
-                <Link to={setupHref}>
-                  <MessageSquare className="size-4" />
-                  Continue setup
-                </Link>
-              </Button>
+              <Link to={setupHref} className={buttonVariants({ size: 'sm' })}>
+                <MessageSquare className="size-4" />
+                Continue setup
+              </Link>
             )}
           </div>
         </div>
@@ -598,9 +601,15 @@ export default function AgentDetail() {
                         logs.
                       </p>
                     </div>
-                    <Button variant="outline" size="sm" asChild>
-                      <Link to={`${base}/deployments`}>View deployments</Link>
-                    </Button>
+                    <Link
+                      to={`${base}/deployments`}
+                      className={buttonVariants({
+                        variant: 'outline',
+                        size: 'sm',
+                      })}
+                    >
+                      View deployments
+                    </Link>
                   </div>
                 )}
               </PanelContent>
@@ -773,9 +782,12 @@ export default function AgentDetail() {
                 >
                   All sessions
                 </Link>
-                <Button asChild size="sm" variant="outline">
-                  <Link to={`${base}#playground`}>Start a session</Link>
-                </Button>
+                <Link
+                  to={`${base}#playground`}
+                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                >
+                  Start a session
+                </Link>
               </div>
             </PanelHeader>
             <ResourceTable

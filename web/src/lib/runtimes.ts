@@ -77,7 +77,10 @@ export const RUNTIMES: RuntimeOption[] = [
 
 // Key-field copy per provider. Pi mixes providers within one runtime, so the create
 // dialog keys the credential field off the selected model's provider, not the runtime.
-export const PROVIDER_KEY_FIELDS: Record<string, { keyLabel: string; keyPlaceholder: string }> = {
+export const PROVIDER_KEY_FIELDS: Record<
+  string,
+  { keyLabel: string; keyPlaceholder: string }
+> = {
   anthropic: { keyLabel: 'Anthropic API key', keyPlaceholder: 'sk-ant-…' },
   openai: { keyLabel: 'OpenAI API key', keyPlaceholder: 'sk-…' },
   google: { keyLabel: 'Google AI API key', keyPlaceholder: 'AIza…' },
@@ -128,8 +131,16 @@ export function providerForModel(model: string): string {
 }
 
 // The key-field copy for a provider, with a generic fallback for uncurated providers.
-export function keyFieldFor(provider: string): { keyLabel: string; keyPlaceholder: string } {
-  return PROVIDER_KEY_FIELDS[provider] ?? { keyLabel: 'Model provider API key', keyPlaceholder: 'API key' }
+export function keyFieldFor(provider: string): {
+  keyLabel: string
+  keyPlaceholder: string
+} {
+  return (
+    PROVIDER_KEY_FIELDS[provider] ?? {
+      keyLabel: 'Model provider API key',
+      keyPlaceholder: 'API key',
+    }
+  )
 }
 
 // A Select option that is either a model or a group divider.

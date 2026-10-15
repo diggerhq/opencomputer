@@ -95,11 +95,7 @@ export function ResourceTable<T>({
               return (
                 <Fragment key={rowKey(row)}>
                   <TableRow
-                    className={cn(
-                      'hover:bg-row-hover',
-                      onRowClick && 'cursor-pointer',
-                      sub && 'border-b-0',
-                    )}
+                    className={cn(onRowClick && 'cursor-pointer')}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     role={onRowClick ? 'button' : undefined}
                     tabIndex={onRowClick ? 0 : undefined}

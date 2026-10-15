@@ -13,7 +13,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
@@ -195,16 +195,15 @@ export function ManagedProjectBYOK({
           title="BYOK is available on Pro"
           description={`Bring your own provider keys and route this project's models through them. Pro is $${PLAN_OFFERS.pro.priceUsd}/mo and includes $${PLAN_OFFERS.pro.creditsUsd} in credits every month.`}
           action={
-            <Button asChild>
-              <Link
-                to={upgradeHref('pro')}
-                onClick={() =>
-                  trackUpsellClicked({ surface: 'byok_gate', plan: 'pro' })
-                }
-              >
-                Upgrade to Pro — ${PLAN_OFFERS.pro.priceUsd}/mo
-              </Link>
-            </Button>
+            <Link
+              to={upgradeHref('pro')}
+              onClick={() =>
+                trackUpsellClicked({ surface: 'byok_gate', plan: 'pro' })
+              }
+              className={buttonVariants()}
+            >
+              Upgrade to Pro — ${PLAN_OFFERS.pro.priceUsd}/mo
+            </Link>
           }
         />
       </Panel>

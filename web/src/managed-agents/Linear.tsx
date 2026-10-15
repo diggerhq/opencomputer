@@ -23,7 +23,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { ServiceLogo } from '@/components/service-logo'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -667,11 +667,14 @@ function LinearSetupDialog({
                 agent’s name in Linear.
               </p>
               {createAppHref ? (
-                <Button asChild size="sm">
-                  <a href={createAppHref} target="_blank" rel="noreferrer">
-                    Open Linear to create the app <ExternalLink />
-                  </a>
-                </Button>
+                <a
+                  href={createAppHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={buttonVariants({ size: 'sm' })}
+                >
+                  Open Linear to create the app <ExternalLink />
+                </a>
               ) : null}
               {connection?.webhookUrl ? (
                 <div className="space-y-1.5">

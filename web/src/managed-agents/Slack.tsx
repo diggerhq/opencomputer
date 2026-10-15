@@ -27,7 +27,7 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -551,11 +551,14 @@ function SlackAutomaticSetup({
             </Button>
           ) : null}
           {uncertain ? (
-            <Button asChild size="sm" variant="outline">
-              <a href={SLACK_APPS_URL} target="_blank" rel="noreferrer">
-                Open your Slack apps <ExternalLink />
-              </a>
-            </Button>
+            <a
+              href={SLACK_APPS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              Open your Slack apps <ExternalLink />
+            </a>
           ) : null}
           {resumable && actions.includes('cancel') ? (
             <Button

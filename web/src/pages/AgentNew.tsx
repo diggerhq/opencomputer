@@ -40,7 +40,7 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -182,18 +182,30 @@ export function RepositoryStarterGuide() {
         Fork the Flue starter, add your agent logic, then deploy it here.
       </p>
       <div className="mt-4 flex flex-wrap gap-2 xl:flex-col">
-        <Button variant="outline" className="justify-between" asChild>
-          <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
-            Fork on GitHub
-            <ExternalLink className="size-3.5" />
-          </a>
-        </Button>
-        <Button variant="ghost" className="justify-between" asChild>
-          <a href={STARTER_URL} target="_blank" rel="noreferrer">
-            View repository
-            <ExternalLink className="size-3.5" />
-          </a>
-        </Button>
+        <a
+          href={STARTER_FORK_URL}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            buttonVariants({ variant: 'outline' }),
+            'justify-between',
+          )}
+        >
+          Fork on GitHub
+          <ExternalLink className="size-3.5" />
+        </a>
+        <a
+          href={STARTER_URL}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            buttonVariants({ variant: 'ghost' }),
+            'justify-between',
+          )}
+        >
+          View repository
+          <ExternalLink className="size-3.5" />
+        </a>
       </div>
     </aside>
   )
@@ -485,13 +497,16 @@ function GithubImport({
         </PanelHeader>
         <PanelContent className="space-y-3">
           {app.install_url ? (
-            <Button asChild>
-              <a href={app.install_url} target="_blank" rel="noreferrer">
-                <GithubMark className="size-4" />
-                Install GitHub App
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
+            <a
+              href={app.install_url}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants()}
+            >
+              <GithubMark className="size-4" />
+              Install GitHub App
+              <ExternalLink className="size-3.5" />
+            </a>
           ) : (
             <Button disabled>
               <GithubMark className="size-4" />
@@ -565,12 +580,15 @@ function GithubImport({
               Cancel
             </Button>
           ) : app.configure_url ? (
-            <Button variant="ghost" size="sm" asChild>
-              <a href={app.configure_url} target="_blank" rel="noreferrer">
-                Add repositories
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
+            <a
+              href={app.configure_url}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+            >
+              Add repositories
+              <ExternalLink className="size-3.5" />
+            </a>
           ) : null}
         </PanelHeader>
         {!inspection ? (
@@ -728,11 +746,15 @@ function GithubImport({
                     . One agent can own this repository root for deploy-on-push.
                   </AlertDescription>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" asChild>
-                      <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
-                        Open agent
-                      </Link>
-                    </Button>
+                    <Link
+                      to={`/agents/${selectedLinkedSource.agent.id}`}
+                      className={buttonVariants({
+                        variant: 'outline',
+                        size: 'sm',
+                      })}
+                    >
+                      Open agent
+                    </Link>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -841,11 +863,15 @@ function GithubImport({
                   . Unlink it before creating another agent from this root.
                 </AlertDescription>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
-                      Open agent
-                    </Link>
-                  </Button>
+                  <Link
+                    to={`/agents/${selectedLinkedSource.agent.id}`}
+                    className={buttonVariants({
+                      variant: 'outline',
+                      size: 'sm',
+                    })}
+                  >
+                    Open agent
+                  </Link>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -899,9 +925,12 @@ function GithubImport({
                   </div>
                 ) : existingAgent ? (
                   <div className="mt-3">
-                    <Button size="sm" asChild>
-                      <Link to={`/agents/${existingAgent.id}`}>Open agent</Link>
-                    </Button>
+                    <Link
+                      to={`/agents/${existingAgent.id}`}
+                      className={buttonVariants({ size: 'sm' })}
+                    >
+                      Open agent
+                    </Link>
                   </div>
                 ) : null}
               </Alert>
@@ -996,11 +1025,15 @@ function GithubImport({
                       </div>
                       {linkedSource ? (
                         <div className="flex shrink-0 flex-wrap gap-1">
-                          <Button size="sm" variant="outline" asChild>
-                            <Link to={`/agents/${linkedSource.agent.id}`}>
-                              Open agent
-                            </Link>
-                          </Button>
+                          <Link
+                            to={`/agents/${linkedSource.agent.id}`}
+                            className={buttonVariants({
+                              variant: 'outline',
+                              size: 'sm',
+                            })}
+                          >
+                            Open agent
+                          </Link>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1043,15 +1076,21 @@ function GithubImport({
               {inspection.candidate_roots.length === 0 ? (
                 <Button onClick={changeSource}>Choose another folder</Button>
               ) : null}
-              <Button variant="outline" asChild>
-                <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
-                  Fork the Flue starter
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-              <Button variant="ghost" asChild>
-                <Link to="/agents/new?mode=manual">Configure manually</Link>
-              </Button>
+              <a
+                href={STARTER_FORK_URL}
+                target="_blank"
+                rel="noreferrer"
+                className={buttonVariants({ variant: 'outline' })}
+              >
+                Fork the Flue starter
+                <ExternalLink className="size-3.5" />
+              </a>
+              <Link
+                to="/agents/new?mode=manual"
+                className={buttonVariants({ variant: 'ghost' })}
+              >
+                Configure manually
+              </Link>
             </div>
           </PanelContent>
         </Panel>

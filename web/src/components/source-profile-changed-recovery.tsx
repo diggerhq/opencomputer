@@ -3,7 +3,7 @@ import { ExternalLink, Unplug } from 'lucide-react'
 import type { DeploymentSource } from '@/api/schemas'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { sourceChangesUrl } from '@/lib/source-profile-recovery'
 
 /**
@@ -36,12 +36,15 @@ export function SourceProfileChangedRecovery({
         </AlertDescription>
         <div className="mt-3 flex flex-wrap gap-2">
           {changesUrl ? (
-            <Button size="sm" variant="outline" asChild>
-              <a href={changesUrl} target="_blank" rel="noreferrer">
-                View source changes
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
+            <a
+              href={changesUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              View source changes
+              <ExternalLink className="size-3.5" />
+            </a>
           ) : null}
           <Button
             size="sm"

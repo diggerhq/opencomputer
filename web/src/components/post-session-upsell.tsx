@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
 import { Panel } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
 import { useCreditState } from '@/hooks/useCreditState'
 import {
   BASE_GRANT_CENTS,
@@ -103,21 +103,20 @@ export function PostSessionUpsell({
           </p>
         </div>
       </div>
-      <Button asChild size="sm">
-        <Link
-          to={upgradeHref('pro')}
-          onClick={() =>
-            trackUpsellClicked({
-              surface: 'post_session_card',
-              plan: 'pro',
-              usagePlan,
-              creditsRemainingCents,
-            })
-          }
-        >
-          Upgrade to Pro — ${pro.priceUsd}/mo
-        </Link>
-      </Button>
+      <Link
+        to={upgradeHref('pro')}
+        onClick={() =>
+          trackUpsellClicked({
+            surface: 'post_session_card',
+            plan: 'pro',
+            usagePlan,
+            creditsRemainingCents,
+          })
+        }
+        className={buttonVariants({ size: 'sm' })}
+      >
+        Upgrade to Pro — ${pro.priceUsd}/mo
+      </Link>
     </Panel>
   )
 }

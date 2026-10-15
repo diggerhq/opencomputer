@@ -24,7 +24,8 @@ import {
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Input, Select } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
@@ -108,12 +109,15 @@ export function PinnedRepositorySource({
 
           <div className="flex flex-wrap gap-2">
             {githubUrl ? (
-              <Button size="sm" variant="outline" asChild>
-                <a href={githubUrl} target="_blank" rel="noreferrer">
-                  {githubLabel}
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
+              <a
+                href={githubUrl}
+                target="_blank"
+                rel="noreferrer"
+                className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              >
+                {githubLabel}
+                <ExternalLink className="size-3.5" />
+              </a>
             ) : null}
             <Button
               size="sm"
@@ -398,21 +402,19 @@ export function AgentDeploySource({
           />
         ) : !app?.installed ? (
           <div className="space-y-3">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!app?.install_url}
-              asChild
+            <a
+              href={app?.install_url ?? '#'}
+              target="_blank"
+              rel="noreferrer"
+              aria-disabled={!app?.install_url || undefined}
+              className={cn(
+                buttonVariants({ size: 'sm', variant: 'outline' }),
+                !app?.install_url && 'pointer-events-none opacity-50',
+              )}
             >
-              <a
-                href={app?.install_url ?? '#'}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <GithubMark className="size-4" />
-                Connect repository
-              </a>
-            </Button>
+              <GithubMark className="size-4" />
+              Connect repository
+            </a>
             <p className="text-muted-foreground text-xs">
               Or use the CLI: <code className="font-mono">oc agent deploy</code>
             </p>

@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import AppShell from '@/components/app-shell'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
 import { loginPathForReturn } from '@/lib/login-path'
 
 // Layout for pages a visitor may open before signing up (a shared template
@@ -31,11 +31,12 @@ export default function PublicTemplateRoute() {
             opencomputer
           </span>
         </Link>
-        <Button asChild size="sm">
-          <a href={loginPathForReturn(location.pathname + location.search)}>
-            Sign in
-          </a>
-        </Button>
+        <a
+          href={loginPathForReturn(location.pathname + location.search)}
+          className={buttonVariants({ size: 'sm' })}
+        >
+          Sign in
+        </a>
       </header>
       <main className="mx-auto max-w-3xl px-6 py-8">
         <Suspense

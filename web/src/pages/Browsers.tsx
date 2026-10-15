@@ -35,7 +35,11 @@ function canDeleteBrowser(browser: BrowserSession) {
 }
 
 function canOpenLiveView(browser: BrowserSession) {
-  return browser.status === 'active' && !browser.deleted_at && !!browser.live_view_url
+  return (
+    browser.status === 'active' &&
+    !browser.deleted_at &&
+    !!browser.live_view_url
+  )
 }
 
 function browserMode(browser: BrowserSession) {
@@ -198,7 +202,9 @@ export default function Browsers() {
       header: 'Cost',
       cell: (browser) => (
         <div className="text-right font-mono text-xs">
-          <div className="text-foreground">{formatCurrency(browserCost(browser))}</div>
+          <div className="text-foreground">
+            {formatCurrency(browserCost(browser))}
+          </div>
           {browser.metering_error ? (
             <div className="text-status-warning">pending</div>
           ) : null}
@@ -304,7 +310,9 @@ export default function Browsers() {
             <Metric label="Profiles" value={profiles.length} />
             <Metric
               label="Browser session cost"
-              value={formatCurrency(browserUsage?.total_cost_usd ?? visibleBrowserCost)}
+              value={formatCurrency(
+                browserUsage?.total_cost_usd ?? visibleBrowserCost,
+              )}
             />
           </div>
 

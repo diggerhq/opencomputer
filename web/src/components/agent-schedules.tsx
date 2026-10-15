@@ -41,7 +41,12 @@ function rel(iso: string | null): string {
   if (!iso) return '—'
   const delta = new Date(iso).getTime() - Date.now()
   const m = Math.max(1, Math.round(Math.abs(delta) / 60000))
-  const unit = m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
+  const unit =
+    m < 60
+      ? `${m}m`
+      : m < 1440
+        ? `${Math.round(m / 60)}h`
+        : `${Math.round(m / 1440)}d`
   return delta >= 0 ? `in ${unit}` : `${unit} ago`
 }
 // Next-fire label: a due/overdue slot sits briefly in the past (until the tick catches up, < ~60s) —
@@ -82,7 +87,11 @@ function StateBadge({ s }: { s: Schedule }) {
       : s.state === 'auto_paused'
         ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
         : 'bg-muted text-muted-foreground'
-  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{s.state.replace('_', ' ')}</span>
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+      {s.state.replace('_', ' ')}
+    </span>
+  )
 }
 
 // A run's outcome in plain language. "enacted" → a session was started (linked); "failed" → it
@@ -96,7 +105,10 @@ function RunStatus({ run }: { run: ScheduleRun }) {
       </>
     )
     return run.session_id ? (
-      <Link to={`/sessions/${run.session_id}`} className="text-foreground inline-flex items-center gap-1 hover:underline">
+      <Link
+        to={`/sessions/${run.session_id}`}
+        className="text-foreground inline-flex items-center gap-1 hover:underline"
+      >
         {inner}
       </Link>
     ) : (
@@ -104,25 +116,46 @@ function RunStatus({ run }: { run: ScheduleRun }) {
     )
   }
   if (run.outcome === 'skipped') {
-    return <span className="text-muted-foreground">Skipped — previous run still running</span>
+    return (
+      <span className="text-muted-foreground">
+        Skipped — previous run still running
+      </span>
+    )
   }
   return (
-    <span className="inline-flex min-w-0 items-center gap-1 text-red-600 dark:text-red-500" title={run.error ?? undefined}>
+    <span
+      className="inline-flex min-w-0 items-center gap-1 text-red-600 dark:text-red-500"
+      title={run.error ?? undefined}
+    >
       <AlertTriangle className="size-3.5 shrink-0" />
-      <span className="truncate">Didn’t start{run.error ? ` — ${run.error}` : ''}</span>
+      <span className="truncate">
+        Didn’t start{run.error ? ` — ${run.error}` : ''}
+      </span>
     </span>
   )
 }
 
 // Recent runs for a schedule — lazily fetched when a row is expanded.
-function ScheduleRuns({ agentId, scheduleId }: { agentId: string; scheduleId: string }) {
+function ScheduleRuns({
+  agentId,
+  scheduleId,
+}: {
+  agentId: string
+  scheduleId: string
+}) {
   const { data: runs, isLoading } = useQuery({
     queryKey: ['schedule-runs', agentId, scheduleId],
     queryFn: () => getScheduleRuns(agentId, scheduleId, 5),
     refetchInterval: 15_000, // schedules fire in the background — keep the runs list live while open
   })
-  if (isLoading) return <p className="text-muted-foreground px-3 py-2 text-xs">Loading runs…</p>
-  if (!runs || runs.length === 0) return <p className="text-muted-foreground px-3 py-2 text-xs">No runs yet.</p>
+  if (isLoading)
+    return (
+      <p className="text-muted-foreground px-3 py-2 text-xs">Loading runs…</p>
+    )
+  if (!runs || runs.length === 0)
+    return (
+      <p className="text-muted-foreground px-3 py-2 text-xs">No runs yet.</p>
+    )
   return (
     <ul className="divide-border/60 divide-y text-xs">
       {runs.map((r) => (
@@ -130,14 +163,22 @@ function ScheduleRuns({ agentId, scheduleId }: { agentId: string; scheduleId: st
           <div className="min-w-0 flex-1">
             <RunStatus run={r} />
           </div>
-          <span className="text-muted-foreground shrink-0">{rel(r.fired_at)}</span>
+          <span className="text-muted-foreground shrink-0">
+            {rel(r.fired_at)}
+          </span>
         </li>
       ))}
     </ul>
   )
 }
 
-type FormState = { id?: string; name: string; cron: string; input: string; overlap: ScheduleOverlap }
+type FormState = {
+  id?: string
+  name: string
+  cron: string
+  input: string
+  overlap: ScheduleOverlap
+}
 
 // ── the tab ─────────────────────────────────────────────────────────────────────
 
@@ -171,16 +212,30 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
     refetchInterval: 20_000, // schedules fire in the background — reflect next-fire / last-ran live
   })
 
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['agent-schedules', agentId] })
+  const invalidate = () =>
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-schedules', agentId],
+    })
 
-  const openCreate = () => setForm({ name: '', cron: '0 9 * * 1-5', input: '', overlap: 'skip' })
+  const openCreate = () =>
+    setForm({ name: '', cron: '0 9 * * 1-5', input: '', overlap: 'skip' })
   const openEdit = (s: Schedule) =>
-    setForm({ id: s.id, name: s.name, cron: s.cron, input: s.input, overlap: s.overlap })
+    setForm({
+      id: s.id,
+      name: s.name,
+      cron: s.cron,
+      input: s.input,
+      overlap: s.overlap,
+    })
 
   const save = useMutation({
     mutationFn: () => {
       const f = form!
-      const common = { cron: f.cron.trim(), input: f.input.trim(), overlap: f.overlap }
+      const common = {
+        cron: f.cron.trim(),
+        input: f.input.trim(),
+        overlap: f.overlap,
+      }
       // Create is UTC-only (tz: null). Edit omits tz entirely so it never clobbers a zone set via the API/CLI.
       return f.id
         ? updateSchedule(agentId, f.id, common)
@@ -196,17 +251,22 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
   })
 
   const toggle = useMutation({
-    mutationFn: (s: Schedule) => updateSchedule(agentId, s.id, { paused: s.state === 'active' }),
+    mutationFn: (s: Schedule) =>
+      updateSchedule(agentId, s.id, { paused: s.state === 'active' }),
     onSuccess: () => invalidate(),
     onError: (e) => notifyError("Couldn't update the schedule.", e),
   })
   const fire = useMutation({
     mutationFn: (s: Schedule) => fireSchedule(agentId, s.id),
     onSuccess: (run, s) => {
-      void queryClient.invalidateQueries({ queryKey: ['schedule-runs', agentId, s.id] })
+      void queryClient.invalidateQueries({
+        queryKey: ['schedule-runs', agentId, s.id],
+      })
       invalidate()
-      if (run.outcome === 'enacted' && run.session_id) notifySuccess(`Fired — session ${run.session_id}`)
-      else notifyError(`Fire ${run.outcome}`, new Error(run.error ?? run.outcome))
+      if (run.outcome === 'enacted' && run.session_id)
+        notifySuccess(`Fired — session ${run.session_id}`)
+      else
+        notifyError(`Fire ${run.outcome}`, new Error(run.error ?? run.outcome))
     },
     onError: (e) => notifyError("Couldn't fire the schedule.", e),
   })
@@ -221,7 +281,8 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
   })
 
   const f = form
-  const canSave = f && (f.id || f.name.trim()) && f.cron.trim() && f.input.trim()
+  const canSave =
+    f && (f.id || f.name.trim()) && f.cron.trim() && f.input.trim()
   const cronGloss = f ? CRON_HINTS[f.cron.trim()] : undefined
 
   return (
@@ -230,7 +291,8 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
         <div>
           <h2 className="text-base font-medium">Schedules</h2>
           <p className="text-muted-foreground mt-0.5 text-sm">
-            Run this agent on a cron — each firing starts a new session with a fixed message.
+            Run this agent on a cron — each firing starts a new session with a
+            fixed message.
           </p>
         </div>
         {!repoManaged && !form ? (
@@ -245,8 +307,10 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
         <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
           <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
           <p className="text-muted-foreground">
-            Managed from the connected repo — edit the <span className="font-mono">[[schedules]]</span> table in{' '}
-            <span className="font-mono">agent.toml</span> and push. You can still pause, resume, and test-fire here.
+            Managed from the connected repo — edit the{' '}
+            <span className="font-mono">[[schedules]]</span> table in{' '}
+            <span className="font-mono">agent.toml</span> and push. You can
+            still pause, resume, and test-fire here.
           </p>
         </div>
       ) : null}
@@ -263,7 +327,11 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                 placeholder="morning-docs-sweep"
                 disabled={!!form.id}
               />
-              {form.id ? <p className="text-muted-foreground mt-1 text-xs">Name can’t be changed after creation.</p> : null}
+              {form.id ? (
+                <p className="text-muted-foreground mt-1 text-xs">
+                  Name can’t be changed after creation.
+                </p>
+              ) : null}
             </Field>
 
             <Field label="Schedule" htmlFor="sch-cron">
@@ -313,16 +381,21 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                 className="min-h-32"
               />
               <p className="text-muted-foreground mt-1 text-xs">
-                Sent as the first message on every run. Write it as a complete instruction — no human is in the loop to
-                clarify.
+                Sent as the first message on every run. Write it as a complete
+                instruction — no human is in the loop to clarify.
               </p>
             </Field>
 
-            <Field label="If the previous run is still going" htmlFor="sch-overlap">
+            <Field
+              label="If the previous run is still going"
+              htmlFor="sch-overlap"
+            >
               <Select
                 id="sch-overlap"
                 value={form.overlap}
-                onValueChange={(v) => setForm({ ...form, overlap: v as ScheduleOverlap })}
+                onValueChange={(v) =>
+                  setForm({ ...form, overlap: v as ScheduleOverlap })
+                }
                 className="max-w-xs"
                 options={[
                   { value: 'skip', label: 'Skip this firing (default)' },
@@ -332,8 +405,17 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
             </Field>
 
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" disabled={save.isPending || !canSave} onClick={() => save.mutate()}>
-                {save.isPending ? 'Saving…' : form.id ? 'Save changes' : 'Create schedule'}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={save.isPending || !canSave}
+                onClick={() => save.mutate()}
+              >
+                {save.isPending
+                  ? 'Saving…'
+                  : form.id
+                    ? 'Save changes'
+                    : 'Create schedule'}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setForm(null)}>
                 Cancel
@@ -348,7 +430,9 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
         <p className="text-muted-foreground text-sm">Loading…</p>
       ) : isError ? (
         <div className="space-y-2">
-          <p className="text-sm text-red-600 dark:text-red-500">Couldn’t load schedules.</p>
+          <p className="text-sm text-red-600 dark:text-red-500">
+            Couldn’t load schedules.
+          </p>
           <Button size="sm" variant="outline" onClick={() => void refetch()}>
             Retry
           </Button>
@@ -373,7 +457,11 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                           disabled={toggle.isPending}
                           onClick={() => toggle.mutate(s)}
                         >
-                          {s.state === 'active' ? <Pause className="size-4" /> : <PlayCircle className="size-4" />}
+                          {s.state === 'active' ? (
+                            <Pause className="size-4" />
+                          ) : (
+                            <PlayCircle className="size-4" />
+                          )}
                         </Button>
                         <Button
                           size="sm"
@@ -386,7 +474,12 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                         </Button>
                         {!repoManaged ? (
                           <>
-                            <Button size="sm" variant="ghost" title="Edit" onClick={() => openEdit(s)}>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Edit"
+                              onClick={() => openEdit(s)}
+                            >
                               <Pencil className="size-4" />
                             </Button>
                             <Button
@@ -404,23 +497,31 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                     </div>
 
                     <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                      <code className="text-foreground font-mono">{s.cron}</code>
+                      <code className="text-foreground font-mono">
+                        {s.cron}
+                      </code>
                       {gloss ? <span>{gloss}</span> : null}
                       <span className="text-border">·</span>
                       <span>{tzDisplay(s.tz)}</span>
                       <span className="text-border">·</span>
                       <span className="inline-flex items-center gap-1">
                         <CalendarClock className="size-3" />
-                        next {s.state === 'active' ? nextFireLabel(s.next_fire_at) : '—'}
+                        next{' '}
+                        {s.state === 'active'
+                          ? nextFireLabel(s.next_fire_at)
+                          : '—'}
                       </span>
-                      {s.last_fired_at ? <span>· last ran {rel(s.last_fired_at)}</span> : null}
+                      {s.last_fired_at ? (
+                        <span>· last ran {rel(s.last_fired_at)}</span>
+                      ) : null}
                     </div>
 
                     {s.state === 'auto_paused' && s.last_error ? (
                       <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-500">
                         <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                         <span className="min-w-0">
-                          Auto-paused after repeated failures — {s.last_error}. Resume once fixed.
+                          Auto-paused after repeated failures — {s.last_error}.
+                          Resume once fixed.
                         </span>
                       </div>
                     ) : null}
@@ -430,7 +531,11 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                       onClick={() => setExpanded(open ? null : s.id)}
                       className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs transition-colors"
                     >
-                      {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                      {open ? (
+                        <ChevronDown className="size-3.5" />
+                      ) : (
+                        <ChevronRight className="size-3.5" />
+                      )}
                       Recent runs
                     </button>
                     {open ? (
@@ -449,7 +554,8 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
           <CalendarClock className="text-muted-foreground mx-auto size-6" />
           <p className="mt-3 text-sm font-medium">No schedules yet</p>
           <p className="text-muted-foreground mx-auto mt-1 max-w-sm text-sm">
-            Run this agent automatically — a draft PR every morning, a nightly audit, a periodic sweep.
+            Run this agent automatically — a draft PR every morning, a nightly
+            audit, a periodic sweep.
           </p>
           {!repoManaged ? (
             <Button size="sm" className="mt-4" onClick={openCreate}>
@@ -461,7 +567,10 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
       ) : null}
 
       <p className="text-muted-foreground text-xs">
-        Or from the CLI: <code className="font-mono">oc agent schedule create &lt;name&gt; --cron "0 9 * * 1-5" --input …</code>
+        Or from the CLI:{' '}
+        <code className="font-mono">
+          oc agent schedule create &lt;name&gt; --cron "0 9 * * 1-5" --input …
+        </code>
       </p>
 
       <ConfirmDialog
@@ -477,4 +586,3 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
     </div>
   )
 }
-

@@ -75,7 +75,8 @@ function deriveAgentName(prompt: string): string {
     .slice(0, 32)
     .replace(/-+$/g, '')
   let h = 0
-  for (let i = 0; i < prompt.length; i++) h = (Math.imul(h, 31) + prompt.charCodeAt(i)) | 0
+  for (let i = 0; i < prompt.length; i++)
+    h = (Math.imul(h, 31) + prompt.charCodeAt(i)) | 0
   const suffix = (h >>> 0).toString(36)
   return `${slug || 'agent'}-${suffix}`
 }

@@ -71,41 +71,39 @@ function ResultTable({ result }: { result: ManagedDatabaseResult }) {
     )
   }
   return (
-    <div className="overflow-x-auto rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow className="hover:bg-transparent">
-            {result.columns.map((column) => (
-              <TableHead key={column} className="whitespace-nowrap">
-                {column}
-              </TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {result.rows.length ? (
-            result.rows.map((row, index) => (
-              <TableRow key={index}>
-                {result.columns.map((column) => (
-                  <TableCell key={column}>
-                    {displayValue(row[column] ?? null)}
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))
-          ) : (
-            <TableRow className="hover:bg-transparent">
-              <TableCell
-                colSpan={result.columns.length}
-                className="text-muted-foreground py-8 text-center"
-              >
-                No rows
-              </TableCell>
+    <Table>
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          {result.columns.map((column) => (
+            <TableHead key={column} className="whitespace-nowrap">
+              {column}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {result.rows.length ? (
+          result.rows.map((row, index) => (
+            <TableRow key={index}>
+              {result.columns.map((column) => (
+                <TableCell key={column}>
+                  {displayValue(row[column] ?? null)}
+                </TableCell>
+              ))}
             </TableRow>
-          )}
-        </TableBody>
-      </Table>
-    </div>
+          ))
+        ) : (
+          <TableRow className="hover:bg-transparent">
+            <TableCell
+              colSpan={result.columns.length}
+              className="text-muted-foreground py-8 text-center"
+            >
+              No rows
+            </TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
   )
 }
 

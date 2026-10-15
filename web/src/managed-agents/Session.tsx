@@ -20,7 +20,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import {
   getManagedAgentSession,
   getManagedAgentSessionEvents,
@@ -94,11 +94,12 @@ export default function ManagedSessionDetail() {
           title="Session not found"
           description="This session is not available in this project."
           action={
-            <Button asChild variant="outline">
-              <Link to={`/projects/${encodeURIComponent(projectId)}/sessions`}>
-                Back to sessions
-              </Link>
-            </Button>
+            <Link
+              to={`/projects/${encodeURIComponent(projectId)}/sessions`}
+              className={buttonVariants({ variant: 'outline' })}
+            >
+              Back to sessions
+            </Link>
           }
         />
       </Panel>
@@ -114,13 +115,12 @@ export default function ManagedSessionDetail() {
         title="Session"
         description={session.data.id}
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link
-              to={{ pathname: sessionPath, search: searchParams.toString() }}
-            >
-              <ArrowLeft /> Sessions
-            </Link>
-          </Button>
+          <Link
+            to={{ pathname: sessionPath, search: searchParams.toString() }}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            <ArrowLeft /> Sessions
+          </Link>
         }
       />
 

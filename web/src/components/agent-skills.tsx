@@ -11,7 +11,8 @@ import {
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 
-const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`)
+const fmtBytes = (n: number) =>
+  n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`
 
 /**
  * Skills panel — a thin consumer of the agent skills sub-resource (design 009 §8). The API owns
@@ -31,7 +32,9 @@ export function AgentSkills({ agentId }: { agentId: string }) {
   // A skills change deploys a new active revision — refresh the dependent views.
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['agent-skills', agentId] })
-    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-revisions', agentId],
+    })
     void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
   }
@@ -39,7 +42,9 @@ export function AgentSkills({ agentId }: { agentId: string }) {
     mutationFn: (zip: File) => putAgentSkills(agentId, zip),
     onSuccess: (r) => {
       invalidate()
-      notifySuccess(`Skills deployed${r.revision ? ` — revision #${r.revision.number} active` : ''}`)
+      notifySuccess(
+        `Skills deployed${r.revision ? ` — revision #${r.revision.number} active` : ''}`,
+      )
     },
     onError: (e) => notifyError("Couldn't upload the skills.", e),
   })
@@ -48,7 +53,9 @@ export function AgentSkills({ agentId }: { agentId: string }) {
     onSuccess: (r) => {
       invalidate()
       // Removing skills deploys a new forward revision (no skills); name it for clear feedback.
-      notifySuccess(`Skills removed${r.revision ? ` — revision #${r.revision.number} active` : ''}`)
+      notifySuccess(
+        `Skills removed${r.revision ? ` — revision #${r.revision.number} active` : ''}`,
+      )
     },
     onError: (e) => notifyError("Couldn't remove the skills.", e),
   })
@@ -67,7 +74,7 @@ export function AgentSkills({ agentId }: { agentId: string }) {
               like this:
             </p>
             <pre className="text-muted-foreground/70 shrink-0 text-left font-mono text-xs leading-snug">
-{`skills/
+              {`skills/
 ├─ triage/
 │  └─ SKILL.md
 └─ pr-review/
@@ -80,14 +87,18 @@ export function AgentSkills({ agentId }: { agentId: string }) {
             {skills.map((s) => (
               <li key={s.name} className="py-2 first:pt-0">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-foreground font-mono text-[13px]">{s.name}</span>
+                  <span className="text-foreground font-mono text-[13px]">
+                    {s.name}
+                  </span>
                   <span className="text-muted-foreground shrink-0 text-xs">
                     {s.files.length} file{s.files.length === 1 ? '' : 's'} ·{' '}
                     {fmtBytes(s.files.reduce((n, f) => n + f.size, 0))}
                   </span>
                 </div>
                 {s.description ? (
-                  <p className="text-muted-foreground mt-0.5 text-xs">{s.description}</p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    {s.description}
+                  </p>
                 ) : null}
               </li>
             ))}
@@ -117,9 +128,19 @@ export function AgentSkills({ agentId }: { agentId: string }) {
               {remove.isPending ? 'Removing…' : 'Remove all'}
             </Button>
           ) : null}
-          <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => inputRef.current?.click()}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+          >
             <Upload className="size-4" />
-            {upload.isPending ? 'Uploading…' : skills.length ? 'Replace .zip' : 'Upload .zip'}
+            {upload.isPending
+              ? 'Uploading…'
+              : skills.length
+                ? 'Replace .zip'
+                : 'Upload .zip'}
           </Button>
         </div>
       </PanelContent>

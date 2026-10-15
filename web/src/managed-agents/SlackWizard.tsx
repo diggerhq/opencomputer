@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
@@ -372,9 +372,12 @@ export function ManagedSlackWizard({
             Show the automated setup
           </Button>
         ) : connectionsHref ? (
-          <Button asChild variant="outline" size="sm">
-            <Link to={connectionsHref}>Open Connections</Link>
-          </Button>
+          <Link
+            to={connectionsHref}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Open Connections
+          </Link>
         ) : null
       ) : null}
     </WizardNotice>

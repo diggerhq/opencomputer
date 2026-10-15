@@ -89,7 +89,8 @@ export default function SandboxDetail() {
   // Consumed once from navigation state (dashboard example chips): a command to
   // auto-run in the terminal, and whether to jump to the Connect panel.
   const [startupCommand, setStartupCommand] = useState<string | undefined>(
-    () => (location.state as { startupCommand?: string } | null)?.startupCommand,
+    () =>
+      (location.state as { startupCommand?: string } | null)?.startupCommand,
   )
   const [focusConnect] = useState(
     () => (location.state as { focus?: string } | null)?.focus === 'connect',
@@ -205,7 +206,8 @@ const { stdout } = await sandbox.exec.run("echo hello from code");`,
       docs: 'https://docs.opencomputer.dev/sandboxes/overview',
     }
     // Lead with the step matching the chip that launched this box.
-    if (webApp || exposePort) return [stepCreate, stepExpose, stepExec, stepConnect]
+    if (webApp || exposePort)
+      return [stepCreate, stepExpose, stepExec, stepConnect]
     if (focusConnect) return [stepCreate, stepConnect, stepExec, stepExpose]
     if (startupCommand) return [stepCreate, stepExec, stepExpose, stepConnect]
     return [stepCreate, stepExec, stepExpose, stepConnect]

@@ -18,7 +18,10 @@ afterEach(() => vi.useRealTimers())
 describe('UIMessageChunkPacer', () => {
   it('trickles a burst out over several ticks and scales with backlog', () => {
     const { out, sink } = collect()
-    const pacer = new UIMessageChunkPacer(sink, { intervalMs: 10, catchUpMs: 40 })
+    const pacer = new UIMessageChunkPacer(sink, {
+      intervalMs: 10,
+      catchUpMs: 40,
+    })
     pacer.push({ type: 'text-start', id: 't' })
     pacer.push({ type: 'text-delta', id: 't', delta: 'abcd' })
     pacer.push({ type: 'text-delta', id: 't', delta: 'efgh' })
@@ -34,7 +37,10 @@ describe('UIMessageChunkPacer', () => {
 
   it('keeps non-text chunks in order relative to the text around them', () => {
     const { out, sink } = collect()
-    const pacer = new UIMessageChunkPacer(sink, { intervalMs: 10, catchUpMs: 10 })
+    const pacer = new UIMessageChunkPacer(sink, {
+      intervalMs: 10,
+      catchUpMs: 10,
+    })
     pacer.push({ type: 'text-delta', id: 't', delta: 'one' })
     pacer.push({
       type: 'tool-input-available',
@@ -46,7 +52,10 @@ describe('UIMessageChunkPacer', () => {
     expect(out).toEqual([])
 
     vi.advanceTimersByTime(10)
-    expect(out.map((c) => c.type)).toEqual(['text-delta', 'tool-input-available'])
+    expect(out.map((c) => c.type)).toEqual([
+      'text-delta',
+      'tool-input-available',
+    ])
     expect(text(out)).toEqual(['one'])
     vi.advanceTimersByTime(10)
     expect(text(out)).toEqual(['one', 'two'])
@@ -70,7 +79,10 @@ describe('UIMessageChunkPacer', () => {
     vi.advanceTimersByTime(10)
     expect(text(out).join('')).toBe('😀x')
 
-    const slow = new UIMessageChunkPacer(sink, { intervalMs: 10, catchUpMs: 1_000 })
+    const slow = new UIMessageChunkPacer(sink, {
+      intervalMs: 10,
+      catchUpMs: 1_000,
+    })
     out.length = 0
     slow.push({ type: 'text-delta', id: 't', delta: '😀x' })
     vi.advanceTimersByTime(10)
@@ -79,7 +91,10 @@ describe('UIMessageChunkPacer', () => {
 
   it('drain resolves once paced out, flush dumps everything at once', async () => {
     const { out, sink } = collect()
-    const pacer = new UIMessageChunkPacer(sink, { intervalMs: 10, catchUpMs: 1_000 })
+    const pacer = new UIMessageChunkPacer(sink, {
+      intervalMs: 10,
+      catchUpMs: 1_000,
+    })
     pacer.push({ type: 'text-delta', id: 't', delta: 'hello world' })
     let drained = false
     void pacer.drain().then(() => {
