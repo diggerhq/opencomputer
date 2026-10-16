@@ -502,7 +502,7 @@ function IdeasToTry() {
       </summary>
       <div className="mt-3 grid gap-2">
         {EXAMPLE_ASKS.map((ask) => (
-          <CopyRow key={ask} value={`@OpenComputer ${ask}`} />
+          <CopyRow key={ask} value={`@Computer ${ask}`} />
         ))}
       </div>
     </details>
@@ -833,7 +833,7 @@ function Setup({
               state={progress('hello')}
             >
               <p>{firstTaskLead(computer)} For example:</p>
-              <CopyRow value={`@OpenComputer ${EXAMPLE_ASKS[0]}`} />
+              <CopyRow value={`@Computer ${EXAMPLE_ASKS[0]}`} />
               <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
                 {slack.dm ? (
                   <Button size="lg" asChild>
@@ -981,7 +981,7 @@ const THREAD: { app?: boolean; at: string; text: ReactNode }[] = [
     at: '2:14',
     text: (
       <>
-        <span className="text-foreground/70 font-medium">@OpenComputer</span>{' '}
+        <span className="text-foreground/70 font-medium">@Computer</span>{' '}
         why is the checkout test flaky?
       </>
     ),
@@ -1073,7 +1073,7 @@ function AskItem({ ask }: { ask: string }) {
         onClick={() => {
           // navigator.clipboard is missing outside secure contexts.
           Promise.resolve()
-            .then(() => navigator.clipboard.writeText(`@OpenComputer ${ask}`))
+            .then(() => navigator.clipboard.writeText(`@Computer ${ask}`))
             .then(markCopied)
             .catch((error: unknown) => notifyError("Couldn't copy.", error))
         }}
