@@ -705,6 +705,9 @@ const sessionSchema = z.object({
   deploymentId: z.string(),
   executionMode: z.enum(['microvm', 'workerd']).optional().default('microvm'),
   status: z.string(),
+  // Resolved display title: an owner-set label, the runtime-generated name,
+  // or the first turn's input.
+  title: z.string().nullable().optional(),
   source: z
     .enum(['api', 'channel', 'playground', 'schedule', 'webhook'])
     .optional()
@@ -760,6 +763,7 @@ const sessionSummarySchema = z.object({
     .optional()
     .default('api'),
   status: z.string(),
+  title: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   createdAt: z.string(),
   updatedAt: z.string(),
