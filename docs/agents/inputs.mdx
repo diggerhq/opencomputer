@@ -55,7 +55,10 @@ A message from a connected [Slack app](/agents/slack) arrives with
 the `connectionId`, and the Slack `workspaceId`, `conversationId` and `userId`
 when Slack supplies them. An agent serving one workspace can ignore all of
 this; an agent behind a shared Slack app uses it to decide whose records to
-read.
+read. A Slack message typed while a question the agent asked in that thread
+is still open also carries `openQuestion`: `{ id, text, options }`, the
+pending question, so the agent can tell whether the message answers it; see
+[Questions](/agents/slack#questions).
 
 A message from a [Linear connection](/agents/linear) also arrives with
 `source: "channel"`, with `channel.provider` set to `linear`,
@@ -152,7 +155,10 @@ export default function Agent() {
 | --- | --- |
 | `event.id` | The source session's event id for its terminal `turn.*` event |
 | `event.type` | `turn.completed`, `turn.failed` or `turn.cancelled` |
+| `event.outcome` | `question` when a completed turn ended by asking |
+| `event.question` | `{ id, text, options }`: what that turn asked, when `outcome` is `question` |
 | `event.sessionId`, `event.turnId`, `event.agentId` | Whose outcome this is |
+| `event.labels` | The source session's [labels](/agents/api#labels), when it has any |
 | `event.occurredAt` | When the source turn settled |
 | `event.reason` | Why it failed or was cancelled, when recorded |
 | `event.error` | The failure message, bounded, when it failed |
