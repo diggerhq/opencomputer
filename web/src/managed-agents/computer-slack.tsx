@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Send } from 'lucide-react'
+import { Check, Copy, Loader2, Send } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
+import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
   computerQueryKey,
   startComputerSlackInstall,
@@ -21,7 +22,7 @@ export function SlackInstallButton({
   label?: string
 }) {
   const install = useMutation({
-    mutationFn: startComputerSlackInstall,
+    mutationFn: () => startComputerSlackInstall(),
     onSuccess: (url) => window.location.assign(url),
     onError: (error) => notifyError("Couldn't start the Slack install.", error),
   })
@@ -40,6 +41,65 @@ export function SlackInstallButton({
       )}
       {label}
     </Button>
+  )
+}
+
+/**
+ * For members who can't add apps: a link a Slack admin can open to install it
+ * for this organization, without an OpenComputer account.
+ */
+export function SlackAdminLink() {
+  const [copied, markCopied] = useTransientFlag(1500)
+  const copy = (url: string) =>
+    // navigator.clipboard is missing outside secure contexts, and Safari
+    // refuses it once the click that asked has been awaited.
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(url))
+      .then(markCopied)
+  const link = useMutation({
+    mutationFn: () => startComputerSlackInstall({ share: true }),
+    // The first copy rides the click; the button below copies it again.
+    onSuccess: (url) => copy(url).catch(() => undefined),
+    onError: (error) => notifyError("Couldn't make the link.", error),
+  })
+  if (!link.data) {
+    return (
+      <p className="text-xs">
+        Not a Slack admin?{' '}
+        <button
+          type="button"
+          className="text-foreground underline underline-offset-2 disabled:opacity-60"
+          disabled={link.isPending}
+          onClick={() => link.mutate()}
+        >
+          Get a link for your admin
+        </button>
+      </p>
+    )
+  }
+  const url = link.data
+  // Inline, like the link that made it, so the two share a baseline.
+  return (
+    <p className="text-xs">
+      Send this link to a Slack admin. It works once, for 7 days, and this page
+      moves on when they're done.{' '}
+      <button
+        type="button"
+        className="text-foreground inline-flex items-center gap-1 align-bottom underline underline-offset-2"
+        onClick={() =>
+          void copy(url).catch((error: unknown) =>
+            notifyError("Couldn't copy.", error),
+          )
+        }
+      >
+        {copied ? (
+          <Check className="size-3" aria-hidden />
+        ) : (
+          <Copy className="size-3" aria-hidden />
+        )}
+        {copied ? 'Copied' : 'Copy link'}
+      </button>
+    </p>
   )
 }
 
