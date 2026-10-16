@@ -76,7 +76,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           >
             <App />
           </ErrorBoundary>
-          <Toaster richColors closeButton />
+          <Toaster theme="light" richColors closeButton />
         </BrowserRouter>
       </QueryClientProvider>
     </PostHogProvider>

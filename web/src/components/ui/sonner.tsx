@@ -6,13 +6,13 @@ import {
   OctagonXIcon,
   Loader2Icon,
 } from 'lucide-react'
-import { useTheme } from '@/hooks/useTheme'
 
-const Toaster = ({ theme, ...props }: ToasterProps) => {
-  const { dark } = useTheme()
+// The dashboard is light-only (no theme provider), so the toaster defaults to
+// the light theme; callers can still override via the `theme` prop.
+const Toaster = ({ theme = 'light', ...props }: ToasterProps) => {
   return (
     <Sonner
-      theme={theme ?? (dark ? 'dark' : 'light')}
+      theme={theme}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,
