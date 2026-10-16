@@ -196,7 +196,10 @@ describe('Computer page', () => {
       (button) => button.textContent === 'Add to Slack',
     )
     expect(invite).toBeDefined()
-    expect(container.querySelectorAll('button')).toHaveLength(1)
+    // Beside it, only the way round for members who can't add apps.
+    expect(
+      [...container.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Add to Slack', 'Get a link for your admin'])
     // The later steps are named, not offered yet.
     expect(container.textContent).toContain('Connect GitHub')
     expect(container.textContent).toContain('Give it a first task')
@@ -221,6 +224,40 @@ describe('Computer page', () => {
       () => computerApi.startComputerSlackInstall.mock.calls.length === 1,
       'Slack install started',
     )
+  })
+
+  it('hands a member who is not a Slack admin a link for one', async () => {
+    computerApi.getComputer.mockResolvedValue(empty)
+    computerApi.startComputerSlackInstall.mockResolvedValue(
+      'https://slack.com/oauth/v2/authorize?state=shared',
+    )
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
+    render('/computer')
+    const button = () =>
+      [...container.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Get a link for your admin',
+      )
+    await settle(() => button() !== undefined, 'admin link offered')
+    act(() => button()!.click())
+    await settle(
+      () => container.textContent?.includes('Send this link') === true,
+      'link made',
+    )
+
+    expect(computerApi.startComputerSlackInstall).toHaveBeenCalledWith({
+      share: true,
+    })
+    expect(writeText).toHaveBeenCalledWith(
+      'https://slack.com/oauth/v2/authorize?state=shared',
+    )
+    expect(container.textContent).toContain('works once, for 7 days')
+    // Making the link is not installing: the page stays put.
+    expect(location()).toBe('/computer')
   })
 
   it('creates the computer when Slack is installed but it is still missing', async () => {

@@ -104,12 +104,17 @@ export async function getComputerSessions() {
   ).sessions
 }
 
-/** Slack's authorize URL, with a short-lived state bound to this organization. */
-export async function startComputerSlackInstall() {
+/**
+ * Slack's authorize URL, with a state bound to this organization. It lasts
+ * minutes; with `share`, a week, for handing to a Slack admin. Either works once.
+ */
+export async function startComputerSlackInstall({
+  share = false,
+}: { share?: boolean } = {}) {
   return (
     await apiFetch(
       '/managed-agents/computer/slack/install',
-      { method: 'POST', body: '{}' },
+      { method: 'POST', body: JSON.stringify(share ? { share } : {}) },
       computerSlackInstallSchema,
     )
   ).url

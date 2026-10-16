@@ -56,7 +56,11 @@ import { PixelScene } from './pixel-scene'
 import { AuthContext } from '@/hooks/useAuth'
 import { addManagedGitHubConnection } from './api'
 import { launchAuthorizationWindow } from './authorization-window'
-import { SlackInstallButton, UnlinkSlackDialog } from './computer-slack'
+import {
+  SlackAdminLink,
+  SlackInstallButton,
+  UnlinkSlackDialog,
+} from './computer-slack'
 import {
   computerQueryKey,
   computerSessionsQueryKey,
@@ -892,12 +896,8 @@ function Setup({
                 right there.
               </p>
               <SlackInstallButton size="lg" label="Add to Slack" />
-              {/* Most workspaces only let admins add apps; where approval is
-                  on, Slack itself lets a member ask for it. */}
-              <p className="text-xs">
-                Not a Slack admin? Click it anyway: Slack lets you ask your
-                admin to approve it. Come back here once they have.
-              </p>
+              {/* Most workspaces only let admins add apps. */}
+              <SlackAdminLink />
             </SetupItem>
             <SetupItem
               number={2}
