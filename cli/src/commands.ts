@@ -81,6 +81,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { doctorProject, type DoctorResult } from "./doctor.js";
 import { CLIError } from "./errors.js";
+import { readTurnImages, type TurnImage } from "./images.js";
 import {
   createSessionWithMemory,
   ensureMemoryDocuments,
@@ -657,6 +658,7 @@ async function sendAgentTurn(
   keep: boolean,
   json: boolean,
   idempotencyKey?: string,
+  images: TurnImage[] = [],
 ): Promise<{ turnId: string; output?: string }> {
   const existing = await client.events(sessionId, 0);
   let cursor = existing.at(-1)?.seq ?? 0;
@@ -674,7 +676,12 @@ async function sendAgentTurn(
     );
     cursor = connected.cursor;
   }
-  const turn = await client.createTurn(sessionId, prompt, idempotencyKey);
+  const turn = await client.createTurn(
+    sessionId,
+    prompt,
+    idempotencyKey,
+    images,
+  );
   let streamedText = "";
   let completedText = "";
   const completed = await waitForEvent(
@@ -833,6 +840,7 @@ async function runAgent(
   verbose: boolean,
   idempotencyKey?: string,
   memory?: MemoryBindings,
+  images: TurnImage[] = [],
 ): Promise<unknown> {
   const created = await createSessionWithMemory(client, agent, memory);
   process.stderr.write(`Starting ${agent}…\n`);
@@ -848,6 +856,7 @@ async function runAgent(
     created.session.id,
     prompt,
     idempotencyKey,
+    images,
   );
   let streamed = false;
   let streamedText = "";
@@ -1471,11 +1480,15 @@ export async function runCommand(
 
   if (command === "run") {
     const keep = flag(args, "--keep");
+    const imagePaths = options(args, "--image");
     const agent = args.shift();
     const prompt = args.join(" ").trim();
-    if (!agent || !prompt) {
-      throw new Error("Usage: opencomputer run <agent> <prompt>");
+    if (!agent || (!prompt && !imagePaths.length)) {
+      throw new Error(
+        "Usage: opencomputer run <agent> <prompt> [--image <path>]...",
+      );
     }
+    const images = await readTurnImages(imagePaths);
     const result = await runAgent(
       client,
       agent,
@@ -1484,6 +1497,8 @@ export async function runCommand(
       globals.json,
       globals.verbose === true,
       globals.idempotencyKey,
+      undefined,
+      images,
     );
     const credits = await fetchCredits(client);
     if (globals.json) {
@@ -3042,8 +3057,12 @@ export async function runCommand(
       return;
     }
     if (session.action === "send") {
+      const imagePaths = options(sessionArgs, "--image");
       const prompt = sessionArgs.join(" ").trim();
-      if (!prompt) throw new Error("A prompt is required.");
+      if (!prompt && !imagePaths.length) {
+        throw new Error("A prompt or --image is required.");
+      }
+      const images = await readTurnImages(imagePaths);
       const result = await sendAgentTurn(
         client,
         sessionId,
@@ -3051,6 +3070,7 @@ export async function runCommand(
         session.keep,
         globals.json,
         globals.idempotencyKey,
+        images,
       );
       if (globals.json) {
         printJSON({ sessionId, ...result, status: "completed" });
