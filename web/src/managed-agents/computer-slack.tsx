@@ -78,15 +78,14 @@ export function SlackAdminLink() {
     )
   }
   const url = link.data
+  // Inline, like the link that made it, so the two share a baseline.
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <p className="flex-1">
-        Send this link to a Slack admin. It works once, for 7 days, and this
-        page moves on when they're done.
-      </p>
-      <Button
-        variant="outline"
-        size="xs"
+    <p className="text-xs">
+      Send this link to a Slack admin. It works once, for 7 days, and this page
+      moves on when they're done.{' '}
+      <button
+        type="button"
+        className="text-foreground inline-flex items-center gap-1 align-bottom underline underline-offset-2"
         onClick={() =>
           void copy(url).catch((error: unknown) =>
             notifyError("Couldn't copy.", error),
@@ -94,13 +93,13 @@ export function SlackAdminLink() {
         }
       >
         {copied ? (
-          <Check className="size-3.5" aria-hidden />
+          <Check className="size-3" aria-hidden />
         ) : (
-          <Copy className="size-3.5" aria-hidden />
+          <Copy className="size-3" aria-hidden />
         )}
         {copied ? 'Copied' : 'Copy link'}
-      </Button>
-    </div>
+      </button>
+    </p>
   )
 }
 
