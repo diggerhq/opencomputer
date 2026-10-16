@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, Loader2, Unplug } from 'lucide-react'
+import { AlertTriangle, GitBranch, Loader2, Unplug } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { GithubMark } from '@/components/github-mark'
 import {
@@ -139,6 +139,40 @@ export function ManagedProjectGitHub({
                 Disconnect
               </Button>
             </div>
+          ) : availableConnections.length === 0 ? (
+            <EmptyState
+              icon={GitBranch}
+              title="No GitHub connections"
+              description={`Install the managed OpenComputer GitHub App and it will appear here, ready to attach to ${environment}.`}
+              action={
+                <Button
+                  disabled={addingConnection}
+                  onClick={() => {
+                    setAddingConnection(true)
+                    void launchAuthorizationWindow(() =>
+                      connectManagedGitHub({
+                        projectId,
+                        environments: [environment],
+                      }).then((connection) => connection.installUrl),
+                    )
+                      .catch((error: unknown) =>
+                        notifyError(
+                          "Couldn't start the GitHub installation.",
+                          error,
+                        ),
+                      )
+                      .finally(() => setAddingConnection(false))
+                  }}
+                >
+                  {addingConnection ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <GithubMark className="size-4" />
+                  )}
+                  Add GitHub connection
+                </Button>
+              }
+            />
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-4">
               <p className="text-muted-foreground max-w-2xl text-sm">
@@ -208,7 +242,8 @@ export function ManagedProjectGitHub({
             </div>
           )}
           {!status.data?.app ? (
-            <p className="text-destructive text-sm">
+            <p className="border-destructive/30 bg-destructive/5 text-destructive flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden />
               The managed GitHub App is not configured in this environment.
             </p>
           ) : null}
