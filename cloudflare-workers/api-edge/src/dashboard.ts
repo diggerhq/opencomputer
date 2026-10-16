@@ -626,7 +626,7 @@ async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: Calle
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, name, key_prefix, scopes, last_used, expires_at, created_at, created_by
        FROM api_keys WHERE org_id = ?1
-        AND NOT (created_by = 'computer' AND expires_at < ?2)
+        AND NOT (name LIKE 'Computer session%' AND expires_at < ?2)
       ORDER BY created_at DESC`,
   ).bind(caller.orgID, Math.floor(Date.now() / 1000)).all<{
     id: string; name: string; key_prefix: string; scopes: string;

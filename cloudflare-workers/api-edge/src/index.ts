@@ -5421,7 +5421,10 @@ export default {
     // /internal/computer-keys — a one-hour org key for an organization's computer
     // (work 067): managed agents mints one when a session runs `opencomputer`,
     // instead of a long-lived key living on the VM. HMAC-auth'd with the scoped
-    // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${body}`. Body: { org_id }.
+    // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${body}`. Body: { org_id, email? }.
+    // With `email`, the session owner's Slack email, the key acts as the org
+    // member with that email, so the session sees that person's connections
+    // (Linear, Gmail, ...); otherwise, or with no such member, as "computer".
     if (path === "/internal/computer-keys" && req.method === "POST") {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
@@ -5431,17 +5434,26 @@ export default {
         : false;
       if (!ok) return json({ error: "signature mismatch" }, 401);
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
-      const parsed = JSON.parse(body) as { org_id?: string };
+      const parsed = JSON.parse(body) as { org_id?: string; email?: string };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);
       const org = await env.OPENCOMPUTER_DB.prepare(`SELECT id FROM orgs WHERE id = ?1`).bind(parsed.org_id).first();
       if (!org) return json({ error: "org not found" }, 404);
+      const email = typeof parsed.email === "string" ? parsed.email.trim().toLowerCase() : "";
+      const member = email
+        ? await env.OPENCOMPUTER_DB.prepare(
+            `SELECT u.id FROM users u JOIN org_memberships m ON m.user_id = u.id
+              WHERE m.org_id = ?1 AND lower(u.email) = ?2 LIMIT 1`,
+          )
+            .bind(parsed.org_id, email)
+            .first<{ id: string }>()
+        : null;
       const created = await createAPIKey(env, {
         orgID: parsed.org_id,
-        userID: "computer",
-        name: "Computer session",
+        userID: member?.id ?? "computer",
+        name: member ? `Computer session (${email})` : "Computer session",
         expiresAt: Math.floor(Date.now() / 1000) + 3600,
       });
-      return json({ key: created.key, expiresAt: created.expiresAt });
+      return json({ key: created.key, expiresAt: created.expiresAt, user: member ? email : "computer" });
     }
 
     // /internal/secret-stores/:id — HMAC-auth'd, called by CP at sandbox-create

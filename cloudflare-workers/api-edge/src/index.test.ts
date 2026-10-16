@@ -647,8 +647,8 @@ describe("/internal/computer-keys", () => {
     const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
     return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
   };
-  const post = async (secret: string, orgID: string, authEnv: Env) => {
-    const body = JSON.stringify({ org_id: orgID });
+  const post = async (secret: string, orgID: string, authEnv: Env, email?: string) => {
+    const body = JSON.stringify({ org_id: orgID, ...(email !== undefined && { email }) });
     const ts = Math.floor(Date.now() / 1000).toString();
     return worker.fetch(
       new Request("https://app.opencomputer.dev/internal/computer-keys", {
@@ -687,5 +687,29 @@ describe("/internal/computer-keys", () => {
     expect(ttl).toBeLessThanOrEqual(3600_000);
     expect(runs[0][1]).toBe("org-x");
     expect(runs[0][2]).toBe("computer");
+  });
+
+  it("mints the key as the org member with the session owner's email", async () => {
+    const runs: unknown[][] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          first: async () =>
+            sql.includes("FROM orgs")
+              ? { id: "org-x" }
+              : sql.includes("FROM users") && args[0] === "org-x" && args[1] === "mo@digger.dev"
+                ? { id: "user-mo" }
+                : null,
+          run: async () => { runs.push(args); return {}; },
+        }),
+      }),
+    };
+    const authEnv = { ...env, OC_MANAGED_CRED_HMAC_SECRET: MANAGED, OPENCOMPUTER_DB: db } as unknown as Env;
+    const member = await post(MANAGED, "org-x", authEnv, " Mo@Digger.dev ");
+    expect(((await member.json()) as { user: string }).user).toBe("mo@digger.dev");
+    expect(runs[0][2]).toBe("user-mo");
+    const stranger = await post(MANAGED, "org-x", authEnv, "someone@else.dev");
+    expect(((await stranger.json()) as { user: string }).user).toBe("computer");
+    expect(runs[1][2]).toBe("computer");
   });
 });
