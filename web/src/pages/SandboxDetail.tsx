@@ -35,6 +35,7 @@ import { Input } from '@/components/ui/input'
 import { MetricCard } from '@/components/metric-card'
 import { ConnectPanel } from '@/components/connect-panel'
 import { StatusBadge } from '@/components/status-badge'
+import { sandboxStatusLabel } from '@/lib/sandbox-status'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
@@ -438,7 +439,10 @@ const { stdout } = await sandbox.exec.run("echo hello from code");`,
               <code className="text-foreground font-mono text-lg font-semibold">
                 {session.sandboxId}
               </code>
-              <StatusBadge status={session.status} />
+              <StatusBadge
+                status={session.status}
+                label={sandboxStatusLabel(session.status)}
+              />
             </div>
             <div className="text-muted-foreground mt-1 text-sm">
               {session.template || 'base'} · Started{' '}
@@ -683,7 +687,7 @@ const { stdout } = await sandbox.exec.run("echo hello from code");`,
           />
           {session.stoppedAt ? (
             <Detail
-              label="Stopped"
+              label="Deleted"
               value={new Date(session.stoppedAt).toLocaleString()}
             />
           ) : null}
@@ -740,7 +744,7 @@ const { stdout } = await sandbox.exec.run("echo hello from code");`,
         open={confirm === 'delete'}
         onOpenChange={(o) => !o && setConfirm(null)}
         title={`Delete sandbox ${session.sandboxId}?`}
-        description="The sandbox will be stopped and its preview URLs removed."
+        description="The sandbox will be destroyed and its preview URLs removed. This cannot be undone."
         confirmLabel="Delete sandbox"
         destructive
         pending={deleteMutation.isPending}
