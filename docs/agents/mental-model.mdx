@@ -57,6 +57,29 @@ export default function Agent() {
 The function does not call the model or execute the tool. Each hook contributes
 to the effective configuration for the next model step.
 
+### A render is one call of your agent function
+
+OpenComputer calls your agent function immediately before every model step.
+That call is a **render**: the function reads the current input and session
+state through hooks and returns the instructions, model, and capabilities the
+harness should use for that one step. Nothing else happens during a render.
+The model is not called, tools do not run, and no output is streamed until the
+render returns.
+
+A turn usually needs several model steps, so a turn usually has several
+renders. Each render is independent: the function does not receive the result
+of the previous render, and its return value is used only for the step that
+follows. The debug inspector in the [playground](/agents/playground) lists
+the renders of a session and shows what each one selected, and each render is
+recorded as an [`agent.rendered`](/agents/events#agent-renders) event.
+
+<Note>
+The name comes from React: a component is rendered every time it needs to
+produce output, and the render only describes what should exist. In the same
+way, your agent function only describes what the agent should be for the next
+step.
+</Note>
+
 ### The harness performs the loop
 
 OpenComputer owns the agent harness. For each step it:
@@ -91,8 +114,8 @@ sequenceDiagram
     H->>S: Record completion
 ```
 
-Because a function can render more than once during a turn, keep it synchronous
-and free of external side effects. Network calls and mutations belong in
+Because a function is rendered more than once during a turn, keep it
+synchronous and free of external side effects. Network calls and mutations belong in
 [tools](/agents/tools) or remote [MCP servers](/agents/mcp).
 
 ### A session makes execution durable
