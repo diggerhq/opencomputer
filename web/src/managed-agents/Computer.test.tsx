@@ -12,6 +12,8 @@ const computerApi = vi.hoisted(() => ({
   getComputerSessions: vi.fn(),
   startComputerSlackInstall: vi.fn(),
   unlinkComputerSlack: vi.fn(),
+  moveComputerSlackHere: vi.fn(),
+  dismissComputerSlackAlreadyLinked: vi.fn(),
 }))
 vi.mock('./computer-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./computer-api')>()),
@@ -286,10 +288,10 @@ describe('Computer page', () => {
       "We've messaged the person who set it up in Slack to invite you.",
     )
     expect(panel.textContent).toContain('menu at the top left')
-    expect(panel.textContent).toContain(
-      'Or connect a different Slack workspace',
-    )
-    expect(panel.textContent).toContain('Install Slack app')
+    // One way forward at a time: no second Add to Slack beside the panel's.
+    expect(panel.querySelectorAll('button')).toHaveLength(1)
+    expect(container.textContent).toContain('Use a different workspace')
+    expect(container.textContent).not.toContain('Add to Slack')
     expect(container.textContent).not.toContain("Couldn't connect Slack")
 
     act(() =>
@@ -299,6 +301,91 @@ describe('Computer page', () => {
     )
     expect(container.textContent).not.toContain('Your team is already here.')
     expect(location()).toBe('/computer')
+  })
+
+  it('lets the person who set the workspace up elsewhere move it here, and keeps saying so after a reload', async () => {
+    const refused = {
+      ...empty,
+      slack: {
+        installed: false,
+        alreadyLinked: { teamName: 'Acme', notified: false, canMove: true },
+      },
+    }
+    computerApi.getComputer.mockResolvedValue(refused)
+    computerApi.moveComputerSlackHere.mockResolvedValue({
+      ...provisioning,
+      slack: { installed: true, teamId: 'T1', teamName: 'Acme' },
+    })
+
+    // No query string: the status alone says it.
+    render('/computer')
+    await settle(
+      () =>
+        container.textContent?.includes(
+          'Acme is in your other organization.',
+        ) === true,
+      'move panel',
+    )
+    const panel = container.querySelector(
+      'section[aria-labelledby="already-linked-title"]',
+    )!
+    expect(panel.textContent).not.toContain('Ask a teammate')
+    act(() =>
+      (
+        [...panel.querySelectorAll('button')].find(
+          (button) => button.textContent === 'Move it here',
+        ) as HTMLButtonElement
+      ).click(),
+    )
+    await settle(
+      () => document.body.querySelector('[role="alertdialog"]') !== null,
+      'the confirmation',
+    )
+    const dialog = document.body.querySelector('[role="alertdialog"]')!
+    expect(dialog.textContent).toContain('Move Acme here?')
+    act(() =>
+      (
+        [...dialog.querySelectorAll('button')].find(
+          (button) => button.textContent === 'Move it here',
+        ) as HTMLButtonElement
+      ).click(),
+    )
+    await settle(
+      () =>
+        !container.textContent?.includes('Acme is in your other organization.'),
+      'panel gone once moved',
+    )
+    expect(computerApi.moveComputerSlackHere).toHaveBeenCalledTimes(1)
+  })
+
+  it('dismisses a refused install for good', async () => {
+    computerApi.getComputer.mockResolvedValue({
+      ...provisioning,
+      slack: {
+        installed: false,
+        alreadyLinked: { teamName: 'Acme', notified: true, canMove: false },
+      },
+    })
+    computerApi.dismissComputerSlackAlreadyLinked.mockResolvedValue(undefined)
+
+    render('/computer')
+    await settle(
+      () =>
+        container.textContent?.includes('Your team is already here.') === true,
+      'already-linked panel',
+    )
+    expect(container.textContent).not.toContain('Move it here')
+    act(() =>
+      (
+        container.querySelector(
+          'section[aria-labelledby="already-linked-title"] button[aria-label="Dismiss"]',
+        ) as HTMLButtonElement
+      ).click(),
+    )
+    expect(container.textContent).not.toContain('Your team is already here.')
+    expect(computerApi.dismissComputerSlackAlreadyLinked).toHaveBeenCalledTimes(
+      1,
+    )
   })
 
   it('keeps a failed Slack install on the page until dismissed', async () => {

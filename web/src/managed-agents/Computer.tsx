@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { GithubMark } from '@/components/github-mark'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyRow } from '@/components/copy-row'
 import { Panel } from '@/components/panel'
 import { ResourceTable, type Column } from '@/components/resource-table'
@@ -61,8 +62,10 @@ import {
   computerQueryKey,
   computerSessionsQueryKey,
   createComputer,
+  dismissComputerSlackAlreadyLinked,
   getComputer,
   getComputerSessions,
+  moveComputerSlackHere,
   type ComputerSession,
   type ComputerStatus,
 } from './computer-api'
@@ -138,10 +141,11 @@ function ComputerPageContent() {
 
   // Slack's install redirect lands here with ?slack=connected|error. A
   // failed install gets a panel that stays until dismissed, not a toast that
-  // is gone before anyone reads it; a workspace that is another
-  // organization's gets its own panel: the person is welcome, they just need
-  // an invite. The redirect is a full page load, so the panel's state is read
-  // once, from the URL it arrived with; the effect below then cleans the URL.
+  // is gone before anyone reads it. The redirect is a full page load, so the
+  // panel's state is read once, from the URL it arrived with; the effect
+  // below then cleans the URL. A workspace that is another organization's
+  // gets its own panel, from the status (so a reload keeps it), or from the
+  // URL when the status does not say.
   const [slackProblem, setSlackProblem] = useState<Exclude<
     SlackReturn,
     { kind: 'connected' } | null
@@ -206,20 +210,36 @@ function ComputerPageContent() {
   const sessionsLoading = hasComputer && sessions.isLoading
   const createError = create.isError ? create.error : null
   const dismissSlackProblem = () => setSlackProblem(null)
-  const slackProblemPanel =
-    slackProblem?.kind === 'already_linked' ? (
-      <AlreadyLinked
-        notified={slackProblem.notified}
-        status={status.data}
-        onDismiss={dismissSlackProblem}
-      />
-    ) : slackProblem?.kind === 'error' ? (
-      <SlackInstallFailed
-        message={slackProblem.message}
-        status={status.data}
-        onDismiss={dismissSlackProblem}
-      />
-    ) : null
+  const alreadyLinked =
+    status.data.slack.alreadyLinked ??
+    (slackProblem?.kind === 'already_linked'
+      ? { notified: slackProblem.notified, canMove: false }
+      : null)
+  const dismissAlreadyLinked = () => {
+    setSlackProblem(null)
+    if (!status.data?.slack.alreadyLinked) return
+    queryClient.setQueryData<ComputerStatus>(computerQueryKey, (current) =>
+      current
+        ? { ...current, slack: { ...current.slack, alreadyLinked: undefined } }
+        : current,
+    )
+    void dismissComputerSlackAlreadyLinked().catch(() =>
+      queryClient.invalidateQueries({ queryKey: computerQueryKey }),
+    )
+  }
+  const slackProblemPanel = alreadyLinked ? (
+    <AlreadyLinked
+      refusal={alreadyLinked}
+      status={status.data}
+      onDismiss={dismissAlreadyLinked}
+    />
+  ) : slackProblem?.kind === 'error' ? (
+    <SlackInstallFailed
+      message={slackProblem.message}
+      status={status.data}
+      onDismiss={dismissSlackProblem}
+    />
+  ) : null
 
   // Whether the first mention is still to come decides between setup and the
   // work, so wait for the sessions rather than flash one and then the other.
@@ -278,6 +298,7 @@ function ComputerPageContent() {
       status={status.data}
       step={step}
       notice={slackProblemPanel}
+      slackAlreadyLinked={alreadyLinked !== null}
       createError={createError}
       creating={create.isPending}
       onRetry={() => create.mutate()}
@@ -513,18 +534,35 @@ function IdeasToTry() {
  * Someone tried to link a Slack workspace that already works with
  * OpenComputer in another organization. Not an error: their team is already
  * here, and the way in is an invite (the person who set it up may have been
- * asked in Slack already).
+ * asked in Slack already). When they set it up there themselves, they can
+ * move it here instead.
  */
 function AlreadyLinked({
-  notified,
+  refusal,
   status,
   onDismiss,
 }: {
-  notified: boolean
+  refusal: { teamName?: string; notified: boolean; canMove: boolean }
   status: ComputerStatus
   onDismiss: () => void
 }) {
-  const copy = alreadyLinkedCopy(notified)
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const move = useMutation({
+    mutationFn: moveComputerSlackHere,
+    onSuccess: (next) => {
+      setConfirming(false)
+      queryClient.setQueryData(computerQueryKey, next)
+      notifySuccess('Slack is connected.', START_SESSION_COPY)
+    },
+    onError: (error) => {
+      setConfirming(false)
+      notifyError("Couldn't move the Slack workspace.", error)
+      void queryClient.invalidateQueries({ queryKey: computerQueryKey })
+    },
+  })
+  const copy = alreadyLinkedCopy(refusal)
+  const teamName = refusal.teamName ?? 'this Slack workspace'
   return (
     <section
       aria-labelledby="already-linked-title"
@@ -551,14 +589,32 @@ function AlreadyLinked({
             {copy.headline}
           </h2>
           <p className="text-muted-foreground mt-2 text-balance">{copy.body}</p>
-          {status.slack.installed ? null : (
-            <div className="mt-6 flex flex-wrap items-center gap-3">
-              <span className="text-muted-foreground text-sm">
-                Or connect a different Slack workspace
-              </span>
-              <SlackInstallButton variant="outline" />
+          {refusal.canMove ? (
+            <div className="mt-6">
+              <Button
+                disabled={move.isPending}
+                onClick={() => setConfirming(true)}
+              >
+                {move.isPending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : null}
+                Move it here
+              </Button>
+              <ConfirmDialog
+                open={confirming}
+                onOpenChange={setConfirming}
+                title={`Move ${teamName} here?`}
+                description={`Its computer in your other organization stops answering in ${teamName}; its sessions stay there.${
+                  status.slack.installed
+                    ? ` ${status.slack.teamName ?? 'The workspace linked here now'} stops working with this computer.`
+                    : ''
+                }`}
+                confirmLabel="Move it here"
+                pending={move.isPending}
+                onConfirm={() => move.mutate()}
+              />
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </section>
@@ -709,6 +765,7 @@ function Setup({
   status,
   step,
   notice,
+  slackAlreadyLinked,
   createError,
   creating,
   onRetry,
@@ -716,6 +773,8 @@ function Setup({
   status: ComputerStatus
   step: SetupStep
   notice: ReactNode
+  /** The panel above holds what to do; adding to Slack again is the other way. */
+  slackAlreadyLinked: boolean
   createError: Error | null
   creating: boolean
   onRetry: () => void
@@ -813,7 +872,15 @@ function Setup({
                 Mention it in any thread and work the task through together,
                 right there.
               </p>
-              <SlackInstallButton size="lg" label="Add to Slack" />
+              {slackAlreadyLinked ? (
+                <SlackInstallButton
+                  size="lg"
+                  variant="outline"
+                  label="Use a different workspace"
+                />
+              ) : (
+                <SlackInstallButton size="lg" label="Add to Slack" />
+              )}
             </SetupItem>
             <SetupItem
               number={2}

@@ -242,11 +242,29 @@ export function slackReturnFromSearch(search: URLSearchParams): SlackReturn {
   }
 }
 
-/** What the already-linked panel says; the other organization is never named. */
-export function alreadyLinkedCopy(notified: boolean): {
+/**
+ * What the already-linked panel says; the other organization is never named.
+ * `canMove`: this person set the workspace up in another organization of
+ * theirs, so the way forward is theirs to pick, not an invite.
+ */
+export function alreadyLinkedCopy({
+  notified,
+  canMove,
+  teamName,
+}: {
+  notified: boolean
+  canMove: boolean
+  teamName?: string
+}): {
   headline: string
   body: string
 } {
+  if (canMove) {
+    return {
+      headline: `${teamName ?? 'This Slack workspace'} is in your other organization.`,
+      body: 'You set it up with OpenComputer in another organization. Move it here to use it with this computer, or switch to that organization from the menu at the top left.',
+    }
+  }
   return {
     headline: 'Your team is already here.',
     body: notified
