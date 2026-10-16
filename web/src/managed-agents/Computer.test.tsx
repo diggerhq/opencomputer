@@ -190,7 +190,7 @@ describe('Computer page', () => {
     expect(container.textContent).not.toContain('Lives in Slack')
     // One call to action: the current step's.
     const current = container.querySelector('li[aria-current="step"]')!
-    expect(current.textContent).toContain('Add OpenComputer to Slack')
+    expect(current.textContent).toContain('Add Computer to Slack')
     const invite = [...current.querySelectorAll('button')].find(
       (button) => button.textContent === 'Add to Slack',
     )
@@ -446,7 +446,7 @@ describe('Computer page', () => {
     )
     const current = container.querySelector('li[aria-current="step"]')!
     expect(current.textContent).toContain('Give it a first task')
-    expect(current.textContent).toContain('@OpenComputer why is the')
+    expect(current.textContent).toContain('@Computer why is the')
     expect(current.textContent).toContain('Waiting for its first task')
     expect(
       current.querySelector('a[href="https://app.slack.com/client/T1"]')
@@ -532,7 +532,7 @@ describe('Computer page', () => {
     expect(
       current.querySelector('a[href="slack://user?team=T1&id=UBOT"]')
         ?.textContent,
-    ).toContain('Message OpenComputer')
+    ).toContain('Message Computer')
     expect(
       current.querySelector('a[href="https://app.slack.com/client/T1"]')
         ?.textContent,
