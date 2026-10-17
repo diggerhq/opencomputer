@@ -34,6 +34,6 @@ script_name = "opencomputer-edge-prod"
 [vars]
 WORKER_ENV = "prod"
 
-# Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
+# Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset oc-platform-edge.
 [[tail_consumers]]
 service = "opencomputer-log-tail-prod"

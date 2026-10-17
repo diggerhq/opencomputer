@@ -207,7 +207,7 @@ MICROVM_EDGE_EXEC = "0"
 
 MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 
-# Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
+# Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset oc-platform-edge.
 [[tail_consumers]]
 service = "opencomputer-log-tail-prod"
 

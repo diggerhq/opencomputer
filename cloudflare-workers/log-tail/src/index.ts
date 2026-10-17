@@ -86,6 +86,54 @@ function requestUrlForLogs(value?: string): string | undefined {
   }
 }
 
+// Correlation ids, lifted from structured log lines into top-level fields so
+// every serverless-agent source (blue, api-edge, agent Workers, the Go
+// services) joins on the same snake_case names. Producers spell them either
+// way (`sessionId` in blue, `session_id` in Go); both land on the snake_case
+// field. Only these keys are lifted, never arbitrary payload.
+const CORRELATION_FIELDS: Record<string, string> = {
+  event: "event",
+  org_id: "org_id", orgId: "org_id",
+  account_id: "account_id", accountId: "account_id",
+  project_id: "project_id", projectId: "project_id",
+  environment: "environment",
+  agent_id: "agent_id", agentId: "agent_id",
+  deployment_id: "deployment_id", deploymentId: "deployment_id",
+  session_id: "session_id", sessionId: "session_id",
+  sandbox_id: "sandbox_id", sandboxId: "sandbox_id",
+  computer_id: "computer_id", computerId: "computer_id",
+  request_id: "request_id", requestId: "request_id",
+  trace_id: "trace_id", traceId: "trace_id",
+};
+
+function structuredPart(part: unknown): Record<string, unknown> | undefined {
+  if (part && typeof part === "object" && !Array.isArray(part)) return part as Record<string, unknown>;
+  if (typeof part !== "string" || !part.startsWith("{")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(part);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function correlationFields(parts: unknown[]): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const part of parts) {
+    const obj = structuredPart(part);
+    if (!obj) continue;
+    for (const [key, field] of Object.entries(CORRELATION_FIELDS)) {
+      const value = obj[key];
+      if (field in fields) continue;
+      if (typeof value === "string" && value) fields[field] = redactWebhookTokens(value.slice(0, 256));
+      else if (typeof value === "number") fields[field] = String(value);
+    }
+  }
+  return fields;
+}
+
 // Map CF console level → Axiom-friendly level string matching what our Go
 // slog handler emits ("INFO", "WARN", "ERROR", "DEBUG").
 function level(l: TraceLog["level"]): string {
@@ -121,6 +169,7 @@ export default {
           time: new Date(log.timestamp).toISOString(),
           level: level(log.level),
           msg: fmtMessage(log.message),
+          ...correlationFields(log.message),
           ...baseEnvelope,
         });
       }
