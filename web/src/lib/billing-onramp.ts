@@ -77,8 +77,21 @@ export function deepLinkedPlanFor(
   return current === UPGRADE_PLAN ? null : UPGRADE_PLAN
 }
 
-export function formatUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
+// Cents of usage per credit (1 credit = $1 in the Autumn catalog today).
+export const CENTS_PER_CREDIT = 100
+
+const creditNumber = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 2,
+})
+
+// Balances and allowances are shown as credits, never dollars.
+export function formatCreditCount(cents: number): string {
+  return creditNumber.format(cents / CENTS_PER_CREDIT)
+}
+
+export function formatCredits(cents: number): string {
+  const count = formatCreditCount(cents)
+  return `${count} ${count === '1' ? 'credit' : 'credits'}`
 }
 
 export type UpsellSurface =

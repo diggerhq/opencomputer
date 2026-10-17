@@ -21,7 +21,7 @@ const base: CreditsStatus = {
 };
 
 test("run footer nudges free orgs, warns when low, and is silent for healthy paid plans", () => {
-  assert.match(creditsFooter(base), /\$3\.40 free credits left/);
+  assert.match(creditsFooter(base), /3.4 free credits left/);
   assert.match(creditsFooter(base), /plan=max/);
   assert.match(creditsFooter(base), /Pro \(\$200\/mo\)/);
   assert.match(
@@ -68,7 +68,7 @@ test("json credits block carries a machine-readable warning", () => {
 test("billing table lists only Pro ($200) unless the org is on legacy Pro", () => {
   const free = formatBilling(base);
   assert.match(free, /Plan\s+Free/);
-  assert.match(free, /Pro\s+\$200\/mo — \$2,000/);
+  assert.match(free, /Pro\s+\$200\/mo — 2,000 credits every month/);
   assert.doesNotMatch(free, /\$20\/mo|top.?up|Max \(/i);
 
   const legacy = formatBilling({

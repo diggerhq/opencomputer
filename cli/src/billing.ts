@@ -1,7 +1,11 @@
 import type { CreditsStatus, OpenComputerClient } from "./api.js";
 
-export function formatUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+// Cents of usage per credit (1 credit = $1 in the Autumn catalog today).
+const CENTS_PER_CREDIT = 100;
+
+/** Credit count for display; balances are shown as credits, never dollars. */
+export function formatCreditCount(cents: number): string {
+  return (cents / CENTS_PER_CREDIT).toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 // The plan on sale is Pro ($200/mo); its billing id stays `max`. The old $20
@@ -24,14 +28,14 @@ const PLAN_NAME: Record<"pro" | "max", string> = {
 export function formatBilling(status: CreditsStatus): string {
   const lines = [
     `Plan          ${PLAN_LABEL[status.usagePlan]}`,
-    `Credits left  ${formatUsd(status.creditsRemainingCents)}${
+    `Credits left  ${formatCreditCount(status.creditsRemainingCents)}${
       status.isHalted ? " (exhausted — sessions paused)" : status.isLow ? " (running low)" : ""
     }`,
     "",
     "Plans:",
     ...status.plans.map(
       (p) =>
-        `  ${(p.name ?? PLAN_NAME[p.id]).padEnd(12)} $${p.priceUsd}/mo — $${p.creditsUsd.toLocaleString("en-US")} in credits every month` +
+        `  ${(p.name ?? PLAN_NAME[p.id]).padEnd(12)} $${p.priceUsd}/mo — ${p.creditsUsd.toLocaleString("en-US")} credits every month` +
         (p.id === status.usagePlan ? "  (current)" : ""),
     ),
     "",
@@ -48,7 +52,7 @@ export function formatBilling(status: CreditsStatus): string {
  */
 export function creditsFooter(status: CreditsStatus | null): string {
   if (!status) return "";
-  const left = formatUsd(status.creditsRemainingCents);
+  const left = formatCreditCount(status.creditsRemainingCents);
   const onPro = status.usagePlan === UPGRADE_PLAN;
   if (status.isHalted) {
     if (onPro) {

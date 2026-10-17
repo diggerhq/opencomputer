@@ -59,7 +59,7 @@ import {
   UPGRADE_PLAN,
   UPGRADE_PLAN_LABEL,
   billingOnrampV2Enabled,
-  formatUsd,
+  formatCredits,
   trackUpsellClicked,
   trackUpsellShown,
   upgradeHref,
@@ -497,7 +497,7 @@ function SidebarCreditMeter({ onNavigate }: { onNavigate?: () => void }) {
             isLow && 'text-amber-600',
           )}
         >
-          {formatUsd(creditsRemainingCents)} left
+          {formatCredits(creditsRemainingCents)} left
         </span>
       </div>
       <div className="bg-secondary mt-1.5 h-1 overflow-hidden rounded-full">
@@ -580,10 +580,10 @@ function HaltBanner() {
       <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
         <CircleAlert className="size-4 shrink-0" />
         <span>
-          {formatUsd(creditsRemainingCents ?? 0)}{' '}
+          {formatCredits(creditsRemainingCents ?? 0)}{' '}
           {usagePlan === 'base'
-            ? 'of free credits left — sessions pause at $0.'
-            : "of this month's credits left."}
+            ? 'of free credits left — sessions pause at 0.'
+            : 'left this month.'}
           {upgradePlan ? (
             <>
               {' '}

@@ -9,7 +9,7 @@ import {
   UPGRADE_PLAN,
   UPGRADE_PLAN_LABEL,
   billingOnrampV2Enabled,
-  formatUsd,
+  formatCredits,
   trackFirstSessionCompleted,
   trackUpsellClicked,
   trackUpsellShown,
@@ -92,9 +92,9 @@ export function PostSessionUpsell({
         <Sparkles className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <div className="text-sm">
           <p className="font-medium">
-            You&apos;ve used {formatUsd(spentCents)} of your{' '}
-            {formatUsd(BASE_GRANT_CENTS)} free credits —{' '}
-            {formatUsd(creditsRemainingCents ?? 0)} left.
+            You&apos;ve used {formatCredits(spentCents)} of your{' '}
+            {formatCredits(BASE_GRANT_CENTS)} free —{' '}
+            {formatCredits(creditsRemainingCents ?? 0)} left.
           </p>
           <p className="text-muted-foreground mt-0.5">
             Upgrade to {UPGRADE_PLAN_LABEL} to keep going when they run out.

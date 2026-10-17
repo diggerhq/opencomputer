@@ -5,6 +5,7 @@ import {
   UPGRADE_PLAN,
   UPGRADE_PLAN_LABEL,
   deepLinkedPlanFor,
+  formatCredits,
   selectablePaidPlans,
   upgradeHref,
   upgradePlanFor,
@@ -48,5 +49,14 @@ describe('billing on-ramp plans', () => {
       "You've used your free credits. Upgrade to Pro ($200/mo) to keep going.",
     )
     expect(FREE_CREDITS_PAYWALL).not.toMatch(/top.?up|\$5\b|\$10\b/i)
+  })
+})
+
+describe('formatCredits', () => {
+  it('shows balances as credits, never dollars', () => {
+    expect(formatCredits(229)).toBe('2.29 credits')
+    expect(formatCredits(200_000)).toBe('2,000 credits')
+    expect(formatCredits(100)).toBe('1 credit')
+    expect(formatCredits(0)).toBe('0 credits')
   })
 })

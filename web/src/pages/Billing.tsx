@@ -37,10 +37,13 @@ import {
   FREE_CREDITS_PAYWALL,
   PLAN_NAMES,
   PLAN_OFFERS,
+  CENTS_PER_CREDIT,
   UPGRADE_PLAN,
   UPGRADE_PLAN_LABEL,
   billingOnrampV2Enabled,
   deepLinkedPlanFor,
+  formatCreditCount,
+  formatCredits,
   selectablePaidPlans,
   trackCheckoutStarted,
   trackPlanActivated,
@@ -285,14 +288,14 @@ const USAGE_PLANS: Array<{
     label: PLAN_NAMES.pro,
     price: PLAN_OFFERS.pro.priceUsd,
     credits: PLAN_OFFERS.pro.creditsUsd,
-    description: `$${PLAN_OFFERS.pro.creditsUsd} in shared credits added every month. No longer offered to new customers.`,
+    description: `${formatCredits(PLAN_OFFERS.pro.creditsUsd * CENTS_PER_CREDIT)} added every month. No longer offered to new customers.`,
   },
   {
     id: 'max',
     label: PLAN_NAMES.max,
     price: PLAN_OFFERS.max.priceUsd,
     credits: PLAN_OFFERS.max.creditsUsd,
-    description: `$${PLAN_OFFERS.max.creditsUsd.toLocaleString()} in shared credits added every month.`,
+    description: `${formatCredits(PLAN_OFFERS.max.creditsUsd * CENTS_PER_CREDIT)} added every month.`,
   },
 ]
 
@@ -302,10 +305,6 @@ function visibleUsagePlans(current: UsagePlanId) {
   return USAGE_PLANS.filter(
     (plan) => plan.id === 'base' || paid.includes(plan.id),
   )
-}
-
-function formatCreditAmount(cents: number) {
-  return `$${(cents / 100).toFixed(2)}`
 }
 
 function formatResetDate(value: string) {
@@ -429,7 +428,6 @@ function PrepaidPlan() {
 
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
-  const credits = (autumn?.creditsRemainingCents ?? 0) / 100
   const creditBreakdown = autumn?.creditBreakdown
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
@@ -477,10 +475,10 @@ function PrepaidPlan() {
                 halted ? 'text-status-error' : 'text-status-running',
               )}
             >
-              ${credits.toFixed(2)}
+              {formatCreditCount(autumn?.creditsRemainingCents ?? 0)}
             </span>
             <span className="text-muted-foreground text-xs">
-              total available
+              credits available
             </span>
           </div>
           {creditBreakdown?.available ? (
@@ -494,12 +492,12 @@ function PrepaidPlan() {
                   </p>
                   <p className="text-muted-foreground mt-0.5 text-xs">
                     {creditBreakdown.planResetsAt
-                      ? `Used first · resets to $${USAGE_PLANS.find((plan) => plan.id === autumn?.usagePlan)?.credits?.toLocaleString() ?? '0'} on ${formatResetDate(creditBreakdown.planResetsAt)}`
+                      ? `Used first · resets to ${formatCredits((USAGE_PLANS.find((plan) => plan.id === autumn?.usagePlan)?.credits ?? 0) * CENTS_PER_CREDIT)} on ${formatResetDate(creditBreakdown.planResetsAt)}`
                       : 'One-time included balance'}
                   </p>
                 </div>
                 <span className="font-mono font-medium">
-                  {formatCreditAmount(creditBreakdown.planRemainingCents)}
+                  {formatCredits(creditBreakdown.planRemainingCents)}
                 </span>
               </div>
               {creditBreakdown.topupRemainingCents > 0 ? (
@@ -511,7 +509,7 @@ function PrepaidPlan() {
                     </p>
                   </div>
                   <span className="font-mono font-medium">
-                    {formatCreditAmount(creditBreakdown.topupRemainingCents)}
+                    {formatCredits(creditBreakdown.topupRemainingCents)}
                   </span>
                 </div>
               ) : null}
@@ -526,7 +524,7 @@ function PrepaidPlan() {
                     </p>
                   </div>
                   <span className="font-mono font-medium">
-                    {formatCreditAmount(creditBreakdown.otherRemainingCents)}
+                    {formatCredits(creditBreakdown.otherRemainingCents)}
                   </span>
                 </div>
               ) : null}
@@ -636,7 +634,7 @@ function PrepaidPlan() {
         title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
         description={
           selectedUsagePlan
-            ? `${selectedUsagePlan.label} costs $${selectedUsagePlan.price}/month and adds $${selectedUsagePlan.credits?.toLocaleString()} in shared credits each month. Autumn applies the plan change and any required proration through Stripe.`
+            ? `${selectedUsagePlan.label} costs $${selectedUsagePlan.price}/month and adds ${formatCredits((selectedUsagePlan.credits ?? 0) * CENTS_PER_CREDIT)} each month. Autumn applies the plan change and any required proration through Stripe.`
             : ''
         }
         confirmLabel={
