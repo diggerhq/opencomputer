@@ -27,6 +27,11 @@ with the exact link command needed to proceed. `opencomputer doctor` and
 local agent deploys as before acting. Compiled bundles are cached under
 `node_modules/.cache/opencomputer/`, never inside `opencomputer/`.
 
+`opencomputer login` binds the CLI to one organization: the one last chosen
+in the dashboard, unless `--org <id|name>` names another. `opencomputer org
+list` shows your organizations and `opencomputer org switch <id|name>` moves
+the login to another without a browser round trip.
+
 The production cloud API (`https://app.opencomputer.dev`) is the default.
 Override it only with `--api-url` or `OPENCOMPUTER_API_URL`.
 

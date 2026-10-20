@@ -12,7 +12,7 @@ import {
   type ProjectEnvironment,
   type ProjectEnvironmentMode,
 } from "./api.js";
-import { login, logout } from "./auth.js";
+import { listOrgs, login, logout, switchOrg, type LoginIdentity } from "./auth.js";
 import {
   creditsFooter,
   creditsSummary,
@@ -192,6 +192,15 @@ function printJSON(value: unknown): void {
 
 function printJSONLine(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function printOtherOrgsHint(identity: LoginIdentity): void {
+  const others = (identity.orgs?.length ?? 1) - 1;
+  if (others < 1) return;
+  process.stderr.write(
+    `You belong to ${others} other organization${others === 1 ? "" : "s"}: ` +
+      "`opencomputer org list` shows them, `opencomputer org switch <id|name>` moves this login.\n",
+  );
 }
 
 function flag(args: string[], name: string): boolean {
@@ -1216,19 +1225,47 @@ export async function runCommand(
   }
 
   if (command === "login") {
-    const identity = await login(config, {
-      noBrowser: flag(args, "--no-browser"),
-      force: flag(args, "--force"),
-    });
+    const noBrowser = flag(args, "--no-browser");
+    const force = flag(args, "--force");
+    const org = option(args, "--org");
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    const identity = await login(config, { noBrowser, force, org });
     if (globals.json) printJSON(identity);
     else {
       process.stdout.write(
         `Logged in as ${identity.email ?? identity.user_id ?? "user"}\n` +
           `Organization: ${identity.org_name ?? identity.org_id}\n`,
       );
+      if (!org) printOtherOrgsHint(identity);
     }
     return;
+  }
+
+  if (command === "org" || command === "orgs") {
+    const sub = command === "orgs" ? "list" : args.shift();
+    if (sub === "list") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const result = await listOrgs(config);
+      if (globals.json) printJSON(result);
+      else {
+        for (const org of result.orgs) {
+          process.stdout.write(
+            `${org.id === result.org_id ? "*" : " "} ${org.name}  ${org.id}\n`,
+          );
+        }
+      }
+      return;
+    }
+    if (sub === "switch") {
+      const org = args.shift();
+      if (!org) throw new Error("Usage: opencomputer org switch <id|name>");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const identity = await switchOrg(config, org);
+      if (globals.json) printJSON(identity);
+      else process.stdout.write(`Organization: ${identity.org_name ?? identity.org_id}\n`);
+      return;
+    }
+    throw new Error("Usage: opencomputer org list | opencomputer org switch <id|name>");
   }
 
   if (command === "logout") {
