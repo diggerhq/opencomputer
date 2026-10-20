@@ -44,9 +44,11 @@ function help(): void {
 OpenComputer — build, test, and deploy agents as code
 
 Usage:
-  opencomputer login [--no-browser] [--force]
+  opencomputer login [--no-browser] [--force] [--org <id|name>]
   opencomputer logout [--local]
   opencomputer whoami
+  opencomputer org list
+  opencomputer org switch <id|name>
   opencomputer billing
   opencomputer upgrade [pro]
   opencomputer agents

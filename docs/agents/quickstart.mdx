@@ -28,6 +28,11 @@ npx --package @opencomputer/cli opencomputer login
 The CLI opens the OpenComputer device-login flow and stores the login locally.
 The production API at `https://app.opencomputer.dev` is used by default.
 
+If you belong to more than one organization, the login uses the one you last
+chose in the dashboard. Pick another with `opencomputer login --org <id|name>`,
+or later with `opencomputer org switch <id|name>`; `opencomputer org list`
+shows your organizations and `opencomputer whoami` the one in use.
+
 ## 3. Watch development deployments
 
 Link the directory to a new cloud project:

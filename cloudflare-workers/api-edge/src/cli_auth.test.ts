@@ -14,6 +14,7 @@ interface FakeMembership {
   name: string;
   plan: string;
   is_personal: number;
+  owner_user_id?: string | null;
   workos_org_id: string | null;
   membership_created_at: number;
   org_created_at: number;
@@ -33,6 +34,15 @@ class FakeStatement {
   }
 
   async first<T>(): Promise<T | null> {
+    if (this.sql.includes("SELECT 1 FROM org_memberships")) {
+      return (this.db.memberships.some((m) => m.id === this.args[1]) ? { 1: 1 } : null) as T | null;
+    }
+    if (this.sql.includes("SELECT last_org_id FROM users")) {
+      return { last_org_id: this.db.lastOrgID } as T;
+    }
+    if (this.sql.includes("cli_login") && this.sql.includes("FROM api_keys WHERE key_hash")) {
+      return (this.db.presentedKey ?? null) as T | null;
+    }
     if (this.sql.includes("FROM users WHERE workos_user_id")) {
       if (!this.db.user) return null;
       return this.db.user as T;
@@ -102,6 +112,15 @@ class FakeDB {
   executed: CapturedStatement[] = [];
   memberships: FakeMembership[];
   pendingInvitations: { id: string; org_id: string; role: string }[] = [];
+  lastOrgID: string | null = null;
+  presentedKey: {
+    id: string;
+    org_id: string;
+    created_by: string | null;
+    name: string;
+    expires_at: number | null;
+    cli_login: number;
+  } | null = null;
   user: { id: string; email: string; name: string } | null;
 
   constructor(
@@ -117,6 +136,7 @@ class FakeDB {
       name: "Igor's workspace",
       plan: "free",
       is_personal: 1,
+      owner_user_id: userID,
       workos_org_id: null,
       membership_created_at: 1,
       org_created_at: 1,
@@ -163,6 +183,38 @@ const ctx = {
 
 function request(path: string, init?: RequestInit): Request {
   return new Request(`https://app.opencomputer.dev${path}`, init);
+}
+
+function membership(
+  id: string,
+  name: string,
+  order: number,
+  extra: Partial<FakeMembership> = {},
+): FakeMembership {
+  return {
+    id,
+    name,
+    plan: "free",
+    is_personal: extra.owner_user_id ? 1 : 0,
+    workos_org_id: null,
+    membership_created_at: order,
+    org_created_at: order,
+    ...extra,
+  };
+}
+
+async function exchange(db: FakeDB, workosOrgID?: string) {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+    user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    ...(workosOrgID ? { organization_id: workosOrgID } : {}),
+  })));
+  const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+  }), testEnv(db), ctx);
+  expect(resp.status).toBe(200);
+  return resp.json<{ org: { id: string; name: string }; orgs: { id: string; name: string }[] }>();
 }
 
 afterEach(() => {
@@ -527,6 +579,50 @@ describe("CLI device authorization edge contract", () => {
     expect(insert?.args[1]).toBe(mappedOrgID);
   });
 
+  it("binds to the org last chosen in the dashboard and returns every org", async () => {
+    const mappedOrgID = "33333333-3333-4333-8333-333333333333";
+    const activeOrgID = "44444444-4444-4444-8444-444444444444";
+    const db = new FakeDB([
+      membership(orgID, "Personal", 1, { owner_user_id: userID }),
+      membership(mappedOrgID, "Digger", 2, { workos_org_id: "workos-org" }),
+      membership(activeOrgID, "Clawputer", 3),
+    ]);
+    db.lastOrgID = activeOrgID;
+    const body = await exchange(db, "workos-org");
+    expect(body.org).toEqual({ id: activeOrgID, name: "Clawputer" });
+    expect(body.orgs).toEqual([
+      { id: orgID, name: "Personal" },
+      { id: mappedOrgID, name: "Digger" },
+      { id: activeOrgID, name: "Clawputer" },
+    ]);
+    const insert = db.executed.find((entry) => entry.sql.includes("INSERT INTO api_keys"));
+    expect(insert?.args[1]).toBe(activeOrgID);
+    expect(insert?.args[8]).toBe(1);
+  });
+
+  it("ignores a last active org the user has since left", async () => {
+    const db = new FakeDB([
+      membership(orgID, "Personal", 1, { owner_user_id: userID }),
+      membership("33333333-3333-4333-8333-333333333333", "Digger", 2),
+    ]);
+    db.lastOrgID = "55555555-5555-4555-8555-555555555555";
+    const body = await exchange(db);
+    expect(body.org).toEqual({ id: orgID, name: "Personal" });
+  });
+
+  it("does not treat a teammate's personal workspace as the user's own", async () => {
+    const ownOrgID = "33333333-3333-4333-8333-333333333333";
+    const db = new FakeDB([
+      membership("66666666-6666-4666-8666-666666666666", "igor@digger.dev", 1, {
+        owner_user_id: "77777777-7777-4777-8777-777777777777",
+      }),
+      membership("44444444-4444-4444-8444-444444444444", "Clawputer", 2),
+      membership(ownOrgID, "mo@digger.dev's workspace", 3, { owner_user_id: userID }),
+    ]);
+    const body = await exchange(db);
+    expect(body.org).toEqual({ id: ownOrgID, name: "mo@digger.dev's workspace" });
+  });
+
   it("accepts pending invitations for the login email and lands in the invited org", async () => {
     const teamOrgID = "44444444-4444-4444-8444-444444444444";
     const db = new FakeDB([
@@ -674,6 +770,122 @@ describe("CLI identity and credential lifecycle", () => {
     const deletion = db.executed.find((entry) => entry.sql.includes("DELETE FROM api_keys"));
     expect(deletion?.args[0]).toMatch(/^[0-9a-f]{64}$/);
     expect(deletion?.args[1]).toBe(orgID);
+  });
+
+  it("records the dashboard's active org for the next CLI login", async () => {
+    const teamOrgID = "33333333-3333-4333-8333-333333333333";
+    const db = new FakeDB([
+      membership(orgID, "Personal", 1, { owner_user_id: userID }),
+      membership(teamOrgID, "Digger", 2),
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const callback = await worker.fetch(request("/auth/callback?code=browser-code"), testEnv(db), ctx);
+    const cookie = callback.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+    const resp = await worker.fetch(request("/api/dashboard/org/switch", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ orgId: teamOrgID }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+    const update = db.executed.find((entry) => entry.sql.includes("SET last_org_id"));
+    expect(update?.args).toEqual([teamOrgID, userID]);
+  });
+
+  describe("org list and switch", () => {
+    const teamOrgID = "33333333-3333-4333-8333-333333333333";
+    const multiOrgDB = (cliLogin = 1) => {
+      const db = new FakeDB([
+        membership(orgID, "Personal", 1, { owner_user_id: userID }),
+        membership(teamOrgID, "Clawputer", 2),
+      ]);
+      db.presentedKey = {
+        id: "key-old",
+        org_id: orgID,
+        created_by: userID,
+        name: "opencomputer CLI on laptop",
+        expires_at: null,
+        cli_login: cliLogin,
+      };
+      return db;
+    };
+    const switchTo = (db: FakeDB, org: string) => worker.fetch(request("/auth/cli/switch", {
+      method: "POST",
+      headers: { "X-API-Key": "osb_presented", "content-type": "application/json" },
+      body: JSON.stringify({ org }),
+    }), testEnv(db), ctx);
+
+    it("lists the orgs a CLI login may switch between", async () => {
+      const resp = await worker.fetch(request("/auth/cli/orgs", {
+        headers: { "X-API-Key": "osb_presented" },
+      }), testEnv(multiOrgDB()), ctx);
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        org_id: orgID,
+        orgs: [{ id: orgID, name: "Personal" }, { id: teamOrgID, name: "Clawputer" }],
+      });
+    });
+
+    it("refuses keys that did not come from opencomputer login", async () => {
+      const db = multiOrgDB(0);
+      const list = await worker.fetch(request("/auth/cli/orgs", {
+        headers: { "X-API-Key": "osb_presented" },
+      }), testEnv(db), ctx);
+      expect(list.status).toBe(403);
+      const resp = await switchTo(db, teamOrgID);
+      expect(resp.status).toBe(403);
+      expect(await resp.json()).toEqual({ error: "cli_login_required" });
+      expect(db.executed.some((entry) => entry.sql.includes("INSERT INTO api_keys"))).toBe(false);
+
+      const unknown = new FakeDB();
+      expect((await switchTo(unknown, teamOrgID)).status).toBe(401);
+    });
+
+    it("trades the login credential for one in the named org", async () => {
+      const db = multiOrgDB();
+      const resp = await switchTo(db, "clawputer");
+      expect(resp.status).toBe(200);
+      const body = await resp.json<{
+        status: string;
+        credential: { key: string; name: string };
+        org: { id: string; name: string };
+        previous_credential_revoked: boolean;
+      }>();
+      expect(body.status).toBe("switched");
+      expect(body.org).toEqual({ id: teamOrgID, name: "Clawputer" });
+      expect(body.credential.key).toMatch(/^osb_[0-9a-f]{64}$/);
+      expect(body.credential.name).toBe("opencomputer CLI on laptop");
+      expect(body.previous_credential_revoked).toBe(true);
+      const insertAt = db.executed.findIndex((entry) => entry.sql.includes("INSERT INTO api_keys"));
+      const deleteAt = db.executed.findIndex((entry) => entry.sql.includes("DELETE FROM api_keys"));
+      expect(db.executed[insertAt]?.args[1]).toBe(teamOrgID);
+      expect(db.executed[insertAt]?.args[2]).toBe(userID);
+      expect(db.executed[insertAt]?.args[8]).toBe(1);
+      expect(db.executed[deleteAt]?.args).toEqual(["key-old"]);
+      expect(insertAt).toBeLessThan(deleteAt);
+    });
+
+    it("keeps the credential when the org is current, unknown, or ambiguous", async () => {
+      const current = multiOrgDB();
+      const same = await switchTo(current, orgID);
+      expect(same.status).toBe(200);
+      expect((await same.json<{ status: string }>()).status).toBe("unchanged");
+
+      const missing = multiOrgDB();
+      const notFound = await switchTo(missing, "Someone else's org");
+      expect(notFound.status).toBe(404);
+      expect((await notFound.json<{ error: string; orgs: unknown[] }>()).orgs).toHaveLength(2);
+
+      const twins = multiOrgDB();
+      twins.memberships.push(membership("88888888-8888-4888-8888-888888888888", "clawputer", 3));
+      const ambiguous = await switchTo(twins, "Clawputer");
+      expect(ambiguous.status).toBe(409);
+
+      for (const db of [current, missing, twins]) {
+        expect(db.executed.some((entry) => entry.sql.includes("api_keys"))).toBe(false);
+      }
+    });
   });
 
   it("keeps the browser callback on its historical membership-selection query", async () => {

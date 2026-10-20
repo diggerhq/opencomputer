@@ -495,6 +495,10 @@ async function handleOrgSwitch(req: Request, env: DashboardEnv, caller: Caller):
   if (!m) return json({ error: "not a member of that org" }, 403);
   const orgRow = await env.OPENCOMPUTER_DB.prepare(`SELECT plan FROM orgs WHERE id = ?1`).bind(body.orgId).first<{ plan: string }>();
   const plan = orgRow?.plan ?? "free";
+  // `opencomputer login` defaults to the org last chosen here (work 075).
+  await env.OPENCOMPUTER_DB.prepare(`UPDATE users SET last_org_id = ?1 WHERE id = ?2`)
+    .bind(body.orgId, caller.userID)
+    .run();
   const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, body.orgId, caller.userID, plan);
   return json({ ok: true, orgId: body.orgId, plan }, 200, { "set-cookie": setSessionCookie(fresh) });
 }

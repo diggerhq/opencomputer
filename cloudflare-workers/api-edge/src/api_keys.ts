@@ -21,11 +21,13 @@ export async function hashAPIKey(key: string): Promise<string> {
 /**
  * Creates an ordinary OpenComputer org key. The caller owns the one-time
  * plaintext response; only its SHA-256 hash is persisted. `expiresAt` (epoch
- * seconds) is optional; key validation refuses the key after it.
+ * seconds) is optional; key validation refuses the key after it. `cliLogin`
+ * marks a key minted by `opencomputer login`, the only kind that may later be
+ * traded for a key in another of its creator's orgs.
  */
 export async function createAPIKey(
   env: APIKeyEnv,
-  input: { orgID: string; userID: string; name: string; expiresAt?: number },
+  input: { orgID: string; userID: string; name: string; expiresAt?: number; cliLogin?: boolean },
 ): Promise<CreatedAPIKey> {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -36,10 +38,10 @@ export async function createAPIKey(
   const now = Math.floor(Date.now() / 1000);
 
   await env.OPENCOMPUTER_DB.prepare(
-    `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at, expires_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'sandbox:*', ?7, ?8)`,
+    `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at, expires_at, cli_login)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'sandbox:*', ?7, ?8, ?9)`,
   )
-    .bind(id, input.orgID, input.userID, hash, prefix, input.name, now, input.expiresAt ?? null)
+    .bind(id, input.orgID, input.userID, hash, prefix, input.name, now, input.expiresAt ?? null, input.cliLogin ? 1 : 0)
     .run();
 
   return {

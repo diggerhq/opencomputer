@@ -15,6 +15,8 @@
 //   POST /auth/refresh         — rotate session JWT (extends expiry)
 //   POST /auth/cli/device      — begin WorkOS device authorization for `oc login`
 //   POST /auth/cli/device/exchange — poll device authorization → one ordinary org key
+//   GET  /auth/cli/orgs        — the orgs a CLI login credential may switch between
+//   POST /auth/cli/switch      — trade a CLI login credential for one in another org
 //   DELETE /auth/cli/credential — revoke the exact CLI-presented org key
 //   POST /webhooks/stripe      — Stripe webhook → DO /mark-pro or /mark-free
 //   GET  /health
@@ -3719,6 +3721,8 @@ interface ProvisionedIdentity {
     name: string;
     plan: string;
   };
+  /** Every org the user belongs to, oldest membership first. */
+  orgs: { id: string; name: string }[];
 }
 
 type IdentitySelection = "browser" | "cli";
@@ -3843,7 +3847,9 @@ export async function acceptPendingInvitations(
 /**
  * Upserts the WorkOS user and guarantees at least one local membership.
  * Browser login deliberately preserves its historical "first membership"
- * selection; CLI login uses the deterministic policy in work 031 §3.2.
+ * selection; CLI login uses the policy in work 031 §3.2 as amended by work 075:
+ * the dashboard's last active org, then the WorkOS-mapped org, then the user's
+ * own personal org, then the oldest membership.
  */
 async function provisionWorkOSIdentity(
   req: Request,
@@ -3894,6 +3900,7 @@ async function provisionWorkOSIdentity(
     name: string;
     plan: string;
     is_personal: number;
+    owner_user_id?: string | null;
     workos_org_id: string | null;
     membership_created_at: number;
     org_created_at: number;
@@ -3924,8 +3931,33 @@ async function provisionWorkOSIdentity(
       .first<MembershipRow>();
 
   const selectCLIMembership = async (): Promise<MembershipRow | null> => {
+    const memberships = await listMemberships();
+    cliOrgs = memberships.map((row) => ({ id: row.id, name: row.name }));
+    const lastOrg = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT last_org_id FROM users WHERE id = ?1`,
+    )
+      .bind(userID)
+      .first<{ last_org_id: string | null }>();
+    if (lastOrg?.last_org_id) {
+      const active = memberships.find((row) => row.id === lastOrg.last_org_id);
+      if (active) return active;
+    }
+    if (workosOrgID) {
+      const mapped = memberships.find((row) => row.workos_org_id === workosOrgID);
+      if (mapped) return mapped;
+    }
+    // Another member's personal workspace is not this user's: an invitee into
+    // a teammate's personal org must not land there ahead of their own.
+    const personal = memberships.find(
+      (row) => row.is_personal === 1 && row.owner_user_id === userID,
+    );
+    if (personal) return personal;
+    return memberships[0] ?? null;
+  };
+
+  const listMemberships = async (): Promise<MembershipRow[]> => {
     const { results } = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
+      `SELECT o.id, o.name, o.plan, o.is_personal, o.owner_user_id, o.workos_org_id,
               m.created_at AS membership_created_at, o.created_at AS org_created_at
          FROM orgs o
          JOIN org_memberships m ON m.org_id = o.id
@@ -3934,17 +3966,10 @@ async function provisionWorkOSIdentity(
     )
       .bind(userID)
       .all<MembershipRow>();
-    const memberships = results ?? [];
-    if (workosOrgID) {
-      const mapped = memberships.find((row) => row.workos_org_id === workosOrgID);
-      if (mapped) return mapped;
-    }
-    const personal = memberships.find((row) => row.is_personal === 1);
-    if (personal) return personal;
-    if (memberships.length === 1) return memberships[0];
-    return memberships[0] ?? null;
+    return results ?? [];
   };
 
+  let cliOrgs: { id: string; name: string }[] = [];
   let orgRow =
     selection === "browser"
       ? await selectBrowserMembership()
@@ -4019,6 +4044,8 @@ async function provisionWorkOSIdentity(
       name: orgRow.name,
       plan: orgRow.plan,
     },
+    // A first-login CLI user has only the personal org created above.
+    orgs: cliOrgs.length ? cliOrgs : [{ id: orgRow.id, name: orgRow.name }],
   };
 }
 
@@ -4155,7 +4182,7 @@ interface CLIAuthLogDetails {
 }
 
 function recordCLIAuth(
-  event: "cli_auth_start" | "cli_auth_exchange" | "cli_auth_revoke",
+  event: "cli_auth_start" | "cli_auth_exchange" | "cli_auth_revoke" | "cli_auth_orgs" | "cli_auth_switch",
   requestID: string,
   result: string,
   status: number,
@@ -4568,6 +4595,7 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
       orgID: identity.org.id,
       userID: identity.user.id,
       name: credentialName,
+      cliLogin: true,
     });
   } catch {
     return finish(
@@ -4590,6 +4618,7 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
       id: identity.org.id,
       name: identity.org.name,
     },
+    orgs: identity.orgs,
   }), "success", {
     user_id: identity.user.id,
     org_id: identity.org.id,
@@ -4635,6 +4664,157 @@ async function authCLIRevoke(req: Request, env: Env): Promise<Response> {
     status: 204,
     headers: { "cache-control": "no-store" },
   }), "success");
+}
+
+// A credential minted by `opencomputer login`, read straight from D1 rather
+// than the auth cache: trading it for another org's key must not ride on a
+// revoked or stale cache entry.
+interface CLILoginCredential {
+  id: string;
+  org_id: string;
+  created_by: string;
+  name: string;
+}
+
+type CLIOrgLookup =
+  | { credential: CLILoginCredential; orgs: { id: string; name: string }[] }
+  | { error: Response; result: string };
+
+async function loadCLILoginOrgs(req: Request, env: Env): Promise<CLIOrgLookup> {
+  const plainKey = req.headers.get("X-API-Key");
+  if (!plainKey || !plainKey.startsWith("osb_")) {
+    return { error: cliAuthError("missing or invalid API key", 401), result: "unauthorized" };
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const hash = await hashAPIKey(plainKey);
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, org_id, created_by, name, expires_at, cli_login
+       FROM api_keys WHERE key_hash = ?1`,
+  )
+    .bind(hash)
+    .first<CLILoginCredential & { expires_at: number | null; cli_login: number }>();
+  if (!row || !row.created_by || (row.expires_at && row.expires_at < nowSec)) {
+    return { error: cliAuthError("missing or invalid API key", 401), result: "unauthorized" };
+  }
+  // Dashboard and CI keys stay bound to their org; only a login credential,
+  // which stands for the person on this machine, may move between their orgs.
+  if (row.cli_login !== 1) {
+    return { error: cliAuthError("cli_login_required", 403), result: "not_cli_login" };
+  }
+  const { results } = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT o.id, o.name
+       FROM orgs o
+       JOIN org_memberships m ON m.org_id = o.id
+      WHERE m.user_id = ?1
+      ORDER BY m.created_at ASC, o.created_at ASC, o.id ASC`,
+  )
+    .bind(row.created_by)
+    .all<{ id: string; name: string }>();
+  return {
+    credential: { id: row.id, org_id: row.org_id, created_by: row.created_by, name: row.name },
+    orgs: (results ?? []).map((org) => ({ id: org.id, name: org.name })),
+  };
+}
+
+/** GET /auth/cli/orgs — the orgs a CLI login may switch between. */
+async function authCLIOrgs(req: Request, env: Env): Promise<Response> {
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const finish = (response: Response, result: string, details: CLIAuthLogDetails = {}): Response => {
+    recordCLIAuth("cli_auth_orgs", requestID, result, response.status, startedAt, details);
+    return response;
+  };
+  if (req.method !== "GET") {
+    return finish(cliAuthError("method_not_allowed", 405), "invalid_request");
+  }
+  let lookup: CLIOrgLookup;
+  try {
+    lookup = await loadCLILoginOrgs(req, env);
+  } catch {
+    return finish(cliAuthError("cli_orgs_unavailable", 503), "storage_error");
+  }
+  if ("error" in lookup) return finish(lookup.error, lookup.result);
+  return finish(cliAuthJSON({
+    org_id: lookup.credential.org_id,
+    orgs: lookup.orgs,
+  }), "success", { user_id: lookup.credential.created_by, org_id: lookup.credential.org_id });
+}
+
+/**
+ * POST /auth/cli/switch { org } — trade the presented login credential for one
+ * bound to another of the user's orgs, named by id or (case-insensitive) name.
+ * The new key is created before the old one is deleted, so a failure leaves
+ * the CLI logged in somewhere.
+ */
+async function authCLISwitch(req: Request, env: Env): Promise<Response> {
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const finish = (response: Response, result: string, details: CLIAuthLogDetails = {}): Response => {
+    recordCLIAuth("cli_auth_switch", requestID, result, response.status, startedAt, details);
+    return response;
+  };
+  if (req.method !== "POST") {
+    return finish(cliAuthError("method_not_allowed", 405), "invalid_request");
+  }
+  const body = await readSmallJSONObject(req);
+  const wanted = typeof body?.org === "string" ? body.org.trim() : "";
+  if (!body || Object.keys(body).length !== 1 || !wanted || wanted.length > 200) {
+    return finish(cliAuthError("invalid_request", 400), "invalid_request");
+  }
+  let lookup: CLIOrgLookup;
+  try {
+    lookup = await loadCLILoginOrgs(req, env);
+  } catch {
+    return finish(cliAuthError("cli_switch_unavailable", 503), "storage_error");
+  }
+  if ("error" in lookup) return finish(lookup.error, lookup.result);
+  const { credential, orgs } = lookup;
+  const logDetails = { user_id: credential.created_by, org_id: credential.org_id };
+
+  const byID = orgs.find((org) => org.id === wanted);
+  const byName = orgs.filter((org) => org.name.toLowerCase() === wanted.toLowerCase());
+  if (!byID && byName.length > 1) {
+    return finish(cliAuthJSON({ error: "org_ambiguous", orgs: byName }, 409), "ambiguous", logDetails);
+  }
+  const target = byID ?? byName[0];
+  if (!target) {
+    return finish(cliAuthJSON({ error: "org_not_found", orgs }, 404), "not_found", logDetails);
+  }
+  if (target.id === credential.org_id) {
+    return finish(cliAuthJSON({ status: "unchanged", org: target, orgs }), "unchanged", logDetails);
+  }
+
+  let created;
+  try {
+    created = await createAPIKey(env, {
+      orgID: target.id,
+      userID: credential.created_by,
+      name: credential.name,
+      cliLogin: true,
+    });
+  } catch {
+    return finish(cliAuthError("credential_creation_failed", 503), "credential_error", logDetails);
+  }
+  let previousRevoked = true;
+  try {
+    await env.OPENCOMPUTER_DB.prepare(`DELETE FROM api_keys WHERE id = ?1`)
+      .bind(credential.id)
+      .run();
+  } catch {
+    previousRevoked = false;
+  }
+  return finish(cliAuthJSON({
+    status: "switched",
+    credential: {
+      id: created.id,
+      key: created.key,
+      key_prefix: created.keyPrefix,
+      name: created.name,
+    },
+    org: target,
+    orgs,
+    previous_credential_revoked: previousRevoked,
+  }), "success", { ...logDetails, org_id: target.id, credential_id: created.id });
 }
 
 // Decode the WorkOS session id (`sid` claim) from a WorkOS access-token JWT
@@ -5603,6 +5783,12 @@ export default {
     }
     if (path === "/auth/cli/credential") {
       return authCLIRevoke(req, env);
+    }
+    if (path === "/auth/cli/orgs") {
+      return authCLIOrgs(req, env);
+    }
+    if (path === "/auth/cli/switch") {
+      return authCLISwitch(req, env);
     }
 
     // Browser auth flow.

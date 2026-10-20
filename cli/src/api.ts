@@ -432,6 +432,18 @@ export interface CreateSessionResult {
   deployment?: ManagedAgentDeployment;
 }
 
+export interface OpenComputerOrg {
+  id: string;
+  name: string;
+}
+
+export interface LoginCredential {
+  id: string;
+  key: string;
+  key_prefix: string;
+  name: string;
+}
+
 export class APIError extends Error {
   constructor(
     message: string,
@@ -599,12 +611,9 @@ export class OpenComputerClient {
     return this.request<{
       status: "authorization_pending" | "authorized";
       retry_after?: number;
-      credential?: {
-        id: string;
-        key: string;
-        key_prefix: string;
-        name: string;
-      };
+      credential?: LoginCredential;
+      org?: OpenComputerOrg;
+      orgs?: OpenComputerOrg[];
     }>(
       "/auth/cli/device/exchange",
       {
@@ -624,6 +633,22 @@ export class OpenComputerClient {
 
   revokeCredential() {
     return this.request<void>("/auth/cli/credential", { method: "DELETE" });
+  }
+
+  /** The orgs this CLI login may switch between; needs a login credential. */
+  loginOrgs() {
+    return this.request<{ org_id: string; orgs: OpenComputerOrg[] }>("/auth/cli/orgs");
+  }
+
+  /** Trades this CLI login credential for one bound to `org` (id or name). */
+  switchLoginOrg(org: string) {
+    return this.request<{
+      status: "switched" | "unchanged";
+      credential?: LoginCredential;
+      org: OpenComputerOrg;
+      orgs: OpenComputerOrg[];
+      previous_credential_revoked?: boolean;
+    }>("/auth/cli/switch", { method: "POST", body: JSON.stringify({ org }) });
   }
 
   async agents(): Promise<ManagedAgentSummary[]> {
