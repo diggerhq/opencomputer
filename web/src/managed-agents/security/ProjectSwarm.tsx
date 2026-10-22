@@ -58,6 +58,8 @@ export default function ProjectSwarm() {
           projectId={projectId}
           runId={manifest.data.runId}
           cells={manifest.data.cells}
+          target={manifest.data.target}
+          model={manifest.data.model}
         />
       ) : (
         <div className="rounded-lg border border-dashed p-10 text-center">

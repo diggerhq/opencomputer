@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -11,17 +11,24 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
+  createManagedMemoryDocument,
   getManagedAgentSession,
   getManagedMemoryDocument,
 } from '../api'
 import {
+  buildRunReport,
   cellDocumentId,
   parseCellFinding,
+  runReportDocumentId,
   SECURITY_FINDINGS_RESOURCE,
+  serializeRunReport,
   type CellFinding,
   type CveDisposition,
   type LaunchedCell,
+  type ReportCell,
+  type ReportDisposition,
   type SwarmCell,
+  type SwarmRunReport,
 } from './catalog'
 
 // A cell is settled when its worker has either saved a verdict or its session
@@ -52,11 +59,9 @@ function sessionFailed(progress: SessionProgress | undefined): boolean {
   return turn === 'failed' || turn === 'errored' || turn === 'cancelled'
 }
 
-// Settled = we will never poll it again: the verdict is saved, or it failed.
-function cellSettled(state: CellState): boolean {
-  return Boolean(state.finding) || sessionFailed(state.progress)
-}
-
+// A cell is settled — we will never poll it again — when its verdict is saved
+// or it failed, i.e. its phase is 'done' or 'failed'. The grid tracks that via
+// `counts.pending === 0`.
 function cellPhase(state: CellState): 'done' | 'failed' | 'running' | 'queued' {
   if (state.finding) return 'done'
   if (sessionFailed(state.progress)) return 'failed'
@@ -90,10 +95,14 @@ export function SwarmGrid({
   projectId,
   runId,
   cells,
+  target = '',
+  model = '',
 }: {
   projectId: string
   runId: string
   cells: readonly LaunchedCell[]
+  target?: string
+  model?: string
 }) {
   // Both polls stop the moment every cell has settled (verdict saved, or
   // failed). We recompute that each render and park it in a ref the two
@@ -114,7 +123,7 @@ export function SwarmGrid({
           return [sessionId, { status: session.status, lastTurnStatus }] as const
         }),
       )
-      return Object.fromEntries(entries) as Record<string, SessionProgress>
+      return Object.fromEntries(entries)
     },
     refetchInterval: () => (allSettledRef.current ? false : 3_000),
   })
@@ -155,8 +164,6 @@ export function SwarmGrid({
     finding: findings.data?.[cellDocumentId(runId, cell)] ?? null,
   }))
 
-  allSettledRef.current = states.every(cellSettled)
-
   const counts = states.reduce(
     (acc, state) => {
       const phase = cellPhase(state)
@@ -169,6 +176,56 @@ export function SwarmGrid({
     { exposed: 0, 'not-exposed': 0, 'needs-review': 0, failed: 0, pending: 0 },
   )
   const settled = counts.pending === 0
+
+  // Park the settled flag in the ref the two refetchInterval closures read, so
+  // both polls stop once the run is done. Written in an effect (not during
+  // render) so the ref update is a proper side effect.
+  useEffect(() => {
+    allSettledRef.current = settled
+  }, [settled])
+
+  // Once every cell has settled, roll the verdicts into the run report. This is
+  // the swarm's artifact; we both show it and persist it (below) so a scheduled
+  // run leaves something behind.
+  const report: SwarmRunReport | null = settled
+    ? buildRunReport(
+        { runId, target, model, generatedAt: new Date().toISOString() },
+        states.map((s): ReportCell => {
+          const disposition: ReportDisposition = s.finding
+            ? s.finding.disposition
+            : 'failed'
+          return {
+            repository: s.cell.repository,
+            cveId: s.cell.cveId,
+            disposition,
+            ...(s.finding?.reasoning ? { reasoning: s.finding.reasoning } : {}),
+            ...(s.finding?.pullRequest
+              ? { pullRequest: s.finding.pullRequest }
+              : {}),
+          }
+        }),
+      )
+    : null
+
+  // Persist the report exactly once, when the run first settles. create-once
+  // (If-None-Match:*) means a reload that re-settles the same run is a no-op —
+  // the first write wins and any later conflict is ignored.
+  const reportWrittenRef = useRef(false)
+  useEffect(() => {
+    if (!report || reportWrittenRef.current) return
+    reportWrittenRef.current = true
+    void createManagedMemoryDocument({
+      projectId,
+      resource: SECURITY_FINDINGS_RESOURCE,
+      environment: 'default',
+      id: runReportDocumentId(runId),
+      title: `Swarm report ${runId}`,
+      text: serializeRunReport(report),
+      agentWrites: 'disabled',
+    }).catch(() => {
+      // Already written by an earlier view of this run — leave it be.
+    })
+  }, [report, projectId, runId])
 
   return (
     <div className="space-y-4">
@@ -208,7 +265,91 @@ export function SwarmGrid({
           />
         ))}
       </div>
+
+      {report ? <RunReportCard report={report} /> : null}
     </div>
+  )
+}
+
+// The run's report: shown once every cell has settled. It is the swarm's
+// artifact — the actionable verdicts rolled up and ranked. Tier 1 computes it
+// from the cell findings the grid already holds; a later reducer agent can
+// replace this with a written narrative over the same persisted document.
+function RunReportCard({ report }: { report: SwarmRunReport }) {
+  const actionable = report.cells.filter(
+    (c) => c.disposition !== 'not-exposed',
+  )
+  return (
+    <div className="mt-2 rounded-lg border">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+        <div>
+          <h3 className="text-sm font-medium">Run report</h3>
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            {report.counts.total} cells ·{' '}
+            {report.counts.exposed} exposed · {report.counts.needsReview} to
+            review · {report.counts.failed} failed · {report.counts.fixPrs} fix
+            {report.counts.fixPrs === 1 ? ' PR' : ' PRs'}
+          </p>
+        </div>
+        <span className="text-muted-foreground text-xs">
+          {new Date(report.generatedAt).toLocaleString()}
+        </span>
+      </div>
+
+      {actionable.length === 0 ? (
+        <p className="text-muted-foreground px-4 py-6 text-sm">
+          Nothing exposed. Every CVE checked was not reachable in its
+          repository.
+        </p>
+      ) : (
+        <ul className="divide-y">
+          {actionable.map((c) => (
+            <ReportRow key={`${c.repository}__${c.cveId}`} cell={c} />
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ReportRow({ cell }: { cell: ReportCell }) {
+  const meta =
+    cell.disposition === 'failed'
+      ? { label: 'Failed', className: 'text-muted-foreground border-border' }
+      : DISPOSITION_META[cell.disposition]
+  return (
+    <li className="flex items-start gap-3 px-4 py-3">
+      <span
+        className={cn(
+          'mt-0.5 inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+          meta.className,
+        )}
+      >
+        {meta.label}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-mono text-xs">
+          {cell.repository}{' '}
+          <span className="text-muted-foreground">· {cell.cveId}</span>
+        </div>
+        {cell.reasoning ? (
+          <p className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5">
+            {cell.reasoning}
+          </p>
+        ) : null}
+      </div>
+      {cell.pullRequest ? (
+        <a
+          href={cell.pullRequest}
+          target="_blank"
+          rel="noreferrer"
+          className="text-status-running mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs hover:underline"
+        >
+          <ExternalLink className="size-3" />
+          Fix PR
+        </a>
+      ) : null}
+    </li>
   )
 }
 

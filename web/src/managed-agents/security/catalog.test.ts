@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildRunReport,
   cellDocumentId,
   composeCellPrompt,
   latestManifestId,
   parseCellFinding,
   parseRunManifest,
   runManifestDocumentId,
+  runReportDocumentId,
   serializeRunManifest,
   swarmCells,
+  type ReportCell,
   type SwarmPayload,
   type SwarmRunManifest,
 } from './catalog'
@@ -147,5 +150,63 @@ describe('run manifest', () => {
         { id: 'run-x__acme-web__cve-1', updatedAt: '2026-10-22T10:00:00Z' },
       ]),
     ).toBeNull()
+  })
+})
+
+describe('run report', () => {
+  const cells: ReportCell[] = [
+    { repository: 'acme/web', cveId: 'CVE-2026-9', disposition: 'not-exposed' },
+    {
+      repository: 'acme/api',
+      cveId: 'CVE-2026-2',
+      disposition: 'exposed',
+      reasoning: 'vulnerable version in lockfile',
+      pullRequest: 'https://github.com/acme/api/pull/7',
+    },
+    { repository: 'acme/db', cveId: 'CVE-2026-5', disposition: 'failed' },
+    { repository: 'acme/ui', cveId: 'CVE-2026-3', disposition: 'needs-review' },
+  ]
+  const meta = {
+    runId: 'run-abc',
+    target: 'https://app.example.com',
+    model: 'GLM-5.3',
+    generatedAt: '2026-10-22T12:00:00Z',
+  }
+
+  it('keeps the report document clear of manifests and findings', () => {
+    expect(runReportDocumentId('run-abc')).toBe('report__run-abc')
+    expect(runReportDocumentId('run-abc')).not.toBe(
+      runManifestDocumentId('run-abc'),
+    )
+  })
+
+  it('derives counts from the cells', () => {
+    const report = buildRunReport(meta, cells)
+    expect(report.counts).toEqual({
+      exposed: 1,
+      notExposed: 1,
+      needsReview: 1,
+      failed: 1,
+      fixPrs: 1,
+      total: 4,
+    })
+  })
+
+  it('ranks cells exposed → needs-review → failed → not-exposed', () => {
+    const report = buildRunReport(meta, cells)
+    expect(report.cells.map((c) => c.disposition)).toEqual([
+      'exposed',
+      'needs-review',
+      'failed',
+      'not-exposed',
+    ])
+  })
+
+  it('carries the run metadata through', () => {
+    const report = buildRunReport(meta, cells)
+    expect(report.runId).toBe('run-abc')
+    expect(report.target).toBe('https://app.example.com')
+    expect(report.model).toBe('GLM-5.3')
+    expect(report.generatedAt).toBe('2026-10-22T12:00:00Z')
   })
 })

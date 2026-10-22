@@ -265,6 +265,83 @@ export function parseCellFinding(text: string): CellFinding | null {
   }
 }
 
+// The run report: the swarm's one artifact, rolled up from every cell's verdict
+// once the grid has settled. It is computed client-side from the findings the
+// cells already saved (Tier 1 — no reducer agent), then persisted as its own
+// document so a scheduled run leaves something behind and the aggregator view
+// has a real source. The `report__` prefix keeps it clear of manifests
+// (`manifest__`) and cell findings (`<runId>__<repo>__<cve>`).
+export const SWARM_REPORT_PREFIX = 'report__'
+
+export function runReportDocumentId(runId: string): string {
+  return `${SWARM_REPORT_PREFIX}${runId}`
+}
+
+// A cell as it appears in the report: its verdict resolved, including `failed`
+// for a cell whose session stopped without saving one.
+export type ReportDisposition = CveDisposition | 'failed'
+
+export type ReportCell = {
+  readonly repository: string
+  readonly cveId: string
+  readonly disposition: ReportDisposition
+  readonly reasoning?: string
+  readonly pullRequest?: string
+}
+
+export type SwarmReportCounts = {
+  readonly exposed: number
+  readonly notExposed: number
+  readonly needsReview: number
+  readonly failed: number
+  readonly fixPrs: number
+  readonly total: number
+}
+
+export type SwarmRunReport = {
+  readonly runId: string
+  readonly target: string
+  readonly model: string
+  readonly generatedAt: string
+  readonly counts: SwarmReportCounts
+  // Ordered most-actionable first: exposed, needs-review, failed, not-exposed.
+  readonly cells: readonly ReportCell[]
+}
+
+const REPORT_ORDER: Record<ReportDisposition, number> = {
+  exposed: 0,
+  'needs-review': 1,
+  failed: 2,
+  'not-exposed': 3,
+}
+
+// Roll resolved cells into a report. Counts are derived here so a caller cannot
+// desync them from the cells; cells are sorted most-actionable first.
+export function buildRunReport(
+  meta: { runId: string; target: string; model: string; generatedAt: string },
+  cells: readonly ReportCell[],
+): SwarmRunReport {
+  const counts: SwarmReportCounts = {
+    exposed: cells.filter((c) => c.disposition === 'exposed').length,
+    notExposed: cells.filter((c) => c.disposition === 'not-exposed').length,
+    needsReview: cells.filter((c) => c.disposition === 'needs-review').length,
+    failed: cells.filter((c) => c.disposition === 'failed').length,
+    fixPrs: cells.filter((c) => Boolean(c.pullRequest)).length,
+    total: cells.length,
+  }
+  const sorted = [...cells].sort(
+    (a, b) =>
+      REPORT_ORDER[a.disposition] - REPORT_ORDER[b.disposition] ||
+      a.repository.localeCompare(b.repository) ||
+      a.cveId.localeCompare(b.cveId),
+  )
+  return { ...meta, counts, cells: sorted }
+}
+
+export function serializeRunReport(report: SwarmRunReport): string {
+  return JSON.stringify(report)
+}
+
 // Compose the controller's first-run input from the payload. This is exactly
 // what the swarm agent receives as its opening instruction when the session
 // starts — the scan → prove → report pipeline, with fixes gated by the
