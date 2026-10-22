@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -27,22 +27,41 @@ import {
 // A cell is settled when its worker has either saved a verdict or its session
 // has stopped without one. We poll both the run's sessions (for liveness) and
 // each cell's findings document (for the verdict) until every cell settles.
+//
+// A cell can fail two ways: the whole session stops (status failed/cancelled),
+// or — the common one — the session stays `idle` while its last turn is
+// `failed` (a single-turn cell whose final generation errored). So we read the
+// last turn's status, not just the session's.
+type SessionProgress = {
+  status: string
+  lastTurnStatus?: string
+}
+
 type CellState = {
   cell: SwarmCell
   sessionId: string
-  sessionStatus?: string
+  progress?: SessionProgress
   finding: CellFinding | null
 }
 
-function isSessionSettled(status: string | undefined): boolean {
-  return status === 'ended' || status === 'failed' || status === 'cancelled'
+function sessionFailed(progress: SessionProgress | undefined): boolean {
+  if (!progress) return false
+  if (progress.status === 'failed' || progress.status === 'cancelled')
+    return true
+  const turn = progress.lastTurnStatus
+  return turn === 'failed' || turn === 'errored' || turn === 'cancelled'
+}
+
+// Settled = we will never poll it again: the verdict is saved, or it failed.
+function cellSettled(state: CellState): boolean {
+  return Boolean(state.finding) || sessionFailed(state.progress)
 }
 
 function cellPhase(state: CellState): 'done' | 'failed' | 'running' | 'queued' {
   if (state.finding) return 'done'
-  if (isSessionSettled(state.sessionStatus)) return 'failed'
-  if (state.sessionStatus === 'running' || state.sessionStatus === 'idle')
-    return 'running'
+  if (sessionFailed(state.progress)) return 'failed'
+  const status = state.progress?.status
+  if (status === 'running' || status === 'idle') return 'running'
   return 'queued'
 }
 
@@ -76,27 +95,28 @@ export function SwarmGrid({
   runId: string
   cells: readonly LaunchedCell[]
 }) {
+  // Both polls stop the moment every cell has settled (verdict saved, or
+  // failed). We recompute that each render and park it in a ref the two
+  // refetchInterval closures read, so neither needs the other's query data.
+  const allSettledRef = useRef(false)
+
   // The run's live sessions, fetched by the ids the launch returned so each tile
-  // can show whether its worker is queued, running, or stopped.
+  // can show whether its worker is queued, running, stopped, or failed.
   const sessions = useQuery({
     queryKey: ['swarm-sessions', projectId, runId],
     queryFn: async () => {
       const entries = await Promise.all(
         cells.map(async ({ sessionId }) => {
           const session = await getManagedAgentSession(sessionId)
-          return [sessionId, session.status] as const
+          const turns = session.turns
+          const lastTurnStatus =
+            turns.length > 0 ? turns[turns.length - 1].status : undefined
+          return [sessionId, { status: session.status, lastTurnStatus }] as const
         }),
       )
-      return Object.fromEntries(entries)
+      return Object.fromEntries(entries) as Record<string, SessionProgress>
     },
-    refetchInterval: (query) => {
-      const data = query.state.data
-      if (!data) return 3_000
-      const allSettled = cells.every(({ sessionId }) =>
-        isSessionSettled(data[sessionId]),
-      )
-      return allSettled ? false : 3_000
-    },
+    refetchInterval: () => (allSettledRef.current ? false : 3_000),
   })
 
   // Each cell's findings document. These are created up front by the launch, so
@@ -120,17 +140,10 @@ export function SwarmGrid({
       )
       return Object.fromEntries(entries)
     },
-    refetchInterval: (query) => {
-      const data = query.state.data
-      if (!data) return 4_000
-      const allFound = cells.every(
-        ({ cell }) => data[cellDocumentId(runId, cell)],
-      )
-      return allFound ? false : 4_000
-    },
+    refetchInterval: () => (allSettledRef.current ? false : 4_000),
   })
 
-  const statusBySession = useMemo(
+  const progressBySession = useMemo(
     () => sessions.data ?? {},
     [sessions.data],
   )
@@ -138,9 +151,11 @@ export function SwarmGrid({
   const states: CellState[] = cells.map(({ cell, sessionId }) => ({
     cell,
     sessionId,
-    sessionStatus: statusBySession[sessionId],
+    progress: progressBySession[sessionId],
     finding: findings.data?.[cellDocumentId(runId, cell)] ?? null,
   }))
+
+  allSettledRef.current = states.every(cellSettled)
 
   const counts = states.reduce(
     (acc, state) => {
@@ -299,7 +314,7 @@ function CellBadge({
   if (phase === 'failed') {
     return (
       <span className="text-muted-foreground border-border inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs">
-        Stopped
+        Failed
       </span>
     )
   }
