@@ -36,7 +36,6 @@ import {
 import { installedTemplateAgentId } from '../template-continuation'
 import {
   cellDocumentId,
-  cellLabels,
   composeCellPrompt,
   composeLaunchPrompt,
   DEFAULT_SWARM_MODEL,
@@ -45,7 +44,7 @@ import {
   SECURITY_SWARM_TEMPLATE_REPOSITORY,
   SEED_CVES,
   swarmCells,
-  type SwarmCell,
+  type LaunchedCell,
   type SwarmPayload,
 } from './catalog'
 import { SwarmGrid } from './SwarmGrid'
@@ -72,7 +71,7 @@ async function waitForInstallation(id: string) {
   return installation
 }
 
-type SwarmRun = { runId: string; cells: SwarmCell[] }
+type SwarmRun = { runId: string; cells: LaunchedCell[] }
 
 export default function SecurityOnboarding() {
   const [run, setRun] = useState<SwarmRun | null>(null)
@@ -186,8 +185,8 @@ export default function SecurityOnboarding() {
       }
       const runId = `run-${crypto.randomUUID()}`
       const agentId = `${deployed.projectAgentId}@default`
-      await Promise.all(
-        cells.map(async (cell) => {
+      const launched = await Promise.all(
+        cells.map(async (cell): Promise<LaunchedCell> => {
           const id = cellDocumentId(runId, cell)
           await createManagedMemoryDocument({
             projectId: deployed.projectId,
@@ -197,19 +196,23 @@ export default function SecurityOnboarding() {
             title: `${cell.repository} · ${cell.cveId}`,
             text: '{}',
           })
-          await startManagedAgentSession(agentId, composeCellPrompt(payload, cell), {
-            memory: {
-              [SECURITY_FINDINGS_RESOURCE]: {
-                scope: 'document',
-                id,
-                access: 'read-write',
+          const { sessionId } = await startManagedAgentSession(
+            agentId,
+            composeCellPrompt(payload, cell),
+            {
+              memory: {
+                [SECURITY_FINDINGS_RESOURCE]: {
+                  scope: 'document',
+                  id,
+                  access: 'read-write',
+                },
               },
             },
-            labels: cellLabels(runId, cell),
-          })
+          )
+          return { cell, sessionId }
         }),
       )
-      return { runId, cells }
+      return { runId, cells: launched }
     },
     onSuccess: (started) => setRun(started),
     onError: (error) => notifyError("Couldn't start the swarm.", error),

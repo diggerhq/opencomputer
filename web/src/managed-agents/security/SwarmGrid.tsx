@@ -3,18 +3,16 @@ import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Loader2, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
-  getManagedAgentSessionsPage,
+  getManagedAgentSession,
   getManagedMemoryDocument,
 } from '../api'
 import {
   cellDocumentId,
-  cellLabels,
   parseCellFinding,
   SECURITY_FINDINGS_RESOURCE,
-  SWARM_CELL_LABEL,
-  SWARM_RUN_LABEL,
   type CellFinding,
   type CveDisposition,
+  type LaunchedCell,
   type SwarmCell,
 } from './catalog'
 
@@ -67,23 +65,27 @@ export function SwarmGrid({
 }: {
   projectId: string
   runId: string
-  cells: readonly SwarmCell[]
+  cells: readonly LaunchedCell[]
 }) {
-  // The run's live sessions, keyed by their per-cell label so each tile can show
-  // whether its worker is queued, running, or stopped.
+  // The run's live sessions, fetched by the ids the launch returned so each tile
+  // can show whether its worker is queued, running, or stopped.
   const sessions = useQuery({
     queryKey: ['swarm-sessions', projectId, runId],
     queryFn: async () => {
-      const page = await getManagedAgentSessionsPage({
-        projectId,
-        labels: { [SWARM_RUN_LABEL]: runId },
-      })
-      return page.sessions
+      const entries = await Promise.all(
+        cells.map(async ({ sessionId }) => {
+          const session = await getManagedAgentSession(sessionId)
+          return [sessionId, session.status] as const
+        }),
+      )
+      return Object.fromEntries(entries)
     },
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return 3_000
-      const allSettled = data.every((s) => isSessionSettled(s.status))
+      const allSettled = cells.every(({ sessionId }) =>
+        isSessionSettled(data[sessionId]),
+      )
       return allSettled ? false : 3_000
     },
   })
@@ -94,7 +96,7 @@ export function SwarmGrid({
     queryKey: ['swarm-findings', projectId, runId],
     queryFn: async () => {
       const entries = await Promise.all(
-        cells.map(async (cell) => {
+        cells.map(async ({ cell }) => {
           const read = await getManagedMemoryDocument({
             projectId,
             resource: SECURITY_FINDINGS_RESOURCE,
@@ -112,28 +114,23 @@ export function SwarmGrid({
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return 4_000
-      const allFound = cells.every((cell) => data[cellDocumentId(runId, cell)])
+      const allFound = cells.every(
+        ({ cell }) => data[cellDocumentId(runId, cell)],
+      )
       return allFound ? false : 4_000
     },
   })
 
-  const sessionByCell = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const session of sessions.data ?? []) {
-      const key = session.labels[SWARM_CELL_LABEL]
-      if (key) map.set(key, session.status)
-    }
-    return map
-  }, [sessions.data])
+  const statusBySession = useMemo(
+    () => sessions.data ?? {},
+    [sessions.data],
+  )
 
-  const states: CellState[] = cells.map((cell) => {
-    const cellKey = cellLabels(runId, cell)[SWARM_CELL_LABEL]
-    return {
-      cell,
-      sessionStatus: sessionByCell.get(cellKey),
-      finding: findings.data?.[cellDocumentId(runId, cell)] ?? null,
-    }
-  })
+  const states: CellState[] = cells.map(({ cell, sessionId }) => ({
+    cell,
+    sessionStatus: statusBySession[sessionId],
+    finding: findings.data?.[cellDocumentId(runId, cell)] ?? null,
+  }))
 
   const counts = states.reduce(
     (acc, state) => {

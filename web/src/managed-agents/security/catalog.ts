@@ -87,6 +87,14 @@ export type SwarmCell = {
   readonly cveId: string
 }
 
+// A cell once its session has been started: the launch pairs each cell with the
+// session id `startManagedAgentSession` returns, so the grid can poll that
+// session's liveness directly instead of discovering it by label.
+export type LaunchedCell = {
+  readonly cell: SwarmCell
+  readonly sessionId: string
+}
+
 // Expand the payload into the matrix of cells. Fan-out needs explicit
 // repositories and CVEs — the "all connected repositories" / "full feed"
 // shorthands only make sense for the single-session controller, so a caller
@@ -116,21 +124,6 @@ function slug(value: string): string {
 // reads them all back as a collection.
 export function cellDocumentId(runId: string, cell: SwarmCell): string {
   return `${runId}__${slug(cell.repository)}__${slug(cell.cveId)}`
-}
-
-// Labels every cell session carries, so the grid can list a run's sessions with
-// `label.swarmRun=<runId>` and map each back to its cell.
-export const SWARM_RUN_LABEL = 'swarmRun'
-export const SWARM_CELL_LABEL = 'swarmCell'
-
-export function cellLabels(
-  runId: string,
-  cell: SwarmCell,
-): Record<string, string> {
-  return {
-    [SWARM_RUN_LABEL]: runId,
-    [SWARM_CELL_LABEL]: slug(`${cell.repository}--${cell.cveId}`),
-  }
 }
 
 // One cell's first-run input: a single repository checked against a single CVE.

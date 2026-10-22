@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   cellDocumentId,
-  cellLabels,
   composeCellPrompt,
   parseCellFinding,
   swarmCells,
-  SWARM_CELL_LABEL,
-  SWARM_RUN_LABEL,
   type SwarmPayload,
 } from './catalog'
 
@@ -40,15 +37,6 @@ describe('swarm fan-out', () => {
     expect(first).toBe('run-abc__acme-web__cve-2026-1')
     expect(first).not.toContain('/')
     expect(first).not.toBe(second)
-  })
-
-  it('labels every cell with the run and a cell key', () => {
-    const labels = cellLabels('run-abc', {
-      repository: 'acme/web',
-      cveId: 'CVE-2026-1',
-    })
-    expect(labels[SWARM_RUN_LABEL]).toBe('run-abc')
-    expect(labels[SWARM_CELL_LABEL]).toBe('acme-web-cve-2026-1')
   })
 
   it('narrows the prompt to a single repository and CVE', () => {
