@@ -11,7 +11,7 @@ import type {
 // state and capacity only (design 002, forbidden vocabulary).
 
 export const START_SESSION_COPY =
-  'Mention @OpenComputer in any channel, or DM it.'
+  'Mention @Computer in any channel, or DM it.'
 
 export type ComputerPresentation = {
   /** StatusBadge key: picks the tone and icon. */
@@ -36,7 +36,7 @@ export function computerPresentation(
       badge: 'not_deployed',
       label: 'Not set up yet',
       description:
-        'Invite OpenComputer to your Slack and your computer wakes up, ready in seconds.',
+        'Invite Computer to your Slack and your computer wakes up, ready in seconds.',
     }
   }
   if (!computer) {
@@ -185,7 +185,7 @@ export function setupStep(
 
 /** The lead of the last step, true to where the computer is. */
 export function firstTaskLead(computer: Computer | null): string {
-  const ways = 'DM it, or mention @OpenComputer in any channel.'
+  const ways = 'DM it, or mention @Computer in any channel.'
   if (computer?.state === 'ready' && computer.connected)
     return `Your computer is ready. ${ways}`
   if (computer?.state === 'parked')
