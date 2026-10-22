@@ -119,8 +119,71 @@ describe('ManagedAgentChatTransport', () => {
       'And the next one?',
       expect.any(Function),
       undefined,
+      [],
     )
     expect(runManagedAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the images of the message, and lets an image go without text', async () => {
+    runManagedAgent.mockReset()
+    runManagedAgent.mockResolvedValue({ sessionId: 'session-9', turnId: 't' })
+    const transport = new ManagedAgentChatTransport(
+      'agent-1',
+      undefined,
+      () => undefined,
+      false,
+    )
+    await readChunks(
+      await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            parts: [
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                filename: 'dot.png',
+                url: 'data:image/png;base64,iVBORw0KGgo=',
+              },
+              {
+                type: 'file',
+                mediaType: 'application/pdf',
+                url: 'https://example.com/a.pdf',
+              },
+            ],
+          },
+        ],
+        abortSignal: undefined,
+      }),
+    )
+    expect(runManagedAgent).toHaveBeenCalledWith(
+      'agent-1',
+      '',
+      expect.any(Function),
+      expect.objectContaining({
+        attachments: [
+          {
+            type: 'image',
+            mediaType: 'image/png',
+            data: 'iVBORw0KGgo=',
+            name: 'dot.png',
+          },
+        ],
+      }),
+    )
+    expect(() =>
+      transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: messages('  '),
+        abortSignal: undefined,
+      }),
+    ).toThrow('Enter a message')
   })
 
   it('paces bursty deltas into a steady trickle without changing the transcript', async () => {

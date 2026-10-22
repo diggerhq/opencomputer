@@ -5,6 +5,7 @@ import {
   type ManagedAgentEvent,
 } from './api'
 import { UIMessageChunkPacer, type ChunkPacerOptions } from './chunk-pacer'
+import { imageAttachments } from './images'
 
 function eventText(event: ManagedAgentEvent) {
   return typeof event.data.text === 'string' ? event.data.text : ''
@@ -18,16 +19,18 @@ function eventError(event: ManagedAgentEvent) {
       : 'The agent could not complete this request.'
 }
 
-function lastUserText(messages: UIMessage[]) {
+function lastUserMessage(messages: UIMessage[]) {
   const message = [...messages]
     .reverse()
     .find((candidate) => candidate.role === 'user')
-  return (
-    message?.parts
-      .filter((part) => part.type === 'text')
-      .map((part) => part.text)
-      .join('') ?? ''
-  )
+  return {
+    text:
+      message?.parts
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('') ?? '',
+    attachments: imageAttachments(message?.parts ?? []),
+  }
 }
 
 export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
@@ -46,8 +49,11 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
     messages,
     abortSignal,
   }: Parameters<ChatTransport<UIMessage>['sendMessages']>[0]) {
-    const input = lastUserText(messages).trim()
-    if (!input) throw new Error('Enter a message before sending.')
+    const last = lastUserMessage(messages)
+    const input = last.text.trim()
+    const { attachments } = last
+    if (!input && !attachments.length)
+      throw new Error('Enter a message before sending.')
 
     const messageId = crypto.randomUUID()
     const textId = `${messageId}:text`
@@ -160,9 +166,11 @@ export class ManagedAgentChatTransport implements ChatTransport<UIMessage> {
                   input,
                   onEvent,
                   abortSignal,
+                  attachments,
                 )
               : runManagedAgent(this.agentId, input, onEvent, {
                   signal: abortSignal,
+                  attachments,
                   onSession: (sessionId) => {
                     this.sessionId = sessionId
                     this.onSession(sessionId)
