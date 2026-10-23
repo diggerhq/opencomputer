@@ -159,3 +159,50 @@ test("fails the collector invocation when the durable sink rejects a batch", asy
     console.error = originalConsoleError;
   }
 });
+
+test("lifts correlation ids from structured log lines into snake_case fields", async () => {
+  const originalFetch = globalThis.fetch;
+  let records: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    records = JSON.parse(String(init?.body));
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await worker.tail([{
+      scriptName: "managed-agents",
+      outcome: "ok",
+      logs: [
+        {
+          timestamp: Date.parse("2026-10-17T12:00:00Z"),
+          level: "info",
+          message: [JSON.stringify({ level: "info", event: "session.started", sessionId: "ses_1", agentId: "agt_1", service: "spoofed" })],
+        },
+        {
+          timestamp: Date.parse("2026-10-17T12:00:01Z"),
+          level: "warn",
+          message: ["turn failed", { session_id: "ses_2", trace_id: "tr_1", secret: "not-lifted" }],
+        },
+        {
+          timestamp: Date.parse("2026-10-17T12:00:02Z"),
+          level: "log",
+          message: ["{not json", 42],
+        },
+      ],
+      exceptions: [],
+    }], env, {} as ExecutionContext);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(records.length, 3);
+  assert.equal(records[0]?.event, "session.started");
+  assert.equal(records[0]?.session_id, "ses_1");
+  assert.equal(records[0]?.agent_id, "agt_1");
+  assert.equal(records[0]?.service, "managed-agents");
+  assert.equal(records[1]?.session_id, "ses_2");
+  assert.equal(records[1]?.trace_id, "tr_1");
+  assert.equal(records[1]?.secret, undefined);
+  assert.equal(records[2]?.session_id, undefined);
+  assert.equal(records[2]?.msg, "{not json 42");
+});

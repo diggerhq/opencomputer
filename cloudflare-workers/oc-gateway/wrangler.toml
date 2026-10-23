@@ -35,6 +35,11 @@ class_name = "DeployLease"
 tag = "v1"
 new_sqlite_classes = ["SpendCounter", "DeployLease"]
 
+# Ship console output and exceptions to Axiom (dataset oc-platform-edge) with
+# the rest of the serverless-agent logs, as oc-agent-dispatch-prod does.
+[[env.production.tail_consumers]]
+service = "opencomputer-log-tail-prod"
+
 [env.production.vars]
 GATEWAY_ORKEY_URL = "https://api.opencomputer.dev/internal/gateway/org-key"
 
