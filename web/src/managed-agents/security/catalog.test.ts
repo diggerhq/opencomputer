@@ -69,11 +69,14 @@ describe('swarm fan-out', () => {
     expect(prompt).toContain('scan_surface')
   })
 
-  it('seeds the cell with live feeds and keeps probing scoped to the target', () => {
-    const prompt = composeCellPrompt(payload, {
-      cveId: 'CVE-2026-1',
-      repositories: ['acme/web'],
-    })
+  it('seeds the cell with live feeds and, in active mode, probes scoped to the target', () => {
+    const prompt = composeCellPrompt(
+      { ...payload, activeScan: true },
+      {
+        cveId: 'CVE-2026-1',
+        repositories: ['acme/web'],
+      },
+    )
     expect(prompt).toContain('cve.now')
     expect(prompt).toContain('pwn.watch')
     expect(prompt).toContain('/workspace')
@@ -82,6 +85,20 @@ describe('swarm fan-out', () => {
     // The cell is told the preinstalled browser exists, not left to discover it.
     expect(prompt).toContain('headless Chromium is preinstalled')
     expect(prompt).toContain('playwright')
+  })
+
+  it('defaults to a passive scan — no browser, no login, scan_surface only', () => {
+    const prompt = composeCellPrompt(payload, {
+      cveId: 'CVE-2026-1',
+      repositories: ['acme/web'],
+    })
+    expect(prompt).toContain('Scan mode: PASSIVE')
+    expect(prompt).toContain('scan_surface')
+    // The active-only affordances must not leak into a passive run.
+    expect(prompt).not.toContain('headless Chromium is preinstalled')
+    expect(prompt).not.toContain('SWARM_LOGIN_USERNAME')
+    // Still feed-seeded (reading public intel is not probing).
+    expect(prompt).toContain('cve.now')
   })
 
   it('drops target-only discovery steps when no target is given', () => {
@@ -93,9 +110,14 @@ describe('swarm fan-out', () => {
     expect(prompt).toContain('reachable in your code')
   })
 
-  it('tells the cell to log in when the scan is authenticated', () => {
+  it('tells the cell to log in when the scan is authenticated and active', () => {
     const prompt = composeCellPrompt(
-      { ...payload, authenticated: true, loginUrl: 'https://app.example.com/login' },
+      {
+        ...payload,
+        authenticated: true,
+        activeScan: true,
+        loginUrl: 'https://app.example.com/login',
+      },
       { cveId: 'CVE-2026-1', repositories: ['acme/web'] },
     )
     // Reads the creds from the environment, never carries them.
@@ -105,13 +127,23 @@ describe('swarm fan-out', () => {
     expect(prompt).toContain('--no-sandbox')
   })
 
-  it('says nothing about logging in for an unauthenticated scan', () => {
+  it('does not log in when credentials are given but the scan stays passive', () => {
+    const prompt = composeCellPrompt(
+      { ...payload, authenticated: true, loginUrl: 'https://app.example.com/login' },
+      { cveId: 'CVE-2026-1', repositories: ['acme/web'] },
+    )
+    // Active scan is the gate: no active flag, no login, whatever the creds say.
+    expect(prompt).not.toContain('SWARM_LOGIN_USERNAME')
+    expect(prompt).not.toContain('throwaway test account')
+  })
+
+  it('says nothing about an authenticated login for an unauthenticated scan', () => {
     const prompt = composeCellPrompt(payload, {
       cveId: 'CVE-2026-1',
       repositories: ['acme/web'],
     })
     expect(prompt).not.toContain('SWARM_LOGIN_USERNAME')
-    expect(prompt).not.toContain('log in')
+    expect(prompt).not.toContain('throwaway test account')
   })
 })
 

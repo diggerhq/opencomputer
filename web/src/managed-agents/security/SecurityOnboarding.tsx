@@ -693,6 +693,10 @@ function PayloadBuilder({
   const [loginUrl, setLoginUrl] = useState('')
   const [loginUsername, setLoginUsername] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
+  // Active scan is opt-in, off by default. Off: passive fingerprint + static code
+  // analysis, touching the target only with scan_surface. On: the cell may log
+  // in, drive a browser and actively probe the named host.
+  const [activeScan, setActiveScan] = useState(false)
   const [repositories, setRepositories] = useState<string[]>([])
   const [cveIds, setCveIds] = useState<string[]>([])
   const [preview, setPreview] = useState<string | null>(null)
@@ -740,10 +744,11 @@ function PayloadBuilder({
       cveIds,
       model: DEFAULT_SWARM_MODEL,
       authenticated,
+      activeScan,
       // Non-secret, so it may ride in the payload; the username/password do not.
       ...(loginUrl.trim() ? { loginUrl: loginUrl.trim() } : {}),
     }),
-    [target, declaration, repositories, cveIds, authenticated, loginUrl],
+    [target, declaration, repositories, cveIds, authenticated, activeScan, loginUrl],
   )
 
   // Default to every connected repo the moment the list lands — the operator
@@ -842,6 +847,27 @@ function PayloadBuilder({
           </span>
         ) : null}
       </Field>
+
+      <label
+        htmlFor="swarm-active-scan"
+        className="flex cursor-pointer items-start gap-2.5 rounded-md border p-3 text-sm"
+      >
+        <Checkbox
+          id="swarm-active-scan"
+          checked={activeScan}
+          onCheckedChange={(v) => setActiveScan(v === true)}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="font-medium">Active scan</span>
+          <span className="text-muted-foreground block">
+            Off by default: the swarm fingerprints passively and proves reachability
+            from your code. Turn on to let each agent log in with the test account,
+            drive a browser and actively probe the target's routes to confirm real
+            exposure. Required for the test login above to take effect.
+          </span>
+        </span>
+      </label>
 
       <Field
         label="Repositories"

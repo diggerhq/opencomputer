@@ -37,6 +37,12 @@ export type SwarmPayload = {
   // reads them from its environment at run time.
   readonly authenticated?: boolean
   readonly loginUrl?: string
+  // Active scan. Off by default: the swarm fingerprints passively and proves
+  // reachability by reading code, touching the target with nothing but
+  // scan_surface. On: the cell may log in, drive a browser and actively exercise
+  // the mapped routes on the named host to prove exposure. The operator opts in
+  // per run with the onboarding checkbox; the cell agent branches on this flag.
+  readonly activeScan?: boolean
 }
 
 // Encrypted runtime-variable names the onboarding writes and every cell reads
@@ -206,10 +212,29 @@ export function listManifestDocs(
 // evidence" reads identically everywhere. Scoped hard to the attested host — the
 // authorization boundary is the operator's ownership declaration, so probing
 // must never leave that one target.
-export function discoveryLines(target: string): string[] {
+// The one line that tells the cell which posture it is running in. The cell
+// agent keys its hard rules off this: PASSIVE is the default and forbids login,
+// browser-driven probing and intrusive traffic; ACTIVE opts into them, scoped to
+// the named host. Stated explicitly so the posture is never inferred.
+export function scanModeLine(activeScan: boolean): string {
+  return activeScan
+    ? 'Scan mode: ACTIVE — you may log in with the provided test account, drive a browser and actively exercise the mapped routes on the named target to prove exposure. Stay on that host.'
+    : 'Scan mode: PASSIVE — fingerprint with scan_surface and prove reachability from the code only. Do not log in, drive a browser, or send intrusive traffic.'
+}
+
+export function discoveryLines(target: string, activeScan: boolean): string[] {
   if (!target) {
     return [
       'Read the repository clones to prove whether this CVE is reachable in your code, then save the finding with memory_save.',
+    ]
+  }
+  if (!activeScan) {
+    return [
+      'Prove reachability passively — fingerprint and read, do not probe:',
+      `- Fingerprint ${target} with scan_surface (public headers and files over https only). Stay on ${target}; never touch another host.`,
+      '- Read the repository clones to derive their routes and dependencies, and judge whether this CVE is actually reachable in the code that host serves.',
+      '- Do not log in, drive a browser, send payloads, or exercise routes — this is a passive scan.',
+      '- Save the finding with memory_save.',
     ]
   }
   return [
@@ -254,11 +279,12 @@ export function composeCellPrompt(payload: SwarmPayload, cell: SwarmCell): strin
       ? `Repositories available as evidence (investigate across all of them): ${cell.repositories.join(', ')}`
       : null,
     `Model: ${payload.model}`,
+    payload.target ? scanModeLine(payload.activeScan ?? false) : null,
     '',
     ...feedSeedingLines(),
     '',
-    ...authenticatedLoginLines(payload),
-    ...discoveryLines(payload.target),
+    ...(payload.activeScan ? authenticatedLoginLines(payload) : []),
+    ...discoveryLines(payload.target, payload.activeScan ?? false),
     'If the verdict is EXPOSED, open_fix_pull_request (dependency-only, single pin). Honor PUBLISH_ENABLED — dry run unless it is enabled.',
   ].filter((line): line is string => line !== null)
   return lines.join('\n')
@@ -465,10 +491,11 @@ export function composeLaunchPrompt(payload: SwarmPayload): string {
     `CVE seeds: ${cves}`,
     `Discovery angles to spread across the swarm: ${angles}`,
     `Model: ${payload.model}`,
+    payload.target ? scanModeLine(payload.activeScan ?? false) : null,
     '',
     ...feedSeedingLines(),
     '',
-    ...discoveryLines(payload.target),
+    ...discoveryLines(payload.target, payload.activeScan ?? false),
     'For any EXPOSED verdict, open_fix_pull_request (dependency-only, single pin). Honor PUBLISH_ENABLED — dry run unless it is enabled.',
   ].filter((line): line is string => line !== null)
   return lines.join('\n')
