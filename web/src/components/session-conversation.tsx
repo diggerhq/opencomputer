@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Hourglass } from 'lucide-react'
 import type { SessionEvent } from '@/api/client'
+import { Shimmer } from '@/components/shimmer/components/shimmer'
 import { Button } from '@/components/ui/button'
 import { UPGRADE_PLAN_LABEL, upgradeHref } from '@/lib/billing-onramp'
 import {
@@ -97,7 +98,7 @@ function TurnStateChip({
           aria-hidden="true"
         />
       )}
-      {state === 'queued' ? 'Queued' : 'Working'}
+      {state === 'queued' ? 'Queued' : <Shimmer>Working</Shimmer>}
     </span>
   )
 }
