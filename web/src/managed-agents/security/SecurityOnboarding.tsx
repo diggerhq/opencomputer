@@ -62,8 +62,8 @@ import { fetchLiveCves, type FeedCve } from './feeds'
 type SwarmCredentials = { username: string; password: string }
 
 // Each cell is one microVM session — one agent per CVE — so cap the swarm to
-// keep a careless "top 200" from spinning up hundreds of sandboxes at once.
-const MAX_SWARM_CELLS = 24
+// keep a careless "top 500" from spinning up hundreds of sandboxes at once.
+const MAX_SWARM_CELLS = 100
 
 // How many of the live, severity-sorted CVEs to preselect on first load, so a
 // first swarm runs with no typing. Clamped to the cap and the feed size.
@@ -702,7 +702,7 @@ function PayloadBuilder({
   // browser fetches it directly — no backend proxy.
   const liveCves = useQuery({
     queryKey: ['swarm-live-cves'],
-    queryFn: ({ signal }) => fetchLiveCves(50, signal),
+    queryFn: ({ signal }) => fetchLiveCves(100, signal),
     staleTime: 5 * 60_000,
     retry: 1,
   })
