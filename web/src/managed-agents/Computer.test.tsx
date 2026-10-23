@@ -447,7 +447,7 @@ describe('Computer page', () => {
     )
     const current = container.querySelector('li[aria-current="step"]')!
     expect(current.textContent).toContain('Give it a first task')
-    expect(current.textContent).toContain('@OpenComputer why is the')
+    expect(current.textContent).toContain('@Computer why is the')
     expect(current.textContent).toContain('Waiting for its first task')
     expect(
       current.querySelector('a[href="https://app.slack.com/client/T1"]')
