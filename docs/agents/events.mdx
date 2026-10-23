@@ -85,6 +85,12 @@ A turn that was queued behind a turn that asked a question is cancelled
 with `reason: "held"` and the `questionId`: its input did not run on its own
 and is delivered with the answer as `steering`.
 
+An [event subscription](/agents/api#event-subscriptions) delivers these
+outcomes to another session; with `sourceLabels` it selects only sessions
+that carried those labels when the turn was accepted, so a coordinating
+session that labels the sessions it starts receives their outcomes and no
+other session's.
+
 #### Public failures
 
 A failure's `data` is a stable `code`, a fixed `message` for that code, and

@@ -499,6 +499,7 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/projects/<project-
 | Field | Meaning |
 | --- | --- |
 | `agentId` | Optional. Outcomes of this agent only; omitted, every agent in the project. |
+| `sourceLabels` | Optional. Outcomes of sessions whose [labels](#labels) contain every one of these pairs (1 to 8, same rules as labels), read when the turn was accepted; a coordinating session labels the sessions it starts with its own id and subscribes with that label, so it receives their outcomes and no other session's. |
 | `events` | One or more of `turn.completed`, `turn.failed`, `turn.cancelled`. Turn outcomes, not session ends. |
 | `destination` | `{ type: "session", sessionId }`: a session of an agent in this project that can still take turns. |
 | `environment` | `development` or `production`. A subscription is scoped to one environment: it selects outcomes recorded there and its destination session runs there. |
@@ -532,8 +533,9 @@ when the subscription is deleted or the destination has ended.
 | `nextAttemptAt` | When a pending delivery is retried |
 | `error` | `subscription_unavailable`, `target_missing`, `target_ended`, or `delivery_failed` |
 
-The delivered event names identifiers and the outcome; a completed turn's
-final message is included, bounded to 16 KB. The receiving agent should
+The delivered event names identifiers and the outcome, and the source
+session's `labels` when it has any; a completed turn's final message is
+included, bounded to 16 KB. The receiving agent should
 treat that text as data about another agent's work, not as instructions.
 
 ## Linear connections
