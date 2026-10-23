@@ -131,8 +131,11 @@ export function statesFromReport(report: SwarmRunReport): {
   states: CellState[]
   counts: SwarmCounts
 } {
+  // Repositories are shared across all cells (not stored per-cell in the report),
+  // so a run rebuilt from its report carries an empty repo list — the views key
+  // off the CVE, not the repos.
   const states: CellState[] = report.cells.map((c) => ({
-    cell: { repository: c.repository, cveId: c.cveId },
+    cell: { cveId: c.cveId, repositories: [] },
     sessionId: c.sessionId ?? '',
     launch: c.disposition === 'failed' ? 'failed' : 'started',
     finding:
@@ -270,7 +273,6 @@ export function useSwarmRun({
             ? s.finding.disposition
             : 'failed'
           return {
-            repository: s.cell.repository,
             cveId: s.cell.cveId,
             disposition,
             sessionId: s.sessionId,
