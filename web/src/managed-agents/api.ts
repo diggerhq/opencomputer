@@ -2655,7 +2655,8 @@ export async function runManagedAgent(
 /**
  * Creates a session and queues its first turn without waiting for the run to
  * finish. This is the fan-out primitive: a swarm launch calls it once per cell
- * (one repository × one CVE), each with its own findings-document binding and
+ * (one agent per CVE, every repo as shared evidence), each with its own
+ * findings-document binding and
  * labels that tie the session back to the run and cell, then returns the
  * session ids for the grid to poll. Unlike `runManagedAgent` it never blocks on
  * completion or suspends — the turn is admitted in `queue` mode and runs on the

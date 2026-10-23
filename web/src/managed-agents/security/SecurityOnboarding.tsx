@@ -46,7 +46,6 @@ import {
   SCAN_DECLARATION,
   SECURITY_FINDINGS_RESOURCE,
   SECURITY_SWARM_TEMPLATE_REPOSITORY,
-  SEED_CVES,
   serializeRunManifest,
   swarmCells,
   SWARM_LOGIN_PASSWORD_VAR,
@@ -55,15 +54,20 @@ import {
   type SwarmCell,
   type SwarmPayload,
 } from './catalog'
+import { fetchLiveCves, type FeedCve } from './feeds'
 
 // The throwaway test-account credentials, carried from the form to the launch
 // handler out-of-band from SwarmPayload so they never reach the cell prompt or
 // the run manifest. They go only to the project's encrypted runtime variables.
 type SwarmCredentials = { username: string; password: string }
 
-// Each cell is one microVM session, so cap the matrix to keep an accidental
-// 20×20 launch from spinning up hundreds of sandboxes at once.
+// Each cell is one microVM session — one agent per CVE — so cap the swarm to
+// keep a careless "top 200" from spinning up hundreds of sandboxes at once.
 const MAX_SWARM_CELLS = 24
+
+// How many of the live, severity-sorted CVEs to preselect on first load, so a
+// first swarm runs with no typing. Clamped to the cap and the feed size.
+const DEFAULT_TOP_N = 8
 
 // Deploying the swarm project is no longer a step the operator clicks through —
 // it starts on its own the moment GitHub is connected and runs while they fill
@@ -143,7 +147,7 @@ async function launchCellsInBackground(args: {
           resource: SECURITY_FINDINGS_RESOURCE,
           environment: 'default',
           id,
-          title: `${cell.repository} · ${cell.cveId}`,
+          title: cell.cveId,
           text: '{}',
         })
         const { sessionId } = await startManagedAgentSession(
@@ -356,8 +360,9 @@ export default function SecurityOnboarding() {
         ? 'deploying'
         : 'idle'
 
-  // Launch fans the payload's repository × CVE matrix out into one bound session
-  // per cell. The slow part is booting each cell's sandbox, so we don't block the
+  // Launch fans the payload's picked CVEs out into one bound session per CVE —
+  // each agent hunts a single CVE against the live target, with every repo as
+  // shared evidence. The slow part is booting each cell's sandbox, so we don't block the
   // UI on it: we write the run manifest immediately with every cell `starting`,
   // navigate to the run page, then boot the sandboxes in the background (see
   // launchCellsInBackground), flipping each cell to `started` with its session id
@@ -380,11 +385,11 @@ export default function SecurityOnboarding() {
     }> => {
       const cells = swarmCells(payload)
       if (cells.length === 0) {
-        throw new Error('Add at least one repository and one CVE to swarm.')
+        throw new Error('Pick at least one CVE and one repository to swarm.')
       }
       if (cells.length > MAX_SWARM_CELLS) {
         throw new Error(
-          `That is ${cells.length} cells (repos × CVEs). Trim to ${MAX_SWARM_CELLS} or fewer — each cell is its own sandbox.`,
+          `That is ${cells.length} CVEs. Pick ${MAX_SWARM_CELLS} or fewer — each CVE is its own sandbox.`,
         )
       }
       // The deploy runs in the background from the moment GitHub connects. If the
@@ -689,11 +694,36 @@ function PayloadBuilder({
   const [loginUsername, setLoginUsername] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [repositories, setRepositories] = useState<string[]>([])
-  // Prefill every CVE in this week's feed so a first swarm runs with no typing.
-  const [cveIds, setCveIds] = useState<string[]>(() =>
-    SEED_CVES.map((c) => c.id),
-  )
+  const [cveIds, setCveIds] = useState<string[]>([])
   const [preview, setPreview] = useState<string | null>(null)
+
+  // The live, severity-sorted CVE feed. We pull a generous slice (worst first)
+  // and let the operator pick the top N to swarm. cve.now sends CORS `*`, so the
+  // browser fetches it directly — no backend proxy.
+  const liveCves = useQuery({
+    queryKey: ['swarm-live-cves'],
+    queryFn: ({ signal }) => fetchLiveCves(50, signal),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  })
+  const feed = useMemo(() => liveCves.data ?? [], [liveCves.data])
+
+  // Preselect the top N by severity the first time the feed lands, so a first
+  // swarm runs with no typing. One-shot: once defaulted (or the operator edits)
+  // we leave the selection alone.
+  const cvesDefaultedRef = useRef(false)
+  useEffect(() => {
+    if (cvesDefaultedRef.current || feed.length === 0) return
+    cvesDefaultedRef.current = true
+    const n = Math.min(DEFAULT_TOP_N, feed.length, MAX_SWARM_CELLS)
+    setCveIds(feed.slice(0, n).map((c) => c.id))
+  }, [feed])
+
+  // Replace the selection with the top N of the live feed (severity-sorted).
+  const pickTopN = (n: number) => {
+    const clamped = Math.max(0, Math.min(n, feed.length))
+    setCveIds(feed.slice(0, clamped).map((c) => c.id))
+  }
 
   // A login needs both a username and a password; the URL is optional (the cell
   // can find the login page itself). Only then is the scan authenticated.
@@ -737,11 +767,13 @@ function PayloadBuilder({
   // unauthenticated, so block the launch until both fields are set or both empty.
   const loginComplete =
     (loginUsername.trim() === '') === (loginPassword === '')
-  // Each cell is one sandbox, so a repository × CVE matrix past the cap is a
-  // launch we won't start — surface it before the click, not on it.
-  const cellCount = repositories.length * cveIds.length
+  // One agent per picked CVE — so the cell count is just the CVEs. Each cell is
+  // its own sandbox, so a pick past the cap is a launch we won't start; surface
+  // it before the click, not on it.
+  const cellCount = cveIds.length
   const overCap = cellCount > MAX_SWARM_CELLS
-  // Fan-out needs explicit repositories: one session per repository × CVE cell.
+  // A swarm needs at least one CVE to hunt and at least one repo as shared
+  // evidence for every cell to investigate against.
   const ready =
     declaration &&
     cveIds.length > 0 &&
@@ -813,7 +845,7 @@ function PayloadBuilder({
 
       <Field
         label="Repositories"
-        hint="Every repo from your GitHub install, selected by default. Each repository is checked against each CVE as its own parallel cell."
+        hint="Every repo from your GitHub install, selected by default. These are shared evidence — every CVE agent gets all of them cloned to investigate the target against."
       >
         <RepoPicker
           available={availableRepos}
@@ -824,40 +856,19 @@ function PayloadBuilder({
       </Field>
 
       <Field
-        label="CVEs"
-        hint="This week's feed, pre-selected. Trim to focus a run."
+        label="CVEs to swarm"
+        hint="This week's feed, newest and most severe first. Pick the top N by severity — one agent hunts each — or fine-tune the list below."
       >
-        <div className="grid gap-1.5 sm:grid-cols-2">
-          {SEED_CVES.map((cve) => {
-            const checked = cveIds.includes(cve.id)
-            return (
-              <label
-                key={cve.id}
-                htmlFor={`cve-${cve.id}`}
-                className="hover:bg-muted/50 flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 text-sm"
-              >
-                <Checkbox
-                  id={`cve-${cve.id}`}
-                  checked={checked}
-                  onCheckedChange={(value) =>
-                    setCveIds((current) =>
-                      value
-                        ? [...current, cve.id]
-                        : current.filter((id) => id !== cve.id),
-                    )
-                  }
-                  className="mt-0.5"
-                />
-                <span className="min-w-0">
-                  <span className="block font-mono text-xs">{cve.id}</span>
-                  <span className="text-muted-foreground block truncate">
-                    {cve.product} · {cve.severity} {cve.cvss.toFixed(1)}
-                  </span>
-                </span>
-              </label>
-            )
-          })}
-        </div>
+        <CvePicker
+          feed={feed}
+          loading={liveCves.isLoading}
+          error={liveCves.isError}
+          onRetry={() => void liveCves.refetch()}
+          selected={cveIds}
+          onChange={setCveIds}
+          onPickTopN={pickTopN}
+          maxCells={MAX_SWARM_CELLS}
+        />
       </Field>
 
       <Field label="Model">
@@ -897,17 +908,17 @@ function PayloadBuilder({
         >
           Preview payload
         </Button>
-        {repositories.length > 0 && cveIds.length > 0 ? (
+        {cveIds.length > 0 ? (
           <span
             className={cn(
               'text-xs',
               overCap ? 'text-destructive' : 'text-muted-foreground',
             )}
           >
-            {repositories.length} × {cveIds.length} = {cellCount} cell
-            {cellCount === 1 ? '' : 's'}
+            {cellCount} agent{cellCount === 1 ? '' : 's'} ·{' '}
+            {repositories.length} repo{repositories.length === 1 ? '' : 's'} each
             {overCap
-              ? ` — over the ${MAX_SWARM_CELLS} limit, trim repositories or CVEs`
+              ? ` — over the ${MAX_SWARM_CELLS} limit, pick fewer CVEs`
               : null}
           </span>
         ) : null}
@@ -1065,6 +1076,173 @@ function RepoPicker({
           ))}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// The CVE band shown on each row, derived from the stated severity or, failing
+// that, the CVSS score. Drives the badge colour and label.
+function cveSeverityLabel(cve: FeedCve): { label: string; className: string } {
+  const band =
+    cve.statedSeverity?.toLowerCase() ??
+    (typeof cve.cvss === 'number'
+      ? cve.cvss >= 9
+        ? 'critical'
+        : cve.cvss >= 7
+          ? 'high'
+          : cve.cvss >= 4
+            ? 'medium'
+            : 'low'
+      : null)
+  switch (band) {
+    case 'critical':
+      return { label: 'Critical', className: 'text-destructive' }
+    case 'high':
+      return { label: 'High', className: 'text-destructive/80' }
+    case 'medium':
+      return { label: 'Medium', className: 'text-muted-foreground' }
+    case 'low':
+      return { label: 'Low', className: 'text-muted-foreground/70' }
+    default:
+      return { label: 'Unscored', className: 'text-muted-foreground/70' }
+  }
+}
+
+// The live-CVE picker: pick the top N by severity in one move, or toggle rows to
+// fine-tune. The feed arrives severity-sorted (worst first), so "top N" is just
+// the first N. Rows past the cap are disabled unless already selected.
+function CvePicker({
+  feed,
+  loading,
+  error,
+  onRetry,
+  selected,
+  onChange,
+  onPickTopN,
+  maxCells,
+}: {
+  feed: FeedCve[]
+  loading: boolean
+  error: boolean
+  onRetry: () => void
+  selected: string[]
+  onChange: (ids: string[]) => void
+  onPickTopN: (n: number) => void
+  maxCells: number
+}) {
+  const [topN, setTopN] = useState(DEFAULT_TOP_N)
+
+  if (loading) {
+    return (
+      <div className="text-muted-foreground inline-flex items-center gap-2 text-sm">
+        <Loader2 className="size-4 animate-spin" />
+        Loading this week's CVE feed…
+      </div>
+    )
+  }
+  if (error || feed.length === 0) {
+    return (
+      <div className="flex items-center gap-3 text-sm">
+        <span className="text-destructive">
+          {error ? "Couldn't load the live CVE feed." : 'No CVEs in the feed right now.'}
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-foreground underline underline-offset-4"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  const cap = Math.min(maxCells, feed.length)
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground text-xs">Pick the top</span>
+        <Input
+          type="number"
+          min={1}
+          max={cap}
+          value={topN}
+          onChange={(e) => setTopN(Number(e.target.value))}
+          className="w-20"
+        />
+        <span className="text-muted-foreground text-xs">by severity</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onPickTopN(Math.max(1, Math.min(topN, cap)))}
+        >
+          Select top {Math.max(1, Math.min(topN, cap))}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => onChange([])}
+          disabled={selected.length === 0}
+        >
+          Clear
+        </Button>
+        <span className="text-muted-foreground ml-auto text-xs">
+          {selected.length} of {feed.length} selected
+        </span>
+      </div>
+
+      <div className="grid max-h-80 gap-1.5 overflow-auto sm:grid-cols-2">
+        {feed.map((cve) => {
+          const checked = selected.includes(cve.id)
+          const sev = cveSeverityLabel(cve)
+          const atCap = !checked && selected.length >= maxCells
+          return (
+            <label
+              key={cve.id}
+              htmlFor={`cve-${cve.id}`}
+              className={cn(
+                'flex items-start gap-2.5 rounded-md border px-3 py-2 text-sm',
+                atCap
+                  ? 'cursor-not-allowed opacity-50'
+                  : 'hover:bg-muted/50 cursor-pointer',
+              )}
+            >
+              <Checkbox
+                id={`cve-${cve.id}`}
+                checked={checked}
+                disabled={atCap}
+                onCheckedChange={(value) =>
+                  onChange(
+                    value
+                      ? [...selected, cve.id]
+                      : selected.filter((id) => id !== cve.id),
+                  )
+                }
+                className="mt-0.5"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="font-mono text-xs">{cve.id}</span>
+                  {cve.kev ? (
+                    <span className="text-destructive text-[10px] font-semibold uppercase">
+                      KEV
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-muted-foreground block truncate">
+                  {cve.title}
+                </span>
+                <span className={cn('block text-xs', sev.className)}>
+                  {sev.label}
+                  {typeof cve.cvss === 'number' ? ` · ${cve.cvss.toFixed(1)}` : ''}
+                </span>
+              </span>
+            </label>
+          )
+        })}
+      </div>
     </div>
   )
 }

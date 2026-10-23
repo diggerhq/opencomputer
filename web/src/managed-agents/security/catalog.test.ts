@@ -26,44 +26,53 @@ const payload: SwarmPayload = {
 }
 
 describe('swarm fan-out', () => {
-  it('expands the repository × CVE matrix into one cell per pair', () => {
+  it('expands into one cell per CVE, every repo shared as evidence', () => {
     expect(swarmCells(payload)).toEqual([
-      { repository: 'acme/web', cveId: 'CVE-2026-1' },
-      { repository: 'acme/web', cveId: 'CVE-2026-2' },
-      { repository: 'acme/api', cveId: 'CVE-2026-1' },
-      { repository: 'acme/api', cveId: 'CVE-2026-2' },
+      { cveId: 'CVE-2026-1', repositories: ['acme/web', 'acme/api'] },
+      { cveId: 'CVE-2026-2', repositories: ['acme/web', 'acme/api'] },
     ])
   })
 
-  it('is empty when either dimension is empty', () => {
-    expect(swarmCells({ ...payload, repositories: [] })).toEqual([])
+  it('is empty only when there are no CVEs to hunt', () => {
     expect(swarmCells({ ...payload, cveIds: [] })).toEqual([])
+    // No repos is still a swarm — the CVEs just have no evidence to lean on.
+    expect(swarmCells({ ...payload, repositories: [] })).toEqual([
+      { cveId: 'CVE-2026-1', repositories: [] },
+      { cveId: 'CVE-2026-2', repositories: [] },
+    ])
   })
 
-  it('builds a stable, slash-free document id unique per cell', () => {
+  it('builds a stable, slash-free document id unique per CVE', () => {
     const run = 'run-abc'
-    const first = cellDocumentId(run, { repository: 'acme/web', cveId: 'CVE-2026-1' })
-    const second = cellDocumentId(run, { repository: 'acme/api', cveId: 'CVE-2026-1' })
-    expect(first).toBe('run-abc__acme-web__cve-2026-1')
+    const first = cellDocumentId(run, {
+      cveId: 'CVE-2026-1',
+      repositories: ['acme/web'],
+    })
+    const second = cellDocumentId(run, {
+      cveId: 'CVE-2026-2',
+      repositories: ['acme/api'],
+    })
+    expect(first).toBe('run-abc__cve-2026-1')
     expect(first).not.toContain('/')
     expect(first).not.toBe(second)
   })
 
-  it('narrows the prompt to a single repository and CVE seed', () => {
+  it('names the cell CVE and every repo as shared evidence', () => {
     const prompt = composeCellPrompt(payload, {
-      repository: 'acme/web',
       cveId: 'CVE-2026-1',
+      repositories: ['acme/web', 'acme/api'],
     })
-    expect(prompt).toContain('Repository: acme/web')
-    expect(prompt).toContain('CVE seed: CVE-2026-1')
+    expect(prompt).toContain('Your CVE to hunt: CVE-2026-1')
+    expect(prompt).toContain('acme/web')
+    // Every repo is shared evidence now, not a per-cell narrowing.
+    expect(prompt).toContain('acme/api')
     expect(prompt).toContain('scan_surface')
-    expect(prompt).not.toContain('acme/api')
   })
 
   it('seeds the cell with live feeds and keeps probing scoped to the target', () => {
     const prompt = composeCellPrompt(payload, {
-      repository: 'acme/web',
       cveId: 'CVE-2026-1',
+      repositories: ['acme/web'],
     })
     expect(prompt).toContain('cve.now')
     expect(prompt).toContain('pwn.watch')
@@ -78,16 +87,16 @@ describe('swarm fan-out', () => {
   it('drops target-only discovery steps when no target is given', () => {
     const prompt = composeCellPrompt(
       { ...payload, target: '' },
-      { repository: 'acme/web', cveId: 'CVE-2026-1' },
+      { cveId: 'CVE-2026-1', repositories: ['acme/web'] },
     )
     expect(prompt).not.toContain('scan_surface')
-    expect(prompt).toContain('reachable in this code')
+    expect(prompt).toContain('reachable in your code')
   })
 
   it('tells the cell to log in when the scan is authenticated', () => {
     const prompt = composeCellPrompt(
       { ...payload, authenticated: true, loginUrl: 'https://app.example.com/login' },
-      { repository: 'acme/web', cveId: 'CVE-2026-1' },
+      { cveId: 'CVE-2026-1', repositories: ['acme/web'] },
     )
     // Reads the creds from the environment, never carries them.
     expect(prompt).toContain('SWARM_LOGIN_USERNAME')
@@ -98,8 +107,8 @@ describe('swarm fan-out', () => {
 
   it('says nothing about logging in for an unauthenticated scan', () => {
     const prompt = composeCellPrompt(payload, {
-      repository: 'acme/web',
       cveId: 'CVE-2026-1',
+      repositories: ['acme/web'],
     })
     expect(prompt).not.toContain('SWARM_LOGIN_USERNAME')
     expect(prompt).not.toContain('log in')
@@ -156,12 +165,12 @@ describe('run manifest', () => {
     target: 'https://app.example.com',
     cells: [
       {
-        cell: { repository: 'acme/web', cveId: 'CVE-2026-1' },
+        cell: { cveId: 'CVE-2026-1', repositories: ['acme/web', 'acme/api'] },
         sessionId: 's1',
         launch: 'started',
       },
       {
-        cell: { repository: 'acme/api', cveId: 'CVE-2026-1' },
+        cell: { cveId: 'CVE-2026-2', repositories: ['acme/web', 'acme/api'] },
         sessionId: 's2',
         launch: 'started',
       },
@@ -171,7 +180,10 @@ describe('run manifest', () => {
   it('keeps the manifest document clear of cell findings documents', () => {
     expect(runManifestDocumentId('run-abc')).toBe('manifest__run-abc')
     expect(runManifestDocumentId('run-abc')).not.toBe(
-      cellDocumentId('run-abc', { repository: 'acme/web', cveId: 'CVE-2026-1' }),
+      cellDocumentId('run-abc', {
+        cveId: 'CVE-2026-1',
+        repositories: ['acme/web'],
+      }),
     )
   })
 
@@ -257,16 +269,15 @@ describe('run manifest', () => {
 
 describe('run report', () => {
   const cells: ReportCell[] = [
-    { repository: 'acme/web', cveId: 'CVE-2026-9', disposition: 'not-exposed' },
+    { cveId: 'CVE-2026-9', disposition: 'not-exposed' },
     {
-      repository: 'acme/api',
       cveId: 'CVE-2026-2',
       disposition: 'exposed',
       reasoning: 'vulnerable version in lockfile',
       pullRequest: 'https://github.com/acme/api/pull/7',
     },
-    { repository: 'acme/db', cveId: 'CVE-2026-5', disposition: 'failed' },
-    { repository: 'acme/ui', cveId: 'CVE-2026-3', disposition: 'needs-review' },
+    { cveId: 'CVE-2026-5', disposition: 'failed' },
+    { cveId: 'CVE-2026-3', disposition: 'needs-review' },
   ]
   const meta = {
     runId: 'run-abc',

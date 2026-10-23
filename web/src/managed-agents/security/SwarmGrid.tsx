@@ -141,11 +141,7 @@ export function RunReportCard({
       ) : (
         <ul className="divide-y">
           {actionable.map((c) => (
-            <ReportRow
-              key={`${c.repository}__${c.cveId}`}
-              cell={c}
-              projectId={projectId}
-            />
+            <ReportRow key={c.cveId} cell={c} projectId={projectId} />
           ))}
         </ul>
       )}
@@ -175,10 +171,7 @@ function ReportRow({
         {meta.label}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="font-mono text-xs">
-          {cell.repository}{' '}
-          <span className="text-muted-foreground">· {cell.cveId}</span>
-        </div>
+        <div className="font-mono text-xs">{cell.cveId}</div>
         {cell.reasoning ? (
           <p className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5">
             {cell.reasoning}
@@ -242,18 +235,17 @@ function CellTile({
   projectId: string
 }) {
   const phase = cellPhase(state)
-  const [owner, name] = state.cell.repository.split('/')
+  const repoCount = state.cell.repositories.length
   return (
     <div className="rounded-lg border p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate font-mono text-xs">
-            <span className="text-muted-foreground">{owner}/</span>
-            {name}
-          </div>
-          <div className="text-muted-foreground mt-0.5 font-mono text-xs">
-            {state.cell.cveId}
-          </div>
+          <div className="truncate font-mono text-xs">{state.cell.cveId}</div>
+          {repoCount > 0 ? (
+            <div className="text-muted-foreground mt-0.5 text-xs">
+              {repoCount} repo{repoCount === 1 ? '' : 's'} as evidence
+            </div>
+          ) : null}
         </div>
         <CellBadge state={state} phase={phase} />
       </div>
