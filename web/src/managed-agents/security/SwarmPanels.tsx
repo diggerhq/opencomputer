@@ -118,10 +118,7 @@ export function FindingsPanel({
           {reportable.map((s) => {
             const status = cellStatus(s)
             return (
-              <li
-                key={`${s.cell.repository}__${s.cell.cveId}`}
-                className="px-4 py-2.5 font-mono text-xs"
-              >
+              <li key={s.cell.cveId} className="px-4 py-2.5 font-mono text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span
                     className="font-bold uppercase tracking-wide"
@@ -142,8 +139,7 @@ export function FindingsPanel({
                   ) : null}
                 </div>
                 <div className="mt-1" style={{ color: PALETTE.text }}>
-                  {s.cell.cveId}{' '}
-                  <span style={{ color: PALETTE.ink }}>· {s.cell.repository}</span>
+                  {s.cell.cveId}
                 </div>
                 {s.sessionId ? (
                   <Link
@@ -192,7 +188,7 @@ export function CellDispatchPanel({
             <div className="flex items-center gap-3 px-4 py-2 font-mono text-xs">
               <span style={{ color: PALETTE.ink }}>{label}</span>
               <span className="min-w-0 flex-1 truncate" style={{ color: PALETTE.text }}>
-                {s.cell.repository}
+                {s.cell.cveId}
               </span>
               <span
                 className="shrink-0 font-bold uppercase tracking-wide"
@@ -203,7 +199,7 @@ export function CellDispatchPanel({
             </div>
           )
           return (
-            <li key={`${s.cell.repository}__${s.cell.cveId}`}>
+            <li key={s.cell.cveId}>
               {s.sessionId ? (
                 <Link
                   to={`/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(s.sessionId)}`}

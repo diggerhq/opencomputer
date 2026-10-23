@@ -54,8 +54,83 @@ export const PWN_WATCH: VulnerabilityFeed = {
 export const SWARM_FEEDS: readonly VulnerabilityFeed[] = [CVE_NOW, PWN_WATCH]
 
 // cve.now's newest-first entries endpoint (cursor-paginated). A cell curls this
-// to pull the current feed slice for its angle.
+// to pull the current feed slice for its angle, and the onboarding UI fetches it
+// directly to present a live, severity-sorted list to pick from (the endpoint
+// sends `access-control-allow-origin: *`, so the browser can call it).
 export const CVE_NOW_ENTRIES_API = 'https://cve.now/api/v1/entries'
+
+// One entry from the cve.now entries API, as the swarm consumes it. The upstream
+// shape is wider; we read only the fields that drive severity ranking and the
+// picker label.
+export type FeedCve = {
+  readonly id: string
+  readonly title: string
+  // CVSS base score 0–10 when the entry carries one, else null.
+  readonly cvss: number | null
+  // Qualitative band as stated upstream: 'low' | 'medium' | 'high' | 'critical'
+  // (or null when unscored). Kept as the raw string; `severityRank` normalises.
+  readonly statedSeverity: string | null
+  // CISA Known-Exploited flag — the strongest "fix this now" signal there is.
+  readonly kev: boolean
+  // ISO timestamp the entry was first seen, newest-first in the feed.
+  readonly firstSeenAt: string | null
+}
+
+// The qualitative bands, worst first, as a lookup for ranking and display.
+const SEVERITY_BUCKET: Record<string, number> = {
+  critical: 3,
+  high: 2,
+  medium: 1,
+  low: 0,
+}
+
+// A single comparable score so the picker can sort worst-first with one key.
+// KEV dominates (a known-exploited CVE outranks anything not on the list),
+// then CVSS, then the stated band as a tiebreak when CVSS is missing. Higher is
+// more severe.
+export function severityRank(cve: FeedCve): number {
+  const kev = cve.kev ? 1000 : 0
+  const cvss = typeof cve.cvss === 'number' ? cve.cvss * 10 : 0
+  const bucket = cve.statedSeverity
+    ? (SEVERITY_BUCKET[cve.statedSeverity.toLowerCase()] ?? 0)
+    : 0
+  return kev + cvss + bucket
+}
+
+// Fetch the current cve.now feed slice and return it severity-sorted (worst
+// first), ready for the onboarding top-N picker. `limit` caps how many raw
+// entries we pull before ranking; the caller slices to the chosen N. Throws on a
+// non-OK response or a malformed body so the UI can show a retry.
+export async function fetchLiveCves(
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<FeedCve[]> {
+  const url = `${CVE_NOW_ENTRIES_API}?limit=${encodeURIComponent(String(limit))}`
+  const res = await fetch(url, { signal, headers: { accept: 'application/json' } })
+  if (!res.ok) {
+    throw new Error(`cve.now feed responded ${res.status}`)
+  }
+  const body: unknown = await res.json()
+  const entries =
+    body && typeof body === 'object' && Array.isArray((body as { entries?: unknown }).entries)
+      ? ((body as { entries: unknown[] }).entries)
+      : []
+  const cves: FeedCve[] = []
+  for (const raw of entries) {
+    if (!raw || typeof raw !== 'object') continue
+    const e = raw as Record<string, unknown>
+    if (typeof e.id !== 'string' || e.id.length === 0) continue
+    cves.push({
+      id: e.id,
+      title: typeof e.title === 'string' ? e.title : e.id,
+      cvss: typeof e.cvss === 'number' ? e.cvss : null,
+      statedSeverity: typeof e.statedSeverity === 'string' ? e.statedSeverity : null,
+      kev: e.kev === true,
+      firstSeenAt: typeof e.firstSeenAt === 'string' ? e.firstSeenAt : null,
+    })
+  }
+  return cves.sort((a, b) => severityRank(b) - severityRank(a))
+}
 
 // cve.now's MCP server. `check_stack` matches a repository's lockfile against
 // known advisories — the precise "which CVEs hit THIS repo" primitive. Referenced

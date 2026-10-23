@@ -23,55 +23,6 @@ export const SECURITY_FINDINGS_RESOURCE = 'cve-findings'
 export const SCAN_DECLARATION =
   'I declare that I own this web application and I am authorized to perform this penetration test.'
 
-export type SeedCve = {
-  readonly id: string
-  readonly product: string
-  readonly severity: 'critical' | 'high' | 'medium' | 'low'
-  readonly cvss: number
-}
-
-// This week's feed, mirroring the launch page and the template's feed.ts. The
-// payload builder opens with all of these pre-selected so a first swarm runs
-// with zero typing.
-export const SEED_CVES: readonly SeedCve[] = [
-  {
-    id: 'CVE-2026-109618',
-    product: 'PHP2Shell',
-    severity: 'critical',
-    cvss: 9.8,
-  },
-  {
-    id: 'CVE-2026-110264',
-    product: 'GitLab CE/EE',
-    severity: 'critical',
-    cvss: 9.6,
-  },
-  {
-    id: 'CVE-2026-96951',
-    product: 'Windows Shell',
-    severity: 'high',
-    cvss: 8.1,
-  },
-  {
-    id: 'CVE-2026-21445',
-    product: 'Oracle Access Manager',
-    severity: 'critical',
-    cvss: 10.0,
-  },
-  {
-    id: 'CVE-2026-21446',
-    product: 'Oracle SOA Suite',
-    severity: 'critical',
-    cvss: 10.0,
-  },
-  {
-    id: 'CVE-2026-21447',
-    product: 'Oracle E-Business Suite',
-    severity: 'critical',
-    cvss: 10.0,
-  },
-]
-
 export type SwarmPayload = {
   readonly target: string
   readonly declarationAccepted: boolean
@@ -94,13 +45,14 @@ export type SwarmPayload = {
 export const SWARM_LOGIN_USERNAME_VAR = 'SWARM_LOGIN_USERNAME'
 export const SWARM_LOGIN_PASSWORD_VAR = 'SWARM_LOGIN_PASSWORD'
 
-// A single unit of swarm work: one repository checked against one CVE. The
-// launch fans the payload's repository × CVE matrix into one cell per pair, and
-// starts one bound session for each so they run in parallel and each writes its
-// own findings document.
+// A single unit of swarm work: one agent hunting one CVE against the target,
+// with every connected repository available to it as evidence. The launch starts
+// one bound session per CVE so they run in parallel and each writes its own
+// findings document. Repos are shared context, not a fan-out dimension — a cell
+// carries the full list, not a single repo.
 export type SwarmCell = {
-  readonly repository: string
   readonly cveId: string
+  readonly repositories: readonly string[]
 }
 
 // Where a cell is in the launch itself, before any agent work. The launch writes
@@ -120,18 +72,16 @@ export type LaunchedCell = {
   readonly launch: CellLaunchStatus
 }
 
-// Expand the payload into the matrix of cells. Fan-out needs explicit
-// repositories and CVEs — the "all connected repositories" / "full feed"
-// shorthands only make sense for the single-session controller, so a caller
-// that means to fan out must resolve those to concrete lists first.
+// One cell per CVE, each carrying all the repos as shared evidence. Fan-out needs
+// an explicit CVE list — the "full feed" shorthand only makes sense for the
+// single-session controller, so a caller that means to fan out must resolve it to
+// a concrete list first. Repos ride along as context and no longer multiply the
+// count, so the cell total is exactly the number of CVEs.
 export function swarmCells(payload: SwarmPayload): SwarmCell[] {
-  const cells: SwarmCell[] = []
-  for (const repository of payload.repositories) {
-    for (const cveId of payload.cveIds) {
-      cells.push({ repository, cveId })
-    }
-  }
-  return cells
+  return payload.cveIds.map((cveId) => ({
+    cveId,
+    repositories: payload.repositories,
+  }))
 }
 
 // Reduce a free-form identifier to the characters a memory document id and a
@@ -148,14 +98,14 @@ function slug(value: string): string {
 // this document read-write and saves the one finding it proves; the reducer
 // reads them all back as a collection.
 export function cellDocumentId(runId: string, cell: SwarmCell): string {
-  return `${runId}__${slug(cell.repository)}__${slug(cell.cveId)}`
+  return `${runId}__${slug(cell.cveId)}`
 }
 
 // The launch records what it started as a run manifest, persisted as its own
 // document under the findings resource so the swarm page can rebuild the grid
 // after navigation or a reload (the session ids live in the manifest, not in
 // React state). The `manifest__` prefix keeps it clear of the cell findings
-// documents, whose ids are `<runId>__<repo>__<cve>`.
+// documents, whose ids are `<runId>__<cve>`.
 export const SWARM_MANIFEST_PREFIX = 'manifest__'
 
 export function runManifestDocumentId(runId: string): string {
@@ -191,14 +141,16 @@ export function parseRunManifest(text: string): SwarmRunManifest | null {
     if (!entry || typeof entry !== 'object') return null
     const e = entry as Record<string, unknown>
     const cell = e.cell as Record<string, unknown> | undefined
-    if (
-      !cell ||
-      typeof cell.repository !== 'string' ||
-      typeof cell.cveId !== 'string' ||
-      typeof e.sessionId !== 'string'
-    ) {
+    if (!cell || typeof cell.cveId !== 'string' || typeof e.sessionId !== 'string') {
       return null
     }
+    // Repos are shared context on the cell. Back-compat: a manifest from the old
+    // repo×CVE model carried a single `repository` string instead of a list.
+    const repositories = Array.isArray(cell.repositories)
+      ? cell.repositories.filter((r): r is string => typeof r === 'string')
+      : typeof cell.repository === 'string'
+        ? [cell.repository]
+        : []
     // Back-compat: a manifest written before incremental launch has no `launch`
     // field — a cell there with a session id is already `started`.
     const launch: CellLaunchStatus =
@@ -208,7 +160,7 @@ export function parseRunManifest(text: string): SwarmRunManifest | null {
           ? 'started'
           : 'starting'
     cells.push({
-      cell: { repository: cell.repository, cveId: cell.cveId },
+      cell: { cveId: cell.cveId, repositories },
       sessionId: e.sessionId,
       launch,
     })
@@ -257,12 +209,12 @@ export function listManifestDocs(
 export function discoveryLines(target: string): string[] {
   if (!target) {
     return [
-      'Read the repository clone to prove whether the seeded CVEs are reachable in this code, then save the finding with memory_save.',
+      'Read the repository clones to prove whether this CVE is reachable in your code, then save the finding with memory_save.',
     ]
   }
   return [
     'Discover, do not just read:',
-    '- Read the repository clone to derive its real routes, parameters and auth flows — that map is what you probe.',
+    '- Read the repository clones to derive their real routes, parameters and auth flows — that map is what you probe.',
     `- Fingerprint ${target} with scan_surface, then exercise the mapped routes on that host to prove whether the exposure is actually reachable. Stay on ${target}; never touch another host.`,
     '- A headless Chromium is preinstalled in the sandbox: `npm i playwright` (the browser is already downloaded), then drive it to load pages, reach client-side routes and capture screenshots.',
     '- Record evidence into /workspace as you go (request/response logs, screenshots, a finding.md) so the proof outlives the session.',
@@ -270,11 +222,10 @@ export function discoveryLines(target: string): string[] {
   ]
 }
 
-// One cell's first-run input. A cell still carries one repository and one CVE
-// seed, but the task is discovery, not a lockfile read: pull live feed
-// intelligence, derive the repo's routes, probe the attested target, and keep
-// evidence. The worker collapses to a single hunt when the payload names one
-// repository and one CVE.
+// One cell's first-run input. Each cell owns one CVE and hunts it against the
+// target with every connected repository available as evidence: pull live feed
+// intelligence, derive the repos' routes, probe the attested target, and keep
+// evidence.
 // When the operator supplied a throwaway test account, tell the cell to log in
 // first and scan behind the auth wall. The credentials themselves are NOT here —
 // they are in the environment as encrypted runtime variables; the prompt only
@@ -298,8 +249,10 @@ export function composeCellPrompt(payload: SwarmPayload, cell: SwarmCell): strin
     payload.target
       ? `Target (authorized discovery within this host only): ${payload.target}`
       : null,
-    `Repository: ${cell.repository}`,
-    `CVE seed: ${cell.cveId}`,
+    `Your CVE to hunt: ${cell.cveId}`,
+    cell.repositories.length > 0
+      ? `Repositories available as evidence (investigate across all of them): ${cell.repositories.join(', ')}`
+      : null,
     `Model: ${payload.model}`,
     '',
     ...feedSeedingLines(),
@@ -358,7 +311,7 @@ export function parseCellFinding(text: string): CellFinding | null {
 // cells already saved (Tier 1 — no reducer agent), then persisted as its own
 // document so a scheduled run leaves something behind and the aggregator view
 // has a real source. The `report__` prefix keeps it clear of manifests
-// (`manifest__`) and cell findings (`<runId>__<repo>__<cve>`).
+// (`manifest__`) and cell findings (`<runId>__<cve>`).
 export const SWARM_REPORT_PREFIX = 'report__'
 
 export function runReportDocumentId(runId: string): string {
@@ -370,7 +323,6 @@ export function runReportDocumentId(runId: string): string {
 export type ReportDisposition = CveDisposition | 'failed'
 
 export type ReportCell = {
-  readonly repository: string
   readonly cveId: string
   readonly disposition: ReportDisposition
   readonly reasoning?: string
@@ -423,7 +375,6 @@ export function buildRunReport(
   const sorted = [...cells].sort(
     (a, b) =>
       REPORT_ORDER[a.disposition] - REPORT_ORDER[b.disposition] ||
-      a.repository.localeCompare(b.repository) ||
       a.cveId.localeCompare(b.cveId),
   )
   return { ...meta, counts, cells: sorted }
@@ -458,7 +409,6 @@ export function parseRunReport(text: string): SwarmRunReport | null {
     if (!entry || typeof entry !== 'object') return null
     const e = entry as Record<string, unknown>
     if (
-      typeof e.repository !== 'string' ||
       typeof e.cveId !== 'string' ||
       typeof e.disposition !== 'string' ||
       !REPORT_DISPOSITIONS.includes(e.disposition as ReportDisposition)
@@ -466,7 +416,6 @@ export function parseRunReport(text: string): SwarmRunReport | null {
       return null
     }
     cells.push({
-      repository: e.repository,
       cveId: e.cveId,
       disposition: e.disposition as ReportDisposition,
       ...(typeof e.reasoning === 'string' ? { reasoning: e.reasoning } : {}),
