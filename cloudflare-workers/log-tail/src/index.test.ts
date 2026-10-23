@@ -159,3 +159,50 @@ test("fails the collector invocation when the durable sink rejects a batch", asy
     console.error = originalConsoleError;
   }
 });
+
+test("promotes correlation keys from a JSON log line to fields", async () => {
+  const originalFetch = globalThis.fetch;
+  let records: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    records = JSON.parse(String(init?.body));
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  const line = JSON.stringify({
+    level: "warn",
+    event: "workerd.stop_requested",
+    sessionId: "ses_1",
+    turnId: "turn_1",
+    runtimeGeneration: "gen:2",
+    reason: "runtime_lost",
+    unlisted: "stays in msg",
+  });
+
+  try {
+    await worker.tail([{
+      scriptName: "managed-agents",
+      outcome: "ok",
+      logs: [
+        { timestamp: Date.parse("2026-10-23T20:00:00Z"), level: "log", message: [line] },
+        { timestamp: Date.parse("2026-10-23T20:00:01Z"), level: "log", message: ["{not json"] },
+        { timestamp: Date.parse("2026-10-23T20:00:02Z"), level: "log", message: [{ event: "x", service: "spoof" }] },
+      ],
+      exceptions: [],
+    }], env, {} as ExecutionContext);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(records.length, 3);
+  assert.equal(records[0]?.level, "WARN");
+  assert.equal(records[0]?.event, "workerd.stop_requested");
+  assert.equal(records[0]?.session_id, "ses_1");
+  assert.equal(records[0]?.turn_id, "turn_1");
+  assert.equal(records[0]?.runtime_generation, "gen:2");
+  assert.equal(records[0]?.reason, "runtime_lost");
+  assert.equal(records[0]?.unlisted, undefined);
+  assert.equal(records[0]?.msg, line);
+  assert.equal(records[1]?.level, "INFO");
+  assert.equal(records[1]?.event, undefined);
+  assert.equal(records[2]?.event, "x");
+  assert.equal(records[2]?.service, "managed-agents");
+});

@@ -97,6 +97,56 @@ function level(l: TraceLog["level"]): string {
   }
 }
 
+// Workers that log one JSON object per line (blue's managed-agents Workers)
+// get their correlation keys promoted to top-level fields, so a session, turn
+// or computer is one `where` away. Only this fixed set is promoted: every
+// distinct key becomes a dataset field and Axiom caps a dataset at 1024. The
+// whole object stays in `msg`, queryable with parse_json().
+const PROMOTED_FIELDS: Record<string, string> = {
+  event: "event",
+  sessionId: "session_id",
+  sessionID: "session_id",
+  session_id: "session_id",
+  managedSessionId: "session_id",
+  turnId: "turn_id",
+  turn_id: "turn_id",
+  hostTurnId: "turn_id",
+  accountId: "account_id",
+  account_id: "account_id",
+  sandboxId: "sandbox_id",
+  sandbox_id: "sandbox_id",
+  generation: "generation",
+  runtimeGeneration: "runtime_generation",
+  reason: "reason",
+  phase: "phase",
+};
+
+function structuredFields(parts: unknown[]): Record<string, unknown> {
+  if (parts.length !== 1) return {};
+  let value = parts[0];
+  if (typeof value === "string") {
+    if (!value.startsWith("{")) return {};
+    try { value = JSON.parse(value); }
+    catch { return {}; }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const fields: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(PROMOTED_FIELDS)) {
+    const v = (value as Record<string, unknown>)[key];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      fields[field] ??= typeof v === "string" ? redactWebhookTokens(v) : v;
+    }
+  }
+  const declared = (value as Record<string, unknown>).level;
+  if (typeof declared === "string") {
+    const upper = declared.toUpperCase();
+    if (upper === "ERROR" || upper === "WARN" || upper === "INFO" || upper === "DEBUG") {
+      fields.level = upper;
+    }
+  }
+  return fields;
+}
+
 export default {
   async tail(items: TraceItem[], env: Env, _ctx: ExecutionContext): Promise<void> {
     const records: Record<string, unknown>[] = [];
@@ -121,6 +171,7 @@ export default {
           time: new Date(log.timestamp).toISOString(),
           level: level(log.level),
           msg: fmtMessage(log.message),
+          ...structuredFields(log.message),
           ...baseEnvelope,
         });
       }
