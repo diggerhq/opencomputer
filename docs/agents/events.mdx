@@ -125,7 +125,7 @@ only when one happened.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question); the asking turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text |
+| `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question) or [`consult`](/agents/tools#consult-another-project-agent); the turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text |
 | `question.answered` | A turn answering the question was admitted | `questionId`, `answer`: `{ questionId, text, value? }` |
 | `question.closed` | The question closed without an answer | `questionId`, `reason`: `stopped`, `dismissed`, `ended` or `undeliverable` |
 | `message.held` | An input sent without `answers` was held behind the open question | `heldId`, `questionId`, `input`, `payload?`, `receivedAt` |
@@ -139,6 +139,21 @@ completed turn. The open question is also on the session as
 [`question`](/agents/sessions#questions), where each closure `reason` is
 explained. A held input is recorded once, however often its key is repeated,
 so a client can rebuild held messages after a reload.
+
+### Consultations
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `agent.consult.requested` | The agent called [`consult`](/agents/tools#consult-another-project-agent); the coordinating turn completes with `outcome: "question"` | `questionId`, `agent`: the project member the model named |
+| `agent.consult.answered` | The member's turn settled and its result was admitted as the coordinator's next input | `questionId`, `memberAgentId`, `memberSessionId`, `memberTurnId`, `outcome` |
+| `agent.consult.failed` | The member could not be resolved, dispatched, or run | `questionId`, `agent`, `error` |
+
+A consultation also uses the question lifecycle above. Its request records
+`question.asked`, then `agent.consult.requested`; its answer records
+`agent.consult.answered` and resolves the question through
+`question.answered`. A failed consultation records `agent.consult.failed` and
+delivers the failure as the answer, so the coordinating agent gets a next turn
+instead of remaining stuck on an open question.
 
 ### Messages
 
