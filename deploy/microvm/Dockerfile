@@ -84,6 +84,39 @@ RUN useradd --create-home --shell /bin/bash sandbox \
 RUN echo 'sandbox ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sandbox \
  && chmod 0440 /etc/sudoers.d/sandbox
 
+# Headless browser (Playwright Chromium), baked so the default sandbox can
+# drive a browser with no per-run download. This is the DEFAULT tool-sandbox
+# image (Modal is a gated exception), so the managed-agent path's browser use
+# lives or dies here. The heavy parts — the Chromium binary and its system
+# libraries — are baked now; an agent drives them with `require('playwright')`
+# and no install at all.
+#
+# Placed BEFORE the ENV block below on purpose: NPM_CONFIG_PREFIX is not set
+# yet, so `npm install -g` lands in the system prefix (/usr/lib/node_modules),
+# root-owned and world-readable, rather than the sandbox user's home. The
+# unprivileged `sandbox` user can read and execute it but not write it, which is
+# what we want for a shared, baked toolchain. PLAYWRIGHT_BROWSERS_PATH and
+# NODE_PATH are set in the ENV block below so they reach the user's commands.
+#
+# al2023 is dnf, so Playwright's apt-only `install-deps` can't run: the runtime
+# libraries are named explicitly (the field-tested Remotion al2023 set plus the
+# few extra libs Chromium links). Fonts are best-effort (--skip-broken) so a
+# package rename can't break the build; the libs above are a hard requirement.
+# Chromium's own sandbox can't nest under the MicroVM's no_new_privs, so callers
+# launch with `--no-sandbox` (see the runtime's capability note).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN dnf install -y \
+      nss nspr atk at-spi2-atk at-spi2-core cups-libs \
+      libdrm libxkbcommon mesa-libgbm dbus-libs \
+      libX11 libxcb libXcomposite libXdamage libXext libXfixes \
+      libXrandr libXrender alsa-lib pango cairo expat \
+ && dnf install -y --skip-broken \
+      fontconfig freetype dejavu-sans-fonts liberation-sans-fonts \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && npm install -g playwright@1.64.1 \
+ && playwright install chromium \
+ && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+
 # ==== OSB_CUSTOM_TEMPLATE_LAYERS ====
 # Custom-template layers are spliced in HERE, and nowhere else.
 #
