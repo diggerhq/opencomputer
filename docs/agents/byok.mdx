@@ -1,17 +1,40 @@
 ---
 title: "Bring your own model account (BYOK)"
-description: "Use a Codex account for model inference in Serverless Agents"
+description: "Use your own API key or Codex account for model inference in Serverless Agents"
 ---
 
-BYOK lets a Serverless Agent use an organization-connected Codex account for
-eligible OpenAI models. OpenComputer keeps the authorization in its control
-plane; it is never added to your deployment, agent source, or runtime
-environment.
+BYOK lets a Serverless Agent use your own model provider instead of Managed
+inference: an OpenRouter, OpenAI, or Anthropic API key, any OpenAI-compatible
+API, or an organization-connected Codex account. OpenComputer keeps the key or
+authorization in its control plane; it is never added to your deployment, agent
+source, or runtime environment.
 
 BYOK is available on the **Pro and Max plans**. Runtime compute is still charged
-to your OpenComputer account. Model calls routed through your Codex account have
+to your OpenComputer account. Model calls routed through your own provider have
 no OpenComputer model-inference charge and remain subject to the provider's
 allowances and terms.
+
+## Route a project through your API key
+
+Open the project's **BYOK** page, pick a provider, and paste its API key:
+
+- **OpenRouter API key** — model IDs use the OpenRouter form, for example
+  `openai/gpt-5` or `anthropic/claude-sonnet-4.6`.
+- **OpenAI API key** — native OpenAI model IDs, for example `gpt-5`.
+- **Anthropic API key** — native Claude model IDs, for example
+  `claude-sonnet-4-6`.
+- **Custom OpenAI-compatible API** — enter the base URL and a model ID your
+  API accepts.
+
+Select **Connect and save route**. The route applies to both development and
+production for every new session in the project. It overrides any
+`useModel()` call in agent code and also applies when agent code selects no
+model, so you do not need to change or redeploy the agent. Choose **Fail
+closed** to stop sessions when the provider is unavailable, or **Use Managed**
+to fall back to Managed inference (charged normally).
+
+Select **Remove route** to return the project to the model chosen by agent code
+or the platform default.
 
 ## Connect a Codex account
 
@@ -76,6 +99,9 @@ useModel({ provider: "openrouter", model: "openai/gpt-5" });
 ## Troubleshooting
 
 - **The BYOK page asks you to upgrade:** the organization must be on Pro or Max.
+- **Connecting an API key fails:** the key is checked against the provider
+  before it is stored; confirm it is active and, for a custom API, that the
+  base URL is a public HTTPS URL serving `/models` and `/chat/completions`.
 - **The organization account is connected but the project is not enabled:**
   select **Enable for this project** or rerun the CLI command with `--project`.
 - **The account is revoked or needs authentication:** rerun the connect command
