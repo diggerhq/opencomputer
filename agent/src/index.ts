@@ -90,14 +90,38 @@ export interface OutcomeEvent {
   readonly reason?: string;
   /** The failure message, bounded, when the turn failed. */
   readonly error?: string;
-  /** The final assistant message of a completed turn; `truncated` when it was cut to fit. */
+  /**
+   * The last message of a completed turn that wrote text, bounded to 16 KB;
+   * `truncated` when it was cut to fit.
+   */
   readonly result?: { readonly text: string; readonly truncated?: boolean };
+  /** `"question"` when a completed turn ended by asking; `question` then names what it asked. */
+  readonly outcome?: TurnOutcome;
+  readonly question?: Readonly<Question>;
+  /** The source session's labels when the outcome was delivered; absent when it has none. */
+  readonly labels?: Readonly<SessionLabels>;
 }
+
+/** What a settled turn came to beyond its status. `question`: the turn ended by asking. */
+export type TurnOutcome = "question";
+
+/**
+ * Application metadata an owner attaches to a session, as string pairs. An
+ * agent reads another session's labels on an outcome event delivered from it.
+ */
+export type SessionLabels = Record<string, string>;
 
 /** One choice of a question; a selection sends `value` back. Each 1–80 characters. */
 export interface QuestionOption {
   readonly label: string;
   readonly value: string;
+}
+
+/** A question an agent asked with `ask`. `options` is empty when the answer is free text. */
+export interface Question {
+  readonly id: string;
+  readonly text: string;
+  readonly options: readonly Readonly<QuestionOption>[];
 }
 
 /** How this input answered the session's open question. */
@@ -112,7 +136,8 @@ export interface QuestionAnswer {
 /**
  * An input that arrived while a question was open without answering it.
  * Held inputs never run as turns of their own: they are delivered, in
- * arrival order, with the answer.
+ * arrival order, with the answer. On Slack nothing is held; see
+ * `openQuestion` on channel inputs.
  */
 export interface HeldInput {
   readonly text?: string;
@@ -190,6 +215,16 @@ export type AgentInput =
   | (BasicAgentInput & {
       readonly source: "channel";
       readonly channel: Readonly<ChannelMessageContext>;
+      /**
+       * The question still open in this conversation, on a channel where a
+       * question does not hold the thread (Slack). A message typed while it
+       * is open runs at once as its own turn and carries it here, so the
+       * agent can tell whether the message answers it, changes it, or is
+       * about something else. A click on the question's buttons arrives as
+       * `answer` instead. When this turn completes with a reply that has
+       * text, or asks again, the open question closes as superseded.
+       */
+      readonly openQuestion?: Readonly<Question>;
     })
   | (BasicAgentInput & {
       readonly source: "schedule";
@@ -1721,7 +1756,9 @@ export const useModel = (model: ModelSelection): void =>
  * (`text` 1–4000 characters; at most six `{ label, value }` options, each
  * 1–80 characters) and ends the turn with that question open. The person's
  * reply arrives as the next input with `answer` set; anything written
- * meanwhile arrives with it as `steering`.
+ * meanwhile arrives with it as `steering`. On Slack the question does not
+ * hold the thread: a typed message runs at once, carrying the question as
+ * `openQuestion`, and a click on its buttons arrives as `answer`.
  */
 export const useTool = (tool: string | ResourceReference): void =>
   hooks().useTool(tool);

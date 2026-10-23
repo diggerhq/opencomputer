@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.4.0
+
+- `@opencomputer/sdk/agents`: an event subscription can select its source
+  sessions by label. `sourceLabels` on `eventSubscriptions.create` (1 to 8
+  pairs, the same key and value rules as session labels) delivers outcomes
+  only of sessions that carried every pair when the turn was accepted; the
+  subscription returns it.
+- `OutcomeEvent` gains `outcome` (`"question"` when the completed turn ended
+  by asking), `question` (`{ id, text, options }`, what it asked) and
+  `labels` (the source session's labels). `result.text` is the last message
+  of the completed turn that wrote text.
+- `QuestionClosedReason` names `superseded`: on Slack, which a question does
+  not hold, the agent replied to a later message in the thread or asked
+  again.
+
 ## 2.3.0
 
 - `@opencomputer/sdk/agents`: questions. `Session.question` is the question
