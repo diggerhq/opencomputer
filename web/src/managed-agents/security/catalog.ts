@@ -78,7 +78,21 @@ export type SwarmPayload = {
   readonly repositories: readonly string[]
   readonly cveIds: readonly string[]
   readonly model: string
+  // Authenticated discovery. These two are non-secret: a flag that a login is
+  // required, and the page to log in on. The throwaway account's actual username
+  // and password NEVER travel in the payload — they would land in the cell
+  // prompt and the run manifest, both of which are stored. They go to the
+  // project's encrypted runtime variables instead (SWARM_LOGIN_*), and the cell
+  // reads them from its environment at run time.
+  readonly authenticated?: boolean
+  readonly loginUrl?: string
 }
+
+// Encrypted runtime-variable names the onboarding writes and every cell reads
+// from its environment to log in. Shared here so the writer and the prompt that
+// tells the agent to read them can never drift apart.
+export const SWARM_LOGIN_USERNAME_VAR = 'SWARM_LOGIN_USERNAME'
+export const SWARM_LOGIN_PASSWORD_VAR = 'SWARM_LOGIN_PASSWORD'
 
 // A single unit of swarm work: one repository checked against one CVE. The
 // launch fans the payload's repository × CVE matrix into one cell per pair, and
@@ -261,6 +275,21 @@ export function discoveryLines(target: string): string[] {
 // intelligence, derive the repo's routes, probe the attested target, and keep
 // evidence. The worker collapses to a single hunt when the payload names one
 // repository and one CVE.
+// When the operator supplied a throwaway test account, tell the cell to log in
+// first and scan behind the auth wall. The credentials themselves are NOT here —
+// they are in the environment as encrypted runtime variables; the prompt only
+// names them so the agent reads them itself. Empty when the scan is unauthenticated.
+function authenticatedLoginLines(payload: SwarmPayload): string[] {
+  if (!payload.authenticated) return []
+  const where = payload.loginUrl
+    ? `the login page ${payload.loginUrl}`
+    : "the target's login page"
+  return [
+    `This target requires a login, and a throwaway test account has been provisioned for you. Its credentials are in the environment variables ${SWARM_LOGIN_USERNAME_VAR} and ${SWARM_LOGIN_PASSWORD_VAR}. Before anything else, drive the preinstalled headless browser (Playwright, launched with --no-sandbox) to ${where}, sign in with those credentials, and save the authenticated session (storageState / cookies). Reuse that session for every page load, API call and scanner request so all discovery runs as the logged-in account. Treat the account as disposable and in-scope: exercise the app and its API to find vulnerabilities, but stay within this host. Never print the credentials or copy them into findings, logs or a pull request.`,
+    '',
+  ]
+}
+
 export function composeCellPrompt(payload: SwarmPayload, cell: SwarmCell): string {
   const lines = [
     'Launch a CVE swarm cell against my own assets.',
@@ -275,6 +304,7 @@ export function composeCellPrompt(payload: SwarmPayload, cell: SwarmCell): strin
     '',
     ...feedSeedingLines(),
     '',
+    ...authenticatedLoginLines(payload),
     ...discoveryLines(payload.target),
     'If the verdict is EXPOSED, open_fix_pull_request (dependency-only, single pin). Honor PUBLISH_ENABLED — dry run unless it is enabled.',
   ].filter((line): line is string => line !== null)

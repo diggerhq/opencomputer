@@ -49,10 +49,17 @@ import {
   SEED_CVES,
   serializeRunManifest,
   swarmCells,
+  SWARM_LOGIN_PASSWORD_VAR,
+  SWARM_LOGIN_USERNAME_VAR,
   type LaunchedCell,
   type SwarmCell,
   type SwarmPayload,
 } from './catalog'
+
+// The throwaway test-account credentials, carried from the form to the launch
+// handler out-of-band from SwarmPayload so they never reach the cell prompt or
+// the run manifest. They go only to the project's encrypted runtime variables.
+type SwarmCredentials = { username: string; password: string }
 
 // Each cell is one microVM session, so cap the matrix to keep an accidental
 // 20×20 launch from spinning up hundreds of sandboxes at once.
@@ -357,9 +364,13 @@ export default function SecurityOnboarding() {
   // as it comes up. The manifest is the source of truth across the route change —
   // the ids don't survive in React state.
   const launch = useMutation({
-    mutationFn: async (
-      payload: SwarmPayload,
-    ): Promise<{
+    mutationFn: async ({
+      payload,
+      credentials,
+    }: {
+      payload: SwarmPayload
+      credentials: SwarmCredentials | null
+    }): Promise<{
       projectId: string
       runId: string
       agentId: string
@@ -380,6 +391,28 @@ export default function SecurityOnboarding() {
       // operator reaches launch before it settles, await that same deploy rather
       // than blocking the whole flow on it earlier.
       const project = deployed ?? (await startDeploy())
+      // Authenticated scan: stash the throwaway account in the project's
+      // encrypted runtime variables so every cell's sandbox gets them in its
+      // environment. Project-scoped (no agentId) so all cells inherit one login;
+      // `default` is the environment managed-template projects run in (the same
+      // one the GitHub install is attached to above). Never written to the
+      // manifest or the prompt.
+      if (credentials) {
+        await Promise.all([
+          putAgentRuntimeVariable({
+            projectId: project.projectId,
+            environment: 'default',
+            name: SWARM_LOGIN_USERNAME_VAR,
+            value: credentials.username,
+          }),
+          putAgentRuntimeVariable({
+            projectId: project.projectId,
+            environment: 'default',
+            name: SWARM_LOGIN_PASSWORD_VAR,
+            value: credentials.password,
+          }),
+        ])
+      }
       const runId = `run-${crypto.randomUUID()}`
       const agentId = `${project.projectAgentId}@default`
       const starting: LaunchedCell[] = cells.map((cell) => ({
@@ -492,7 +525,9 @@ export default function SecurityOnboarding() {
             availableRepos={connectedRepos.data ?? []}
             reposLoading={connectedRepos.isLoading}
             launching={launch.isPending}
-            onLaunch={(payload) => launch.mutate(payload)}
+            onLaunch={(payload, credentials) =>
+              launch.mutate({ payload, credentials })
+            }
           />
         </StepCard>
       </div>
@@ -644,16 +679,28 @@ function PayloadBuilder({
   availableRepos: string[]
   reposLoading: boolean
   launching: boolean
-  onLaunch: (payload: SwarmPayload) => void
+  onLaunch: (payload: SwarmPayload, credentials: SwarmCredentials | null) => void
 }) {
   const [target, setTarget] = useState('')
   const [declaration, setDeclaration] = useState(false)
+  // Optional throwaway test account, so a cell can log in and scan behind the
+  // auth wall. Empty = unauthenticated scan, exactly as before.
+  const [loginUrl, setLoginUrl] = useState('')
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
   const [repositories, setRepositories] = useState<string[]>([])
   // Prefill every CVE in this week's feed so a first swarm runs with no typing.
   const [cveIds, setCveIds] = useState<string[]>(() =>
     SEED_CVES.map((c) => c.id),
   )
   const [preview, setPreview] = useState<string | null>(null)
+
+  // A login needs both a username and a password; the URL is optional (the cell
+  // can find the login page itself). Only then is the scan authenticated.
+  const authenticated = loginUsername.trim() !== '' && loginPassword !== ''
+  const credentials: SwarmCredentials | null = authenticated
+    ? { username: loginUsername.trim(), password: loginPassword }
+    : null
 
   const payload: SwarmPayload = useMemo(
     () => ({
@@ -662,8 +709,11 @@ function PayloadBuilder({
       repositories,
       cveIds,
       model: DEFAULT_SWARM_MODEL,
+      authenticated,
+      // Non-secret, so it may ride in the payload; the username/password do not.
+      ...(loginUrl.trim() ? { loginUrl: loginUrl.trim() } : {}),
     }),
-    [target, declaration, repositories, cveIds],
+    [target, declaration, repositories, cveIds, authenticated, loginUrl],
   )
 
   // Default to every connected repo the moment the list lands — the operator
@@ -681,6 +731,12 @@ function PayloadBuilder({
   // of "this web application" — so a launch needs a real https(s) URL. An empty
   // or malformed target blocks the button.
   const targetValid = /^https?:\/\/.+/i.test(payload.target)
+  // A login URL is optional, but if given it must be a real http(s) URL.
+  const loginUrlValid = loginUrl.trim() === '' || /^https?:\/\/.+/i.test(loginUrl.trim())
+  // Credentials are all-or-nothing: a half-filled login would silently scan
+  // unauthenticated, so block the launch until both fields are set or both empty.
+  const loginComplete =
+    (loginUsername.trim() === '') === (loginPassword === '')
   // Each cell is one sandbox, so a repository × CVE matrix past the cap is a
   // launch we won't start — surface it before the click, not on it.
   const cellCount = repositories.length * cveIds.length
@@ -691,13 +747,15 @@ function PayloadBuilder({
     cveIds.length > 0 &&
     repositories.length > 0 &&
     !overCap &&
-    targetValid
+    targetValid &&
+    loginUrlValid &&
+    loginComplete
 
   return (
     <div className="space-y-5">
       <Field
         label="Endpoint to scan"
-        hint="A public URL you operate — required. Passive only: plain GETs on public paths and banner headers. No payloads, no auth probing."
+        hint="A URL you operate — required. The swarm discovers routes from your repos and probes this host only. Add a test login below to scan behind the auth wall."
       >
         <Input
           type="url"
@@ -709,6 +767,46 @@ function PayloadBuilder({
         {target !== '' && !targetValid ? (
           <span className="text-destructive text-xs">
             Enter a full http(s) URL.
+          </span>
+        ) : null}
+      </Field>
+
+      <Field
+        label="Test login (optional)"
+        hint="Use a throwaway account you create just for this — the swarm signs in with it and scans behind the login, exercising the app and its API to find vulnerabilities. Credentials are stored as encrypted runtime variables, never shown again or written to findings. Leave blank to scan only what's reachable without signing in."
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Input
+            type="text"
+            autoComplete="off"
+            placeholder="Username or email"
+            value={loginUsername}
+            onChange={(e) => setLoginUsername(e.target.value)}
+          />
+          <Input
+            type="password"
+            autoComplete="new-password"
+            placeholder="Password"
+            value={loginPassword}
+            onChange={(e) => setLoginPassword(e.target.value)}
+          />
+        </div>
+        <Input
+          type="url"
+          className="mt-2"
+          placeholder="Login page URL (optional)"
+          value={loginUrl}
+          onChange={(e) => setLoginUrl(e.target.value)}
+          aria-invalid={!loginUrlValid}
+        />
+        {!loginComplete ? (
+          <span className="text-destructive text-xs">
+            Enter both a username and a password, or leave both blank.
+          </span>
+        ) : null}
+        {!loginUrlValid ? (
+          <span className="text-destructive text-xs">
+            Enter a full http(s) URL, or leave the login page blank.
           </span>
         ) : null}
       </Field>
@@ -786,7 +884,7 @@ function PayloadBuilder({
       <div className="flex items-center gap-3">
         <Button
           disabled={!ready || launching || deployState === 'failed'}
-          onClick={() => onLaunch(payload)}
+          onClick={() => onLaunch(payload, credentials)}
         >
           {launching ? <Loader2 className="animate-spin" /> : <Radar />}
           Launch swarm

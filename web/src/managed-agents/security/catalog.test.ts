@@ -83,6 +83,27 @@ describe('swarm fan-out', () => {
     expect(prompt).not.toContain('scan_surface')
     expect(prompt).toContain('reachable in this code')
   })
+
+  it('tells the cell to log in when the scan is authenticated', () => {
+    const prompt = composeCellPrompt(
+      { ...payload, authenticated: true, loginUrl: 'https://app.example.com/login' },
+      { repository: 'acme/web', cveId: 'CVE-2026-1' },
+    )
+    // Reads the creds from the environment, never carries them.
+    expect(prompt).toContain('SWARM_LOGIN_USERNAME')
+    expect(prompt).toContain('SWARM_LOGIN_PASSWORD')
+    expect(prompt).toContain('https://app.example.com/login')
+    expect(prompt).toContain('--no-sandbox')
+  })
+
+  it('says nothing about logging in for an unauthenticated scan', () => {
+    const prompt = composeCellPrompt(payload, {
+      repository: 'acme/web',
+      cveId: 'CVE-2026-1',
+    })
+    expect(prompt).not.toContain('SWARM_LOGIN_USERNAME')
+    expect(prompt).not.toContain('log in')
+  })
 })
 
 describe('parseCellFinding', () => {
