@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   FolderGit2,
   Loader2,
   Radar,
-  Rocket,
   ShieldCheck,
   X,
 } from 'lucide-react'
@@ -56,9 +55,14 @@ import {
 // 20×20 launch from spinning up hundreds of sandboxes at once.
 const MAX_SWARM_CELLS = 24
 
-const STEPS = ['Connect GitHub', 'Deploy swarm', 'Launch swarm'] as const
+// Deploying the swarm project is no longer a step the operator clicks through —
+// it starts on its own the moment GitHub is connected and runs while they fill
+// in the payload, so by launch time it's usually already done.
+const STEPS = ['Connect GitHub', 'Launch swarm'] as const
 
 type DeployResult = { projectId: string; projectAgentId: string }
+
+type DeployState = 'idle' | 'deploying' | 'ready' | 'failed'
 
 // Boot every cell's sandbox in the background, after the launch has already
 // written the manifest and navigated. Each cell: create its findings document
@@ -183,12 +187,14 @@ export default function SecurityOnboarding() {
   )
 
   const [deployed, setDeployed] = useState<DeployResult | null>(null)
-  const [manualStep, setManualStep] = useState<number | null>(null)
 
-  // Derive the active step from real state, but let the user step forward in
-  // the walkthrough even before a backend action resolves.
-  const derivedStep = deployed ? 2 : connected ? 1 : 0
-  const step = Math.max(derivedStep, manualStep ?? 0)
+  // Two steps now: connect, then launch. The deploy happens on its own between
+  // them, so it isn't a step the operator waits on.
+  const step = connected ? 1 : 0
+
+  // Holds the in-flight (or settled) deploy so a launch fired before it finishes
+  // can await the same promise instead of starting a second deploy.
+  const deployPromiseRef = useRef<Promise<DeployResult> | null>(null)
 
   const connect = useMutation({
     mutationFn: () => addManagedGitHubConnection('install'),
@@ -262,6 +268,38 @@ export default function SecurityOnboarding() {
     onError: (error) => notifyError("Couldn't deploy the CVE Swarm.", error),
   })
 
+  // Start the deploy once, reusing the in-flight promise so nothing launches a
+  // second one. A failure clears the ref so a retry (or a launch) can try again.
+  const startDeploy = (): Promise<DeployResult> => {
+    if (deployPromiseRef.current) return deployPromiseRef.current
+    const p = deploy.mutateAsync()
+    deployPromiseRef.current = p
+    void p.catch(() => {
+      deployPromiseRef.current = null
+    })
+    return p
+  }
+
+  // Auto-start it the moment GitHub is connected, so it deploys while the
+  // operator fills in the payload. The ref guard keeps this to one deploy even
+  // though the effect re-runs on each render.
+  useEffect(() => {
+    if (!connected || deployed || deployPromiseRef.current) return
+    const p = deploy.mutateAsync()
+    deployPromiseRef.current = p
+    void p.catch(() => {
+      deployPromiseRef.current = null
+    })
+  }, [connected, deployed, deploy])
+
+  const deployState: DeployState = deployed
+    ? 'ready'
+    : deploy.isError
+      ? 'failed'
+      : connected
+        ? 'deploying'
+        : 'idle'
+
   // Launch fans the payload's repository × CVE matrix out into one bound session
   // per cell. The slow part is booting each cell's sandbox, so we don't block the
   // UI on it: we write the run manifest immediately with every cell `starting`,
@@ -280,7 +318,6 @@ export default function SecurityOnboarding() {
       cells: SwarmCell[]
       manifestEtag: string
     }> => {
-      if (!deployed) throw new Error('Deploy the swarm before launching.')
       const cells = swarmCells(payload)
       if (cells.length === 0) {
         throw new Error('Add at least one repository and one CVE to swarm.')
@@ -290,8 +327,12 @@ export default function SecurityOnboarding() {
           `That is ${cells.length} cells (repos × CVEs). Trim to ${MAX_SWARM_CELLS} or fewer — each cell is its own sandbox.`,
         )
       }
+      // The deploy runs in the background from the moment GitHub connects. If the
+      // operator reaches launch before it settles, await that same deploy rather
+      // than blocking the whole flow on it earlier.
+      const project = deployed ?? (await startDeploy())
       const runId = `run-${crypto.randomUUID()}`
-      const agentId = `${deployed.projectAgentId}@default`
+      const agentId = `${project.projectAgentId}@default`
       const starting: LaunchedCell[] = cells.map((cell) => ({
         cell,
         sessionId: '',
@@ -300,7 +341,7 @@ export default function SecurityOnboarding() {
       // One fast write makes the run reachable by URL; agentWrites stays disabled
       // — only cell findings are agent-owned.
       const created = await createManagedMemoryDocument({
-        projectId: deployed.projectId,
+        projectId: project.projectId,
         resource: SECURITY_FINDINGS_RESOURCE,
         environment: 'default',
         id: runManifestDocumentId(runId),
@@ -314,7 +355,7 @@ export default function SecurityOnboarding() {
         agentWrites: 'disabled',
       })
       return {
-        projectId: deployed.projectId,
+        projectId: project.projectId,
         runId,
         agentId,
         payload,
@@ -392,53 +433,13 @@ export default function SecurityOnboarding() {
         <StepCard
           index={1}
           current={step}
-          icon={Rocket}
-          title="Deploy the swarm"
-          done={!!deployed}
-        >
-          <p className="text-muted-foreground text-sm">
-            Create your own <code>CVE Swarm</code> project from the template.
-            The default model is <strong>{DEFAULT_SWARM_MODEL}</strong>.
-            Publishing stays off (dry-run fixes) until you turn it on.
-          </p>
-          <div className="mt-4 flex items-center gap-3">
-            <Button
-              onClick={() => deploy.mutate()}
-              disabled={deploy.isPending || !!deployed}
-            >
-              {deploy.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Rocket />
-              )}
-              {deployed ? 'Swarm deployed' : 'Deploy CVE Swarm'}
-            </Button>
-            {deploy.isError && !deployed ? (
-              <span className="text-muted-foreground text-sm">
-                Couldn't deploy yet — continue below to preview the launch.
-              </span>
-            ) : null}
-          </div>
-          {!deployed && step >= 1 ? (
-            <button
-              type="button"
-              onClick={() => setManualStep(2)}
-              className="text-muted-foreground hover:text-foreground mt-3 text-xs underline underline-offset-4"
-            >
-              Skip to the payload →
-            </button>
-          ) : null}
-        </StepCard>
-
-        <StepCard
-          index={2}
-          current={step}
           icon={Radar}
           title="Launch swarm from payload"
           done={false}
         >
+          <DeployStatus state={deployState} onRetry={() => void startDeploy()} />
           <PayloadBuilder
-            canLaunch={!!deployed}
+            deployState={deployState}
             launching={launch.isPending}
             onLaunch={(payload) => launch.mutate(payload)}
           />
@@ -536,12 +537,57 @@ function StepCard({
   )
 }
 
+// The slim strip at the top of the launch step: the background deploy's state,
+// so the operator knows their swarm project is being prepared while they build
+// the payload — and can retry if it failed.
+function DeployStatus({
+  state,
+  onRetry,
+}: {
+  state: DeployState
+  onRetry: () => void
+}) {
+  if (state === 'idle') return null
+  if (state === 'ready') {
+    return (
+      <div className="text-status-running mb-4 inline-flex items-center gap-2 text-xs">
+        <ShieldCheck className="size-3.5" />
+        Swarm project ready — publishing stays off (dry-run fixes) until you turn
+        it on.
+      </div>
+    )
+  }
+  if (state === 'failed') {
+    return (
+      <div className="mb-4 flex items-center gap-3 text-xs">
+        <span className="text-destructive">
+          Couldn't prepare your swarm project.
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-foreground underline underline-offset-4"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="text-muted-foreground mb-4 inline-flex items-center gap-2 text-xs">
+      <Loader2 className="size-3.5 animate-spin" />
+      Preparing your swarm project in the background (model{' '}
+      {DEFAULT_SWARM_MODEL})…
+    </div>
+  )
+}
+
 function PayloadBuilder({
-  canLaunch,
+  deployState,
   launching,
   onLaunch,
 }: {
-  canLaunch: boolean
+  deployState: DeployState
   launching: boolean
   onLaunch: (payload: SwarmPayload) => void
 }) {
@@ -708,7 +754,7 @@ function PayloadBuilder({
 
       <div className="flex items-center gap-3">
         <Button
-          disabled={!ready || !canLaunch || launching}
+          disabled={!ready || launching || deployState === 'failed'}
           onClick={() => onLaunch(payload)}
         >
           {launching ? <Loader2 className="animate-spin" /> : <Radar />}
@@ -722,11 +768,7 @@ function PayloadBuilder({
         >
           Preview payload
         </Button>
-        {!canLaunch ? (
-          <span className="text-muted-foreground text-xs">
-            Deploy the swarm above to launch.
-          </span>
-        ) : ready ? (
+        {ready ? (
           <span className="text-muted-foreground text-xs">
             {repositories.length} × {cveIds.length} ={' '}
             {repositories.length * cveIds.length} parallel cell
