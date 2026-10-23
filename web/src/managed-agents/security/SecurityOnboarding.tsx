@@ -54,9 +54,15 @@ import {
   type SwarmPayload,
 } from './catalog'
 
-// Each cell is one microVM session, so cap the matrix to keep an accidental
-// 20×20 launch from spinning up hundreds of sandboxes at once.
-const MAX_SWARM_CELLS = 24
+// Each cell is one microVM session. The platform doesn't cap concurrent
+// sandboxes, so this is only a sanity rail against a fat-fingered launch — set
+// high enough that a real install (hundreds of repos × the feed) fits.
+const MAX_SWARM_CELLS = 500
+
+// How many cell sandboxes to boot at once. The platform has no concurrency cap,
+// but booting all 500 in one burst would flood the control plane — meter the
+// fan-out so the run page still fills in quickly without the thundering herd.
+const LAUNCH_CONCURRENCY = 12
 
 // Deploying the swarm project is no longer a step the operator clicks through —
 // it starts on its own the moment GitHub is connected and runs while they fill
@@ -127,37 +133,52 @@ async function launchCellsInBackground(args: {
     }
   }
 
-  await Promise.all(
-    cells.map(async (cell, i) => {
-      try {
-        const id = cellDocumentId(runId, cell)
-        await createManagedMemoryDocument({
-          projectId,
-          resource: SECURITY_FINDINGS_RESOURCE,
-          environment: 'default',
-          id,
-          title: `${cell.repository} · ${cell.cveId}`,
-          text: '{}',
-        })
-        const { sessionId } = await startManagedAgentSession(
-          agentId,
-          composeCellPrompt(payload, cell),
-          {
-            memory: {
-              [SECURITY_FINDINGS_RESOURCE]: {
-                scope: 'document',
-                id,
-                access: 'read-write',
-              },
+  const bootCell = async (cell: SwarmCell, i: number) => {
+    try {
+      const id = cellDocumentId(runId, cell)
+      await createManagedMemoryDocument({
+        projectId,
+        resource: SECURITY_FINDINGS_RESOURCE,
+        environment: 'default',
+        id,
+        title: `${cell.repository} · ${cell.cveId}`,
+        text: '{}',
+      })
+      const { sessionId } = await startManagedAgentSession(
+        agentId,
+        composeCellPrompt(payload, cell),
+        {
+          memory: {
+            [SECURITY_FINDINGS_RESOURCE]: {
+              scope: 'document',
+              id,
+              access: 'read-write',
             },
           },
-        )
-        launched[i] = { cell, sessionId, launch: 'started' }
-      } catch {
-        launched[i] = { cell, sessionId: '', launch: 'failed' }
-      }
-      await flush()
-    }),
+        },
+      )
+      launched[i] = { cell, sessionId, launch: 'started' }
+    } catch {
+      launched[i] = { cell, sessionId: '', launch: 'failed' }
+    }
+    await flush()
+  }
+
+  // The matrix can be hundreds of cells now, so booting every sandbox at once
+  // would hammer the control plane. Pull from a shared cursor with a fixed pool
+  // of workers instead: cells still light up on the run page as each resolves,
+  // just metered rather than in one burst.
+  let next = 0
+  const worker = async () => {
+    for (;;) {
+      const i = next
+      next += 1
+      if (i >= cells.length) return
+      await bootCell(cells[i], i)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(LAUNCH_CONCURRENCY, cells.length) }, worker),
   )
   await flush()
 }
