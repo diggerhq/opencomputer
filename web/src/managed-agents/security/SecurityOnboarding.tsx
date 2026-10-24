@@ -1186,7 +1186,14 @@ function CvePicker({
           min={1}
           max={cap}
           value={topN}
-          onChange={(e) => setTopN(Number(e.target.value))}
+          onChange={(e) => {
+            const n = Number(e.target.value)
+            setTopN(n)
+            // Apply as you type so the number always matches what will launch —
+            // no separate "select" click to forget. Ignore an empty/invalid box
+            // (leaves the current selection alone until a real number lands).
+            if (Number.isFinite(n) && n >= 1) onPickTopN(Math.min(n, cap))
+          }}
           className="w-20"
         />
         <span className="text-muted-foreground text-xs">by severity</span>
