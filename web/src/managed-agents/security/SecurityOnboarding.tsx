@@ -751,16 +751,9 @@ function PayloadBuilder({
     [target, declaration, repositories, cveIds, authenticated, activeScan, loginUrl],
   )
 
-  // Default to every connected repo the moment the list lands — the operator
-  // asked to swarm their whole surface, so that's the useful starting point.
-  // One-shot: once defaulted (or the operator edits first) we leave the
-  // selection alone, so a removed repo doesn't snap back on the next render.
-  const defaultedRef = useRef(false)
-  useEffect(() => {
-    if (defaultedRef.current || availableRepos.length === 0) return
-    defaultedRef.current = true
-    setRepositories((current) => (current.length > 0 ? current : availableRepos))
-  }, [availableRepos])
+  // Repos start unselected — the operator picks the ones that are real evidence
+  // for the target rather than cloning their whole surface by default. "Select
+  // all" is one click away in the picker when they do want everything.
 
   // The target is the asset under test, and the declaration attests ownership
   // of "this web application" — so a launch needs a real https(s) URL. An empty
@@ -871,7 +864,7 @@ function PayloadBuilder({
 
       <Field
         label="Repositories"
-        hint="Every repo from your GitHub install, selected by default. These are shared evidence — every CVE agent gets all of them cloned to investigate the target against."
+        hint="Pick the repos behind this target — they're shared evidence every CVE agent clones to prove reachability. Use Select all for your whole install, or choose just the ones that back this endpoint."
       >
         <RepoPicker
           available={availableRepos}

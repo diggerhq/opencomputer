@@ -97,24 +97,22 @@ export function severityRank(cve: FeedCve): number {
   return kev + cvss + bucket
 }
 
-// Fetch the current cve.now feed slice and return it severity-sorted (worst
-// first), ready for the onboarding top-N picker. `limit` caps how many raw
-// entries we pull before ranking; the caller slices to the chosen N. Throws on a
-// non-OK response or a malformed body so the UI can show a retry.
-export async function fetchLiveCves(
-  limit = 50,
-  signal?: AbortSignal,
-): Promise<FeedCve[]> {
-  const url = `${CVE_NOW_ENTRIES_API}?limit=${encodeURIComponent(String(limit))}`
-  const res = await fetch(url, { signal, headers: { accept: 'application/json' } })
-  if (!res.ok) {
-    throw new Error(`cve.now feed responded ${res.status}`)
-  }
-  const body: unknown = await res.json()
-  const entries =
-    body && typeof body === 'object' && Array.isArray((body as { entries?: unknown }).entries)
-      ? ((body as { entries: unknown[] }).entries)
-      : []
+// cve.now serves a fixed ~30 entries per page regardless of the `limit` we ask
+// for, cursor-paginated via `nextCursor`. To offer a top-N picker larger than
+// one page we follow the cursor until we have enough — bounded so a broken or
+// endless feed can never loop without limit.
+const MAX_FEED_PAGES = 20
+
+// Validate one entries-API page: pull the well-formed CVE rows out and surface
+// the cursor to the next page (null when the feed has no more). Malformed rows
+// are dropped rather than failing the whole page.
+function parseEntriesPage(body: unknown): {
+  cves: FeedCve[]
+  nextCursor: string | null
+} {
+  const obj =
+    body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+  const entries = Array.isArray(obj.entries) ? obj.entries : []
   const cves: FeedCve[] = []
   for (const raw of entries) {
     if (!raw || typeof raw !== 'object') continue
@@ -129,7 +127,50 @@ export async function fetchLiveCves(
       firstSeenAt: typeof e.firstSeenAt === 'string' ? e.firstSeenAt : null,
     })
   }
-  return cves.sort((a, b) => severityRank(b) - severityRank(a))
+  const nextCursor =
+    typeof obj.nextCursor === 'string' && obj.nextCursor.length > 0
+      ? obj.nextCursor
+      : null
+  return { cves, nextCursor }
+}
+
+// Fetch the current cve.now feed and return it severity-sorted (worst first),
+// ready for the onboarding top-N picker. Follows the cursor across pages until
+// it has gathered `limit` entries or the feed runs out, de-duplicating ids. The
+// first page failing throws so the UI can show a retry; a later page failing
+// keeps what we already gathered rather than losing the whole list.
+export async function fetchLiveCves(
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<FeedCve[]> {
+  const cves: FeedCve[] = []
+  const seen = new Set<string>()
+  let cursor: string | null = null
+  for (let page = 0; page < MAX_FEED_PAGES && cves.length < limit; page += 1) {
+    const url = new URL(CVE_NOW_ENTRIES_API)
+    url.searchParams.set('limit', String(limit))
+    if (cursor) url.searchParams.set('cursor', cursor)
+    let res: Response
+    try {
+      res = await fetch(url, { signal, headers: { accept: 'application/json' } })
+    } catch (err) {
+      if (page === 0) throw err
+      break
+    }
+    if (!res.ok) {
+      if (page === 0) throw new Error(`cve.now feed responded ${res.status}`)
+      break
+    }
+    const { cves: pageCves, nextCursor } = parseEntriesPage(await res.json())
+    for (const cve of pageCves) {
+      if (seen.has(cve.id)) continue
+      seen.add(cve.id)
+      cves.push(cve)
+    }
+    cursor = nextCursor
+    if (!cursor) break
+  }
+  return cves.sort((a, b) => severityRank(b) - severityRank(a)).slice(0, limit)
 }
 
 // cve.now's MCP server. `check_stack` matches a repository's lockfile against
