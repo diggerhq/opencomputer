@@ -31,12 +31,28 @@ export default function ProjectSwarms() {
     queryKey: ['swarm-runs', projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<RunRow[]> => {
-      const page = await getManagedMemoryDocuments({
-        projectId,
-        resource: SECURITY_FINDINGS_RESOURCE,
-        environment: 'default',
-      })
-      const manifests = listManifestDocs(page.documents)
+      // The findings resource holds one `manifest__` doc per run alongside every
+      // cell's finding doc, and the list endpoint pages at 50 newest-first by
+      // `updatedAt`. A busy run (dozens of cells, each rewriting its finding doc)
+      // pushes the now-static manifest past page 1, so reading only the first
+      // page shows "no swarm has run" even when runs exist. Follow the cursor to
+      // gather every doc, then filter to manifests. Bounded so a runaway feed
+      // can't loop without limit.
+      const MAX_PAGES = 50
+      const docs: { id: string; updatedAt: string }[] = []
+      let cursor: string | undefined
+      for (let i = 0; i < MAX_PAGES; i += 1) {
+        const page = await getManagedMemoryDocuments({
+          projectId,
+          resource: SECURITY_FINDINGS_RESOURCE,
+          environment: 'default',
+          cursor,
+        })
+        docs.push(...page.documents)
+        if (!page.nextCursor) break
+        cursor = page.nextCursor
+      }
+      const manifests = listManifestDocs(docs)
       const rows = await Promise.all(
         manifests.map(async ({ id, updatedAt }) => {
           const read = await getManagedMemoryDocument({
