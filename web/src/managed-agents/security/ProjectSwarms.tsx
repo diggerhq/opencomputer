@@ -82,15 +82,6 @@ export default function ProjectSwarms() {
         title="Swarms"
         description="Every CVE swarm run in this project. Open one to watch its map or grid and read its report."
         className="mb-6"
-        actions={
-          runs.data && runs.data.length > 0 ? (
-            <Button asChild>
-              <Link to="/security">
-                <Radar className="size-4" /> New swarm
-              </Link>
-            </Button>
-          ) : undefined
-        }
       />
       {runs.isPending ? (
         <div className="text-muted-foreground inline-flex items-center gap-2 text-sm">
