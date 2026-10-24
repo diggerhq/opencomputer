@@ -97,24 +97,21 @@ export function severityRank(cve: FeedCve): number {
   return kev + cvss + bucket
 }
 
-// Fetch the current cve.now feed slice and return it severity-sorted (worst
-// first), ready for the onboarding top-N picker. `limit` caps how many raw
-// entries we pull before ranking; the caller slices to the chosen N. Throws on a
-// non-OK response or a malformed body so the UI can show a retry.
-export async function fetchLiveCves(
-  limit = 50,
-  signal?: AbortSignal,
-): Promise<FeedCve[]> {
-  const url = `${CVE_NOW_ENTRIES_API}?limit=${encodeURIComponent(String(limit))}`
-  const res = await fetch(url, { signal, headers: { accept: 'application/json' } })
-  if (!res.ok) {
-    throw new Error(`cve.now feed responded ${res.status}`)
-  }
-  const body: unknown = await res.json()
-  const entries =
-    body && typeof body === 'object' && Array.isArray((body as { entries?: unknown }).entries)
-      ? ((body as { entries: unknown[] }).entries)
-      : []
+// A hard ceiling on how many pages we walk, so a stuck or looping cursor can
+// never fan out into unbounded requests. At ~30 entries a page this covers a
+// few hundred CVEs — far past any swarm cap.
+const MAX_FEED_PAGES = 20
+
+// Parse one entries-API page body into validated FeedCves plus the next cursor.
+// Everything upstream is untrusted, so each field is checked and malformed rows
+// are dropped rather than trusted.
+function parseEntriesPage(body: unknown): {
+  cves: FeedCve[]
+  nextCursor: string | null
+} {
+  const obj =
+    body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+  const entries = Array.isArray(obj.entries) ? obj.entries : []
   const cves: FeedCve[] = []
   for (const raw of entries) {
     if (!raw || typeof raw !== 'object') continue
@@ -124,12 +121,60 @@ export async function fetchLiveCves(
       id: e.id,
       title: typeof e.title === 'string' ? e.title : e.id,
       cvss: typeof e.cvss === 'number' ? e.cvss : null,
-      statedSeverity: typeof e.statedSeverity === 'string' ? e.statedSeverity : null,
+      statedSeverity:
+        typeof e.statedSeverity === 'string' ? e.statedSeverity : null,
       kev: e.kev === true,
       firstSeenAt: typeof e.firstSeenAt === 'string' ? e.firstSeenAt : null,
     })
   }
-  return cves.sort((a, b) => severityRank(b) - severityRank(a))
+  const nextCursor =
+    typeof obj.nextCursor === 'string' && obj.nextCursor ? obj.nextCursor : null
+  return { cves, nextCursor }
+}
+
+// Fetch the current cve.now feed and return it severity-sorted (worst first),
+// ready for the onboarding top-N picker. The entries API serves a fixed, small
+// page (~30) regardless of the `limit` we ask for, so to offer a real top-50 or
+// top-100 we follow `nextCursor` across pages until we have `limit` entries (or
+// the feed runs out). Ids are de-duplicated across pages, and the result is
+// sorted then sliced to `limit`. A failed FIRST page throws so the UI can show a
+// retry; a failure part-way just caps the list at what we already have, which
+// still gives the operator a usable slice.
+export async function fetchLiveCves(
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<FeedCve[]> {
+  const cves: FeedCve[] = []
+  const seen = new Set<string>()
+  let cursor: string | null = null
+
+  for (let page = 0; page < MAX_FEED_PAGES && cves.length < limit; page += 1) {
+    const url = new URL(CVE_NOW_ENTRIES_API)
+    url.searchParams.set('limit', String(limit))
+    if (cursor) url.searchParams.set('cursor', cursor)
+
+    const res = await fetch(url, {
+      signal,
+      headers: { accept: 'application/json' },
+    })
+    if (!res.ok) {
+      if (cves.length === 0) {
+        throw new Error(`cve.now feed responded ${res.status}`)
+      }
+      break
+    }
+
+    const { cves: pageCves, nextCursor } = parseEntriesPage(await res.json())
+    for (const cve of pageCves) {
+      if (seen.has(cve.id)) continue
+      seen.add(cve.id)
+      cves.push(cve)
+    }
+    cursor = nextCursor
+    if (!cursor) break
+  }
+
+  return cves.sort((a, b) => severityRank(b) - severityRank(a)).slice(0, limit)
 }
 
 // cve.now's MCP server. `check_stack` matches a repository's lockfile against
