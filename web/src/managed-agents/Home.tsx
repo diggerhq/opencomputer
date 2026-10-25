@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate } from 'react-router-dom'
 import {
   Archive,
+  Check,
+  CheckSquare,
   ChevronRight,
   FolderKanban,
   Loader2,
@@ -47,21 +49,62 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
   })
   const items = projects.data ?? []
   const archivedItems = archivedProjects.data ?? []
-  // The project the confirm dialog is open for, held whole so the dialog can
-  // name it after the list behind it has already been invalidated.
-  const [pendingArchive, setPendingArchive] = useState<{
-    id: string
-    name: string
-  } | null>(null)
+  // The projects the confirm dialog is open for, held whole so the dialog can
+  // name them after the list behind it has already been invalidated.
+  const [pendingArchive, setPendingArchive] = useState<
+    { id: string; name: string }[] | null
+  >(null)
+  // Selection mode turns the cards into checkboxes for archiving many at once.
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const stopSelecting = () => {
+    setSelecting(false)
+    setSelected(new Set())
+  }
   const archive = useMutation({
-    mutationFn: archiveManagedProject,
-    onSuccess: async () => {
+    // One request per project; each is archived or fails on its own.
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(ids.map(archiveManagedProject))
+      const failed = ids.filter((_, i) => results[i].status === 'rejected')
+      const rejection = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )
+      return { failed, error: rejection?.reason as unknown }
+    },
+    onSuccess: async ({ failed, error }, ids) => {
       setPendingArchive(null)
       await queryClient.invalidateQueries({ queryKey: ['managed-projects'] })
-      notifySuccess('Project archived.', 'You can restore it at any time.')
+      const archived = ids.length - failed.length
+      if (failed.length === 0) {
+        stopSelecting()
+        notifySuccess(
+          archived === 1
+            ? 'Project archived.'
+            : `${archived} projects archived.`,
+          'You can restore them at any time.',
+        )
+        return
+      }
+      // Keep what failed selected so it can be retried.
+      setSelected(new Set(failed))
+      notifyError(
+        ids.length === 1
+          ? "Couldn't archive the project."
+          : `Couldn't archive ${failed.length} of ${ids.length} projects.`,
+        error,
+      )
     },
     onError: (error) => notifyError("Couldn't archive the project.", error),
   })
+  const toggleSelected = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const selectedProjects = items.filter((project) => selected.has(project.id))
   const restore = useMutation({
     mutationFn: restoreManagedProject,
     onSuccess: async () => {
@@ -146,58 +189,146 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
         title="Automation projects"
         description="Open one to see its agent playground, deployments, sessions, and resources."
         actions={
-          <Button asChild>
-            <Link to="/new">
-              <Plus /> New project
-            </Link>
-          </Button>
+          <>
+            {items.length > 1 && !selecting && (
+              <Button variant="outline" onClick={() => setSelecting(true)}>
+                <CheckSquare /> Select
+              </Button>
+            )}
+            <Button asChild>
+              <Link to="/new">
+                <Plus /> New project
+              </Link>
+            </Button>
+          </>
         }
       />
 
       <section className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((project) => (
-            <Link
-              key={project.id}
-              to={`/projects/${encodeURIComponent(project.id)}`}
-              className="group focus-visible:ring-ring/50 rounded-lg outline-none focus-visible:ring-3"
+        {selecting && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-muted-foreground mr-auto text-sm">
+              {selected.size} selected
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                setSelected(
+                  selected.size === items.length
+                    ? new Set()
+                    : new Set(items.map((project) => project.id)),
+                )
+              }
             >
-              <Panel className="group-hover:border-foreground/20 group-hover:bg-muted/25 h-full transition-colors">
-                <PanelContent className="flex items-center gap-3">
-                  <div className="bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-lg">
-                    <FolderKanban className="size-4" aria-hidden />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {project.name}
-                    </p>
-                    <p className="text-muted-foreground mt-0.5 text-xs">
-                      {project.agents.length}{' '}
-                      {project.agents.length === 1 ? 'agent' : 'agents'} ·{' '}
-                      {project.environments.length === 1
-                        ? 'single environment'
-                        : `${project.environments.length} environments`}
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Archive ${project.name}`}
-                    className="text-muted-foreground size-8 shrink-0"
-                    onClick={(event) => {
-                      // The whole card is a link; archiving must not navigate.
-                      event.preventDefault()
-                      event.stopPropagation()
-                      setPendingArchive({ id: project.id, name: project.name })
-                    }}
-                  >
-                    <Archive className="size-4" aria-hidden />
-                  </Button>
-                  <ChevronRight className="text-muted-foreground size-4 transition-transform group-hover:translate-x-0.5" />
-                </PanelContent>
-              </Panel>
-            </Link>
-          ))}
+              {selected.size === items.length ? 'Select none' : 'Select all'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={stopSelecting}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={selected.size === 0}
+              onClick={() =>
+                setPendingArchive(
+                  selectedProjects.map(({ id, name }) => ({ id, name })),
+                )
+              }
+            >
+              <Archive aria-hidden />
+              Archive
+              {selected.size > 0 ? ` ${selected.size}` : ''}
+            </Button>
+          </div>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map((project) =>
+            selecting ? (
+              <button
+                key={project.id}
+                type="button"
+                aria-pressed={selected.has(project.id)}
+                aria-label={`Select ${project.name}`}
+                onClick={() => toggleSelected(project.id)}
+                className="focus-visible:ring-ring/50 rounded-lg text-left outline-none focus-visible:ring-3"
+              >
+                <Panel
+                  className={
+                    selected.has(project.id)
+                      ? 'border-primary/60 bg-primary/5 h-full transition-colors'
+                      : 'hover:border-foreground/20 hover:bg-muted/25 h-full transition-colors'
+                  }
+                >
+                  <PanelContent className="flex items-center gap-3">
+                    <span
+                      aria-hidden
+                      className={
+                        selected.has(project.id)
+                          ? 'border-primary bg-primary text-primary-foreground flex size-4 shrink-0 items-center justify-center rounded-[4px] border'
+                          : 'border-input flex size-4 shrink-0 items-center justify-center rounded-[4px] border'
+                      }
+                    >
+                      {selected.has(project.id) && (
+                        <Check className="size-3.5" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {project.name}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 text-xs">
+                        {project.agents.length}{' '}
+                        {project.agents.length === 1 ? 'agent' : 'agents'}
+                      </p>
+                    </div>
+                  </PanelContent>
+                </Panel>
+              </button>
+            ) : (
+              <Link
+                key={project.id}
+                to={`/projects/${encodeURIComponent(project.id)}`}
+                className="group focus-visible:ring-ring/50 rounded-lg outline-none focus-visible:ring-3"
+              >
+                <Panel className="group-hover:border-foreground/20 group-hover:bg-muted/25 h-full transition-colors">
+                  <PanelContent className="flex items-center gap-3">
+                    <div className="bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-lg">
+                      <FolderKanban className="size-4" aria-hidden />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {project.name}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 text-xs">
+                        {project.agents.length}{' '}
+                        {project.agents.length === 1 ? 'agent' : 'agents'} ·{' '}
+                        {project.environments.length === 1
+                          ? 'single environment'
+                          : `${project.environments.length} environments`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Archive ${project.name}`}
+                      className="text-muted-foreground size-8 shrink-0"
+                      onClick={(event) => {
+                        // The whole card is a link; archiving must not navigate.
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setPendingArchive([
+                          { id: project.id, name: project.name },
+                        ])
+                      }}
+                    >
+                      <Archive className="size-4" aria-hidden />
+                    </Button>
+                    <ChevronRight className="text-muted-foreground size-4 transition-transform group-hover:translate-x-0.5" />
+                  </PanelContent>
+                </Panel>
+              </Link>
+            ),
+          )}
         </div>
       </section>
 
@@ -248,12 +379,24 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
         onOpenChange={(open) => {
           if (!open) setPendingArchive(null)
         }}
-        title={`Archive ${pendingArchive?.name ?? 'this project'}?`}
-        description="This hides the project and stops its running sessions. Its agents, deployments, secrets and connections are preserved, and you can restore it later."
-        confirmLabel="Archive project"
+        title={
+          pendingArchive && pendingArchive.length > 1
+            ? `Archive ${pendingArchive.length} projects?`
+            : `Archive ${pendingArchive?.[0]?.name ?? 'this project'}?`
+        }
+        description={
+          pendingArchive && pendingArchive.length > 1
+            ? `This hides ${pendingArchive.map((p) => p.name).join(', ')} and stops their running sessions. Their agents, deployments, secrets and connections are preserved, and you can restore them later.`
+            : 'This hides the project and stops its running sessions. Its agents, deployments, secrets and connections are preserved, and you can restore it later.'
+        }
+        confirmLabel={
+          pendingArchive && pendingArchive.length > 1
+            ? `Archive ${pendingArchive.length} projects`
+            : 'Archive project'
+        }
         pending={archive.isPending}
         onConfirm={() => {
-          if (pendingArchive) archive.mutate(pendingArchive.id)
+          if (pendingArchive) archive.mutate(pendingArchive.map((p) => p.id))
         }}
       />
     </div>
