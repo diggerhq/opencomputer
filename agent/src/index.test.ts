@@ -528,6 +528,69 @@ test("useInput narrows a delivered turn outcome to its typed event", () => {
   }
 });
 
+test("a delivered outcome names the question its turn asked and the source session's labels", () => {
+  const event: OutcomeEvent = {
+    id: "event_10",
+    type: "turn.completed",
+    sessionId: "ses_worker",
+    turnId: "turn-2",
+    agentId: "worker",
+    occurredAt: "2026-10-07T12:00:00.000Z",
+    result: { text: "Two ways to fix it; which one?", truncated: false },
+    outcome: "question",
+    question: {
+      id: "q_1",
+      text: "Patch or rewrite?",
+      options: [
+        { label: "Patch", value: "patch" },
+        { label: "Rewrite", value: "rewrite" },
+      ],
+    },
+    labels: { coordinator: "ses_lead" },
+  };
+  const input: AgentInput = { source: "event", event };
+  if (input.source !== "event") assert.fail("expected an event input");
+  assert.equal(input.event.outcome, "question");
+  assert.deepEqual(
+    input.event.question?.options.map((option) => option.value),
+    ["patch", "rewrite"],
+  );
+  assert.equal(input.event.labels?.coordinator, "ses_lead");
+  // A turn that did not ask, from a session without labels, carries neither.
+  const plain: OutcomeEvent = { ...event, outcome: undefined, question: undefined, labels: undefined };
+  assert.equal(plain.outcome ?? plain.question ?? plain.labels, undefined);
+});
+
+test("a channel message typed while a question is open carries that question", () => {
+  const input: AgentInput = {
+    source: "channel",
+    text: "Actually, make it a rewrite.",
+    channel: { provider: "slack", connectionId: "conn_1", conversationId: "C1:1700000000.000100" },
+    openQuestion: {
+      id: "q_1",
+      text: "Patch or rewrite?",
+      options: [
+        { label: "Patch", value: "patch" },
+        { label: "Rewrite", value: "rewrite" },
+      ],
+    },
+  };
+  const globals = globalThis as Record<PropertyKey, unknown>;
+  globals[HOOKS] = { useInput: () => input };
+  try {
+    const read = useInput();
+    if (read.source !== "channel") assert.fail("expected a channel input");
+    assert.equal(read.openQuestion?.id, "q_1");
+    assert.equal(read.answer, undefined);
+  } finally {
+    delete globals[HOOKS];
+  }
+  // Only channel inputs carry an open question.
+  // @ts-expect-error openQuestion is not a field of a user input.
+  const user: AgentInput = { source: "user", text: "hi", openQuestion: { id: "q", text: "t", options: [] } };
+  assert.equal(user.source, "user");
+});
+
 test("defineTool marks a result tool and pins its output schema", () => {
   const output = {
     type: "object",

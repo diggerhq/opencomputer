@@ -75,9 +75,17 @@ export interface SessionQuestion {
  * held inputs are discarded), `dismissed` (`sessions.questions.dismiss`; held
  * inputs run as ordinary turns), `ended` (the session ended; nothing runs),
  * `undeliverable` (the question could never be shown; held inputs run as
- * ordinary turns).
+ * ordinary turns), `superseded` (on Slack, which a question does not hold:
+ * the agent replied to a later message in the thread, or asked again;
+ * nothing was held).
  */
-export type QuestionClosedReason = "stopped" | "dismissed" | "ended" | "undeliverable" | (string & {});
+export type QuestionClosedReason =
+  | "stopped"
+  | "dismissed"
+  | "ended"
+  | "undeliverable"
+  | "superseded"
+  | (string & {});
 
 /** How an input answered a question; `value` when the text matched an option by value or label. */
 export interface QuestionAnswer {
@@ -123,7 +131,11 @@ export interface SessionResult {
   data: DataValue;
 }
 
-/** Application metadata on a session. Not authorization, not visible to the agent. */
+/**
+ * Application metadata on a session. Not authorization, and not visible to
+ * the session's own agent; an outcome event delivered from the session
+ * carries them.
+ */
 export type SessionLabels = Record<string, string>;
 
 /** A session as `GET /sessions/<id>` returns it. */

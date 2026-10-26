@@ -4,6 +4,7 @@
 // `oc.projects.eventSubscriptions` sends and returns them.
 
 import type { MemoryEnvironment } from "./memory.js";
+import type { SessionLabels, SessionQuestion, TurnOutcome } from "./types.js";
 
 /** The turn outcomes a subscription can select. Turn outcomes, not session ends. */
 export type OutcomeEventType = "turn.completed" | "turn.failed" | "turn.cancelled";
@@ -18,6 +19,12 @@ export interface SessionDestination {
 export interface CreateEventSubscriptionBody {
   /** Exact source agent id; omitted selects every agent in the project. */
   agentId?: string;
+  /**
+   * Label pairs the source session must carry, every one of them, read when
+   * the source turn is accepted; omitted selects regardless of labels. 1–8
+   * pairs under the same key and value rules as session labels.
+   */
+  sourceLabels?: SessionLabels;
   /** At least one outcome type. */
   events: OutcomeEventType[];
   destination: SessionDestination;
@@ -30,6 +37,8 @@ export interface EventSubscription {
   id: string;
   projectId: string;
   agentId?: string;
+  /** Label pairs the source session must carry; absent selects regardless of labels. */
+  sourceLabels?: SessionLabels;
   environment?: MemoryEnvironment;
   events: OutcomeEventType[];
   destination: SessionDestination;
@@ -53,8 +62,16 @@ export interface OutcomeEvent {
   reason?: string;
   /** The failure message, bounded, when the turn failed. */
   error?: string;
-  /** The final assistant message of a completed turn; `truncated` when it was cut to fit. */
+  /**
+   * The last message of a completed turn that wrote text, bounded to 16 KB;
+   * `truncated` when it was cut to fit.
+   */
   result?: { text: string; truncated?: boolean };
+  /** `question` when a completed turn ended by asking; `question` then names what it asked. */
+  outcome?: TurnOutcome;
+  question?: Omit<SessionQuestion, "askedAt">;
+  /** The source session's labels when the outcome was delivered; absent when it has none. */
+  labels?: SessionLabels;
 }
 
 /** The input of a turn an event subscription started, as the agent's `useInput()` returns it. */
