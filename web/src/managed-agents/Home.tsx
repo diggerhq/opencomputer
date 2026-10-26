@@ -385,9 +385,24 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
             : `Archive ${pendingArchive?.[0]?.name ?? 'this project'}?`
         }
         description={
-          pendingArchive && pendingArchive.length > 1
-            ? `This hides ${pendingArchive.map((p) => p.name).join(', ')} and stops their running sessions. Their agents, deployments, secrets and connections are preserved, and you can restore them later.`
-            : 'This hides the project and stops its running sessions. Its agents, deployments, secrets and connections are preserved, and you can restore it later.'
+          pendingArchive && pendingArchive.length > 1 ? (
+            <>
+              This hides these projects and stops their running sessions. Their
+              agents, deployments, secrets and connections are preserved, and
+              you can restore them later.
+              {/* Description renders a <p>, so block spans rather than a list.
+                  Capped height keeps the confirm button on screen. */}
+              <span className="mt-3 block max-h-48 overflow-y-auto rounded-md border px-3 py-2">
+                {pendingArchive.map((p) => (
+                  <span key={p.id} className="text-foreground block truncate">
+                    {p.name}
+                  </span>
+                ))}
+              </span>
+            </>
+          ) : (
+            'This hides the project and stops its running sessions. Its agents, deployments, secrets and connections are preserved, and you can restore it later.'
+          )
         }
         confirmLabel={
           pendingArchive && pendingArchive.length > 1
