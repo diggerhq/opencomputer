@@ -488,14 +488,17 @@ function MemoryResourceDocuments({
     {
       key: 'document',
       header: 'Document',
+      // Titles and ids are long unbroken strings; let this column absorb the
+      // spare width and wrap so the action buttons stay on screen.
+      className: 'w-full max-w-0 min-w-64 whitespace-normal',
       cell: (document) => (
         <div className="min-w-0">
-          <p className="text-sm font-medium">{document.title}</p>
-          <p className="text-muted-foreground mt-0.5 font-mono text-xs">
+          <p className="text-sm font-medium break-all">{document.title}</p>
+          <p className="text-muted-foreground mt-0.5 font-mono text-xs break-all">
             {document.id}
           </p>
           {document.summary ? (
-            <p className="text-muted-foreground mt-1 max-w-xl truncate text-xs">
+            <p className="text-muted-foreground mt-1 truncate text-xs">
               {document.summary}
             </p>
           ) : null}
