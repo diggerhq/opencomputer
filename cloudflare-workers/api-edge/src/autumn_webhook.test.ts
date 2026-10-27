@@ -4,6 +4,7 @@ import {
   autumnWebhook,
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
+  billingWarning,
   billingWebhookEvents,
   haltReason,
   planChangeKind,
@@ -335,6 +336,7 @@ describe("billing funnel events from Autumn", () => {
                   if (args[0] === "base") org.payment_past_due_at = null;
                 } else if (sql.includes("SET is_halted")) {
                   org.usage_plan = args[3];
+                  org.billing_warning = args[7];
                 }
                 return { meta: { changes: 1 } };
               },
@@ -374,6 +376,14 @@ describe("billing funnel events from Autumn", () => {
       event: "billing.plan_changed",
       properties: { from: "base", to: "pro", kind: "trial_converted" },
     });
+  });
+
+  it("writes the warning next to the halt reason", async () => {
+    mockAutumn([{ plan_id: "pro" }]);
+    const db = fakeDb("pro", Math.floor(Date.now() / 1000) - 3600);
+    const r = await syncAutumnToD1({ ...env, OPENCOMPUTER_DB: db }, "org_1");
+    expect(r?.warning).toBe("payment_failed");
+    expect(db.org.billing_warning).toBe("payment_failed");
   });
 
   it("calls a plan that ends while past due lapsed, whoever projects it", async () => {
@@ -492,5 +502,63 @@ describe("halt rules", () => {
     expect(
       haltReason(customer(["trial"], { minutes: 600, credits: 10 }), { ...fresh, trialStartedAt: now - 40 * day }, now),
     ).toBe("trial_days");
+  });
+});
+
+describe("warnings before the stop", () => {
+  const now = 1_800_000_000;
+  const day = 86_400;
+  const customer = (
+    plans: string[],
+    balances: { minutes?: number; credits?: number },
+    autoTopup = false,
+  ): Parameters<typeof billingWarning>[0] => ({
+    id: "org_1",
+    subscriptions: plans.map((plan_id) => ({ plan_id, add_on: false, status: "active" })),
+    balances: {
+      ...(balances.minutes === undefined ? {} : { work_minutes: { remaining: balances.minutes } }),
+      credits: { remaining: balances.credits ?? 0 },
+    },
+    ...(autoTopup
+      ? { billing_controls: { auto_topups: [{ feature_id: "credits", enabled: true, threshold: 5, quantity: 10 }] } }
+      : {}),
+  });
+  const fresh = { trialStartedAt: now - day, paymentPastDueAt: null };
+
+  it("warns a trial at 480 minutes, 2 days left or $8 spent", () => {
+    expect(billingWarning(customer(["trial"], { minutes: 121, credits: 2.5 }), fresh, now)).toBeNull();
+    expect(billingWarning(customer(["trial"], { minutes: 120, credits: 5 }), fresh, now)).toBe("trial_minutes");
+    expect(billingWarning(customer(["trial"], { minutes: 300, credits: 2 }), fresh, now)).toBe("trial_tokens");
+    expect(
+      billingWarning(customer(["trial"], { minutes: 300, credits: 5 }), { ...fresh, trialStartedAt: now - 5 * day }, now),
+    ).toBe("trial_days");
+  });
+
+  it("names the trial limit closest to stopping", () => {
+    const day6 = { ...fresh, trialStartedAt: now - 6 * day };
+    // 1 day of 7 left (14%) against 100 of 600 minutes (17%).
+    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 5 }), day6, now)).toBe("trial_days");
+    expect(billingWarning(customer(["trial"], { minutes: 30, credits: 5 }), day6, now)).toBe("trial_minutes");
+    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 0.5 }), day6, now)).toBe("trial_tokens");
+  });
+
+  it("warns a paid org at 80% of its minutes, then about low credits", () => {
+    expect(billingWarning(customer(["pro"], { minutes: 401, credits: 1 }), fresh, now)).toBeNull();
+    expect(billingWarning(customer(["pro"], { minutes: 400, credits: 20 }), fresh, now)).toBe("allowance_80");
+    expect(billingWarning(customer(["max"], { minutes: 4_000, credits: 4 }), fresh, now)).toBe("credits_low");
+    expect(billingWarning(customer(["pro"], { minutes: 0, credits: 4.99 }), fresh, now)).toBe("credits_low");
+    expect(billingWarning(customer(["pro"], { minutes: 0, credits: 4 }, true), fresh, now)).toBe("allowance_80");
+  });
+
+  it("puts a failing payment first, inside its grace", () => {
+    const pastDue = { ...fresh, paymentPastDueAt: now - day };
+    expect(billingWarning(customer(["pro"], { minutes: 0, credits: 1 }), pastDue, now)).toBe("payment_failed");
+    expect(billingWarning(customer(["pro"], { minutes: 0, credits: 1 }), { ...fresh, paymentPastDueAt: now - 3 * day }, now)).toBeNull();
+  });
+
+  it("says nothing once halted, or to a credit-only org", () => {
+    expect(billingWarning(customer(["trial"], { minutes: 0, credits: 5 }), fresh, now)).toBeNull();
+    expect(billingWarning(customer([], { minutes: 0 }), fresh, now)).toBeNull();
+    expect(billingWarning(customer(["base"], { credits: 1 }), { trialStartedAt: null, paymentPastDueAt: null }, now)).toBeNull();
   });
 });

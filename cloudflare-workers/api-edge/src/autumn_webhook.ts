@@ -571,6 +571,9 @@ export async function agentRuntimeUsageInternal(
       idempotencyKey: p.idempotency_key,
     });
     if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    else if (workMinutes && remaining !== null && customer && minutesWarningCrossed(customer, remaining)) {
+      await projectOrg(env, p.org_id);
+    }
     if (workMinutes) {
       await recordWorkMinutes(env, p.org_id, customer, {
         minutes: Number(p.quantity_seconds) / 60,
@@ -688,6 +691,85 @@ export function haltReason(
   return "lapsed";
 }
 
+// ── warnings before the stop (serverless-agents-ws 086, step 4) ─────────────
+
+export type BillingWarning =
+  | "trial_minutes"
+  | "trial_days"
+  | "trial_tokens"
+  | "allowance_80"
+  | "credits_low"
+  | "payment_failed";
+
+const TRIAL_MINUTES = 600;
+const TRIAL_CREDITS = 10;
+// Trial: warn at 480 of 600 minutes, 2 days left, or $8 of the $10 spent.
+const TRIAL_WARN_MINUTES_LEFT = 120;
+const TRIAL_WARN_DAYS_LEFT = 2;
+const TRIAL_WARN_CREDITS_LEFT = 2;
+// Paid: warn at 80% of the month's minutes, and when the credits that pay past
+// them run under $5 with no auto top-up to refill them.
+const PLAN_WORK_MINUTES: Record<string, number> = { pro: 2_000, max: 25_000 };
+const ALLOWANCE_WARN_FRACTION = 0.2;
+const CREDITS_LOW = 5;
+
+function hasAutoTopup(customer: AutumnCustomer): boolean {
+  return (customer.billing_controls?.auto_topups ?? []).some((a) => a.feature_id === CREDITS_FEATURE_ID && a.enabled);
+}
+
+// billingWarning says which limit an org is about to hit, or null when none is
+// near or it is already halted. A failing payment comes first, since it stops
+// the org whatever its usage; otherwise the trial warns about the limit with
+// the smallest share left, and a paid org about low credits before 80% of its
+// minutes, since credits are the last thing between it and the stop.
+export function billingWarning(
+  customer: AutumnCustomer,
+  org: { trialStartedAt: number | null; paymentPastDueAt: number | null },
+  nowSec: number,
+): BillingWarning | null {
+  if (haltReason(customer, org, nowSec) !== null) return null;
+  const plan = activeUsagePlan(customer);
+  // Any paid org, credit plans included, is told its payment failed.
+  if (plan !== "base" && org.paymentPastDueAt != null) return "payment_failed";
+  const credits = customer.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
+  const minutesBalance = customer.balances?.[WORK_MINUTES_FEATURE_ID];
+  if (minutesBalance === undefined && org.trialStartedAt == null) return null;
+  const minutes = minutesBalance?.remaining ?? 0;
+
+  if (plan !== "base") {
+    const allowance = PLAN_WORK_MINUTES[plan];
+    if (minutesBalance === undefined || allowance === undefined) return null;
+    const allowanceNear = minutes <= allowance * ALLOWANCE_WARN_FRACTION;
+    if (allowanceNear && credits < CREDITS_LOW && !hasAutoTopup(customer)) return "credits_low";
+    return allowanceNear ? "allowance_80" : null;
+  }
+
+  // haltReason returned null, so this is a running trial.
+  const near: Array<[BillingWarning, number]> = [];
+  if (minutes <= TRIAL_WARN_MINUTES_LEFT) near.push(["trial_minutes", minutes / TRIAL_MINUTES]);
+  if (org.trialStartedAt != null) {
+    const daysLeft = TRIAL_DAYS - (nowSec - org.trialStartedAt) / DAY_SEC;
+    if (daysLeft <= TRIAL_WARN_DAYS_LEFT) near.push(["trial_days", daysLeft / TRIAL_DAYS]);
+  }
+  if (credits <= TRIAL_WARN_CREDITS_LEFT) near.push(["trial_tokens", credits / TRIAL_CREDITS]);
+  near.sort((a, b) => a[1] - b[1]);
+  return near[0]?.[0] ?? null;
+}
+
+// minutesWarningCrossed: did this track move the minutes past a warning line
+// (480 trial minutes, 80% of the month)? Only usage differs between the two
+// reads, so the clock-driven reasons are left out of the comparison.
+function minutesWarningCrossed(before: AutumnCustomer, minutesRemaining: number): boolean {
+  const minutes = { ...before.balances?.[WORK_MINUTES_FEATURE_ID], remaining: minutesRemaining };
+  const after: AutumnCustomer = { ...before, balances: { ...before.balances, [WORK_MINUTES_FEATURE_ID]: minutes } };
+  const noClock = { trialStartedAt: null, paymentPastDueAt: null };
+  const nowSec = Math.floor(Date.now() / 1000);
+  return billingWarning(before, noClock, nowSec) !== billingWarning(after, noClock, nowSec);
+}
+
+// The trial age at which trial_days starts, for the billing clock.
+export const TRIAL_WARN_AFTER_SEC = (TRIAL_DAYS - TRIAL_WARN_DAYS_LEFT) * DAY_SEC;
+
 // syncAutumnToD1 reads Autumn's authoritative balance/plans and writes the D1
 // projection (is_halted / usage_plan / max_concurrent) WITHOUT any cell dispatch. Returns the
 // halt transition so callers can decide whether to actively hibernate. Reusable
@@ -698,6 +780,7 @@ export interface AutumnSyncResult {
   maxConcurrent: number;
   halted: boolean;
   haltReason: HaltReason | null;
+  warning: BillingWarning | null;
   wasHalted: boolean;
   usagePlan: UsagePlan;
 }
@@ -726,12 +809,10 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
       trial_started_at: number | null;
     }>();
   const wasHalted = prevRow?.is_halted === 1;
-  const reason = haltReason(
-    cust,
-    { trialStartedAt: prevRow?.trial_started_at ?? null, paymentPastDueAt: prevRow?.payment_past_due_at ?? null },
-    nowSec,
-  );
+  const clock = { trialStartedAt: prevRow?.trial_started_at ?? null, paymentPastDueAt: prevRow?.payment_past_due_at ?? null };
+  const reason = haltReason(cust, clock, nowSec);
   const halted = reason !== null;
+  const warning = billingWarning(cust, clock, nowSec);
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   // Compare-and-set the plan first: the webhook, checkout-return and the cron can
@@ -752,18 +833,22 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
     }
   }
 
+  // billing_warning_at marks when the org started being warned and holds while
+  // any warning stands, so a surface can tell each reason once per episode.
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, usage_plan = ?4, updated_at = ?5,
-       halt_reason = ?7 WHERE id = ?6`,
+       halt_reason = ?7, billing_warning = ?8,
+       billing_warning_at = CASE WHEN ?8 IS NULL THEN NULL ELSE COALESCE(billing_warning_at, ?5) END
+     WHERE id = ?6`,
   )
-    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID, reason)
+    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID, reason, warning)
     .run();
 
   // After the writes, so the event's send time never widens the window in which
   // a concurrent projection can interleave.
   if (planChange) await emitBillingEvent(env, "billing.plan_changed", { orgId: orgID, data: planChange });
 
-  return { customer: cust, creditsRemaining, maxConcurrent, halted, haltReason: reason, wasHalted, usagePlan };
+  return { customer: cust, creditsRemaining, maxConcurrent, halted, haltReason: reason, warning, wasHalted, usagePlan };
 }
 
 // autumnSetProviderInternal flips D1 orgs.billing_provider for one org (the

@@ -57,6 +57,39 @@ async function post(fields: Record<string, unknown>, envOverrides: Partial<Autum
 describe("managed-agent runtime usage billing", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("re-projects a trial whose minutes cross the warning line", async () => {
+    const trial = (minutes: number) =>
+      Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "trial", add_on: false, status: "active" }],
+        balances: { work_minutes: { remaining: minutes }, credits: { remaining: 10 } },
+      });
+    const writes: string[] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => (sql.startsWith("SELECT is_halted") ? { is_halted: 0, usage_plan: "base" } : null),
+          run: async () => {
+            writes.push(sql);
+            return { meta: { changes: 1 } };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(trial(121))
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 119 } }))
+      .mockResolvedValueOnce(trial(119))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+
+    const response = await post({ close_reason: "turn_settled", idempotency_key: "crt_1:4" }, { OPENCOMPUTER_DB: db });
+
+    expect(response.status).toBe(200);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/customers/org_1"))).toHaveLength(2);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+  });
+
   it("bills an org on a work-minute plan in work minutes", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

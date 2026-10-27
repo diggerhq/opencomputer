@@ -17,6 +17,7 @@ class FakeStatement {
     private readonly plan: string,
     private readonly billingProvider: string,
     private readonly haltReason: string | null,
+    private readonly warning: [string, number] | null = null,
   ) {}
 
   bind(orgID: string): this {
@@ -35,6 +36,8 @@ class FakeStatement {
           plan: this.plan,
           billing_provider: this.billingProvider,
           halt_reason: this.haltReason,
+          billing_warning: this.warning?.[0] ?? null,
+          billing_warning_at: this.warning?.[1] ?? null,
         }) as T | null;
   }
 }
@@ -46,14 +49,13 @@ function env(
   plan = "free",
   billingProvider = "autumn",
   haltReason: string | null = null,
+  warning: [string, number] | null = null,
 ) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
-        expect(sql).toBe(
-          "SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason FROM orgs WHERE id = ?1",
-        );
-        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider, haltReason);
+        expect(sql).toContain("halt_reason, billing_warning, billing_warning_at");
+        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider, haltReason, warning);
       },
     } as unknown as D1Database,
   };
@@ -102,6 +104,8 @@ describe("managed-agent credit admission", () => {
       modelAccess: null,
       usagePlan: "base",
       haltReason: "credits_exhausted",
+      warning: null,
+      warningSince: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(null), "org_test"),
@@ -114,6 +118,8 @@ describe("managed-agent credit admission", () => {
       modelAccess: "full",
       usagePlan: null,
       haltReason: null,
+      warning: null,
+      warningSince: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(0, null, "pro"), "org_test"),
@@ -126,6 +132,8 @@ describe("managed-agent credit admission", () => {
       modelAccess: "full",
       usagePlan: "pro",
       haltReason: null,
+      warning: null,
+      warningSince: null,
     });
   });
 
@@ -143,6 +151,8 @@ describe("managed-agent credit admission", () => {
         modelAccess: "fallback",
         usagePlan: plan,
         haltReason: "credits_exhausted",
+        warning: null,
+        warningSince: null,
       });
       const request = new Request(
         "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
@@ -162,6 +172,21 @@ describe("managed-agent credit admission", () => {
       ).resolves.toMatchObject({ allowed: false, isHalted: true, paid: true, modelAccess: null });
     },
   );
+
+  it("reports the warning before the stop, and none once halted", async () => {
+    await expect(
+      getManagedAgentBillingAdmission(
+        env(0, null, "base", "free", "autumn", null, ["trial_minutes", 1_789_700_000]),
+        "org_test",
+      ),
+    ).resolves.toMatchObject({ allowed: true, warning: "trial_minutes", warningSince: 1_789_700_000 });
+    await expect(
+      getManagedAgentBillingAdmission(
+        env(1, 1_789_707_077, "base", "free", "autumn", "trial_minutes", ["trial_minutes", 1_789_700_000]),
+        "org_test",
+      ),
+    ).resolves.toMatchObject({ haltReason: "trial_minutes", warning: null, warningSince: null });
+  });
 
   it("keeps the fallback for a paid org halted on the credit rule", async () => {
     await expect(
@@ -184,6 +209,8 @@ describe("managed-agent credit admission", () => {
       modelAccess: "fallback",
       usagePlan: "pro",
       haltReason: "credits_exhausted",
+      warning: null,
+      warningSince: null,
     });
   });
 

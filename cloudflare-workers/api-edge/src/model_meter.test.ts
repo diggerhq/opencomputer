@@ -6,11 +6,12 @@ vi.mock("./autumn_webhook", () => ({
   getAutumnCustomer: vi.fn(),
   trackAutumnUsage: vi.fn(async () => 1),
   projectOrg: vi.fn(async () => {}),
+  billingWarning: vi.fn(() => null),
   haltKeepsFallback: (reason: string | null | undefined) => reason == null || reason === "credits_exhausted",
 }));
 
 import { getOrKey, patchOrKey } from "./openrouter";
-import { getAutumnCustomer, trackAutumnUsage, projectOrg } from "./autumn_webhook";
+import { billingWarning, getAutumnCustomer, trackAutumnUsage, projectOrg } from "./autumn_webhook";
 import { runModelMeter, syncModelCaps, type ModelMeterEnv } from "./model_meter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
@@ -19,6 +20,7 @@ const gPatch = patchOrKey as unknown as ReturnType<typeof vi.fn>;
 const gCust = getAutumnCustomer as unknown as ReturnType<typeof vi.fn>;
 const gTrack = trackAutumnUsage as unknown as ReturnType<typeof vi.fn>;
 const gProject = projectOrg as unknown as ReturnType<typeof vi.fn>;
+const gWarning = billingWarning as unknown as ReturnType<typeof vi.fn>;
 
 // ── in-memory D1 for orgs + managed_model_keys ──────────────────────────────
 class FakeDb {
@@ -83,6 +85,7 @@ beforeEach(() => {
   gCust.mockReset();
   gTrack.mockReset().mockResolvedValue(1);
   gProject.mockReset().mockResolvedValue(undefined);
+  gWarning.mockReset().mockReturnValue(null);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -100,6 +103,19 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     expect(gTrack.mock.calls[0][1]).toMatchObject({ customerID: "org1", featureID: "model_spend", value: 500000, idempotencyKey: "model_spend:org1:0:500000" });
     expect(db.keys[0].committed_micro).toBe(500000);
     expect(db.keys[0].pending_idem).toBeNull(); // cleared after success
+  });
+
+  it("re-projects when spend moves the org's warning", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
+    db.keys.push(key({ committed_micro: 0 }));
+    gOrKey.mockResolvedValue(orKey(8.5));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 1.5 } } });
+    gWarning.mockReturnValue("trial_tokens");
+
+    await runModelMeter(env(db), 0);
+
+    expect(gProject).toHaveBeenCalledWith(expect.anything(), "org1");
   });
 
   it("skips non-autumn orgs entirely — no debit, no halt (decoupled; the fixed OR-key budget is the ceiling)", async () => {

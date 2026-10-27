@@ -2,12 +2,14 @@
 // time passing rather than usage. A trial ends on day 7 and a failing payment
 // halts after its grace even when the org does nothing, so the */5 cron
 // re-projects the orgs whose clock has run out; projectOrg decides and halts.
-// A halted or paid-up org no longer matches. One that matches but stays
+// It also re-projects a trial reaching 2 days left that is not yet warned, so
+// the trial_days warning goes out on time rather than on the next activity.
+// A halted, warned or paid-up org no longer matches. One that matches but stays
 // unhalted (a credit-only signup before the Autumn trial plan exists) is
 // re-projected every tick, so the batch takes the least recently updated rows
 // first: projectOrg stamps updated_at, and such rows cannot starve the rest.
 
-import { type AutumnEnv, PAYMENT_GRACE_DAYS, TRIAL_DAYS, projectOrg } from "./autumn_webhook";
+import { type AutumnEnv, PAYMENT_GRACE_DAYS, TRIAL_DAYS, TRIAL_WARN_AFTER_SEC, projectOrg } from "./autumn_webhook";
 
 const DAY_SEC = 86_400;
 // Bounds one tick; the next tick continues.
@@ -18,11 +20,17 @@ export async function runBillingClock(env: AutumnEnv, nowMs: number): Promise<nu
   const due = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id FROM orgs
       WHERE billing_provider = 'autumn' AND is_halted = 0
-        AND ((usage_plan = 'base' AND trial_started_at <= ?1) OR payment_past_due_at <= ?2)
+        AND ((usage_plan = 'base' AND trial_started_at <= ?1) OR payment_past_due_at <= ?2
+          OR (usage_plan = 'base' AND trial_started_at <= ?4 AND billing_warning IS NULL))
       ORDER BY updated_at
       LIMIT ?3`,
   )
-    .bind(nowSec - TRIAL_DAYS * DAY_SEC, nowSec - PAYMENT_GRACE_DAYS * DAY_SEC, MAX_ORGS_PER_RUN)
+    .bind(
+      nowSec - TRIAL_DAYS * DAY_SEC,
+      nowSec - PAYMENT_GRACE_DAYS * DAY_SEC,
+      MAX_ORGS_PER_RUN,
+      nowSec - TRIAL_WARN_AFTER_SEC,
+    )
     .all<{ id: string }>();
   let projected = 0;
   for (const { id } of due.results ?? []) {

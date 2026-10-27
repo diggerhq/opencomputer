@@ -12,6 +12,8 @@ interface ManagedAgentCreditRow {
   usage_plan: string | null;
   plan: string | null;
   halt_reason: string | null;
+  billing_warning?: string | null;
+  billing_warning_at?: number | null;
 }
 
 // "full": the org's selected models. "fallback": credits are exhausted on a
@@ -42,6 +44,19 @@ export interface ManagedAgentBillingAdmission {
    * null when not halted.
    */
   haltReason: string | null;
+  /**
+   * Additive (086): the limit the org is about to hit (orgs.billing_warning:
+   * "trial_minutes", "trial_days", "trial_tokens", "allowance_80",
+   * "credits_low", "payment_failed"), so a surface can warn before the stop.
+   * null when nothing is near or the org is halted.
+   */
+  warning: string | null;
+  /**
+   * When the current run of warnings began (orgs.billing_warning_at, unix
+   * seconds). It holds while any warning stands, so (warning, warningSince)
+   * names one warning to tell once.
+   */
+  warningSince: number | null;
 }
 
 function normalizedUsagePlan(
@@ -84,7 +99,8 @@ export async function getManagedAgentBillingAdmission(
   selfHeal?: ManagedAgentSelfHeal,
 ): Promise<ManagedAgentBillingAdmission> {
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason FROM orgs WHERE id = ?1",
+    `SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason, billing_warning, billing_warning_at
+       FROM orgs WHERE id = ?1`,
   )
     .bind(orgID)
     .first<ManagedAgentCreditRow>();
@@ -113,6 +129,8 @@ export async function getManagedAgentBillingAdmission(
     modelAccess: !isHalted ? "full" : fallback ? "fallback" : null,
     usagePlan: normalizedUsagePlan(row),
     haltReason: isHalted ? row?.halt_reason ?? "credits_exhausted" : null,
+    warning: isHalted ? null : row?.billing_warning ?? null,
+    warningSince: isHalted || !row?.billing_warning ? null : row.billing_warning_at ?? null,
   };
 }
 

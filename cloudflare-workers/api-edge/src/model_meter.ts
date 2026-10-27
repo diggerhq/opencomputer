@@ -12,7 +12,14 @@
 // into the Autumn ledger + keeps the cap aligned with the shared balance. Mirrors
 // the autumn_meter idempotency model (Autumn dedupes the track key).
 
-import { type AutumnEnv, getAutumnCustomer, haltKeepsFallback, projectOrg, trackAutumnUsage } from "./autumn_webhook";
+import {
+  type AutumnEnv,
+  billingWarning,
+  getAutumnCustomer,
+  haltKeepsFallback,
+  projectOrg,
+  trackAutumnUsage,
+} from "./autumn_webhook";
 import { getOrKey, patchOrKey, type OpenRouterEnv } from "./openrouter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
@@ -31,6 +38,9 @@ interface OrgMeterRow {
   id: string;
   model_markup_bps: number;
   billing_provider: string;
+  trial_started_at?: number | null;
+  payment_past_due_at?: number | null;
+  billing_warning?: string | null;
 }
 
 function markupBps(env: ModelMeterEnv, org: OrgMeterRow): number {
@@ -73,7 +83,8 @@ export async function runModelMeter(env: ModelMeterEnv, _nowMs: number): Promise
 
 async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKeyRow[]): Promise<boolean> {
   const org = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT id, model_markup_bps, billing_provider FROM orgs WHERE id = ?1",
+    `SELECT id, model_markup_bps, billing_provider, trial_started_at, payment_past_due_at, billing_warning
+       FROM orgs WHERE id = ?1`,
   )
     .bind(orgId)
     .first<OrgMeterRow>();
@@ -110,6 +121,10 @@ async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKey
   if (remaining <= 0) {
     // Halt immediately (mirror autumn_meter) — don't wait on the Autumn webhook.
     await projectOrg(env, orgId).catch((e) => console.error(`model-meter: projectOrg ${orgId} failed`, e));
+  } else if (debited && cust && warningMoved(cust, org)) {
+    // Spend crossed a warning line (trial $8 spent, paid credits low): project
+    // now so the warning goes out on this tick, not on the next webhook.
+    await projectOrg(env, orgId).catch((e) => console.error(`model-meter: projectOrg ${orgId} failed`, e));
   }
   await pushCaps(env, keys, usage, await spendableUsd(env, orgId, remaining), bps);
   return debited;
@@ -125,6 +140,11 @@ async function spendableUsd(env: ModelMeterEnv, orgId: string, creditsUsd: numbe
     .bind(orgId)
     .first<{ is_halted: number; halt_reason: string | null }>();
   return row?.is_halted === 1 && !haltKeepsFallback(row.halt_reason) ? 0 : creditsUsd;
+}
+
+function warningMoved(cust: Parameters<typeof billingWarning>[0], org: OrgMeterRow): boolean {
+  const clock = { trialStartedAt: org.trial_started_at ?? null, paymentPastDueAt: org.payment_past_due_at ?? null };
+  return billingWarning(cust, clock, Math.floor(Date.now() / 1000)) !== (org.billing_warning ?? null);
 }
 
 // syncModelCaps pushes one org's caps off its current Autumn balance now, for the
