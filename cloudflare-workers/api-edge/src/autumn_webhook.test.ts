@@ -3,6 +3,9 @@ import {
   autumnPurchase,
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
+  billingWebhookEvents,
+  planChangeKind,
+  syncAutumnToD1,
   summarizeAutumnCreditBalance,
   type AutumnApiEnv,
 } from "./autumn_webhook";
@@ -263,5 +266,90 @@ describe("Autumn shared-credit plan purchases", () => {
         }),
       }),
     );
+  });
+});
+
+describe("billing funnel events from Autumn", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names plan transitions", () => {
+    expect(planChangeKind("base", "pro", false)).toBe("trial_converted");
+    expect(planChangeKind("pro", "max", false)).toBe("upgrade");
+    expect(planChangeKind("max", "pro", false)).toBe("downgrade");
+    expect(planChangeKind("pro", "base", false)).toBe("cancel");
+    expect(planChangeKind("pro", "base", true)).toBe("lapsed");
+  });
+
+  it("maps payment and top-up webhooks to events", () => {
+    expect(
+      billingWebhookEvents({
+        type: "billing.updated",
+        data: {
+          plan_changes: [
+            { action: "updated", subscription: { plan_id: "pro", past_due: true }, previous_attributes: { past_due: false } },
+            { action: "updated", subscription: { plan_id: "max", past_due: false }, previous_attributes: { past_due: true } },
+            { action: "activated", subscription: { plan_id: "pro", past_due: false }, previous_attributes: null },
+          ],
+        },
+      }),
+    ).toEqual([
+      { name: "billing.payment_failed", data: { plan: "pro" } },
+      { name: "billing.payment_recovered", data: { plan: "max" } },
+    ]);
+    expect(billingWebhookEvents({ type: "billing.auto_topup_succeeded", data: { quantity_granted: 50 } })).toEqual([
+      { name: "billing.credits_purchased", data: { amount: 50, auto: true } },
+    ]);
+    expect(billingWebhookEvents({ type: "billing.auto_topup_failed", data: { reason: "charge_failed" } })).toEqual([
+      { name: "billing.payment_failed", data: { plan: "top_up", reason: "charge_failed" } },
+    ]);
+    expect(billingWebhookEvents({ type: "balances.limit_reached", data: {} })).toEqual([]);
+  });
+
+  function planDb(usagePlan: string) {
+    const org = { is_halted: 0, autumn_concurrency_override: null, usage_plan: usagePlan };
+    return {
+      prepare(sql: string) {
+        return {
+          bind(...args: unknown[]) {
+            return {
+              first: async () => ({ ...org }),
+              run: async () => {
+                if (sql.includes("AND usage_plan = ?3")) {
+                  if (org.usage_plan !== args[2]) return { meta: { changes: 0 } };
+                  org.usage_plan = args[0] as string;
+                }
+                return { meta: { changes: 1 } };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+  }
+
+  it("emits plan_changed once when the projection moves the plan", async () => {
+    const posted: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://autumn.test/v1/customers/")) {
+        return Response.json({
+          id: "org_1",
+          subscriptions: [{ plan_id: "pro", add_on: false, status: "active" }],
+          balances: { credits: { remaining: 10 } },
+        });
+      }
+      posted.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 200 });
+    });
+    const syncEnv = { ...env, OPENCOMPUTER_DB: planDb("base"), POSTHOG_PROJECT_TOKEN: "phc_test" };
+
+    expect((await syncAutumnToD1(syncEnv, "org_1"))?.usagePlan).toBe("pro");
+    await syncAutumnToD1(syncEnv, "org_1");
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      event: "billing.plan_changed",
+      properties: { from: "base", to: "pro", kind: "trial_converted" },
+    });
   });
 });

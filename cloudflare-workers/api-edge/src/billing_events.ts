@@ -21,7 +21,11 @@ export type BillingEventName =
   | "billing.trial_started"
   | "billing.work_minutes_recorded"
   | "billing.first_work_minute"
-  | "billing.checkout_opened";
+  | "billing.checkout_opened"
+  | "billing.plan_changed"
+  | "billing.payment_failed"
+  | "billing.payment_recovered"
+  | "billing.credits_purchased";
 
 export interface BillingEvent {
   orgId: string;

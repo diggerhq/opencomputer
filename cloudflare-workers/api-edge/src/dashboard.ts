@@ -1829,7 +1829,7 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
 // recharge. Monetary values are integer credits ($1 each). Autumn expresses the
 // hard monthly budget as a purchase count, so budget must be a whole multiple of
 // quantity. A saved payment method is required for charges to succeed.
-async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string; userID?: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
   let body: { enabled?: boolean; threshold?: number; quantity?: number; budget?: number };
   try {
@@ -1871,6 +1871,7 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
         quantity,
         successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${quantity}`,
       });
+      if (!co.url) await emitCreditsPurchased(env, caller, quantity);
       return json({ ok: true, url: co.url });
     }
     return json({ ok: true, url: null });
@@ -1886,7 +1887,7 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
 // dropped query params), which both adds the credits and arms auto-recharge, then
 // 302 back to the billing page. Authenticated by the session cookie carried on
 // the redirect.
-async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: { orgID: string; userID?: string }): Promise<Response> {
   const origin = new URL(req.url).origin;
   const billing = `${origin}/dashboard/billing`;
   if (!env.AUTUMN_SECRET_KEY) return Response.redirect(billing, 302);
@@ -1901,6 +1902,7 @@ async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: 
         productId: "top_up",
         options: [{ feature_id: "credits", quantity: credits }],
       });
+      await emitCreditsPurchased(env, caller, credits);
     } catch (e) {
       console.error("billing/autumn finalize-arm:", e);
       return Response.redirect(`${billing}?arm=failed`, 302);
@@ -1909,10 +1911,21 @@ async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: 
   return Response.redirect(`${billing}?arm=ok`, 302);
 }
 
+// A manual credit pack is charged here, server-side: directly when a card is on
+// file (url null), or in finalize-arm after the hosted card setup. Auto top-ups
+// are counted from Autumn's webhook instead.
+async function emitCreditsPurchased(env: DashboardEnv, caller: { orgID: string; userID?: string }, credits: number) {
+  await emitBillingEvent(env, "billing.credits_purchased", {
+    orgId: caller.orgID,
+    userId: caller.userID,
+    data: { amount: credits, auto: false },
+  });
+}
+
 // POST /api/dashboard/billing/autumn/topup { credits } — one-off prepaid credit
 // purchase. Returns a Stripe checkout URL; success returns to the billing page
 // where handleAutumnBilling re-syncs the new balance.
-async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgID: string; userID?: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
   let body: { credits?: number };
   try {
@@ -1934,6 +1947,7 @@ async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgI
       quantity: credits,
       successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${credits}`,
     });
+    if (!co.url) await emitCreditsPurchased(env, caller, credits);
     return json({ url: co.url });
   } catch (e) {
     console.error("billing/autumn topup:", e);
