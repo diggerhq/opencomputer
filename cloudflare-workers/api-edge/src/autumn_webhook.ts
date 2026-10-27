@@ -740,8 +740,10 @@ export function billingWarning(
   if (plan !== "base" && org.paymentPastDueAt != null) return "payment_failed";
   const credits = customer.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
   const minutesBalance = customer.balances?.[WORK_MINUTES_FEATURE_ID];
-  if (minutesBalance === undefined && org.trialStartedAt == null) return null;
-  const minutes = minutesBalance?.remaining ?? 0;
+  // No minutes balance means Autumn has no trial plan for the org yet, so it is
+  // on the credit rule like haltReason says, whatever trial_started_at holds.
+  if (minutesBalance === undefined) return null;
+  const minutes = minutesBalance.remaining ?? 0;
 
   if (plan !== "base") {
     const allowance = PLAN_WORK_MINUTES[plan];

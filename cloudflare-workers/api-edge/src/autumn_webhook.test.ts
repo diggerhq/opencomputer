@@ -565,6 +565,11 @@ describe("warnings before the stop", () => {
   });
   const fresh = { trialStartedAt: now - day, paymentPastDueAt: null };
 
+  it("does not warn a new signup until Autumn has a trial plan", () => {
+    expect(billingWarning(customer(["base"], { credits: 10 }), fresh, now)).toBeNull();
+    expect(billingWarning(customer(["base"], { credits: 10 }), { ...fresh, trialStartedAt: now - 6 * day }, now)).toBeNull();
+  });
+
   it("warns a trial at 480 minutes, 2 days left or $8 spent", () => {
     expect(billingWarning(customer(["trial"], { minutes: 121, credits: 2.5 }), fresh, now)).toBeNull();
     expect(billingWarning(customer(["trial"], { minutes: 120, credits: 5 }), fresh, now)).toBe("trial_minutes");
