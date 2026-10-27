@@ -6,6 +6,7 @@ vi.mock("./autumn_webhook", () => ({
   getAutumnCustomer: vi.fn(),
   trackAutumnUsage: vi.fn(async () => 1),
   projectOrg: vi.fn(async () => {}),
+  haltKeepsFallback: (reason: string | null | undefined) => reason == null || reason === "credits_exhausted",
 }));
 
 import { getOrKey, patchOrKey } from "./openrouter";
@@ -21,7 +22,7 @@ const gProject = projectOrg as unknown as ReturnType<typeof vi.fn>;
 
 // ── in-memory D1 for orgs + managed_model_keys ──────────────────────────────
 class FakeDb {
-  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string }>();
+  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string; is_halted?: number; halt_reason?: string | null }>();
   keys: ManagedModelKeyRow[] = [];
   prepare(sql: string) {
     return new Stmt(this, sql);
@@ -188,6 +189,28 @@ describe("model_meter cap + halt (§5.4/§7)", () => {
     await runModelMeter(env(db), 0);
     expect(gProject).toHaveBeenCalledWith(expect.anything(), "org1");
   });
+
+  it("caps the active key at its usage on a work-minute halt, credits or not", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn", is_halted: 1, halt_reason: "trial_minutes" });
+    db.keys.push(key({ committed_micro: 500000 }));
+    gOrKey.mockResolvedValue(orKey(0.5, 10));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 9.5 } } }); // trial tokens left
+
+    await runModelMeter(env(db), 0);
+    expect(gPatch).toHaveBeenCalledWith(expect.anything(), "hash1", { limitUsd: expect.closeTo(0.5, 5) });
+  });
+
+  it("keeps a credit-rule halt on its credits", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn", is_halted: 1, halt_reason: "credits_exhausted" });
+    db.keys.push(key({ committed_micro: 500000 }));
+    gOrKey.mockResolvedValue(orKey(0.5, 1));
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
+
+    await runModelMeter(env(db), 0);
+    expect(gPatch).toHaveBeenCalledWith(expect.anything(), "hash1", { limitUsd: expect.closeTo(10.5, 5) });
+  });
 });
 
 describe("syncModelCaps (Autumn webhook)", () => {
@@ -202,6 +225,17 @@ describe("syncModelCaps (Autumn webhook)", () => {
     expect(gPatch).toHaveBeenCalledWith(expect.anything(), "hash1", { limitUsd: expect.closeTo(208.7, 5) });
     expect(gTrack).not.toHaveBeenCalled();
     expect(db.keys[0].committed_micro).toBe(8000000);
+  });
+
+  it("lifts a work-minute halt's zero cap once the org is no longer halted", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn", is_halted: 0, halt_reason: null });
+    db.keys.push(key({ committed_micro: 500000 }));
+    gOrKey.mockResolvedValue(orKey(0.5, 0.5)); // zeroed by the halt
+    gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 9.5 } } }); // subscribed
+
+    await syncModelCaps(env(db), "org1");
+    expect(gPatch).toHaveBeenCalledWith(expect.anything(), "hash1", { limitUsd: expect.closeTo(10, 5) });
   });
 
   it("leaves non-autumn orgs alone", async () => {

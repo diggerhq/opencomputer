@@ -36,6 +36,12 @@ export interface ManagedAgentBillingAdmission {
    * 'base' default reads as "pro".
    */
   usagePlan: ManagedAgentUsagePlan | null;
+  /**
+   * Additive: why the org is halted (orgs.halt_reason, e.g. "trial_days",
+   * "credits_empty", "payment"), so a paywall can say which limit was hit.
+   * null when not halted.
+   */
+  haltReason: string | null;
 }
 
 function normalizedUsagePlan(
@@ -106,6 +112,7 @@ export async function getManagedAgentBillingAdmission(
     paid,
     modelAccess: !isHalted ? "full" : fallback ? "fallback" : null,
     usagePlan: normalizedUsagePlan(row),
+    haltReason: isHalted ? row?.halt_reason ?? "credits_exhausted" : null,
   };
 }
 

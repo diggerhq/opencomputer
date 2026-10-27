@@ -101,6 +101,7 @@ describe("managed-agent credit admission", () => {
       paid: false,
       modelAccess: null,
       usagePlan: "base",
+      haltReason: "credits_exhausted",
     });
     await expect(
       getManagedAgentBillingAdmission(env(null), "org_test"),
@@ -112,6 +113,7 @@ describe("managed-agent credit admission", () => {
       paid: false,
       modelAccess: "full",
       usagePlan: null,
+      haltReason: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(0, null, "pro"), "org_test"),
@@ -123,6 +125,7 @@ describe("managed-agent credit admission", () => {
       paid: true,
       modelAccess: "full",
       usagePlan: "pro",
+      haltReason: null,
     });
   });
 
@@ -139,6 +142,7 @@ describe("managed-agent credit admission", () => {
         paid: true,
         modelAccess: "fallback",
         usagePlan: plan,
+        haltReason: "credits_exhausted",
       });
       const request = new Request(
         "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
@@ -179,6 +183,7 @@ describe("managed-agent credit admission", () => {
       paid: true,
       modelAccess: "fallback",
       usagePlan: "pro",
+      haltReason: "credits_exhausted",
     });
   });
 

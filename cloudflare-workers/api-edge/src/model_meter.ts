@@ -12,7 +12,7 @@
 // into the Autumn ledger + keeps the cap aligned with the shared balance. Mirrors
 // the autumn_meter idempotency model (Autumn dedupes the track key).
 
-import { type AutumnEnv, getAutumnCustomer, projectOrg, trackAutumnUsage } from "./autumn_webhook";
+import { type AutumnEnv, getAutumnCustomer, haltKeepsFallback, projectOrg, trackAutumnUsage } from "./autumn_webhook";
 import { getOrKey, patchOrKey, type OpenRouterEnv } from "./openrouter";
 import type { ManagedModelKeyRow } from "./model_billing";
 
@@ -111,8 +111,20 @@ async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKey
     // Halt immediately (mirror autumn_meter) — don't wait on the Autumn webhook.
     await projectOrg(env, orgId).catch((e) => console.error(`model-meter: projectOrg ${orgId} failed`, e));
   }
-  await pushCaps(env, keys, usage, remaining, bps);
+  await pushCaps(env, keys, usage, await spendableUsd(env, orgId, remaining), bps);
   return debited;
+}
+
+// spendableUsd is what the org's keys may still spend: its credits, or nothing
+// while a work-minute halt stands (trial over, allowance and credits used,
+// payment, lapsed). The @computer calls OpenRouter with the org's key directly,
+// so a zero cap is what stops its in-flight turns; a credit-rule halt is already
+// at zero credits.
+async function spendableUsd(env: ModelMeterEnv, orgId: string, creditsUsd: number): Promise<number> {
+  const row = await env.OPENCOMPUTER_DB.prepare("SELECT is_halted, halt_reason FROM orgs WHERE id = ?1")
+    .bind(orgId)
+    .first<{ is_halted: number; halt_reason: string | null }>();
+  return row?.is_halted === 1 && !haltKeepsFallback(row.halt_reason) ? 0 : creditsUsd;
 }
 
 // syncModelCaps pushes one org's caps off its current Autumn balance now, for the
@@ -139,7 +151,8 @@ export async function syncModelCaps(env: ModelMeterEnv, orgId: string): Promise<
     usage.set(k.id, { usageUsd: ok.usage, limitUsd: ok.limit });
   }
   const remaining = (await getAutumnCustomer(env, orgId))?.balances?.credits?.remaining;
-  await pushCaps(env, keys, usage, typeof remaining === "number" ? remaining : 0, markupBps(env, org));
+  const credits = typeof remaining === "number" ? remaining : 0;
+  await pushCaps(env, keys, usage, await spendableUsd(env, orgId, credits), markupBps(env, org));
 }
 
 // debitKey moves a key's NEW OpenRouter spend into Autumn, exactly-once (§7):
