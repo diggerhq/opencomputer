@@ -74,6 +74,16 @@ export const agentRuntime = feature({
   consumable: true,
 });
 
+// Work minutes (serverless-agents-ws 086): turn time across @computer and
+// automations, never idle VM time. Each plan includes a pool; past it, a
+// minute draws $0.01 from prepaid credits.
+export const workMinutes = feature({
+  id: "work_minutes",
+  name: "Work minutes",
+  type: "metered",
+  consumable: true,
+});
+
 // Entitlement gate for connecting an external Claude/Codex subscription
 // (work 011). Boolean feature: present on a plan = allowed, absent = denied.
 // Not metered and not part of the credit system; subscription-routed model
@@ -106,6 +116,11 @@ export const credits = feature({
       meteredFeatureId: agentRuntime.id,
       // $0.00315 per minute, billed in whole seconds.
       creditCost: 0.0000525,
+    },
+    {
+      meteredFeatureId: workMinutes.id,
+      // $0.01 per minute once the plan's included minutes are used.
+      creditCost: 0.01,
     },
   ],
 });
@@ -191,6 +206,69 @@ export const max = plan({
     item({
       featureId: credits.id,
       included: 2_000,
+      reset: { interval: "month" },
+    }),
+    item({
+      featureId: byoModelSubscriptions.id,
+    }),
+  ],
+});
+
+// Work-minute plans (serverless-agents-ws 086). New ids so orgs on the
+// credit-based pro and max above keep their plans until they are migrated.
+// The trial is attached at signup; the day-7 end is enforced by the API edge,
+// not by Autumn. Credits come from top_up in $10 / $50 / $200 packs.
+
+export const trial = plan({
+  id: "trial",
+  name: "Trial",
+  description: "7 days, 600 work minutes and $10 of model credits.",
+  group: "usage_plan",
+  items: [
+    item({
+      featureId: workMinutes.id,
+      included: 600,
+      reset: { interval: "one_off" },
+    }),
+    item({
+      featureId: credits.id,
+      included: 10,
+      reset: { interval: "one_off" },
+    }),
+    item({
+      featureId: byoModelSubscriptions.id,
+    }),
+  ],
+});
+
+export const proMinutes = plan({
+  id: "pro_minutes",
+  name: "Pro (minutes)",
+  description: "$20 per month with 2,000 work minutes.",
+  group: "usage_plan",
+  price: { amount: 20, interval: "month" },
+  items: [
+    item({
+      featureId: workMinutes.id,
+      included: 2_000,
+      reset: { interval: "month" },
+    }),
+    item({
+      featureId: byoModelSubscriptions.id,
+    }),
+  ],
+});
+
+export const maxMinutes = plan({
+  id: "max_minutes",
+  name: "Max (minutes)",
+  description: "$200 per month with 25,000 work minutes.",
+  group: "usage_plan",
+  price: { amount: 200, interval: "month" },
+  items: [
+    item({
+      featureId: workMinutes.id,
+      included: 25_000,
       reset: { interval: "month" },
     }),
     item({
