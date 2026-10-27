@@ -178,16 +178,20 @@ export const concurrencyPlusPlus = plan({
   items: [],
 });
 
+// pro and max are versioned, not replaced (serverless-agents-ws 086): v1
+// granted credits and stays on its existing subscribers until they are
+// migrated; this version grants work minutes, and a minute past the pool
+// draws $0.01 from credits. Push with --plan-intents create_version.
 export const pro = plan({
   id: "pro",
   name: "Pro",
-  description: "$20 per month with $200 in shared OpenComputer credits.",
+  description: "$20 per month with 2,000 work minutes.",
   group: "usage_plan",
   price: { amount: 20, interval: "month" },
   items: [
     item({
-      featureId: credits.id,
-      included: 200,
+      featureId: workMinutes.id,
+      included: 2_000,
       reset: { interval: "month" },
     }),
     item({
@@ -199,13 +203,13 @@ export const pro = plan({
 export const max = plan({
   id: "max",
   name: "Max",
-  description: "$200 per month with $2,000 in shared OpenComputer credits.",
+  description: "$200 per month with 25,000 work minutes.",
   group: "usage_plan",
   price: { amount: 200, interval: "month" },
   items: [
     item({
-      featureId: credits.id,
-      included: 2_000,
+      featureId: workMinutes.id,
+      included: 25_000,
       reset: { interval: "month" },
     }),
     item({
@@ -214,10 +218,9 @@ export const max = plan({
   ],
 });
 
-// Work-minute plans (serverless-agents-ws 086). New ids so orgs on the
-// credit-based pro and max above keep their plans until they are migrated.
-// The trial is attached at signup; the day-7 end is enforced by the API edge,
-// not by Autumn. Credits come from top_up in $10 / $50 / $200 packs.
+// Work-minute trial (serverless-agents-ws 086), attached at signup; the
+// day-7 end is enforced by the API edge, not by Autumn. Credits come from
+// top_up in $10 / $50 / $200 packs.
 
 export const trial = plan({
   id: "trial",
@@ -234,42 +237,6 @@ export const trial = plan({
       featureId: credits.id,
       included: 10,
       reset: { interval: "one_off" },
-    }),
-    item({
-      featureId: byoModelSubscriptions.id,
-    }),
-  ],
-});
-
-export const proMinutes = plan({
-  id: "pro_minutes",
-  name: "Pro (minutes)",
-  description: "$20 per month with 2,000 work minutes.",
-  group: "usage_plan",
-  price: { amount: 20, interval: "month" },
-  items: [
-    item({
-      featureId: workMinutes.id,
-      included: 2_000,
-      reset: { interval: "month" },
-    }),
-    item({
-      featureId: byoModelSubscriptions.id,
-    }),
-  ],
-});
-
-export const maxMinutes = plan({
-  id: "max_minutes",
-  name: "Max (minutes)",
-  description: "$200 per month with 25,000 work minutes.",
-  group: "usage_plan",
-  price: { amount: 200, interval: "month" },
-  items: [
-    item({
-      featureId: workMinutes.id,
-      included: 25_000,
-      reset: { interval: "month" },
     }),
     item({
       featureId: byoModelSubscriptions.id,
