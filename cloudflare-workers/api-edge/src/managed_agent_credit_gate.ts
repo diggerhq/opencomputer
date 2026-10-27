@@ -1,4 +1,4 @@
-import { isPaidUsagePlan } from "./autumn_webhook";
+import { haltKeepsFallback, isPaidUsagePlan } from "./autumn_webhook";
 import { insufficientCreditsResponse } from "./billing_onramp";
 
 export interface ManagedAgentCreditGateEnv {
@@ -11,6 +11,7 @@ interface ManagedAgentCreditRow {
   halted_at: number | null;
   usage_plan: string | null;
   plan: string | null;
+  halt_reason: string | null;
 }
 
 // "full": the org's selected models. "fallback": credits are exhausted on a
@@ -77,7 +78,7 @@ export async function getManagedAgentBillingAdmission(
   selfHeal?: ManagedAgentSelfHeal,
 ): Promise<ManagedAgentBillingAdmission> {
   const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at, usage_plan, plan, billing_provider FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<ManagedAgentCreditRow>();
@@ -92,14 +93,18 @@ export async function getManagedAgentBillingAdmission(
   // 'base' default. Keep their established Pro entitlement effective until an
   // Autumn projection refines usage_plan to the authoritative pro/max value.
   const paid = isPaidUsagePlan(row?.usage_plan) || row?.plan === "pro";
-  const allowed = !isHalted || paid;
+  // Only a credit-rule halt keeps a paid org on the fallback model; a
+  // work-minute halt (trial over, allowance and credits used, payment, lapsed)
+  // stops it like any other org.
+  const fallback = paid && haltKeepsFallback(row?.halt_reason);
+  const allowed = !isHalted || fallback;
   return {
     allowed,
     isHalted,
     haltedAt: isHalted ? row?.halted_at ?? null : null,
     reason: allowed ? null : "insufficient_credits",
     paid,
-    modelAccess: !isHalted ? "full" : paid ? "fallback" : null,
+    modelAccess: !isHalted ? "full" : fallback ? "fallback" : null,
     usagePlan: normalizedUsagePlan(row),
   };
 }

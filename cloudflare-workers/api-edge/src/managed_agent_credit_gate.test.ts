@@ -16,6 +16,7 @@ class FakeStatement {
     private readonly usagePlan: string,
     private readonly plan: string,
     private readonly billingProvider: string,
+    private readonly haltReason: string | null,
   ) {}
 
   bind(orgID: string): this {
@@ -33,6 +34,7 @@ class FakeStatement {
           usage_plan: this.usagePlan,
           plan: this.plan,
           billing_provider: this.billingProvider,
+          halt_reason: this.haltReason,
         }) as T | null;
   }
 }
@@ -43,14 +45,15 @@ function env(
   usagePlan = "base",
   plan = "free",
   billingProvider = "autumn",
+  haltReason: string | null = null,
 ) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
         expect(sql).toBe(
-          "SELECT is_halted, halted_at, usage_plan, plan, billing_provider FROM orgs WHERE id = ?1",
+          "SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason FROM orgs WHERE id = ?1",
         );
-        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider);
+        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider, haltReason);
       },
     } as unknown as D1Database,
   };
@@ -146,6 +149,21 @@ describe("managed-agent credit admission", () => {
       ).resolves.toBeNull();
     },
   );
+
+  it.each(["credits_empty", "payment", "trial_days"])(
+    "stops a paid org halted on the work-minute rule (%s)",
+    async (reason) => {
+      await expect(
+        getManagedAgentBillingAdmission(env(1, 1_789_707_077, "pro", "free", "autumn", reason), "org_test"),
+      ).resolves.toMatchObject({ allowed: false, isHalted: true, paid: true, modelAccess: null });
+    },
+  );
+
+  it("keeps the fallback for a paid org halted on the credit rule", async () => {
+    await expect(
+      getManagedAgentBillingAdmission(env(1, 1_789_707_077, "max", "free", "autumn", "credits_exhausted"), "org_test"),
+    ).resolves.toMatchObject({ allowed: true, modelAccess: "fallback" });
+  });
 
   it("keeps an existing Pro org eligible before its usage-plan projection", async () => {
     await expect(

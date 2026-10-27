@@ -5,6 +5,7 @@ import {
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
   billingWebhookEvents,
+  haltReason,
   planChangeKind,
   syncAutumnToD1,
   summarizeAutumnCreditBalance,
@@ -434,5 +435,57 @@ describe("billing funnel events from Autumn", () => {
 
     expect(db.org.payment_past_due_at).not.toBeNull();
     expect(posted.map((p) => p.event)).toEqual(["billing.payment_failed"]);
+  });
+});
+
+describe("halt rules", () => {
+  const now = 1_800_000_000;
+  const day = 86_400;
+  const customer = (
+    plans: string[],
+    balances: { minutes?: number; credits?: number },
+  ): Parameters<typeof haltReason>[0] => ({
+    id: "org_1",
+    subscriptions: plans.map((plan_id) => ({ plan_id, add_on: false, status: "active" })),
+    balances: {
+      ...(balances.minutes === undefined ? {} : { work_minutes: { remaining: balances.minutes } }),
+      credits: { remaining: balances.credits ?? 0 },
+    },
+  });
+  const fresh = { trialStartedAt: now - day, paymentPastDueAt: null };
+
+  it("keeps credit-only orgs on the credit rule", () => {
+    const org = { trialStartedAt: null, paymentPastDueAt: null };
+    expect(haltReason(customer(["base"], { credits: 3 }), org, now)).toBeNull();
+    expect(haltReason(customer(["base"], { credits: 0 }), org, now)).toBe("credits_exhausted");
+    expect(haltReason(customer(["max"], { credits: 0 }), org, now)).toBe("credits_exhausted");
+  });
+
+  it("ends the trial at day 7, 600 minutes or the token credit", () => {
+    expect(haltReason(customer(["trial"], { minutes: 100, credits: 5 }), fresh, now)).toBeNull();
+    expect(
+      haltReason(customer(["trial"], { minutes: 100, credits: 5 }), { ...fresh, trialStartedAt: now - 7 * day }, now),
+    ).toBe("trial_days");
+    expect(haltReason(customer(["trial"], { minutes: 0, credits: 5 }), fresh, now)).toBe("trial_minutes");
+    expect(haltReason(customer(["trial"], { minutes: 100, credits: 0 }), fresh, now)).toBe("trial_tokens");
+  });
+
+  it("halts a paid org only when minutes and credits are both used", () => {
+    expect(haltReason(customer(["pro"], { minutes: 0, credits: 4 }), fresh, now)).toBeNull();
+    expect(haltReason(customer(["pro"], { minutes: 12, credits: 0 }), fresh, now)).toBeNull();
+    expect(haltReason(customer(["max"], { minutes: 0, credits: 0 }), fresh, now)).toBe("credits_empty");
+  });
+
+  it("halts a paid org once its payment is 3 days past due", () => {
+    const pastDue = (days: number) => ({ ...fresh, paymentPastDueAt: now - days * day });
+    expect(haltReason(customer(["pro"], { minutes: 500 }), pastDue(2), now)).toBeNull();
+    expect(haltReason(customer(["pro"], { minutes: 500 }), pastDue(3), now)).toBe("payment");
+  });
+
+  it("calls a work-minute org with no plan lapsed, and gives no second trial", () => {
+    expect(haltReason(customer([], { minutes: 0, credits: 0 }), fresh, now)).toBe("lapsed");
+    expect(
+      haltReason(customer(["trial"], { minutes: 600, credits: 10 }), { ...fresh, trialStartedAt: now - 40 * day }, now),
+    ).toBe("trial_days");
   });
 });

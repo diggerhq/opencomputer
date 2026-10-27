@@ -628,6 +628,65 @@ export async function selfHealHalt(env: AutumnEnv, orgID: string): Promise<boole
   return row?.is_halted === 1;
 }
 
+// ── halt rules (serverless-agents-ws 086, step 4) ───────────────────────────
+
+export const TRIAL_DAYS = 7;
+// A paid org whose payment is failing keeps working this long before it halts.
+export const PAYMENT_GRACE_DAYS = 3;
+const DAY_SEC = 86_400;
+
+export type HaltReason =
+  | "trial_minutes"
+  | "trial_days"
+  | "trial_tokens"
+  | "credits_empty"
+  | "payment"
+  | "lapsed"
+  | "credits_exhausted";
+
+// Credit-only halts keep a paid org's managed agents on the open-weight
+// fallback model; every work-minute halt stops the org. NULL: halted before
+// halt_reason existed, read as the old rule until the next projection.
+export function haltKeepsFallback(reason: string | null | undefined): boolean {
+  return reason == null || reason === "credits_exhausted";
+}
+
+function hasActiveSubscription(customer: AutumnCustomer, planID: string): boolean {
+  return (customer.subscriptions ?? []).some((s) => s.plan_id === planID && (!s.status || s.status === "active"));
+}
+
+// haltReason decides whether an org is halted, and why. An org is on work
+// minutes once Autumn shows a work_minutes balance or the edge recorded its
+// trial; every other org keeps the credit rule until it is migrated (step 8).
+export function haltReason(
+  customer: AutumnCustomer,
+  org: { trialStartedAt: number | null; paymentPastDueAt: number | null },
+  nowSec: number,
+): HaltReason | null {
+  const credits = customer.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
+  const minutesBalance = customer.balances?.[WORK_MINUTES_FEATURE_ID];
+  if (minutesBalance === undefined && org.trialStartedAt == null) {
+    return credits <= 0 ? "credits_exhausted" : null;
+  }
+  const minutes = minutesBalance?.remaining ?? 0;
+
+  if (activeUsagePlan(customer) !== "base") {
+    if (org.paymentPastDueAt != null && nowSec - org.paymentPastDueAt >= PAYMENT_GRACE_DAYS * DAY_SEC) {
+      return "payment";
+    }
+    return minutes <= 0 && credits <= 0 ? "credits_empty" : null;
+  }
+  if (hasActiveSubscription(customer, "trial")) {
+    // Autumn re-enables trial when a paid plan ends; the original start still
+    // counts, so a cancelled org gets no second trial.
+    if (org.trialStartedAt != null && nowSec - org.trialStartedAt >= TRIAL_DAYS * DAY_SEC) return "trial_days";
+    if (minutes <= 0) return "trial_minutes";
+    if (credits <= 0) return "trial_tokens";
+    return null;
+  }
+  return "lapsed";
+}
+
 // syncAutumnToD1 reads Autumn's authoritative balance/plans and writes the D1
 // projection (is_halted / usage_plan / max_concurrent) WITHOUT any cell dispatch. Returns the
 // halt transition so callers can decide whether to actively hibernate. Reusable
@@ -637,6 +696,7 @@ export interface AutumnSyncResult {
   creditsRemaining: number; // dollars
   maxConcurrent: number;
   halted: boolean;
+  haltReason: HaltReason | null;
   wasHalted: boolean;
   usagePlan: UsagePlan;
 }
@@ -649,13 +709,12 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   }
 
   const creditsRemaining = cust.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
-  const halted = creditsRemaining <= 0;
   const usagePlan = activeUsagePlan(cust);
   const projectedMaxConcurrent = maxConcurrency(cust.subscriptions ?? []);
   const nowSec = Math.floor(Date.now() / 1000);
 
   const prevRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, autumn_concurrency_override, usage_plan, payment_past_due_at FROM orgs WHERE id = ?1",
+    "SELECT is_halted, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<{
@@ -663,8 +722,15 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
       autumn_concurrency_override: number | null;
       usage_plan: UsagePlan;
       payment_past_due_at: number | null;
+      trial_started_at: number | null;
     }>();
   const wasHalted = prevRow?.is_halted === 1;
+  const reason = haltReason(
+    cust,
+    { trialStartedAt: prevRow?.trial_started_at ?? null, paymentPastDueAt: prevRow?.payment_past_due_at ?? null },
+    nowSec,
+  );
+  const halted = reason !== null;
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   // Compare-and-set the plan first: the webhook, checkout-return and the cron can
@@ -686,16 +752,17 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   }
 
   await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, usage_plan = ?4, updated_at = ?5 WHERE id = ?6`,
+    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, usage_plan = ?4, updated_at = ?5,
+       halt_reason = ?7 WHERE id = ?6`,
   )
-    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID)
+    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID, reason)
     .run();
 
   // After the writes, so the event's send time never widens the window in which
   // a concurrent projection can interleave.
   if (planChange) await emitBillingEvent(env, "billing.plan_changed", { orgId: orgID, data: planChange });
 
-  return { customer: cust, creditsRemaining, maxConcurrent, halted, wasHalted, usagePlan };
+  return { customer: cust, creditsRemaining, maxConcurrent, halted, haltReason: reason, wasHalted, usagePlan };
 }
 
 // autumnSetProviderInternal flips D1 orgs.billing_provider for one org (the
@@ -751,6 +818,8 @@ export async function projectOrg(env: AutumnEnv, orgID: string): Promise<void> {
   // webhook both call projectOrg, so this is the straggler safety net (a halted
   // org with a leftover running box gets re-dispatched on the next sight).
   if (!r.wasHalted || (await hasRunningSandboxes(env, orgID))) {
+    // The cells stamp and resume by "credits_exhausted" whatever the cause; the
+    // reason a surface shows lives in orgs.halt_reason.
     await dispatchToCells(env, orgID, "/admin/halt-org", { org_id: orgID, reason: "credits_exhausted" });
   }
 }

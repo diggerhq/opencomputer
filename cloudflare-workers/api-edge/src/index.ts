@@ -71,6 +71,7 @@ import {
   createAutumnCustomer,
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
+import { runBillingClock } from "./billing_clock";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter, syncModelCaps } from "./model_meter";
 import {
@@ -6324,6 +6325,9 @@ export default {
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(
       runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
+    );
+    ctx.waitUntil(
+      runBillingClock(env, Date.now()).catch((err) => console.error("billing-clock: run failed", err)),
     );
     if (env.OPENROUTER_PROVISIONING_KEY) {
       ctx.waitUntil(
