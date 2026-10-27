@@ -46,9 +46,9 @@ class Stmt {
   async all<T>(): Promise<{ results: T[] }> {
     return { results: this.db.prepare(this.sql).all(...this.args()) as T[] };
   }
-  async run(): Promise<{ success: true; meta: object }> {
-    this.db.prepare(this.sql).run(...this.args());
-    return { success: true, meta: {} };
+  async run(): Promise<{ success: true; meta: { changes: number } }> {
+    const out = this.db.prepare(this.sql).run(...this.args()) as { changes?: number | bigint };
+    return { success: true, meta: { changes: Number(out?.changes ?? 0) } };
   }
 }
 
@@ -232,6 +232,30 @@ describe("browser signup records attribution", () => {
     await callback(`oc_ft=${encodeFirstTouch({ utm_source: "other" })}`);
     expect(db.prepare("SELECT utm_source FROM signup_attribution").all()).toEqual([{ utm_source: "test" }]);
     expect(posthog).toHaveLength(1);
+  });
+
+  it("records a signup retried after a partial first callback, once", async () => {
+    // The first callback inserted the user, then failed before the workspace existed.
+    const nowSec = Math.floor(Date.now() / 1000);
+    db.prepare("INSERT INTO users (id, email, workos_user_id, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run("u_partial", "new@example.com", "wos_1", "New", nowSec - 30);
+    const res = await callback(`oc_ft=${encodeFirstTouch({ utm_source: "retry" })}`);
+    expect(res.status).toBe(302);
+    expect(db.prepare("SELECT user_id, utm_source FROM signup_attribution").all()).toEqual([
+      { user_id: "u_partial", utm_source: "retry" },
+    ]);
+    await callback(`oc_ft=${encodeFirstTouch({ utm_source: "retry" })}`);
+    expect(posthog.map((e) => e.event)).toEqual(["signed_up"]);
+  });
+
+  it("does not attribute an existing account's login", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    db.prepare("INSERT INTO users (id, email, workos_user_id, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run("u_old", "new@example.com", "wos_1", "New", nowSec - 2 * 60 * 60);
+    const res = await callback(`oc_ft=${encodeFirstTouch({ utm_source: "late" })}`);
+    expect(res.status).toBe(302);
+    expect(db.prepare("SELECT * FROM signup_attribution").all()).toEqual([]);
+    expect(posthog).toEqual([]);
   });
 
   it("logs in with a garbage cookie, recording unknown fields", async () => {

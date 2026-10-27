@@ -3823,11 +3823,21 @@ interface ProvisionedIdentity {
     name: string;
     plan: string;
   };
-  /** True when this login created the user row: a signup. */
+  /**
+   * True when this login is part of a signup: it created the user row, or the
+   * row is younger than SIGNUP_RETRY_WINDOW_SEC (a signup whose first callback
+   * failed after the insert and was retried). Attribution writes are
+   * idempotent, so a repeat inside the window records nothing new.
+   */
   created: boolean;
 }
 
 type IdentitySelection = "browser" | "cli";
+
+// A signup whose callback failed after inserting the user is retried at once
+// (authCallback restarts the login); within this window it still counts as
+// the signup for attribution.
+const SIGNUP_RETRY_WINDOW_SEC = 60 * 60;
 
 // A post-login destination is only honored if it is a same-origin PATH: it must
 // start with a single "/", carry no host (no "//" protocol-relative form) and no
@@ -3964,12 +3974,12 @@ async function provisionWorkOSIdentity(
     [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email;
 
   let userRow = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, email, name FROM users WHERE workos_user_id = ?1`,
+    `SELECT id, email, name, created_at FROM users WHERE workos_user_id = ?1`,
   )
     .bind(profile.id)
-    .first<{ id: string; email: string; name: string | null }>();
+    .first<{ id: string; email: string; name: string | null; created_at: number | null }>();
 
-  let created = false;
+  let created = userRow !== null && nowSec - (userRow.created_at ?? 0) < SIGNUP_RETRY_WINDOW_SEC;
   if (!userRow) {
     const candidateID = crypto.randomUUID();
     await env.OPENCOMPUTER_DB.prepare(
@@ -3989,10 +3999,10 @@ async function provisionWorkOSIdentity(
       .run();
     // Re-read after the email-conflict path: the existing row retains its id.
     userRow = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, email, name FROM users WHERE workos_user_id = ?1`,
+      `SELECT id, email, name, created_at FROM users WHERE workos_user_id = ?1`,
     )
       .bind(profile.id)
-      .first<{ id: string; email: string; name: string | null }>();
+      .first<{ id: string; email: string; name: string | null; created_at: number | null }>();
     if (!userRow) throw new Error("workos user upsert did not resolve");
     // The email-conflict path keeps an existing account: not a signup.
     created = userRow.id === candidateID;

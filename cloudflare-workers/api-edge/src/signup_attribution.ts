@@ -276,12 +276,15 @@ export function signupPostHogEvent(token: string, row: SignupAttributionRow, org
   };
 }
 
-/** Stores the signup's attribution and tells PostHog. Never throws. */
+/**
+ * Stores the signup's attribution and tells PostHog, once per user: a repeat
+ * (a retried signup's later login) writes nothing and sends nothing. Never throws.
+ */
 export async function recordSignupAttribution(env: SignupAttributionEnv, input: SignupAttributionInput): Promise<void> {
   let row: SignupAttributionRow;
   try {
     row = signupAttributionRow(input, Math.floor(Date.now() / 1000));
-    await env.OPENCOMPUTER_DB.prepare(
+    const result = await env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO signup_attribution (
          user_id, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
          gclid, fbclid, li_fat_id, ref, referrer, landing_path, first_seen_at,
@@ -295,6 +298,7 @@ export async function recordSignupAttribution(env: SignupAttributionEnv, input: 
         row.channel, row.client, row.auth_method, row.plan_intent, row.created_at,
       )
       .run();
+    if (!result.meta?.changes) return;
   } catch (err) {
     console.error(`signup attribution: insert failed for ${input.userId}`, err instanceof Error ? err.message : "");
     return;
