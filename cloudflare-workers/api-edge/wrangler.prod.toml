@@ -170,6 +170,10 @@ deleted_classes = ["VmSession"]
 #   LINEAR_API_KEY / LINEAR_TEAM_ID (+ optional LINEAR_PROJECT_ID var) —
 #                            when set, each new agent-feedback report opens a
 #                            Linear issue. Off when unset.
+#   LOOPS_API_KEY          — lifecycle email through Loops (src/loops.ts,
+#                            serverless-agents-ws 088). Off when unset.
+#   LOOPS_EXCLUDE_EMAILS   — comma-separated addresses or @domains that never
+#                            get lifecycle email (internal accounts).
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 

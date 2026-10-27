@@ -118,6 +118,7 @@ import {
   COMPUTER_API_PREFIX,
 } from "./computer_api";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
+import { sendLoopsEvent, type LoopsEnv } from "./loops";
 import {
   type EdgeRequestFacts,
   newEdgeRequestFacts,
@@ -127,7 +128,7 @@ import { computerEnabledFor } from "./computer";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
-export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv {
+export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -3958,6 +3959,7 @@ async function provisionWorkOSIdentity(
   workosOrgID: string | undefined,
   selection: IdentitySelection,
   planIntent: string | null = null,
+  ctx?: ExecutionContext,
 ): Promise<ProvisionedIdentity> {
   const nowSec = Math.floor(Date.now() / 1000);
   const displayName =
@@ -4103,6 +4105,21 @@ async function provisionWorkOSIdentity(
         userId: userID,
         data: { plan_intent: planIntent, via: selection },
       });
+      // Welcome email (088): creates the Loops contact and starts its loops.
+      // Off the login path; a Loops failure is logged, never fails the login.
+      const welcome = sendLoopsEvent(env, { email: profile.email, userId: userID }, "signed_up", {
+        idempotencyKey: `${orgID}:signed_up`,
+        eventProperties: { via: selection },
+        contactProperties: {
+          ...(profile.first_name ? { firstName: profile.first_name } : {}),
+          ...(profile.last_name ? { lastName: profile.last_name } : {}),
+          orgId: orgID,
+          plan: "base",
+          signedUpAt: new Date(nowSec * 1000).toISOString(),
+        },
+      });
+      if (ctx) ctx.waitUntil(welcome);
+      else await welcome;
     }
     orgRow = {
       id: orgID,
@@ -4142,7 +4159,7 @@ async function provisionWorkOSIdentity(
   };
 }
 
-async function authCallback(req: Request, env: Env): Promise<Response> {
+async function authCallback(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const reqURL = new URL(req.url);
   const code = reqURL.searchParams.get("code");
   if (!code) return json({ error: "missing code" }, 400);
@@ -4169,7 +4186,7 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
   // whose refresh fails with "code already exchanged". Restart the login once
   // (WorkOS issues a fresh code); a second failure gets a plain retry page.
   try {
-    return await completeAuthCallback(req, env, reqURL, tokenBody);
+    return await completeAuthCallback(req, env, reqURL, tokenBody, ctx);
   } catch (err) {
     console.error("auth callback: post-exchange failure", err);
     const state = parseAuthState(reqURL.searchParams.get("state"));
@@ -4216,6 +4233,7 @@ async function completeAuthCallback(
   env: Env,
   reqURL: URL,
   tokenBody: AuthenticateResponse,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const profile = tokenBody.user;
   // WorkOS session id (sid) for the hosted logout flow — carried in our session JWT.
@@ -4231,6 +4249,7 @@ async function completeAuthCallback(
     tokenBody.organization_id ?? profile.organization_id,
     "browser",
     planIntent,
+    ctx,
   );
   if (identity.created) {
     await recordSignupAttribution(env, {
@@ -4705,7 +4724,7 @@ async function authCLIExchange(req: Request, env: Env, ctx?: ExecutionContext): 
 
   let identity: ProvisionedIdentity;
   try {
-    identity = await provisionWorkOSIdentity(req, env, typedProfile, workosOrgID, "cli");
+    identity = await provisionWorkOSIdentity(req, env, typedProfile, workosOrgID, "cli", null, ctx);
   } catch {
     return finish(cliAuthError("account_provisioning_unavailable", 503), "provisioning_error");
   }
@@ -5940,7 +5959,7 @@ export default {
 
     // Browser auth flow.
     if (path === "/auth/login")    { if (req.method === "GET")  return withFirstTouchCookie(req, await authLogin(req, env)); }
-    if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env); }
+    if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
     if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 

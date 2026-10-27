@@ -19,6 +19,7 @@
 // events (billingWebhookEvents), never for the projection.
 
 import { emitBillingEvent, type BillingEventName, type BillingEventsEnv } from "./billing_events";
+import { notifyTrialEvent, syncLoopsPlan, trialReason, type LoopsEnv } from "./loops";
 
 // AutumnApiEnv is the minimal binding set for calling Autumn's REST API
 // (GetCustomer / checkout). The dashboard handlers satisfy this without the
@@ -29,7 +30,7 @@ export interface AutumnApiEnv {
 }
 
 // AutumnSyncEnv adds D1 — enough to project Autumn state without dispatching.
-export interface AutumnSyncEnv extends AutumnApiEnv, BillingEventsEnv {
+export interface AutumnSyncEnv extends AutumnApiEnv, BillingEventsEnv, LoopsEnv {
   OPENCOMPUTER_DB: D1Database;
 }
 
@@ -829,7 +830,7 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   const nowSec = Math.floor(Date.now() / 1000);
 
   const prevRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at, billing_warning FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<{
@@ -839,6 +840,7 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
       usage_plan: UsagePlan;
       payment_past_due_at: number | null;
       trial_started_at: number | null;
+      billing_warning?: string | null;
     }>();
   const wasHalted = prevRow?.is_halted === 1;
   const clock = { trialStartedAt: prevRow?.trial_started_at ?? null, paymentPastDueAt: prevRow?.payment_past_due_at ?? null };
@@ -882,6 +884,15 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   // After the writes, so the event's send time never widens the window in which
   // a concurrent projection can interleave.
   if (planChange) await emitBillingEvent(env, "billing.plan_changed", { orgId: orgID, data: planChange });
+
+  // Lifecycle email (088), on the transition only: the first trial warning and
+  // a fresh halt on a trial limit. notifyTrialEvent also claims each event once
+  // per org, against concurrent projections that both see the transition.
+  const lowReason = trialReason(warning);
+  if (lowReason && !trialReason(prevRow?.billing_warning)) await notifyTrialEvent(env, orgID, "trial_low", lowReason);
+  const endReason = trialReason(reason);
+  if (endReason && !wasHalted) await notifyTrialEvent(env, orgID, "trial_ended", endReason);
+  if (planChange) await syncLoopsPlan(env, orgID, usagePlan);
 
   return { customer: cust, creditsRemaining, maxConcurrent, halted, haltReason: reason, warning, wasHalted, usagePlan };
 }

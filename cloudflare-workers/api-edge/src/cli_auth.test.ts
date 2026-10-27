@@ -690,6 +690,37 @@ describe("CLI device authorization edge contract", () => {
     expect(typeof orgInsert?.args[8]).toBe("number");
   });
 
+  it("sends the welcome event to Loops off the login path", async () => {
+    const db = new FakeDB([], null);
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => Response.json({
+      user: { id: "new-workos-user", email: "new@example.com", first_name: "New" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending: Promise<unknown>[] = [];
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-ipcountry": "US" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), { ...testEnv(db), AUTUMN_NEW_ORGS: "true", AUTUMN_SECRET_KEY: "autumn-test", LOOPS_API_KEY: "loops-test" }, {
+      ...ctx,
+      waitUntil: (p: Promise<unknown>) => pending.push(p),
+    } as unknown as ExecutionContext);
+    expect(resp.status).toBe(200);
+    await Promise.all(pending);
+
+    const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
+    const loops = fetchMock.mock.calls.filter(([url]) => String(url).startsWith("https://app.loops.so/"));
+    expect(loops).toHaveLength(1);
+    expect(String(loops[0][0])).toBe("https://app.loops.so/api/v1/events/send");
+    expect(JSON.parse(String(loops[0][1]?.body))).toMatchObject({
+      email: "new@example.com",
+      eventName: "signed_up",
+      firstName: "New",
+      orgId: orgInsert?.args[0],
+      plan: "base",
+    });
+  });
+
   it("rejects extra exchange fields before contacting WorkOS", async () => {
     const providerFetch = vi.fn();
     vi.stubGlobal("fetch", providerFetch);
