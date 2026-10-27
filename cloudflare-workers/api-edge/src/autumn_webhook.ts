@@ -656,8 +656,9 @@ function hasActiveSubscription(customer: AutumnCustomer, planID: string): boolea
 }
 
 // haltReason decides whether an org is halted, and why. An org is on work
-// minutes once Autumn shows a work_minutes balance or the edge recorded its
-// trial; every other org keeps the credit rule until it is migrated (step 8).
+// minutes once Autumn shows a work_minutes balance; every other org keeps the
+// credit rule until it is migrated (step 8). trial_started_at alone is not
+// enough: signup stamps it even when the Autumn catalog has no trial plan yet.
 export function haltReason(
   customer: AutumnCustomer,
   org: { trialStartedAt: number | null; paymentPastDueAt: number | null },
@@ -665,7 +666,7 @@ export function haltReason(
 ): HaltReason | null {
   const credits = customer.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
   const minutesBalance = customer.balances?.[WORK_MINUTES_FEATURE_ID];
-  if (minutesBalance === undefined && org.trialStartedAt == null) {
+  if (minutesBalance === undefined) {
     return credits <= 0 ? "credits_exhausted" : null;
   }
   const minutes = minutesBalance?.remaining ?? 0;

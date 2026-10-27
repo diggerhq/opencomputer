@@ -461,6 +461,11 @@ describe("halt rules", () => {
     expect(haltReason(customer(["max"], { credits: 0 }), org, now)).toBe("credits_exhausted");
   });
 
+  it("keeps a new signup on the credit rule until Autumn has a trial plan", () => {
+    expect(haltReason(customer(["base"], { credits: 10 }), fresh, now)).toBeNull();
+    expect(haltReason(customer(["base"], { credits: 0 }), fresh, now)).toBe("credits_exhausted");
+  });
+
   it("ends the trial at day 7, 600 minutes or the token credit", () => {
     expect(haltReason(customer(["trial"], { minutes: 100, credits: 5 }), fresh, now)).toBeNull();
     expect(
