@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getAutumnBilling } from '@/api/client'
 import type { AutumnBilling } from '@/api/schemas'
 import {
+  haltBlocksAgents,
   upgradePlanFor,
   type UpgradePlanId,
   type UsagePlanId,
@@ -13,7 +14,8 @@ export interface CreditState {
   creditsRemainingCents: number | undefined
   isHalted: boolean
   // Halted orgs can't start agent sessions until they pay (serverless-agents-ws
-  // 086: no fallback model on any plan).
+  // 086), except a paid org on the old credit rule, which keeps the fallback
+  // model (see haltBlocksAgents).
   sessionsBlocked: boolean
   // orgs.halt_reason while halted, and orgs.billing_warning before that.
   haltReason: string | null
@@ -38,7 +40,7 @@ export function useCreditState(): CreditState {
     usagePlan,
     creditsRemainingCents: data?.creditsRemainingCents,
     isHalted,
-    sessionsBlocked: isHalted,
+    sessionsBlocked: haltBlocksAgents(data),
     haltReason: isHalted ? (data?.haltReason ?? null) : null,
     warning: isHalted ? null : (data?.warning ?? null),
     upgradePlan: upgradePlanFor(usagePlan ?? 'trial'),

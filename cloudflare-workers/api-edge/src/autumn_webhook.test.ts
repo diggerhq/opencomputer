@@ -242,6 +242,25 @@ describe("Autumn shared-credit plan purchases", () => {
     );
   });
 
+  it("does not carry the trial's credit into a paid plan", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "trial", add_on: false, status: "active" }],
+        purchases: [],
+      }))
+      .mockResolvedValueOnce(Response.json({ payment_url: null }));
+
+    await autumnUsagePlanPurchase(env, {
+      customerId: "org_1",
+      planId: "pro",
+      successUrl: "https://example.test/billing?usage-plan=pro",
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.lastCall?.[1]?.body));
+    expect(body.carry_over_balances).toBeUndefined();
+  });
+
   it("does not roll paid monthly grants into another paid plan", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(Response.json({

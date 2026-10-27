@@ -10,6 +10,7 @@ import { notifyError } from '@/lib/errors'
 import {
   PLAN_NAMES,
   formatUsd,
+  planChangeTiming,
   trackCheckoutStarted,
   trackPlanActivated,
   type PaidPlanId,
@@ -36,6 +37,18 @@ export function useBillingActions(options: {
       options.onPlanChanged?.(plan)
       if (data.url) {
         window.location.href = data.url
+        return
+      }
+      // $200 → $20 is only scheduled: the current plan runs to the period end,
+      // so nothing is activated yet.
+      if (
+        options.usagePlan &&
+        planChangeTiming(options.usagePlan, plan) === 'period_end'
+      ) {
+        toast.success(`${PLAN_NAMES[plan]} plan scheduled`, {
+          description: 'It starts at the end of your current period.',
+        })
+        refresh()
         return
       }
       toast.success(`${PLAN_NAMES[plan]} plan updated`, {

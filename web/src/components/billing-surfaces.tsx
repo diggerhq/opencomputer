@@ -86,14 +86,15 @@ export function BillingWarningBanner() {
   )
 }
 
-// Blocks every page while the org is halted. The Billing page is the one
+// Blocks every page while the org's halt stops work. The Billing page is the one
 // exception: it shows the same notice inline so plans, packs and the card
 // stay reachable there.
 export function HaltModal() {
   const location = useLocation()
-  const { billing, isHalted, haltReason, usagePlan } = useCreditState()
+  const { billing, sessionsBlocked, haltReason, usagePlan } = useCreditState()
   const onBilling = location.pathname.startsWith('/billing')
-  const open = isHalted && !onBilling
+  // A paid org on the fallback model keeps working, so it isn't blocked.
+  const open = sessionsBlocked && !onBilling
   const reason = haltReason ?? 'unknown'
   useEffect(() => {
     if (open) trackPaywallShown(reason)

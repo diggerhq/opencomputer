@@ -72,6 +72,33 @@ export function planChangeTiming(
   return current === 'max' && target === 'pro' ? 'period_end' : 'now'
 }
 
+// Whether a halt stops agent sessions. Mirrors the edge's managed-agent
+// admission (getManagedAgentBillingAdmission): a paid org halted by the old
+// credit rule (`credits_exhausted`, or no reason recorded) keeps running on the
+// fallback model; every work-minute halt stops it.
+export function haltBlocksAgents(
+  billing:
+    | { isHalted: boolean; usagePlan: UsagePlanId; haltReason?: string | null }
+    | undefined,
+): boolean {
+  if (!billing?.isHalted) return false
+  const paid = billing.usagePlan === 'pro' || billing.usagePlan === 'max'
+  const reason = billing.haltReason ?? null
+  return !(paid && (reason === null || reason === 'credits_exhausted'))
+}
+
+// A picker's preset values plus the saved one, so a value set before the
+// presets existed (e.g. a $25 auto top-up pack) shows and saves unchanged.
+export function withSavedOption(
+  presets: readonly number[],
+  saved: number | null | undefined,
+): number[] {
+  if (saved == null || !Number.isInteger(saved) || saved < 1)
+    return [...presets]
+  if (presets.includes(saved)) return [...presets]
+  return [...presets, saved].sort((a, b) => a - b)
+}
+
 // `?plan=` deep link → the checkout to open. Only upgrades: a link never
 // downgrades an org or reopens the plan it is on.
 export function deepLinkedPlanFor(

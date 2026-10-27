@@ -6,12 +6,14 @@ import {
   billingPillText,
   deepLinkedPlanFor,
   formatCredits,
+  haltBlocksAgents,
   haltNotice,
   planChangeTiming,
   planPriceLabel,
   upgradeHref,
   upgradePlanFor,
   warningNotice,
+  withSavedOption,
 } from '@/lib/billing-onramp'
 
 const NOW = new Date('2026-06-26T12:00:00Z').getTime()
@@ -116,6 +118,50 @@ describe('haltNotice', () => {
     expect(notice.title).toBe('Your free trial is over')
     expect(notice.body).toContain('7-day trial has ended')
     expect(notice.body).toContain('$20')
+  })
+})
+
+describe('haltBlocksAgents', () => {
+  const halted = (
+    usagePlan: 'trial' | 'base' | 'pro' | 'max',
+    haltReason: string | null,
+  ) => ({ isHalted: true, usagePlan, haltReason })
+
+  it('lets a paid org on the old credit rule keep its fallback model', () => {
+    expect(haltBlocksAgents(halted('pro', 'credits_exhausted'))).toBe(false)
+    expect(haltBlocksAgents(halted('max', null))).toBe(false)
+  })
+
+  it('blocks every work-minute halt and every unpaid halt', () => {
+    expect(haltBlocksAgents(halted('pro', 'credits_empty'))).toBe(true)
+    expect(haltBlocksAgents(halted('max', 'payment'))).toBe(true)
+    expect(haltBlocksAgents(halted('pro', 'lapsed'))).toBe(true)
+    expect(haltBlocksAgents(halted('trial', 'trial_minutes'))).toBe(true)
+    expect(haltBlocksAgents(halted('base', 'credits_exhausted'))).toBe(true)
+  })
+
+  it('is false when not halted or not loaded', () => {
+    expect(haltBlocksAgents(undefined)).toBe(false)
+    expect(
+      haltBlocksAgents({
+        isHalted: false,
+        usagePlan: 'trial',
+        haltReason: null,
+      }),
+    ).toBe(false)
+  })
+})
+
+describe('withSavedOption', () => {
+  it('keeps a saved value outside the presets selectable', () => {
+    expect(withSavedOption([10, 50, 200], 25)).toEqual([10, 25, 50, 200])
+    expect(withSavedOption([1, 2, 3, 5, 10], 4)).toEqual([1, 2, 3, 4, 5, 10])
+  })
+
+  it('leaves the presets alone otherwise', () => {
+    expect(withSavedOption([10, 50, 200], 50)).toEqual([10, 50, 200])
+    expect(withSavedOption([10, 50, 200], undefined)).toEqual([10, 50, 200])
+    expect(withSavedOption([10, 50, 200], 0)).toEqual([10, 50, 200])
   })
 })
 

@@ -1029,6 +1029,9 @@ export async function autumnUsagePlanPurchase(
   },
 ): Promise<{ url: string | null }> {
   const customer = await getAutumnCustomer(env, params.customerId);
+  // Only the pre-trial `base` grant carries. The 7-day trial's minutes and $10
+  // token credit do not (serverless-agents-ws 086 "Plan changes": trial → paid
+  // starts the paid allowance fresh).
   const upgradingFromUsage = (customer?.subscriptions ?? []).some(
     (subscription) =>
       subscription.plan_id === "base" &&

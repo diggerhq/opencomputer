@@ -50,6 +50,7 @@ import {
   planPriceLabel,
   trackPlanActivated,
   trackUpsellShown,
+  withSavedOption,
   type CreditPackUsd,
   type PaidPlanId,
   type UsagePlanId,
@@ -1043,20 +1044,23 @@ function AutoTopupCard({
   const [draft, setDraft] = useState<{
     enabled?: boolean
     threshold?: number
-    quantity?: CreditPackUsd
+    quantity?: number
     perMonth?: number
   }>({})
-  const savedPack = CREDIT_PACKS_USD.find((usd) => usd === current?.quantity)
-  const enabled = draft.enabled ?? current?.enabled ?? false
-  const threshold = draft.threshold ?? current?.threshold ?? 5
-  const quantity: CreditPackUsd = draft.quantity ?? savedPack ?? 10
+  // A policy saved before the presets (e.g. $25 packs, a $100 cap) stays
+  // selectable, so saving another field never rewrites it.
+  const savedPack =
+    current && current.quantity > 0 ? current.quantity : undefined
   const savedPerMonth =
     current && current.budget != null && current.quantity > 0
       ? Math.round(current.budget / current.quantity)
-      : 3
-  const perMonth =
-    draft.perMonth ??
-    (TOPUPS_PER_MONTH.includes(savedPerMonth) ? savedPerMonth : 3)
+      : undefined
+  const packOptions = withSavedOption(CREDIT_PACKS_USD, savedPack)
+  const perMonthOptions = withSavedOption(TOPUPS_PER_MONTH, savedPerMonth)
+  const enabled = draft.enabled ?? current?.enabled ?? false
+  const threshold = draft.threshold ?? current?.threshold ?? 5
+  const quantity = draft.quantity ?? savedPack ?? 10
+  const perMonth = draft.perMonth ?? savedPerMonth ?? 3
   const budget = quantity * perMonth
   const [saved, markSaved] = useTransientFlag(3000)
   const [confirm, setConfirm] = useState(false)
@@ -1112,12 +1116,9 @@ function AutoTopupCard({
               id="topup-pack"
               value={String(quantity)}
               onValueChange={(v) =>
-                setDraft((d) => ({
-                  ...d,
-                  quantity: Number(v) as CreditPackUsd,
-                }))
+                setDraft((d) => ({ ...d, quantity: Number(v) }))
               }
-              options={CREDIT_PACKS_USD.map((usd) => ({
+              options={packOptions.map((usd) => ({
                 value: String(usd),
                 label: `$${usd} pack`,
               }))}
@@ -1152,7 +1153,7 @@ function AutoTopupCard({
               onValueChange={(v) =>
                 setDraft((d) => ({ ...d, perMonth: Number(v) }))
               }
-              options={TOPUPS_PER_MONTH.map((n) => ({
+              options={perMonthOptions.map((n) => ({
                 value: String(n),
                 label: `${n}× a month ($${n * quantity})`,
               }))}
