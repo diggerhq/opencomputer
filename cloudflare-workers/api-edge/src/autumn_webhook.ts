@@ -40,6 +40,10 @@ export interface AutumnEnv extends AutumnSyncEnv {
 
 const DEFAULT_BASE_URL = "https://api.useautumn.com/v1";
 const CREDITS_FEATURE_ID = "credits";
+// Work-minute plans (trial, pro and max v2; serverless-agents-ws 086) carry a
+// work_minutes balance; credit-based plans do not.
+const WORK_MINUTES_FEATURE_ID = "work_minutes";
+const AGENT_RUNTIME_FEATURE_ID = "agent_runtime_2gb_1vcpu";
 const SVIX_TOLERANCE_SEC = 300;
 
 // Mirror of internal/billing/autumn.ConcurrencyByPlan — keep in sync.
@@ -398,10 +402,17 @@ export async function agentRuntimeUsageInternal(
   }
 
   try {
+    // An org on a work-minute plan pays for this time in work minutes, and
+    // past its pool $0.01 a minute from credits; anyone else keeps paying
+    // agent runtime in credits. Either way one segment is one track under its
+    // own key, so a retry that lands after a plan change is still dropped.
+    const customer = await getAutumnCustomer(env, p.org_id);
+    const workMinutes = customer?.balances?.[WORK_MINUTES_FEATURE_ID] !== undefined;
+    const featureID = workMinutes ? WORK_MINUTES_FEATURE_ID : AGENT_RUNTIME_FEATURE_ID;
     const remaining = await trackAutumnUsage(env, {
       customerID: p.org_id,
-      featureID: "agent_runtime_2gb_1vcpu",
-      value: Number(p.quantity_seconds),
+      featureID,
+      value: workMinutes ? Number(p.quantity_seconds) / 60 : Number(p.quantity_seconds),
       idempotencyKey: p.idempotency_key,
     });
     if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
@@ -410,6 +421,7 @@ export async function agentRuntimeUsageInternal(
       billed: true,
       org_id: p.org_id,
       session_id: p.session_id,
+      feature_id: featureID,
       remaining,
     });
   } catch (err) {

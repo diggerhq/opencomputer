@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentRuntimeUsageInternal, type AutumnEnv } from "./autumn_webhook";
 
 async function hmacHex(secret: string, data: string) {
@@ -27,10 +27,84 @@ function env(): AutumnEnv {
   };
 }
 
+async function post(fields: Record<string, unknown>) {
+  const body = JSON.stringify({
+    org_id: "org_1",
+    deployment_id: "dep_1",
+    agent_id: "agent_1",
+    session_id: "session_1",
+    microvm_id: "vm_1",
+    resource_tier: "2gb_1vcpu",
+    quantity_seconds: 60,
+    idempotency_key: "lease_1:final",
+    ...fields,
+  });
+  const ts = String(Math.floor(Date.now() / 1000));
+  const path = "/internal/agent-runtime-usage";
+  const sig = await hmacHex("agent-runtime-secret", `${ts}.${path}.${body}`);
+  return agentRuntimeUsageInternal(
+    new Request(`https://api.test${path}`, {
+      method: "POST",
+      headers: { "X-Timestamp": ts, "X-Signature": sig },
+      body,
+    }),
+    env(),
+  );
+}
+
 describe("managed-agent runtime usage billing", () => {
-  it("tracks a finalized resource segment with its stable idempotency key", async () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("bills an org on a work-minute plan in work minutes", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({ id: "org_1", balances: { work_minutes: { remaining: 600 }, credits: { remaining: 10 } } }),
+      )
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 595.5 } }));
+
+    const response = await post({ quantity_seconds: 270, idempotency_key: "crt_1:3" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ feature_id: "work_minutes", remaining: 595.5 });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://autumn.test/v1/track",
+      expect.objectContaining({
+        body: JSON.stringify({
+          customer_id: "org_1",
+          feature_id: "work_minutes",
+          value: 4.5,
+          idempotency_key: "crt_1:3",
+        }),
+      }),
+    );
+  });
+
+  it("keeps an org the edge cannot find in Autumn on agent runtime", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 1 } }));
+
+    const response = await post({});
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ feature_id: "agent_runtime_2gb_1vcpu" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks blue to retry when Autumn cannot be read", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("down", { status: 503 }));
+
+    const response = await post({});
+
+    expect(response.status).toBe(502);
+  });
+
+  it("bills an org on a credit plan in agent runtime, with the segment's idempotency key", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { credits: { remaining: 10 } } }))
       .mockResolvedValueOnce(Response.json({ balance: { remaining: 9.7 } }));
     const body = JSON.stringify({
       org_id: "org_1",
@@ -61,6 +135,7 @@ describe("managed-agent runtime usage billing", () => {
       billed: true,
       org_id: "org_1",
       session_id: "session_1",
+      feature_id: "agent_runtime_2gb_1vcpu",
       remaining: 9.7,
     });
     expect(fetchMock).toHaveBeenCalledWith(
