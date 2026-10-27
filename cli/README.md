@@ -185,3 +185,11 @@ When credits are exhausted every command fails with HTTP `402` and a structured
 `insufficient_credits` error whose `hint` and `details.upgradeUrl` point at
 checkout for Pro ($200/mo). Agents driving the CLI should stop, relay that link to
 the user, and resume once billing is sorted rather than retrying.
+
+On work-minute pricing (the trial and the $20 / $200 plans) the `402` also
+carries `details.haltReason` (`trial_days`, `trial_minutes`, `trial_tokens`,
+`credits_empty`, `payment`, `lapsed`); its `hint` says why in words to relay to
+the user, and the link is the Billing page. Before a stop, `run` prints a
+warning line instead of the balance, and the `--json` `credits` block carries
+`billingWarning` (`trial_minutes`, `trial_days`, `trial_tokens`,
+`allowance_80`, `credits_low`, `payment_failed`).

@@ -285,6 +285,30 @@ describe("managed-agent credit admission", () => {
     expect(response?.status).toBe(402);
   });
 
+  it("names the work-minute halt in the 402 and counts the paywall once", async () => {
+    const request = new Request(
+      "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+      { method: "POST" },
+    );
+    const waits: Promise<unknown>[] = [];
+    const response = await enforceManagedAgentCreditGate(
+      request,
+      env(1, 1_789_707_077, "base", "free", "autumn", "trial_days"),
+      "org_test",
+      undefined,
+      (p) => waits.push(p),
+    );
+    expect(response?.status).toBe(402);
+    const body = (await response!.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({
+      code: "insufficient_credits",
+      haltReason: "trial_days",
+      actionUrl: "https://mo-oc-dev.com/billing",
+    });
+    expect(body.error.message).toContain("7-day trial has ended");
+    expect(waits).toHaveLength(1);
+  });
+
   it("returns a typed, actionable 402", async () => {
     const response = insufficientManagedAgentCredits(
       new Request("https://mo-oc-dev.com/api/managed-agents/sessions"),

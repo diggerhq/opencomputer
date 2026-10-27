@@ -21,6 +21,8 @@ export type BillingEventName =
   | "billing.trial_started"
   | "billing.work_minutes_recorded"
   | "billing.first_work_minute"
+  | "billing.warning_shown"
+  | "billing.paywall_shown"
   | "billing.checkout_opened"
   | "billing.plan_changed"
   | "billing.payment_failed"

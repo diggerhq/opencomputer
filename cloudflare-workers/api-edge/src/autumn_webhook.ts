@@ -46,7 +46,7 @@ const DEFAULT_BASE_URL = "https://api.useautumn.com/v1";
 const CREDITS_FEATURE_ID = "credits";
 // Work-minute plans (trial, pro and max v2; serverless-agents-ws 086) carry a
 // work_minutes balance; credit-based plans do not.
-const WORK_MINUTES_FEATURE_ID = "work_minutes";
+export const WORK_MINUTES_FEATURE_ID = "work_minutes";
 const AGENT_RUNTIME_FEATURE_ID = "agent_runtime_2gb_1vcpu";
 // blue sends two overlapping measures of a managed session: one segment per
 // settled turn (any runtime), and the microVM's lease, which also counts idle

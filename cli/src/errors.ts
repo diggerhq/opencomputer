@@ -1,4 +1,5 @@
 import { APIError } from "./api.js";
+import { paywallFor } from "./billing.js";
 
 export interface StructuredCLIError {
   code: string;
@@ -31,6 +32,24 @@ export function structuredError(error: unknown): StructuredCLIError {
   if (error instanceof APIError) {
     if (error.code === "insufficient_credits" || error.status === 402) {
       const url = error.actionUrl;
+      const paywall = paywallFor(error.haltReason);
+      if (paywall) {
+        return {
+          code: "insufficient_credits",
+          message,
+          // Worded for the user, so an agent can relay it as is.
+          hint:
+            `${paywall.why} ${paywall.action}` +
+            (url ? ` at ${url}` : " on the Billing page") +
+            ", then run the command again. Do not retry until then.",
+          details: {
+            status: error.status,
+            apiCode: error.code ?? "insufficient_credits",
+            haltReason: error.haltReason,
+            ...(url ? { upgradeUrl: url } : {}),
+          },
+        };
+      }
       // A $200 Pro org that has used its monthly credits gets the plain billing
       // page (no `?plan=`): there is nothing to upgrade to, so don't say so.
       const renewOnly = url !== undefined && !url.includes("?plan=");

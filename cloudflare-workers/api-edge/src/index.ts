@@ -76,9 +76,15 @@ import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter, syncModelCaps } from "./model_meter";
 import {
   enforceManagedAgentCreditGate,
-  insufficientManagedAgentCredits,
 } from "./managed_agent_credit_gate";
-import { handleCreditsStatus, insufficientCreditsLegacyResponse, type UsagePlan } from "./billing_onramp";
+import {
+  emitPaywallShown,
+  handleCreditsStatus,
+  insufficientCreditsLegacyResponse,
+  insufficientCreditsResponse,
+  paywallContext,
+  usagePlanOf,
+} from "./billing_onramp";
 export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
 import * as secretStores from "./secret_stores";
@@ -1476,22 +1482,23 @@ async function refreshOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | nu
   return policy;
 }
 
-// The usage plan behind an out-of-credits 402, so its message fits the org:
-// free gets the paywall, legacy $20 Pro the upgrade to Pro, $200 Pro no upsell.
-// Only read on the (rare) halted path; any failure falls back to the paywall.
-function usagePlanOf(value: string | null | undefined): UsagePlan {
-  return value === "pro" || value === "max" ? value : "base";
-}
-
-async function haltedUsagePlan(env: Env, orgID: string): Promise<UsagePlan> {
-  try {
-    const row = await env.OPENCOMPUTER_DB.prepare("SELECT usage_plan FROM orgs WHERE id = ?1")
-      .bind(orgID)
-      .first<{ usage_plan: string | null }>();
-    return usagePlanOf(row?.usage_plan);
-  } catch {
-    return "base";
-  }
+// The 402 for a halted Autumn org, so its message fits the org: a work-minute
+// halt names its reason and links Billing; on the credit rule, free gets the
+// paywall, legacy $20 Pro the upgrade to Pro, $200 Pro no upsell. Counted as
+// billing.paywall_shown. Only read on the (rare) halted path, after the
+// self-heal re-projected the row; any failure falls back to the paywall.
+async function haltedOrgResponse(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  orgID: string,
+  structured = false,
+): Promise<Response> {
+  const paywall = await paywallContext(env.OPENCOMPUTER_DB, orgID);
+  ctx.waitUntil(emitPaywallShown(env, orgID, paywall.haltReason));
+  return structured
+    ? insufficientCreditsResponse(req, paywall)
+    : insufficientCreditsLegacyResponse(req, {}, paywall);
 }
 
 // enforceCreatePolicy applies every org-level gate for creating or forking a
@@ -1510,6 +1517,7 @@ async function haltedUsagePlan(env: Env, orgID: string): Promise<UsagePlan> {
 async function enforceCreatePolicy(
   req: Request,
   env: Env,
+  ctx: ExecutionContext,
   orgID: string,
   org: OrgPolicy,
   sizes: { cpuCount: number; memoryMB: number; diskMB: number },
@@ -1524,7 +1532,7 @@ async function enforceCreatePolicy(
   // pay per GB-second); only the per-org max_disk_mb cap applies.
   if (org.billing_provider === "autumn") {
     if (org.is_halted === 1 && (await selfHealHalt(env, orgID))) {
-      return insufficientCreditsLegacyResponse(req, {}, await haltedUsagePlan(env, orgID));
+      return haltedOrgResponse(req, env, ctx, orgID);
     }
   } else if (plan === "free") {
     // Legacy free-tier gate. is_halted is the D1 fast path; otherwise ask the
@@ -2271,7 +2279,7 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext, tTop
   // them concurrently — under a burst these were two serial D1 round-trips
   // (~90ms) sitting on the create hot path.
   const [gate, cell] = await Promise.all([
-    enforceCreatePolicy(req, env, caller.orgID, org, {
+    enforceCreatePolicy(req, env, ctx, caller.orgID, org, {
       cpuCount: bodyCpuCount,
       memoryMB: bodyMemoryMB,
       diskMB: bodyDiskMB,
@@ -3491,7 +3499,9 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
       const stillHalted =
         haltRow.billing_provider === "autumn" ? await selfHealHalt(env, caller.orgID) : true;
       if (stillHalted) {
-        return insufficientCreditsLegacyResponse(req, {}, usagePlanOf(haltRow.usage_plan));
+        return haltRow.billing_provider === "autumn"
+          ? haltedOrgResponse(req, env, ctx, caller.orgID)
+          : insufficientCreditsLegacyResponse(req, {}, { plan: usagePlanOf(haltRow.usage_plan) });
       }
     }
   }
@@ -6004,7 +6014,7 @@ export default {
             selfHealHalt(env, id),
           );
           if (billing.status === "halted") {
-            return insufficientManagedAgentCredits(req);
+            return haltedOrgResponse(req, env, ctx, caller.orgID, true);
           }
           if (billing.status !== "active") {
             return json({ error: "managed model billing is unavailable" }, 503);
@@ -6022,6 +6032,7 @@ export default {
           env,
           caller.orgID,
           (id) => selfHealHalt(env, id),
+          (p) => ctx.waitUntil(p),
         );
         if (creditError) return creditError;
       }
@@ -6083,7 +6094,7 @@ export default {
         // previously ungated at the edge and leaned on a cell-side concurrent
         // check that read stale cell PG and could only ever count one cell's
         // sandboxes — wrong once an org spans cells. Enforce from D1 here.
-        const fcGate = await enforceCreatePolicy(req, env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
+        const fcGate = await enforceCreatePolicy(req, env, ctx, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
         // org.runtime, deliberately NOT the SDK-version routing createSandbox
@@ -6240,7 +6251,7 @@ export default {
     if (path === "/api/billing/credits" && req.method === "GET") {
       const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      return handleCreditsStatus(req, env, caller);
+      return handleCreditsStatus(req, env, caller, (p) => ctx.waitUntil(p));
     }
 
     if (path === "/api/whoami" && req.method === "GET") {

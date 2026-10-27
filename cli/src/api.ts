@@ -440,6 +440,8 @@ export class APIError extends Error {
     readonly code?: string,
     /** Where the human can resolve the error (e.g. billing checkout). */
     readonly actionUrl?: string,
+    /** Why billing halted the org (the edge's orgs.halt_reason), on a 402. */
+    readonly haltReason?: string,
   ) {
     super(message);
   }
@@ -469,6 +471,12 @@ export interface CreditsStatus {
   lowCreditThresholdCents: number;
   isLow: boolean;
   isHalted: boolean;
+  /** Why billing halted the org (orgs.halt_reason); absent from older APIs. */
+  haltReason?: string | null;
+  /** The warning to show before a halt (orgs.billing_warning). */
+  billingWarning?: string | null;
+  /** On work-minute pricing (the trial and the $20 / $200 plans). */
+  workMinutes?: boolean;
   billingUrl: string;
   upgradeUrl: string;
   plans: Array<{ id: "pro" | "max"; name?: string; priceUsd: number; creditsUsd: number }>;
@@ -575,7 +583,8 @@ export class OpenComputerClient {
         errorMessage(body, response.status),
         response.status,
         errorCode(body),
-        errorField(body, "upgradeUrl") ?? errorField(body, "actionUrl"),
+        errorField(body, "actionUrl") ?? errorField(body, "upgradeUrl"),
+        errorField(body, "haltReason"),
       );
     }
     return response;

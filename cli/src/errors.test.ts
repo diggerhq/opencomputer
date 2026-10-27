@@ -65,3 +65,35 @@ test("out-of-credits responses tell the agent to stop and surface the upgrade li
   assert.match(pro.hint, /renew/);
   assert.doesNotMatch(pro.hint, /upgrade/i);
 });
+
+test("a work-minute 402 says why and links Billing", () => {
+  const trial = structuredError(
+    new APIError(
+      "Your 7-day trial has ended.",
+      402,
+      "insufficient_credits",
+      "https://app.opencomputer.dev/billing",
+      "trial_days",
+    ),
+  );
+  assert.equal(trial.code, "insufficient_credits");
+  assert.match(trial.hint, /^Your 7-day trial has ended\. Pick a plan to keep going at https:\/\/app\.opencomputer\.dev\/billing,/);
+  assert.match(trial.hint, /Do not retry/);
+  assert.deepEqual(trial.details, {
+    status: 402,
+    apiCode: "insufficient_credits",
+    haltReason: "trial_days",
+    upgradeUrl: "https://app.opencomputer.dev/billing",
+  });
+
+  const payment = structuredError(
+    new APIError("Payment failed.", 402, "insufficient_credits", undefined, "payment"),
+  );
+  assert.match(payment.hint, /Update your payment method to keep going on the Billing page/);
+
+  // The credit rule keeps its copy.
+  const exhausted = structuredError(
+    new APIError("Out.", 402, "insufficient_credits", "https://app.opencomputer.dev/billing?plan=max", "credits_exhausted"),
+  );
+  assert.match(exhausted.hint, /upgrade to Pro/);
+});

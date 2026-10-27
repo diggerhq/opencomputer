@@ -56,6 +56,7 @@ test("json credits block carries a machine-readable warning", () => {
     plan: "base",
     remainingCents: 340,
     upgradeUrl: base.upgradeUrl,
+    billingUrl: base.billingUrl,
   });
   assert.equal(creditsSummary({ ...base, isLow: true })?.warning, "low_credits");
   assert.equal(
@@ -63,6 +64,56 @@ test("json credits block carries a machine-readable warning", () => {
     "insufficient_credits",
   );
   assert.equal(creditsSummary(null), undefined);
+});
+
+const trial: CreditsStatus = { ...base, workMinutes: true, haltReason: null, billingWarning: null };
+
+test("run footer names the work-minute halt and links Billing with no plan forced", () => {
+  const cases: Record<string, RegExp> = {
+    trial_days: /Your 7-day trial has ended\. Pick a plan to keep going/,
+    trial_minutes: /trial's 600 work minutes/,
+    trial_tokens: /trial's model credit/,
+    credits_empty: /Buy credits or upgrade/,
+    payment: /Update your payment method/,
+    lapsed: /Your plan has ended/,
+  };
+  for (const [haltReason, copy] of Object.entries(cases)) {
+    for (const usagePlan of ["base", "pro", "max"] as const) {
+      const footer = creditsFooter({ ...trial, usagePlan, isHalted: true, haltReason });
+      assert.match(footer, copy);
+      assert.match(footer, /: https:\/\/app\.opencomputer\.dev\/billing\n$/);
+      assert.doesNotMatch(footer, /plan=|top.?up/i);
+    }
+  }
+  // The credit rule keeps its copy.
+  assert.match(
+    creditsFooter({ ...base, isHalted: true, haltReason: "credits_exhausted" }),
+    /You've used your free credits/,
+  );
+});
+
+test("run footer shows the pre-halt warning, and is otherwise quiet on work minutes", () => {
+  assert.equal(creditsFooter(trial), "");
+  assert.equal(creditsFooter({ ...trial, isLow: true }), "");
+  assert.match(
+    creditsFooter({ ...trial, billingWarning: "trial_minutes" }),
+    /almost out of work minutes\. Pick a plan to keep going: https:\/\/app\.opencomputer\.dev\/billing/,
+  );
+  assert.match(creditsFooter({ ...trial, usagePlan: "pro", billingWarning: "allowance_80" }), /80% of this month's work minutes/);
+  assert.match(creditsFooter({ ...trial, usagePlan: "max", billingWarning: "credits_low" }), /credits are running low/);
+  assert.match(creditsFooter({ ...trial, usagePlan: "pro", billingWarning: "payment_failed" }), /payment didn't go through/);
+  // An unknown warning from a newer API is ignored.
+  assert.equal(creditsFooter({ ...trial, billingWarning: "something_new" }), "");
+
+  const summary = creditsSummary({ ...trial, isLow: true, billingWarning: "trial_days" });
+  assert.equal(summary?.warning, undefined);
+  assert.equal(summary?.billingWarning, "trial_days");
+  assert.equal(
+    creditsSummary({ ...trial, isHalted: true, haltReason: "trial_minutes" })?.haltReason,
+    "trial_minutes",
+  );
+  assert.match(formatBilling({ ...trial, billingWarning: "trial_days" }), /trial ends soon/);
+  assert.match(formatBilling({ ...trial, isHalted: true, haltReason: "lapsed" }), /^Your plan has ended\./);
 });
 
 test("billing table lists only Pro ($200) unless the org is on legacy Pro", () => {

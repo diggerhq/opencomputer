@@ -36,7 +36,7 @@ what to branch on; the `message` is short and safe to show.
 | --- | --- |
 | `400` | Invalid body, query or header |
 | `401` | Missing or invalid API key |
-| `402` | `insufficient_credits`: prepaid credits are exhausted |
+| `402` | `insufficient_credits`: the organization is out of minutes or credits; `error.haltReason` says why and `error.actionUrl` links Billing |
 | `403` | The key may not perform this operation |
 | `404` | The route or the target does not exist |
 | `409` | The request conflicts with current state, for example a reused `Idempotency-Key` |

@@ -63,8 +63,13 @@ the same way**. Do **not** retry or work around it. Instead:
    credits renew next billing period.
 3. Resume once they confirm they've upgraded.
 
-A response that carries `warning: "low_credits"` (or a "credits left (running
-low)" line) still succeeded — finish the task, then mention the balance and
+When the error carries a `haltReason` (the trial ended, the month's minutes
+and credits are used, a payment failed, or the plan ended), relay the `hint`
+as is: it says why and links the Billing page, where the user picks a plan,
+buys credits or updates their card.
+
+A response that carries `warning: "low_credits"` or a `billingWarning` (or a
+warning line after `run`) still succeeded — finish the task, then mention the balance and
 the upgrade link to the user so they can act before sessions pause.
 
 ## CLI Reference

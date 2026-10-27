@@ -353,6 +353,33 @@ test("memory precondition failures surface the API's code", async (context) => {
   );
 });
 
+test("a 402 carries the halt reason and prefers the action link", async (context) => {
+  context.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        error: {
+          code: "insufficient_credits",
+          message: "Your 7-day trial has ended.",
+          haltReason: "trial_days",
+          actionUrl: "https://app.opencomputer.dev/billing",
+          upgradeUrl: "https://app.opencomputer.dev/billing?plan=max",
+        },
+      },
+      { status: 402 },
+    ),
+  );
+  const client = new OpenComputerClient({
+    apiUrl: "https://app.opencomputer.dev",
+    apiKey: "test",
+  });
+  await assert.rejects(client.credits(), (error: unknown) =>
+    error instanceof APIError &&
+    error.status === 402 &&
+    error.haltReason === "trial_days" &&
+    error.actionUrl === "https://app.opencomputer.dev/billing",
+  );
+});
+
 test("managed GitHub App requests use project-scoped status and connect routes", async (context) => {
   const requests: Request[] = [];
   context.mock.method(

@@ -42,6 +42,7 @@ import {
 } from "./managed_agents";
 import { computerEnabledFor } from "./computer";
 import { enableManagedBilling } from "./model_billing";
+import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 
 export interface DashboardEnv extends BillingEventsEnv {
@@ -1085,7 +1086,8 @@ export async function handleDashboard(
           async (id) => (await syncAutumnToD1(env, id).catch(() => null))?.halted ?? true,
         );
         if (billing.status === "halted") {
-          return insufficientManagedAgentCredits(req);
+          // No paywall_shown here: the web app counts its own (surface "web").
+          return insufficientManagedAgentCredits(req, await paywallContext(env.OPENCOMPUTER_DB, caller.orgID));
         }
         if (billing.status !== "active") {
           return json({ error: "managed model billing is unavailable" }, 503);

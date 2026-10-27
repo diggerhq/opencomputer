@@ -1,7 +1,8 @@
 import { haltKeepsFallback, isPaidUsagePlan } from "./autumn_webhook";
-import { insufficientCreditsResponse } from "./billing_onramp";
+import type { BillingEventsEnv } from "./billing_events";
+import { emitPaywallShown, insufficientCreditsResponse, type PaywallContext } from "./billing_onramp";
 
-export interface ManagedAgentCreditGateEnv {
+export interface ManagedAgentCreditGateEnv extends BillingEventsEnv {
   OPENCOMPUTER_DB: D1Database;
 }
 
@@ -134,8 +135,8 @@ export async function getManagedAgentBillingAdmission(
   };
 }
 
-export function insufficientManagedAgentCredits(request: Request): Response {
-  return insufficientCreditsResponse(request);
+export function insufficientManagedAgentCredits(request: Request, paywall: PaywallContext = {}): Response {
+  return insufficientCreditsResponse(request, paywall);
 }
 
 export async function enforceManagedAgentCreditGate(
@@ -143,14 +144,19 @@ export async function enforceManagedAgentCreditGate(
   env: ManagedAgentCreditGateEnv,
   orgID: string,
   selfHeal?: ManagedAgentSelfHeal,
+  waitUntil: (p: Promise<unknown>) => void = () => {},
 ): Promise<Response | null> {
   if (!isManagedAgentBillableRequest(request.method, new URL(request.url).pathname)) {
     return null;
   }
   try {
-    return (await getManagedAgentBillingAdmission(env, orgID, selfHeal)).allowed
-      ? null
-      : insufficientManagedAgentCredits(request);
+    const admission = await getManagedAgentBillingAdmission(env, orgID, selfHeal);
+    if (admission.allowed) return null;
+    waitUntil(emitPaywallShown(env, orgID, admission.haltReason));
+    return insufficientManagedAgentCredits(request, {
+      plan: admission.usagePlan,
+      haltReason: admission.haltReason,
+    });
   } catch (error) {
     // D1 is the low-latency projection, not the financial authority. Preserve
     // availability and rely on the provider key limit as the hard backstop.

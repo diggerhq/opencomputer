@@ -24,9 +24,48 @@ const PLAN_NAME: Record<"pro" | "max", string> = {
   max: "Pro",
 };
 
+// Work-minute pricing (serverless-agents-ws 086): why an org is halted, by the
+// edge's halt_reason, and what to do, always on the Billing page. The credit
+// rule ("credits_exhausted", or an older API with no reason) keeps the copy
+// below.
+const PAYWALL: Record<string, { why: string; action: string }> = {
+  trial_days: { why: "Your 7-day trial has ended.", action: "Pick a plan to keep going" },
+  trial_minutes: { why: "You've used your trial's 600 work minutes.", action: "Pick a plan to keep going" },
+  trial_tokens: { why: "You've used your trial's model credit.", action: "Pick a plan to keep going" },
+  credits_empty: {
+    why: "You've used this month's work minutes and your credits.",
+    action: "Buy credits or upgrade to keep going",
+  },
+  payment: { why: "Your last payment didn't go through.", action: "Update your payment method to keep going" },
+  lapsed: { why: "Your plan has ended.", action: "Pick a plan to keep going" },
+};
+
+/** The paywall for a work-minute halt reason; undefined for the credit rule. */
+export function paywallFor(reason: string | null | undefined): { why: string; action: string } | undefined {
+  return reason && Object.hasOwn(PAYWALL, reason) ? PAYWALL[reason] : undefined;
+}
+
+// Before the stop: orgs.billing_warning, by reason.
+const WARNINGS: Record<string, string> = {
+  trial_minutes: "Your trial is almost out of work minutes. Pick a plan to keep going",
+  trial_days: "Your 7-day trial ends soon. Pick a plan to keep going",
+  trial_tokens: "Your trial's model credit is almost used. Pick a plan to keep going",
+  allowance_80: "You've used 80% of this month's work minutes. Buy credits or upgrade so work doesn't stop",
+  credits_low: "Your credits are running low. Buy credits so work doesn't stop",
+  payment_failed: "Your last payment didn't go through. Update your payment method so work doesn't stop",
+};
+
+export function billingWarningText(reason: string | null | undefined): string | undefined {
+  return reason && Object.hasOwn(WARNINGS, reason) ? WARNINGS[reason] : undefined;
+}
+
 /** Human-readable summary for `opencomputer billing`. */
 export function formatBilling(status: CreditsStatus): string {
+  const paywall = status.isHalted ? paywallFor(status.haltReason) : undefined;
+  const warning = status.isHalted ? undefined : billingWarningText(status.billingWarning);
   const lines = [
+    ...(paywall ? [`${paywall.why} ${paywall.action}: ${status.billingUrl}`, ""] : []),
+    ...(warning ? [`${warning}: ${status.billingUrl}`, ""] : []),
     `Plan          ${PLAN_LABEL[status.usagePlan]}`,
     `Credits left  ${formatCreditCount(status.creditsRemainingCents)}${
       status.isHalted ? " (exhausted — sessions paused)" : status.isLow ? " (running low)" : ""
@@ -52,6 +91,15 @@ export function formatBilling(status: CreditsStatus): string {
  */
 export function creditsFooter(status: CreditsStatus | null): string {
   if (!status) return "";
+  if (status.isHalted) {
+    const paywall = paywallFor(status.haltReason);
+    if (paywall) return `\n${paywall.why} ${paywall.action}: ${status.billingUrl}\n`;
+  } else {
+    const warning = billingWarningText(status.billingWarning);
+    if (warning) return `\n${warning}: ${status.billingUrl}\n`;
+  }
+  // Work-minute orgs hear from billing only through the warnings above.
+  if (status.workMinutes) return "";
   const left = formatCreditCount(status.creditsRemainingCents);
   const onPro = status.usagePlan === UPGRADE_PLAN;
   if (status.isHalted) {
@@ -78,7 +126,12 @@ export interface CreditsSummary {
   plan: CreditsStatus["usagePlan"];
   remainingCents: number;
   warning?: "insufficient_credits" | "low_credits";
+  /** Why the org is halted, on work-minute pricing (orgs.halt_reason). */
+  haltReason?: string;
+  /** The pre-halt warning (trial_minutes, allowance_80, credits_low, ...). */
+  billingWarning?: string;
   upgradeUrl: string;
+  billingUrl: string;
 }
 
 export function creditsSummary(
@@ -87,14 +140,17 @@ export function creditsSummary(
   if (!status) return undefined;
   const warning = status.isHalted
     ? "insufficient_credits"
-    : status.isLow
+    : status.isLow && !status.workMinutes
       ? "low_credits"
       : undefined;
   return {
     plan: status.usagePlan,
     remainingCents: status.creditsRemainingCents,
     ...(warning ? { warning } : {}),
+    ...(status.isHalted && status.haltReason ? { haltReason: status.haltReason } : {}),
+    ...(!status.isHalted && status.billingWarning ? { billingWarning: status.billingWarning } : {}),
     upgradeUrl: status.upgradeUrl,
+    billingUrl: status.billingUrl,
   };
 }
 
