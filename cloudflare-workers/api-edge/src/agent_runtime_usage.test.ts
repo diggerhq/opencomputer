@@ -80,6 +80,30 @@ describe("managed-agent runtime usage billing", () => {
     );
   });
 
+  it("bills a Workerd turn as work minutes on a work-minute plan", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { work_minutes: { remaining: 600 } } }))
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 599 } }));
+
+    const response = await post({ microvm_id: "workerd", idempotency_key: "turn_1:workerd" });
+
+    expect(await response.json()).toMatchObject({ billed: true, feature_id: "work_minutes" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("acknowledges a Workerd turn on a credit plan without billing it", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { credits: { remaining: 10 } } }));
+
+    const response = await post({ microvm_id: "workerd", idempotency_key: "turn_1:workerd" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, billed: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps an org the edge cannot find in Autumn on agent runtime", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
