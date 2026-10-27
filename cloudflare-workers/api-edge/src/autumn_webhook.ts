@@ -117,6 +117,8 @@ export interface AutumnCustomer {
   // "auto-recharge will fire" signal (Autumn exposes no payment-method field).
   purchases?: Array<{ plan_id: string }>;
   balances?: Record<string, AutumnBalance>;
+  // Boolean features the customer's plans grant, by feature id.
+  flags?: Record<string, unknown>;
   billing_controls?: { auto_topups?: AutumnAutoTopup[] };
 }
 
@@ -601,7 +603,7 @@ function maxConcurrency(subs: AutumnSubscription[]): number {
 }
 
 // createAutumnCustomer provisions an Autumn customer (id = our org UUID) →
-// Autumn auto-attaches the `base` plan + grants the $5 signup credit. POSTing an
+// Autumn auto-attaches the `trial` plan (600 work minutes, $10). POSTing an
 // existing id returns the existing customer, so it's idempotent/retry-safe.
 export async function createAutumnCustomer(
   env: AutumnApiEnv,

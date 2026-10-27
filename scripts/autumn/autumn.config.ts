@@ -128,7 +128,6 @@ export const credits = feature({
 export const base = plan({
   id: "base",
   name: "base",
-  autoEnable: true,
   items: [
     item({
       featureId: credits.id,
@@ -218,13 +217,14 @@ export const max = plan({
   ],
 });
 
-// Work-minute trial (serverless-agents-ws 086), attached at signup; the
-// day-7 end is enforced by the API edge, not by Autumn. Credits come from
-// top_up in $10 / $50 / $200 packs.
+// Work-minute trial (serverless-agents-ws 086). Autumn attaches it to every
+// new customer, in place of base; the edge records the start and enforces
+// the day-7 end. Credits come from top_up in $10 / $50 / $200 packs.
 
 export const trial = plan({
   id: "trial",
   name: "Trial",
+  autoEnable: true,
   description: "7 days, 600 work minutes and $10 of model credits.",
   group: "usage_plan",
   items: [

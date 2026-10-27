@@ -83,6 +83,9 @@ export async function hasBYOKPlanAccess(
     },
     orgID,
   );
+  // Every plan that allows BYOK grants this feature (trial, pro, max);
+  // the plan check covers a customer read before the flag existed.
+  if (customer?.flags?.byo_model_subscriptions) return true;
   return (
     customer?.subscriptions?.some(
       (subscription) =>

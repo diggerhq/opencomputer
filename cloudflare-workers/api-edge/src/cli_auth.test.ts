@@ -661,10 +661,33 @@ describe("CLI device authorization edge contract", () => {
     expect(userInsert?.sql).toContain("infrastructure_enabled");
     expect(userInsert?.sql).toMatch(/VALUES\s*\(\?1, \?2, \?3, \?4, \?5, 0, 0\)/);
     expect(orgInsert?.args[3]).toBe("azure-us-east-2-a");
+    // Legacy billing (no Autumn customer) has no trial.
+    expect(orgInsert?.sql).toContain("trial_started_at");
+    expect(orgInsert?.args[8]).toBeNull();
     expect(membershipInsert?.args[0]).toBe(body.org.id);
     expect(membershipInsert?.args[1]).toBe(body.user.id);
     expect(keyInsert?.args[1]).toBe(body.org.id);
     expect(keyInsert?.args[2]).toBe(body.user.id);
+  });
+
+  it("starts the trial for an org created with an Autumn customer", async () => {
+    const db = new FakeDB([], null);
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => Response.json({
+      user: { id: "new-workos-user", email: "new@example.com", first_name: "New" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-ipcountry": "US" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), { ...testEnv(db), AUTUMN_NEW_ORGS: "true", AUTUMN_SECRET_KEY: "autumn-test" }, ctx);
+    expect(resp.status).toBe(200);
+
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/customers"))).toBe(true);
+    const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
+    expect(orgInsert?.args[6]).toBe("autumn");
+    expect(orgInsert?.args[8]).toBe(orgInsert?.args[5]);
+    expect(typeof orgInsert?.args[8]).toBe("number");
   });
 
   it("rejects extra exchange fields before contacting WorkOS", async () => {

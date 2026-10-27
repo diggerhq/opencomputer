@@ -4058,8 +4058,8 @@ async function provisionWorkOSIdentity(
       }
     }
     await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, max_concurrent_sandboxes, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?8, ?6, ?6)`,
+      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, max_concurrent_sandboxes, trial_started_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?8, ?9, ?6, ?6)`,
     )
       .bind(
         orgID,
@@ -4070,6 +4070,8 @@ async function provisionWorkOSIdentity(
         nowSec,
         provider,
         DEFAULT_MAX_CONCURRENT_SANDBOXES,
+        // A new Autumn customer starts on the trial plan (autoEnable).
+        provider === "autumn" ? nowSec : null,
       )
       .run();
     await env.OPENCOMPUTER_DB.prepare(

@@ -736,6 +736,29 @@ describe("managed agents proxy", () => {
     ).resolves.toBe(true);
   });
 
+  it("allows BYOK on the trial through its byo_model_subscriptions flag", async () => {
+    const access = async (customer: Record<string, unknown>) => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ id: "org_test", ...customer })));
+      const autumnDB = {
+        prepare: () => ({
+          bind: () => ({ first: async () => ({ plan: "free", billing_provider: "autumn" }) }),
+        }),
+      } as unknown as D1Database;
+      return hasBYOKPlanAccess(
+        { OPENCOMPUTER_DB: autumnDB, AUTUMN_SECRET_KEY: "autumn-test", AUTUMN_BASE_URL: "https://autumn.test/v1" },
+        "org_test",
+      );
+    };
+    const trial = [{ plan_id: "trial", add_on: false, status: "active" }];
+    await expect(
+      access({
+        subscriptions: trial,
+        flags: { byo_model_subscriptions: { feature_id: "byo_model_subscriptions", plan_id: "trial" } },
+      }),
+    ).resolves.toBe(true);
+    await expect(access({ subscriptions: trial, flags: {} })).resolves.toBe(false);
+  });
+
   it("returns the public model-access OAuth receipt without custody fields", async () => {
     vi.stubGlobal(
       "fetch",
