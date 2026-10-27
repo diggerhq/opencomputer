@@ -61,11 +61,15 @@ function NewProject() {
 }
 
 // `app.opencomputer.dev/?security=1` drops into the independent CVE Swarm
-// onboarding path; the param survives the login round-trip via returnTo.
+// onboarding path; `?plan=pro|max` (the site's pricing CTAs) opens that plan
+// on Billing. Both survive the login round-trip via returnTo.
 function HomeRoute() {
   const [searchParams] = useSearchParams()
   if (searchParams.get('security') === '1')
     return <Navigate to="/security" replace />
+  const plan = searchParams.get('plan')
+  if (plan === 'pro' || plan === 'max')
+    return <Navigate to={`/billing?plan=${plan}`} replace />
   return managedAgentsExperimentEnabled ? <ManagedAgentsHome /> : <Dashboard />
 }
 

@@ -16,6 +16,8 @@
 // is Deprecated and ignored. Because we always re-check, every event is handled
 // uniformly — the type only decides whether we bother projecting at all.
 
+import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
+
 // AutumnApiEnv is the minimal binding set for calling Autumn's REST API
 // (GetCustomer / checkout). The dashboard handlers satisfy this without the
 // webhook/dispatch secrets.
@@ -30,7 +32,7 @@ export interface AutumnSyncEnv extends AutumnApiEnv {
 }
 
 // AutumnEnv adds the secrets needed to dispatch halt to cells + verify webhooks.
-export interface AutumnEnv extends AutumnSyncEnv {
+export interface AutumnEnv extends AutumnSyncEnv, BillingEventsEnv {
   CF_ADMIN_SECRET: string;
   EVENT_SECRET: string;
   AUTUMN_WEBHOOK_SECRET: string;
@@ -361,6 +363,45 @@ export async function browserUsageInternal(req: Request, env: AutumnEnv): Promis
 // has finalized a bounded lease segment. The segment ID is the financial
 // idempotency key; authenticated organization and session attribution travel
 // with it, but only the fixed resource tier controls the Autumn feature.
+const WORK_MINUTE_PLANS = new Set(["trial", "pro", "max"]);
+
+// The funnel's billing.work_minutes_recorded, and billing.first_work_minute
+// the first time an org's minutes are tracked. A retried segment emits again
+// (Autumn drops the track, not the event); the first-minute stamp is set once.
+async function recordWorkMinutes(
+  env: AutumnEnv,
+  orgID: string,
+  customer: AutumnCustomer | null,
+  w: { minutes: number; surface: "computer" | "automation" },
+): Promise<void> {
+  const plan =
+    customer?.subscriptions?.find(
+      (s) => (!s.status || s.status === "active") && WORK_MINUTE_PLANS.has(s.plan_id),
+    )?.plan_id ?? null;
+  await emitBillingEvent(env, "billing.work_minutes_recorded", {
+    orgId: orgID,
+    data: { minutes: Math.round(w.minutes * 100) / 100, surface: w.surface, plan },
+  });
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const first = await env.OPENCOMPUTER_DB.prepare(
+      `UPDATE orgs SET first_work_minute_at = ?1
+       WHERE id = ?2 AND first_work_minute_at IS NULL
+       RETURNING trial_started_at, created_at`,
+    )
+      .bind(nowSec, orgID)
+      .first<{ trial_started_at: number | null; created_at: number }>();
+    if (!first) return;
+    const since = first.trial_started_at ?? first.created_at;
+    await emitBillingEvent(env, "billing.first_work_minute", {
+      orgId: orgID,
+      data: { surface: w.surface, minutes_since_signup: Math.max(0, Math.round((nowSec - since) / 60)) },
+    });
+  } catch (err) {
+    console.error(`agent runtime usage: first work minute for ${orgID}:`, (err as Error).message);
+  }
+}
+
 export async function agentRuntimeUsageInternal(
   req: Request,
   env: AutumnEnv,
@@ -431,6 +472,12 @@ export async function agentRuntimeUsageInternal(
       idempotencyKey: p.idempotency_key,
     });
     if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    if (workMinutes) {
+      await recordWorkMinutes(env, p.org_id, customer, {
+        minutes: Number(p.quantity_seconds) / 60,
+        surface: p.deployment_id === "computer" ? "computer" : "automation",
+      });
+    }
     return json({
       ok: true,
       billed: true,

@@ -110,16 +110,16 @@ import {
   withComputerApiCors,
   COMPUTER_API_PREFIX,
 } from "./computer_api";
+import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import {
   type EdgeRequestFacts,
-  type EdgeTelemetryEnv,
   newEdgeRequestFacts,
   reportEdgeRequest,
 } from "./computer_telemetry";
 import { computerEnabledFor } from "./computer";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 
-export interface Env extends DashboardEnv, AgentFeedbackEnv, EdgeTelemetryEnv {
+export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -3943,6 +3943,7 @@ async function provisionWorkOSIdentity(
   profile: WorkOSProfile,
   workosOrgID: string | undefined,
   selection: IdentitySelection,
+  planIntent: string | null = null,
 ): Promise<ProvisionedIdentity> {
   const nowSec = Math.floor(Date.now() / 1000);
   const displayName =
@@ -4079,6 +4080,13 @@ async function provisionWorkOSIdentity(
     )
       .bind(orgID, userID, nowSec)
       .run();
+    if (provider === "autumn") {
+      await emitBillingEvent(env, "billing.trial_started", {
+        orgId: orgID,
+        userId: userID,
+        data: { plan_intent: planIntent, via: selection },
+      });
+    }
     orgRow = {
       id: orgID,
       name: orgName,
@@ -4160,6 +4168,14 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
   }
 }
 
+// The plan a signup came for: the site's pricing CTAs link `/?plan=pro|max`,
+// which reaches here inside returnTo.
+export function planIntentOf(returnTo: string | null): string | null {
+  if (!returnTo) return null;
+  const plan = new URL(returnTo, "https://app.invalid").searchParams.get("plan");
+  return plan === "pro" || plan === "max" ? plan : null;
+}
+
 function parseAuthState(raw: string | null): { returnTo: string | null; retried: boolean } {
   if (!raw) return { returnTo: null, retried: false };
   try {
@@ -4179,12 +4195,16 @@ async function completeAuthCallback(
   const profile = tokenBody.user;
   // WorkOS session id (sid) for the hosted logout flow — carried in our session JWT.
   const workosSessionID = workosSessionIdFromAccessToken(tokenBody.access_token);
+  // Re-validate here: `state` is attacker-influenceable, so the path is only
+  // trusted after safeReturnTo passes a second time.
+  const returnTo = parseAuthState(reqURL.searchParams.get("state")).returnTo;
   const identity = await provisionWorkOSIdentity(
     req,
     env,
     profile,
     tokenBody.organization_id ?? profile.organization_id,
     "browser",
+    planIntentOf(returnTo),
   );
 
   // Mint session JWT — same signing secret as cap-token but a different
@@ -4198,9 +4218,7 @@ async function completeAuthCallback(
   );
 
   // Land on the deferred deep link if `state` carried a valid one, else the
-  // dashboard. Re-validate here: `state` is attacker-influenceable, so the path
-  // is only trusted after safeReturnTo passes a second time.
-  const returnTo = parseAuthState(reqURL.searchParams.get("state")).returnTo;
+  // dashboard.
   const landingURL = `${reqURL.origin}${returnTo ?? "/dashboard"}`;
   return new Response(null, {
     status: 302,

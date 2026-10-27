@@ -101,12 +101,12 @@ export function blueMs(response: Response): number | undefined {
 }
 
 /** A Tinybird `DateTime64` string. */
-function tbTime(ms: number): string {
+export function tbTime(ms: number): string {
   return new Date(ms).toISOString().replace("T", " ").replace("Z", "");
 }
 
 /** UUIDv7: a 48-bit ms timestamp, then random bits. */
-function uuidv7(now: number): string {
+export function uuidv7(now: number): string {
   const b = new Uint8Array(16);
   crypto.getRandomValues(b);
   let t = now;

@@ -15,7 +15,7 @@ async function hmacHex(secret: string, data: string) {
     .join("");
 }
 
-function env(): AutumnEnv {
+function env(overrides: Partial<AutumnEnv> = {}): AutumnEnv {
   return {
     AUTUMN_SECRET_KEY: "autumn-secret",
     AUTUMN_BASE_URL: "https://autumn.test/v1",
@@ -24,10 +24,11 @@ function env(): AutumnEnv {
     AGENT_RUNTIME_USAGE_HMAC_SECRET: "agent-runtime-secret",
     CF_ADMIN_SECRET: "admin-secret",
     OPENCOMPUTER_DB: {} as D1Database,
+    ...overrides,
   };
 }
 
-async function post(fields: Record<string, unknown>) {
+async function post(fields: Record<string, unknown>, envOverrides: Partial<AutumnEnv> = {}) {
   const body = JSON.stringify({
     org_id: "org_1",
     deployment_id: "dep_1",
@@ -49,7 +50,7 @@ async function post(fields: Record<string, unknown>) {
       headers: { "X-Timestamp": ts, "X-Signature": sig },
       body,
     }),
-    env(),
+    env(envOverrides),
   );
 }
 
@@ -115,6 +116,48 @@ describe("managed-agent runtime usage billing", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, billed: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the work-minute funnel events, the first minute once", async () => {
+    const posthog: Array<{ event: string; properties: Record<string, unknown> }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://ph.test/")) {
+        posthog.push(JSON.parse(String(init?.body)));
+        return new Response("{}");
+      }
+      if (url.endsWith("/track")) return Response.json({ balance: { remaining: 590 } });
+      return Response.json({
+        id: "org_1",
+        subscriptions: [{ plan_id: "trial", status: "active" }],
+        balances: { work_minutes: { remaining: 600 } },
+      });
+    });
+    let stamped = false;
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => {
+            if (stamped) return null;
+            stamped = true;
+            return { trial_started_at: Math.floor(Date.now() / 1000) - 600, created_at: 0 };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    const telemetry = { OPENCOMPUTER_DB: db, POSTHOG_PROJECT_TOKEN: "phc_test", POSTHOG_HOST: "https://ph.test" };
+
+    await post({ deployment_id: "computer", close_reason: "idle", quantity_seconds: 90 }, telemetry);
+    await post({ close_reason: "turn_settled", quantity_seconds: 30, idempotency_key: "t:turn" }, telemetry);
+
+    expect(posthog.map((e) => e.event)).toEqual([
+      "billing.work_minutes_recorded",
+      "billing.first_work_minute",
+      "billing.work_minutes_recorded",
+    ]);
+    expect(posthog[0]!.properties).toMatchObject({ minutes: 1.5, surface: "computer", plan: "trial", org_id: "org_1" });
+    expect(posthog[1]!.properties).toMatchObject({ surface: "computer", minutes_since_signup: 10 });
+    expect(posthog[2]!.properties).toMatchObject({ minutes: 0.5, surface: "automation" });
   });
 
   it("keeps an org the edge cannot find in Autumn on agent runtime", async () => {

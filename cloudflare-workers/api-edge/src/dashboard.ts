@@ -28,6 +28,7 @@ import {
   autumnSetAutoTopup,
   autumnOpenCustomerPortal,
 } from "./autumn_webhook";
+import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 import {
   acknowledgeAgentSecurityNotification,
@@ -43,7 +44,7 @@ import { computerEnabledFor } from "./computer";
 import { enableManagedBilling } from "./model_billing";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 
-export interface DashboardEnv {
+export interface DashboardEnv extends BillingEventsEnv {
   /** Computer rollout (work 052): see computerEnabledFor in computer.ts. */
   COMPUTER_ENABLED_FOR_ALL?: string;
   COMPUTER_ENABLED_ORGS?: string;
@@ -1786,12 +1787,15 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   });
 }
 
-// POST /api/dashboard/billing/autumn/plan { plan } — subscribe to or switch
+// Where a checkout was opened from (086 funnel); anything else is the Billing page.
+const CHECKOUT_FROM = new Set(["paywall", "warning", "billing_page", "signup"]);
+
+// POST /api/dashboard/billing/autumn/plan { plan, from? } — subscribe to or switch
 // between the recurring Pro and Max shared-credit plans. Usage remains the
 // automatic fallback when a paid subscription is cancelled in Stripe.
-async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { orgID: string; userID?: string }): Promise<Response> {
   if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
-  let body: { plan?: string };
+  let body: { plan?: string; from?: string };
   try {
     body = await req.json();
   } catch {
@@ -1807,6 +1811,11 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
       customerId: caller.orgID,
       planId: plan,
       successUrl: `${origin}/billing?usage-plan=${plan}`,
+    });
+    await emitBillingEvent(env, "billing.checkout_opened", {
+      orgId: caller.orgID,
+      userId: caller.userID,
+      data: { plan, from: CHECKOUT_FROM.has(body.from ?? "") ? body.from! : "billing_page" },
     });
     return json({ url: co.url });
   } catch (e) {
