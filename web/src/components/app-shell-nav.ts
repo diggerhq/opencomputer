@@ -6,7 +6,6 @@ import {
   BrainCircuit,
   CalendarClock,
   Computer,
-  CreditCard,
   Database,
   FolderKanban,
   KeySquare,
@@ -138,7 +137,6 @@ export function managedAgentsNav(options: {
           ? [{ to: '/computer', label: 'Computer', icon: Computer }]
           : []),
         { to: '/automations', label: 'Automations', icon: FolderKanban },
-        { to: '/billing', label: 'Billing', icon: CreditCard },
       ],
     })
   }
