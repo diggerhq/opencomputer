@@ -119,7 +119,7 @@ describe("billing_onramp", () => {
 
   it("402 names the work-minute halt reason, links Billing with no plan forced", async () => {
     const cases = {
-      trial_days: "Your 7-day trial has ended. Ask the user to pick a plan",
+      trial_days: "Your 3-day trial has ended. Ask the user to pick a plan",
       trial_minutes: "You've used your trial's 600 work minutes.",
       trial_tokens: "You've used your trial's model credit.",
       credits_empty: "buy credits or upgrade",

@@ -225,7 +225,7 @@ export const trial = plan({
   id: "trial",
   name: "Trial",
   autoEnable: true,
-  description: "7 days, 600 work minutes and $10 of model credits.",
+  description: "3 days, 600 work minutes and $10 of model credits.",
   group: "usage_plan",
   items: [
     item({

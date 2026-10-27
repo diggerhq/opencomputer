@@ -324,7 +324,7 @@ describe("managed-agent credit admission", () => {
       haltReason: "trial_days",
       actionUrl: "https://mo-oc-dev.com/billing",
     });
-    expect(body.error.message).toContain("7-day trial has ended");
+    expect(body.error.message).toContain("3-day trial has ended");
     expect(waits).toHaveLength(1);
   });
 

@@ -36,16 +36,27 @@ export function BillingPill({ className }: { className?: string }) {
   const { billing } = useCreditState()
   const text = billing ? billingPillText(billing) : null
   if (!billingOnrampV2Enabled || !text) return null
+  // The trial pill is filled and asks to upgrade, so a trial org can't miss it;
+  // a paid org's stays quiet.
+  const trial = billing?.usagePlan === 'trial' && !billing.isHalted
   return (
     <Link
       to="/billing"
       className={cn(
-        'text-muted-foreground hover:text-foreground hover:border-foreground/30 rounded-full border px-3 py-1 font-mono text-[11px] whitespace-nowrap transition-colors',
+        'rounded-full border font-mono whitespace-nowrap transition-colors',
+        trial
+          ? 'bg-primary text-primary-foreground border-primary inline-flex items-center gap-2 py-1 pr-1 pl-3 text-xs font-medium hover:opacity-90'
+          : 'text-muted-foreground hover:text-foreground hover:border-foreground/30 px-3 py-1 text-[11px]',
         billing?.isHalted && 'border-destructive/40 text-destructive',
         className,
       )}
     >
       {text}
+      {trial && (
+        <span className="bg-primary-foreground text-primary rounded-full px-2 py-0.5 font-sans font-semibold">
+          Upgrade
+        </span>
+      )}
     </Link>
   )
 }

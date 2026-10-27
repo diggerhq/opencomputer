@@ -640,7 +640,7 @@ export async function selfHealHalt(env: AutumnEnv, orgID: string): Promise<boole
 
 // ── halt rules (serverless-agents-ws 086, step 4) ───────────────────────────
 
-export const TRIAL_DAYS = 7;
+export const TRIAL_DAYS = 3;
 // A paid org whose payment is failing keeps working this long before it halts.
 export const PAYMENT_GRACE_DAYS = 3;
 const DAY_SEC = 86_400;
@@ -710,9 +710,9 @@ export type BillingWarning =
 
 const TRIAL_MINUTES = 600;
 const TRIAL_CREDITS = 10;
-// Trial: warn at 480 of 600 minutes, 2 days left, or $8 of the $10 spent.
+// Trial: warn at 480 of 600 minutes, 1 day left, or $8 of the $10 spent.
 const TRIAL_WARN_MINUTES_LEFT = 120;
-const TRIAL_WARN_DAYS_LEFT = 2;
+const TRIAL_WARN_DAYS_LEFT = 1;
 const TRIAL_WARN_CREDITS_LEFT = 2;
 // Paid: warn at 80% of the month's minutes, and when the credits that pay past
 // them run under $5 with no auto top-up to refill them.
@@ -1146,7 +1146,7 @@ export async function autumnUsagePlanPurchase(
   },
 ): Promise<{ url: string | null }> {
   const customer = await getAutumnCustomer(env, params.customerId);
-  // Only the pre-trial `base` grant carries. The 7-day trial's minutes and $10
+  // Only the pre-trial `base` grant carries. The 3-day trial's minutes and $10
   // token credit do not (serverless-agents-ws 086 "Plan changes": trial → paid
   // starts the paid allowance fresh).
   const upgradingFromUsage = (customer?.subscriptions ?? []).some(

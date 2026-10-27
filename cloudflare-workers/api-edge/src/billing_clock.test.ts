@@ -24,7 +24,7 @@ describe("billing clock", () => {
     expect(await runBillingClock(env, 1_800_000_000_000)).toBe(2);
     // Least recently updated first, so orgs that stay unhalted can't fill every batch.
     expect(sql).toMatch(/ORDER BY updated_at\s+LIMIT/);
-    expect(bound).toEqual([1_800_000_000 - 7 * 86_400, 1_800_000_000 - 3 * 86_400, 50, 1_800_000_000 - 5 * 86_400, 1_800_000_000 - 3_600]);
+    expect(bound).toEqual([1_800_000_000 - 3 * 86_400, 1_800_000_000 - 3 * 86_400, 50, 1_800_000_000 - 2 * 86_400, 1_800_000_000 - 3_600]);
     // A trial warned about minutes or credits is re-checked hourly, so trial_days can replace it.
     expect(sql).toMatch(/billing_warning IS NULL OR \(billing_warning <> 'trial_days' AND updated_at <= \?5\)/);
     expect(project.mock.calls.map((c) => c[1])).toEqual(["org_a", "org_b"]);

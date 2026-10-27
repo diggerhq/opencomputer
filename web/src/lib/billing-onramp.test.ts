@@ -116,7 +116,7 @@ describe('haltNotice', () => {
   it('words the trial halts as the end of the trial', () => {
     const notice = haltNotice('trial_days')
     expect(notice.title).toBe('Your free trial is over')
-    expect(notice.body).toContain('7-day trial has ended')
+    expect(notice.body).toContain('3-day trial has ended')
     expect(notice.body).toContain('$20')
   })
 })

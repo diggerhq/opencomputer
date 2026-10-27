@@ -1,5 +1,5 @@
 // Display names of the Autumn usage plans (serverless-agents-ws 086): the
-// 7-day trial, Pro ($20/mo, 2,000 work minutes) and Max ($200/mo, 25,000).
+// 3-day trial, Pro ($20/mo, 2,000 work minutes) and Max ($200/mo, 25,000).
 // `base` is the pre-trial free tier, until those orgs are migrated.
 export const USAGE_PLAN_NAMES: Record<
   'trial' | 'base' | 'pro' | 'max',

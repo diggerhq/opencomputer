@@ -69,8 +69,8 @@ describe("plan changes", () => {
     expect(planSchedule("trial", "max")).toBe("immediate");
   });
 
-  it("ends the trial seven days after it starts", () => {
-    expect(trialEndsAt(1_790_000_000)).toBe(new Date((1_790_000_000 + 7 * 86_400) * 1_000).toISOString());
+  it("ends the trial three days after it starts", () => {
+    expect(trialEndsAt(1_790_000_000)).toBe(new Date((1_790_000_000 + 3 * 86_400) * 1_000).toISOString());
     expect(trialEndsAt(null)).toBeNull();
   });
 });

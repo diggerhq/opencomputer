@@ -101,9 +101,9 @@ describe("managed-agent runtime usage billing", () => {
   });
 
   it("replaces a trial_days warning once the minutes are the nearer limit", async () => {
-    // Day 6: 100/600 minutes ranks behind 1/7 days; 80/600 ranks ahead of it.
-    const daySix = Math.floor(Date.now() / 1000) - 6 * 86_400;
-    const { db, writes } = orgDB({ trial_started_at: daySix, billing_warning: "trial_days" });
+    // 0.45 days of 3 left (15%): 100/600 minutes ranks behind it; 80/600 ranks ahead.
+    const lastDay = Math.floor(Date.now() / 1000) - 2.55 * 86_400;
+    const { db, writes } = orgDB({ trial_started_at: lastDay, billing_warning: "trial_days" });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(trial(100))
       .mockResolvedValueOnce(Response.json({ balance: { remaining: 80 } }))

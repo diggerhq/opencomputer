@@ -70,7 +70,7 @@ const trial: CreditsStatus = { ...base, workMinutes: true, haltReason: null, bil
 
 test("run footer names the work-minute halt and links Billing with no plan forced", () => {
   const cases: Record<string, RegExp> = {
-    trial_days: /Your 7-day trial has ended\. Pick a plan to keep going/,
+    trial_days: /Your 3-day trial has ended\. Pick a plan to keep going/,
     trial_minutes: /trial's 600 work minutes/,
     trial_tokens: /trial's model credit/,
     credits_empty: /Buy credits or upgrade/,

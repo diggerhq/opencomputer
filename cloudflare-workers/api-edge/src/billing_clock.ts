@@ -1,8 +1,8 @@
 // Billing clock (serverless-agents-ws 086, step 4): the halts that come from
-// time passing rather than usage. A trial ends on day 7 and a failing payment
+// time passing rather than usage. A trial ends on day 3 and a failing payment
 // halts after its grace even when the org does nothing, so the */5 cron
 // re-projects the orgs whose clock has run out; projectOrg decides and halts.
-// It also re-projects a trial reaching 2 days left that is not yet warned, so
+// It also re-projects a trial reaching 1 day left that is not yet warned, so
 // the trial_days warning goes out on time rather than on the next activity,
 // and hourly one warned about minutes or credits, which the days can outrank.
 // A halted, warned or paid-up org no longer matches. One that matches but stays
@@ -13,7 +13,7 @@
 import { type AutumnEnv, PAYMENT_GRACE_DAYS, TRIAL_DAYS, TRIAL_WARN_AFTER_SEC, projectOrg } from "./autumn_webhook";
 
 const DAY_SEC = 86_400;
-// A trial in its last 2 days already warned about minutes or credits is
+// A trial in its last day already warned about minutes or credits is
 // re-projected at most this often, so trial_days replaces that warning once the
 // days left are the smaller share, even while the org is idle.
 const WARNED_TRIAL_RECHECK_SEC = 3_600;

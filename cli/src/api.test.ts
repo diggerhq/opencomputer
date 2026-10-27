@@ -359,7 +359,7 @@ test("a 402 carries the halt reason and prefers the action link", async (context
       {
         error: {
           code: "insufficient_credits",
-          message: "Your 7-day trial has ended.",
+          message: "Your 3-day trial has ended.",
           haltReason: "trial_days",
           actionUrl: "https://app.opencomputer.dev/billing",
           upgradeUrl: "https://app.opencomputer.dev/billing?plan=max",

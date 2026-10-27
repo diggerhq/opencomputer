@@ -10,11 +10,11 @@ export const billingOnrampV2Enabled =
 export type UsagePlanId = 'trial' | 'base' | 'pro' | 'max'
 export type PaidPlanId = 'pro' | 'max'
 
-// Work-minute plans (serverless-agents-ws 086): a 7-day trial with 600 work
+// Work-minute plans (serverless-agents-ws 086): a 3-day trial with 600 work
 // minutes and $10 of model credits, then Pro ($20/mo, 2,000 min) or Max
 // ($200/mo, 25,000 min). Past the allowance, work draws prepaid credits at
 // $0.01/min, bought in packs.
-export const TRIAL_DAYS = 7
+export const TRIAL_DAYS = 3
 export const TRIAL_MINUTES = 600
 export const TRIAL_CREDITS_USD = 10
 export const OVERAGE_USD_PER_MINUTE = 0.01
@@ -141,7 +141,7 @@ interface PillSource {
   trialEndsAt?: string | null
 }
 
-// The header pill: "Trial · 412 min · 5 days left" or
+// The header pill: "Trial · 412 min · 2 days left" or
 // "1,240 / 2,000 min · $12 credits" (minutes left of the month's allowance).
 export function billingPillText(
   b: PillSource,

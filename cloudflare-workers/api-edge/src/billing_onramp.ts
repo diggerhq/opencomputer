@@ -67,7 +67,7 @@ export function billingLinks(request: Request): BillingLinks {
 // failed payment updates its card. Wording follows blue's Slack paywall
 // (src/computer/admission.ts outOfCreditsNotice).
 const WORK_MINUTE_PAYWALL: Record<Exclude<HaltReason, "credits_exhausted">, (billingUrl: string) => string> = {
-  trial_days: (u) => `Your 7-day trial has ended. Ask the user to pick a plan at ${u} to keep going`,
+  trial_days: (u) => `Your 3-day trial has ended. Ask the user to pick a plan at ${u} to keep going`,
   trial_minutes: (u) => `You've used your trial's 600 work minutes. Ask the user to pick a plan at ${u} to keep going`,
   trial_tokens: (u) => `You've used your trial's model credit. Ask the user to pick a plan at ${u} to keep going`,
   credits_empty: (u) =>

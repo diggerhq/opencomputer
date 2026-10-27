@@ -69,7 +69,7 @@ test("out-of-credits responses tell the agent to stop and surface the upgrade li
 test("a work-minute 402 says why and links Billing", () => {
   const trial = structuredError(
     new APIError(
-      "Your 7-day trial has ended.",
+      "Your 3-day trial has ended.",
       402,
       "insufficient_credits",
       "https://app.opencomputer.dev/billing",
@@ -77,7 +77,7 @@ test("a work-minute 402 says why and links Billing", () => {
     ),
   );
   assert.equal(trial.code, "insufficient_credits");
-  assert.match(trial.hint, /^Your 7-day trial has ended\. Pick a plan to keep going at https:\/\/app\.opencomputer\.dev\/billing,/);
+  assert.match(trial.hint, /^Your 3-day trial has ended\. Pick a plan to keep going at https:\/\/app\.opencomputer\.dev\/billing,/);
   assert.match(trial.hint, /Do not retry/);
   assert.deepEqual(trial.details, {
     status: 402,

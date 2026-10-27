@@ -368,7 +368,7 @@ function autumnMock() {
     currency: 'usd',
     paymentPastDueAt: null,
     trialStartedAt: fromNow(-2),
-    trialEndsAt: fromNow(4.9),
+    trialEndsAt: fromNow(2.9),
     workMinutes: { granted: 600, remaining: 412, resetsAt: null },
     periodEndsAt: null as string | null,
     scheduledChange: null as { to: 'pro' | 'cancel'; at: string | null } | null,

@@ -240,7 +240,7 @@ export const AutumnBillingSchema = z.object({
   }),
   maxConcurrentSandboxes: z.number(),
   concurrencyPlan: z.string(),
-  // `trial` is the 7-day trial; `base` is the pre-trial free tier, kept until
+  // `trial` is the 3-day trial; `base` is the pre-trial free tier, kept until
   // every free org is migrated (serverless-agents-ws 086).
   usagePlan: z.enum(['trial', 'base', 'pro', 'max']),
   isHalted: z.boolean(),

@@ -570,21 +570,21 @@ describe("warnings before the stop", () => {
     expect(billingWarning(customer(["base"], { credits: 10 }), { ...fresh, trialStartedAt: now - 6 * day }, now)).toBeNull();
   });
 
-  it("warns a trial at 480 minutes, 2 days left or $8 spent", () => {
+  it("warns a trial at 480 minutes, 1 day left or $8 spent", () => {
     expect(billingWarning(customer(["trial"], { minutes: 121, credits: 2.5 }), fresh, now)).toBeNull();
     expect(billingWarning(customer(["trial"], { minutes: 120, credits: 5 }), fresh, now)).toBe("trial_minutes");
     expect(billingWarning(customer(["trial"], { minutes: 300, credits: 2 }), fresh, now)).toBe("trial_tokens");
     expect(
-      billingWarning(customer(["trial"], { minutes: 300, credits: 5 }), { ...fresh, trialStartedAt: now - 5 * day }, now),
+      billingWarning(customer(["trial"], { minutes: 300, credits: 5 }), { ...fresh, trialStartedAt: now - 2 * day }, now),
     ).toBe("trial_days");
   });
 
   it("names the trial limit closest to stopping", () => {
-    const day6 = { ...fresh, trialStartedAt: now - 6 * day };
-    // 1 day of 7 left (14%) against 100 of 600 minutes (17%).
-    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 5 }), day6, now)).toBe("trial_days");
-    expect(billingWarning(customer(["trial"], { minutes: 30, credits: 5 }), day6, now)).toBe("trial_minutes");
-    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 0.5 }), day6, now)).toBe("trial_tokens");
+    const lastDay = { ...fresh, trialStartedAt: now - 2.6 * day };
+    // 0.4 days of 3 left (13%) against 100 of 600 minutes (17%).
+    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 5 }), lastDay, now)).toBe("trial_days");
+    expect(billingWarning(customer(["trial"], { minutes: 30, credits: 5 }), lastDay, now)).toBe("trial_minutes");
+    expect(billingWarning(customer(["trial"], { minutes: 100, credits: 0.5 }), lastDay, now)).toBe("trial_tokens");
   });
 
   it("warns a paid org at 80% of its minutes, then about low credits", () => {

@@ -29,7 +29,7 @@ const PLAN_NAME: Record<"pro" | "max", string> = {
 // rule ("credits_exhausted", or an older API with no reason) keeps the copy
 // below.
 const PAYWALL: Record<string, { why: string; action: string }> = {
-  trial_days: { why: "Your 7-day trial has ended.", action: "Pick a plan to keep going" },
+  trial_days: { why: "Your 3-day trial has ended.", action: "Pick a plan to keep going" },
   trial_minutes: { why: "You've used your trial's 600 work minutes.", action: "Pick a plan to keep going" },
   trial_tokens: { why: "You've used your trial's model credit.", action: "Pick a plan to keep going" },
   credits_empty: {
@@ -48,7 +48,7 @@ export function paywallFor(reason: string | null | undefined): { why: string; ac
 // Before the stop: orgs.billing_warning, by reason.
 const WARNINGS: Record<string, string> = {
   trial_minutes: "Your trial is almost out of work minutes. Pick a plan to keep going",
-  trial_days: "Your 7-day trial ends soon. Pick a plan to keep going",
+  trial_days: "Your 3-day trial ends soon. Pick a plan to keep going",
   trial_tokens: "Your trial's model credit is almost used. Pick a plan to keep going",
   allowance_80: "You've used 80% of this month's work minutes. Buy credits or upgrade so work doesn't stop",
   credits_low: "Your credits are running low. Buy credits so work doesn't stop",
