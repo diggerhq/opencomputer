@@ -219,7 +219,7 @@ export const max = plan({
 
 // Work-minute trial (serverless-agents-ws 086). Autumn attaches it to every
 // new customer, in place of base; the edge records the start and enforces
-// the day-7 end. Credits come from top_up in $10 / $50 / $200 packs.
+// the day-3 end. Credits come from top_up in $10 / $50 / $200 packs.
 
 export const trial = plan({
   id: "trial",
