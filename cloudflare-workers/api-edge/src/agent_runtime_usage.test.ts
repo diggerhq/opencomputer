@@ -36,6 +36,7 @@ async function post(fields: Record<string, unknown>) {
     microvm_id: "vm_1",
     resource_tier: "2gb_1vcpu",
     quantity_seconds: 60,
+    close_reason: "suspended",
     idempotency_key: "lease_1:final",
     ...fields,
   });
@@ -63,7 +64,7 @@ describe("managed-agent runtime usage billing", () => {
       )
       .mockResolvedValueOnce(Response.json({ balance: { remaining: 595.5 } }));
 
-    const response = await post({ quantity_seconds: 270, idempotency_key: "crt_1:3" });
+    const response = await post({ quantity_seconds: 270, close_reason: "idle", idempotency_key: "crt_1:3" });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ feature_id: "work_minutes", remaining: 595.5 });
@@ -80,24 +81,36 @@ describe("managed-agent runtime usage billing", () => {
     );
   });
 
-  it("bills a Workerd turn as work minutes on a work-minute plan", async () => {
+  it("bills a turn as work minutes on a work-minute plan", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { work_minutes: { remaining: 600 } } }))
       .mockResolvedValueOnce(Response.json({ balance: { remaining: 599 } }));
 
-    const response = await post({ microvm_id: "workerd", idempotency_key: "turn_1:workerd" });
+    const response = await post({ close_reason: "turn_settled", idempotency_key: "turn_1:turn" });
 
     expect(await response.json()).toMatchObject({ billed: true, feature_id: "work_minutes" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("acknowledges a Workerd turn on a credit plan without billing it", async () => {
+  it("acknowledges a turn on a credit plan without billing it", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { credits: { remaining: 10 } } }));
 
-    const response = await post({ microvm_id: "workerd", idempotency_key: "turn_1:workerd" });
+    const response = await post({ close_reason: "turn_settled", idempotency_key: "turn_1:turn" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, billed: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges a microVM lease on a work-minute plan without billing it", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: "org_1", balances: { work_minutes: { remaining: 600 } } }));
+
+    const response = await post({ close_reason: "session_ended" });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, billed: false });

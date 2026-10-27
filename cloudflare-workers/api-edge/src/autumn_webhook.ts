@@ -44,8 +44,12 @@ const CREDITS_FEATURE_ID = "credits";
 // work_minutes balance; credit-based plans do not.
 const WORK_MINUTES_FEATURE_ID = "work_minutes";
 const AGENT_RUNTIME_FEATURE_ID = "agent_runtime_2gb_1vcpu";
-// blue's segment for a Workerd turn, which has no microVM.
-const WORKERD_MICROVM_ID = "workerd";
+// blue sends two overlapping measures of a managed session: one segment per
+// settled turn (any runtime), and the microVM's lease, which also counts idle
+// time. Work-minute plans pay for turns, credit plans for the lease. Computer
+// segments use other close reasons and are billed on either plan.
+const TURN_CLOSE_REASON = "turn_settled";
+const LEASE_CLOSE_REASONS = new Set(["suspended", "terminated", "session_ended", "heartbeat_expired"]);
 const SVIX_TOLERANCE_SEC = 300;
 
 // Mirror of internal/billing/autumn.ConcurrencyByPlan — keep in sync.
@@ -383,6 +387,7 @@ export async function agentRuntimeUsageInternal(
     microvm_id?: string;
     resource_tier?: string;
     quantity_seconds?: number;
+    close_reason?: string;
     idempotency_key?: string;
   };
   try {
@@ -410,9 +415,10 @@ export async function agentRuntimeUsageInternal(
     // own key, so a retry that lands after a plan change is still dropped.
     const customer = await getAutumnCustomer(env, p.org_id);
     const workMinutes = customer?.balances?.[WORK_MINUTES_FEATURE_ID] !== undefined;
-    // Workerd turns (microvm_id "workerd") were never billed on credit plans;
-    // they count only as work minutes, so a credit plan acknowledges them free.
-    if (!workMinutes && p.microvm_id === WORKERD_MICROVM_ID) {
+    const skip = workMinutes
+      ? LEASE_CLOSE_REASONS.has(p.close_reason ?? "")
+      : p.close_reason === TURN_CLOSE_REASON;
+    if (skip) {
       return json({ ok: true, billed: false, org_id: p.org_id, session_id: p.session_id });
     }
     const featureID = workMinutes ? WORK_MINUTES_FEATURE_ID : AGENT_RUNTIME_FEATURE_ID;
