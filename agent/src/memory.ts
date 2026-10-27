@@ -402,10 +402,15 @@ export function memoryToolNames(provider: MemoryProvider): string[] {
 }
 
 /**
- * The projection the host resolved for the session's binding of `id`, or a
- * render failure when the session has no such binding.
+ * The projection the host resolved for the session's binding of `id`, or
+ * undefined when the session has no such binding. A host value of any other
+ * shape is a host bug and fails the render.
  */
-export function memoryProjection(id: string, value: unknown): MemoryProjection {
+export function memoryProjection(
+  id: string,
+  value: unknown,
+): MemoryProjection | undefined {
+  if (value === undefined || value === null) return undefined;
   if (
     !isRecord(value) ||
     typeof value.text !== "string" ||
@@ -413,7 +418,7 @@ export function memoryProjection(id: string, value: unknown): MemoryProjection {
     typeof value.writable !== "boolean"
   ) {
     throw new Error(
-      `Memory ${JSON.stringify(id)} is not bound to this session; create the session with a memory binding for it`,
+      `Memory ${JSON.stringify(id)} projection from the host is malformed`,
     );
   }
   return value as unknown as MemoryProjection;

@@ -1696,14 +1696,14 @@ export function defineTool<Output extends DataValue = DataValue>(
 }
 
 /**
- * The projection the host recalled for this session's binding of `memory`.
- * It never fetches: a session without that binding fails the render here,
- * before inference. Calling it also selects the binding's permitted tools for
- * this model request; omitting it exposes none of them.
+ * The projection the host recalled for this session's binding of `memory`,
+ * or undefined when the session has no such binding. It never fetches.
+ * Calling it also selects the binding's permitted tools for this model
+ * request; omitting it exposes none of them.
  */
 export function useMemory(
   memory: string | ResourceReference,
-): MemoryProjection {
+): MemoryProjection | undefined {
   const id = memoryId(
     typeof memory === "string" ? memory : memory.id,
     "useMemory",

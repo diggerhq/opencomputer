@@ -462,18 +462,17 @@ test("useMemory reads the host projection and records the selection", () => {
   );
 });
 
-test("useMemory fails a render whose session has no binding for the resource", () => {
-  assert.throws(
-    () => renderWith({}, () => useMemory("requirements")),
-    /Memory "requirements" is not bound to this session/,
-  );
+test("useMemory returns undefined when the session has no binding for the resource", () => {
+  const unbound = renderWith({}, () => useMemory("requirements"));
+  assert.equal(unbound.result, undefined);
+  assert.deepEqual(unbound.selectedMemory, []);
   assert.throws(
     () =>
       renderWith(
         { requirements: { text: "x" } as never },
         () => useMemory("requirements"),
       ),
-    /Memory "requirements" is not bound to this session/,
+    /Memory "requirements" projection from the host is malformed/,
   );
   assert.throws(() => renderWith({}, () => useMemory("Not Valid")));
   assert.throws(

@@ -3484,7 +3484,7 @@ export const publishOutbox = async (outbox, input) => {
 // The host resolves every session binding before the render and exposes the
 // projections on its render scope as scope.memory[id]; the hook returns one
 // and the host records the id in scope.selectedMemory, returned to it as
-// selectedMemory next to enabledTools. An unbound id fails the render here.
+// selectedMemory next to enabledTools. An unbound id returns undefined.
 export const useMemory = (memory) => {
   const resource = memoryId(typeof memory === "string" ? memory : memory && memory.id, "useMemory");
   return memoryProjection(resource, hooks().useMemory(resource));

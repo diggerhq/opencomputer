@@ -2317,7 +2317,7 @@ export default function Agent() {
   const saved = useMemory(requirements);
   if (input.text?.includes("facts")) useMemory(knowledge);
   useModel("anthropic/claude-sonnet-4.6");
-  return "Saved requirements (JSON string): " + JSON.stringify(saved.text) + " writable=" + String(saved.writable);
+  return "Saved requirements (JSON string): " + JSON.stringify(saved?.text) + " writable=" + String(saved?.writable);
 }
 `,
     );
@@ -2383,10 +2383,10 @@ export default function Agent() {
       );
       assert.deepEqual([...scope.selectedMemory], ["requirements"]);
       scope.input = { source: "user", text: "facts please" };
-      assert.throws(
-        () => module.default(),
-        /Memory "knowledge" is not bound to this session/,
-      );
+      scope.selectedMemory.clear();
+      // An unbound resource renders as undefined instead of failing.
+      assert.equal(typeof module.default(), "string");
+      assert.deepEqual([...scope.selectedMemory], ["requirements"]);
     } finally {
       delete (globalThis as Record<PropertyKey, unknown>)[
         Symbol.for("opencomputer.agent-hooks")

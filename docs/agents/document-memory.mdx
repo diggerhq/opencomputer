@@ -76,7 +76,7 @@ Set `memory.<resource>` when creating a session:
   it suits a single owner or a coordinating agent, not one user among many.
 
 Calling `useMemory` exposes the binding's tools; omitting it exposes none.
-An unbound hook fails before inference. Tools accept a `memory` resource ID,
+An unbound hook returns `undefined`, so an agent can render without the binding. Tools accept a `memory` resource ID,
 required when multiple resources **selected by that render** offer the tool.
 Descriptions list those eligible resources and their declared guidance.
 
