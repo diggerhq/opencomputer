@@ -57,18 +57,23 @@ async function post(fields: Record<string, unknown>, envOverrides: Partial<Autum
 describe("managed-agent runtime usage billing", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("re-projects a trial whose minutes cross the warning line", async () => {
-    const trial = (minutes: number) =>
-      Response.json({
-        id: "org_1",
-        subscriptions: [{ plan_id: "trial", add_on: false, status: "active" }],
-        balances: { work_minutes: { remaining: minutes }, credits: { remaining: 10 } },
-      });
+  const trial = (minutes: number) =>
+    Response.json({
+      id: "org_1",
+      subscriptions: [{ plan_id: "trial", add_on: false, status: "active" }],
+      balances: { work_minutes: { remaining: minutes }, credits: { remaining: 10 } },
+    });
+  // D1 holding one org with the given trial start and stored warning.
+  function orgDB(org: { trial_started_at: number | null; billing_warning: string | null }) {
     const writes: string[] = [];
     const db = {
       prepare: (sql: string) => ({
         bind: () => ({
-          first: async () => (sql.startsWith("SELECT is_halted") ? { is_halted: 0, usage_plan: "base" } : null),
+          first: async () => {
+            if (sql.startsWith("SELECT is_halted")) return { is_halted: 0, usage_plan: "base", ...org };
+            if (sql.startsWith("SELECT trial_started_at")) return { payment_past_due_at: null, ...org };
+            return null;
+          },
           run: async () => {
             writes.push(sql);
             return { meta: { changes: 1 } };
@@ -76,6 +81,11 @@ describe("managed-agent runtime usage billing", () => {
         }),
       }),
     } as unknown as D1Database;
+    return { db, writes };
+  }
+
+  it("re-projects a trial whose minutes cross the warning line", async () => {
+    const { db, writes } = orgDB({ trial_started_at: null, billing_warning: null });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(trial(121))
@@ -88,6 +98,35 @@ describe("managed-agent runtime usage billing", () => {
     expect(response.status).toBe(200);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/customers/org_1"))).toHaveLength(2);
     expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+  });
+
+  it("replaces a trial_days warning once the minutes are the nearer limit", async () => {
+    // Day 6: 100/600 minutes ranks behind 1/7 days; 80/600 ranks ahead of it.
+    const daySix = Math.floor(Date.now() / 1000) - 6 * 86_400;
+    const { db, writes } = orgDB({ trial_started_at: daySix, billing_warning: "trial_days" });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(trial(100))
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 80 } }))
+      .mockResolvedValueOnce(trial(80))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+
+    await post({ quantity_seconds: 1_200, close_reason: "turn_settled", idempotency_key: "crt_1:5" }, { OPENCOMPUTER_DB: db });
+
+    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+  });
+
+  it("does not re-project when the stored warning still stands", async () => {
+    const { db, writes } = orgDB({ trial_started_at: null, billing_warning: "trial_minutes" });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(trial(100))
+      .mockResolvedValueOnce(Response.json({ balance: { remaining: 99 } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+
+    await post({ close_reason: "turn_settled", idempotency_key: "crt_1:6" }, { OPENCOMPUTER_DB: db });
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/customers/org_1"))).toHaveLength(1);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(false);
   });
 
   it("bills an org on a work-minute plan in work minutes", async () => {

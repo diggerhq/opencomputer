@@ -3,7 +3,8 @@
 // halts after its grace even when the org does nothing, so the */5 cron
 // re-projects the orgs whose clock has run out; projectOrg decides and halts.
 // It also re-projects a trial reaching 2 days left that is not yet warned, so
-// the trial_days warning goes out on time rather than on the next activity.
+// the trial_days warning goes out on time rather than on the next activity,
+// and hourly one warned about minutes or credits, which the days can outrank.
 // A halted, warned or paid-up org no longer matches. One that matches but stays
 // unhalted (a credit-only signup before the Autumn trial plan exists) is
 // re-projected every tick, so the batch takes the least recently updated rows
@@ -12,6 +13,10 @@
 import { type AutumnEnv, PAYMENT_GRACE_DAYS, TRIAL_DAYS, TRIAL_WARN_AFTER_SEC, projectOrg } from "./autumn_webhook";
 
 const DAY_SEC = 86_400;
+// A trial in its last 2 days already warned about minutes or credits is
+// re-projected at most this often, so trial_days replaces that warning once the
+// days left are the smaller share, even while the org is idle.
+const WARNED_TRIAL_RECHECK_SEC = 3_600;
 // Bounds one tick; the next tick continues.
 const MAX_ORGS_PER_RUN = 50;
 
@@ -21,7 +26,8 @@ export async function runBillingClock(env: AutumnEnv, nowMs: number): Promise<nu
     `SELECT id FROM orgs
       WHERE billing_provider = 'autumn' AND is_halted = 0
         AND ((usage_plan = 'base' AND trial_started_at <= ?1) OR payment_past_due_at <= ?2
-          OR (usage_plan = 'base' AND trial_started_at <= ?4 AND billing_warning IS NULL))
+          OR (usage_plan = 'base' AND trial_started_at <= ?4
+            AND (billing_warning IS NULL OR (billing_warning <> 'trial_days' AND updated_at <= ?5))))
       ORDER BY updated_at
       LIMIT ?3`,
   )
@@ -30,6 +36,7 @@ export async function runBillingClock(env: AutumnEnv, nowMs: number): Promise<nu
       nowSec - PAYMENT_GRACE_DAYS * DAY_SEC,
       MAX_ORGS_PER_RUN,
       nowSec - TRIAL_WARN_AFTER_SEC,
+      nowSec - WARNED_TRIAL_RECHECK_SEC,
     )
     .all<{ id: string }>();
   let projected = 0;

@@ -451,6 +451,7 @@ export async function browserUsageInternal(req: Request, env: AutumnEnv): Promis
       idempotencyKey: p.idempotency_key,
     });
     if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    else if (remaining !== null && creditsInWarningBand(remaining)) await refreshWarning(env, p.org_id);
     return json({ ok: true, billed: true, org_id: p.org_id, browser_id: p.browser_id, remaining });
   } catch (err) {
     console.error(`browser-usage: track failed org=${p.org_id} browser=${p.browser_id}`, err);
@@ -571,8 +572,10 @@ export async function agentRuntimeUsageInternal(
       idempotencyKey: p.idempotency_key,
     });
     if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
-    else if (workMinutes && remaining !== null && customer && minutesWarningCrossed(customer, remaining)) {
-      await projectOrg(env, p.org_id);
+    else if (workMinutes && remaining !== null && customer && minutesInWarningBand(customer, remaining)) {
+      const minutes = { ...customer.balances?.[WORK_MINUTES_FEATURE_ID], remaining };
+      const after = { ...customer, balances: { ...customer.balances, [WORK_MINUTES_FEATURE_ID]: minutes } };
+      await refreshWarning(env, p.org_id, after as AutumnCustomer);
     }
     if (workMinutes) {
       await recordWorkMinutes(env, p.org_id, customer, {
@@ -756,15 +759,37 @@ export function billingWarning(
   return near[0]?.[0] ?? null;
 }
 
-// minutesWarningCrossed: did this track move the minutes past a warning line
-// (480 trial minutes, 80% of the month)? Only usage differs between the two
-// reads, so the clock-driven reasons are left out of the comparison.
-function minutesWarningCrossed(before: AutumnCustomer, minutesRemaining: number): boolean {
-  const minutes = { ...before.balances?.[WORK_MINUTES_FEATURE_ID], remaining: minutesRemaining };
-  const after: AutumnCustomer = { ...before, balances: { ...before.balances, [WORK_MINUTES_FEATURE_ID]: minutes } };
-  const noClock = { trialStartedAt: null, paymentPastDueAt: null };
-  const nowSec = Math.floor(Date.now() / 1000);
-  return billingWarning(before, noClock, nowSec) !== billingWarning(after, noClock, nowSec);
+// Usage only moves a warning once the balance it spends is inside a warning
+// line: the trial's last 120 minutes or the last 20% of the month's, and
+// credits under $5 (the trial's $2 line is inside it). Above the lines the
+// usage paths skip the check, so a usage event costs no extra reads.
+function minutesInWarningBand(customer: AutumnCustomer, minutesRemaining: number): boolean {
+  const plan = activeUsagePlan(customer);
+  const line = plan === "base" ? TRIAL_WARN_MINUTES_LEFT : (PLAN_WORK_MINUTES[plan] ?? 0) * ALLOWANCE_WARN_FRACTION;
+  return minutesRemaining <= line;
+}
+
+export function creditsInWarningBand(creditsRemaining: number): boolean {
+  return creditsRemaining > 0 && creditsRemaining <= CREDITS_LOW;
+}
+
+// refreshWarning re-projects an org whose stored warning is no longer the one
+// its balances and clock give, for the usage paths that otherwise project only
+// at exhaustion. It compares against the stored warning with the real clock, so
+// a trial_days warning that minutes or credits now outrank is replaced too.
+export async function refreshWarning(env: AutumnEnv, orgID: string, customer?: AutumnCustomer | null): Promise<void> {
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT trial_started_at, payment_past_due_at, billing_warning FROM orgs WHERE id = ?1",
+  )
+    .bind(orgID)
+    .first<{ trial_started_at: number | null; payment_past_due_at: number | null; billing_warning: string | null }>();
+  if (!row) return;
+  const cust = customer ?? (await getAutumnCustomer(env, orgID));
+  if (!cust) return;
+  const clock = { trialStartedAt: row.trial_started_at ?? null, paymentPastDueAt: row.payment_past_due_at ?? null };
+  if (billingWarning(cust, clock, Math.floor(Date.now() / 1000)) !== (row.billing_warning ?? null)) {
+    await projectOrg(env, orgID);
+  }
 }
 
 // The trial age at which trial_days starts, for the billing clock.

@@ -9,7 +9,7 @@
 // A bucket whose track() returns a non-positive balance triggers projectOrg →
 // is_halted + hibernate-dispatch.
 
-import { type AutumnEnv, projectOrg, trackAutumnUsage } from "./autumn_webhook";
+import { type AutumnEnv, creditsInWarningBand, projectOrg, refreshWarning, trackAutumnUsage } from "./autumn_webhook";
 
 // Fixed 5-minute bucket: the unit of idempotency AND the bound on overspend past
 // a zero balance before the halt fires. Mirrors the old cell autumnBucketSize.
@@ -106,25 +106,30 @@ async function meterOrg(env: AutumnEnv, org: AutumnOrgRow, nowSec: number): Prom
   const firstSampleSec = Math.floor(win.mn / 1000);
   cursor += Math.floor((firstSampleSec - cursor) / BUCKET_SEC) * BUCKET_SEC;
 
+  let remaining: number | null = null;
   for (let n = 0; n < MAX_BUCKETS_PER_ORG; n++) {
     const bucketEnd = cursor + BUCKET_SEC;
     if (bucketEnd > closeBefore) break;
-    const exhausted = await trackBucket(env, org.id, cursor, bucketEnd);
+    remaining = (await trackBucket(env, org.id, cursor, bucketEnd)) ?? remaining;
     await setWatermark(env, org.id, bucketEnd);
     cursor = bucketEnd;
-    if (exhausted) {
+    if (remaining !== null && remaining <= 0) {
       // projectOrg re-reads the balance, sets is_halted, and dispatches
       // /admin/halt-org to hibernate running boxes. Stop here — usage halts.
       await projectOrg(env, org.id);
-      break;
+      return true;
     }
   }
+  // Spend inside a credit warning line ($2 left on a trial, under $5 paid):
+  // store the warning on this tick rather than at the next webhook.
+  if (remaining !== null && creditsInWarningBand(remaining)) await refreshWarning(env, org.id);
   return true;
 }
 
 // trackBucket aggregates usage_samples in [from, to) by memory tier and tracks
-// one usage event per tier to Autumn. Returns true if the balance is now <= 0.
-async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec: number): Promise<boolean> {
+// one usage event per tier to Autumn. Returns the credits left after it, or
+// null when nothing was tracked.
+async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec: number): Promise<number | null> {
   const aggRes = await env.OPENCOMPUTER_DB.prepare(
     `SELECT memory_mb AS memory_mb, SUM(interval_s) AS secs
        FROM usage_samples
@@ -134,7 +139,7 @@ async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec
     .bind(orgID, fromSec * 1000, toSec * 1000)
     .all<TierAgg>();
   const tiers = aggRes.results ?? [];
-  if (tiers.length === 0) return false;
+  if (tiers.length === 0) return null;
 
   let remaining: number | null = null;
   for (const t of tiers) {
@@ -151,7 +156,7 @@ async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec
       idempotencyKey: usageIdempotencyKey(orgID, fromSec, feature),
     });
   }
-  return remaining !== null && remaining <= 0;
+  return remaining;
 }
 
 async function setWatermark(env: AutumnEnv, orgID: string, ts: number): Promise<void> {
