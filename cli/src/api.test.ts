@@ -380,6 +380,21 @@ test("a 402 carries the halt reason and prefers the action link", async (context
   );
 });
 
+test("credits signals display only when the caller shows the warning", async (context) => {
+  const urls: string[] = [];
+  context.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    urls.push(String(input instanceof Request ? input.url : input));
+    return Response.json({ usagePlan: "base" });
+  });
+  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" });
+  await client.credits();
+  await client.credits(true);
+  assert.deepEqual(urls, [
+    "https://app.opencomputer.dev/api/billing/credits",
+    "https://app.opencomputer.dev/api/billing/credits?display=1",
+  ]);
+});
+
 test("managed GitHub App requests use project-scoped status and connect routes", async (context) => {
   const requests: Request[] = [];
   context.mock.method(

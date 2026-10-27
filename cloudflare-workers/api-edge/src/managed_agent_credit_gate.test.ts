@@ -259,6 +259,25 @@ describe("managed-agent credit admission", () => {
     ).resolves.toMatchObject({ allowed: false, isHalted: true });
   });
 
+  it("names the re-projected halt reason when the re-check keeps the halt", async () => {
+    const reasons = ["payment", "credits_empty"];
+    const db = {
+      OPENCOMPUTER_DB: {
+        prepare: () =>
+          new FakeStatement(1, 1_789_707_077, "pro", "free", "autumn", reasons.shift() ?? null),
+      } as unknown as D1Database,
+    };
+    const selfHeal = vi.fn(async () => true);
+    const request = new Request(
+      "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
+      { method: "POST" },
+    );
+    const response = await enforceManagedAgentCreditGate(request, db, "org_test", selfHeal);
+    expect(response?.status).toBe(402);
+    const body = (await response!.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({ haltReason: "credits_empty" });
+  });
+
   it("re-checks only halted Autumn orgs", async () => {
     const selfHeal = vi.fn(async () => false);
     await getManagedAgentBillingAdmission(env(0), "org_test", selfHeal);

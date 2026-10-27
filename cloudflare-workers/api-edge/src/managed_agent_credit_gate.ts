@@ -99,18 +99,23 @@ export async function getManagedAgentBillingAdmission(
   orgID: string,
   selfHeal?: ManagedAgentSelfHeal,
 ): Promise<ManagedAgentBillingAdmission> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason, billing_warning, billing_warning_at
-       FROM orgs WHERE id = ?1`,
-  )
-    .bind(orgID)
-    .first<ManagedAgentCreditRow>();
+  const readRow = () =>
+    env.OPENCOMPUTER_DB.prepare(
+      `SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason, billing_warning, billing_warning_at
+         FROM orgs WHERE id = ?1`,
+    )
+      .bind(orgID)
+      .first<ManagedAgentCreditRow>();
+  let row = await readRow();
   let isHalted = row?.is_halted === 1;
   // Like the sandbox create/wake gates: a halted Autumn org re-checks the
   // authoritative balance, so a user who just topped up isn't denied until
   // the webhook/reconciler catches up.
   if (isHalted && row?.billing_provider === "autumn" && selfHeal) {
     isHalted = await selfHeal(orgID);
+    // The re-check re-projects halt_reason/usage_plan; a still-halted org's
+    // 402 must name the current reason, not the pre-heal one.
+    if (isHalted) row = (await readRow()) ?? row;
   }
   // Existing paid orgs predate usage_plan and initially carry its conservative
   // 'base' default. Keep their established Pro entitlement effective until an

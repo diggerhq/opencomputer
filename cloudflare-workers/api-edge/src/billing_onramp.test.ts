@@ -5,6 +5,7 @@ import {
   billingWarningOf,
   emitPaywallShown,
   FREE_CREDITS_PAYWALL,
+  handleCreditsStatus,
   insufficientCreditsLegacyResponse,
   insufficientCreditsResponse,
   lowCreditThresholdCents,
@@ -12,6 +13,19 @@ import {
   usagePlanOffers,
 } from "./billing_onramp";
 import type { AutumnCustomer } from "./autumn_webhook";
+
+vi.mock("./autumn_webhook", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./autumn_webhook")>()),
+  syncAutumnToD1: vi.fn(async () => ({
+    customer: { subscriptions: [] },
+    creditsRemaining: 10,
+    maxConcurrent: 1,
+    halted: false,
+    haltReason: null,
+    wasHalted: false,
+    usagePlan: "base",
+  })),
+}));
 
 const req = new Request("https://app.opencomputer.dev/api/v3/sessions");
 
@@ -174,5 +188,36 @@ describe("billing_onramp", () => {
     expect(billingWarningOf("payment_failed")).toBe("payment_failed");
     expect(billingWarningOf("soon")).toBeNull();
     expect(billingWarningOf(null)).toBeNull();
+  });
+
+  it("counts a billing warning only for a caller that displays it", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const env = {
+      AUTUMN_SECRET_KEY: "sk_test",
+      POSTHOG_PROJECT_TOKEN: "phc_test",
+      OPENCOMPUTER_DB: {
+        prepare: () => ({
+          bind: () => ({ first: async () => ({ billing_warning: "trial_days", trial_started_at: 1 }) }),
+        }),
+      },
+    } as unknown as Parameters<typeof handleCreditsStatus>[1];
+    const caller = { orgID: "org_warning_display" };
+    const waits: Promise<unknown>[] = [];
+    const status = (u: string) =>
+      handleCreditsStatus(new Request(u), env, caller, (p) => waits.push(p));
+
+    // `opencomputer upgrade` looks the status up without showing the warning.
+    const hidden = await status("https://app.opencomputer.dev/api/billing/credits");
+    expect(await hidden.json()).toMatchObject({ billingWarning: "trial_days" });
+    await Promise.all(waits);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await status("https://app.opencomputer.dev/api/billing/credits?display=1");
+    await Promise.all(waits);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toMatchObject({
+      event: "billing.warning_shown",
+      properties: { reason: "trial_days", surface: "cli" },
+    });
   });
 });

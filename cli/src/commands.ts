@@ -1377,7 +1377,7 @@ export async function runCommand(
 
   if (command === "billing" || command === "credits") {
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    const status = await client.credits();
+    const status = await client.credits(true);
     if (globals.json) printJSON(status);
     else if (!status) {
       process.stdout.write(
@@ -1609,7 +1609,7 @@ export async function runCommand(
       globals.verbose === true,
       globals.idempotencyKey,
     );
-    const credits = await fetchCredits(client);
+    const credits = await fetchCredits(client, true);
     if (globals.json) {
       const summary = creditsSummary(credits);
       printJSON(

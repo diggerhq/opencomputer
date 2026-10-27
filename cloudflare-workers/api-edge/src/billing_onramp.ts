@@ -263,9 +263,10 @@ export function usagePlanOffers(current: UsagePlan): CreditsStatus["plans"] {
 // GET /api/billing/credits — API-key authenticated credit status for the CLI.
 // Re-syncs Autumn → D1 like the dashboard endpoint so a fresh upgrade clears a
 // halt on the next CLI call too. Legacy (Stripe) orgs have no Autumn customer
-// and get a 404 — clients treat that as "no credit meter". The CLI is the only
-// caller and shows a warning it returns, so billing.warning_shown is counted
-// here (deduped like the paywall event).
+// and get a 404 — clients treat that as "no credit meter". billing.warning_shown
+// is counted here (deduped like the paywall event) only when the caller says it
+// displays the warning (?display=1): a lookup that doesn't show it (e.g.
+// `opencomputer upgrade`) must not count it or consume the dedupe key.
 export async function handleCreditsStatus(
   req: Request,
   env: AutumnSyncEnv & { AUTUMN_SECRET_KEY?: string },
@@ -301,7 +302,7 @@ export async function handleCreditsStatus(
     ...links,
     plans: usagePlanOffers(usagePlan),
   };
-  if (billingWarning) {
+  if (billingWarning && new URL(req.url).searchParams.get("display") === "1") {
     waitUntil(
       onceAnHour(`warning:${caller.orgID}:${billingWarning}`, () =>
         emitBillingEvent(env, "billing.warning_shown", {

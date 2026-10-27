@@ -157,9 +157,10 @@ export function creditsSummary(
 /** Best-effort fetch: billing must never fail an otherwise successful command. */
 export async function fetchCredits(
   client: OpenComputerClient,
+  display = false,
 ): Promise<CreditsStatus | null> {
   try {
-    return await client.credits();
+    return await client.credits(display);
   } catch {
     return null;
   }

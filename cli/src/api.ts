@@ -601,10 +601,13 @@ export class OpenComputerClient {
     return body as T;
   }
 
-  /** Prepaid credit status; `null` for orgs without a credit meter (legacy billing). */
-  async credits(): Promise<CreditsStatus | null> {
+  /**
+   * Prepaid credit status; `null` for orgs without a credit meter (legacy billing).
+   * `display`: the caller shows the returned billing warning, so the edge counts it.
+   */
+  async credits(display = false): Promise<CreditsStatus | null> {
     try {
-      return await this.request<CreditsStatus>("/api/billing/credits");
+      return await this.request<CreditsStatus>(`/api/billing/credits${display ? "?display=1" : ""}`);
     } catch (error) {
       if (error instanceof APIError && (error.status === 404 || error.status === 503)) {
         return null;
