@@ -335,6 +335,8 @@ describe("billing funnel events from Autumn", () => {
                   org.usage_plan = args[0];
                   if (args[0] === "base") org.payment_past_due_at = null;
                 } else if (sql.includes("SET is_halted")) {
+                  org.is_halted = args[0];
+                  org.halted_at = args[1];
                   org.usage_plan = args[3];
                   org.billing_warning = args[7];
                 }
@@ -348,14 +350,14 @@ describe("billing funnel events from Autumn", () => {
     return db as typeof db & D1Database;
   }
 
-  function mockAutumn(subscriptions: Array<{ plan_id: string }>) {
+  function mockAutumn(subscriptions: Array<{ plan_id: string }>, credits = 10) {
     const posted: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (String(input).startsWith("https://autumn.test/v1/customers/")) {
         return Response.json({
           id: "org_1",
           subscriptions: subscriptions.map((s) => ({ ...s, add_on: false, status: "active" })),
-          balances: { credits: { remaining: 10 } },
+          balances: { credits: { remaining: credits } },
         });
       }
       posted.push(JSON.parse(String(init?.body)));
@@ -394,6 +396,25 @@ describe("billing funnel events from Autumn", () => {
 
     expect(posted[0]).toMatchObject({ properties: { from: "pro", to: "base", kind: "lapsed" } });
     expect(db.org.payment_past_due_at).toBeNull();
+  });
+
+  it("keeps halted_at while the org stays halted, and clears it when the halt lifts", async () => {
+    mockAutumn([], 0);
+    const db = fakeDb("base");
+    const syncEnv = { ...env, OPENCOMPUTER_DB: db };
+
+    await syncAutumnToD1(syncEnv, "org_1");
+    expect(db.org.is_halted).toBe(1);
+    expect(db.org.halted_at).toBeGreaterThan(0);
+    db.org.halted_at = 1_700_000_000;
+    await syncAutumnToD1(syncEnv, "org_1");
+    expect(db.org.halted_at).toBe(1_700_000_000);
+
+    vi.restoreAllMocks();
+    mockAutumn([], 10);
+    await syncAutumnToD1(syncEnv, "org_1");
+    expect(db.org.is_halted).toBe(0);
+    expect(db.org.halted_at).toBeNull();
   });
 
   async function svixPost(webhookEnv: AutumnEnv, svixID: string, payload: unknown) {

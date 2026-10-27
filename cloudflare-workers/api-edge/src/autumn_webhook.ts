@@ -823,11 +823,12 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   const nowSec = Math.floor(Date.now() / 1000);
 
   const prevRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<{
       is_halted: number;
+      halted_at: number | null;
       autumn_concurrency_override: number | null;
       usage_plan: UsagePlan;
       payment_past_due_at: number | null;
@@ -838,6 +839,9 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   const reason = haltReason(cust, clock, nowSec);
   const halted = reason !== null;
   const warning = billingWarning(cust, clock, nowSec);
+  // Since when the org has been halted, for any reason: kept across projections
+  // while it stays halted (blue parks an unpaid computer 7 days in, 086).
+  const haltedAt = halted ? (wasHalted && prevRow?.halted_at ? prevRow.halted_at : nowSec) : null;
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   // Compare-and-set the plan first: the webhook, checkout-return and the cron can
@@ -866,7 +870,7 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
        billing_warning_at = CASE WHEN ?8 IS NULL THEN NULL ELSE COALESCE(billing_warning_at, ?5) END
      WHERE id = ?6`,
   )
-    .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID, reason, warning)
+    .bind(halted ? 1 : 0, haltedAt, maxConcurrent, usagePlan, nowSec, orgID, reason, warning)
     .run();
 
   // After the writes, so the event's send time never widens the window in which
