@@ -255,15 +255,18 @@ export async function autumnWebhook(
     return json({ ok: true, ignored: type });
   }
 
+  // Past-due state first, so a projection that ends the plan can tell a lapse
+  // from a cancel.
+  const pastDue = pastDueChanges(evt);
   try {
-    await projectOrg(env, orgID, { lapsed: subscriptionLapsed(evt) });
+    if (pastDue.length) await recordPastDue(env, orgID, pastDue[pastDue.length - 1].pastDue);
+    await projectOrg(env, orgID);
   } catch (err) {
     // 5xx → Svix retries with backoff (the Go reconciler is the longer backstop).
     console.error(`autumn-webhook: project ${orgID} (${type}) failed`, err);
     return json({ error: "projection failed" }, 502);
   }
-  // After the projection, so a 5xx retry does not count the event twice.
-  for (const e of billingWebhookEvents(evt)) await emitBillingEvent(env, e.name, { orgId: orgID, data: e.data });
+  await emitWebhookEventsOnce(env, req.headers.get("svix-id"), orgID, billingWebhookEvents(evt));
   await afterProject?.(orgID).catch((err) => console.error(`autumn-webhook: after-project ${orgID} (${type}) failed`, err));
   return json({ ok: true, type, org_id: orgID });
 }
@@ -284,11 +287,47 @@ interface AutumnWebhookPayload {
   };
 }
 
-// A subscription that expired while past due lapsed for non-payment; any other
-// expiry is a cancel. Only the webhook knows which, so it hints the projection.
-function subscriptionLapsed(evt: AutumnWebhookPayload): boolean {
-  if (evt.type !== "billing.updated") return false;
-  return (evt.data?.plan_changes ?? []).some((c) => c.action === "expired" && c.subscription?.past_due === true);
+// The subscriptions whose past_due flag flipped in a billing.updated webhook.
+function pastDueChanges(evt: AutumnWebhookPayload): Array<{ plan: string | null; pastDue: boolean }> {
+  if (evt.type !== "billing.updated") return [];
+  return (evt.data?.plan_changes ?? []).flatMap((c) => {
+    const was = c.previous_attributes?.past_due;
+    const now = c.subscription?.past_due;
+    if (was === undefined || now === undefined || was === now) return [];
+    return [{ plan: c.subscription?.plan_id ?? null, pastDue: now }];
+  });
+}
+
+async function recordPastDue(env: AutumnSyncEnv, orgID: string, pastDue: boolean): Promise<void> {
+  await env.OPENCOMPUTER_DB.prepare(
+    "UPDATE orgs SET payment_past_due_at = CASE WHEN ?1 THEN COALESCE(payment_past_due_at, ?2) ELSE NULL END WHERE id = ?3",
+  )
+    .bind(pastDue ? 1 : 0, Math.floor(Date.now() / 1000), orgID)
+    .run();
+}
+
+// Svix can deliver a message more than once, even after a 2xx, so a delivery's
+// events are sent only by the first one to record its svix-id. Sent after the
+// projection, so a 5xx retry still gets its turn.
+async function emitWebhookEventsOnce(
+  env: AutumnEnv,
+  svixID: string | null,
+  orgID: string,
+  events: ReturnType<typeof billingWebhookEvents>,
+): Promise<void> {
+  if (!events.length || !svixID) return;
+  try {
+    const first = await env.OPENCOMPUTER_DB.prepare(
+      "INSERT OR IGNORE INTO autumn_webhook_deliveries (svix_id, received_at) VALUES (?1, ?2)",
+    )
+      .bind(svixID, Math.floor(Date.now() / 1000))
+      .run();
+    if (first.meta?.changes !== 1) return;
+  } catch (err) {
+    console.error(`autumn-webhook: dedupe ${svixID} failed; events not sent`, err);
+    return;
+  }
+  for (const e of events) await emitBillingEvent(env, e.name, { orgId: orgID, data: e.data });
 }
 
 // billingWebhookEvents maps one Autumn webhook to its funnel events. Plan changes
@@ -305,17 +344,10 @@ export function billingWebhookEvents(
     case "billing.auto_topup_failed":
       return [{ name: "billing.payment_failed", data: { plan: "top_up", reason: d.reason ?? null } }];
     case "billing.updated":
-      return (d.plan_changes ?? []).flatMap((c) => {
-        const was = c.previous_attributes?.past_due;
-        const now = c.subscription?.past_due;
-        if (was === undefined || now === undefined || was === now) return [];
-        return [
-          {
-            name: now ? ("billing.payment_failed" as const) : ("billing.payment_recovered" as const),
-            data: { plan: c.subscription?.plan_id ?? null },
-          },
-        ];
-      });
+      return pastDueChanges(evt).map((c) => ({
+        name: c.pastDue ? ("billing.payment_failed" as const) : ("billing.payment_recovered" as const),
+        data: { plan: c.plan },
+      }));
     default:
       return [];
   }
@@ -323,6 +355,7 @@ export function billingWebhookEvents(
 
 // planChangeKind names a usage-plan transition for billing.plan_changed. `base`
 // is "no paid plan" (the trial, or a pre-launch free org) until step 5 names it.
+// A paid plan that ends while past due (orgs.payment_past_due_at) lapsed.
 export function planChangeKind(from: UsagePlan, to: UsagePlan, lapsed: boolean): string {
   if (from === "base") return "trial_converted";
   if (to === "base") return lapsed ? "lapsed" : "cancel";
@@ -608,11 +641,7 @@ export interface AutumnSyncResult {
   usagePlan: UsagePlan;
 }
 
-export async function syncAutumnToD1(
-  env: AutumnSyncEnv,
-  orgID: string,
-  opts: { lapsed?: boolean } = {},
-): Promise<AutumnSyncResult | null> {
+export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise<AutumnSyncResult | null> {
   const cust = await getAutumnCustomer(env, orgID);
   if (!cust) {
     console.error(`autumn: customer ${orgID} not found in Autumn`);
@@ -626,25 +655,33 @@ export async function syncAutumnToD1(
   const nowSec = Math.floor(Date.now() / 1000);
 
   const prevRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, autumn_concurrency_override, usage_plan FROM orgs WHERE id = ?1",
+    "SELECT is_halted, autumn_concurrency_override, usage_plan, payment_past_due_at FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
-    .first<{ is_halted: number; autumn_concurrency_override: number | null; usage_plan: UsagePlan }>();
+    .first<{
+      is_halted: number;
+      autumn_concurrency_override: number | null;
+      usage_plan: UsagePlan;
+      payment_past_due_at: number | null;
+    }>();
   const wasHalted = prevRow?.is_halted === 1;
   const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   // Compare-and-set the plan first: the webhook, checkout-return and the cron can
   // project the same change concurrently, and only the writer that moves it emits.
+  // Dropping to no paid plan clears the past-due mark once it has been read.
   const fromPlan = prevRow?.usage_plan;
+  let planChange: Record<string, string> | null = null;
   if (fromPlan && fromPlan !== usagePlan) {
-    const moved = await env.OPENCOMPUTER_DB.prepare("UPDATE orgs SET usage_plan = ?1 WHERE id = ?2 AND usage_plan = ?3")
+    const moved = await env.OPENCOMPUTER_DB.prepare(
+      `UPDATE orgs SET usage_plan = ?1, payment_past_due_at = CASE WHEN ?1 = 'base' THEN NULL ELSE payment_past_due_at END
+       WHERE id = ?2 AND usage_plan = ?3`,
+    )
       .bind(usagePlan, orgID, fromPlan)
       .run();
     if (moved.meta?.changes === 1) {
-      await emitBillingEvent(env, "billing.plan_changed", {
-        orgId: orgID,
-        data: { from: fromPlan, to: usagePlan, kind: planChangeKind(fromPlan, usagePlan, opts.lapsed === true) },
-      });
+      const lapsed = prevRow?.payment_past_due_at != null;
+      planChange = { from: fromPlan, to: usagePlan, kind: planChangeKind(fromPlan, usagePlan, lapsed) };
     }
   }
 
@@ -653,6 +690,10 @@ export async function syncAutumnToD1(
   )
     .bind(halted ? 1 : 0, halted ? nowSec : null, maxConcurrent, usagePlan, nowSec, orgID)
     .run();
+
+  // After the writes, so the event's send time never widens the window in which
+  // a concurrent projection can interleave.
+  if (planChange) await emitBillingEvent(env, "billing.plan_changed", { orgId: orgID, data: planChange });
 
   return { customer: cust, creditsRemaining, maxConcurrent, halted, wasHalted, usagePlan };
 }
@@ -701,8 +742,8 @@ export async function autumnSetProviderInternal(req: Request, env: AutumnEnv): P
 // do NOT dispatch — D1.is_halted is already cleared, which unblocks the gates;
 // hibernated boxes wake lazily on the next request. This is the locked "no
 // auto-wake for prepaid" decision: a top-up unblocks but never force-wakes.
-export async function projectOrg(env: AutumnEnv, orgID: string, opts: { lapsed?: boolean } = {}): Promise<void> {
-  const r = await syncAutumnToD1(env, orgID, opts);
+export async function projectOrg(env: AutumnEnv, orgID: string): Promise<void> {
+  const r = await syncAutumnToD1(env, orgID);
   if (!r || !r.halted) return;
   // Dispatch halt on the fresh transition, OR whenever a halted org STILL has
   // running sandboxes — so a halt is eventually complete even if a single

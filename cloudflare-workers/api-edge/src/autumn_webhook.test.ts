@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   autumnPurchase,
+  autumnWebhook,
   autumnSetAutoTopup,
   autumnUsagePlanPurchase,
   billingWebhookEvents,
@@ -8,6 +9,7 @@ import {
   syncAutumnToD1,
   summarizeAutumnCreditBalance,
   type AutumnApiEnv,
+  type AutumnEnv,
 } from "./autumn_webhook";
 
 describe("Autumn credit balance summary", () => {
@@ -305,18 +307,33 @@ describe("billing funnel events from Autumn", () => {
     expect(billingWebhookEvents({ type: "balances.limit_reached", data: {} })).toEqual([]);
   });
 
-  function planDb(usagePlan: string) {
-    const org = { is_halted: 0, autumn_concurrency_override: null, usage_plan: usagePlan };
-    return {
+  function fakeDb(usagePlan: string, pastDueAt: number | null = null) {
+    const org: Record<string, unknown> = {
+      is_halted: 0,
+      autumn_concurrency_override: null,
+      usage_plan: usagePlan,
+      payment_past_due_at: pastDueAt,
+    };
+    const deliveries = new Set<string>();
+    const db = {
+      org,
       prepare(sql: string) {
         return {
           bind(...args: unknown[]) {
             return {
-              first: async () => ({ ...org }),
+              first: async () => (sql.includes("FROM sandboxes_index") ? null : { ...org }),
               run: async () => {
-                if (sql.includes("AND usage_plan = ?3")) {
+                if (sql.includes("INSERT OR IGNORE INTO autumn_webhook_deliveries")) {
+                  if (deliveries.has(args[0] as string)) return { meta: { changes: 0 } };
+                  deliveries.add(args[0] as string);
+                } else if (sql.includes("SET payment_past_due_at")) {
+                  org.payment_past_due_at = args[0] ? (org.payment_past_due_at ?? args[1]) : null;
+                } else if (sql.includes("AND usage_plan = ?3")) {
                   if (org.usage_plan !== args[2]) return { meta: { changes: 0 } };
-                  org.usage_plan = args[0] as string;
+                  org.usage_plan = args[0];
+                  if (args[0] === "base") org.payment_past_due_at = null;
+                } else if (sql.includes("SET is_halted")) {
+                  org.usage_plan = args[3];
                 }
                 return { meta: { changes: 1 } };
               },
@@ -324,24 +341,29 @@ describe("billing funnel events from Autumn", () => {
           },
         };
       },
-    } as unknown as D1Database;
+    };
+    return db as typeof db & D1Database;
   }
 
-  it("emits plan_changed once when the projection moves the plan", async () => {
+  function mockAutumn(subscriptions: Array<{ plan_id: string }>) {
     const posted: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.startsWith("https://autumn.test/v1/customers/")) {
+      if (String(input).startsWith("https://autumn.test/v1/customers/")) {
         return Response.json({
           id: "org_1",
-          subscriptions: [{ plan_id: "pro", add_on: false, status: "active" }],
+          subscriptions: subscriptions.map((s) => ({ ...s, add_on: false, status: "active" })),
           balances: { credits: { remaining: 10 } },
         });
       }
       posted.push(JSON.parse(String(init?.body)));
       return new Response(null, { status: 200 });
     });
-    const syncEnv = { ...env, OPENCOMPUTER_DB: planDb("base"), POSTHOG_PROJECT_TOKEN: "phc_test" };
+    return posted;
+  }
+
+  it("emits plan_changed once when the projection moves the plan", async () => {
+    const posted = mockAutumn([{ plan_id: "pro" }]);
+    const syncEnv = { ...env, OPENCOMPUTER_DB: fakeDb("base"), POSTHOG_PROJECT_TOKEN: "phc_test" };
 
     expect((await syncAutumnToD1(syncEnv, "org_1"))?.usagePlan).toBe("pro");
     await syncAutumnToD1(syncEnv, "org_1");
@@ -351,5 +373,66 @@ describe("billing funnel events from Autumn", () => {
       event: "billing.plan_changed",
       properties: { from: "base", to: "pro", kind: "trial_converted" },
     });
+  });
+
+  it("calls a plan that ends while past due lapsed, whoever projects it", async () => {
+    const posted = mockAutumn([]);
+    const db = fakeDb("pro", 1_700_000_000);
+
+    await syncAutumnToD1({ ...env, OPENCOMPUTER_DB: db, POSTHOG_PROJECT_TOKEN: "phc_test" }, "org_1");
+
+    expect(posted[0]).toMatchObject({ properties: { from: "pro", to: "base", kind: "lapsed" } });
+    expect(db.org.payment_past_due_at).toBeNull();
+  });
+
+  async function svixPost(webhookEnv: AutumnEnv, svixID: string, payload: unknown) {
+    const body = JSON.stringify(payload);
+    const ts = String(Math.floor(Date.now() / 1000));
+    const secret = btoa("webhook-key");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      Uint8Array.from(atob(secret), (c) => c.charCodeAt(0)),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${svixID}.${ts}.${body}`)));
+    const sig = btoa(String.fromCharCode(...mac));
+    return autumnWebhook(
+      new Request("https://api.test/webhooks/autumn", {
+        method: "POST",
+        headers: { "svix-id": svixID, "svix-timestamp": ts, "svix-signature": `v1,${sig}` },
+        body,
+      }),
+      { ...webhookEnv, AUTUMN_WEBHOOK_SECRET: `whsec_${secret}` },
+    );
+  }
+
+  it("marks the org past due and sends a redelivered webhook's events once", async () => {
+    const posted = mockAutumn([{ plan_id: "pro" }]);
+    const db = fakeDb("pro");
+    const webhookEnv = {
+      ...env,
+      OPENCOMPUTER_DB: db,
+      POSTHOG_PROJECT_TOKEN: "phc_test",
+      EVENT_SECRET: "event-secret",
+      CF_ADMIN_SECRET: "admin-secret",
+      AUTUMN_WEBHOOK_SECRET: "",
+    } as unknown as AutumnEnv;
+    const payload = {
+      type: "billing.updated",
+      data: {
+        customer_id: "org_1",
+        plan_changes: [
+          { action: "updated", subscription: { plan_id: "pro", past_due: true }, previous_attributes: { past_due: false } },
+        ],
+      },
+    };
+
+    expect((await svixPost(webhookEnv, "msg_1", payload)).status).toBe(200);
+    expect((await svixPost(webhookEnv, "msg_1", payload)).status).toBe(200);
+
+    expect(db.org.payment_past_due_at).not.toBeNull();
+    expect(posted.map((p) => p.event)).toEqual(["billing.payment_failed"]);
   });
 });
