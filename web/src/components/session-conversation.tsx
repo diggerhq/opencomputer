@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Hourglass } from 'lucide-react'
 import type { SessionEvent } from '@/api/client'
 import { Button } from '@/components/ui/button'
-import { UPGRADE_PLAN_LABEL, upgradeHref } from '@/lib/billing-onramp'
+import { CHOOSE_PLAN_LABEL, upgradeHref } from '@/lib/billing-onramp'
 import {
   bodyText,
   httpRequestPayloadText,
@@ -75,7 +75,7 @@ export function MessageBubble({
       <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
       {outOfCredits ? (
         <Button asChild size="sm" className="mt-2">
-          <Link to={upgradeHref()}>Upgrade to {UPGRADE_PLAN_LABEL}</Link>
+          <Link to={upgradeHref()}>{CHOOSE_PLAN_LABEL}</Link>
         </Button>
       ) : null}
     </div>

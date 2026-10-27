@@ -22,9 +22,10 @@ describe('planLabel', () => {
 
 describe('usagePlanLabel', () => {
   it.each([
+    ['trial', 'Trial'],
     ['base', 'Free'],
-    ['pro', 'Pro (legacy)'],
-    ['max', 'Pro'],
+    ['pro', 'Pro'],
+    ['max', 'Max'],
     ['enterprise_custom', 'Enterprise Custom'],
   ])('names usage plan %s as %s', (plan, label) => {
     expect(usagePlanLabel(plan)).toBe(label)
@@ -46,14 +47,17 @@ describe('organizationPlanLabel', () => {
           usagePlan: 'max',
         },
       ),
-    ).toBe('Pro')
+    ).toBe('Max')
   })
 
-  it('labels the retired $20 plan as legacy and the free plan as Free', () => {
+  it('names the $20 plan Pro, the trial Trial and the old free tier Free', () => {
     const autumnBilling = { plan: 'free', billingProvider: 'autumn' }
     expect(
       organizationPlanLabel(org, autumnBilling, { usagePlan: 'pro' }),
-    ).toBe('Pro (legacy)')
+    ).toBe('Pro')
+    expect(
+      organizationPlanLabel(org, autumnBilling, { usagePlan: 'trial' }),
+    ).toBe('Trial')
     expect(
       organizationPlanLabel(org, autumnBilling, { usagePlan: 'base' }),
     ).toBe('Free')

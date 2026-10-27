@@ -199,7 +199,7 @@ export function setupStep(
 
 /** The done row of step 1: what runs the person's threads. */
 export function agentSummary(agent: ComputerAgent): string {
-  if (!agent.subscription) return `${agent.managedModel} · free credits`
+  if (!agent.subscription) return `${agent.managedModel} · OpenComputer credits`
   return agent.subscription.provider === 'codex'
     ? 'Codex · your ChatGPT plan'
     : 'Claude Code · your subscription'

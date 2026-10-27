@@ -1,13 +1,18 @@
-// Display names of the Autumn usage plans. `max` ($200/mo) is sold as "Pro";
-// the retired $20/mo plan (id `pro`) is "Pro (legacy)" for its subscribers.
-export const USAGE_PLAN_NAMES: Record<'base' | 'pro' | 'max', string> = {
+// Display names of the Autumn usage plans (serverless-agents-ws 086): the
+// 7-day trial, Pro ($20/mo, 2,000 work minutes) and Max ($200/mo, 25,000).
+// `base` is the pre-trial free tier, until those orgs are migrated.
+export const USAGE_PLAN_NAMES: Record<
+  'trial' | 'base' | 'pro' | 'max',
+  string
+> = {
+  trial: 'Trial',
   base: 'Free',
-  pro: 'Pro (legacy)',
-  max: 'Pro',
+  pro: 'Pro',
+  max: 'Max',
 }
 
 export function usagePlanLabel(plan: string): string {
-  return plan === 'base' || plan === 'pro' || plan === 'max'
+  return plan === 'trial' || plan === 'base' || plan === 'pro' || plan === 'max'
     ? USAGE_PLAN_NAMES[plan]
     : planLabel(plan)
 }

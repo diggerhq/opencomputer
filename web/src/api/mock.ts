@@ -337,16 +337,85 @@ const apiKeys = [
   },
 ]
 
-const autumn = {
-  isHalted: false,
-  creditsRemainingCents: 4210,
-  concurrencyPlan: 'base',
-  usagePlan: 'base',
-  maxConcurrentSandboxes: 5,
-  autoTopup: { enabled: false, threshold: 5, quantity: 25, budget: 100 },
-  hasToppedUp: true,
-  hasPaidSubscription: false,
-  currency: 'usd',
+// `?billing=` picks a billing state to review: trial (default), pro, max,
+// max_downgrade, halted_<halt_reason>, warning_<warning>.
+function autumnMock() {
+  // Trial and period dates follow the real clock so "days left" reads right.
+  const fromNow = (days: number) =>
+    new Date(Date.now() + days * 86_400_000).toISOString()
+  const scenario =
+    typeof window === 'undefined'
+      ? null
+      : new URLSearchParams(window.location.search).get('billing')
+  const trial = {
+    isHalted: false,
+    haltReason: null as string | null,
+    warning: null as string | null,
+    creditsRemainingCents: 1_000,
+    creditBreakdown: {
+      available: true,
+      planRemainingCents: 1_000,
+      topupRemainingCents: 0,
+      otherRemainingCents: 0,
+      planResetsAt: null,
+    },
+    concurrencyPlan: 'base',
+    usagePlan: 'trial' as string,
+    maxConcurrentSandboxes: 5,
+    autoTopup: { enabled: false, threshold: 5, quantity: 10, budget: 100 },
+    hasToppedUp: false,
+    hasPaidSubscription: false,
+    currency: 'usd',
+    paymentPastDueAt: null,
+    trialStartedAt: fromNow(-2),
+    trialEndsAt: fromNow(4.9),
+    workMinutes: { granted: 600, remaining: 412, resetsAt: null },
+    periodEndsAt: null as string | null,
+    scheduledChange: null as { to: 'pro' | 'cancel'; at: string | null } | null,
+  }
+  const paid = (plan: 'pro' | 'max') => ({
+    ...trial,
+    usagePlan: plan,
+    hasPaidSubscription: true,
+    hasToppedUp: true,
+    creditsRemainingCents: 1_200,
+    creditBreakdown: {
+      ...trial.creditBreakdown,
+      planRemainingCents: 0,
+      topupRemainingCents: 1_200,
+    },
+    autoTopup: { enabled: true, threshold: 5, quantity: 10, budget: 100 },
+    trialStartedAt: fromNow(-30),
+    trialEndsAt: fromNow(-23),
+    workMinutes: {
+      granted: plan === 'pro' ? 2_000 : 25_000,
+      remaining: plan === 'pro' ? 1_240 : 18_400,
+      resetsAt: fromNow(12),
+    },
+    periodEndsAt: fromNow(12),
+  })
+  if (!scenario || scenario === 'trial') return trial
+  if (scenario === 'pro' || scenario === 'max') return paid(scenario)
+  if (scenario === 'max_downgrade')
+    return {
+      ...paid('max'),
+      scheduledChange: { to: 'pro' as const, at: fromNow(12) },
+    }
+  if (scenario.startsWith('warning_'))
+    return { ...trial, warning: scenario.slice('warning_'.length) }
+  if (scenario.startsWith('halted_')) {
+    const haltReason = scenario.slice('halted_'.length)
+    const base = haltReason.startsWith('trial') ? trial : paid('pro')
+    return {
+      ...base,
+      isHalted: true,
+      haltReason,
+      workMinutes: { ...base.workMinutes, remaining: 0 },
+      creditsRemainingCents:
+        haltReason === 'credits_empty' ? 0 : base.creditsRemainingCents,
+    }
+  }
+  return trial
 }
 
 const billing = {
@@ -1805,7 +1874,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ checkpoints, total: checkpoints.length, page: 1, perPage: 20 }),
   ],
   [/^\/api-keys$/, () => apiKeys],
-  [/^\/billing\/autumn$/, () => autumn],
+  [/^\/billing\/autumn$/, () => autumnMock()],
   [/^\/billing\/invoices/, () => ({ invoices: [] })],
   [/^\/billing$/, () => billing],
   [/^\/usage\/sandboxes/, () => sandboxUsage],

@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { AuthContext } from '@/hooks/useAuth'
-import { BASE_GRANT_CENTS } from '@/lib/billing-onramp'
+import { TRIAL_CREDITS_USD } from '@/lib/billing-onramp'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -100,7 +100,6 @@ const disconnectSubscription = (provider: SubscriptionProvider) =>
 // `claude setup-token` prints a long-lived OAuth token with this prefix.
 const SETUP_TOKEN = /^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$/
 const STILL_CHECKING_MS = 10_000
-const FREE_DOLLARS = BASE_GRANT_CENTS / 100
 
 const Cmd = ({ children }: { children: ReactNode }) => (
   <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
@@ -219,7 +218,8 @@ export function AgentSetup({
       await setAgent(next)
       trackAgentChosen(choice)
       if (choice !== 'credits') return
-      if (agent.subscription) notifySuccess('Threads run on free credits now.')
+      if (agent.subscription)
+        notifySuccess('Threads run on OpenComputer credits now.')
       onDone?.()
     },
     onError: (error, choice) => {
@@ -227,7 +227,7 @@ export function AgentSetup({
       reread()
       notifyError(
         choice === 'credits'
-          ? "Couldn't switch to free credits."
+          ? "Couldn't switch to OpenComputer credits."
           : "Couldn't save your choice.",
         error,
       )
@@ -289,8 +289,8 @@ export function AgentSetup({
         <div>
           <p className="text-foreground font-semibold">
             {agent.subscription
-              ? 'Switch to free credits.'
-              : `No subscription? Start with $${FREE_DOLLARS} free.`}
+              ? 'Switch to OpenComputer credits.'
+              : `No subscription? Your trial includes $${TRIAL_CREDITS_USD} of model credits.`}
           </p>
           <p>
             {agent.subscription
@@ -307,7 +307,9 @@ export function AgentSetup({
           {choose.isPending && choose.variables === 'credits' ? (
             <Loader2 className="size-4 animate-spin" aria-hidden />
           ) : null}
-          {onCredits ? 'Using free credits' : 'Use free credits'}
+          {onCredits
+            ? 'Using OpenComputer credits'
+            : 'Use OpenComputer credits'}
         </Button>
       </div>
     </>
@@ -983,8 +985,8 @@ const HEALTH: Record<
 > = {
   ok: 'Connected',
   unchecked: "Saved. We'll check it when your computer starts.",
-  paused: 'Paused. Threads run on free credits.',
-  limited: 'At its limit. Threads run on free credits',
+  paused: 'Paused. Threads run on OpenComputer credits.',
+  limited: 'At its limit. Threads run on OpenComputer credits',
   invalid: 'This token stopped working. Replace it, or resume once fixed.',
 }
 
@@ -1270,7 +1272,7 @@ function ProviderRow({
         title={`Disconnect ${name}?`}
         description={
           runs
-            ? `Threads run on free credits (${agent.managedModel}) until you connect one again.`
+            ? `Threads run on OpenComputer credits (${agent.managedModel}) until you connect one again.`
             : `${name} stays off until you connect it again.`
         }
         confirmLabel="Disconnect"

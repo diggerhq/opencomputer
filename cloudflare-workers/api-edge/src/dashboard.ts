@@ -27,7 +27,9 @@ import {
   summarizeAutumnCreditBalance,
   autumnSetAutoTopup,
   autumnOpenCustomerPortal,
+  autumnCancelPlan,
 } from "./autumn_webhook";
+import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_summary";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 import {
@@ -1397,6 +1399,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/concurrency" && method === "POST") {
     return handleAutumnConcurrency(req, env, caller);
   }
+  if (sub === "/billing/autumn/cancel" && method === "POST") {
+    return handleAutumnCancel(req, env, caller);
+  }
   if (sub === "/billing/autumn/auto-topup" && method === "POST") {
     return handleAutumnAutoTopup(req, env, caller);
   }
@@ -1708,6 +1713,15 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
   const hasPaidSubscription = usagePlan === "pro" || usagePlan === "max";
   const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
+  const plan = summarizeWorkMinutePlan(r.customer);
+  const billingState = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT halt_reason, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
+  ).bind(caller.orgID).first<{
+    halt_reason: string | null;
+    payment_past_due_at: number | null;
+    trial_started_at: number | null;
+  }>();
+  const warning = await billingWarning(env, caller.orgID);
 
   const model = await env.OPENCOMPUTER_DB.prepare(
     `SELECT
@@ -1757,8 +1771,16 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     },
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
-    usagePlan,
+    usagePlan: plan.usagePlan,
     isHalted: r.halted,
+    haltReason: r.haltReason,
+    warning,
+    paymentPastDueAt: secondsToIso(billingState?.payment_past_due_at),
+    trialStartedAt: secondsToIso(billingState?.trial_started_at),
+    trialEndsAt: trialEndsAt(billingState?.trial_started_at),
+    workMinutes: plan.workMinutes,
+    periodEndsAt: plan.periodEndsAt,
+    scheduledChange: plan.scheduledChange,
     hasToppedUp,
     hasPaidSubscription,
     autoTopup: at
@@ -1787,6 +1809,23 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   });
 }
 
+function secondsToIso(value: number | null | undefined): string | null {
+  return value == null ? null : new Date(value * 1_000).toISOString();
+}
+
+// orgs.billing_warning (migration 0015) is written by the billing clock; read
+// apart so the page still loads on a database that does not have it yet.
+async function billingWarning(env: DashboardEnv, orgID: string): Promise<string | null> {
+  try {
+    const row = await env.OPENCOMPUTER_DB.prepare("SELECT billing_warning FROM orgs WHERE id = ?1")
+      .bind(orgID)
+      .first<{ billing_warning: string | null }>();
+    return row?.billing_warning ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Where a checkout was opened from (086 funnel); anything else is the Billing page.
 const CHECKOUT_FROM = new Set(["paywall", "warning", "billing_page", "signup"]);
 
@@ -1807,10 +1846,14 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
   }
   const origin = new URL(req.url).origin;
   try {
+    const current = await env.OPENCOMPUTER_DB.prepare("SELECT usage_plan FROM orgs WHERE id = ?1")
+      .bind(caller.orgID)
+      .first<{ usage_plan: string | null }>();
     const co = await autumnUsagePlanPurchase(env, {
       customerId: caller.orgID,
       planId: plan,
       successUrl: `${origin}/billing?usage-plan=${plan}`,
+      planSchedule: planSchedule(current?.usage_plan === "max" ? "max" : "base", plan),
     });
     await emitBillingEvent(env, "billing.checkout_opened", {
       orgId: caller.orgID,
@@ -1820,6 +1863,34 @@ async function handleAutumnUsagePlan(req: Request, env: DashboardEnv, caller: { 
     return json({ url: co.url });
   } catch (e) {
     console.error("billing/autumn plan:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
+}
+
+// POST /api/dashboard/billing/autumn/cancel { plan, undo? } — cancel the paid
+// plan at the end of its period, or (undo) keep it, which also drops a
+// scheduled $200 → $20 downgrade.
+async function handleAutumnCancel(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { plan?: string; undo?: boolean };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const plan = body.plan ?? "";
+  if (plan !== "pro" && plan !== "max") {
+    return json({ error: `unknown usage plan '${plan}'` }, 400);
+  }
+  try {
+    await autumnCancelPlan(env, {
+      customerId: caller.orgID,
+      planId: plan,
+      action: body.undo ? "uncancel" : "cancel_end_of_cycle",
+    });
+    return json({ ok: true });
+  } catch (e) {
+    console.error("billing/autumn cancel:", e);
     return json({ error: (e as Error).message }, 502);
   }
 }

@@ -101,6 +101,9 @@ export interface AutumnSubscription {
   plan_id: string;
   add_on: boolean;
   status: string;
+  // Set when the subscription is cancelled at the period end.
+  canceled_at?: number | null;
+  current_period_end?: number | null;
 }
 export interface AutumnAutoTopup {
   feature_id: string;
@@ -137,6 +140,7 @@ export interface AutumnBalanceBreakdown {
 }
 
 export interface AutumnBalance {
+  granted?: number;
   remaining?: number;
   next_reset_at?: number | null;
   breakdown?: AutumnBalanceBreakdown[];
@@ -1016,7 +1020,13 @@ export async function autumnPurchase(
 // stack; paid-plan switches keep Autumn's normal replacement/proration rules.
 export async function autumnUsagePlanPurchase(
   env: AutumnApiEnv,
-  params: { customerId: string; planId: "pro" | "max"; successUrl: string },
+  params: {
+    customerId: string;
+    planId: "pro" | "max";
+    successUrl: string;
+    // A downgrade waits for the period end (086 "Plan changes").
+    planSchedule?: "immediate" | "end_of_cycle";
+  },
 ): Promise<{ url: string | null }> {
   const customer = await getAutumnCustomer(env, params.customerId);
   const upgradingFromUsage = (customer?.subscriptions ?? []).some(
@@ -1028,7 +1038,7 @@ export async function autumnUsagePlanPurchase(
     customer_id: params.customerId,
     plan_id: params.planId,
     success_url: params.successUrl,
-    plan_schedule: "immediate",
+    plan_schedule: params.planSchedule ?? "immediate",
   };
   if (upgradingFromUsage) {
     body.carry_over_balances = {
@@ -1096,6 +1106,27 @@ export async function autumnOpenCustomerPortal(
   if (!resp.ok) throw new Error(`autumn open_customer_portal ${resp.status}: ${await resp.text()}`);
   const d = (await resp.json()) as { url?: string };
   return { url: d.url ?? null };
+}
+
+// autumnCancelPlan cancels a paid plan at the end of its period, or with
+// `uncancel` keeps it (also dropping a scheduled downgrade) —
+// POST /billing.update. Autumn re-enables the trial when the plan ends, which
+// the halt rules read as lapsed.
+export async function autumnCancelPlan(
+  env: AutumnApiEnv,
+  params: { customerId: string; planId: "pro" | "max"; action: "cancel_end_of_cycle" | "uncancel" },
+): Promise<void> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.update`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "x-api-version": "2.3.0",
+    },
+    body: JSON.stringify({ customer_id: params.customerId, plan_id: params.planId, cancel_action: params.action }),
+  });
+  if (!resp.ok) throw new Error(`autumn billing.update ${resp.status}: ${await resp.text()}`);
 }
 
 // autumnTopUpCharge buys `quantity` credits while ensuring the card ends up saved

@@ -22,7 +22,7 @@ import {
 } from './project-context'
 import {
   UPGRADE_PLAN,
-  UPGRADE_PLAN_LABEL,
+  planPriceLabel,
   trackUpsellClicked,
   trackUpsellShown,
   upgradeHref,
@@ -194,11 +194,11 @@ export function ManagedProjectBYOK({
         <EmptyState
           icon={LockKeyhole}
           title="BYOK is available on Pro"
-          description={`Bring your own provider keys and route this project's models through them. Available on ${UPGRADE_PLAN_LABEL}.`}
+          description={`Bring your own provider keys and route this project's models through them. Available on ${planPriceLabel('pro')} and ${planPriceLabel('max')}.`}
           action={
             <Button asChild>
               <Link
-                to={upgradeHref()}
+                to={upgradeHref(UPGRADE_PLAN)}
                 onClick={() =>
                   trackUpsellClicked({
                     surface: 'byok_gate',
@@ -206,7 +206,7 @@ export function ManagedProjectBYOK({
                   })
                 }
               >
-                Upgrade to {UPGRADE_PLAN_LABEL}
+                Upgrade to {planPriceLabel(UPGRADE_PLAN)}
               </Link>
             </Button>
           }

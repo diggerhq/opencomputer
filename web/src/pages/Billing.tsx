@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
-  autumnBillingPortal,
-  autumnSubscribeUsagePlan,
+  autumnCancelPlan,
   billingPortal,
   billingSetup,
   getAutumnBilling,
@@ -17,6 +16,7 @@ import {
   redeemPromoCode,
   setAutumnAutoTopup,
   type AutumnBilling,
+  type CheckoutFrom,
   type AgentSessionUsageRow,
   type StripeInvoice,
 } from '@/api/client'
@@ -25,32 +25,37 @@ import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Field, Input, Label } from '@/components/form'
+import { Field, Input, Label, Select } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { cn } from '@/lib/utils'
 import {
-  FREE_CREDITS_PAYWALL,
+  CENTS_PER_CREDIT,
+  CREDIT_PACKS_USD,
+  OVERAGE_USD_PER_MINUTE,
+  PAID_PLANS,
   PLAN_NAMES,
   PLAN_OFFERS,
-  CENTS_PER_CREDIT,
-  UPGRADE_PLAN,
-  UPGRADE_PLAN_LABEL,
+  TRIAL_CREDITS_USD,
+  TRIAL_DAYS,
+  TRIAL_MINUTES,
   billingOnrampV2Enabled,
   deepLinkedPlanFor,
   formatCreditCount,
-  formatCredits,
-  lowCreditThresholdCents,
-  planGrantCents,
-  selectablePaidPlans,
-  trackCheckoutStarted,
+  formatMinutes,
+  formatUsd,
+  planChangeTiming,
+  planPriceLabel,
   trackPlanActivated,
   trackUpsellShown,
+  type CreditPackUsd,
   type PaidPlanId,
   type UsagePlanId,
 } from '@/lib/billing-onramp'
+import { useBillingActions } from '@/hooks/useBillingActions'
+import { HaltNoticeBody } from '@/components/billing-surfaces'
 
 type Tab = 'usage' | 'invoices'
 
@@ -260,79 +265,17 @@ function PlanTab() {
 
 /* ── Prepaid (Autumn) ─────────────────────────────────────────────────────── */
 
-// Plans on the Billing page. `max` is the one plan on sale, shown as "Pro".
-// The retired $20 plan (id `pro`, "Pro (legacy)") is listed only to orgs
-// already subscribed to it; see selectablePaidPlans.
-const USAGE_PLANS: Array<{
-  id: UsagePlanId
-  label: string
-  price: number
-  credits: number | null
-  description: string
-}> = [
-  {
-    id: 'base',
-    label: PLAN_NAMES.base,
-    price: 0,
-    credits: null,
-    description: 'Free credits to get started. Upgrade when they run out.',
-  },
-  {
-    id: 'pro',
-    label: PLAN_NAMES.pro,
-    price: PLAN_OFFERS.pro.priceUsd,
-    credits: PLAN_OFFERS.pro.creditsUsd,
-    description: `${formatCredits(PLAN_OFFERS.pro.creditsUsd * CENTS_PER_CREDIT)} added every month. No longer offered to new customers.`,
-  },
-  {
-    id: 'max',
-    label: PLAN_NAMES.max,
-    price: PLAN_OFFERS.max.priceUsd,
-    credits: PLAN_OFFERS.max.creditsUsd,
-    description: `${formatCredits(PLAN_OFFERS.max.creditsUsd * CENTS_PER_CREDIT)} added every month.`,
-  },
-]
-
-// The plans shown to an org: Free, Pro, and legacy Pro only for its subscribers.
-function visibleUsagePlans(current: UsagePlanId) {
-  const paid = selectablePaidPlans(current)
-  return USAGE_PLANS.filter(
-    (plan) => plan.id === 'base' || paid.includes(plan.id),
-  )
+// The plan picker of serverless-agents-ws 086: the trial, Pro ($20/mo, 2,000
+// work minutes) and Max ($200/mo, 25,000). Upgrades apply now; Max → Pro and
+// cancelling take effect at the end of the paid period.
+const PLAN_DESCRIPTIONS: Record<UsagePlanId, string> = {
+  trial: `${formatMinutes(TRIAL_MINUTES)} of work and $${TRIAL_CREDITS_USD} of model credits for ${TRIAL_DAYS} days. No card needed.`,
+  base: 'Free credits to get started.',
+  pro: `${formatMinutes(PLAN_OFFERS.pro.minutes)} of work a month.`,
+  max: `${formatMinutes(PLAN_OFFERS.max.minutes)} of work a month.`,
 }
 
-// How much of the plan's grant is left, like the sidebar meter.
-function CreditMeter({
-  remainingCents,
-  plan,
-  halted,
-}: {
-  remainingCents: number
-  plan: UsagePlanId
-  halted: boolean
-}) {
-  const grant = Math.max(planGrantCents(plan), remainingCents)
-  const pct = Math.max(0, Math.min(100, (remainingCents / grant) * 100))
-  const low = !halted && remainingCents <= lowCreditThresholdCents(plan)
-  return (
-    <div className="mt-4">
-      <div className="bg-secondary h-2 overflow-hidden rounded-full">
-        <div
-          className={cn(
-            'h-full rounded-full transition-[width] duration-700',
-            halted ? 'bg-destructive' : low ? 'bg-amber-500' : 'bg-primary',
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <p className="text-muted-foreground mt-1.5 font-mono text-[11px]">
-        {formatCreditCount(remainingCents)} of {formatCredits(grant)} left
-      </p>
-    </div>
-  )
-}
-
-function formatResetDate(value: string) {
+function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'long',
     day: 'numeric',
@@ -340,8 +283,20 @@ function formatResetDate(value: string) {
   }).format(new Date(value))
 }
 
+function checkoutFromParam(value: string | null): CheckoutFrom {
+  return value === 'paywall' || value === 'warning' || value === 'signup'
+    ? value
+    : 'billing_page'
+}
+
+// A pending plan change waiting for the user's confirmation.
+type PlanDialog =
+  | { kind: 'switch'; plan: PaidPlanId }
+  | { kind: 'cancel'; plan: PaidPlanId }
+
 function PrepaidPlan() {
   const queryClient = useQueryClient()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const redirectedPlan = searchParams.get('usage-plan')
   const pendingUsagePlan =
@@ -352,27 +307,44 @@ function PrepaidPlan() {
     queryFn: getAutumnBilling,
     refetchInterval: pendingUsagePlan != null ? 1_500 : 30_000,
   })
-  // `?plan=` (upsell deep link) opens the Pro ($200) upgrade confirmation
-  // directly. Old `?plan=pro` links open it too; legacy Pro is never offered.
+  const currentPlan: UsagePlanId = autumn?.usagePlan ?? 'trial'
+  // `?plan=` (upsell or site deep link) opens that plan's upgrade confirmation.
   const deepLinkedPlan =
     billingOnrampV2Enabled && autumn
       ? deepLinkedPlanFor(searchParams.get('plan'), autumn.usagePlan)
       : null
-  const [confirmUsagePlanId, setConfirmUsagePlanId] =
-    useState<PaidPlanId | null>(null)
+  const [dialog, setDialog] = useState<PlanDialog | null>(null)
   // While `?plan=` is in the URL it drives the dialog; closing it clears the
   // param so the same link can reopen it later.
-  const openUsagePlanId = confirmUsagePlanId ?? deepLinkedPlan
-  const clearDeepLink = () => {
+  const openDialog: PlanDialog | null =
+    dialog ?? (deepLinkedPlan ? { kind: 'switch', plan: deepLinkedPlan } : null)
+  const closeDialog = () => {
+    setDialog(null)
     if (!searchParams.has('plan')) return
     const next = new URLSearchParams(searchParams)
     next.delete('plan')
     setSearchParams(next, { replace: true })
   }
-  const closeUsagePlanDialog = () => {
-    setConfirmUsagePlanId(null)
-    clearDeepLink()
-  }
+
+  const actions = useBillingActions({
+    from: checkoutFromParam(searchParams.get('from')),
+    usagePlan: autumn?.usagePlan,
+    onPlanChanged: closeDialog,
+  })
+  const cancelMutation = useMutation({
+    mutationFn: (v: { plan: PaidPlanId; undo: boolean }) =>
+      autumnCancelPlan(v.plan, v.undo),
+    onSuccess: (_d, v) => {
+      closeDialog()
+      toast.success(v.undo ? 'Your plan stays as it is' : 'Plan cancelled', {
+        description: v.undo
+          ? undefined
+          : 'It stays active until the end of the period.',
+      })
+      void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+    },
+    onError: (e) => notifyError("Couldn't update your plan.", e),
+  })
 
   useEffect(() => {
     if (!deepLinkedPlan || !autumn) return
@@ -392,7 +364,7 @@ function PrepaidPlan() {
     if (!activationToastShown.current) {
       const label = PLAN_NAMES[pendingUsagePlan]
       toast.success(`${label} plan activated`, {
-        description: 'Your monthly credits are ready to use.',
+        description: 'Your work minutes are ready to use.',
       })
       trackPlanActivated({ plan: pendingUsagePlan })
       activationToastShown.current = true
@@ -402,28 +374,13 @@ function PrepaidPlan() {
     setSearchParams(next, { replace: true })
   }, [autumn?.usagePlan, pendingUsagePlan, searchParams, setSearchParams])
 
-  // url present → redirect to hosted checkout (new card); url null → the
-  // existing card was charged server-side, so just refresh the balance.
-  const onPurchase = (data: { url: string | null }) => {
-    if (data.url) window.location.href = data.url
-    else void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
-  }
-  const usagePlanMutation = useMutation({
-    mutationFn: (plan: 'pro' | 'max') => autumnSubscribeUsagePlan(plan),
-    onSuccess: (d, plan) => {
-      closeUsagePlanDialog()
-      trackCheckoutStarted({ plan, usagePlan: autumn?.usagePlan })
-      if (!d.url) {
-        const label = PLAN_NAMES[plan]
-        toast.success(`${label} plan updated`, {
-          description: 'Your billing status and credits are refreshing.',
-        })
-        trackPlanActivated({ plan, usagePlan: autumn?.usagePlan })
-      }
-      onPurchase(d)
-    },
-    onError: (e) => notifyError("Couldn't update your plan.", e),
-  })
+  // Prompts link to #plans, #credits or #payment.
+  useEffect(() => {
+    if (isLoading || !location.hash) return
+    document
+      .getElementById(location.hash.slice(1))
+      ?.scrollIntoView({ block: 'start' })
+  }, [isLoading, location.hash])
 
   // Whether a card is on file → offer the Stripe portal to manage it. Compliance
   // requires that anyone with a saved card can view/update/remove it.
@@ -431,25 +388,23 @@ function PrepaidPlan() {
     queryKey: ['billing'],
     queryFn: getBilling,
   })
-  const portalMutation = useMutation({
-    mutationFn: autumnBillingPortal,
-    onSuccess: (data) => {
-      window.location.href = data.url
-    },
-    onError: (e) => notifyError("Couldn't open the billing portal.", e),
-  })
 
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
-  const creditBreakdown = autumn?.creditBreakdown
   const halted = autumn?.isHalted ?? false
-  const selectedUsagePlan = USAGE_PLANS.find(
-    (plan) => plan.id === openUsagePlanId,
-  )
   const hasCard =
     (billing?.hasPaymentMethod ?? false) ||
     (autumn?.hasToppedUp ?? false) ||
     (autumn?.hasPaidSubscription ?? false)
+  const scheduled = autumn?.scheduledChange ?? null
+  const dialogPlan = openDialog?.plan
+  const dialogTiming =
+    openDialog?.kind === 'switch'
+      ? planChangeTiming(currentPlan, openDialog.plan)
+      : null
+  const periodEnd = autumn?.periodEndsAt
+    ? formatDate(autumn.periodEndsAt)
+    : 'the end of the period'
 
   return (
     <div className="max-w-5xl space-y-4">
@@ -462,246 +417,385 @@ function PrepaidPlan() {
                 Activating {PLAN_NAMES[pendingUsagePlan]}…
               </h2>
               <p className="text-muted-foreground mt-1 text-sm">
-                Payment completed. We are waiting for the plan and monthly
-                credits to synchronize.
+                Payment completed. We are waiting for the plan and its work
+                minutes to synchronize.
               </p>
             </div>
           </div>
         </Panel>
       ) : null}
-      <UsagePlanCard
-        currentPlan={autumn?.usagePlan ?? 'base'}
-        onSelectPlan={setConfirmUsagePlanId}
-        onManage={() => portalMutation.mutate()}
-        managing={portalMutation.isPending}
+
+      {/* The halt modal stays off this page so its way out is reachable. */}
+      {halted ? (
+        <Panel className="border-destructive/40 p-6">
+          <HaltNoticeBody
+            reason={autumn?.haltReason}
+            usagePlan={autumn?.usagePlan}
+            from={
+              searchParams.get('from') === 'paywall'
+                ? 'paywall'
+                : 'billing_page'
+            }
+          />
+        </Panel>
+      ) : null}
+
+      {autumn ? <UsageSummary autumn={autumn} /> : null}
+
+      <PlanPicker
+        currentPlan={currentPlan}
+        trialEndsAt={autumn?.trialEndsAt ?? null}
+        periodEndsAt={autumn?.periodEndsAt ?? null}
+        scheduled={scheduled}
+        busy={actions.pending || cancelMutation.isPending}
+        onSwitch={(plan) => setDialog({ kind: 'switch', plan })}
+        onCancel={(plan) => setDialog({ kind: 'cancel', plan })}
+        onUndo={(plan) => cancelMutation.mutate({ plan, undo: true })}
       />
-      {/* Credits */}
-      <Panel className="p-6">
-        <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
-        <div className="flex items-baseline gap-3">
-          <span
-            className={cn(
-              'font-mono text-4xl font-semibold',
-              halted ? 'text-status-error' : 'text-status-running',
-            )}
-          >
-            {formatCreditCount(autumn?.creditsRemainingCents ?? 0)}
-          </span>
-          <span className="text-muted-foreground text-xs">
-            credits available
-          </span>
-        </div>
-        <CreditMeter
-          remainingCents={autumn?.creditsRemainingCents ?? 0}
-          plan={autumn?.usagePlan ?? 'base'}
-          halted={halted}
-        />
-        {creditBreakdown?.available ? (
-          <div className="mt-5 space-y-3 border-t pt-4 text-sm">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="font-medium">
-                  {autumn?.usagePlan === 'base'
-                    ? 'Signup credits'
-                    : `${PLAN_NAMES[autumn?.usagePlan ?? 'max']} plan credits`}
-                </p>
-                <p className="text-muted-foreground mt-0.5 text-xs">
-                  {creditBreakdown.planResetsAt
-                    ? `Used first · resets to ${formatCredits((USAGE_PLANS.find((plan) => plan.id === autumn?.usagePlan)?.credits ?? 0) * CENTS_PER_CREDIT)} on ${formatResetDate(creditBreakdown.planResetsAt)}`
-                    : 'One-time included balance'}
-                </p>
-              </div>
-              <span className="font-mono font-medium">
-                {formatCredits(creditBreakdown.planRemainingCents)}
-              </span>
-            </div>
-            {creditBreakdown.topupRemainingCents > 0 ? (
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="font-medium">Top-up credits</p>
-                  <p className="text-muted-foreground mt-0.5 text-xs">
-                    Used after plan credits · carries forward
-                  </p>
-                </div>
-                <span className="font-mono font-medium">
-                  {formatCredits(creditBreakdown.topupRemainingCents)}
-                </span>
-              </div>
-            ) : null}
-            {creditBreakdown.otherRemainingCents > 0 ? (
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="font-medium">Carried or promotional credits</p>
-                  <p className="text-muted-foreground mt-0.5 text-xs">
-                    Preserved separately from this month&apos;s allowance
-                  </p>
-                </div>
-                <span className="font-mono font-medium">
-                  {formatCredits(creditBreakdown.otherRemainingCents)}
-                </span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {halted ? (
-          <div className="text-status-error mt-2 space-y-2 text-sm">
-            <p className="flex items-center gap-1.5">
-              <CircleAlert className="size-4 shrink-0" />
-              {autumn?.usagePlan === 'pro' || autumn?.usagePlan === 'max'
-                ? 'Credits exhausted — agents are running on an open-weight model (GLM)'
-                : FREE_CREDITS_PAYWALL}
-            </p>
-            {autumn?.usagePlan !== UPGRADE_PLAN ? (
-              <Button
-                size="sm"
-                onClick={() => setConfirmUsagePlanId(UPGRADE_PLAN)}
-              >
-                Upgrade to {UPGRADE_PLAN_LABEL}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-      </Panel>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
-        {/* Top-ups are no longer sold. An org that already turned on
-            automatic top-up keeps the card so it can change or turn it off. */}
-        {autumn?.autoTopup?.enabled ? (
-          <AutoTopupCard
-            current={autumn.autoTopup}
-            hasToppedUp={autumn.hasToppedUp}
-          />
-        ) : null}
-
-        {hasCard ? (
-          <Panel className="p-6">
-            <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
-            <p className="text-muted-foreground mb-3 text-sm">
-              Update your card, download invoices, or remove your payment method
-              on Stripe.
-            </p>
-            <Button
-              variant="outline"
-              onClick={() => portalMutation.mutate()}
-              disabled={portalMutation.isPending}
-            >
-              {portalMutation.isPending
-                ? 'Opening Stripe…'
-                : 'Manage payment method ↗'}
-            </Button>
-          </Panel>
-        ) : null}
+        <CreditPacksCard
+          creditsRemainingCents={autumn?.creditsRemainingCents ?? 0}
+          busy={actions.pending}
+          onBuy={(usd) => actions.buyPack.mutate(usd)}
+        />
+        <AutoTopupCard
+          current={autumn?.autoTopup ?? null}
+          hasToppedUp={autumn?.hasToppedUp ?? false}
+        />
       </div>
+
+      <Panel id="payment" className="scroll-mt-24 p-6">
+        <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
+        <p className="text-muted-foreground mb-3 text-sm">
+          {hasCard
+            ? 'Update your card, download invoices, or remove your payment method on Stripe.'
+            : 'No card on file yet. You add one when you choose a plan or buy credits.'}
+        </p>
+        {hasCard ? (
+          <Button
+            variant="outline"
+            onClick={() => actions.portal.mutate()}
+            disabled={actions.portal.isPending}
+          >
+            {actions.portal.isPending ? 'Opening Stripe…' : 'Update card ↗'}
+          </Button>
+        ) : null}
+      </Panel>
 
       <AgentUsageBreakdown usage={autumn?.modelUsage ?? null} />
 
       <ConfirmDialog
-        open={!!selectedUsagePlan}
-        onOpenChange={(open) => !open && closeUsagePlanDialog()}
-        title={`Switch to ${selectedUsagePlan?.label ?? ''}`}
+        open={openDialog?.kind === 'switch' && !!dialogPlan}
+        onOpenChange={(open) => !open && closeDialog()}
+        title={
+          dialogTiming === 'period_end'
+            ? `Switch to ${dialogPlan ? PLAN_NAMES[dialogPlan] : ''} on ${periodEnd}`
+            : `Upgrade to ${dialogPlan ? PLAN_NAMES[dialogPlan] : ''}`
+        }
         description={
-          selectedUsagePlan
-            ? `${selectedUsagePlan.label} costs $${selectedUsagePlan.price}/month and adds ${formatCredits((selectedUsagePlan.credits ?? 0) * CENTS_PER_CREDIT)} each month. Autumn applies the plan change and any required proration through Stripe.`
+          dialogPlan
+            ? dialogTiming === 'period_end'
+              ? `You keep Max until ${periodEnd}. Then Pro starts at $${PLAN_OFFERS.pro.priceUsd}/month with ${formatMinutes(PLAN_OFFERS.pro.minutes)} a month.`
+              : `${planPriceLabel(dialogPlan)} starts now with ${formatMinutes(PLAN_OFFERS[dialogPlan].minutes)} a month. Stripe prorates any change from your current plan.`
             : ''
         }
         confirmLabel={
-          selectedUsagePlan
-            ? `${selectedUsagePlan.label} — $${selectedUsagePlan.price}/mo`
+          dialogPlan
+            ? dialogTiming === 'period_end'
+              ? `Switch on ${periodEnd}`
+              : `${PLAN_NAMES[dialogPlan]} — $${PLAN_OFFERS[dialogPlan].priceUsd}/mo`
             : 'Continue'
         }
-        pending={usagePlanMutation.isPending}
+        pending={actions.subscribe.isPending}
+        onConfirm={() => dialogPlan && actions.subscribe.mutate(dialogPlan)}
+      />
+      <ConfirmDialog
+        open={openDialog?.kind === 'cancel'}
+        onOpenChange={(open) => !open && closeDialog()}
+        title={`Cancel ${dialogPlan ? PLAN_NAMES[dialogPlan] : ''}?`}
+        description={`Your plan stays active until ${periodEnd}. After that, work pauses until you choose a plan again.`}
+        confirmLabel={`Cancel on ${periodEnd}`}
+        cancelLabel="Keep plan"
+        destructive
+        pending={cancelMutation.isPending}
         onConfirm={() =>
-          selectedUsagePlan &&
-          selectedUsagePlan.id !== 'base' &&
-          usagePlanMutation.mutate(selectedUsagePlan.id)
+          dialogPlan && cancelMutation.mutate({ plan: dialogPlan, undo: false })
         }
       />
     </div>
   )
 }
 
-function UsagePlanCard({
+// Work minutes left this period (or in the trial) and the credit balance
+// overage draws from.
+function UsageSummary({ autumn }: { autumn: AutumnBilling }) {
+  const minutes = autumn.workMinutes
+  const halted = autumn.isHalted
+  const pct = minutes
+    ? Math.max(
+        0,
+        Math.min(100, (minutes.remaining / Math.max(1, minutes.granted)) * 100),
+      )
+    : 0
+  const low = pct <= 20
+  const resetLine =
+    autumn.usagePlan === 'trial'
+      ? autumn.trialEndsAt
+        ? `Trial ends ${formatDate(autumn.trialEndsAt)}`
+        : null
+      : minutes?.resetsAt
+        ? `Resets ${formatDate(minutes.resetsAt)}`
+        : null
+  return (
+    <Panel className="grid gap-6 p-6 md:grid-cols-2">
+      <div>
+        <h2 className="text-sm font-semibold">Work minutes</h2>
+        {minutes ? (
+          <>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span
+                className={cn(
+                  'font-mono text-3xl font-semibold',
+                  halted && 'text-status-error',
+                )}
+              >
+                {new Intl.NumberFormat('en-US').format(minutes.remaining)}
+              </span>
+              <span className="text-muted-foreground text-xs">
+                of {formatMinutes(minutes.granted)} left
+              </span>
+            </div>
+            <div className="bg-secondary mt-3 h-2 overflow-hidden rounded-full">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-[width] duration-700',
+                  halted
+                    ? 'bg-destructive'
+                    : low
+                      ? 'bg-amber-500'
+                      : 'bg-primary',
+                )}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            {resetLine ? (
+              <p className="text-muted-foreground mt-1.5 font-mono text-[11px]">
+                {resetLine}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-muted-foreground mt-3 text-sm">
+            Choose a plan to get work minutes.
+          </p>
+        )}
+      </div>
+      <div>
+        <h2 className="text-sm font-semibold">Credits</h2>
+        <div className="mt-3 flex items-baseline gap-2">
+          <span className="font-mono text-3xl font-semibold">
+            {formatUsd(autumn.creditsRemainingCents)}
+          </span>
+          <span className="text-muted-foreground text-xs">available</span>
+        </div>
+        <p className="text-muted-foreground mt-3 text-sm">
+          {autumn.usagePlan === 'trial'
+            ? 'Model credits included with your trial.'
+            : `Used past your monthly minutes, at $${OVERAGE_USD_PER_MINUTE}/min, and for models.`}
+        </p>
+      </div>
+    </Panel>
+  )
+}
+
+function PlanPicker({
   currentPlan,
-  onSelectPlan,
-  onManage,
-  managing,
+  trialEndsAt,
+  periodEndsAt,
+  scheduled,
+  busy,
+  onSwitch,
+  onCancel,
+  onUndo,
 }: {
   currentPlan: UsagePlanId
-  onSelectPlan: (plan: PaidPlanId) => void
-  onManage: () => void
-  managing: boolean
+  trialEndsAt: string | null
+  periodEndsAt: string | null
+  scheduled: AutumnBilling['scheduledChange'] | null
+  busy: boolean
+  onSwitch: (plan: PaidPlanId) => void
+  onCancel: (plan: PaidPlanId) => void
+  onUndo: (plan: PaidPlanId) => void
 }) {
+  const paidCurrent =
+    currentPlan === 'pro' || currentPlan === 'max' ? currentPlan : null
+  // The trial (or the old free tier) is listed only while the org is on it.
+  const plans: UsagePlanId[] = paidCurrent
+    ? PAID_PLANS
+    : [currentPlan, ...PAID_PLANS]
+  const changeDate = scheduled?.at ? formatDate(scheduled.at) : null
   return (
-    <Panel className="p-6">
+    <Panel id="plans" className="scroll-mt-24 p-6">
       <div className="mb-4">
         <h2 className="text-sm font-semibold">Plan</h2>
         <p className="text-muted-foreground mt-1 text-sm">
-          Monthly credits are shared by serverless-agent sessions and sandboxes.
+          Work minutes cover your computer and automations. Past them, work
+          draws prepaid credits at ${OVERAGE_USD_PER_MINUTE}/min.
         </p>
       </div>
       <div
         className={cn(
           'grid gap-3',
-          currentPlan === 'pro' ? 'md:grid-cols-3' : 'md:grid-cols-2',
+          plans.length === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2',
         )}
       >
-        {visibleUsagePlans(currentPlan).map((plan) => {
-          const planId = plan.id
-          const current = plan.id === currentPlan
+        {plans.map((plan) => {
+          const current = plan === currentPlan
+          const paid = plan === 'pro' || plan === 'max' ? plan : null
+          const startsLater = scheduled?.to === 'pro' && plan === 'pro'
+          const cancelling = current && scheduled?.to === 'cancel'
+          let note: string | null = null
+          if (current && plan === 'trial' && trialEndsAt)
+            note = `Ends ${formatDate(trialEndsAt)}`
+          else if (cancelling) note = `Ends ${changeDate ?? 'at period end'}`
+          else if (current && scheduled?.to === 'pro')
+            note = `Until ${changeDate ?? 'the period ends'}`
+          else if (current && paid && periodEndsAt)
+            note = `Renews ${formatDate(periodEndsAt)}`
+          else if (startsLater) note = `Starts ${changeDate ?? 'at period end'}`
           return (
-            <div key={plan.id} className="rounded-md border p-4">
+            <div
+              key={plan}
+              className={cn(
+                'flex flex-col rounded-md border p-4',
+                current && 'border-foreground/40',
+              )}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="font-medium">{plan.label}</div>
+                  <div className="font-medium">{PLAN_NAMES[plan]}</div>
                   <div className="mt-1 font-mono text-xl font-semibold">
-                    ${plan.price}
+                    {paid ? `$${PLAN_OFFERS[paid].priceUsd}` : '$0'}
                     <span className="text-muted-foreground text-xs font-normal">
-                      /mo
+                      {paid ? '/mo' : ` for ${TRIAL_DAYS} days`}
                     </span>
                   </div>
                 </div>
-                {current ? <StatusBadge status="active" /> : null}
+                {current ? (
+                  <StatusBadge status="active" label="Current" />
+                ) : startsLater ? (
+                  <StatusBadge status="pending" label="Scheduled" />
+                ) : null}
               </div>
               <p className="text-muted-foreground mt-3 min-h-10 text-sm">
-                {plan.description}
+                {PLAN_DESCRIPTIONS[plan]}
               </p>
-              {current ? (
-                currentPlan === 'base' ? (
-                  <Button className="mt-4 w-full" variant="outline" disabled>
+              {note ? (
+                <p
+                  className={cn(
+                    'mt-1 font-mono text-[11px]',
+                    cancelling ? 'text-status-error' : 'text-muted-foreground',
+                  )}
+                >
+                  {note}
+                </p>
+              ) : null}
+              <div className="mt-auto pt-4">
+                {!paid ? (
+                  <Button className="w-full" variant="outline" disabled>
                     Current plan
+                  </Button>
+                ) : current ? (
+                  scheduled ? (
+                    <Button
+                      className="w-full"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => onUndo(paid)}
+                    >
+                      Keep {PLAN_NAMES[paid]}
+                    </Button>
+                  ) : (
+                    <Button
+                      className="w-full"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => onCancel(paid)}
+                    >
+                      Cancel plan
+                    </Button>
+                  )
+                ) : startsLater ? (
+                  <Button className="w-full" variant="outline" disabled>
+                    Starts {changeDate ?? 'at period end'}
                   </Button>
                 ) : (
                   <Button
-                    className="mt-4 w-full"
-                    variant="outline"
-                    disabled={managing}
-                    onClick={onManage}
+                    className="w-full"
+                    variant={
+                      planChangeTiming(currentPlan, paid) === 'now'
+                        ? 'default'
+                        : 'outline'
+                    }
+                    disabled={busy}
+                    onClick={() => onSwitch(paid)}
                   >
-                    Manage subscription
+                    {planChangeTiming(currentPlan, paid) === 'now'
+                      ? `Upgrade to ${PLAN_NAMES[paid]}`
+                      : `Switch to ${PLAN_NAMES[paid]}`}
                   </Button>
-                )
-              ) : planId === 'base' ? (
-                <Button
-                  className="mt-4 w-full"
-                  variant="outline"
-                  disabled={currentPlan === 'base' || managing}
-                  onClick={onManage}
-                >
-                  Manage in Stripe
-                </Button>
-              ) : (
-                <Button
-                  className="mt-4 w-full"
-                  variant="outline"
-                  onClick={() => onSelectPlan(planId)}
-                >
-                  {plan.id === UPGRADE_PLAN ? 'Upgrade' : 'Switch plan'}
-                </Button>
-              )}
+                )}
+              </div>
             </div>
           )
         })}
       </div>
+    </Panel>
+  )
+}
+
+function CreditPacksCard({
+  creditsRemainingCents,
+  busy,
+  onBuy,
+}: {
+  creditsRemainingCents: number
+  busy: boolean
+  onBuy: (usd: CreditPackUsd) => void
+}) {
+  const [confirm, setConfirm] = useState<CreditPackUsd | null>(null)
+  return (
+    <Panel id="credits" className="scroll-mt-24 p-6">
+      <h2 className="mb-2 text-sm font-semibold">Buy credits</h2>
+      <p className="text-muted-foreground mb-4 text-sm">
+        {formatUsd(creditsRemainingCents)} available. Credits cover work past
+        your monthly minutes (${OVERAGE_USD_PER_MINUTE}/min) and models.
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+        {CREDIT_PACKS_USD.map((usd) => (
+          <Button
+            key={usd}
+            variant="outline"
+            disabled={busy}
+            onClick={() => setConfirm(usd)}
+          >
+            ${usd}
+          </Button>
+        ))}
+      </div>
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => !open && setConfirm(null)}
+        title={`Buy $${confirm ?? ''} of credits`}
+        description={`We charge $${confirm ?? ''} to your saved card, or take you to Stripe to add one.`}
+        confirmLabel={`Buy $${confirm ?? ''}`}
+        pending={busy}
+        onConfirm={() => {
+          if (confirm !== null) onBuy(confirm)
+          setConfirm(null)
+        }}
+      />
     </Panel>
   )
 }
@@ -931,6 +1025,10 @@ function AgentUsageBreakdown({
   )
 }
 
+// Monthly cap options for automatic top-up, as a number of packs (the edge
+// requires the budget to be a whole multiple of the pack).
+const TOPUPS_PER_MONTH = [1, 2, 3, 5, 10]
+
 function AutoTopupCard({
   current,
   hasToppedUp,
@@ -945,13 +1043,21 @@ function AutoTopupCard({
   const [draft, setDraft] = useState<{
     enabled?: boolean
     threshold?: number
-    quantity?: number
-    budget?: number
+    quantity?: CreditPackUsd
+    perMonth?: number
   }>({})
+  const savedPack = CREDIT_PACKS_USD.find((usd) => usd === current?.quantity)
   const enabled = draft.enabled ?? current?.enabled ?? false
   const threshold = draft.threshold ?? current?.threshold ?? 5
-  const quantity = draft.quantity ?? current?.quantity ?? 25
-  const budget = draft.budget ?? current?.budget ?? 100
+  const quantity: CreditPackUsd = draft.quantity ?? savedPack ?? 10
+  const savedPerMonth =
+    current && current.budget != null && current.quantity > 0
+      ? Math.round(current.budget / current.quantity)
+      : 3
+  const perMonth =
+    draft.perMonth ??
+    (TOPUPS_PER_MONTH.includes(savedPerMonth) ? savedPerMonth : 3)
+  const budget = quantity * perMonth
   const [saved, markSaved] = useTransientFlag(3000)
   const [confirm, setConfirm] = useState(false)
 
@@ -973,9 +1079,7 @@ function AutoTopupCard({
 
   // Saving only charges when enabling WITHOUT a card on file. Gate that one path.
   const willCharge = enabled && !hasToppedUp
-  const validBudget = budget >= quantity && budget % quantity === 0
   const onSave = () => {
-    if (enabled && !validBudget) return
     if (willCharge) setConfirm(true)
     else mutation.mutate()
   }
@@ -984,8 +1088,8 @@ function AutoTopupCard({
     <Panel className="p-6">
       <h2 className="mb-2 text-sm font-semibold">Automatic top-up</h2>
       <p className="text-muted-foreground mb-4 text-sm">
-        Keep your balance from running out — when it drops below the threshold
-        we automatically add credits to your saved card.
+        When your credits drop below the threshold, we buy a pack with your
+        saved card so work doesn&apos;t pause.
       </p>
 
       <div className="flex items-center gap-2">
@@ -997,13 +1101,30 @@ function AutoTopupCard({
           }
         />
         <Label htmlFor="auto-topup" className="cursor-pointer font-normal">
-          Enable automatic top-up
+          Top up automatically
         </Label>
       </div>
 
       {enabled ? (
         <div className="mt-4 flex flex-wrap gap-5">
-          <Field label="When balance falls below" htmlFor="threshold">
+          <Field label="Buy" htmlFor="topup-pack">
+            <Select
+              id="topup-pack"
+              value={String(quantity)}
+              onValueChange={(v) =>
+                setDraft((d) => ({
+                  ...d,
+                  quantity: Number(v) as CreditPackUsd,
+                }))
+              }
+              options={CREDIT_PACKS_USD.map((usd) => ({
+                value: String(usd),
+                label: `$${usd} pack`,
+              }))}
+              className="w-32"
+            />
+          </Field>
+          <Field label="When credits fall below" htmlFor="threshold">
             <div className="flex items-center gap-1.5">
               <span className="text-muted-foreground text-sm">$</span>
               <Input
@@ -1024,63 +1145,27 @@ function AutoTopupCard({
               />
             </div>
           </Field>
-          <Field label="Add credits" htmlFor="quantity">
-            <div className="flex items-center gap-1.5">
-              <span className="text-muted-foreground text-sm">$</span>
-              <Input
-                id="quantity"
-                type="number"
-                min={1}
-                value={quantity}
-                onChange={(e) =>
-                  setDraft((d) => ({
-                    ...d,
-                    quantity: Math.max(
-                      1,
-                      Math.floor(Number(e.target.value) || 0),
-                    ),
-                  }))
-                }
-                className="w-24 font-mono"
-              />
-            </div>
-          </Field>
-          <Field label="Monthly budget" htmlFor="budget">
-            <div className="flex items-center gap-1.5">
-              <span className="text-muted-foreground text-sm">$</span>
-              <Input
-                id="budget"
-                type="number"
-                min={quantity}
-                step={quantity}
-                value={budget}
-                onChange={(e) =>
-                  setDraft((d) => ({
-                    ...d,
-                    budget: Math.max(
-                      0,
-                      Math.floor(Number(e.target.value) || 0),
-                    ),
-                  }))
-                }
-                className="w-24 font-mono"
-              />
-            </div>
+          <Field label="At most" htmlFor="topup-limit">
+            <Select
+              id="topup-limit"
+              value={String(perMonth)}
+              onValueChange={(v) =>
+                setDraft((d) => ({ ...d, perMonth: Number(v) }))
+              }
+              options={TOPUPS_PER_MONTH.map((n) => ({
+                value: String(n),
+                label: `${n}× a month ($${n * quantity})`,
+              }))}
+              className="w-44"
+            />
           </Field>
         </div>
-      ) : null}
-
-      {enabled && !validBudget ? (
-        <p className="text-status-error mt-3 text-xs">
-          Monthly budget must be at least ${quantity} and a whole multiple of
-          the ${quantity} top-up amount.
-        </p>
       ) : null}
 
       <div className="mt-4">
         <Button
           variant="outline"
-          disabled={mutation.isPending || (enabled && !validBudget)}
+          disabled={mutation.isPending}
           onClick={onSave}
         >
           {mutation.isPending ? 'Saving…' : saved ? 'Saved' : 'Save'}
@@ -1089,17 +1174,17 @@ function AutoTopupCard({
 
       {enabled && !hasToppedUp ? (
         <p className="text-muted-foreground mt-3 text-xs">
-          Since you haven&apos;t topped up yet, enabling runs your first $
-          {quantity} recharge now to set up your card.
+          Since you haven&apos;t bought credits yet, enabling buys your first $
+          {quantity} pack now to set up your card.
         </p>
       ) : null}
 
       <ConfirmDialog
         open={confirm}
         onOpenChange={(o) => !o && setConfirm(false)}
-        title="Enable automatic top-up"
-        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}, up to $${budget} per month.`}
-        confirmLabel={`Charge $${quantity} & enable`}
+        title="Turn on automatic top-up"
+        description={`You don't have a saved card yet, so turning this on buys your first $${quantity} pack now to set it up. After that we buy a $${quantity} pack whenever your credits drop below $${threshold}, at most ${perMonth}× ($${budget}) a month.`}
+        confirmLabel={`Buy $${quantity} & turn on`}
         pending={mutation.isPending}
         onConfirm={() => mutation.mutate()}
       />

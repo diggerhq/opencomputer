@@ -26,7 +26,6 @@ import {
   Check,
   Menu,
   Loader2,
-  CircleAlert,
   ChevronRight,
   type LucideIcon,
 } from 'lucide-react'
@@ -52,18 +51,11 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
-import { useCreditState } from '@/hooks/useCreditState'
 import {
-  BASE_GRANT_CENTS,
-  FREE_CREDITS_USED,
-  UPGRADE_PLAN,
-  UPGRADE_PLAN_LABEL,
-  billingOnrampV2Enabled,
-  formatCredits,
-  trackUpsellClicked,
-  trackUpsellShown,
-  upgradeHref,
-} from '@/lib/billing-onramp'
+  BillingPill,
+  BillingWarningBanner,
+  HaltModal,
+} from '@/components/billing-surfaces'
 import {
   getManagedMemoryResources,
   getManagedProject,
@@ -451,7 +443,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <SidebarCreditMeter onNavigate={onNavigate} />
 
       <div className="border-t p-3">
         {managedAgentsExperimentEnabled ? (
@@ -477,166 +468,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-// Always-visible balance for prepaid orgs that haven't subscribed yet, so the
-// first "you should pay" moment isn't the hard stop. Paid plans and legacy
-// orgs (404 on /billing/autumn) render nothing.
-function SidebarCreditMeter({ onNavigate }: { onNavigate?: () => void }) {
-  const { usagePlan, creditsRemainingCents, isLow, isHalted } = useCreditState()
-  const visible =
-    billingOnrampV2Enabled &&
-    usagePlan === 'base' &&
-    creditsRemainingCents !== undefined
-  useEffect(() => {
-    if (visible)
-      trackUpsellShown({
-        surface: 'sidebar_meter',
-        plan: UPGRADE_PLAN,
-        usagePlan,
-        creditsRemainingCents,
-      })
-    // Fire once per mount; balance changes shouldn't re-count an impression.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible])
-  if (!visible) return null
-  const grant = Math.max(BASE_GRANT_CENTS, creditsRemainingCents)
-  const pct = Math.max(0, Math.min(100, (creditsRemainingCents / grant) * 100))
-  return (
-    <div className="border-t px-3 py-3">
-      <div className="text-muted-foreground flex items-center justify-between font-mono text-[11px]">
-        <span>Free credits</span>
-        <span
-          className={cn(
-            isHalted && 'text-destructive',
-            isLow && 'text-amber-600',
-          )}
-        >
-          {formatCredits(creditsRemainingCents)} left
-        </span>
-      </div>
-      <div className="bg-secondary mt-1.5 h-1 overflow-hidden rounded-full">
-        <div
-          className={cn(
-            'h-full rounded-full',
-            isHalted ? 'bg-destructive' : isLow ? 'bg-amber-500' : 'bg-primary',
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <Link
-        to={upgradeHref()}
-        onClick={() => {
-          trackUpsellClicked({
-            surface: 'sidebar_meter',
-            plan: UPGRADE_PLAN,
-            usagePlan,
-            creditsRemainingCents,
-          })
-          onNavigate?.()
-        }}
-        className="text-foreground mt-2 block text-xs font-medium underline-offset-2 hover:underline"
-      >
-        Upgrade to {UPGRADE_PLAN_LABEL} →
-      </Link>
-    </div>
-  )
-}
-
-// Org-wide credit notice. Prepaid (autumn) orgs that exhaust credits get halted
-// (sandboxes hibernate); show a banner everywhere except Billing so users know
-// why things paused and where to resolve it. A free org sees the paywall: one
-// message, one link to the Pro checkout. Below the low-credit threshold the
-// banner is an amber nudge instead. Legacy orgs 404 on /billing/autumn → no
-// data → no banner. Top-ups are no longer sold, so nothing here offers one.
-function HaltBanner() {
-  const location = useLocation()
-  const {
-    isHalted,
-    isLow,
-    modelFallback,
-    usagePlan,
-    creditsRemainingCents,
-    upgradePlan,
-  } = useCreditState()
-  const onBilling = location.pathname.startsWith('/billing')
-  const state = isHalted ? 'halted' : isLow ? 'low' : null
-  useEffect(() => {
-    if (state && !onBilling && upgradePlan)
-      trackUpsellShown({
-        surface: state === 'halted' ? 'halt_banner' : 'low_credit_banner',
-        plan: upgradePlan,
-        usagePlan,
-        creditsRemainingCents,
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, onBilling])
-  if (!state || onBilling) return null
-  const click = () => {
-    if (!upgradePlan) return
-    trackUpsellClicked({
-      surface: state === 'halted' ? 'halt_banner' : 'low_credit_banner',
-      plan: upgradePlan,
-      usagePlan,
-      creditsRemainingCents,
-    })
-  }
-  const upgradeLink = (label: string) => (
-    <Link
-      to={upgradeHref()}
-      onClick={click}
-      className="font-semibold underline underline-offset-2"
-    >
-      {label}
-    </Link>
-  )
-  if (state === 'low') {
-    return (
-      <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
-        <CircleAlert className="size-4 shrink-0" />
-        <span>
-          {formatCredits(creditsRemainingCents ?? 0)}{' '}
-          {usagePlan === 'base'
-            ? 'of free credits left — sessions pause at 0.'
-            : 'left this month.'}
-          {upgradePlan ? (
-            <>
-              {' '}
-              {upgradeLink(`Upgrade to ${UPGRADE_PLAN_LABEL}`)} to keep going.
-            </>
-          ) : null}
-        </span>
-      </div>
-    )
-  }
-  if (modelFallback) {
-    return (
-      <div className="flex items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-center text-sm font-medium text-amber-700 sm:px-8 dark:text-amber-400">
-        <CircleAlert className="size-4 shrink-0" />
-        <span>
-          You&apos;ve used this month&apos;s credits — agents keep running on an
-          open-weight model (GLM)
-          {upgradePlan ? (
-            <>
-              . {upgradeLink(`Upgrade to ${UPGRADE_PLAN_LABEL}`)} to switch back
-              to your selected models.
-            </>
-          ) : (
-            ' until your plan renews.'
-          )}
-        </span>
-      </div>
-    )
-  }
-  return (
-    <div className="border-destructive/40 bg-status-error-bg text-destructive flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium sm:px-8">
-      <CircleAlert className="size-4 shrink-0" />
-      <span>
-        {FREE_CREDITS_USED} {upgradeLink(`Upgrade to ${UPGRADE_PLAN_LABEL}`)} to
-        keep going.
-      </span>
     </div>
   )
 }
@@ -700,7 +531,8 @@ export default function AppShell() {
             />
           </div>
         ) : null}
-        <div className="ml-auto flex items-center px-4">
+        <div className="ml-auto flex items-center gap-3 px-4">
+          <BillingPill />
           <ThemeToggle />
         </div>
       </header>
@@ -738,7 +570,8 @@ export default function AppShell() {
             onChange={changeProjectEnvironment}
           />
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <BillingPill className="hidden sm:inline" />
           <ThemeToggle />
         </div>
       </header>
@@ -746,9 +579,10 @@ export default function AppShell() {
       {/* Main content */}
       <div className="flex flex-1 flex-col md:pt-16 md:pl-60">
         <div className="sticky top-14 z-20 md:top-16">
-          <HaltBanner />
+          <BillingWarningBanner />
           <AgentSecurityAlertBanner />
         </div>
+        <HaltModal />
         <main
           className={cn(
             'mx-auto flex w-full flex-1 flex-col px-4 py-6 sm:px-8',

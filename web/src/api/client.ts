@@ -496,10 +496,25 @@ export const autumnSubscribeConcurrency = (plan: string) =>
     body: JSON.stringify({ plan }),
   })
 
-export const autumnSubscribeUsagePlan = (plan: 'pro' | 'max') =>
+// Where a checkout was opened from; the edge records it on
+// billing.checkout_opened.
+export type CheckoutFrom = 'paywall' | 'warning' | 'billing_page' | 'signup'
+
+export const autumnSubscribeUsagePlan = (
+  plan: 'pro' | 'max',
+  from: CheckoutFrom = 'billing_page',
+) =>
   apiFetch<{ url: string | null }>('/billing/autumn/plan', {
     method: 'POST',
-    body: JSON.stringify({ plan }),
+    body: JSON.stringify({ plan, from }),
+  })
+
+// Cancel the paid plan at the end of the period, or undo that (undo also
+// drops a scheduled $200 → $20 downgrade).
+export const autumnCancelPlan = (plan: 'pro' | 'max', undo = false) =>
+  apiFetch<{ ok: boolean }>('/billing/autumn/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ plan, undo }),
   })
 
 // Open Autumn's Stripe-hosted billing portal to manage the saved card + invoices.

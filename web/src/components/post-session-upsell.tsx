@@ -5,11 +5,11 @@ import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { useCreditState } from '@/hooks/useCreditState'
 import {
-  BASE_GRANT_CENTS,
+  PLAN_OFFERS,
   UPGRADE_PLAN,
-  UPGRADE_PLAN_LABEL,
   billingOnrampV2Enabled,
-  formatCredits,
+  formatMinutes,
+  planPriceLabel,
   trackFirstSessionCompleted,
   trackUpsellClicked,
   trackUpsellShown,
@@ -39,9 +39,9 @@ function rememberSession(sessionId: string): { index: number; show: boolean } {
   }
 }
 
-// Shown under a serverless-agent session once it has finished a turn. Sessions
-// don't expose per-session cost, so the card speaks in terms of the org's free
-// credit grant instead.
+// Shown under a serverless-agent session once it has finished a turn, during
+// the trial. Sessions don't expose per-session cost, so the card speaks in
+// terms of the trial's work minutes instead.
 export function PostSessionUpsell({
   sessionId,
   completed,
@@ -51,18 +51,19 @@ export function PostSessionUpsell({
   completed: boolean
   className?: string
 }) {
-  const { usagePlan, isHalted, creditsRemainingCents } = useCreditState()
-  const spentCents =
-    creditsRemainingCents === undefined
-      ? null
-      : Math.max(0, BASE_GRANT_CENTS - creditsRemainingCents)
+  const { billing, usagePlan, isHalted, creditsRemainingCents } =
+    useCreditState()
+  const minutes = billing?.workMinutes ?? null
+  const spentMinutes = minutes
+    ? Math.max(0, minutes.granted - minutes.remaining)
+    : null
   const eligible =
     billingOnrampV2Enabled &&
     completed &&
-    usagePlan === 'base' &&
+    usagePlan === 'trial' &&
     !isHalted &&
-    spentCents !== null &&
-    spentCents > 0
+    spentMinutes !== null &&
+    spentMinutes > 0
   const seen = eligible ? rememberSession(sessionId) : null
   const show = seen?.show ?? false
 
@@ -71,7 +72,6 @@ export function PostSessionUpsell({
     if (seen?.index === 0)
       trackFirstSessionCompleted({
         sessionId,
-        costCents: spentCents ?? 0,
         usagePlan,
       })
     trackUpsellShown({
@@ -83,7 +83,7 @@ export function PostSessionUpsell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, sessionId])
 
-  if (!show || spentCents === null) return null
+  if (!show || !minutes || spentMinutes === null) return null
   return (
     <Panel
       className={`flex flex-wrap items-center justify-between gap-4 p-4 ${className ?? ''}`}
@@ -92,18 +92,19 @@ export function PostSessionUpsell({
         <Sparkles className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <div className="text-sm">
           <p className="font-medium">
-            You&apos;ve used {formatCredits(spentCents)} of your{' '}
-            {formatCredits(BASE_GRANT_CENTS)} free —{' '}
-            {formatCredits(creditsRemainingCents ?? 0)} left.
+            You&apos;ve used {formatMinutes(spentMinutes)} of your{' '}
+            {formatMinutes(minutes.granted)} trial —{' '}
+            {formatMinutes(minutes.remaining)} left.
           </p>
           <p className="text-muted-foreground mt-0.5">
-            Upgrade to {UPGRADE_PLAN_LABEL} to keep going when they run out.
+            {planPriceLabel(UPGRADE_PLAN)} gives you{' '}
+            {formatMinutes(PLAN_OFFERS[UPGRADE_PLAN].minutes)} a month.
           </p>
         </div>
       </div>
       <Button asChild size="sm">
         <Link
-          to={upgradeHref()}
+          to={upgradeHref(UPGRADE_PLAN)}
           onClick={() =>
             trackUpsellClicked({
               surface: 'post_session_card',
@@ -113,7 +114,7 @@ export function PostSessionUpsell({
             })
           }
         >
-          Upgrade to {UPGRADE_PLAN_LABEL}
+          Upgrade to {planPriceLabel(UPGRADE_PLAN)}
         </Link>
       </Button>
     </Panel>

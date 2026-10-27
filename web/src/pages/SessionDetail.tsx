@@ -14,11 +14,7 @@ import {
 import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
-import {
-  FREE_CREDITS_USED,
-  UPGRADE_PLAN_LABEL,
-  upgradeHref,
-} from '@/lib/billing-onramp'
+import { WORK_PAUSED, WORK_PAUSED_TITLE } from '@/lib/billing-onramp'
 import {
   getSession,
   getSessionSources,
@@ -631,14 +627,14 @@ for await (const event of session.events()) {
             <div className="text-destructive mb-2 flex items-center gap-1.5 text-xs">
               <CircleAlert className="size-3.5 shrink-0" />
               <span>
-                {FREE_CREDITS_USED}{' '}
+                {WORK_PAUSED}{' '}
                 <Link
-                  to={upgradeHref()}
+                  to="/billing"
                   className="font-medium underline underline-offset-2"
                 >
-                  Upgrade to {UPGRADE_PLAN_LABEL}
+                  Open Billing
                 </Link>{' '}
-                to keep going.
+                to resume.
               </span>
             </div>
           )}
@@ -665,7 +661,7 @@ for await (const event of session.events()) {
               }}
               placeholder={
                 halted
-                  ? `${FREE_CREDITS_USED} Upgrade to ${UPGRADE_PLAN_LABEL} to resume.`
+                  ? WORK_PAUSED_TITLE
                   : canSteer
                     ? 'Send a message to steer the session…'
                     : 'Session archived'

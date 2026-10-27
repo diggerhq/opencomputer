@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { MessagesSquare, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
-import { FREE_CREDITS_USED, UPGRADE_PLAN_LABEL } from '@/lib/billing-onramp'
+import { WORK_PAUSED_TITLE } from '@/lib/billing-onramp'
 import { getSessions, getAgents, createSession, ApiError } from '@/api/client'
 import type { Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -36,7 +36,7 @@ import {
   usageDisclosure,
 } from '@/lib/usage'
 
-const HALTED_TITLE = `${FREE_CREDITS_USED} Upgrade to ${UPGRADE_PLAN_LABEL} to resume.`
+const HALTED_TITLE = WORK_PAUSED_TITLE
 export default function Sessions() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()

@@ -14,7 +14,7 @@ describe('managed agents navigation', () => {
       computerEnabled: true,
     })
     expect(nav.map((group) => group.items.map((item) => item.label))).toEqual([
-      ['Computer', 'Automations'],
+      ['Computer', 'Automations', 'Billing'],
       ['Connections'],
     ])
     expect(nav[0]?.items[0]).toMatchObject({
@@ -34,13 +34,13 @@ describe('managed agents navigation', () => {
       managedAgentsNav({ ...defaults, computerEnabled: true }).map((group) =>
         group.items.map((item) => item.label),
       ),
-    ).toEqual([['Computer', 'Automations'], ['Connections']])
+    ).toEqual([['Computer', 'Automations', 'Billing'], ['Connections']])
   })
 
   it('hides the computer from organizations without it (rollout flag)', () => {
     expect(
       managedAgentsNav(defaults)[0]?.items.map((item) => item.label),
-    ).toEqual(['Automations'])
+    ).toEqual(['Automations', 'Billing'])
   })
 
   it('shows project navigation only after a project is selected', () => {

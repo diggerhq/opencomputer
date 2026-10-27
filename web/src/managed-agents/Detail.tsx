@@ -77,11 +77,10 @@ import { useLiveSessionEvents } from './use-live-session-events'
 import { PostSessionUpsell } from '@/components/post-session-upsell'
 import { useCreditState } from '@/hooks/useCreditState'
 import {
-  FREE_CREDITS_USED,
-  UPGRADE_PLAN,
-  UPGRADE_PLAN_LABEL,
+  BILLING_ACTION_LABELS,
+  billingActionHref,
+  haltNotice,
   trackUpsellClicked,
-  upgradeHref,
 } from '@/lib/billing-onramp'
 import { DebugInspector } from './DebugInspector'
 import { isNearScrollEnd } from './scroll-follow'
@@ -527,22 +526,28 @@ function PlaygroundChat({
           ) : null}
           {halted ? (
             <p className="text-destructive mb-2 text-xs">
-              {FREE_CREDITS_USED}{' '}
+              {haltNotice(credits.haltReason).title}.{' '}
               <Link
-                to={upgradeHref()}
+                to={billingActionHref(
+                  haltNotice(credits.haltReason).actions[0] ?? 'plans',
+                  'paywall',
+                )}
                 className="font-medium underline"
                 onClick={() =>
                   trackUpsellClicked({
                     surface: 'session_composer',
-                    plan: UPGRADE_PLAN,
+                    plan: credits.upgradePlan ?? undefined,
                     usagePlan: credits.usagePlan,
                     creditsRemainingCents: credits.creditsRemainingCents,
                   })
                 }
               >
-                Upgrade to {UPGRADE_PLAN_LABEL}
-              </Link>{' '}
-              to keep going.
+                {
+                  BILLING_ACTION_LABELS[
+                    haltNotice(credits.haltReason).actions[0] ?? 'plans'
+                  ]
+                }
+              </Link>
             </p>
           ) : error ? (
             <p className="text-destructive mb-2 text-xs">{error.message}</p>

@@ -235,8 +235,34 @@ export const AutumnBillingSchema = z.object({
   }),
   maxConcurrentSandboxes: z.number(),
   concurrencyPlan: z.string(),
-  usagePlan: z.enum(['base', 'pro', 'max']),
+  // `trial` is the 7-day trial; `base` is the pre-trial free tier, kept until
+  // every free org is migrated (serverless-agents-ws 086).
+  usagePlan: z.enum(['trial', 'base', 'pro', 'max']),
   isHalted: z.boolean(),
+  haltReason: z.string().nullable().optional(),
+  // orgs.billing_warning: trial_minutes | trial_days | trial_tokens |
+  // allowance_80 | credits_low | payment_failed.
+  warning: z.string().nullable().optional(),
+  paymentPastDueAt: z.string().nullable().optional(),
+  trialStartedAt: z.string().nullable().optional(),
+  trialEndsAt: z.string().nullable().optional(),
+  workMinutes: z
+    .object({
+      granted: z.number(),
+      remaining: z.number(),
+      resetsAt: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  periodEndsAt: z.string().nullable().optional(),
+  // A change Autumn applies at the end of the paid period.
+  scheduledChange: z
+    .object({
+      to: z.enum(['pro', 'cancel']),
+      at: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   hasToppedUp: z.boolean(),
   hasPaidSubscription: z.boolean(),
   autoTopup: AutumnAutoTopupSchema.nullable(),

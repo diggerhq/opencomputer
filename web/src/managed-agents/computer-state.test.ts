@@ -311,7 +311,7 @@ describe('choosing the coding agent (work 081)', () => {
   it('names what runs the threads', () => {
     expect(agentSummary(connected)).toBe('Claude Code · your subscription')
     expect(agentSummary({ ...fresh, choice: 'credits' })).toBe(
-      'Claude Opus 5.5 · free credits',
+      'Claude Opus 5.5 · OpenComputer credits',
     )
     expect(
       agentSummary({

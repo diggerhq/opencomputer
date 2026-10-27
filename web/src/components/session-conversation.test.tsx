@@ -33,15 +33,14 @@ describe('HttpRequestCard', () => {
 })
 
 describe('MessageBubble', () => {
-  it('offers the Pro upgrade, not a top-up, when the agent is out of credits', () => {
+  it('sends an out-of-credits agent to the plan picker', () => {
     const markup = renderToStaticMarkup(
       <MemoryRouter>
         <MessageBubble label="Agent" text="Out of credits" outOfCredits />
       </MemoryRouter>,
     )
 
-    expect(markup).toContain('href="/billing?plan=max"')
-    expect(markup).toContain('Upgrade to Pro ($200/mo)')
-    expect(markup).not.toMatch(/top.?up/i)
+    expect(markup).toContain('href="/billing#plans"')
+    expect(markup).toContain('Choose a plan')
   })
 })
