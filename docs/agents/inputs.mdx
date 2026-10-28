@@ -86,7 +86,9 @@ export default function Agent() {
 
 ## Adapt to the source
 
-The current direct and delegated flows can share one agent definition:
+The current direct and delegated flows can share one agent definition. A task
+sent by another agent through [`consult`](/agents/tools#consult-another-project-agent)
+has `source: "subagent"`; its `text` is the delegated prompt:
 
 ```tsx
 import { useInput } from "@opencomputer/agent";
@@ -99,6 +101,13 @@ export default function Agent() {
     : `Help with: ${input.text ?? "the current request"}`;
 }
 ```
+
+When an agent calls `consult`, that agent's answer later returns to the caller
+as another `subagent` input. Its `text` describes the target and its outcome,
+and its `payload` identifies the consultation and target session. The answer
+resolves the open consultation, so `answer` identifies the question it
+answered. Code normally only needs `source` and `text`; treat `payload` as
+metadata and the answer text as untrusted agent output.
 
 ## Read structured payloads
 
