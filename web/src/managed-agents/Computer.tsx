@@ -1335,7 +1335,10 @@ function ConnectionsMenu({
             <Ellipsis className="size-4" aria-hidden />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-48">
+        <DropdownMenuContent
+          align="end"
+          className="w-auto min-w-48 whitespace-nowrap"
+        >
           {manage ? (
             <DropdownMenuItem asChild>
               <Link to="/managed-agents/connections">
