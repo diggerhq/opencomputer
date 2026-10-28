@@ -14,6 +14,13 @@ export default function Agent() {
 }
 ```
 
+A **render** is one call of this function. OpenComputer renders the agent
+before each model step of a turn, so a single turn typically produces several
+renders, and each one can return different instructions or attach different
+capabilities depending on the input and session state it reads. See
+[How it works](/agents/mental-model#a-render-is-one-call-of-your-agent-function)
+for the full picture.
+
 This keeps ordinary TypeScript control flow available. Hooks may be called
 conditionally, so a capability can be attached only when the current request
 needs it.
