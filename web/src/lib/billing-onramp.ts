@@ -158,7 +158,7 @@ export function billingPillText(
     return parts.join(' · ')
   }
   if (b.usagePlan === 'base' || !minutes) return null
-  return `${minuteNumber.format(minutes.remaining)} / ${formatMinutes(minutes.granted)} · ${formatUsd(b.creditsRemainingCents)} credits`
+  return `${minuteNumber.format(minutes.remaining)} / ${formatMinutes(minutes.granted)} · ${formatCredits(b.creditsRemainingCents)}`
 }
 
 export type BillingAction = 'plans' | 'credits' | 'card'
@@ -244,7 +244,7 @@ export function warningNotice(
       }
     case 'credits_low':
       return {
-        text: `Your credits are running low (${formatUsd(b.creditsRemainingCents)} left).`,
+        text: `Your credits are running low (${formatCredits(b.creditsRemainingCents)} left).`,
         action: 'credits',
       }
     case 'payment_failed':
