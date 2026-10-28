@@ -104,6 +104,56 @@ transforms:
       .host_ip = "${OPENCOMPUTER_HOST_IP:-unknown}"
       .hostname, _ = get_hostname()
 
+  # Wrap each parsed log line in the OTLP resourceLogs envelope the
+  # opentelemetry sink's `otlp` codec expects (it does not wrap on its own).
+  # Host envelope fields become resource attributes; every other slog field
+  # becomes a log-record attribute. Journald metadata (_PID, PRIORITY, ...)
+  # is dropped: it's noise outside this host.
+  sazabi_otlp:
+    type: remap
+    inputs:
+      - worker_parse
+    source: |
+      ts = .timestamp
+      if exists(.time) { ts = parse_timestamp(.time, "%+") ?? ts }
+      ts = to_unix_timestamp(timestamp(ts) ?? now(), unit: "nanoseconds")
+
+      level = upcase(string(.level) ?? "")
+      if !includes(["DEBUG", "INFO", "WARN", "ERROR"], level) {
+        priority = to_int(.PRIORITY) ?? 6
+        level = if priority <= 3 { "ERROR" } else if priority == 4 { "WARN" } else { "INFO" }
+      }
+      severity = get!({"DEBUG": 5, "INFO": 9, "WARN": 13, "ERROR": 17}, [level])
+
+      body = string(.msg) ?? string(.message) ?? encode_json(.)
+
+      resource_keys = ["service", "service_id", "cell_id", "region", "host_ip", "hostname"]
+      resource = [{ "key": "service.name", "value": { "stringValue": string(.service) ?? "unknown" } }]
+      attrs = []
+      for_each(object(.)) -> |k, v| {
+        if includes(resource_keys, k) {
+          resource = push(resource, { "key": k, "value": { "stringValue": string(v) ?? encode_json(v) } })
+        } else if !starts_with(k, "_") && !match(k, r'^[A-Z0-9_]+$') && !includes(["msg", "message", "level", "time", "timestamp", "source_type", "host"], k) {
+          attrs = push(attrs, { "key": k, "value": { "stringValue": string(v) ?? encode_json(v) } })
+        }
+      }
+
+      . = {
+        "resourceLogs": [{
+          "resource": { "attributes": resource },
+          "scopeLogs": [{
+            "scope": { "name": "vector" },
+            "logRecords": [{
+              "timeUnixNano": ts,
+              "severityText": level,
+              "severityNumber": severity,
+              "body": { "stringValue": body },
+              "attributes": attrs
+            }]
+          }]
+        }]
+      }
+
 sinks:
   # Logs sink: ships journald (parsed + enveloped) to the platform-logs dataset.
   # Unchanged from pre-metrics behavior.
@@ -140,3 +190,24 @@ sinks:
       when_full: drop_newest
     healthcheck:
       enabled: true
+
+  # Sazabi (proactive monitoring) gets a copy of the same logs over OTLP/HTTP.
+  # The intake URL is the credential (no auth header) and comes from the
+  # optional Key Vault secret shared-sazabi-otlp-logs-url. Until it's set the
+  # placeholder points at a closed local port: this sink errors and drops,
+  # the Axiom sinks are unaffected. Memory buffer + drop_newest so a Sazabi
+  # outage can never backpressure the journald source Axiom depends on.
+  sazabi_logs:
+    type: opentelemetry
+    inputs:
+      - sazabi_otlp
+    protocol:
+      type: http
+      uri: "${SAZABI_OTLP_LOGS_URL:-http://127.0.0.1:9/v1/logs}"
+      method: post
+      encoding:
+        codec: otlp
+    buffer:
+      type: memory
+      max_events: 10000
+      when_full: drop_newest

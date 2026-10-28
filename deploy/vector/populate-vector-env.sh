@@ -22,6 +22,7 @@
 #   shared-axiom-platform-metrics-ingest-token → AXIOM_PLATFORM_METRICS_TOKEN  (optional — metrics)
 #   shared-axiom-platform-metrics-dataset      → AXIOM_PLATFORM_METRICS_DATASET (optional — metrics)
 #   shared-cell-id                             → OPENCOMPUTER_CELL_ID          (optional — cell tag)
+#   shared-sazabi-otlp-logs-url                → SAZABI_OTLP_LOGS_URL          (optional — Sazabi copy)
 #
 # Logs secrets are hard-required: missing → exit 0 without writing env file,
 # Vector fails healthcheck and buffers to disk until the secret appears
@@ -31,6 +32,11 @@
 # with logs creds set, metrics ones empty. The metrics sink fails healthcheck
 # and buffers to disk independently. Lets operators roll out the metrics
 # dataset asynchronously without coordinating with the worker fleet.
+#
+# shared-sazabi-otlp-logs-url is soft-optional: the Sazabi OTLP logs intake
+# URL (ends in /v1/logs; the URL is the credential). Missing → the var is
+# written empty, the sazabi_logs sink falls back to a closed local port and
+# drops; Axiom shipping is unaffected.
 #
 # shared-cell-id is soft-optional too: missing → fall back to whatever
 # OPENCOMPUTER_CELL_ID was already in the populator's shell env (typically
@@ -45,6 +51,7 @@ DATASET_SECRET=shared-axiom-platform-dataset
 METRICS_TOKEN_SECRET=shared-axiom-platform-metrics-ingest-token
 METRICS_DATASET_SECRET=shared-axiom-platform-metrics-dataset
 CELL_ID_SECRET=shared-cell-id
+SAZABI_URL_SECRET=shared-sazabi-otlp-logs-url
 
 log() { logger -t populate-vector-env "$*"; echo "$*"; }
 
@@ -163,6 +170,11 @@ if [ -z "$METRICS_TOKEN_VALUE" ] || [ -z "$METRICS_DATASET_VALUE" ]; then
     log "metrics secrets ($METRICS_TOKEN_SECRET / $METRICS_DATASET_SECRET) missing — metrics sink will buffer to disk until configured"
 fi
 
+SAZABI_URL_VALUE=$(kv_get "$SAZABI_URL_SECRET")
+if [ -z "$SAZABI_URL_VALUE" ]; then
+    log "secret $SAZABI_URL_SECRET not found in $VAULT_NAME — sazabi_logs sink will drop until configured"
+fi
+
 # Cell tag — fall through KV → inherited env → "unknown". KV wins so the
 # value matches what the Go binary will load via secretMapping in
 # internal/config/keyvault.go; events from both pipelines stay coherent.
@@ -182,6 +194,7 @@ AXIOM_PLATFORM_TOKEN=${TOKEN_VALUE}
 AXIOM_PLATFORM_DATASET=${DATASET_VALUE}
 AXIOM_PLATFORM_METRICS_TOKEN=${METRICS_TOKEN_VALUE}
 AXIOM_PLATFORM_METRICS_DATASET=${METRICS_DATASET_VALUE}
+SAZABI_OTLP_LOGS_URL=${SAZABI_URL_VALUE}
 OPENCOMPUTER_CELL_ID=${CELL_ID_VALUE}
 OPENSANDBOX_REGION=${OPENSANDBOX_REGION:-unknown}
 OPENCOMPUTER_HOST_IP=${HOST_IP:-unknown}
@@ -194,4 +207,6 @@ metrics_status="absent"
 if [ -n "$METRICS_TOKEN_VALUE" ] && [ -n "$METRICS_DATASET_VALUE" ]; then
     metrics_status="present"
 fi
-log "populated $ENV_FILE (logs token+dataset from $VAULT_NAME, metrics=$metrics_status, cell_id=$CELL_ID_VALUE, host_ip=${HOST_IP:-unknown})"
+sazabi_status="absent"
+[ -n "$SAZABI_URL_VALUE" ] && sazabi_status="present"
+log "populated $ENV_FILE (logs token+dataset from $VAULT_NAME, metrics=$metrics_status, sazabi=$sazabi_status, cell_id=$CELL_ID_VALUE, host_ip=${HOST_IP:-unknown})"
