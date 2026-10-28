@@ -223,7 +223,7 @@ test("ships to Sazabi as OTLP protobuf without blocking Axiom on a Sazabi failur
       outcome: "ok",
       logs: [{ timestamp: Date.now(), level: "info", message: ["hello"] }],
       exceptions: [],
-    }], { ...env, SAZABI_OTLP_LOGS_URL: "https://sazabi.test/secret-key/v1/logs" }, {} as ExecutionContext);
+    }], { ...env, SAZABI_OTLP_LOGS_URL: "https://sazabi.test/secret-key/v1/logs", SAZABI_SERVICES: "api-edge" }, {} as ExecutionContext);
   } catch (err) {
     error = err;
   } finally {
@@ -233,4 +233,26 @@ test("ships to Sazabi as OTLP protobuf without blocking Axiom on a Sazabi failur
   assert.deepEqual(calls.map((c) => c.contentType).sort(), ["application/json", "application/x-protobuf"]);
   assert.match(String(error), /sazabi ingest failed status=503/);
   assert.equal(String(error).includes("secret-key"), false);
+});
+
+test("only allowlisted Workers go to Sazabi", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await worker.tail([{
+      scriptName: "opencomputer-vmdo-prod",
+      outcome: "ok",
+      logs: [{ timestamp: Date.now(), level: "info", message: ["hello"] }],
+      exceptions: [],
+    }], { ...env, SAZABI_OTLP_LOGS_URL: "https://sazabi.test/v1/logs", SAZABI_SERVICES: "managed-agents, previews" }, {} as ExecutionContext);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(urls, ["https://axiom.test/v1/datasets/edge/ingest"]);
 });
