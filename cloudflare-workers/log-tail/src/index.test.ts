@@ -206,3 +206,31 @@ test("promotes correlation keys from a JSON log line to fields", async () => {
   assert.equal(records[2]?.event, "x");
   assert.equal(records[2]?.service, "managed-agents");
 });
+
+test("ships to Sazabi as OTLP protobuf without blocking Axiom on a Sazabi failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; contentType: string | null }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, contentType: new Headers(init?.headers).get("content-type") });
+    return new Response(null, { status: url.startsWith("https://sazabi.test") ? 503 : 200 });
+  }) as typeof fetch;
+
+  let error: unknown;
+  try {
+    await worker.tail([{
+      scriptName: "api-edge",
+      outcome: "ok",
+      logs: [{ timestamp: Date.now(), level: "info", message: ["hello"] }],
+      exceptions: [],
+    }], { ...env, SAZABI_OTLP_LOGS_URL: "https://sazabi.test/secret-key/v1/logs" }, {} as ExecutionContext);
+  } catch (err) {
+    error = err;
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls.map((c) => c.contentType).sort(), ["application/json", "application/x-protobuf"]);
+  assert.match(String(error), /sazabi ingest failed status=503/);
+  assert.equal(String(error).includes("secret-key"), false);
+});
