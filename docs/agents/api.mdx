@@ -334,6 +334,10 @@ repeated key whatever the existing turn has reached, `completed`, `failed`
 or `cancelled` once it has settled. Follow the turn in the event log; the
 response does not wait for it.
 
+A turn sent to a suspended session resumes it: the turn is `queued` while
+the session is `resuming`, and runs once the runtime reconnects. There is no
+need to resume the session first.
+
 The key identifies the request, not only the call. A repeat with the same
 `input`, `payload` and `mode` is the existing turn: key order inside the
 payload does not matter, an omitted `mode` means `queue`, and whitespace in

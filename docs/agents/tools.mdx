@@ -318,8 +318,7 @@ tools that cannot write, and select the writing tools on the turn that
 carries the answer.
 
 The id `ask` is reserved: `defineTool({ name: "ask" })` is refused, both by
-`defineTool` and by the CLI's build. `ask` runs on the default runtime for new deployments;
-sessions with `executionMode: "microvm"` cannot select it.
+`defineTool` and by the CLI's build.
 
 `ask` is different from [waiting for a person](#wait-for-a-person-before-writing):
 `ask` ends a turn with an open question the agent reasons about when it is
