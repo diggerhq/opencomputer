@@ -1,6 +1,6 @@
 // Tail Worker — subscribes to console output and exception traces from
 // other Workers in this account and POSTs them as JSON events to Axiom, and
-// as OTLP logs to Sazabi when SAZABI_OTLP_LOGS_URL is set.
+// as OTLP logs to Sazabi for the Workers listed in SAZABI_SERVICES.
 //
 // Wire it up by adding to each producer Worker's wrangler.toml:
 //   [[tail_consumers]]
@@ -19,6 +19,9 @@ interface Env {
   // Sazabi OTLP logs intake (ends in /v1/logs). The URL is the credential,
   // so it's a Worker secret. Unset → Sazabi forwarding is off.
   SAZABI_OTLP_LOGS_URL?: string;
+  // Comma-separated producer script names forwarded to Sazabi. Sazabi is
+  // scoped to serverless agents and @computer, not every tailed Worker.
+  SAZABI_SERVICES?: string;
 }
 
 interface TraceLog {
@@ -214,10 +217,15 @@ export default {
 
     if (records.length === 0) return;
 
-    // Both sinks get the same records; one failing never stops the other.
+    // Axiom gets everything; Sazabi gets the allowlisted Workers. One sink
+    // failing never stops the other.
+    const sazabiServices = new Set((env.SAZABI_SERVICES ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+    const sazabiRecords = records.filter((r) => sazabiServices.has(String(r.service)));
     const results = await Promise.allSettled([
       sendToAxiom(records, env),
-      env.SAZABI_OTLP_LOGS_URL ? sendToSazabi(records, env.SAZABI_OTLP_LOGS_URL) : Promise.resolve(),
+      env.SAZABI_OTLP_LOGS_URL && sazabiRecords.length > 0
+        ? sendToSazabi(sazabiRecords, env.SAZABI_OTLP_LOGS_URL)
+        : Promise.resolve(),
     ]);
     const failures = results
       .filter((r): r is PromiseRejectedResult => r.status === "rejected")
