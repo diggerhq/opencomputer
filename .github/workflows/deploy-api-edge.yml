@@ -101,6 +101,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OC_MANAGED_CRED_HMAC_SECRET: ${{ secrets.OC_MANAGED_CRED_HMAC_SECRET }}
           AGENT_RUNTIME_USAGE_HMAC_SECRET: ${{ secrets.AGENT_RUNTIME_USAGE_HMAC_SECRET }}
+          # Optional (lifecycle email, src/loops.ts): pushed only when set, so
+          # an unset GitHub secret leaves the worker's value alone.
+          LOOPS_API_KEY: ${{ secrets.LOOPS_API_KEY }}
+          LOOPS_EXCLUDE_EMAILS: ${{ secrets.LOOPS_EXCLUDE_EMAILS }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
             echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
@@ -112,7 +116,11 @@ jobs:
           jq -n \
             --arg managedCredential "$OC_MANAGED_CRED_HMAC_SECRET" \
             --arg runtimeUsage "$AGENT_RUNTIME_USAGE_HMAC_SECRET" \
-            '{OC_MANAGED_CRED_HMAC_SECRET: $managedCredential, AGENT_RUNTIME_USAGE_HMAC_SECRET: $runtimeUsage}' \
+            --arg loopsKey "$LOOPS_API_KEY" \
+            --arg loopsExclude "$LOOPS_EXCLUDE_EMAILS" \
+            '{OC_MANAGED_CRED_HMAC_SECRET: $managedCredential, AGENT_RUNTIME_USAGE_HMAC_SECRET: $runtimeUsage}
+             + (if $loopsKey == "" then {} else {LOOPS_API_KEY: $loopsKey} end)
+             + (if $loopsExclude == "" then {} else {LOOPS_EXCLUDE_EMAILS: $loopsExclude} end)' \
             > "$RUNNER_TEMP/api-edge-secrets.json"
           npx wrangler deploy \
             -c wrangler.ci.toml \
