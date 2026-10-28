@@ -1,5 +1,6 @@
 // Tail Worker — subscribes to console output and exception traces from
-// other Workers in this account and POSTs them as JSON events to Axiom.
+// other Workers in this account and POSTs them as JSON events to Axiom, and
+// as OTLP logs to Sazabi when SAZABI_OTLP_LOGS_URL is set.
 //
 // Wire it up by adding to each producer Worker's wrangler.toml:
 //   [[tail_consumers]]
@@ -9,10 +10,15 @@
 // already emit (level, msg, service, ...) so the dataset stays one schema
 // regardless of producer.
 
+import { encodeLogs } from "./otlp.ts";
+
 interface Env {
   AXIOM_HOST: string;
   AXIOM_DATASET: string;
   AXIOM_TOKEN: string;
+  // Sazabi OTLP logs intake (ends in /v1/logs). The URL is the credential,
+  // so it's a Worker secret. Unset → Sazabi forwarding is off.
+  SAZABI_OTLP_LOGS_URL?: string;
 }
 
 interface TraceLog {
@@ -208,23 +214,49 @@ export default {
 
     if (records.length === 0) return;
 
-    const url = `${env.AXIOM_HOST}/v1/datasets/${env.AXIOM_DATASET}/ingest`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.AXIOM_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(records),
-    });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      const message = `axiom ingest failed status=${resp.status} body=${body.slice(0, 200)}`;
-      console.error(message);
+    // Both sinks get the same records; one failing never stops the other.
+    const results = await Promise.allSettled([
+      sendToAxiom(records, env),
+      env.SAZABI_OTLP_LOGS_URL ? sendToSazabi(records, env.SAZABI_OTLP_LOGS_URL) : Promise.resolve(),
+    ]);
+    const failures = results
+      .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
+    if (failures.length > 0) {
+      for (const message of failures) console.error(message);
       // The collector has Cloudflare Workers Logs enabled as an independent
-      // fallback. Throwing makes a broken durable sink an observable failed
+      // fallback. Throwing makes a broken sink an observable failed
       // invocation instead of an apparently healthy, lossy success.
-      throw new Error(message);
+      throw new Error(failures.join("; "));
     }
   },
 };
+
+async function sendToAxiom(records: Record<string, unknown>[], env: Env): Promise<void> {
+  const url = `${env.AXIOM_HOST}/v1/datasets/${env.AXIOM_DATASET}/ingest`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AXIOM_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(records),
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`axiom ingest failed status=${resp.status} body=${body.slice(0, 200)}`);
+  }
+}
+
+async function sendToSazabi(records: Record<string, unknown>[], url: string): Promise<void> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-protobuf" },
+    body: encodeLogs(records),
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    // Never echo the URL: it is the credential.
+    throw new Error(`sazabi ingest failed status=${resp.status} body=${body.slice(0, 200)}`);
+  }
+}
