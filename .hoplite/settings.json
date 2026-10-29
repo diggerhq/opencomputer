@@ -1,0 +1,30 @@
+{
+	"version": 1,
+	"inference": {
+		"run": {
+			"detectorVersion": 4,
+			"framework": "go",
+			"workspacePath": null
+		}
+	},
+	"ports": {
+		"preview": 8080,
+		"additional": {}
+	},
+	"services": [],
+	"scripts": {
+		"setup": {
+			"enabled": true,
+			"command": null
+		},
+		"run": {
+			"enabled": true,
+			"command": "go run ./cmd/server"
+		},
+		"archive": {
+			"enabled": true,
+			"command": null
+		}
+	},
+	"mcpServers": []
+}
