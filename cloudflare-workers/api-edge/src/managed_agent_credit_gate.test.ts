@@ -18,6 +18,7 @@ class FakeStatement {
     private readonly billingProvider: string,
     private readonly haltReason: string | null,
     private readonly warning: [string, number] | null = null,
+    private readonly trialStartedAt: number | null = null,
   ) {}
 
   bind(orgID: string): this {
@@ -38,6 +39,7 @@ class FakeStatement {
           halt_reason: this.haltReason,
           billing_warning: this.warning?.[0] ?? null,
           billing_warning_at: this.warning?.[1] ?? null,
+          trial_started_at: this.trialStartedAt,
         }) as T | null;
   }
 }
@@ -50,12 +52,13 @@ function env(
   billingProvider = "autumn",
   haltReason: string | null = null,
   warning: [string, number] | null = null,
+  trialStartedAt: number | null = null,
 ) {
   return {
     OPENCOMPUTER_DB: {
       prepare(sql: string) {
         expect(sql).toContain("halt_reason, billing_warning, billing_warning_at");
-        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider, haltReason, warning);
+        return new FakeStatement(halted, haltedAt, usagePlan, plan, billingProvider, haltReason, warning, trialStartedAt);
       },
     } as unknown as D1Database,
   };
@@ -106,6 +109,7 @@ describe("managed-agent credit admission", () => {
       haltReason: "credits_exhausted",
       warning: null,
       warningSince: null,
+      trialEndsAt: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(null), "org_test"),
@@ -120,6 +124,7 @@ describe("managed-agent credit admission", () => {
       haltReason: null,
       warning: null,
       warningSince: null,
+      trialEndsAt: null,
     });
     await expect(
       getManagedAgentBillingAdmission(env(0, null, "pro"), "org_test"),
@@ -134,6 +139,7 @@ describe("managed-agent credit admission", () => {
       haltReason: null,
       warning: null,
       warningSince: null,
+      trialEndsAt: null,
     });
   });
 
@@ -153,6 +159,7 @@ describe("managed-agent credit admission", () => {
         haltReason: "credits_exhausted",
         warning: null,
         warningSince: null,
+        trialEndsAt: null,
       });
       const request = new Request(
         "https://mo-oc-dev.com/api/managed-agents/sessions/session_1/turns",
@@ -188,6 +195,20 @@ describe("managed-agent credit admission", () => {
     ).resolves.toMatchObject({ haltReason: "trial_minutes", warning: null, warningSince: null });
   });
 
+  it("reports when a free org's trial ends, for its computer to stay on until then", async () => {
+    const started = 1_793_200_000;
+    await expect(
+      getManagedAgentBillingAdmission(env(0, null, "base", "free", "autumn", null, null, started), "org_test"),
+    ).resolves.toMatchObject({ allowed: true, trialEndsAt: started + 3 * 86_400 });
+    await expect(
+      getManagedAgentBillingAdmission(env(1, 1_793_500_000, "base", "free", "autumn", "trial_days", null, started), "org_test"),
+    ).resolves.toMatchObject({ allowed: false, trialEndsAt: started + 3 * 86_400 });
+    await expect(
+      getManagedAgentBillingAdmission(env(0, null, "max", "free", "autumn", null, null, started), "org_test"),
+    ).resolves.toMatchObject({ paid: true, trialEndsAt: null });
+    await expect(getManagedAgentBillingAdmission(env(0), "org_test")).resolves.toMatchObject({ trialEndsAt: null });
+  });
+
   it("keeps the fallback for a paid org halted on the credit rule", async () => {
     await expect(
       getManagedAgentBillingAdmission(env(1, 1_789_707_077, "max", "free", "autumn", "credits_exhausted"), "org_test"),
@@ -211,6 +232,7 @@ describe("managed-agent credit admission", () => {
       haltReason: "credits_exhausted",
       warning: null,
       warningSince: null,
+      trialEndsAt: null,
     });
   });
 
