@@ -8,6 +8,7 @@ import { deleteSandbox, getSandboxes, type Sandbox } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
@@ -33,7 +34,13 @@ export default function Sandboxes() {
   const [status, setStatus] = useState<string>('')
   const [toDelete, setToDelete] = useState<Sandbox | null>(null)
 
-  const { data: sessions, isLoading } = useQuery({
+  const {
+    data: sessions,
+    isLoading,
+    isError,
+    isFetching,
+    refetch,
+  } = useQuery({
     queryKey: ['sandboxes', status],
     queryFn: () => getSandboxes(status || undefined),
   })
@@ -168,25 +175,51 @@ export default function Sandboxes() {
         ))}
       </div>
 
-      <Panel className="overflow-hidden">
-        <ResourceTable
-          columns={columns}
-          rows={sessions ?? []}
-          rowKey={(s) => s.id}
-          loading={isLoading}
-          empty={
-            <EmptyState
-              icon={Boxes}
-              title="No sandboxes found"
-              description={
-                status
-                  ? 'No sandboxes match this filter.'
-                  : 'Sandboxes you start will show up here.'
-              }
-            />
-          }
-        />
-      </Panel>
+      {isError ? (
+        <Alert variant="destructive" className="mb-4">
+          <AlertTitle>
+            {(sessions?.length ?? 0) > 0
+              ? "Couldn't refresh sandboxes"
+              : "Couldn't load sandboxes"}
+          </AlertTitle>
+          <AlertDescription>
+            {(sessions?.length ?? 0) > 0
+              ? 'Showing previously loaded results. They may be out of date.'
+              : 'Your sandboxes could not be loaded. Please try again.'}
+          </AlertDescription>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2 justify-self-start"
+            disabled={isFetching}
+            onClick={() => void refetch()}
+          >
+            {isFetching ? 'Retrying…' : 'Try again'}
+          </Button>
+        </Alert>
+      ) : null}
+
+      {!isError || (sessions?.length ?? 0) > 0 ? (
+        <Panel className="overflow-hidden">
+          <ResourceTable
+            columns={columns}
+            rows={sessions ?? []}
+            rowKey={(s) => s.id}
+            loading={isLoading}
+            empty={
+              <EmptyState
+                icon={Boxes}
+                title="No sandboxes found"
+                description={
+                  status
+                    ? 'No sandboxes match this filter.'
+                    : 'Sandboxes you start will show up here.'
+                }
+              />
+            }
+          />
+        </Panel>
+      ) : null}
 
       <ConfirmDialog
         open={toDelete !== null}
