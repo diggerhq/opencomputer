@@ -12,6 +12,7 @@ import {
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   Dialog,
   DialogContent,
@@ -42,7 +43,13 @@ function expiryFromOption(option: string): string | undefined {
 
 export default function APIKeys() {
   const queryClient = useQueryClient()
-  const { data: keys, isLoading } = useQuery({
+  const {
+    data: keys,
+    isLoading,
+    isError,
+    isFetching,
+    refetch,
+  } = useQuery({
     queryKey: ['api-keys'],
     queryFn: getAPIKeys,
   })
@@ -201,27 +208,53 @@ export default function APIKeys() {
         </Panel>
       ) : null}
 
-      <Panel className="overflow-hidden">
-        <ResourceTable
-          columns={columns}
-          rows={keys ?? []}
-          rowKey={(k) => k.id}
-          loading={isLoading}
-          empty={
-            <EmptyState
-              icon={KeyRound}
-              title="No API keys yet"
-              description="Create a key to authenticate the SDK, CLI, and integrations."
-              action={
-                <Button size="sm" onClick={() => setShowCreate(true)}>
-                  <Plus className="size-4" />
-                  Create key
-                </Button>
-              }
-            />
-          }
-        />
-      </Panel>
+      {isError ? (
+        <Alert variant="destructive" className="mb-4">
+          <AlertTitle>
+            {(keys?.length ?? 0) > 0
+              ? "Couldn't refresh API keys"
+              : "Couldn't load API keys"}
+          </AlertTitle>
+          <AlertDescription>
+            {(keys?.length ?? 0) > 0
+              ? 'Showing previously loaded results. They may be out of date.'
+              : 'Your API keys could not be loaded. Please try again.'}
+          </AlertDescription>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2 justify-self-start"
+            disabled={isFetching}
+            onClick={() => void refetch()}
+          >
+            {isFetching ? 'Retrying…' : 'Try again'}
+          </Button>
+        </Alert>
+      ) : null}
+
+      {!isError || (keys?.length ?? 0) > 0 ? (
+        <Panel className="overflow-hidden">
+          <ResourceTable
+            columns={columns}
+            rows={keys ?? []}
+            rowKey={(k) => k.id}
+            loading={isLoading}
+            empty={
+              <EmptyState
+                icon={KeyRound}
+                title="No API keys yet"
+                description="Create a key to authenticate the SDK, CLI, and integrations."
+                action={
+                  <Button size="sm" onClick={() => setShowCreate(true)}>
+                    <Plus className="size-4" />
+                    Create key
+                  </Button>
+                }
+              />
+            }
+          />
+        </Panel>
+      ) : null}
 
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent>
