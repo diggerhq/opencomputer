@@ -1,4 +1,4 @@
-import { haltKeepsFallback, isPaidUsagePlan } from "./autumn_webhook";
+import { haltKeepsFallback, isPaidUsagePlan, TRIAL_DAYS } from "./autumn_webhook";
 import type { BillingEventsEnv } from "./billing_events";
 import { emitPaywallShown, insufficientCreditsResponse, type PaywallContext } from "./billing_onramp";
 
@@ -15,6 +15,7 @@ interface ManagedAgentCreditRow {
   halt_reason: string | null;
   billing_warning?: string | null;
   billing_warning_at?: number | null;
+  trial_started_at?: number | null;
 }
 
 // "full": the org's selected models. "fallback": credits are exhausted on a
@@ -58,6 +59,14 @@ export interface ManagedAgentBillingAdmission {
    * names one warning to tell once.
    */
   warningSince: number | null;
+  /**
+   * Additive (serverless-agents-ws 092): when a free org's trial ends (unix
+   * seconds, orgs.trial_started_at + TRIAL_DAYS), so its computer stays on
+   * until then. null for a paid org or one with no trial; the time may be
+   * past, and the halt rules decide whether the trial is over by minutes or
+   * tokens sooner.
+   */
+  trialEndsAt: number | null;
 }
 
 function normalizedUsagePlan(
@@ -101,7 +110,7 @@ export async function getManagedAgentBillingAdmission(
 ): Promise<ManagedAgentBillingAdmission> {
   const readRow = () =>
     env.OPENCOMPUTER_DB.prepare(
-      `SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason, billing_warning, billing_warning_at
+      `SELECT is_halted, halted_at, usage_plan, plan, billing_provider, halt_reason, billing_warning, billing_warning_at, trial_started_at
          FROM orgs WHERE id = ?1`,
     )
       .bind(orgID)
@@ -137,6 +146,7 @@ export async function getManagedAgentBillingAdmission(
     haltReason: isHalted ? row?.halt_reason ?? "credits_exhausted" : null,
     warning: isHalted ? null : row?.billing_warning ?? null,
     warningSince: isHalted || !row?.billing_warning ? null : row.billing_warning_at ?? null,
+    trialEndsAt: !paid && row?.trial_started_at != null ? row.trial_started_at + TRIAL_DAYS * 86_400 : null,
   };
 }
 
