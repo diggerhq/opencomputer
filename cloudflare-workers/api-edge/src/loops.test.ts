@@ -234,6 +234,24 @@ describe("trial events from the Autumn projection", () => {
     expect(loops).toEqual([expect.objectContaining({ eventName: "trial_ended", eventProperties: { reason: "minutes" } })]);
   });
 
+  it("sends trial_ended when the trial's days just ran out", async () => {
+    const loops = mockAutumn(100);
+    const now = Math.floor(Date.now() / 1000);
+    const db = fakeDb({ org: { trial_started_at: now - 3 * 86_400 - 600 } });
+    await syncAutumnToD1(syncEnv(db), "org_1");
+    expect(db.org.halt_reason).toBe("trial_days");
+    expect(loops).toEqual([expect.objectContaining({ eventName: "trial_ended", eventProperties: { reason: "days" } })]);
+  });
+
+  it("halts a trial that ran out long ago without telling anyone", async () => {
+    const loops = mockAutumn(100);
+    const now = Math.floor(Date.now() / 1000);
+    const db = fakeDb({ org: { trial_started_at: now - 30 * 86_400 } });
+    await syncAutumnToD1(syncEnv(db), "org_1");
+    expect(db.org.halt_reason).toBe("trial_days");
+    expect(loops).toEqual([]);
+  });
+
   it("mirrors a plan change onto the contact", async () => {
     const loops: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {

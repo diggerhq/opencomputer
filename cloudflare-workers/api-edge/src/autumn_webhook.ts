@@ -891,8 +891,13 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   // per org, against concurrent projections that both see the transition.
   const lowReason = trialReason(warning);
   if (lowReason && !trialReason(prevRow?.billing_warning)) await notifyTrialEvent(env, orgID, "trial_low", lowReason);
+  // A trial that ran out of days long ago (an org idle since before the clock
+  // shipped, or a cancelled paid org back on the trial plan) halts silently:
+  // only a trial that just ended is news to the owner or to us.
   const endReason = trialReason(reason);
-  if (endReason && !wasHalted) {
+  const staleEnd =
+    endReason === "days" && (clock.trialStartedAt == null || nowSec - clock.trialStartedAt >= (TRIAL_DAYS + 1) * DAY_SEC);
+  if (endReason && !wasHalted && !staleEnd) {
     await notifyTrialEvent(env, orgID, "trial_ended", endReason);
     await sendSlackAlert(env, trialEndedAlert(orgID, endReason));
   }
