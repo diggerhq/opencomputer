@@ -999,6 +999,29 @@ export class OpenComputerClient {
     );
   }
 
+  /**
+   * Calls a service through a connection, as the connections route proxies
+   * it: the answer is the provider's response as JSON. On the computer, only
+   * granted connections answer.
+   */
+  connectionFetch(input: {
+    service: string;
+    path: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    label?: string;
+  }) {
+    const provider =
+      input.service === "linear" || input.service === "github"
+        ? input.service
+        : "google";
+    return this.request<unknown>(
+      `/api/managed-agents/connections/${provider}/fetch`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
   /** Revokes every grant of a connection to the computer. */
   revokeComputerServiceConnection(connectionId: string) {
     return this.request<void>(

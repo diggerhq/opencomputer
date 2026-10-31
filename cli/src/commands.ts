@@ -2252,6 +2252,42 @@ export async function runCommand(
       return;
     }
 
+    // A call through a connection, for agents on the computer and scripts:
+    // `connection fetch linear /graphql --data '{"query":"{ viewer { id } }"}'`.
+    if (action === "fetch") {
+      const service = args.shift();
+      const path = args.shift();
+      if (!service || !path) {
+        throw new Error(
+          "Use `opencomputer connection fetch <service> <path> [--method <m>] [--data <body>] [--header 'Name: value'] [--alias <name>]`",
+        );
+      }
+      const data = option(args, "--data");
+      const headers: Record<string, string> = {};
+      for (const header of options(args, "--header")) {
+        const colon = header.indexOf(":");
+        if (colon < 1) throw new Error(`Invalid header ${JSON.stringify(header)}: use 'Name: value'`);
+        headers[header.slice(0, colon).trim()] = header.slice(colon + 1).trim();
+      }
+      const method = option(args, "--method") ?? (data === undefined ? "GET" : "POST");
+      const label = option(args, "--alias");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if (data !== undefined && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
+        headers["Content-Type"] = "application/json";
+      }
+      printJSON(
+        await client.connectionFetch({
+          service,
+          path,
+          method: method.toUpperCase(),
+          ...(Object.keys(headers).length ? { headers } : {}),
+          ...(data === undefined ? {} : { body: data }),
+          ...(label ? { label } : {}),
+        }),
+      );
+      return;
+    }
+
     if (action === "remove" || action === "disconnect") {
       const target = args.shift();
       if (!target) {
@@ -2274,7 +2310,7 @@ export async function runCommand(
     }
 
     throw new Error(
-      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|grant|revoke|grants|remove`.",
+      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|grant|revoke|grants|fetch|remove`.",
     );
   }
 
