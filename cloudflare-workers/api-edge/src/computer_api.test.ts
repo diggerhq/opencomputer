@@ -244,6 +244,9 @@ describe("computer API allowlist", () => {
     ["PUT", "/computer/sessions/cs_01h/secrets/API_KEY"],
     ["DELETE", "/computer/me/secrets/API_KEY"],
     ["PUT", "/computer/organization/secrets/API_KEY"],
+    ["GET", "/computer/service-connections"],
+    ["POST", "/computer/service-connections"],
+    ["DELETE", "/computer/service-connections"],
     ["GET", "/computer/sessions/cs_01h/workspace/archive"],
     ["PUT", "/computer/sessions/cs_01h/workspace/archive"],
     ["GET", "/computer/sessions/cs_01h/workspace/file"],
@@ -264,6 +267,7 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/a%2Fb"],
     ["GET", "/computer/sessions/cs_01h/unknown"],
     ["POST", "/computer/slack/install"],
+    ["PUT", "/computer/service-connections"],
   ])("refuses %s %s", (method, suffix) => {
     expect(isComputerApiRoute(method, suffix)).toBe(false);
   });

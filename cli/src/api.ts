@@ -133,6 +133,21 @@ export interface ProjectServiceAttachment {
   updatedAt: string;
 }
 
+/** A connection granted to the organization's computer (work 080). */
+export interface ComputerServiceAttachment {
+  service: string;
+  provider: string;
+  label: string;
+  connectionId: string;
+  connection: ServiceConnection;
+  /** `session` (one Slack thread), `user` (one Slack user's threads) or `everyone`. */
+  scope: "session" | "user" | "everyone";
+  subject: string;
+  grantedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ModelAccessConnection {
   id: string;
   organizationId: string;
@@ -966,6 +981,29 @@ export class OpenComputerClient {
             }
           : {}),
       },
+    );
+  }
+
+  async computerServiceConnections(): Promise<ComputerServiceAttachment[]> {
+    const result = await this.request<{
+      attachments: ComputerServiceAttachment[];
+    }>("/api/managed-agents/computer/service-connections");
+    return result.attachments ?? [];
+  }
+
+  /** Grants one of your connections to everyone on the computer (admins only). */
+  grantComputerServiceConnection(connectionId: string) {
+    return this.request<ComputerServiceAttachment>(
+      "/api/managed-agents/computer/service-connections",
+      { method: "POST", body: JSON.stringify({ connectionId }) },
+    );
+  }
+
+  /** Revokes every grant of a connection to the computer. */
+  revokeComputerServiceConnection(connectionId: string) {
+    return this.request<void>(
+      "/api/managed-agents/computer/service-connections",
+      { method: "DELETE", body: JSON.stringify({ connectionId }) },
     );
   }
 
