@@ -45,7 +45,7 @@ import {
   deepLinkedPlanFor,
   formatCreditCount,
   formatMinutes,
-  formatUsd,
+  formatCredits,
   planChangeTiming,
   planPriceLabel,
   trackPlanActivated,
@@ -596,9 +596,11 @@ function UsageSummary({ autumn }: { autumn: AutumnBilling }) {
         <h2 className="text-sm font-semibold">Credits</h2>
         <div className="mt-3 flex items-baseline gap-2">
           <span className="font-mono text-3xl font-semibold">
-            {formatUsd(autumn.creditsRemainingCents)}
+            {formatCreditCount(autumn.creditsRemainingCents)}
           </span>
-          <span className="text-muted-foreground text-xs">available</span>
+          <span className="text-muted-foreground text-xs">
+            credits available
+          </span>
         </div>
         <p className="text-muted-foreground mt-3 text-sm">
           {autumn.usagePlan === 'trial'
@@ -770,8 +772,8 @@ function CreditPacksCard({
     <Panel id="credits" className="scroll-mt-24 p-6">
       <h2 className="mb-2 text-sm font-semibold">Buy credits</h2>
       <p className="text-muted-foreground mb-4 text-sm">
-        {formatUsd(creditsRemainingCents)} available. Credits cover work past
-        your monthly minutes (${OVERAGE_USD_PER_MINUTE}/min) and models.
+        {formatCredits(creditsRemainingCents)} available. Credits cover work
+        past your monthly minutes (${OVERAGE_USD_PER_MINUTE}/min) and models.
       </p>
       <div className="grid grid-cols-3 gap-2">
         {CREDIT_PACKS_USD.map((usd) => (

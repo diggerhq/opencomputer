@@ -89,7 +89,7 @@ describe('billingPillText', () => {
         creditsRemainingCents: 1_200,
         workMinutes: { granted: 2_000, remaining: 1_240 },
       }),
-    ).toBe('1,240 / 2,000 min · $12 credits')
+    ).toBe('1,240 / 2,000 min · 12 credits')
   })
 
   it('shows nothing for the old free tier', () => {
@@ -175,7 +175,11 @@ describe('warningNotice', () => {
   it.each([
     ['trial_minutes', 'Your trial has 45 min of work left.', 'plans'],
     ['trial_days', 'Your trial ends in 2 days.', 'plans'],
-    ['credits_low', 'Your credits are running low ($2.50 left).', 'credits'],
+    [
+      'credits_low',
+      'Your credits are running low (2.5 credits left).',
+      'credits',
+    ],
     [
       'payment_failed',
       'Your last payment failed. Update your card to avoid a pause.',
