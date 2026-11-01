@@ -107,6 +107,10 @@ export function ComputerSecrets() {
           />
         )}
       </Panel>
+      <p className="text-muted-foreground mt-3 text-xs">
+        These are organization-wide. A Slack thread or a person can set their
+        own value for the same name in Slack, and theirs is used there instead.
+      </p>
 
       {editing ? (
         <SecretDialog editing={editing} onClose={() => setEditing(null)} />
