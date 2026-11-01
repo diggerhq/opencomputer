@@ -1731,27 +1731,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
   [/^\/managed-agents\/computer$/, previewComputer],
-  [
-    /^\/managed-agents\/computer\/secrets\/[^/]+\/events$/,
-    () => ({
-      events: [
-        {
-          at: new Date(Date.now() - 26 * 3_600_000).toISOString(),
-          action: 'replace',
-          kind: 'secret',
-          actor: previewSecretActor('Ayush'),
-          via: 'dashboard',
-        },
-        {
-          at: new Date(Date.now() - 266 * 3_600_000).toISOString(),
-          action: 'set',
-          kind: 'secret',
-          actor: { slackUserId: 'U0PREVIEW' },
-          via: 'slack',
-        },
-      ],
-    }),
-  ],
   [/^\/managed-agents\/computer\/secrets$/, previewOrgSecrets],
   [
     /^\/managed-agents\/computer\/sessions$/,
