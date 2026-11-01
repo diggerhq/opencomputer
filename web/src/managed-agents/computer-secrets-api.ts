@@ -29,21 +29,10 @@ export const orgSecretSchema = z.object({
   overriddenIn: z.object({ threads: z.number(), people: z.number() }),
 })
 
-export const secretEventSchema = z.object({
-  at: z.string().nullable(),
-  action: z.string(),
-  kind: z.enum(['secret', 'variable']),
-  actor: actorSchema.nullable(),
-  via: z.string(),
-})
-
 export type SecretActor = z.infer<typeof actorSchema>
 export type OrgSecret = z.infer<typeof orgSecretSchema>
-export type SecretEvent = z.infer<typeof secretEventSchema>
 
 export const orgSecretsQueryKey = ['managed-computer', 'secrets'] as const
-export const secretEventsQueryKey = (name: string) =>
-  ['managed-computer', 'secrets', name, 'events'] as const
 
 const PREFIX = '/managed-agents/computer'
 
@@ -56,17 +45,6 @@ export async function getOrgSecrets() {
       '/api',
     )
   ).secrets
-}
-
-export async function getSecretEvents(name: string) {
-  return (
-    await apiFetch(
-      `${PREFIX}/secrets/${encodeURIComponent(name)}/events`,
-      undefined,
-      z.object({ events: z.array(secretEventSchema) }),
-      '/api',
-    )
-  ).events
 }
 
 /** Sets or replaces an organization secret or variable. */

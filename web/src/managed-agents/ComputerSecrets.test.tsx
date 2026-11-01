@@ -8,7 +8,6 @@ import { ApiError } from '@/api/errors'
 
 const secretsApi = vi.hoisted(() => ({
   getOrgSecrets: vi.fn(),
-  getSecretEvents: vi.fn(),
   putOrgSecret: vi.fn(),
   deleteOrgSecret: vi.fn(),
 }))
@@ -95,15 +94,12 @@ async function flush() {
 }
 
 describe('computer secrets page', () => {
-  it('lists organization secrets with who set them and where they are overridden', async () => {
+  it('lists organization secrets by name only', async () => {
     secretsApi.getOrgSecrets.mockResolvedValue([row])
     await render()
     expect(container.textContent).toContain('EXECUTOR_API_KEY')
-    expect(container.textContent).toContain('Ayush')
-    expect(container.textContent).toContain('Not yet')
-    expect(container.textContent).toContain(
-      'Overridden in 1 thread by a copy set in Slack',
-    )
+    expect(container.textContent).not.toContain('Ayush')
+    expect(container.textContent).not.toContain('Overridden')
   })
 
   it('offers to add the first secret when there are none', async () => {
@@ -179,33 +175,5 @@ describe('computer secrets page', () => {
     expect(secretsApi.deleteOrgSecret.mock.calls[0]?.[0]).toBe(
       'EXECUTOR_API_KEY',
     )
-  })
-
-  it('shows the history of a name', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([row])
-    secretsApi.getSecretEvents.mockResolvedValue([
-      {
-        at: '2026-10-30T10:00:00.000Z',
-        action: 'replace',
-        kind: 'secret',
-        actor: { member: 'usr_1', name: 'Ayush' },
-        via: 'dashboard',
-      },
-      {
-        at: '2026-10-29T10:00:00.000Z',
-        action: 'set',
-        kind: 'secret',
-        actor: { slackUserId: 'U1' },
-        via: 'slack',
-      },
-    ])
-    await render()
-    act(() => button('History of EXECUTOR_API_KEY').click())
-    await flush()
-    expect(secretsApi.getSecretEvents).toHaveBeenCalledWith('EXECUTOR_API_KEY')
-    expect(document.body.textContent).toContain(
-      'Replaced by Ayush in the dashboard',
-    )
-    expect(document.body.textContent).toContain('Set in Slack')
   })
 })
