@@ -99,7 +99,7 @@ describe('computer secrets page', () => {
     await render()
     expect(container.textContent).toContain('EXECUTOR_API_KEY')
     expect(container.textContent).not.toContain('Ayush')
-    expect(container.textContent).not.toContain('Overridden')
+    expect(container.textContent).toContain('These are organization-wide.')
   })
 
   it('offers to add the first secret when there are none', async () => {
