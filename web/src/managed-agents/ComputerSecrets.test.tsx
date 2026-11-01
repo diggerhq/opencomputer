@@ -61,9 +61,10 @@ async function render() {
       </QueryClientProvider>,
     )
   })
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
+  // Until the list's query settles, however slow the run.
+  for (let i = 0; i < 50 && container.querySelector('[role="status"]'); i++) {
+    await flush()
+  }
 }
 
 // The last match: a dialog's button comes after the page's of the same name.
