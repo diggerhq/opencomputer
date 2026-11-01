@@ -8,6 +8,7 @@ import {
   Computer,
   Database,
   FolderKanban,
+  KeyRound,
   KeySquare,
   Layers,
   MessagesSquare,
@@ -134,7 +135,10 @@ export function managedAgentsNav(options: {
     groups.push({
       items: [
         ...(options.computerEnabled
-          ? [{ to: '/computer', label: 'Computer', icon: Computer }]
+          ? [
+              { to: '/computer', label: 'Computer', icon: Computer, end: true },
+              { to: '/computer/secrets', label: 'Secrets', icon: KeyRound },
+            ]
           : []),
         { to: '/automations', label: 'Automations', icon: FolderKanban },
       ],

@@ -30,6 +30,9 @@ const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
+const ManagedComputerSecrets = lazy(
+  () => import('./managed-agents/ComputerSecrets'),
+)
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
@@ -96,6 +99,10 @@ export default function App() {
               }
             />
             <Route path="computer" element={<ManagedComputer />} />
+            <Route
+              path="computer/secrets"
+              element={<ManagedComputerSecrets />}
+            />
             {managedAgentsExperimentEnabled ? (
               <Route path="automations" element={<ManagedAgentsHome list />} />
             ) : null}
