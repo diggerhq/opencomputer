@@ -1677,6 +1677,51 @@ function previewComputerSessions() {
 
 let previewProjectServiceAttachments: Array<Record<string, unknown>> = []
 
+// The computer's organization secrets (work 095); `?secrets=none` shows the
+// empty page.
+const previewSecretActor = (name: string) => ({ member: `usr_${name}`, name })
+function previewOrgSecrets() {
+  if (new URLSearchParams(window.location.search).get('secrets') === 'none')
+    return { secrets: [] }
+  const at = (hours: number) =>
+    new Date(Date.now() - hours * 3_600_000).toISOString()
+  const row = (
+    name: string,
+    by: string,
+    updated: number,
+    used: number | null,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    name,
+    layer: 'organization',
+    kind: 'secret',
+    file: false,
+    createdAt: at(updated + 240),
+    createdBy: previewSecretActor(by),
+    updatedAt: at(updated),
+    updatedBy: previewSecretActor(by),
+    lastUsedAt: used === null ? null : at(used),
+    overriddenIn: { threads: 0, people: 0 },
+    ...extra,
+  })
+  return {
+    secrets: [
+      row('EXECUTOR_API_KEY', 'Ayush', 26, 2, {
+        overriddenIn: { threads: 1, people: 0 },
+      }),
+      row('GITHUB_TOKEN', 'Igor', 240, 0.1, {
+        overriddenIn: { threads: 0, people: 2 },
+      }),
+      row('GCP_SERVICE_ACCOUNT', 'Mohamed', 400, 30, { file: true }),
+      row('LINEAR_API_KEY', 'Utpal', 480, 24),
+      row('OPENAI_BASE_URL', 'Mohamed', 72, null, {
+        kind: 'variable',
+        value: 'https://gateway.example.com/v1',
+      }),
+    ],
+  }
+}
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
@@ -1686,6 +1731,28 @@ const ROUTES: Array<[RegExp, Handler]> = [
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
   [/^\/managed-agents\/computer$/, previewComputer],
+  [
+    /^\/managed-agents\/computer\/secrets\/[^/]+\/events$/,
+    () => ({
+      events: [
+        {
+          at: new Date(Date.now() - 26 * 3_600_000).toISOString(),
+          action: 'replace',
+          kind: 'secret',
+          actor: previewSecretActor('Ayush'),
+          via: 'dashboard',
+        },
+        {
+          at: new Date(Date.now() - 266 * 3_600_000).toISOString(),
+          action: 'set',
+          kind: 'secret',
+          actor: { slackUserId: 'U0PREVIEW' },
+          via: 'slack',
+        },
+      ],
+    }),
+  ],
+  [/^\/managed-agents\/computer\/secrets$/, previewOrgSecrets],
   [
     /^\/managed-agents\/computer\/sessions$/,
     () => ({ sessions: previewComputerSessions() }),

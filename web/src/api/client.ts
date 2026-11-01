@@ -134,11 +134,14 @@ function errorDetails(body: unknown): Record<string, unknown> | undefined {
 // The authenticated request with error normalization, returning the raw
 // Response for callers that need headers (a memory document's ETag) as well
 // as the body. `apiFetch` is the JSON-and-schema layer over it.
+// `base` is `/api` for the public API's routes a dashboard session may also
+// call, such as the computer's secrets (work 095).
 export async function apiFetchResponse(
   path: string,
   options: RequestInit = {},
+  base: '/api' | typeof API_BASE = API_BASE,
 ): Promise<Response> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${base}${path}`, {
     ...options,
     credentials: 'include',
     headers: {
@@ -169,6 +172,7 @@ export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
   schema?: z.ZodType<T>,
+  base: '/api' | typeof API_BASE = API_BASE,
 ): Promise<T> {
   // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
   // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
@@ -179,7 +183,7 @@ export async function apiFetch<T>(
     return validate(schema, await mockFetch<unknown>(path, options), path)
   }
 
-  const res = await apiFetchResponse(path, options)
+  const res = await apiFetchResponse(path, options, base)
 
   if (res.status === 204) {
     return undefined as T
