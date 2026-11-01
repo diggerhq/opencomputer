@@ -66,6 +66,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   },
   // Secrets (docs/api/http/secrets.mdx).
   { methods: new Set(["GET"]), pattern: route("/secrets") },
+  { methods: new Set(["GET"]), pattern: route(`/secrets/${SEG}/events`) },
   {
     methods: new Set(["PUT", "DELETE"]),
     pattern: route(`/(?:sessions/${SEG}|me|organization)/secrets/${SEG}`),
