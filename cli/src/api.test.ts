@@ -594,3 +594,23 @@ test("session list sends exact filters, the page size and the cursor as query pa
   assert.equal(query.get("limit"), "2");
   assert.equal(query.get("cursor"), "eyJjIjoxfQ");
 });
+
+test("connection fetch posts to the provider's fetch route", async (context) => {
+  const requests: Request[] = [];
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return Response.json({ status: 200, body: "{}" });
+    },
+  );
+  const client = new OpenComputerClient({ apiUrl: "https://app.opencomputer.dev", apiKey: "test" }, "setup");
+  await client.connectionFetch({ service: "linear", path: "/graphql", method: "POST", body: "{}" });
+  await client.connectionFetch({ service: "gmail", path: "/gmail/v1/users/me/profile" });
+  assert.deepEqual(
+    requests.map((r) => new URL(r.url).pathname),
+    ["/api/managed-agents/connections/linear/fetch", "/api/managed-agents/connections/google/fetch"],
+  );
+  assert.deepEqual(await requests[0]!.json(), { service: "linear", path: "/graphql", method: "POST", body: "{}" });
+});

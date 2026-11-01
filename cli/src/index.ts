@@ -91,6 +91,10 @@ Usage:
   opencomputer connection status <alias|connection-id> [--service <name>]
   opencomputer connection attach <alias|connection-id> [--service <name>] [--project <id|slug|current>]
   opencomputer connection detach <alias|connection-id> [--service <name>] [--project <id|slug|current>]
+  opencomputer connection grant <alias|connection-id> [--service <name>]
+  opencomputer connection revoke <alias|connection-id> [--service <name>]
+  opencomputer connection grants
+  opencomputer connection fetch <service> <path> [--method <m>] [--data <body>] [--header 'Name: value'] [--alias <name>]
   opencomputer connection remove <alias|connection-id> [--service <name>]
   opencomputer github status [--project <id|slug>]
   opencomputer github connect [--new | --connection <id|account>] [--environment development|production] [--project <id|slug>] [--no-wait]

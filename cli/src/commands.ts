@@ -2194,6 +2194,100 @@ export async function runCommand(
       return;
     }
 
+    // The organization's computer (work 080): Slack threads use only the
+    // connections people grant it. From here, an admin grants their own
+    // connection to everyone; thread and personal grants are made in Slack.
+    if (action === "grants") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const attachments = await client.computerServiceConnections();
+      if (globals.json) {
+        printJSON(attachments);
+        return;
+      }
+      if (!attachments.length) {
+        process.stdout.write("No connections are granted to the computer.\n");
+        return;
+      }
+      for (const attachment of attachments) {
+        const audience =
+          attachment.scope === "everyone"
+            ? "everyone"
+            : `${attachment.scope} ${attachment.subject}`;
+        process.stdout.write(
+          `${attachment.label.padEnd(18)} ${attachment.service.padEnd(8)} ` +
+            `${audience.padEnd(26)} ${attachment.connectionId}\n`,
+        );
+      }
+      return;
+    }
+
+    if (action === "grant" || action === "revoke") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error(
+          `Use \`opencomputer connection ${action} <alias|connection-id>\``,
+        );
+      }
+      const service = option(args, "--service");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connection = await findConnection(target, service);
+      const resolved = service ?? serviceOfConnection(connection);
+      if (action === "grant") {
+        const attachment = await client.grantComputerServiceConnection(
+          connection.id,
+        );
+        if (globals.json) printJSON(attachment);
+        else
+          process.stdout.write(
+            `Granted ${connection.label} (${resolved}) to everyone on the computer.\n`,
+          );
+      } else {
+        await client.revokeComputerServiceConnection(connection.id);
+        if (globals.json) printJSON({ revoked: connection.id });
+        else
+          process.stdout.write(
+            `Revoked ${connection.label} (${resolved}) from the computer.\n`,
+          );
+      }
+      return;
+    }
+
+    // A call through a connection, for agents on the computer and scripts:
+    // `connection fetch linear /graphql --data '{"query":"{ viewer { id } }"}'`.
+    if (action === "fetch") {
+      const service = args.shift();
+      const path = args.shift();
+      if (!service || !path) {
+        throw new Error(
+          "Use `opencomputer connection fetch <service> <path> [--method <m>] [--data <body>] [--header 'Name: value'] [--alias <name>]`",
+        );
+      }
+      const data = option(args, "--data");
+      const headers: Record<string, string> = {};
+      for (const header of options(args, "--header")) {
+        const colon = header.indexOf(":");
+        if (colon < 1) throw new Error(`Invalid header ${JSON.stringify(header)}: use 'Name: value'`);
+        headers[header.slice(0, colon).trim()] = header.slice(colon + 1).trim();
+      }
+      const method = option(args, "--method") ?? (data === undefined ? "GET" : "POST");
+      const label = option(args, "--alias");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if (data !== undefined && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
+        headers["Content-Type"] = "application/json";
+      }
+      printJSON(
+        await client.connectionFetch({
+          service,
+          path,
+          method: method.toUpperCase(),
+          ...(Object.keys(headers).length ? { headers } : {}),
+          ...(data === undefined ? {} : { body: data }),
+          ...(label ? { label } : {}),
+        }),
+      );
+      return;
+    }
+
     if (action === "remove" || action === "disconnect") {
       const target = args.shift();
       if (!target) {
@@ -2216,7 +2310,7 @@ export async function runCommand(
     }
 
     throw new Error(
-      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|remove`.",
+      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|grant|revoke|grants|fetch|remove`.",
     );
   }
 
