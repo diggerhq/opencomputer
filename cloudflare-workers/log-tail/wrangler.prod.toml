@@ -1,6 +1,8 @@
 # log-tail Worker — PROD on Mo's CF account.
 # Tail consumer for opencomputer-edge-prod + opencomputer-events-ingest-prod.
-# Forwards console output + exceptions to Axiom dataset oc-platform-edge.
+# Forwards console output + exceptions to Axiom dataset oc-platform-edge,
+# and the SAZABI_SERVICES Workers to Sazabi over OTLP when
+# SAZABI_OTLP_LOGS_URL is set.
 # Deployed by .github/workflows/deploy-log-tail.yml on push to main; manually:
 # `npm run deploy:prod` (needs CLOUDFLARE_API_TOKEN for this account).
 
@@ -22,6 +24,11 @@ enabled = true
 
 # Secrets (set via `wrangler secret put --config wrangler.prod.toml`):
 #   AXIOM_TOKEN — ingest-capable token scoped to the oc-platform-edge dataset
+#   SAZABI_OTLP_LOGS_URL — optional Sazabi OTLP logs intake URL (ends in
+#     /v1/logs; the URL is the credential). Unset → Sazabi forwarding is off.
 [vars]
 AXIOM_HOST = "https://api.axiom.co"
 AXIOM_DATASET = "oc-platform-edge"
+# Workers whose logs also go to Sazabi: serverless agents and @computer.
+# opencomputer-wire and previews need tail_consumers before they show up.
+SAZABI_SERVICES = "managed-agents,managed-agents-platform,managed-agents-opencode-workerd,opencomputer-wire,previews"
