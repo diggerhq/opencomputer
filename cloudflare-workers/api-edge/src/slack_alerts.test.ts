@@ -144,7 +144,7 @@ describe("billing-event alerts", () => {
     ]);
   });
 
-  it("skips free-email trial starts and every internal account", async () => {
+  it("alerts free-email trial starts and skips every internal account", async () => {
     const db = schemaDB();
     const { posts, fetchImpl } = slack();
     const free = addOrg(db, "joe@gmail.com");
@@ -154,10 +154,8 @@ describe("billing-event alerts", () => {
       await sendSlackAlert(env(db), alertForBillingEvent({}, "billing.trial_started", org, {}, NOW)!, fetchImpl, NOW);
     }
     await sendSlackAlert(env(db), trialEndedAlert(staff, "days"), fetchImpl, NOW);
-    expect(posts).toEqual([]);
-    // A free-email account still alerts on everything after the trial start.
-    await sendSlackAlert(env(db), trialEndedAlert(free, "minutes"), fetchImpl, NOW);
-    expect(posts.map((p) => p.text)).toEqual(["⏹️ joe@gmail.com ended their trial unpaid · trial · out of work minutes"]);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toMatch(/^🟢 joe@gmail\.com started a trial/);
   });
 
   it("renders each revenue event", async () => {

@@ -9,14 +9,13 @@
 // own channel without a deploy. Dormant unless the token and a channel are set.
 //
 // Unlike the billing events (work 054) the message carries the owner's email:
-// it is looked up here, for Slack only. Internal accounts never alert;
-// free-email accounts skip trial_started and first show up when they activate.
-// Both lists are slack_connect.ts's, shared with 089.
+// it is looked up here, for Slack only. Internal accounts never alert; the
+// list is slack_connect.ts's, shared with 089.
 //
 // Each alert is claimed once in slack_alerts before it is posted. One bounded
 // attempt; never throws, so a billing or login path can await it.
 
-import { isFreeEmail, isInternalEmail } from "./slack_connect";
+import { isInternalEmail } from "./slack_connect";
 
 // The settings; OPENCOMPUTER_DB comes from the caller's env (AlertsDBEnv), kept
 // out of here so env interfaces that require it can still extend this one.
@@ -258,7 +257,6 @@ export async function sendSlackAlert(
   try {
     const c = await orgContext(db, alert.orgId);
     if (!c?.email || isInternalEmail(c.email)) return false;
-    if (alert.kind === "trial_started" && isFreeEmail(c.email)) return false;
 
     const claimed = await db
       .prepare(`INSERT OR IGNORE INTO slack_alerts (org_id, event, key, sent_at) VALUES (?1, ?2, ?3, ?4)`)
