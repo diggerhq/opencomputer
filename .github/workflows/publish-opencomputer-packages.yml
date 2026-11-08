@@ -25,9 +25,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Test, build, and publish packages
+  test:
+    name: Test and build packages
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: |
+            agent/package-lock.json
+            react/package-lock.json
+            cli/package-lock.json
+
+      - name: Verify package version contract
+        run: node scripts/check-opencomputer-package-contract.mjs
+
+      - name: Install and test agent package
+        working-directory: agent
+        run: |
+          npm ci
+          npm test
+
+      - name: Install and test CLI package
+        working-directory: cli
+        run: |
+          npm ci
+          npm test
+
+      - name: Install and test React package
+        working-directory: react
+        run: |
+          npm ci
+          npm test
+
+      - name: Install and test starter package
+        working-directory: create-start
+        env:
+          OPENCOMPUTER_CREATE_START_MODULE_PATH: ${{ github.workspace }}/cli/dist/create-start.js
+        run: |
+          npm test
+
+
+  # Publishing holds NPM_TOKEN and an OIDC token, so it runs only from main and
+  # only in the `npm` environment, whose secrets are restricted to main.
+  publish:
+    name: Publish packages
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm
     permissions:
       contents: read
       id-token: write
@@ -73,7 +125,6 @@ jobs:
           npm test
 
       - name: Publish packages in dependency order
-        if: github.event_name != 'pull_request'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
