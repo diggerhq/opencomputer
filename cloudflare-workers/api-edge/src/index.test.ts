@@ -332,6 +332,16 @@ describe("/internal/model-billing/enable — scoped-secret auth boundary", () =>
     const stale = (Math.floor(Date.now() / 1000) - 600).toString();
     expect((await post("/internal/model-billing/enable", MANAGED, { ts: stale })).status).toBe(401);
   });
+  it("managed secret over the path authorizes enable (not 401)", async () => {
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sig = await sign(MANAGED, ts, `/internal/model-billing/enable.${JSON.stringify({ org_id: "org-x" })}`);
+    expect((await post("/internal/model-billing/enable", MANAGED, { ts, sig })).status).not.toBe(401);
+  });
+  it("a path signature for another endpoint → 401", async () => {
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sig = await sign(MANAGED, ts, `/internal/computer-keys.${JSON.stringify({ org_id: "org-x" })}`);
+    expect((await post("/internal/model-billing/enable", MANAGED, { ts, sig })).status).toBe(401);
+  });
 });
 
 describe("api-edge VM-DO exec routing", () => {
@@ -887,7 +897,11 @@ describe("/internal/computer-keys", () => {
     return worker.fetch(
       new Request("https://app.opencomputer.dev/internal/computer-keys", {
         method: "POST",
-        headers: { "content-type": "application/json", "X-Timestamp": ts, "X-Signature": await sign(secret, ts, body) },
+        headers: {
+          "content-type": "application/json",
+          "X-Timestamp": ts,
+          "X-Signature": await sign(secret, ts, `/internal/computer-keys.${body}`),
+        },
         body,
       }),
       authEnv,
@@ -898,6 +912,23 @@ describe("/internal/computer-keys", () => {
   it("refuses any other secret", async () => {
     const authEnv = { ...env, CF_ADMIN_SECRET: "admin", OC_MANAGED_CRED_HMAC_SECRET: MANAGED } as unknown as Env;
     expect((await post("admin", "org-x", authEnv)).status).toBe(401);
+  });
+
+  it("refuses a path signature made for another endpoint", async () => {
+    const authEnv = { ...env, OC_MANAGED_CRED_HMAC_SECRET: MANAGED } as unknown as Env;
+    const body = JSON.stringify({ org_id: "org-x" });
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sig = await sign(MANAGED, ts, `/internal/model-billing/enable.${body}`);
+    const res = await worker.fetch(
+      new Request("https://app.opencomputer.dev/internal/computer-keys", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Timestamp": ts, "X-Signature": sig },
+        body,
+      }),
+      authEnv,
+      ctx,
+    );
+    expect(res.status).toBe(401);
   });
 
   it("mints a one-hour key for an existing org", async () => {

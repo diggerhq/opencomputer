@@ -3796,6 +3796,24 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// A request signed with the scoped OC_MANAGED_CRED_HMAC_SECRET. The signature
+// covers the path, `${ts}.${path}.${body}`, so a signed `{ org_id }` for one
+// endpoint can't be replayed against another (a captured model-billing/enable
+// call used to mint a computer key). The path-less `${ts}.${body}` form is still
+// accepted until blue and sessions-api sign paths; it is then removed (work 097).
+async function verifyManagedCredSignature(
+  env: Env,
+  path: string,
+  ts: string,
+  body: string,
+  sig: string,
+): Promise<boolean> {
+  const secret = env.OC_MANAGED_CRED_HMAC_SECRET;
+  if (!secret) return false;
+  if (constantTimeEqual(await hmacHex(secret, `${ts}.${path}.${body}`), sig)) return true;
+  return constantTimeEqual(await hmacHex(secret, `${ts}.${body}`), sig);
+}
+
 // ── WorkOS auth flow ─────────────────────────────────────────────────────
 //
 // Browser flow:
@@ -5781,9 +5799,8 @@ export default {
       // agent-create without holding the broad admin secret. `disable` stays admin-only.
       const adminOk = constantTimeEqual(await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`), sig);
       const managedOk =
-        path === "/internal/model-billing/enable" && env.OC_MANAGED_CRED_HMAC_SECRET
-          ? constantTimeEqual(await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${body}`), sig)
-          : false;
+        path === "/internal/model-billing/enable" &&
+        (await verifyManagedCredSignature(env, path, ts, body, sig));
       if (!adminOk && !managedOk) return json({ error: "signature mismatch" }, 401);
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       const parsed = JSON.parse(body) as { org_id?: string };
@@ -5803,16 +5820,14 @@ export default {
     // /internal/computer-keys — a one-hour org key for an organization's computer
     // (work 067): managed agents mints one when a session runs `opencomputer`,
     // instead of a long-lived key living on the VM. HMAC-auth'd with the scoped
-    // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${body}`. Body: { org_id,
+    // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${path}.${body}`. Body: { org_id,
     // session_key? }: the Slack thread the key is for (work 080), recorded on
     // the key and forwarded as the assertion's session_key claim.
     if (path === "/internal/computer-keys" && req.method === "POST") {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
       const body = await req.text();
-      const ok = env.OC_MANAGED_CRED_HMAC_SECRET
-        ? constantTimeEqual(await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${body}`), sig)
-        : false;
+      const ok = await verifyManagedCredSignature(env, path, ts, body, sig);
       if (!ok) return json({ error: "signature mismatch" }, 401);
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       const parsed = JSON.parse(body) as { org_id?: string; session_key?: unknown };
