@@ -7,7 +7,7 @@ set -euo pipefail
 #   3. Wake from S3 checkpoint (simulate migration — purge local, pull from S3)
 #
 # Usage: ./scripts/bench-launch.sh <server-url> <api-key>
-# Example: ./scripts/bench-launch.sh http://3.135.246.117:8080 osb_600b1a...
+# Example: ./scripts/bench-launch.sh http://3.135.246.117:8080 osb_...
 
 SERVER="${1:?Usage: $0 <server-url> <api-key>}"
 API_KEY="${2:?Usage: $0 <server-url> <api-key>}"
