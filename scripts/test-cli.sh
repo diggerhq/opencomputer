@@ -3,7 +3,7 @@ set -euo pipefail
 
 # CLI integration test — runs against a live OpenComputer server.
 # Usage: ./scripts/test-cli.sh [api-url] [api-key]
-#   e.g. ./scripts/test-cli.sh https://dev.opensandbox.ai osb_600b1a...
+#   e.g. ./scripts/test-cli.sh https://dev.opensandbox.ai osb_...
 # Defaults to dev.opensandbox.ai if no URL provided.
 
 API_URL="${1:?Usage: $0 <api-url> <api-key>}"
