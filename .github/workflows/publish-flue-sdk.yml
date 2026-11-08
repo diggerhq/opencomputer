@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: npm
     steps:
       - uses: actions/checkout@v4
 
