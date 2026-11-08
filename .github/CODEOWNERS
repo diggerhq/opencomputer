@@ -1,0 +1,5 @@
+# Deploy-sensitive paths: changes here need a review from one of these owners.
+/.github/            @motatoes @ZIJ @UtpalJayNadiger
+/cloudflare-workers/ @motatoes @ZIJ @UtpalJayNadiger
+/deploy/             @motatoes @ZIJ @UtpalJayNadiger
+/ci/                 @motatoes @ZIJ @UtpalJayNadiger
