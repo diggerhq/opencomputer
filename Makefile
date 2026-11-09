@@ -5,17 +5,15 @@ BINARY_SERVER = opensandbox-server
 BINARY_WORKER = opensandbox-worker
 BINARY_AGENT = osb-agent
 BUILD_DIR = bin
-VERSION ?= $(shell cat VERSION | tr -d '[:space:]').dev
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
-LDFLAGS_OC = -s -w -X github.com/opensandbox/opensandbox/cmd/oc/internal/commands.Version=$(VERSION)
 LDFLAGS_WORKER = -X main.WorkerVersion=$(GIT_SHA) -X main.AgentVersion=$(GIT_SHA)
 
 ## help: Show this help message
 help:
 	@grep -E '^##' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## build: Build server, worker, agent, and CLI binaries
-build: build-server build-worker build-agent build-oc
+## build: Build server, worker, and agent binaries
+build: build-server build-worker build-agent
 
 ## build-server: Build the control plane server
 build-server:
@@ -40,14 +38,6 @@ build-agent-amd64:
 ## build-server-arm64: Cross-compile server for Linux ARM64
 build-server-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY_SERVER)-arm64 ./cmd/server
-
-## build-oc: Build the oc CLI tool
-build-oc:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS_OC)" -o $(BUILD_DIR)/oc ./cmd/oc
-
-## install-oc: Build and install oc to $GOPATH/bin
-install-oc:
-	CGO_ENABLED=0 go install -ldflags "$(LDFLAGS_OC)" ./cmd/oc
 
 ## --- Local Testing (3 tiers) ---
 
