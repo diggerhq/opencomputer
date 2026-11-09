@@ -34,7 +34,7 @@ truth they come from.
 - `internal/config/config.go` — environment variables and runtime config
 - `proto/` — inter-tier contracts
 - `docs/docs.json` — docs navigation
-- `cmd/oc/` — CLI entrypoint
+- `cli/` — the `opencomputer` CLI (TypeScript, published as `@opencomputer/cli`)
 - `sdks/typescript/` and `sdks/python/` — published SDKs
 
 Managed-agent product behavior is mostly **not** implemented here:
@@ -152,7 +152,7 @@ Client -> Control Plane -> Data Plane -> In-VM Agent
   machine-level execution.
 - **In-VM agent** (`cmd/agent`, `internal/agent/`, `proto/agent/`) owns exec,
   files, PTY, and process interaction inside the sandbox.
-- **CLI** (`cmd/oc/`) is the user-facing shell over platform APIs.
+- **CLI** (`cli/`) is the user-facing shell over platform APIs.
 
 The stable mental model is:
 
@@ -164,7 +164,7 @@ The stable mental model is:
 
 Use this as a routing map, not a full index:
 
-- `cmd/server/`, `cmd/worker/`, `cmd/agent/`, `cmd/oc/` — entrypoints
+- `cmd/server/`, `cmd/worker/`, `cmd/agent/` — entrypoints
 - `internal/api/` — HTTP handlers and API composition
 - `internal/auth/` — auth, API keys, WorkOS, middleware
 - `internal/sandbox/` — sandbox state machine and routing
@@ -189,7 +189,7 @@ you are editing:
 - `proto/` — contracts between tiers
 - public HTTP API routes in `internal/api/`
 - `sdks/` — published TypeScript and Python SDKs
-- `cmd/oc/` — CLI behavior users script against
+- `cli/` — CLI behavior users script against
 - `docs/` — user-facing product and API documentation
 
 If a change crosses one of these boundaries, treat it as a contract change, not
@@ -222,21 +222,16 @@ just a refactor.
 
 ## CLI boundary
 
-`cmd/oc/` spans two kinds of user flows:
-
-- direct OpenComputer platform commands: sandboxes, exec, files, checkpoints,
-  previews, secrets
-- managed-agent commands, which delegate to `sessions-api`
-
-Do not assume all `oc` behavior is implemented in this repo just because the
-command lives here.
+The `opencomputer` CLI lives in `cli/`. Managed-agent commands delegate to
+`sessions-api`; do not assume all CLI behavior is implemented in this repo just
+because the command lives here.
 
 ## Change strategy
 
 When making changes, prefer the narrowest layer that can correctly own the work:
 
 - docs/content issue -> `docs/`
-- CLI UX issue -> `cmd/oc/`
+- CLI UX issue -> `cli/`
 - SDK issue -> `sdks/`
 - API shape/auth issue -> `internal/api/` or `internal/auth/`
 - sandbox lifecycle issue -> `internal/sandbox/`, `internal/worker/`,
