@@ -116,9 +116,7 @@ deleted_classes = ["VmSession"]
 #   STRIPE_API_KEY         — Stripe LIVE mode API key (sk_live_...)
 #   WORKOS_API_KEY         — prod WorkOS app API key
 #   WORKOS_CLIENT_ID       — prod WorkOS client identifier
-#   EVENT_SECRET           — fresh prod HMAC for /internal/autumn-* and
-#                            /internal/webhooks/* callers
-#   SECRET_ENCRYPTION_KEY  — envelope-encryption key for D1 secret_store_entries
+#   EVENT_SECRET           — fresh prod HMAC for /internal/autumn-* callers
 #   OPENROUTER_PROVISIONING_KEY — OpenRouter MANAGEMENT/provisioning key (mints
 #                            per-org inference keys + reads analytics). Token
 #                            billing dormant until this is set. (token-billing.md)

@@ -1,7 +1,7 @@
 # api-edge — `igor-dev` personal dev edge in **Mo's CF account (b8f23cb8)**.
 # A prod-mirror of the api-edge Worker sitting in front of Igor's GCP dev box:
 # one worker that serves the dashboard SPA from [assets] AND handles /auth
-# (WorkOS) + /api/dashboard (edge-native, read from D1) + /api/webhooks — the
+# (WorkOS) + /api/dashboard (edge-native, read from D1) — the
 # same code path as prod's single edge.
 #
 # Differs from prod: no public routes (uses the workers.dev URL), no autumn
@@ -19,7 +19,7 @@
 #   WORKOS_API_KEY, WORKOS_CLIENT_ID — staging WorkOS (same app as the dev box)
 #   SESSION_JWT_SECRET               — signs oc_session; must == the box's
 #                                      OPENSANDBOX_SESSION_JWT_SECRET to wire it as a cell
-#   EVENT_SECRET, SVIX_API_TOKEN     — webhooks e2e (PR #410), optional
+#   EVENT_SECRET                     — /internal/* HMAC, optional
 # WorkOS dashboard (staging env): allowlist https://<worker>.workers.dev/auth/callback
 # and set it as the Sign-out redirect.
 

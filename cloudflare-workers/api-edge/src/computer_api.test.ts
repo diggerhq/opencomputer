@@ -95,7 +95,6 @@ function testEnv(db: FakeDB, extra: Partial<Record<string, unknown>> = {}): Env 
     CF_ADMIN_SECRET: "",
     STRIPE_WEBHOOK_SECRET: "",
     EVENT_SECRET: "",
-    SECRET_ENCRYPTION_KEY: "",
     MANAGED_AGENTS_API_URL: BLUE,
     OC_MANAGED_AGENTS_SECRET: "assert-secret",
     WIRE_HTTP_URL: WIRE,

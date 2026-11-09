@@ -8,8 +8,9 @@
 //
 // The sandbox-runtime proxy to the cells (/internal/dashboard/* for sessions,
 // PTY, agents, sandbox create, previews and snapshot deletes) was removed in
-// 097 step 7.2. The D1-only sandbox reads (sessions, checkpoints, images) stay
-// until the sandbox tables themselves are retired.
+// 097 step 7.2, followed by the D1-only sandbox reads (sessions, checkpoints,
+// images, per-sandbox usage), sandbox webhooks and org custom domains. The
+// sandbox D1 tables and org columns stay until a later migration.
 
 import {
   autumnPurchase,
@@ -25,7 +26,6 @@ import {
 } from "./autumn_webhook";
 import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_summary";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
-import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 import { createAPIKeyWithHash } from "./api_keys";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 import {
@@ -57,10 +57,6 @@ export interface DashboardEnv extends BillingEventsEnv {
   // "true" → new signups are provisioned on Autumn (Stage 2 switch). Default
   // off keeps merge dormant; existing orgs are never auto-migrated by this.
   AUTUMN_NEW_ORGS?: string;
-  // CF Custom Hostnames API token + zone (for /org/custom-domain). Optional —
-  // if unset the custom-domain endpoints return 503 (feature disabled).
-  CF_API_TOKEN?: string;
-  CF_ZONE_ID?: string;
   // Browser Sessions dashboard proxy. The browser API remains a separate
   // Worker; this edge Worker only translates dashboard cookie auth into the
   // internal service token plus org/user headers.
@@ -171,16 +167,6 @@ function epochToISO(s: number | null | undefined): string | undefined {
 // treats as non-nullable.
 function epochToISORequired(s: number | null | undefined): string {
   return new Date(((s ?? 0) || 0) * 1000).toISOString();
-}
-
-// Cell ID → region, for the sandbox rows still listed from D1. Cell ids
-// follow {cloud}-{region-with-hyphens}-{slot}, e.g.
-// "azure-us-west-2-b" → region "us-west-2".
-function cellToRegion(cellID: string): string {
-  // Strip first segment (cloud) and last segment (slot).
-  const parts = cellID.split("-");
-  if (parts.length < 3) return "";
-  return parts.slice(1, -1).join("-");
 }
 
 // shapeOrg maps a D1 orgs row to the frontend's Org interface (camelCase,
@@ -573,201 +559,6 @@ async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: Calle
   });
 }
 
-// ── sessions list (cross-cell) ───────────────────────────────────────────
-
-async function handleListSessions(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const url = new URL(req.url);
-  const status = url.searchParams.get("status") ?? "";
-  let stmt;
-  if (status) {
-    stmt = env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, cell_id, worker_id, status, template_id, created_at, last_event_at, stopped_at
-         FROM sandboxes_index WHERE org_id = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT 200`,
-    ).bind(caller.orgID, status);
-  } else {
-    stmt = env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, cell_id, worker_id, status, template_id, created_at, last_event_at, stopped_at
-         FROM sandboxes_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
-    ).bind(caller.orgID);
-  }
-  const { results } = await stmt.all<{
-    id: string; cell_id: string; worker_id: string | null; status: string;
-    template_id: string | null; created_at: number; last_event_at: number | null; stopped_at: number | null;
-  }>();
-  // Reshape to match the frontend's Session interface (camelCase, ISO timestamps).
-  const sessions = (results ?? []).map((r) => ({
-    id: r.id,
-    sandboxId: r.id,
-    orgId: caller.orgID,
-    template: r.template_id ?? "default",
-    region: cellToRegion(r.cell_id),
-    workerId: r.worker_id ?? "",
-    status: r.status,
-    startedAt: epochToISORequired(r.created_at),
-    stoppedAt: epochToISO(r.stopped_at),
-    cellId: r.cell_id, // bonus: surface the cell for cross-cell aware UI
-  }));
-  return json(sessions);
-}
-
-// ── checkpoints (cross-cell) ─────────────────────────────────────────────
-
-async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-    const perPage = Math.min(100, Math.max(1, parseInt(url.searchParams.get("per_page") ?? "20", 10) || 20));
-    const offset = (page - 1) * perPage;
-
-    const { results } = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, sandbox_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, expires_at, name, status, error_msg, failed_at, kind
-         FROM checkpoints_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3`,
-    ).bind(caller.orgID, perPage, offset).all<{
-      id: string; sandbox_id: string; owner_cell_id: string; s3_url: string | null;
-      size_bytes: number | null; golden_hash: string | null; workspace_size: number | null;
-      created_at: number; expires_at: number | null;
-      name: string | null;
-      status: string | null; error_msg: string | null; failed_at: number | null;
-      kind: string | null;
-    }>();
-    const totalRow = await env.OPENCOMPUTER_DB.prepare(`SELECT COUNT(*) AS c FROM checkpoints_index WHERE org_id = ?1`).bind(caller.orgID).first<{ c: number }>();
-    return json({
-      checkpoints: (results ?? []).map((r) => ({
-        id: r.id,
-        sandboxId: r.sandbox_id ?? "",
-        orgId: caller.orgID,
-        // Prefer the user-set name. Pre-fix this derived from s3_url which
-        // always ended in "rootfs.tar.zst" (every row showed the same name);
-        // the column was added + backfilled from cell PG sandbox_checkpoints
-        // so this now surfaces what customers actually called the checkpoint.
-        name: r.name && r.name.length > 0 ? r.name : r.id.slice(0, 8),
-        status: r.status ?? "ready",
-        sizeBytes: r.size_bytes ?? 0,
-        activeForks: 0,
-        totalForks: 0,
-        createdAt: epochToISORequired(r.created_at),
-        errorMsg: r.error_msg ?? undefined,
-        failedAt: r.failed_at ? epochToISORequired(r.failed_at) : undefined,
-        kind: r.kind === "disk_only" ? "disk_only" : "full",
-        cellId: r.owner_cell_id ?? "",
-        goldenHash: r.golden_hash ?? "",
-      })),
-      total: totalRow?.c ?? 0,
-      page, perPage,
-    });
-  } catch (err) {
-    console.error("handleListCheckpoints failed:", err);
-    return json({ error: `checkpoints failed: ${(err as Error).message}` }, 500);
-  }
-}
-
-async function handleDeleteCheckpoint(_req: Request, env: DashboardEnv, caller: Caller, cpID: string): Promise<Response> {
-  // Verify ownership before delete.
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`,
-  ).bind(cpID, caller.orgID).first<{ owner_cell_id: string }>();
-  if (!row) return json({ error: "checkpoint not found" }, 404);
-  // Delete D1 row first (source of truth). Owning-cell blob cleanup is async
-  // via the cell's existing GC; we don't try to coordinate here.
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`).bind(cpID, caller.orgID).run();
-  return new Response(null, { status: 204 });
-}
-
-// ── custom domain (CF Custom Hostnames API) ──────────────────────────────
-
-interface CFCustomHostname {
-  id: string;
-  status: string;
-  ssl: { status: string; txt_name?: string; txt_value?: string; validation_records?: { name: string; value: string }[] };
-  ownership_verification?: { name: string; value: string };
-}
-
-async function cfAPI(env: DashboardEnv, method: string, path: string, body?: any): Promise<Response> {
-  return fetch(`https://api.cloudflare.com/client/v4${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${env.CF_API_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-}
-
-async function handleSetCustomDomain(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const body = await req.json<{ domain?: string }>().catch(() => ({} as { domain?: string }));
-  const domain = (body.domain ?? "").trim().toLowerCase();
-  if (!domain) return json({ error: "domain required" }, 400);
-
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
-  }
-  const r = await cfAPI(env, "POST", `/zones/${env.CF_ZONE_ID}/custom_hostnames`, {
-    hostname: domain,
-    ssl: { method: "txt", type: "dv" },
-  });
-  if (!r.ok) return json({ error: `Cloudflare API: ${r.status} ${await r.text()}` }, 502);
-  const data = (await r.json<{ result: CFCustomHostname }>()).result;
-
-  const verifyName = data.ownership_verification?.name ?? null;
-  const verifyValue = data.ownership_verification?.value ?? null;
-  let sslName: string | null = null;
-  let sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
-
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET custom_domain = ?1, cf_hostname_id = ?2, domain_verification_status = ?3, domain_ssl_status = ?4,
-                     verification_txt_name = ?5, verification_txt_value = ?6, ssl_txt_name = ?7, ssl_txt_value = ?8,
-                     updated_at = ?9
-       WHERE id = ?10`,
-  ).bind(domain, data.id, data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
-}
-
-async function handleDeleteCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
-  }
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET custom_domain = NULL, cf_hostname_id = NULL,
-                     domain_verification_status = 'none', domain_ssl_status = 'none',
-                     verification_txt_name = NULL, verification_txt_value = NULL,
-                     ssl_txt_name = NULL, ssl_txt_value = NULL, updated_at = ?1
-       WHERE id = ?2`,
-  ).bind(Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
-}
-
-async function handleRefreshCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (!org?.cf_hostname_id) return json({ error: "no custom domain configured" }, 400);
-  const r = await cfAPI(env, "GET", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`);
-  if (!r.ok) return json({ error: `Cloudflare API: ${r.status}` }, 502);
-  const data = (await r.json<{ result: CFCustomHostname }>()).result;
-
-  const verifyName = data.ownership_verification?.name ?? null;
-  const verifyValue = data.ownership_verification?.value ?? null;
-  let sslName: string | null = null, sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
-
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET domain_verification_status = ?1, domain_ssl_status = ?2,
-                     verification_txt_name = ?3, verification_txt_value = ?4,
-                     ssl_txt_name = ?5, ssl_txt_value = ?6, updated_at = ?7
-       WHERE id = ?8`,
-  ).bind(data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
-}
-
 // ── credits + billing ────────────────────────────────────────────────────
 
 async function handleGetCredits(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
@@ -951,17 +742,6 @@ export async function handleDashboard(
   }
   if (sub === "/browser-profiles" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
 
-  // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
-  // Reuse the public /api/webhooks handler with the cookie-derived org, so the
-  // dashboard manages destinations/deliveries org-scoped without an osb_ key in
-  // the browser. The handler parses the path from the url arg; rewrite it back
-  // to /api/webhooks/*. env carries the Svix bindings at runtime.
-  if (sub === "/webhooks" || sub.startsWith("/webhooks/")) {
-    const whUrl = new URL(req.url);
-    whUrl.pathname = "/api" + sub;
-    return handleWebhooksAPI(req, env as unknown as WebhookEnv, caller, whUrl);
-  }
-
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);
   if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, caller);
@@ -981,9 +761,6 @@ export async function handleDashboard(
     if (m && method === "DELETE") return handleRevokeInvitation(req, env, caller, m[1]);
   }
   if (sub === "/org/credits" && method === "GET") return handleGetCredits(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "PUT") return handleSetCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "DELETE") return handleDeleteCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain/refresh" && method === "POST") return handleRefreshCustomDomain(req, env, caller);
 
   // ── api keys ───────────────────────────────────────────────────────────
   if (sub === "/api-keys" && method === "GET") return handleListAPIKeys(req, env, caller);
@@ -992,21 +769,6 @@ export async function handleDashboard(
     const m = sub.match(/^\/api-keys\/([^/]+)$/);
     if (m && method === "DELETE") return handleDeleteAPIKey(req, env, ctx, caller, m[1]);
     if (m && method === "PATCH") return handleRenameAPIKey(req, env, caller, m[1]);
-  }
-
-  // ── sessions: list from D1 sandboxes_index ─────────────────────────────
-  if (sub === "/sessions" && method === "GET") return handleListSessions(req, env, caller);
-
-  // ── checkpoints ───────────────────────────────────────────────────────
-  if (sub === "/checkpoints" && method === "GET") return handleListCheckpoints(req, env, caller);
-  {
-    const m = sub.match(/^\/checkpoints\/([^/]+)$/);
-    if (m && method === "DELETE") return handleDeleteCheckpoint(req, env, caller, m[1]);
-  }
-
-  // ── images: list from D1 images_index ──────────────────────────────────
-  if (sub === "/images" && method === "GET") {
-    return handleListImages(env, caller);
   }
 
   if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
@@ -1107,9 +869,6 @@ export async function handleDashboard(
   if (sub === "/billing/invoices" && method === "GET") {
     return handleBillingInvoices(req, env, caller);
   }
-  if (sub === "/usage/sandboxes" && method === "GET") {
-    return handleSandboxUsage(req, env, caller);
-  }
   if (sub === "/billing/autumn" && method === "GET") {
     return handleAutumnBilling(req, env, caller);
   }
@@ -1136,47 +895,6 @@ export async function handleDashboard(
   }
 
   return json({ error: `not found: ${method} ${sub}` }, 404);
-}
-
-// ── Images (cross-cell via D1 images_index) ────────────────────────────
-
-interface ImagesRow {
-  id: string;
-  org_id: string;
-  owner_cell_id: string;
-  content_hash: string;
-  checkpoint_id: string | null;
-  name: string | null;
-  manifest: string;
-  status: string;
-  created_at: number;
-  last_used_at: number;
-}
-
-async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Response> {
-  const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, org_id, owner_cell_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
-       FROM images_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
-  )
-    .bind(caller.orgID)
-    .all<ImagesRow>();
-  const out = (results ?? []).map((r) => {
-    let manifest: unknown = {};
-    try { manifest = JSON.parse(r.manifest); } catch { /* keep empty */ }
-    return {
-      id: r.id,
-      orgId: r.org_id,
-      cellId: r.owner_cell_id,
-      contentHash: r.content_hash,
-      checkpointId: r.checkpoint_id,
-      name: r.name,
-      manifest,
-      status: r.status,
-      createdAt: new Date(r.created_at * 1000).toISOString(),
-      lastUsedAt: new Date(r.last_used_at * 1000).toISOString(),
-    };
-  });
-  return json(out);
 }
 
 // ── Stripe helpers ─────────────────────────────────────────────────────
@@ -1255,79 +973,6 @@ async function handleAutumnPortal(req: Request, env: DashboardEnv, caller: { org
     console.error("billing/autumn/portal:", e);
     return json({ error: (e as Error).message }, 500);
   }
-}
-
-// ── Per-sandbox usage breakdown ──────────────────────────────────────────
-
-// Per-sandbox DISPLAY rate for PREPAID (autumn) orgs only — this breakdown is
-// rendered solely in the autumn billing view, and this constant has exactly one
-// consumer (handleSandboxUsage below). It is intentionally decoupled from
-// internal/billing/pricing.go (legacy billing): the source of truth for prepaid
-// charges is the Autumn `credits` credit-schema (credit_cost per compute
-// feature), and these values MUST mirror it exactly or the breakdown won't
-// reconcile with what's actually deducted. Current basis: $0.06/GB-hour
-// (0.00001666666666 per GB-second × the tier's GB). Change the Autumn schema →
-// change these too.
-const AUTUMN_TIER_RATE_PER_SEC: Record<number, number> = {
-  1024: 0.00001666666666,
-  4096: 0.00006666666664,
-  8192: 0.00013333333328,
-  16384: 0.00026666666656,
-  32768: 0.00053333333312,
-  65536: 0.00106666666624,
-};
-
-// GET /api/dashboard/usage/sandboxes?days=N — per-sandbox compute cost over a
-// recent window, for billing transparency. Sourced from D1 usage_samples
-// (global across cells); disk overage is excluded (samples carry no disk size),
-// so this is compute cost only. usage_samples is short-lived, hence the window.
-async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  const url = new URL(req.url);
-  let days = Number.parseInt(url.searchParams.get("days") ?? "30", 10);
-  if (!Number.isFinite(days) || days < 1) days = 30;
-  if (days > 90) days = 90;
-  const cutoffMs = (Math.floor(Date.now() / 1000) - days * 86400) * 1000;
-
-  const rows = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT u.sandbox_id AS sandbox_id, u.memory_mb AS memory_mb, SUM(u.interval_s) AS secs,
-            MAX(si.status) AS status, MAX(si.created_at) AS created_at
-       FROM usage_samples u
-       LEFT JOIN sandboxes_index si ON si.id = u.sandbox_id
-      WHERE u.org_id = ?1 AND u.ts >= ?2
-      GROUP BY u.sandbox_id, u.memory_mb`,
-  )
-    .bind(caller.orgID, cutoffMs)
-    .all<{ sandbox_id: string; memory_mb: number; secs: number; status: string | null; created_at: number | null }>();
-
-  // Fold per-(sandbox, tier) rows into per-sandbox totals.
-  const bySandbox = new Map<string, { costCents: number; seconds: number; status: string | null; createdAt: number | null }>();
-  for (const r of rows.results ?? []) {
-    const rate = AUTUMN_TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
-    const secs = r.secs ?? 0;
-    const cur = bySandbox.get(r.sandbox_id) ?? { costCents: 0, seconds: 0, status: r.status, createdAt: r.created_at };
-    cur.costCents += secs * rate * 100;
-    cur.seconds += secs;
-    if (cur.status == null) cur.status = r.status;
-    if (cur.createdAt == null) cur.createdAt = r.created_at;
-    bySandbox.set(r.sandbox_id, cur);
-  }
-
-  const sandboxes = [...bySandbox.entries()]
-    .map(([sandboxId, v]) => ({
-      sandboxId,
-      status: v.status ?? "deleted",
-      createdAt: v.createdAt ?? undefined,
-      seconds: Math.round(v.seconds),
-      // Keep FRACTIONAL cents. Rounding each sandbox to whole cents here meant a
-      // cheap/short sandbox (e.g. 4GB for ~15 min ≈ 0.5¢) showed $0.00, and the
-      // total summed already-zeroed rows — so a page of real usage read $0.00.
-      // The frontend formats the precision for display.
-      costCents: v.costCents,
-    }))
-    .sort((a, b) => b.costCents - a.costCents);
-
-  const totalCents = sandboxes.reduce((s, x) => s + x.costCents, 0);
-  return json({ windowDays: days, totalCents, sandboxes });
 }
 
 // ── Autumn prepaid billing ───────────────────────────────────────────────

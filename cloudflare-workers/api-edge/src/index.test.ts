@@ -56,7 +56,6 @@ const env = {
   CF_ADMIN_SECRET: "",
   STRIPE_WEBHOOK_SECRET: "",
   EVENT_SECRET: "",
-  SECRET_ENCRYPTION_KEY: "",
 } as unknown as Env;
 
 const ctx = {
