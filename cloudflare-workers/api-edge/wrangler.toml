@@ -115,7 +115,7 @@ deleted_classes = ["VmSession"]
 #   STRIPE_API_KEY         — for creating Stripe customer + subscription on /mark-pro
 #   WORKOS_API_KEY         — server-side WorkOS API for /auth/login
 #   WORKOS_CLIENT_ID       — WorkOS client identifier
-#   EVENT_SECRET           — HMAC for /internal/autumn-* and /internal/webhooks/* callers
+#   EVENT_SECRET           — HMAC for /internal/autumn-* callers
 #   OPENROUTER_PROVISIONING_KEY — OpenRouter MANAGEMENT/provisioning key (token
 #                            billing; mints per-org keys + reads analytics). Dormant
 #                            until set. See .agents/work/token-billing.md.

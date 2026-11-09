@@ -47,8 +47,6 @@ import {
 } from "./billing_onramp";
 export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
-import * as secretStores from "./secret_stores";
-import * as webhooks from "./webhooks";
 import { createAPIKey, createAPIKeyWithHash, hashAPIKey } from "./api_keys";
 import { envWithD1Retry } from "./d1_retry";
 import {
@@ -114,13 +112,6 @@ export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, L
   BROWSER_USAGE_HMAC_SECRET?: string;
   // Dedicated HMAC secret for finalized managed-agent runtime segments.
   AGENT_RUNTIME_USAGE_HMAC_SECRET?: string;
-  // Lives in Infisical /shared/. Used for envelope encryption of secret_store_entries.encrypted_value. Matches
-  // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
-  SECRET_ENCRYPTION_KEY: string;
-  // Svix API token (managed webhook delivery). Region is in the token suffix.
-  SVIX_API_TOKEN: string;
-  // CF_API_TOKEN and CF_ZONE_ID are optional in DashboardEnv (custom domain
-  // feature gates on them). Inherited.
   ASSETS?: Fetcher;
   // Slack Connect per signup (slack_connect.ts), sent by the OpenComputer
   // Slack app: dormant unless the token
@@ -2209,54 +2200,6 @@ export default {
       return json({ key: created.key, expiresAt: created.expiresAt });
     }
 
-    // /internal/webhooks/register — HMAC-auth'd, called by the CP at
-    // sandbox-create time to register inline webhooks (Svix endpoints) BEFORE
-    // the sandbox emits `created`. (.agents/work/sandbox-webhooks-rearchitecture.md)
-    // Not in 097 step 7.2's strip list: it touches only Svix and D1, and goes
-    // dead on its own once the cells stop calling it. Removed with the rest of
-    // the sandbox webhooks in a follow-up.
-    if (path === "/internal/webhooks/register") {
-      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-      return webhooks.registerInlineWebhooksInternal(req, env, url);
-    }
-
-    // /api/secret-stores — org-scoped CRUD with X-API-Key auth; replaced the
-    // legacy CP-side PG routes (deleted in the same PR as migration 041). Kept
-    // after the sandbox strip (097 step 7.2) because `oc secret` still calls it;
-    // it no longer pushes anything to cells.
-    if (path === "/api/secret-stores") {
-      const caller = await authenticate(req, env, ctx);
-      if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      if (req.method === "POST") return secretStores.createStore(req, env, caller);
-      if (req.method === "GET") return secretStores.listStores(req, env, caller);
-      return json({ error: "method not allowed" }, 405);
-    }
-    {
-      // /api/secret-stores/:id, /api/secret-stores/:id/secrets, /:id/secrets/:name
-      const m = path.match(/^\/api\/secret-stores\/([^/]+)(?:\/secrets(?:\/([^/]+))?)?$/);
-      if (m) {
-        const storeID = m[1];
-        const entryName = m[2];
-        const isEntriesCollection = path.endsWith("/secrets");
-        const isEntry = !!entryName;
-        const caller = await authenticate(req, env, ctx);
-        if (!caller) return json({ error: "missing or invalid API key" }, 401);
-        if (isEntry) {
-          if (req.method === "PUT") return secretStores.setEntry(req, env, caller, storeID, entryName);
-          if (req.method === "DELETE") return secretStores.deleteEntry(req, env, caller, storeID, entryName);
-          return json({ error: "method not allowed" }, 405);
-        }
-        if (isEntriesCollection) {
-          if (req.method === "GET") return secretStores.listEntries(req, env, caller, storeID);
-          return json({ error: "method not allowed" }, 405);
-        }
-        if (req.method === "GET") return secretStores.getStore(req, env, caller, storeID);
-        if (req.method === "PUT") return secretStores.updateStore(req, env, caller, storeID);
-        if (req.method === "DELETE") return secretStores.deleteStore(req, env, caller, storeID);
-        return json({ error: "method not allowed" }, 405);
-      }
-    }
-
     // Auth flows. CLI device auth is deliberately edge-brokered: WorkOS tokens
     // never cross this boundary and the CLI receives one ordinary OC org key.
     if (path === "/auth/cli/device") {
@@ -2435,15 +2378,6 @@ export default {
         email: identity?.email ?? null,
         org_name: identity?.org_name ?? null,
       });
-    }
-
-    // /api/webhooks* — sandbox lifecycle webhook management (Svix-backed,
-    // all-at-edge). Same X-API-Key auth as the rest of the public API; must
-    // precede the proxy catch-all below.
-    if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) {
-      const caller = await authenticate(req, env, ctx);
-      if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      return webhooks.handleWebhooksAPI(req, env, caller, url);
     }
 
     // Any other /api/* path used to fall through to a sandbox cell. The cells

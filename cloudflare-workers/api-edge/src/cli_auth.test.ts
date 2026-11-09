@@ -148,7 +148,6 @@ function testEnv(db = new FakeDB()): Env {
     CF_ADMIN_SECRET: "",
     STRIPE_WEBHOOK_SECRET: "",
     EVENT_SECRET: "",
-    SECRET_ENCRYPTION_KEY: "",
   } as unknown as Env;
 }
 
