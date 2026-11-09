@@ -12,7 +12,7 @@ def _fresh_import():
 
 
 def test_import_warns_deprecated_and_points_to_replacement():
-    with pytest.warns(DeprecationWarning, match="deprecated") as record:
+    with pytest.warns(FutureWarning, match="deprecated") as record:
         mod = _fresh_import()
     message = str(record[0].message)
     assert "@opencomputer/sdk/agents" in message
@@ -24,14 +24,14 @@ def test_final_release_version_stays_on_major_1():
     # The server routes on the SDK's major (x-oc-sdk-version); the deprecation
     # release must not move callers.
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", FutureWarning)
         mod = _fresh_import()
     assert mod.__version__ == "1.2.0"
 
 
 def test_existing_exports_still_import():
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", FutureWarning)
         mod = _fresh_import()
     for name in mod.__all__:
         assert hasattr(mod, name), name
