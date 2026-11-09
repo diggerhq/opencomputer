@@ -8,7 +8,6 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Rocket,
   KeyRound,
   CreditCard,
   Settings,
@@ -18,7 +17,6 @@ import {
   Menu,
   Loader2,
   ChevronRight,
-  type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout } from '@/api/client'
@@ -40,7 +38,6 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { cn } from '@/lib/utils'
-import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 import {
   BillingPill,
   BillingWarningBanner,
@@ -58,32 +55,7 @@ import {
   type ProjectEnvironment,
   type ProjectEnvironmentMode,
 } from '@/managed-agents/project-context'
-import { managedAgentsNav, type NavGroup } from './app-shell-nav'
-
-type NavItem = {
-  to: string
-  label: string
-  icon: LucideIcon
-  end?: boolean
-  preview?: boolean
-}
-type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
-
-// The legacy (VITE_MANAGED_AGENTS_EXPERIMENT=0) navigation: browsers plus account/org. Groups render with spacing + a small muted
-// label rather than hard dividers.
-const LEGACY_NAV: LegacyNavGroup[] = [
-  {
-    items: [{ to: '/', label: 'Getting started', icon: Rocket, end: true }],
-  },
-  {
-    label: 'Account',
-    items: [
-      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-      { to: '/billing', label: 'Billing', icon: CreditCard },
-      { to: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
-]
+import { managedAgentsNav } from './app-shell-nav'
 
 function Brand() {
   return (
@@ -288,19 +260,17 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         projectId: projectId!,
         environment: 'default',
       }),
-    enabled: Boolean(managedAgentsExperimentEnabled && projectId),
+    enabled: Boolean(projectId),
     staleTime: 60_000,
   })
   const swarmEnabled = (swarmResources.data?.resources ?? []).some(
     (resource) => resource.id === SECURITY_FINDINGS_RESOURCE,
   )
-  const nav = managedAgentsExperimentEnabled
-    ? managedAgentsNav({
-        projectId,
-        computerEnabled,
-        swarmEnabled,
-      })
-    : LEGACY_NAV
+  const nav = managedAgentsNav({
+    projectId,
+    computerEnabled,
+    swarmEnabled,
+  })
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
@@ -393,28 +363,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t p-3">
-        {managedAgentsExperimentEnabled ? (
-          <ManagedProfileMenu onNavigate={onNavigate} />
-        ) : (
-          <div className="flex items-center gap-2.5">
-            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
-              {user?.email?.charAt(0).toUpperCase() || '?'}
-            </span>
-            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
-              {user?.email}
-            </span>
-            {user?.capabilities?.signOut !== false ? (
-              <button
-                onClick={() => void logout()}
-                aria-label="Sign out"
-                title="Sign out"
-                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
-              >
-                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        )}
+        <ManagedProfileMenu onNavigate={onNavigate} />
       </div>
     </div>
   )
@@ -425,9 +374,7 @@ export default function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
-  const projectId = managedAgentsExperimentEnabled
-    ? projectIdFromPath(location.pathname)
-    : undefined
+  const projectId = projectIdFromPath(location.pathname)
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId!),
