@@ -105,7 +105,6 @@ describe("Loops client", () => {
 function fakeDb(opts: { provider?: string; email?: string; org?: Record<string, unknown> } = {}) {
   const org: Record<string, unknown> = {
     is_halted: 0,
-    autumn_concurrency_override: null,
     usage_plan: "base",
     payment_past_due_at: null,
     trial_started_at: Math.floor(Date.now() / 1000) - 86_400,
@@ -139,9 +138,9 @@ function fakeDb(opts: { provider?: string; email?: string; org?: Record<string, 
               } else if (sql.includes("SET is_halted")) {
                 org.is_halted = args[0];
                 org.halted_at = args[1];
-                org.usage_plan = args[3];
-                org.halt_reason = args[6];
-                org.billing_warning = args[7];
+                org.usage_plan = args[2];
+                org.halt_reason = args[5];
+                org.billing_warning = args[6];
               }
               return { meta: { changes: 1 } };
             },

@@ -74,14 +74,6 @@ class FakeStatement {
     if (this.sql.includes("JOIN org_memberships")) {
       return { results: this.db.memberships as T[] };
     }
-    if (this.sql.includes("FROM cells") && this.sql.includes("accepts_new_orgs = 1")) {
-      return {
-        results: [{
-          cell_id: "azure-us-east-2-a",
-          region: "us-east-2",
-        } as T],
-      };
-    }
     return { results: [] };
   }
 
@@ -100,6 +92,9 @@ class FakeStatement {
 
 class FakeDB {
   executed: CapturedStatement[] = [];
+  // Every SQL string prepared, read or write, so a test can prove a table was
+  // never touched.
+  prepared: string[] = [];
   memberships: FakeMembership[];
   pendingInvitations: { id: string; org_id: string; role: string }[] = [];
   user: { id: string; email: string; name: string } | null;
@@ -125,6 +120,7 @@ class FakeDB {
   }
 
   prepare(sql: string): FakeStatement {
+    this.prepared.push(sql);
     return new FakeStatement(this, sql);
   }
 
@@ -660,10 +656,11 @@ describe("CLI device authorization edge contract", () => {
     expect(userInsert?.sql).toContain("durable_sessions_enabled");
     expect(userInsert?.sql).toContain("infrastructure_enabled");
     expect(userInsert?.sql).toMatch(/VALUES\s*\(\?1, \?2, \?3, \?4, \?5, 0, 0\)/);
-    expect(orgInsert?.args[3]).toBe("azure-us-east-2-a");
+    // No home cell: the legacy NOT NULL home_cell column gets '' (097 step 7.2).
+    expect(orgInsert?.sql).toMatch(/VALUES\s*\(\?1, \?2, \?3, 'free', '', 1,/);
     // Legacy billing (no Autumn customer) has no trial.
     expect(orgInsert?.sql).toContain("trial_started_at");
-    expect(orgInsert?.args[8]).toBeNull();
+    expect(orgInsert?.args[6]).toBeNull();
     expect(membershipInsert?.args[0]).toBe(body.org.id);
     expect(membershipInsert?.args[1]).toBe(body.user.id);
     expect(keyInsert?.args[1]).toBe(body.org.id);
@@ -685,9 +682,35 @@ describe("CLI device authorization edge contract", () => {
 
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/customers"))).toBe(true);
     const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
-    expect(orgInsert?.args[6]).toBe("autumn");
-    expect(orgInsert?.args[8]).toBe(orgInsert?.args[5]);
-    expect(typeof orgInsert?.args[8]).toBe("number");
+    expect(orgInsert?.args[5]).toBe("autumn");
+    expect(orgInsert?.args[6]).toBe(orgInsert?.args[4]);
+    expect(typeof orgInsert?.args[6]).toBe("number");
+  });
+
+  it("signs up a first-login user without picking or reading a cell", async () => {
+    const db = new FakeDB([], null);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "new-workos-user", email: "new@example.com", first_name: "New" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-ipcountry": "DE" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+    const body = await resp.json<{ org: { id: string }; credential: { key: string } }>();
+    expect(body.credential.key).toMatch(/^osb_[0-9a-f]{64}$/);
+
+    // The cells table is never queried, and the org row carries no cell and
+    // no sandbox concurrency (the column keeps its schema default).
+    expect(db.prepared.some((sql) => /\bcells\b/.test(sql))).toBe(false);
+    const orgInsert = db.executed.find((entry) => entry.sql.includes("INSERT INTO orgs"));
+    expect(orgInsert?.args[0]).toBe(body.org.id);
+    expect(orgInsert?.sql).toContain("'', 1,");
+    expect(orgInsert?.sql).not.toContain("max_concurrent_sandboxes");
+    expect(orgInsert?.args).not.toContain("azure-us-east-2-a");
+    expect(db.executed.some((entry) => entry.sql.includes("INSERT INTO org_memberships"))).toBe(true);
+    expect(db.executed.some((entry) => entry.sql.includes("INSERT INTO api_keys"))).toBe(true);
   });
 
   it("sends the welcome event to Loops off the login path", async () => {

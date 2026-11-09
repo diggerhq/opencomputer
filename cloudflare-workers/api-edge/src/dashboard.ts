@@ -1,21 +1,15 @@
 // dashboard.ts — edge-native dashboard backend.
 //
-// The new architecture (see docs/dev-cutover-runbook.md + the dev-cutover diagram)
-// makes the CF edge authoritative for identity, billing, sandbox routing index,
-// and audit log. The dashboard accordingly lives here: D1 is the source of
-// truth for org/user/api-key/checkpoint data, and only sandbox-RUNTIME ops
-// (exec, PTY, logs) proxy to the cell where the sandbox actually runs.
+// The CF edge is authoritative for identity and billing, and the dashboard
+// backend lives here: D1 is the source of truth for org/user/api-key data.
 //
 // Auth: session JWT cookie `oc_session` minted by /auth/callback. Browser
 // hits /api/dashboard/...; we validate the cookie and execute the handler.
 //
-// Proxy pattern for sandbox-runtime ops:
-//   1. Look up the sandbox's cell_id in D1 sandboxes_index (or org.home_cell
-//      for non-sandbox-scoped proxies like /agents).
-//   2. Mint a short-lived capability JWT for that cell with claims.OrgID +
-//      claims.Plan (the same cap-token shape /api/sandboxes POST uses).
-//   3. Fetch the cell's /internal/dashboard/{path} with Authorization: Bearer.
-//   4. Stream the response (or WebSocket pair) back to the browser.
+// The sandbox-runtime proxy to the cells (/internal/dashboard/* for sessions,
+// PTY, agents, sandbox create, previews and snapshot deletes) was removed in
+// 097 step 7.2. The D1-only sandbox reads (sessions, checkpoints, images) stay
+// until the sandbox tables themselves are retired.
 
 import {
   autumnPurchase,
@@ -150,24 +144,6 @@ function setSessionCookie(jwt: string): string {
   return `${SESSION_COOKIE}=${jwt}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SEC}`;
 }
 
-// Same shape as the cap-token /api/sandboxes mints for /internal/sandboxes/create.
-// Cells' capTokenMiddleware validates this same format on /internal/dashboard/*.
-async function mintCellCapToken(secret: string, orgID: string, cellID: string, plan: string, userID: string | null): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opensandbox-edge", iat: now, exp: now + 120,
-    org_id: orgID, cell_id: cellID, plan,
-  };
-  if (userID) payload.user_id = userID;
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
 function b64url(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = "";
@@ -197,8 +173,8 @@ function epochToISORequired(s: number | null | undefined): string {
   return new Date(((s ?? 0) || 0) * 1000).toISOString();
 }
 
-// Cell ID → region. Reverse of api-edge's pickCell convention:
-// cells follow {cloud}-{region-with-hyphens}-{slot}, e.g.
+// Cell ID → region, for the sandbox rows still listed from D1. Cell ids
+// follow {cloud}-{region-with-hyphens}-{slot}, e.g.
 // "azure-us-west-2-b" → region "us-west-2".
 function cellToRegion(cellID: string): string {
   // Strip first segment (cloud) and last segment (slot).
@@ -247,103 +223,6 @@ function shapeOrg(r: OrgRow): Record<string, unknown> {
     isHalted: !!r.is_halted,
     haltedAt: epochToISO(r.halted_at),
   };
-}
-
-// ── cell lookup helpers ──────────────────────────────────────────────────
-
-interface CellRow {
-  cell_id: string;
-  base_url: string;
-}
-
-async function homeCell(env: DashboardEnv, orgID: string): Promise<CellRow | null> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT c.cell_id, c.base_url FROM orgs o JOIN cells c ON c.cell_id = o.home_cell WHERE o.id = ?1`,
-  ).bind(orgID).first<CellRow>();
-  return row ?? null;
-}
-
-async function sandboxCell(env: DashboardEnv, sandboxID: string): Promise<{ cell_id: string; base_url: string; org_id: string } | null> {
-  return env.OPENCOMPUTER_DB.prepare(
-    `SELECT s.cell_id, s.org_id, c.base_url FROM sandboxes_index s JOIN cells c ON c.cell_id = s.cell_id WHERE s.id = ?1`,
-  ).bind(sandboxID).first<{ cell_id: string; base_url: string; org_id: string }>();
-}
-
-// proxyToCell handles non-WebSocket dashboard requests. Looks up the
-// destination URL (caller-supplied), mints a cap-token for that cell, and
-// streams the response back. Pass-through for status, body, content-type.
-async function proxyToCell(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  cell: CellRow,
-  path: string,
-): Promise<Response> {
-  const url = new URL(req.url);
-  const target = cell.base_url.replace(/\/$/, "") + path + url.search;
-  const token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
-
-  // Forward only the headers the cell actually needs. CF Workers forbids
-  // some headers (Host, Connection, Content-Length) and stripping cookies
-  // avoids sending the browser's session JWT to the cell. The Authorization
-  // header is the auth signal the cell needs; content-type matters for body
-  // parsing on POST/PUT.
-  const headers = new Headers();
-  headers.set("authorization", "Bearer " + token);
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
-  const accept = req.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-  const ua = req.headers.get("user-agent");
-  if (ua) headers.set("user-agent", ua);
-
-  const init: RequestInit = { method: req.method, headers };
-  if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
-  return fetch(target, init);
-}
-
-// ── WebSocket proxy (PTY) ────────────────────────────────────────────────
-
-async function proxyWebSocket(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  cell: CellRow,
-  cellPath: string,
-): Promise<Response> {
-  if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-    return json({ error: "expected websocket upgrade" }, 400);
-  }
-
-  // Mint the cell-bound cap-token the cell-CP expects in Authorization,
-  // then transparently forward the upgrade to the cell-CP. With the
-  // OPENSANDBOX_WS_BROKER=1 cell-CP path active, the cell-CP's
-  // wsgateway terminates the browser's WS and brokers it against the
-  // worker — redial on upstream close, keepalive, exec-exit suppression,
-  // multi-session per sandbox, etc. live in Go, not here.
-  //
-  // Previously this function did an edge-side WebSocketPair + manual
-  // Blob-aware bridge. That made the cell-CP see the EDGE as the client,
-  // which short-circuited the broker's redial/keepalive — a worker
-  // restart killed the browser's terminal. Replacing the bridge with
-  // a transparent forward puts the broker actually in the middle.
-  let token: string;
-  try {
-    token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
-  } catch (e) {
-    console.error("proxyWebSocket: mint failed:", e);
-    return new Response("token mint failed", { status: 500 });
-  }
-  const upstreamURL = cell.base_url.replace(/\/$/, "") + cellPath;
-  console.log(`proxyWebSocket: forwarding upgrade to ${upstreamURL}`);
-
-  const fwd = new Request(upstreamURL, req);
-  fwd.headers.set("authorization", "Bearer " + token);
-  // Strip browser cookies — cell-CP authenticates the cap-token, not
-  // dashboard session cookies, and the cookies would only bloat the
-  // upstream request.
-  fwd.headers.delete("cookie");
-  return await fetch(fwd);
 }
 
 // ── identity (/me, /orgs, /org, /org/switch) ─────────────────────────────
@@ -1010,8 +889,8 @@ export async function handleDashboard(
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
     if (sub === "/managed-agents/sessions" && method === "POST") {
       try {
-        // Dispatch-free re-check (DashboardEnv has no cell secrets): a fresh
-        // halt is still hibernated by the webhook/reconciler.
+        // Re-check Autumn and re-project D1 (the same projection projectOrg
+        // writes; it no longer dispatches anywhere since 097 step 7.2).
         const billing = await enableManagedBilling(
           env,
           caller.orgID,
@@ -1115,25 +994,8 @@ export async function handleDashboard(
     if (m && method === "PATCH") return handleRenameAPIKey(req, env, caller, m[1]);
   }
 
-  // ── sessions: cross-cell list, then per-cell proxy ─────────────────────
+  // ── sessions: list from D1 sandboxes_index ─────────────────────────────
   if (sub === "/sessions" && method === "GET") return handleListSessions(req, env, caller);
-  {
-    const m = sub.match(/^\/sessions\/([^/]+)(\/.*)?$/);
-    if (m) {
-      const sandboxID = m[1];
-      const rest = m[2] ?? ""; // "" means /sessions/:id only
-      const target = await sandboxCell(env, sandboxID);
-      if (!target) return json({ error: "sandbox not found" }, 404);
-      if (target.org_id !== caller.orgID) return json({ error: "sandbox not in your org" }, 403);
-      const cell = { cell_id: target.cell_id, base_url: target.base_url };
-      const cellPath = `/internal/dashboard/sessions/${sandboxID}${rest}`;
-      // WebSocket on PTY GET — anything else is a regular HTTP proxy.
-      if (req.headers.get("upgrade")?.toLowerCase() === "websocket" && /^\/pty\/[^/]+$/.test(rest)) {
-        return proxyWebSocket(req, env, caller, cell, cellPath);
-      }
-      return proxyToCell(req, env, caller, cell, cellPath);
-    }
-  }
 
   // ── checkpoints ───────────────────────────────────────────────────────
   if (sub === "/checkpoints" && method === "GET") return handleListCheckpoints(req, env, caller);
@@ -1142,64 +1004,11 @@ export async function handleDashboard(
     if (m && method === "DELETE") return handleDeleteCheckpoint(req, env, caller, m[1]);
   }
 
-  // ── images: cross-cell list from D1 images_index ───────────────────────
-  // CP emits image_cache_ready / image_cache_deleted events; events-ingest
-  // upserts/deletes this table. The dashboard's Images page used to proxy
-  // to the user's home_cell, which broke cross-cell visibility — building
-  // a snapshot on cell A wouldn't show in the dashboard if the user later
-  // moved to cell B. D1 is now authoritative.
-  //
-  // Mutations (DELETE) still need to land on the owning cell — only that
-  // cell has the underlying bytes/checkpoint to clean up — so DELETE is
-  // routed to the cell that owns the row.
+  // ── images: list from D1 images_index ──────────────────────────────────
   if (sub === "/images" && method === "GET") {
     return handleListImages(env, caller);
   }
-  {
-    const m = sub.match(/^\/images\/([^/]+)$/);
-    if (m && method === "DELETE") {
-      return handleDeleteImage(req, env, caller, m[1]);
-    }
-  }
-  {
-    const m = sub.match(/^\/snapshots\/([^/]+)$/);
-    if (m && method === "DELETE") {
-      return handleDeleteSnapshot(req, env, caller, decodeURIComponent(m[1]));
-    }
-  }
 
-  // ── agents: proxy to home cell (cell-side hits external agents service) ─
-  if (sub === "/agents" || sub.startsWith("/agents/")) {
-    if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
-    const cell = await homeCell(env, caller.orgID);
-    if (!cell) return json({ error: "home cell unavailable" }, 503);
-    return proxyToCell(req, env, caller, cell, `/internal/dashboard${sub}`);
-  }
-
-  // ── sandboxes: one-click create from the dashboard → the org's home cell.
-  // Reuses the cap-token /internal/sandboxes/create path (same token shape the
-  // /api/sandboxes create mints); the cell stamps ownership from the token's org.
-  if (sub === "/sandboxes" && method === "POST") {
-    const cell = await homeCell(env, caller.orgID);
-    if (!cell) return json({ error: "home cell unavailable" }, 503);
-    return proxyToCell(req, env, caller, cell, "/internal/sandboxes/create");
-  }
-
-  // ── sandbox preview URLs: expose/list/unexpose a port on a running sandbox.
-  // Proxies to the public /api/sandboxes/:id/preview, which accepts this same
-  // edge cap-token (PGAPIKeyMiddleware validates it and sets the org), so no
-  // cell-side handler is needed. POST create, GET list, DELETE /:port unexpose.
-  {
-    const pv = sub.match(/^\/sandboxes\/([^/]+)\/preview(?:\/(\d+))?$/);
-    if (pv) {
-      const cell = await homeCell(env, caller.orgID);
-      if (!cell) return json({ error: "home cell unavailable" }, 503);
-      const cellPath = pv[2]
-        ? `/api/sandboxes/${pv[1]}/preview/${pv[2]}`
-        : `/api/sandboxes/${pv[1]}/preview`;
-      return proxyToCell(req, env, caller, cell, cellPath);
-    }
-  }
   if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
 
   // /billing — basic billing read used by the dashboard billing page.
@@ -1368,55 +1177,6 @@ async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Resp
     };
   });
   return json(out);
-}
-
-async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller, imageID: string): Promise<Response> {
-  // Look up owning cell to forward the DELETE to (bytes + checkpoint live there).
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id, name FROM images_index WHERE id = ?1 AND org_id = ?2`,
-  )
-    .bind(imageID, caller.orgID)
-    .first<{ owner_cell_id: string; name: string | null }>();
-  if (!row) return json({ error: "image not found" }, 404);
-  if (!row.name) return json({ error: "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard" }, 400);
-
-  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, row.name);
-}
-
-async function handleDeleteSnapshot(req: Request, env: DashboardEnv, caller: Caller, name: string): Promise<Response> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id FROM images_index WHERE name = ?1 AND org_id = ?2`,
-  )
-    .bind(name, caller.orgID)
-    .first<{ owner_cell_id: string }>();
-  if (!row) return json({ error: "snapshot not found" }, 404);
-
-  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, name);
-}
-
-async function deleteSnapshotOnCell(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  ownerCellID: string,
-  name: string,
-): Promise<Response> {
-  // Find the cell's base_url and forward via tunnel.
-  const cell = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT base_url FROM cells WHERE cell_id = ?1`,
-  )
-    .bind(ownerCellID)
-    .first<{ base_url: string }>();
-  if (!cell) return json({ error: "owning cell not registered" }, 503);
-
-  // Reuse proxyToCell so the cap-token / cookie auth chain handles auth.
-  return proxyToCell(
-    req,
-    env,
-    caller,
-    { cell_id: ownerCellID, base_url: cell.base_url },
-    `/internal/dashboard/snapshots/${encodeURIComponent(name)}`,
-  );
 }
 
 // ── Stripe helpers ─────────────────────────────────────────────────────
@@ -1629,8 +1389,9 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
   const plan = summarizeWorkMinutePlan(r.customer);
   const billingState = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT halt_reason, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
+    "SELECT halt_reason, payment_past_due_at, trial_started_at, max_concurrent_sandboxes FROM orgs WHERE id = ?1",
   ).bind(caller.orgID).first<{
+    max_concurrent_sandboxes: number | null;
     halt_reason: string | null;
     payment_past_due_at: number | null;
     trial_started_at: number | null;
@@ -1683,7 +1444,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
         ? null
         : new Date(creditBreakdown.planResetsAt).toISOString(),
     },
-    maxConcurrentSandboxes: r.maxConcurrent,
+    maxConcurrentSandboxes: billingState?.max_concurrent_sandboxes ?? 0,
     concurrencyPlan,
     usagePlan: plan.usagePlan,
     isHalted: r.halted,

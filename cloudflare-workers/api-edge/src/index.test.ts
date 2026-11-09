@@ -3,17 +3,11 @@ import worker, { type Env, safeReturnTo } from "./index";
 
 const orgID = "org-1";
 const userID = "user-1";
-const cellID = "azure-us-east-2-a";
-
-const sandboxIndexInserts: unknown[][] = [];
 
 class FakeStatement {
   constructor(private sql: string) {}
 
-  private args: unknown[] = [];
-
-  bind(...args: unknown[]) {
-    this.args = args;
+  bind(..._args: unknown[]) {
     return this;
   }
 
@@ -21,70 +15,23 @@ class FakeStatement {
     if (this.sql.includes("FROM api_keys")) {
       return { org_id: orgID, created_by: userID, expires_at: null } as T;
     }
-    if (this.sql.includes("FROM sandboxes_index") && this.sql.includes("SELECT cell_id, org_id")) {
-      return { cell_id: cellID, org_id: orgID } as T;
-    }
-    if (this.sql.includes("FROM cells WHERE cell_id")) {
-      return {
-        cell_id: cellID,
-        cloud: "azure",
-        region: "us-east-2",
-        base_url: "https://cp-us-east-2.opencomputer.dev",
-        status: "active",
-        available_workers: 1,
-        capacity_updated_at: Math.floor(Date.now() / 1000),
-      } as T;
-    }
     if (this.sql.includes("SELECT plan FROM orgs")) {
       return { plan: "pro" } as T;
-    }
-    if (this.sql.includes("SELECT home_cell, plan, is_halted")) {
-      return {
-        home_cell: cellID,
-        plan: "pro",
-        is_halted: 0,
-        max_concurrent_sandboxes: 10,
-        max_disk_mb: 262144,
-      } as T;
-    }
-    if (this.sql.includes("COUNT(*) AS n FROM sandboxes_index")) {
-      return { n: 0 } as T;
     }
     return null;
   }
 
   async all<T>() {
-    if (this.sql.includes("FROM cells WHERE status = 'active'")) {
-      return {
-        results: [
-          {
-            cell_id: cellID,
-            cloud: "azure",
-            region: "us-east-2",
-            base_url: "https://cp-us-east-2.opencomputer.dev",
-            status: "active",
-            available_workers: 1,
-            capacity_updated_at: Math.floor(Date.now() / 1000),
-          },
-        ],
-      } as { results: T[] };
-    }
     return { results: [] as T[] };
   }
 
   async run() {
-    if (this.sql.includes("INSERT INTO sandboxes_index") && this.sql.includes("ON CONFLICT(id)")) {
-      sandboxIndexInserts.push(this.args);
-    }
     return {};
   }
 
   // Mirrors D1's batch() per-statement result shape ({ results: [...] }):
-  // list queries use all(); single-row queries wrap first() in an array.
+  // single-row queries wrap first() in an array.
   async batchResult<T>(): Promise<{ results: T[] }> {
-    if (this.sql.includes("WHERE status = 'active'")) {
-      return (await this.all<T>()) as { results: T[] };
-    }
     const row = await this.first<T>();
     return { results: row ? [row] : [] };
   }
@@ -117,169 +64,62 @@ const ctx = {
   passThroughOnException: vi.fn(),
 } as unknown as ExecutionContext;
 
-describe("api-edge WebSocket auth", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    sandboxIndexInserts.length = 0;
-  });
+// The sandbox API, preview URLs and cell routing were removed in 097 step 7.2.
+// What used to reach a cell is now an authenticated 404, and nothing is ever
+// forwarded.
+describe("api-edge after the sandbox strip", () => {
+  afterEach(() => vi.unstubAllGlobals());
 
-  it("accepts api_key query auth for sandbox WebSocket proxy requests", async () => {
-    const fetchSpy = vi.fn(async (_req: Request) => new Response("proxied", { status: 200 }));
+  const call = (path: string, init: RequestInit = {}) => {
+    const fetchSpy = vi.fn(async () => new Response("proxied", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
+    return { fetchSpy, resp: worker.fetch(new Request(`https://app.opencomputer.dev${path}`, init), env, ctx) };
+  };
 
-    const resp = await worker.fetch(
-      new Request(
-        "https://app.opencomputer.dev/api/sandboxes/sb-123/exec/es-123?api_key=osb_test&stream=1",
-        {
-          headers: {
-            Upgrade: "websocket",
-          },
-        },
-      ),
-      env,
-      ctx,
-    );
-
-    expect(resp.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    const forwarded = fetchSpy.mock.calls[0][0] as Request;
-    const forwardedURL = new URL(forwarded.url);
-    expect(forwardedURL.origin).toBe("https://cp-us-east-2.opencomputer.dev");
-    expect(forwardedURL.pathname).toBe("/api/sandboxes/sb-123/exec/es-123");
-    expect(forwardedURL.searchParams.get("stream")).toBe("1");
-    expect(forwardedURL.searchParams.has("api_key")).toBe(false);
-    expect(forwarded.headers.get("authorization")).toMatch(/^Bearer /);
-    expect(forwarded.headers.get("x-api-key")).toBeNull();
-  });
-
-  it("does not accept api_key query auth for non-WebSocket HTTP requests", async () => {
-    const fetchSpy = vi.fn(async (_req: Request) => new Response("proxied", { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
-
-    const resp = await worker.fetch(
-      new Request("https://app.opencomputer.dev/api/sandboxes/sb-123/exec/es-123?api_key=osb_test"),
-      env,
-      ctx,
-    );
-
-    expect(resp.status).toBe(401);
-    expect(await resp.json()).toEqual({ error: "missing or invalid API key" });
+  it("answers 401 for a sandbox path without an API key, forwarding nothing", async () => {
+    const { fetchSpy, resp } = call("/api/sandboxes/sb-123/exec/es-123?api_key=osb_test");
+    expect((await resp).status).toBe(401);
+    expect(await (await resp).json()).toEqual({ error: "missing or invalid API key" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("strips api_key query params from proxied HTTP requests authenticated by header", async () => {
-    const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response("proxied", { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
-
-    const resp = await worker.fetch(
-      new Request(
-        "https://app.opencomputer.dev/api/sandboxes/sb-123/exec?api_key=osb_query&stream=1",
-        {
-          headers: {
-            "X-API-Key": "osb_header",
-          },
-        },
-      ),
-      env,
-      ctx,
-    );
-
-    expect(resp.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    const forwardedURL = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(forwardedURL.origin).toBe("https://cp-us-east-2.opencomputer.dev");
-    expect(forwardedURL.pathname).toBe("/api/sandboxes/sb-123/exec");
-    expect(forwardedURL.searchParams.get("stream")).toBe("1");
-    expect(forwardedURL.searchParams.has("api_key")).toBe(false);
-
-    const forwardedHeaders = new Headers(fetchSpy.mock.calls[0][1]?.headers);
-    expect(forwardedHeaders.get("authorization")).toMatch(/^Bearer /);
-    expect(forwardedHeaders.get("x-api-key")).toBeNull();
-  });
-
-  it("rejects WebSocket proxy requests without header or query auth", async () => {
-    const fetchSpy = vi.fn(async (_req: Request) => new Response("proxied", { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
-
-    const resp = await worker.fetch(
-      new Request(
-        "https://app.opencomputer.dev/api/sandboxes/sb-123/exec/es-123",
-        {
-          headers: {
-            Upgrade: "websocket",
-          },
-        },
-      ),
-      env,
-      ctx,
-    );
-
-    expect(resp.status).toBe(401);
-    expect(await resp.json()).toEqual({ error: "missing or invalid API key" });
+  it("answers 401 for a sandbox WebSocket without an API key", async () => {
+    const { fetchSpy, resp } = call("/api/sandboxes/sb-123/exec/es-123", { headers: { Upgrade: "websocket" } });
+    expect((await resp).status).toBe(401);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
-});
 
-describe("api-edge sandbox create", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    sandboxIndexInserts.length = 0;
-  });
-
-  it("indexes SSE snapshot creates before the streamed response completes", async () => {
-    const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => {
-      const body = [
-        "event: build_log",
-        'data: {"message":"creating"}',
-        "",
-        "event: result",
-        'data: {"sandboxID":"sb-sse1234","workerID":"worker-1","status":"running","memoryMB":2048}',
-        "",
-      ].join("\n");
-      return new Response(body, {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
+  it("answers 404 for an authenticated sandbox create, forwarding nothing", async () => {
+    const { fetchSpy, resp } = call("/api/sandboxes", {
+      method: "POST",
+      headers: { "X-API-Key": "osb_test", "content-type": "application/json" },
+      body: JSON.stringify({ templateID: "base" }),
     });
-    vi.stubGlobal("fetch", fetchSpy);
+    expect((await resp).status).toBe(404);
+    expect(await (await resp).json()).toEqual({ error: "not found" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
-    const resp = await worker.fetch(
-      new Request("https://app.opencomputer.dev/api/sandboxes", {
-        method: "POST",
-        headers: {
-          "X-API-Key": "osb_test",
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          // This case is about SSE indexing, not routing — but a create with no
-          // SDK version is now refused as v1, so it has to announce itself.
-          "x-oc-sdk-version": "1.0.0",
-        },
-        body: JSON.stringify({ snapshot: "snapshot-1", memoryMB: 1024 }),
-      }),
-      env,
-      ctx,
-    );
+  it("answers 404 for authenticated exec, snapshot and image paths", async () => {
+    for (const path of ["/api/sandboxes/sb-123/exec/run-async", "/api/snapshots", "/api/images"]) {
+      const { fetchSpy, resp } = call(path, { method: "POST", headers: { "X-API-Key": "osb_test" } });
+      expect((await resp).status, path).toBe(404);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  });
 
-    expect(resp.status).toBe(200);
-    expect(await resp.text()).toContain("event: result");
-    expect(sandboxIndexInserts).toHaveLength(1);
-    expect(sandboxIndexInserts[0]).toEqual([
-      "sb-sse1234",
-      orgID,
-      userID,
-      cellID,
-      "worker-1",
-      "running",
-      0,
-      2048,
-      expect.any(Number),
-      // end_at: this CP response carries no deadline, and the absence must
-      // reach the column as NULL rather than as a fabricated timestamp — a
-      // wrong deadline here would make a live sandbox read as expired.
-      null,
-    ]);
+  it("does not route preview hosts or the cell-facing internal routes", async () => {
+    for (const url of [
+      "https://sb-123-p8080.sb.opencomputer.dev/",
+      "https://app.opencomputer.dev/internal/halt-list",
+      "https://app.opencomputer.dev/internal/vms/sb-123/connect",
+    ]) {
+      const fetchSpy = vi.fn(async () => new Response("proxied", { status: 200 }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const resp = await worker.fetch(new Request(url), env, ctx);
+      expect(resp.status, url).toBe(404);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -331,71 +171,6 @@ describe("/internal/model-billing/enable — scoped-secret auth boundary", () =>
   it("stale timestamp → 401", async () => {
     const stale = (Math.floor(Date.now() / 1000) - 600).toString();
     expect((await post("/internal/model-billing/enable", MANAGED, { ts: stale })).status).toBe(401);
-  });
-});
-
-describe("api-edge VM-DO exec routing", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    sandboxIndexInserts.length = 0;
-  });
-
-  // A VmSession DO namespace stub whose /exec returns `doResponse`. The exec
-  // fast path is gated on SESSION_JWT_SECRET, which the base test env already sets.
-  const vmEnv = (doResponse: Response) =>
-    ({
-      ...env,
-      VM_SESSIONS: {
-        idFromName: (s: string) => s,
-        get: () => ({ fetch: async () => doResponse.clone() }),
-      },
-    }) as unknown as Env;
-
-  const runAsync = (e: Env) =>
-    worker.fetch(
-      new Request("https://app.opencomputer.dev/api/sandboxes/sb-123/exec/run-async", {
-        method: "POST",
-        headers: { "X-API-Key": "osb_test", "content-type": "application/json" },
-        body: JSON.stringify({ cmd: "sh", args: ["-c", "node -v"], timeout: 60 }),
-      }),
-      e,
-      ctx,
-    );
-
-  it("serves exec inline from the DO and does not hit the tunnel", async () => {
-    const tunnel = vi.fn(async () => new Response("TUNNEL", { status: 200 }));
-    vi.stubGlobal("fetch", tunnel);
-    const resp = await runAsync(vmEnv(new Response(JSON.stringify({ exitCode: 0, stdout: "v20.0.0\n", stderr: "" }), { status: 200 })));
-    expect(resp.status).toBe(200);
-    expect(await resp.json()).toEqual({ exitCode: 0, stdout: "v20.0.0\n", stderr: "" });
-    expect(tunnel).not.toHaveBeenCalled(); // one hop: edge→DO, no tunnel
-  });
-
-  it("falls back to the tunnel when the DO channel is not connected", async () => {
-    const tunnel = vi.fn(async () => new Response(JSON.stringify({ execId: "e1", running: true }), { status: 200 }));
-    vi.stubGlobal("fetch", tunnel);
-    const resp = await runAsync(vmEnv(new Response(JSON.stringify({ connected: false }), { status: 409 })));
-    expect(resp.status).toBe(200);
-    expect(tunnel).toHaveBeenCalledTimes(1); // degraded → tunnel
-  });
-
-  it("only routes run-async to the DO — other exec sub-paths take the tunnel", async () => {
-    // The result-poll (GET /exec/:id/result), files, pty, etc. must not touch the
-    // DO; the fast path is scoped to POST /exec/run-async.
-    const tunnel = vi.fn(async () => new Response("proxied", { status: 200 }));
-    vi.stubGlobal("fetch", tunnel);
-    const doGet = vi.fn();
-    const e = { ...env, VM_SESSIONS: { idFromName: (s: string) => s, get: doGet } } as unknown as Env;
-    const resp = await worker.fetch(
-      new Request("https://app.opencomputer.dev/api/sandboxes/sb-123/exec/es-1/result", {
-        headers: { "X-API-Key": "osb_test" },
-      }),
-      e,
-      ctx,
-    );
-    expect(resp.status).toBe(200);
-    expect(doGet).not.toHaveBeenCalled(); // result poll → tunnel, never the DO
-    expect(tunnel).toHaveBeenCalledTimes(1);
   });
 });
 

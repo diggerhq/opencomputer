@@ -5,11 +5,11 @@
 // "re-check, not payload" design: the ONLY field we read from the body is
 // data.customer_id (= our org id). We then GET the customer from Autumn and
 // project the *authoritative* balance + plans into D1:
-//   - orgs.is_halted / halted_at        (credits balance <= 0)
-//   - orgs.max_concurrent_sandboxes     (highest active concurrency plan,
-//                                        unless autumn_concurrency_override is set)
-// On a halt/resume transition we dispatch /admin/halt-org or /admin/resume-org
-// to the cells running the org's sandboxes (same HMAC scheme the DO used).
+//   - orgs.is_halted / halted_at / halt_reason
+//   - orgs.usage_plan / billing_warning
+// The projection is all there is: the edge gates (the managed-agents credit
+// gate among them) read D1. Halts are no longer dispatched to sandbox cells,
+// and orgs.max_concurrent_sandboxes is no longer written (097 step 7.2).
 //
 // Event catalog (Svix): billing.updated, billing.auto_topup_succeeded,
 // billing.auto_topup_failed, balances.limit_reached, balances.usage_alert_triggered.
@@ -35,9 +35,8 @@ export interface AutumnSyncEnv extends AutumnApiEnv, BillingEventsEnv, LoopsEnv 
   OPENCOMPUTER_DB: D1Database;
 }
 
-// AutumnEnv adds the secrets needed to dispatch halt to cells + verify webhooks.
+// AutumnEnv adds the secrets needed to verify webhooks and internal triggers.
 export interface AutumnEnv extends AutumnSyncEnv {
-  CF_ADMIN_SECRET: string;
   EVENT_SECRET: string;
   AUTUMN_WEBHOOK_SECRET: string;
   BROWSER_USAGE_HMAC_SECRET?: string;
@@ -57,15 +56,6 @@ const AGENT_RUNTIME_FEATURE_ID = "agent_runtime_2gb_1vcpu";
 const TURN_CLOSE_REASON = "turn_settled";
 const LEASE_CLOSE_REASONS = new Set(["suspended", "terminated", "session_ended", "heartbeat_expired"]);
 const SVIX_TOLERANCE_SEC = 300;
-
-// Mirror of internal/billing/autumn.ConcurrencyByPlan — keep in sync.
-const CONCURRENCY_BY_PLAN: Record<string, number> = {
-  base: 50,
-  concurrency_pro: 100,
-  concurrency_pro_plus: 600,
-  concurrency_pro_plus_plus: 1000,
-};
-const DEFAULT_CONCURRENCY = 50;
 
 export type UsagePlan = "base" | "pro" | "max";
 
@@ -368,11 +358,10 @@ export function planChangeKind(from: UsagePlan, to: UsagePlan, lapsed: boolean):
   return USAGE_PLAN_RANK[to] > USAGE_PLAN_RANK[from] ? "upgrade" : "downgrade";
 }
 
-// autumnProjectInternal is the cell/reconciler-facing trigger for the SAME
-// re-check+project logic, behind the in-house EVENT_SECRET HMAC ({ts}.{body}).
-// The cell's inline halt (off track()) and the Go reconciler POST this so they
-// can drive the D1 projection without owning Autumn reads or D1 writes —
-// keeping all of that at the edge, exactly as the Svix path does.
+// autumnProjectInternal is the internal trigger for the SAME re-check+project
+// logic, behind the in-house EVENT_SECRET HMAC ({ts}.{body}). The Go reconciler
+// POSTs this so it can drive the D1 projection without owning Autumn reads or
+// D1 writes — keeping all of that at the edge, exactly as the Svix path does.
 export async function autumnProjectInternal(req: Request, env: AutumnEnv): Promise<Response> {
   const rawBody = await req.text();
   const ts = req.headers.get("X-Timestamp") ?? "";
@@ -382,7 +371,7 @@ export async function autumnProjectInternal(req: Request, env: AutumnEnv): Promi
   if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TOLERANCE_SEC) {
     return json({ error: "timestamp out of window" }, 401);
   }
-  // POST signs {ts}.{path}{query}.{body} — matches edgeclient.sign + templates.ts.
+  // POST signs {ts}.{path}{query}.{body} — matches edgeclient.sign.
   const url = new URL(req.url);
   const expected = await hmacHex(env.EVENT_SECRET, `${ts}.${url.pathname}${url.search}.${rawBody}`);
   if (!timingSafeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
@@ -804,13 +793,12 @@ export async function refreshWarning(env: AutumnEnv, orgID: string, customer?: A
 export const TRIAL_WARN_AFTER_SEC = (TRIAL_DAYS - TRIAL_WARN_DAYS_LEFT) * DAY_SEC;
 
 // syncAutumnToD1 reads Autumn's authoritative balance/plans and writes the D1
-// projection (is_halted / usage_plan / max_concurrent) WITHOUT any cell dispatch. Returns the
-// halt transition so callers can decide whether to actively hibernate. Reusable
-// by the dashboard (checkout-return) since it needs no dispatch secrets.
+// projection (is_halted / halt_reason / usage_plan / billing_warning). Returns
+// the halt transition. Reusable by the dashboard (checkout-return) since it
+// needs no secrets beyond the Autumn key.
 export interface AutumnSyncResult {
   customer: AutumnCustomer;
   creditsRemaining: number; // dollars
-  maxConcurrent: number;
   halted: boolean;
   haltReason: HaltReason | null;
   warning: BillingWarning | null;
@@ -827,17 +815,15 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
 
   const creditsRemaining = cust.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
   const usagePlan = activeUsagePlan(cust);
-  const projectedMaxConcurrent = maxConcurrency(cust.subscriptions ?? []);
   const nowSec = Math.floor(Date.now() / 1000);
 
   const prevRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT is_halted, halted_at, autumn_concurrency_override, usage_plan, payment_past_due_at, trial_started_at, billing_warning FROM orgs WHERE id = ?1",
+    "SELECT is_halted, halted_at, usage_plan, payment_past_due_at, trial_started_at, billing_warning FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<{
       is_halted: number;
       halted_at: number | null;
-      autumn_concurrency_override: number | null;
       usage_plan: UsagePlan;
       payment_past_due_at: number | null;
       trial_started_at: number | null;
@@ -851,7 +837,6 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   // Since when the org has been halted, for any reason: kept across projections
   // while it stays halted (blue parks an unpaid computer 7 days in, 086).
   const haltedAt = halted ? (wasHalted && prevRow?.halted_at ? prevRow.halted_at : nowSec) : null;
-  const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   // Compare-and-set the plan first: the webhook, checkout-return and the cron can
   // project the same change concurrently, and only the writer that moves it emits.
@@ -874,12 +859,12 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   // billing_warning_at marks when the org started being warned and holds while
   // any warning stands, so a surface can tell each reason once per episode.
   await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, usage_plan = ?4, updated_at = ?5,
-       halt_reason = ?7, billing_warning = ?8,
-       billing_warning_at = CASE WHEN ?8 IS NULL THEN NULL ELSE COALESCE(billing_warning_at, ?5) END
-     WHERE id = ?6`,
+    `UPDATE orgs SET is_halted = ?1, halted_at = ?2, usage_plan = ?3, updated_at = ?4,
+       halt_reason = ?6, billing_warning = ?7,
+       billing_warning_at = CASE WHEN ?7 IS NULL THEN NULL ELSE COALESCE(billing_warning_at, ?4) END
+     WHERE id = ?5`,
   )
-    .bind(halted ? 1 : 0, haltedAt, maxConcurrent, usagePlan, nowSec, orgID, reason, warning)
+    .bind(halted ? 1 : 0, haltedAt, usagePlan, nowSec, orgID, reason, warning)
     .run();
 
   // After the writes, so the event's send time never widens the window in which
@@ -903,12 +888,12 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
   }
   if (planChange) await syncLoopsPlan(env, orgID, usagePlan);
 
-  return { customer: cust, creditsRemaining, maxConcurrent, halted, haltReason: reason, warning, wasHalted, usagePlan };
+  return { customer: cust, creditsRemaining, halted, haltReason: reason, warning, wasHalted, usagePlan };
 }
 
 // autumnSetProviderInternal flips D1 orgs.billing_provider for one org (the
 // migrate tool's D1 half; cell-PG is flipped by the Go cmd). EVENT_SECRET HMAC.
-// On →autumn it also projects (is_halted/max_concurrent from Autumn) so the
+// On →autumn it also projects (is_halted etc. from Autumn) so the
 // edge gates are correct the instant the flag flips. Body: {org_id, provider}.
 export async function autumnSetProviderInternal(req: Request, env: AutumnEnv): Promise<Response> {
   const rawBody = await req.text();
@@ -944,47 +929,13 @@ export async function autumnSetProviderInternal(req: Request, env: AutumnEnv): P
   return json({ ok: true, org_id: p.org_id, provider: p.provider });
 }
 
-// projectOrg = syncAutumnToD1 + actively hibernate on a fresh halt.
-//
-// On halt we dispatch /admin/halt-org to hibernate running boxes. On RESUME we
-// do NOT dispatch — D1.is_halted is already cleared, which unblocks the gates;
-// hibernated boxes wake lazily on the next request. This is the locked "no
-// auto-wake for prepaid" decision: a top-up unblocks but never force-wakes.
+// projectOrg re-checks Autumn and writes the D1 projection. It used to also
+// dispatch /admin/halt-org to the sandbox cells on a fresh halt; the cells are
+// retired (097 step 7.2), so the projection is the whole job. The edge gates,
+// the managed-agents credit gate among them, read is_halted from D1, so a halt
+// still takes effect the moment it is projected, and a top-up clears it.
 export async function projectOrg(env: AutumnEnv, orgID: string): Promise<void> {
-  const r = await syncAutumnToD1(env, orgID);
-  if (!r || !r.halted) return;
-  // Dispatch halt on the fresh transition, OR whenever a halted org STILL has
-  // running sandboxes — so a halt is eventually complete even if a single
-  // hibernation flaked on the first dispatch. The autumn-meter cron + the
-  // webhook both call projectOrg, so this is the straggler safety net (a halted
-  // org with a leftover running box gets re-dispatched on the next sight).
-  if (!r.wasHalted || (await hasRunningSandboxes(env, orgID))) {
-    // The cells stamp and resume by "credits_exhausted" whatever the cause; the
-    // reason a surface shows lives in orgs.halt_reason.
-    await dispatchToCells(env, orgID, "/admin/halt-org", { org_id: orgID, reason: "credits_exhausted" });
-  }
-}
-
-// hasRunningSandboxes — does this org have any sandbox still running (across all
-// cells)? Cheap indexed lookup; gates the straggler re-dispatch so a fully
-// hibernated halted org costs no dispatch.
-async function hasRunningSandboxes(env: AutumnSyncEnv, orgID: string): Promise<boolean> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT 1 AS one FROM sandboxes_index WHERE org_id = ?1 AND status = 'running' LIMIT 1",
-  )
-    .bind(orgID)
-    .first<{ one: number }>();
-  return row != null;
-}
-
-function maxConcurrency(subs: AutumnSubscription[]): number {
-  let limit = DEFAULT_CONCURRENCY;
-  for (const s of subs) {
-    if (s.status && s.status !== "active") continue;
-    const v = CONCURRENCY_BY_PLAN[s.plan_id];
-    if (v !== undefined && v > limit) limit = v;
-  }
-  return limit;
+  await syncAutumnToD1(env, orgID);
 }
 
 // createAutumnCustomer provisions an Autumn customer (id = our org UUID) →
@@ -1346,53 +1297,6 @@ export async function autumnSetAutoTopup(
     }),
   });
   if (!resp.ok) throw new Error(`autumn set auto-topup ${resp.status}: ${await resp.text()}`);
-}
-
-// ── cell dispatch (mirrors the DO's halt/resume fan-out) ───────────────────
-
-interface CellRow {
-  cell_id: string;
-  base_url: string;
-}
-const DISPATCH_BACKOFFS_MS = [200, 1000, 3000];
-
-async function dispatchToCells(env: AutumnEnv, orgID: string, path: string, payload: unknown): Promise<void> {
-  const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT DISTINCT c.cell_id, c.base_url
-       FROM sandboxes_index s
-       JOIN cells c ON s.cell_id = c.cell_id
-      WHERE s.org_id = ?1 AND s.status IN ('running', 'hibernated', 'migrating')`,
-  )
-    .bind(orgID)
-    .all<CellRow>();
-  const cells = results ?? [];
-  if (cells.length === 0) return;
-
-  const body = JSON.stringify(payload);
-  await Promise.all(cells.map((c) => postWithRetry(env, c, path, body)));
-}
-
-async function postWithRetry(env: AutumnEnv, cell: CellRow, path: string, body: string): Promise<void> {
-  const ts = Math.floor(Date.now() / 1000).toString();
-  const sig = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
-  const url = cell.base_url.replace(/\/$/, "") + path;
-
-  for (let attempt = 0; attempt <= DISPATCH_BACKOFFS_MS.length; attempt++) {
-    try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-Timestamp": ts, "X-Signature": sig },
-        body,
-      });
-      if (resp.status >= 200 && resp.status < 300) return;
-      console.error(`autumn-webhook: dispatch ${path} → ${cell.cell_id} status=${resp.status} attempt=${attempt}`);
-    } catch (err) {
-      console.error(`autumn-webhook: dispatch ${path} → ${cell.cell_id} error=${(err as Error).message}`);
-    }
-    if (attempt < DISPATCH_BACKOFFS_MS.length) {
-      await new Promise((r) => setTimeout(r, DISPATCH_BACKOFFS_MS[attempt]));
-    }
-  }
 }
 
 // ── crypto ─────────────────────────────────────────────────────────────────
