@@ -5,8 +5,6 @@ import { z } from 'zod'
 // Status / kind / state fields are kept as z.string() (not z.enum) so a new
 // server-side value never fails validation — the UI compares them as strings.
 
-const record = z.record(z.string(), z.unknown())
-
 export const OrgInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -35,105 +33,6 @@ export const MeResponseSchema = z.object({
       switchOrganizations: z.boolean(),
     })
     .optional(),
-})
-
-export const SandboxSchema = z.object({
-  id: z.string(),
-  sandboxId: z.string(),
-  orgId: z.string(),
-  template: z.string(),
-  region: z.string(),
-  workerId: z.string(),
-  status: z.string(),
-  startedAt: z.string(),
-  stoppedAt: z.string().optional(),
-  errorMsg: z.string().optional(),
-})
-export const SandboxListSchema = z.array(SandboxSchema)
-
-export const PreviewURLSchema = z.object({
-  id: z.string(),
-  sandboxId: z.string(),
-  orgId: z.string(),
-  hostname: z.string(),
-  customHostname: z.string().optional(),
-  port: z.number(),
-  cfHostnameId: z.string().optional(),
-  sslStatus: z.string(),
-  authConfig: record,
-  createdAt: z.string(),
-})
-
-export const SandboxDetailSchema = z.object({
-  id: z.string(),
-  sandboxId: z.string(),
-  template: z.string(),
-  status: z.string(),
-  startedAt: z.string(),
-  stoppedAt: z.string().optional(),
-  errorMsg: z.string().optional(),
-  config: z
-    .object({
-      timeout: z.number().optional(),
-      cpuCount: z.number().optional(),
-      memoryMB: z.number().optional(),
-      networkEnabled: z.boolean().optional(),
-      envs: z.record(z.string(), z.string()).optional(),
-    })
-    .optional(),
-  checkpoint: z
-    .object({
-      checkpointKey: z.string(),
-      sizeBytes: z.number(),
-      hibernatedAt: z.string(),
-    })
-    .optional(),
-  previewUrls: z.array(PreviewURLSchema).optional(),
-})
-
-export const SandboxStatsSchema = z.object({
-  cpuPercent: z.number(),
-  memUsage: z.number(),
-  memLimit: z.number(),
-  netInput: z.number(),
-  netOutput: z.number(),
-  pids: z.number(),
-})
-
-export const CheckpointItemSchema = z.object({
-  id: z.string(),
-  sandboxId: z.string(),
-  orgId: z.string(),
-  name: z.string(),
-  status: z.string(),
-  kind: z.string().optional(),
-  promotionStatus: z.string().optional(),
-  promotedCheckpointId: z.string().optional(),
-  sizeBytes: z.number(),
-  activeForks: z.number(),
-  totalForks: z.number(),
-  createdAt: z.string(),
-  errorMsg: z.string().optional(),
-  failedAt: z.string().optional(),
-})
-
-export const CheckpointsResponseSchema = z.object({
-  checkpoints: z.array(CheckpointItemSchema),
-  total: z.number(),
-  page: z.number(),
-  perPage: z.number(),
-})
-
-export const ImageCacheItemSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  contentHash: z.string(),
-  checkpointId: z.string().optional(),
-  name: z.string().optional(),
-  manifest: record,
-  status: z.string(),
-  createdAt: z.string(),
-  lastUsedAt: z.string(),
 })
 
 export const OrgSchema = z.object({
@@ -310,20 +209,6 @@ export const InvoicesResponseSchema = z.object({
   invoices: z.array(StripeInvoiceSchema),
 })
 
-export const SandboxUsageRowSchema = z.object({
-  sandboxId: z.string(),
-  status: z.string(),
-  createdAt: z.number().optional(),
-  seconds: z.number(),
-  costCents: z.number(),
-})
-
-export const SandboxUsageSchema = z.object({
-  windowDays: z.number(),
-  totalCents: z.number(),
-  sandboxes: z.array(SandboxUsageRowSchema),
-})
-
 export const BrowserSessionSchema = z.object({
   id: z.string(),
   provider: z.string(),
@@ -378,44 +263,8 @@ export const BrowserProfileListSchema = z.object({
   profiles: z.array(BrowserProfileSchema),
 })
 
-// Sandbox lifecycle webhooks (Svix-backed, served by the edge /api/webhooks*).
-// Org-scoped; shapes mirror the edge's toWire()/listDeliveries() camelCase.
-export const SandboxWebhookSchema = z.object({
-  id: z.string(),
-  url: z.string(),
-  eventTypes: z.array(z.string()).nullish(), // empty/absent = all events
-  sandboxId: z.string().nullish(),
-  name: z.string().nullish(),
-  enabled: z.boolean(),
-  hasSecret: z.boolean().optional(),
-  createdAt: z.string().optional(),
-  updatedAt: z.string().optional(),
-  secret: z.string().optional(), // returned once on create / rotate
-})
-export const SandboxWebhookListSchema = z.object({
-  data: z.array(SandboxWebhookSchema),
-})
-
-export const SandboxWebhookDeliverySchema = z.object({
-  id: z.string(), // message id — the redeliver/get key
-  attemptId: z.string().optional(),
-  status: z.string().optional(), // success | pending | failed
-  responseStatusCode: z.number().nullish(),
-  timestamp: z.string().optional(),
-})
-export const SandboxWebhookDeliveryListSchema = z.object({
-  data: z.array(SandboxWebhookDeliverySchema),
-})
-
 export type OrgInfo = z.infer<typeof OrgInfoSchema>
 export type MeResponse = z.infer<typeof MeResponseSchema>
-export type Sandbox = z.infer<typeof SandboxSchema>
-export type PreviewURL = z.infer<typeof PreviewURLSchema>
-export type SandboxDetail = z.infer<typeof SandboxDetailSchema>
-export type SandboxStats = z.infer<typeof SandboxStatsSchema>
-export type CheckpointItem = z.infer<typeof CheckpointItemSchema>
-export type CheckpointsResponse = z.infer<typeof CheckpointsResponseSchema>
-export type ImageCacheItem = z.infer<typeof ImageCacheItemSchema>
 export type Org = z.infer<typeof OrgSchema>
 export type APIKey = z.infer<typeof APIKeySchema>
 export type OrgMember = z.infer<typeof OrgMemberSchema>
@@ -427,11 +276,5 @@ export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type AgentSessionUsageRow = z.infer<typeof AgentSessionUsageRowSchema>
 export type AgentSessionUsage = z.infer<typeof AgentSessionUsageSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
-export type SandboxUsageRow = z.infer<typeof SandboxUsageRowSchema>
-export type SandboxUsage = z.infer<typeof SandboxUsageSchema>
 export type BrowserSession = z.infer<typeof BrowserSessionSchema>
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>
-export type SandboxWebhook = z.infer<typeof SandboxWebhookSchema>
-export type SandboxWebhookDelivery = z.infer<
-  typeof SandboxWebhookDeliverySchema
->

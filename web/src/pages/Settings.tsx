@@ -184,7 +184,7 @@ export default function Settings() {
             <NavigationToggle
               id="infrastructure-enabled"
               label="Enable infrastructure"
-              description="Show sandboxes, checkpoints, templates, webhooks, and browsers."
+              description="Show browsers."
               checked={user?.infrastructureEnabled ?? false}
               disabled={navigationMutation.isPending}
               onCheckedChange={(checked) =>

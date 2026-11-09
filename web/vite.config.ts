@@ -64,14 +64,6 @@ const v3Proxy: Record<string, ProxyOptions> = v3Key
         rewrite: (p) => p.replace(/^\/api\/dashboard/, ''),
         configure: injectKey,
       },
-      // Sandbox webhooks live at the prod public API (/api/webhooks/*).
-      '/api/dashboard/webhooks': {
-        target: v3Target,
-        changeOrigin: true,
-        rewrite: (p) =>
-          p.replace(/^\/api\/dashboard\/webhooks/, '/api/webhooks'),
-        configure: injectKey,
-      },
     }
   : {}
 

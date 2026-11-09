@@ -7,18 +7,12 @@ import PublicTemplateRoute from './components/PublicTemplateRoute'
 import { managedAgentsExperimentEnabled } from './managed-agents/feature'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
 
-// Route pages are code-split so the initial bundle stays small; the heaviest
-// deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
+// Route pages are code-split so the initial bundle stays small.
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Browsers = lazy(() => import('./pages/Browsers'))
-const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
-const Checkpoints = lazy(() => import('./pages/Checkpoints'))
-const Templates = lazy(() => import('./pages/Templates'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
-const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
-const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
@@ -140,12 +134,6 @@ export default function App() {
               element={<ManagedAgentDetail />}
             />
             <Route path="browsers" element={<Browsers />} />
-            {/* Sandbox plane */}
-            <Route path="sandboxes" element={<Sandboxes />} />
-            <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
-            <Route path="checkpoints" element={<Checkpoints />} />
-            <Route path="templates" element={<Templates />} />
-            <Route path="sandbox-webhooks" element={<SandboxWebhooks />} />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />

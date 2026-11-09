@@ -29,83 +29,6 @@ const me = {
   ],
 }
 
-const sandboxes = [
-  {
-    id: 's1',
-    sandboxId: 'sbx_a1b2c3d4e5',
-    orgId: 'org_digger',
-    template: 'python-3.12',
-    region: 'us-east-1',
-    workerId: 'w1',
-    status: 'running',
-    startedAt: at(0, 3),
-  },
-  {
-    id: 's2',
-    sandboxId: 'sbx_f6g7h8i9j0',
-    orgId: 'org_digger',
-    template: 'base',
-    region: 'us-east-1',
-    workerId: 'w1',
-    status: 'running',
-    startedAt: at(0, 6),
-  },
-  {
-    id: 's3',
-    sandboxId: 'sbx_k1l2m3n4o5',
-    orgId: 'org_digger',
-    template: 'node-20',
-    region: 'eu-west-1',
-    workerId: 'w2',
-    status: 'hibernated',
-    startedAt: at(1, 2),
-  },
-  {
-    id: 's4',
-    sandboxId: 'sbx_p6q7r8s9t0',
-    orgId: 'org_digger',
-    template: 'base',
-    region: 'us-east-1',
-    workerId: 'w1',
-    status: 'stopped',
-    startedAt: at(2, 5),
-    stoppedAt: at(2, 1),
-  },
-  {
-    id: 's5',
-    sandboxId: 'sbx_u1v2w3x4y5',
-    orgId: 'org_digger',
-    template: 'python-3.12',
-    region: 'us-east-1',
-    workerId: 'w2',
-    status: 'error',
-    startedAt: at(3, 4),
-    errorMsg: 'sandbox boot timed out after 120s',
-  },
-  {
-    id: 's6',
-    sandboxId: 'sbx_z6a7b8c9d0',
-    orgId: 'org_digger',
-    template: 'rust-1.80',
-    region: 'eu-west-1',
-    workerId: 'w2',
-    status: 'stopped',
-    startedAt: at(5, 8),
-    stoppedAt: at(5, 2),
-  },
-  {
-    id: 's7',
-    sandboxId: 'sbx_e1f2g3h4i5',
-    orgId: 'org_digger',
-    template: 'base',
-    region: 'us-east-1',
-    workerId: 'w1',
-    status: 'stopped',
-    startedAt: at(6, 3),
-    stoppedAt: at(6, 1),
-  },
-]
-
 const browserSessions = [
   {
     id: 'br_linkedin_live',
@@ -188,121 +111,6 @@ const browserProfiles = [
     provider_created_at: at(4, 0),
     provider_updated_at: at(0, 1),
     provider_last_used_at: at(0, 1),
-  },
-]
-
-const images = [
-  {
-    id: 'img1',
-    orgId: 'org_digger',
-    contentHash: 'sha256:aa11bb22',
-    checkpointId: 'ckpt_aa11bb22cc33',
-    name: 'ml-base',
-    manifest: {
-      steps: [
-        { type: 'apt_install', args: { packages: ['ffmpeg', 'git'] } },
-        {
-          type: 'pip_install',
-          args: { packages: ['torch', 'numpy', 'pandas'] },
-        },
-      ],
-    },
-    status: 'ready',
-    lastUsedAt: at(0, 5),
-    createdAt: at(12),
-  },
-  {
-    id: 'img2',
-    orgId: 'org_digger',
-    contentHash: 'sha256:cc33dd44',
-    checkpointId: 'ckpt_dd44ee55ff66',
-    name: 'node-web',
-    manifest: {
-      steps: [
-        { type: 'run', args: { commands: ['npm i -g pnpm'] } },
-        { type: 'env', args: { vars: { NODE_ENV: 'production' } } },
-      ],
-    },
-    status: 'building',
-    lastUsedAt: at(1),
-    createdAt: at(3),
-  },
-  {
-    id: 'img3',
-    orgId: 'org_digger',
-    contentHash: 'sha256:ee55ff66',
-    name: '',
-    manifest: { steps: [] },
-    status: 'ready',
-    lastUsedAt: at(4),
-    createdAt: at(20),
-  },
-  {
-    id: 'img4',
-    orgId: 'org_digger',
-    contentHash: 'sha256:gg77hh88',
-    name: 'broken-img',
-    manifest: {
-      steps: [{ type: 'apt_install', args: { packages: ['nonexistent-pkg'] } }],
-    },
-    status: 'failed',
-    lastUsedAt: at(8),
-    createdAt: at(8),
-  },
-]
-
-const checkpoints = [
-  {
-    id: 'cp1',
-    sandboxId: 'sbx_a1b2c3d4e5',
-    orgId: 'org_digger',
-    name: 'after-deps-install',
-    status: 'ready',
-    kind: 'disk_only',
-    promotionStatus: 'ready',
-    sizeBytes: 1_240_000_000,
-    activeForks: 3,
-    totalForks: 18,
-    createdAt: at(0, 4),
-  },
-  {
-    id: 'cp2',
-    sandboxId: 'sbx_f6g7h8i9j0',
-    orgId: 'org_digger',
-    name: 'clean-base',
-    status: 'ready',
-    kind: 'full',
-    sizeBytes: 2_900_000_000,
-    activeForks: 0,
-    totalForks: 2,
-    createdAt: at(1, 6),
-  },
-  {
-    id: 'cp3',
-    sandboxId: 'sbx_k1l2m3n4o5',
-    orgId: 'org_digger',
-    name: 'web-build',
-    status: 'processing',
-    kind: 'disk_only',
-    promotionStatus: 'processing',
-    sizeBytes: 800_000_000,
-    activeForks: 0,
-    totalForks: 0,
-    createdAt: at(0, 1),
-  },
-  {
-    id: 'cp4',
-    sandboxId: 'sbx_p6q7r8s9t0',
-    orgId: 'org_digger',
-    name: 'snapshot-failed',
-    status: 'failed',
-    kind: 'disk_only',
-    sizeBytes: 0,
-    activeForks: 0,
-    totalForks: 0,
-    createdAt: at(2, 2),
-    errorMsg: 'archive upload to object store failed: connection reset by peer',
-    failedAt: at(2, 1),
   },
 ]
 
@@ -426,72 +234,6 @@ const billing = {
   hasPaymentMethod: false,
 }
 
-const sandboxUsage = {
-  windowDays: 30,
-  totalCents: 156,
-  sandboxes: [
-    {
-      sandboxId: 'sbx_a1b2c3d4e5',
-      status: 'running',
-      seconds: 12_600,
-      costCents: 84,
-    },
-    {
-      sandboxId: 'sbx_f6g7h8i9j0',
-      status: 'stopped',
-      seconds: 3_600,
-      costCents: 24,
-    },
-    {
-      sandboxId: 'sbx_k1l2m3n4o5',
-      status: 'hibernated',
-      seconds: 7_200,
-      costCents: 48,
-    },
-  ],
-}
-
-const sessionDetail = {
-  id: 's1',
-  sandboxId: 'sbx_a1b2c3d4e5',
-  template: 'python-3.12',
-  status: 'running',
-  startedAt: at(0, 3),
-  config: { timeout: 3600, cpuCount: 2, memoryMB: 2048, networkEnabled: true },
-  previewUrls: [
-    {
-      id: 'pu1',
-      sandboxId: 'sbx_a1b2c3d4e5',
-      orgId: 'org_digger',
-      hostname: 'sbx-a1b2c3d4e5-3000.preview.opencomputer.dev',
-      customHostname: 'sbx-a1b2c3d4e5-3000.acme.dev',
-      port: 3000,
-      sslStatus: 'active',
-      authConfig: {},
-      createdAt: at(0, 2),
-    },
-    {
-      id: 'pu2',
-      sandboxId: 'sbx_a1b2c3d4e5',
-      orgId: 'org_digger',
-      hostname: 'sbx-a1b2c3d4e5-8080.preview.opencomputer.dev',
-      port: 8080,
-      sslStatus: 'active',
-      authConfig: {},
-      createdAt: at(0, 2),
-    },
-  ],
-}
-
-const sandboxStats = {
-  cpuPercent: 12.4,
-  memUsage: 734_003_200,
-  memLimit: 2_147_483_648,
-  pids: 37,
-  netOutput: 4_180_000,
-  netInput: 12_500_000,
-}
-
 const org = {
   id: 'org_digger',
   name: 'Digger',
@@ -537,48 +279,6 @@ const orgInvitations = [
     role: 'member',
     expiresAt: at(-5),
     createdAt: at(1),
-  },
-]
-
-const sandboxWebhooks = [
-  {
-    id: 'whk_1',
-    url: 'https://acme.dev/hooks/sandbox',
-    eventTypes: ['sandbox.ready', 'sandbox.stopped'],
-    sandboxId: null,
-    name: 'Prod ingest',
-    enabled: true,
-    hasSecret: true,
-    createdAt: at(3),
-    updatedAt: at(0, 4),
-  },
-  {
-    id: 'whk_2',
-    url: 'https://hooks.internal.acme.dev/all',
-    eventTypes: [],
-    sandboxId: null,
-    name: '',
-    enabled: true,
-    hasSecret: true,
-    createdAt: at(8),
-    updatedAt: at(8),
-  },
-]
-
-const sandboxWebhookDeliveries = [
-  {
-    id: 'msg_1',
-    attemptId: 'att_1',
-    status: 'success',
-    responseStatusCode: 200,
-    timestamp: at(0, 1),
-  },
-  {
-    id: 'msg_2',
-    attemptId: 'att_2',
-    status: 'failed',
-    responseStatusCode: 500,
-    timestamp: at(0, 2),
   },
 ]
 
@@ -1200,35 +900,17 @@ const ROUTES: Array<[RegExp, Handler]> = [
       turns: [],
     }),
   ],
-  [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],
-  [/^\/sessions\/[^/]+$/, () => sessionDetail],
-  [/^\/sessions(\?.*)?$/, () => sandboxes],
   [/^\/browsers\/[^/]+$/, () => browserSessions[0]],
   [/^\/browsers(\?.*)?$/, () => ({ browsers: browserSessions })],
   [/^\/browser-profiles$/, () => ({ profiles: browserProfiles })],
-  [/^\/images(\?.*)?$/, () => images],
-  [
-    /^\/checkpoints(\?.*)?$/,
-    () => ({ checkpoints, total: checkpoints.length, page: 1, perPage: 20 }),
-  ],
   [/^\/api-keys$/, () => apiKeys],
   [/^\/billing\/autumn$/, () => autumnMock()],
   [/^\/billing\/invoices/, () => ({ invoices: [] })],
   [/^\/billing$/, () => billing],
-  [/^\/usage\/sandboxes/, () => sandboxUsage],
   [/^\/org\/members$/, () => orgMembers],
   [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
-  [
-    /^\/webhooks\/[^/]+\/deliveries$/,
-    () => ({ data: sandboxWebhookDeliveries }),
-  ],
-  [
-    /^\/webhooks\/[^/]+\/secret$/,
-    () => ({ secret: 'whsec_mockSigningSecret123' }),
-  ],
-  [/^\/webhooks$/, () => ({ data: sandboxWebhooks })],
 ]
 
 // Mutations the preview needs to echo something parseable (e.g. the Slack

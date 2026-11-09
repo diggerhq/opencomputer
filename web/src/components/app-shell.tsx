@@ -8,13 +8,8 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutGrid,
   Rocket,
   Monitor,
-  Boxes,
-  Layers,
-  Package,
-  Webhook,
   KeyRound,
   CreditCard,
   Settings,
@@ -75,14 +70,11 @@ type NavItem = {
 }
 type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
 
-// The raw-compute (sandbox) plane plus account/org. Groups render with spacing + a small muted
+// The legacy (VITE_MANAGED_AGENTS_EXPERIMENT=0) navigation: browsers plus account/org. Groups render with spacing + a small muted
 // label rather than hard dividers.
 const LEGACY_NAV: LegacyNavGroup[] = [
   {
-    items: [
-      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
-      { to: '/getting-started', label: 'Getting started', icon: Rocket },
-    ],
+    items: [{ to: '/', label: 'Getting started', icon: Rocket, end: true }],
   },
   {
     label: 'Browser Sessions',
@@ -93,15 +85,6 @@ const LEGACY_NAV: LegacyNavGroup[] = [
         icon: Monitor,
         preview: true,
       },
-    ],
-  },
-  {
-    label: 'Sandboxes',
-    items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Templates', icon: Package },
-      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
     ],
   },
   {
