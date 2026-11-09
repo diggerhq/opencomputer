@@ -1,133 +1,148 @@
-name: Deploy API Edge
+# One-time branch-only migration helper. Do not merge this workflow revision.
+#
+# Before dispatching, configure the temporary Infisical identity's OIDC auth
+# with this exact GitHub claim and grant it write access only to production
+# /api-edge:
+#   subject:  repo:diggerhq/opencomputer:ref:refs/heads/feat/infisical-secret-relay
+#   audience: https://github.com/diggerhq
+name: One-Time Relay Production Secrets to Infisical
+
+run-name: Relay production secrets to Infisical by @${{ github.actor }}
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'cloudflare-workers/api-edge/**'
-      - 'cloudflare-workers/shared/**'
-      - 'web/**'
-      - '.github/workflows/deploy-api-edge.yml'
   workflow_dispatch:
+    inputs:
+      infisical_identity_id:
+        description: 'Temporary OIDC-enabled Infisical machine identity ID'
+        required: true
+        type: string
+      infisical_project_id:
+        description: 'Infisical project ID (UUID, not the project slug)'
+        required: true
+        default: 'ab6933b4-8e02-4cb8-ac6c-c178009d5bf5'
+        type: string
+      confirmation:
+        description: 'Select RELAY to copy the four GitHub secrets'
+        required: true
+        default: CANCEL
+        type: choice
+        options:
+          - CANCEL
+          - RELAY
 
 concurrency:
-  group: deploy-api-edge
+  group: one-time-production-secret-relay
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy API Edge
-    runs-on: ubuntu-latest
+  relay:
+    if: inputs.confirmation == 'RELAY'
+    name: Relay to production /api-edge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
-      contents: read
+      id-token: write
+    env:
+      DO_NOT_TRACK: '1'
+      INFISICAL_DISABLE_UPDATE_CHECK: '1'
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Resolve target
-        id: target
-        run: |
-          echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
-          echo "database=OPENCOMPUTER_DB" >> "$GITHUB_OUTPUT"
-          echo "name=opencomputer-edge-prod" >> "$GITHUB_OUTPUT"
-
-      - name: Build dashboard assets
-        working-directory: web
+      - name: Install verified Infisical CLI
         env:
-          VITE_PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
-          VITE_PUBLIC_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          INFISICAL_CLI_VERSION: 0.45.4
+          INFISICAL_CLI_SHA256: 107389f4c9a0cc48023a834bb2a5bf1280c0a0e45ea7a98d13807d4def21b0a5
         run: |
-          npm ci
-          npm run build
+          set -Eeuo pipefail
+          archive="cli_${INFISICAL_CLI_VERSION}_linux_amd64.tar.gz"
+          install_dir="$RUNNER_TEMP/infisical-cli"
+          archive_path="$RUNNER_TEMP/$archive"
 
-      - name: Stage dashboard assets for Worker
-        run: |
-          rm -rf cloudflare-workers/api-edge/assets
-          mkdir -p cloudflare-workers/api-edge/assets
-          cp -R web/dist/. cloudflare-workers/api-edge/assets/
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$archive_path" \
+            "https://github.com/Infisical/cli/releases/download/v${INFISICAL_CLI_VERSION}/$archive"
+          printf '%s  %s\n' "$INFISICAL_CLI_SHA256" "$archive_path" | sha256sum --check --status
 
-      - name: Install api-edge dependencies
-        working-directory: cloudflare-workers/api-edge
-        run: npm ci
+          mkdir -p "$install_dir"
+          tar -xzf "$archive_path" -C "$install_dir" infisical
+          test -x "$install_dir/infisical"
+          printf 'INFISICAL_BIN=%s\n' "$install_dir/infisical" >> "$GITHUB_ENV"
 
-      - name: Test api-edge
-        working-directory: cloudflare-workers/api-edge
-        run: |
-          npm test -- --run
-          npx tsc --noEmit
-
-      - name: Prepare CI deploy config
-        working-directory: cloudflare-workers/api-edge
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          src = Path("${{ steps.target.outputs.config }}")
-          dst = Path("wrangler.ci.toml")
-          lines = src.read_text().splitlines()
-
-          out = []
-          skipping_routes = False
-          for line in lines:
-              if line.startswith("routes = ["):
-                  skipping_routes = True
-                  continue
-              if skipping_routes:
-                  if line.strip() == "]":
-                      skipping_routes = False
-                  continue
-              out.append(line)
-
-          dst.write_text("\n".join(out).rstrip() + "\n")
-          PY
-
-      - name: Apply D1 migrations
-        working-directory: cloudflare-workers/api-edge
+      - name: Relay repository secrets without exposing values
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler D1 migrations" >&2
-            exit 1
-          fi
-          npx wrangler d1 migrations apply "${{ steps.target.outputs.database }}" --remote -c wrangler.ci.toml
-
-      - name: Deploy ${{ steps.target.outputs.name }}
-        working-directory: cloudflare-workers/api-edge
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INFISICAL_IDENTITY_ID: ${{ inputs.infisical_identity_id }}
+          INFISICAL_PROJECT_ID: ${{ inputs.infisical_project_id }}
           OC_MANAGED_CRED_HMAC_SECRET: ${{ secrets.OC_MANAGED_CRED_HMAC_SECRET }}
           AGENT_RUNTIME_USAGE_HMAC_SECRET: ${{ secrets.AGENT_RUNTIME_USAGE_HMAC_SECRET }}
-          # Optional (lifecycle email, src/loops.ts): pushed only when set, so
-          # an unset GitHub secret leaves the worker's value alone.
           LOOPS_API_KEY: ${{ secrets.LOOPS_API_KEY }}
-          LOOPS_EXCLUDE_EMAILS: ${{ secrets.LOOPS_EXCLUDE_EMAILS }}
-          # Optional (Slack Connect per signup, src/slack_connect.ts): same rule.
           SLACK_CONNECT_TOKEN: ${{ secrets.SLACK_CONNECT_TOKEN }}
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
+          set -Eeuo pipefail
+          umask 077
+
+          uuid_pattern='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          if [[ ! "$INFISICAL_IDENTITY_ID" =~ $uuid_pattern ]]; then
+            echo 'infisical_identity_id must be a UUID' >&2
             exit 1
           fi
-          : "${OC_MANAGED_CRED_HMAC_SECRET:?missing OC_MANAGED_CRED_HMAC_SECRET}"
-          : "${AGENT_RUNTIME_USAGE_HMAC_SECRET:?missing AGENT_RUNTIME_USAGE_HMAC_SECRET}"
-          umask 077
-          jq -n \
-            --arg managedCredential "$OC_MANAGED_CRED_HMAC_SECRET" \
-            --arg runtimeUsage "$AGENT_RUNTIME_USAGE_HMAC_SECRET" \
-            --arg loopsKey "$LOOPS_API_KEY" \
-            --arg loopsExclude "$LOOPS_EXCLUDE_EMAILS" \
-            --arg slackConnect "$SLACK_CONNECT_TOKEN" \
-            '{OC_MANAGED_CRED_HMAC_SECRET: $managedCredential, AGENT_RUNTIME_USAGE_HMAC_SECRET: $runtimeUsage}
-             + (if $loopsKey == "" then {} else {LOOPS_API_KEY: $loopsKey} end)
-             + (if $loopsExclude == "" then {} else {LOOPS_EXCLUDE_EMAILS: $loopsExclude} end)
-             + (if $slackConnect == "" then {} else {SLACK_CONNECT_TOKEN: $slackConnect} end)' \
-            > "$RUNNER_TEMP/api-edge-secrets.json"
-          npx wrangler deploy \
-            -c wrangler.ci.toml \
-            --keep-vars \
-            --strict \
-            --secrets-file "$RUNNER_TEMP/api-edge-secrets.json"
+          if [[ ! "$INFISICAL_PROJECT_ID" =~ $uuid_pattern ]]; then
+            echo 'infisical_project_id must be a UUID' >&2
+            exit 1
+          fi
+
+          secret_names=(
+            OC_MANAGED_CRED_HMAC_SECRET
+            AGENT_RUNTIME_USAGE_HMAC_SECRET
+            LOOPS_API_KEY
+            SLACK_CONNECT_TOKEN
+          )
+          for secret_name in "${secret_names[@]}"; do
+            secret_value="${!secret_name-}"
+            if [[ -z "$secret_value" ]]; then
+              printf 'Required GitHub secret %s is missing or empty\n' "$secret_name" >&2
+              exit 1
+            fi
+          done
+
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC request URL is unavailable}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is unavailable}"
+          oidc_response="$(
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fgithub.com%2Fdiggerhq"
+          )"
+          oidc_jwt="$(jq --exit-status --raw-output '.value | strings | select(length > 0)' <<< "$oidc_response")"
+          printf '::add-mask::%s\n' "$oidc_jwt"
+          unset oidc_response
+
+          infisical_token="$(
+            INFISICAL_MACHINE_IDENTITY_ID="$INFISICAL_IDENTITY_ID" \
+            INFISICAL_JWT="$oidc_jwt" \
+            INFISICAL_DOMAIN='https://app.infisical.com' \
+            "$INFISICAL_BIN" login --method=oidc-auth --silent --plain
+          )"
+          printf '::add-mask::%s\n' "$infisical_token"
+          unset oidc_jwt
+
+          # The CLI chooses its parser from the filename. A .yml symlink to
+          # stdin lets jq serialize every value safely without writing a
+          # plaintext secrets file or placing a value in a process argument.
+          relay_input="$RUNNER_TEMP/infisical-relay-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.yml"
+          ln -s /dev/stdin "$relay_input"
+          jq --null-input '{
+            OC_MANAGED_CRED_HMAC_SECRET: env.OC_MANAGED_CRED_HMAC_SECRET,
+            AGENT_RUNTIME_USAGE_HMAC_SECRET: env.AGENT_RUNTIME_USAGE_HMAC_SECRET,
+            LOOPS_API_KEY: env.LOOPS_API_KEY,
+            SLACK_CONNECT_TOKEN: env.SLACK_CONNECT_TOKEN
+          }' \
+            | INFISICAL_TOKEN="$infisical_token" \
+              INFISICAL_DOMAIN='https://app.infisical.com' \
+              "$INFISICAL_BIN" secrets set \
+                --file "$relay_input" \
+                --projectId "$INFISICAL_PROJECT_ID" \
+                --env prod \
+                --path /api-edge \
+                --type shared \
+                >/dev/null
+
+          unset infisical_token
+          echo 'Relayed four production secrets to Infisical /api-edge.'
