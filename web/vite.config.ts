@@ -30,7 +30,8 @@ const injectKey: ProxyOptions['configure'] = (proxy) => {
 // local-only, and it bypasses the edge's route allowlist and response shaping.
 const managedAgentsToken = process.env.OC_MANAGED_AGENTS_TOKEN
 const managedAgentsTarget =
-  process.env.OC_MANAGED_AGENTS_TARGET || 'https://managedagents.opencomputer.dev'
+  process.env.OC_MANAGED_AGENTS_TARGET ||
+  'https://managedagents.opencomputer.dev'
 const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
   ? {
       // The dashboard's API base is /api/dashboard, so its managed-agents
@@ -42,7 +43,9 @@ const managedAgentsProxy: Record<string, ProxyOptions> = managedAgentsToken
         ws: true,
         rewrite: (p) => p.replace(/^\/api\/dashboard\/managed-agents/, '/v1'),
         configure: (proxy) => {
-          const inject = (proxyReq: { setHeader(k: string, v: string): void }) =>
+          const inject = (proxyReq: {
+            setHeader(k: string, v: string): void
+          }) =>
             proxyReq.setHeader('x-opencomputer-agent-token', managedAgentsToken)
           proxy.on('proxyReq', inject)
           proxy.on('proxyReqWs', inject)
@@ -89,7 +92,6 @@ const localUser = {
           id: 'local-dev-user',
           email: 'local@dev.invalid',
           orgId: 'local-dev-org',
-          durableSessionsEnabled: false,
           infrastructureEnabled: false,
           authMode: 'development',
           capabilities: {

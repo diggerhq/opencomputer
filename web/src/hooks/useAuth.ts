@@ -8,7 +8,6 @@ export interface AuthUser {
   email: string
   orgId: string
   orgs?: OrgInfo[]
-  durableSessionsEnabled: boolean
   infrastructureEnabled: boolean
   computerEnabled?: boolean
   onboardingExperience?: MeResponse['onboardingExperience']

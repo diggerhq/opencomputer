@@ -34,7 +34,6 @@ export type {
   BrowserProfile,
   SandboxWebhook,
   SandboxWebhookDelivery,
-  Credential,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -522,45 +521,6 @@ export const deleteBrowser = (id: string) =>
 export const getBrowserProfiles = () =>
   apiFetch('/browser-profiles', {}, S.BrowserProfileListSchema).then(
     (r) => r.profiles,
-  )
-
-// Credentials — model-provider keys for Durable Agent Sessions, reached through
-// the edge's /api/dashboard/v3/* proxy to sessions-api. The agents and sessions
-// pages are gone; only the Credentials page still calls these, and it is
-// removed in a later change.
-export const getCredentials = () =>
-  apiFetch('/v3/credentials', {}, S.CredentialListSchema).then((r) => r.data)
-
-export const createCredential = (body: {
-  key: string
-  provider?: string
-  name?: string
-  is_default?: boolean
-}) =>
-  apiFetch(
-    '/v3/credentials',
-    { method: 'POST', body: JSON.stringify(body) },
-    S.CredentialSchema,
-  )
-
-export const deleteCredential = (id: string) =>
-  apiFetch<void>(`/v3/credentials/${id}`, { method: 'DELETE' })
-
-// Set the org default credential for its provider (the one sessions fall back to).
-export const setDefaultCredential = (id: string) =>
-  apiFetch(
-    '/v3/credentials/default',
-    { method: 'PUT', body: JSON.stringify({ credential: id }) },
-    S.CredentialSchema,
-  )
-
-// Rotate a credential's secret VALUE (versioned, write-only key). Returns updated
-// metadata (new last4).
-export const rotateCredential = (id: string, key: string) =>
-  apiFetch(
-    `/v3/credentials/${id}`,
-    { method: 'PATCH', body: JSON.stringify({ key }) },
-    S.CredentialSchema,
   )
 
 // ── Sandbox lifecycle webhooks (org-scoped, Svix-backed at the edge) ─────────
