@@ -10,14 +10,7 @@ import { templateDeployPathFromSearch } from './managed-agents/templates'
 // Route pages are code-split so the initial bundle stays small; the heaviest
 // deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
 const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Agents = lazy(() => import('./pages/Agents'))
-const AgentNew = lazy(() => import('./pages/AgentNew'))
-const AgentDetail = lazy(() => import('./pages/AgentDetail'))
-const AgentDeployment = lazy(() => import('./pages/AgentDeployment'))
-const AgentSetup = lazy(() => import('./pages/AgentSetup'))
 const Credentials = lazy(() => import('./pages/Credentials'))
-const Sessions = lazy(() => import('./pages/Sessions'))
-const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 const Browsers = lazy(() => import('./pages/Browsers'))
 const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
@@ -147,19 +140,7 @@ export default function App() {
               path="managed-agents/:agentId"
               element={<ManagedAgentDetail />}
             />
-            {/* Agent plane */}
-            <Route path="agents" element={<Agents />} />
-            <Route path="agents/new" element={<AgentNew />} />
-            <Route path="agents/:agentId/setup" element={<AgentSetup />} />
-            <Route
-              path="agents/:agentId/deployments/:deploymentId"
-              element={<AgentDeployment />}
-            />
-            <Route path="agents/:agentId" element={<AgentDetail />} />
-            <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
             <Route path="credentials" element={<Credentials />} />
-            <Route path="sessions" element={<Sessions />} />
-            <Route path="sessions/:sessionId" element={<SessionDetail />} />
             <Route path="browsers" element={<Browsers />} />
             {/* Sandbox plane */}
             <Route path="sandboxes" element={<Sandboxes />} />

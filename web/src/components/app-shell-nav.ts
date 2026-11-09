@@ -160,15 +160,8 @@ export function managedAgentsNav(options: {
     groups.push({
       label: 'Durable sessions',
       collapsible: true,
-      landingTo: '/agents',
+      landingTo: '/credentials',
       items: [
-        { to: '/agents', label: 'Agents', icon: Bot, preview: true },
-        {
-          to: '/sessions',
-          label: 'Sessions',
-          icon: MessagesSquare,
-          preview: true,
-        },
         {
           to: '/credentials',
           label: 'Credentials',

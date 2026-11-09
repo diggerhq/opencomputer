@@ -10,8 +10,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutGrid,
   Rocket,
-  Bot,
-  MessagesSquare,
   Monitor,
   Boxes,
   Layers,
@@ -48,7 +46,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 import {
@@ -92,13 +89,6 @@ const LEGACY_NAV: LegacyNavGroup[] = [
   {
     label: 'Agents',
     items: [
-      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
-      {
-        to: '/sessions',
-        label: 'Sessions',
-        icon: MessagesSquare,
-        preview: true,
-      },
       {
         to: '/credentials',
         label: 'Credentials',
@@ -336,7 +326,10 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const swarmResources = useQuery({
     queryKey: ['managed-memory-resources', projectId],
     queryFn: () =>
-      getManagedMemoryResources({ projectId: projectId!, environment: 'default' }),
+      getManagedMemoryResources({
+        projectId: projectId!,
+        environment: 'default',
+      }),
     enabled: Boolean(managedAgentsExperimentEnabled && projectId),
     staleTime: 60_000,
   })
@@ -442,7 +435,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </nav>
-
 
       <div className="border-t p-3">
         {managedAgentsExperimentEnabled ? (
@@ -580,7 +572,6 @@ export default function AppShell() {
       <div className="flex flex-1 flex-col md:pt-16 md:pl-60">
         <div className="sticky top-14 z-20 md:top-16">
           <BillingWarningBanner />
-          <AgentSecurityAlertBanner />
         </div>
         <HaltModal />
         <main
