@@ -21,7 +21,6 @@ const me = {
   id: 'user_2abc',
   email: 'igor@digger.dev',
   orgId: 'org_digger',
-  durableSessionsEnabled: true,
   infrastructureEnabled: true,
   computerEnabled: true,
   orgs: [
@@ -538,25 +537,6 @@ const orgInvitations = [
     role: 'member',
     expiresAt: at(-5),
     createdAt: at(1),
-  },
-]
-
-const credentials = [
-  {
-    id: 'cred_anth_1',
-    provider: 'anthropic',
-    name: 'Production',
-    last4: 'a1b2',
-    is_default: true,
-    created_at: at(20),
-  },
-  {
-    id: 'cred_anth_2',
-    provider: 'anthropic',
-    name: 'Staging',
-    last4: 'c3d4',
-    is_default: false,
-    created_at: at(8),
   },
 ]
 
@@ -1240,8 +1220,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
-  // The Credentials page is the last /v3 caller (removed in a later change).
-  [/^\/v3\/credentials$/, () => ({ data: credentials })],
   [
     /^\/webhooks\/[^/]+\/deliveries$/,
     () => ({ data: sandboxWebhookDeliveries }),
@@ -1342,7 +1320,7 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   if (method === 'PUT' && path === '/me/preferences') {
     const body = typeof options.body === 'string' ? options.body : '{}'
     const updates = JSON.parse(body) as Partial<
-      Pick<typeof me, 'durableSessionsEnabled' | 'infrastructureEnabled'>
+      Pick<typeof me, 'infrastructureEnabled'>
     >
     Object.assign(me, updates)
     return me as T

@@ -16,7 +16,6 @@ import {
   Package,
   Webhook,
   KeyRound,
-  KeySquare,
   CreditCard,
   Settings,
   LogOut,
@@ -76,25 +75,13 @@ type NavItem = {
 }
 type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
 
-// Two planes, subtly separated: the durable-agent plane and the raw-compute
-// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
+// The raw-compute (sandbox) plane plus account/org. Groups render with spacing + a small muted
 // label rather than hard dividers.
 const LEGACY_NAV: LegacyNavGroup[] = [
   {
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
       { to: '/getting-started', label: 'Getting started', icon: Rocket },
-    ],
-  },
-  {
-    label: 'Agents',
-    items: [
-      {
-        to: '/credentials',
-        label: 'Credentials',
-        icon: KeySquare,
-        preview: true,
-      },
     ],
   },
   {
@@ -339,7 +326,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const nav = managedAgentsExperimentEnabled
     ? managedAgentsNav({
         projectId,
-        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
         infrastructureEnabled: user?.infrastructureEnabled ?? false,
         computerEnabled,
         swarmEnabled,

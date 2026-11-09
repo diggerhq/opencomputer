@@ -10,7 +10,6 @@ import { templateDeployPathFromSearch } from './managed-agents/templates'
 // Route pages are code-split so the initial bundle stays small; the heaviest
 // deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
 const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Credentials = lazy(() => import('./pages/Credentials'))
 const Browsers = lazy(() => import('./pages/Browsers'))
 const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
@@ -140,7 +139,6 @@ export default function App() {
               path="managed-agents/:agentId"
               element={<ManagedAgentDetail />}
             />
-            <Route path="credentials" element={<Credentials />} />
             <Route path="browsers" element={<Browsers />} />
             {/* Sandbox plane */}
             <Route path="sandboxes" element={<Sandboxes />} />

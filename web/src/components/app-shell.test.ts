@@ -4,7 +4,6 @@ import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
   const defaults = {
-    durableSessionsEnabled: false,
     infrastructureEnabled: false,
   }
 
@@ -83,14 +82,7 @@ describe('managed agents navigation', () => {
     )
   })
 
-  it('reveals each advanced area independently', () => {
-    expect(
-      managedAgentsNav({
-        ...defaults,
-        durableSessionsEnabled: true,
-      }).map((group) => group.label),
-    ).toEqual([undefined, 'Account', 'Durable sessions'])
-
+  it('reveals the infrastructure area when enabled', () => {
     expect(
       managedAgentsNav({
         ...defaults,
@@ -103,7 +95,6 @@ describe('managed agents navigation', () => {
     expect(
       managedAgentsNav({
         projectId: 'project-one',
-        durableSessionsEnabled: true,
         infrastructureEnabled: true,
       }).map((group) => group.label),
     ).toEqual([undefined, undefined])

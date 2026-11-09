@@ -39,7 +39,6 @@ export type NavGroup = {
 
 export function managedAgentsNav(options: {
   projectId?: string
-  durableSessionsEnabled: boolean
   infrastructureEnabled: boolean
   computerEnabled?: boolean
   swarmEnabled?: boolean
@@ -155,22 +154,6 @@ export function managedAgentsNav(options: {
       },
     ],
   })
-
-  if (options.durableSessionsEnabled) {
-    groups.push({
-      label: 'Durable sessions',
-      collapsible: true,
-      landingTo: '/credentials',
-      items: [
-        {
-          to: '/credentials',
-          label: 'Credentials',
-          icon: KeySquare,
-          preview: true,
-        },
-      ],
-    })
-  }
 
   if (options.infrastructureEnabled) {
     groups.push({

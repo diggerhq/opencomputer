@@ -19,7 +19,6 @@ export const MeResponseSchema = z.object({
   email: z.string(),
   orgId: z.string(),
   orgs: z.array(OrgInfoSchema).optional(),
-  durableSessionsEnabled: z.boolean(),
   infrastructureEnabled: z.boolean(),
   /** Work 052 rollout: the organization has its computer. Absent on older edges. */
   computerEnabled: z.boolean().optional(),
@@ -407,26 +406,6 @@ export const SandboxWebhookDeliverySchema = z.object({
 export const SandboxWebhookDeliveryListSchema = z.object({
   data: z.array(SandboxWebhookDeliverySchema),
 })
-
-// ── Durable Agent Sessions credentials ─────────────────────────────────────
-// Only the Credentials page still reads these (via the edge's /v3 proxy to
-// sessions-api); it is removed in a later change.
-// Credentials — the reusable model-provider keys an agent/session resolves. The
-// raw key is write-only; the API returns only metadata (last4 for display).
-export const CredentialSchema = z.object({
-  id: z.string(),
-  provider: z.string(),
-  name: z.string().nullish(),
-  last4: z.string().nullable().optional(),
-  is_default: z.boolean().optional(),
-  created_at: z.string(),
-})
-export const CredentialListSchema = z.object({
-  data: z.array(CredentialSchema),
-  next_cursor: z.string().nullish(),
-})
-
-export type Credential = z.infer<typeof CredentialSchema>
 
 export type OrgInfo = z.infer<typeof OrgInfoSchema>
 export type MeResponse = z.infer<typeof MeResponseSchema>

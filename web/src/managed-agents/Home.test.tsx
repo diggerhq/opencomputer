@@ -13,7 +13,6 @@ const authWith = (computerEnabled: boolean) =>
       id: 'u1',
       email: 'a@b.c',
       orgId: 'org_1',
-      durableSessionsEnabled: false,
       infrastructureEnabled: false,
       computerEnabled,
     },
