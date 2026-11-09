@@ -1,8 +1,8 @@
 # @opencomputer/sdk
 
-The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): the **cloud sandbox** client at the package root, and the **Serverless Agents** management client on the portable `@opencomputer/sdk/agents` subpath.
+The official TypeScript client for the [OpenComputer](https://github.com/diggerhq/opencomputer) **Serverless Agents** management API. It has one entry point, `@opencomputer/sdk/agents`.
 
-> Versions before 2.0.0 also carried a client for the retired Durable Agent Sessions API; see [CHANGELOG](./CHANGELOG.md).
+> **3.0.0 removed the sandbox client.** `Sandbox`, `Browser`, `SandboxAgent`, `Templates`, `Image`, `Snapshots`, sandbox `Webhooks`, `verifyWebhook`, `SecretStore`, `Usage`/`Tags` and everything else that was exported from the package root (`@opencomputer/sdk`) and `@opencomputer/sdk/node` are gone, because the OpenComputer sandbox platform is shut down. Importing the package root now fails to resolve. Code that still needs the sandbox client pins `@opencomputer/sdk@2`; `@opencomputer/sdk/agents` is unchanged from 2.3.1. Versions before 2.0.0 also carried a client for the retired Durable Agent Sessions API. See the [CHANGELOG](./CHANGELOG.md).
 
 ## Install
 
@@ -10,28 +10,9 @@ The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/openc
 npm install @opencomputer/sdk
 ```
 
-## Quick Start
+## Usage
 
-```typescript
-import { Sandbox } from "@opencomputer/sdk";
-
-const sandbox = await Sandbox.create({ template: "base" });
-
-// Execute commands
-const result = await sandbox.commands.run("echo hello");
-console.log(result.stdout); // "hello\n"
-
-// Read and write files
-await sandbox.files.write("/tmp/test.txt", "Hello, world!");
-const content = await sandbox.files.read("/tmp/test.txt");
-
-// Clean up
-await sandbox.kill();
-```
-
-## Serverless Agents management client
-
-Serverless Agents (`opencomputer deploy`) are managed over the [management API](https://opencomputer.dev/agents/api). The client for it is a separate subpath export whose module graph has no Node dependency and runs nothing at import, so the same code serves a Cloudflare Worker without Node compatibility, Vercel, Deno and Node. Use it from trusted server code; the API key must not reach a browser.
+Serverless Agents (`opencomputer deploy`) are managed over the [management API](https://opencomputer.dev/agents/api). The client is the `@opencomputer/sdk/agents` subpath export, whose module graph has no Node dependency and runs nothing at import, so the same code serves a Cloudflare Worker without Node compatibility, Vercel, Deno and Node. Use it from trusted server code; the API key must not reach a browser.
 
 ```typescript
 import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/agents";
@@ -78,46 +59,13 @@ const { document, session } = await oc.sessions.startOnDocument({
 
 `startSessionOnDocument({ apiKey, ...params })` from the same subpath is the standalone form of the call.
 
-## Sandbox webhooks (Preview)
-
-Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. `verifyWebhook` checks a delivery's signature and returns its envelope. **Preview: newly available; the surface may change.**
-
-```typescript
-import { Webhooks, verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
-
-const webhooks = new Webhooks({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
-
-// `secret` (whsec_…) is returned ONCE on create — store it; you need it to verify.
-const { secret } = await webhooks.create({
-  url: "https://app.example.com/oc-webhook",
-  eventTypes: ["sandbox.stopped"],
-});
-
-// In your handler — verify against the RAW body, then route:
-const delivery = await verifyWebhook<SandboxLifecycleEvent>(rawBody, request.headers, secret);
-if (delivery.type === "sandbox.stopped") {
-  console.log(delivery.sandboxId, delivery.event.data.reason);
-}
-```
-
 ## Configuration
-
-**Sandboxes** (`Sandbox`):
-
-| Option   | Env Variable           | Default                          |
-|----------|------------------------|----------------------------------|
-| `apiUrl` | `OPENCOMPUTER_API_URL` | `https://app.opencomputer.dev`   |
-| `apiKey` | `OPENCOMPUTER_API_KEY` | (none)                           |
-
-**Serverless Agents** (`OpenComputer` from `@opencomputer/sdk/agents`):
 
 | Option    | Default                                            |
 |-----------|----------------------------------------------------|
 | `baseUrl` | `https://app.opencomputer.dev/api/managed-agents`  |
 | `apiKey`  | required                                           |
 | `fetch`   | the global `fetch`                                 |
-
-Importing the package root installs nothing globally and opens no connection. The sandbox client keeps its own HTTP/2 pool, created on the first request and warmed on the first `Sandbox.create`; call `prewarmConnections()` earlier to pay that cost before a timing loop.
 
 ## Releasing
 
