@@ -1,4 +1,17 @@
-"""OpenComputer Python SDK - cloud sandbox platform."""
+"""OpenComputer Python SDK - cloud sandbox platform. Deprecated: 1.2.0 is the final release."""
+
+import warnings as _warnings
+
+#: Shown once per process, on the first ``import opencomputer``. A
+#: DeprecationWarning is displayed by default when the importing code is
+#: ``__main__`` and under pytest; elsewhere ``python -W default`` shows it.
+DEPRECATION_MESSAGE = (
+    "opencomputer-sdk is deprecated and receives no further releases: the "
+    "OpenComputer sandbox platform it targets is shut down. For Serverless "
+    "Agents use the management API (https://opencomputer.dev/agents/api) or "
+    "the TypeScript client @opencomputer/sdk/agents (npm install @opencomputer/sdk)."
+)
+_warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
 
 from opencomputer.sandbox import Sandbox, ScalingLockedError, PlanLimitError, SandboxFamilyLimitError
 from opencomputer.browser import Browser, BrowserProfile
