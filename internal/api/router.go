@@ -469,10 +469,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		idash.GET("/images", s.dashboardListImages)
 		idash.DELETE("/images/:id", s.dashboardDeleteImage)
 		idash.DELETE("/snapshots/:name", s.dashboardDeleteSnapshot)
-		// Agents — currently proxied to an external service from each cell.
-		// Easier to keep that wiring intact than reimplement on the edge.
-		idash.Any("/agents", s.dashboardAgentsProxy)
-		idash.Any("/agents/*", s.dashboardAgentsProxy)
+		// Per-agent paywalled-feature subscriptions.
 		idash.GET("/agents/:agentId/entitlements", s.dashboardListAgentEntitlements)
 		idash.POST("/agents/:agentId/subscriptions/:feature", s.dashboardSubscribeAgentFeature)
 		idash.DELETE("/agents/:agentId/subscriptions/:feature", s.dashboardCancelAgentFeature)
@@ -873,19 +870,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 
 		// Admin endpoints
 
-		// Agents — reverse-proxy to sessions-api. Mints short-lived identity
-		// JWTs for the inbound (sessions-api) and downstream (OC API) hops so
-		// no API key is needed end-to-end. CLI users bypass this and hit
-		// sessions-api directly with X-API-Key.
-		dash.Any("/agents", s.dashboardAgentsProxy)
 		// Per-agent paywalled-feature subscriptions (telegram et al).
-		// Mounted BEFORE the catch-all /agents/* proxy so they don't
-		// get forwarded to sessions-api.
 		dash.GET("/agents/:agentId/entitlements", s.dashboardListAgentEntitlements)
 		dash.POST("/agents/:agentId/subscriptions/:feature", s.dashboardSubscribeAgentFeature)
 		dash.DELETE("/agents/:agentId/subscriptions/:feature", s.dashboardCancelAgentFeature)
-
-		dash.Any("/agents/*", s.dashboardAgentsProxy)
 
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)
