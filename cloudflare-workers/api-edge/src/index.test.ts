@@ -283,8 +283,8 @@ describe("api-edge sandbox create", () => {
   });
 });
 
-// The scoped-secret boundary added so sessions-api can ensure-provision Managed at
-// agent-create without holding the broad CF_ADMIN_SECRET. Asserts the auth gate only
+// The scoped-secret boundary that lets the managed agents backend ensure-provision
+// Managed without holding the broad CF_ADMIN_SECRET. Asserts the auth gate only
 // (provisioning itself isn't exercised: getOrg → null → 500, which is still ≠ 401).
 describe("/internal/model-billing/enable — scoped-secret auth boundary", () => {
   const ADMIN = "admin-secret";

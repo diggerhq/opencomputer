@@ -26,7 +26,6 @@ export type EdgeAuth =
   | "missing"
   | "invalid"
   | "conflicting"
-  | "project_key"
   | "not_member"
   | "origin"
   | "key_required"

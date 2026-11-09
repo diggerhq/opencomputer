@@ -16,14 +16,12 @@ import {
 
 export interface ModelBillingEnv extends OpenRouterEnv, AutumnApiEnv {
   OPENCOMPUTER_DB: D1Database;
-  // sessions-api base URL (shared with the dashboard /v3 proxy). Default = prod.
-  SESSIONS_API_URL?: string;
-  // Private managed-agent backend. Preferred for new Serverless Agent key
-  // custody; SESSIONS_API_URL remains a compatibility fallback during rollout.
+  // Private managed agents backend (blue) base URL. Required for the managed
+  // credential hand-off; the hand-off fails clearly if it is unset.
   MANAGED_AGENTS_API_URL?: string;
   // DEDICATED HMAC secret for the plaintext-key hand-off (§6.7.5 / P2-f). NOT the
   // generic internal-auth secret — this route carries a live model key. Shared
-  // only with sessions-api.
+  // only with the managed agents backend (blue).
   OC_MANAGED_CRED_HMAC_SECRET: string;
   // Optional env-default markup (basis points) when the org row's is 0. Org wins.
   OPENROUTER_MARKUP_BPS?: string;
@@ -39,7 +37,6 @@ const DEFAULT_MANAGED_BUDGET_USD = 10;
 const MAX_PROVISION_ATTEMPTS = 5;
 // Accepted clock skew on the hand-off HMAC (replay window, §6.7.5).
 const HANDOFF_SKEW_SEC = 60;
-const DEFAULT_SESSIONS_API = "https://api.opencomputer.dev";
 const HANDOFF_PATH = "/internal/managed-credential";
 
 export type ManagedKeyStatus = "active" | "superseded" | "deleting";
@@ -71,8 +68,8 @@ interface OrgBillingRow {
   halt_reason?: string | null;
 }
 
-// sessions-api owner id for an OC org. MUST match sessions-api's ownerIdForOrg
-// (src/v3/auth/org-token.ts) — the managed credential is stored + resolved under it.
+// Managed agents backend owner id for an OC org. MUST match the backend's owner id
+// for the org — the managed credential is stored + resolved under it.
 export function ownerIdForOrg(orgId: string): string {
   return "oc-org:" + orgId;
 }
@@ -219,7 +216,7 @@ async function budgetFor(env: ModelBillingEnv, org: OrgBillingRow): Promise<numb
   return defaultBudgetUsd(env);
 }
 
-// ── edge → sessions-api hand-off (HMAC, §6.7.5) ─────────────────────────────
+// ── edge → managed agents backend hand-off (HMAC, §6.7.5) ───────────────────
 
 async function hmacHex(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -234,7 +231,7 @@ async function hmacHex(secret: string, data: string): Promise<string> {
 }
 
 // Signs `${ts}.${method}.${path}.${body}` (path includes query) and calls
-// sessions-api. Returns the parsed JSON. `path` must start with HANDOFF_PATH.
+// the managed agents backend (blue). Returns the parsed JSON. `path` must start with HANDOFF_PATH.
 async function signedHandoff(
   env: ModelBillingEnv,
   method: "POST" | "GET" | "DELETE",
@@ -244,11 +241,10 @@ async function signedHandoff(
   if (!env.OC_MANAGED_CRED_HMAC_SECRET) {
     throw new Error("model-billing: OC_MANAGED_CRED_HMAC_SECRET unset — refusing hand-off");
   }
-  const base = (
-    env.MANAGED_AGENTS_API_URL ??
-    env.SESSIONS_API_URL ??
-    DEFAULT_SESSIONS_API
-  ).replace(/\/+$/, "");
+  if (!env.MANAGED_AGENTS_API_URL) {
+    throw new Error("model-billing: MANAGED_AGENTS_API_URL unset — refusing hand-off");
+  }
+  const base = env.MANAGED_AGENTS_API_URL.replace(/\/+$/, "");
   const ts = Math.floor(Date.now() / 1000).toString();
   const sig = await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${method}.${path}.${body}`);
   const resp = await fetch(`${base}${path}`, {
@@ -265,7 +261,7 @@ async function signedHandoff(
   return text ? JSON.parse(text) : null;
 }
 
-// Hand the freshly-minted plaintext OR key to sessions-api to seal. Idempotent per
+// Hand the freshly-minted plaintext OR key to the managed agents backend to seal. Idempotent per
 // (owner_id, operation_id): a re-call rotates rather than duplicates. Returns the
 // managed_credential_id. The plaintext is NEVER persisted on the edge.
 async function bindManagedCredential(
@@ -296,7 +292,7 @@ async function lookupManagedCredential(
   return out?.managed_credential_id ?? null;
 }
 
-// Revoke (soft-delete) the owner's managed credential(s) in sessions-api — the
+// Revoke (soft-delete) the owner's managed credential(s) in the managed agents backend — the
 // rollback counterpart of the bind. Idempotent (deleting none returns 0). Returns
 // how many were deleted.
 async function revokeManagedCredential(env: ModelBillingEnv, ownerId: string): Promise<number> {
@@ -379,8 +375,8 @@ async function driveProvisioning(env: ModelBillingEnv, org: OrgBillingRow, row: 
       await updateRow(env, row.id, { or_key_hash: created.data.hash, attempts: 0, last_error: null });
       row.or_key_hash = created.data.hash;
 
-      // Step 3: hand the plaintext to sessions-api immediately (still in memory,
-      // never persisted). On success persist the credential id.
+      // Step 3: hand the plaintext to the managed agents backend immediately
+      // (still in memory, never persisted). On success persist the credential id.
       const credId = await bindManagedCredential(env, {
         ownerId: ownerIdForOrg(org.id),
         orKeyHash: created.data.hash,
@@ -447,7 +443,7 @@ export async function reconcileManagedBilling(env: ModelBillingEnv, orgId: strin
 // disableManagedBilling is the rollback path: a synchronous HARD offboard. The
 // graceful-drain cron (§5.8 — keep polling until spend quiesces, final debit, then
 // delete) isn't built yet, so disable does the teardown directly: delete the OR
-// key(s), revoke the sessions-api managed credential, drop the key rows, flip the org
+// key(s), revoke the managed agents backend credential, drop the key rows, flip the org
 // off. Order matters — we only delete rows + flip off AFTER the OR key + credential
 // are gone, so a partial failure throws and a retry completes cleanly (every step is
 // idempotent). NOTE: a tiny final slice of spend may go unbilled (no drain); fine for
@@ -459,8 +455,9 @@ export async function disableManagedBilling(env: ModelBillingEnv, orgId: string)
   for (const row of rows) {
     if (row.or_key_hash) await deleteOrKey(env, row.or_key_hash);
   }
-  // 2. Revoke the managed credential in sessions-api so the resolver stops resolving
-  //    Managed (the org-default-managed arm, §6.7.3). Throws on failure → retry.
+  // 2. Revoke the managed credential in the managed agents backend so the
+  //    resolver stops resolving Managed (the org-default-managed arm, §6.7.3).
+  //    Throws on failure → retry.
   await revokeManagedCredential(env, ownerIdForOrg(orgId));
   // 3. Only now: drop the rows + flip off (so a mid-failure retry re-runs 1–2).
   await deleteKeyRows(env, orgId);

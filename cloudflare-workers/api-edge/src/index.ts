@@ -182,11 +182,6 @@ export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, L
   // Optional alpha Burst Sandbox cell. When unset, burst=true creates
   // fail closed rather than silently landing on on-demand capacity.
   BURST_CELL_ID?: string;
-  // act-as-org provisioning (agent-sandbox-ownership): shared HS256 secret with
-  // sessions-api. When set, authenticate() accepts a signed "act for org X" JWT
-  // as the API key so /v3 sandboxes are owned by + billed to the customer org.
-  // Unset → the feature is inert (JWT keys rejected). See dashboard.ts.
-  OC_PROVISION_SECRET?: string;
   // Slack Connect per signup (slack_connect.ts), sent by the OpenComputer
   // Slack app: dormant unless the token
   // and SINCE (unix seconds) are set.
@@ -199,8 +194,9 @@ export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, L
   OPENROUTER_PROVISIONING_KEY: string;
   OPENROUTER_BASE_URL?: string; // default https://openrouter.ai/api/v1
   OPENROUTER_MARKUP_BPS?: string; // env-default markup (bps) when the org's is 0
-  // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
-  // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
+  // DEDICATED HMAC secret for handing a freshly-minted OR key to the managed
+  // agents backend (blue) (NOT the generic internal-auth — this route carries a
+  // live model key). §6.7.5.
   OC_MANAGED_CRED_HMAC_SECRET: string;
   // Edge claim (pool_stock.ts): per-cell Durable Object stocking pre-reserved
   // hot pool boxes so default-shape creates are answered at the edge with zero
@@ -436,17 +432,14 @@ interface Caller {
   orgID: string;
   userID: string | null;
   role?: string;
-  // Set only for act-as-org provisioning tokens (sessions-api). Least-privilege:
-  // the dispatch gates these to sandbox + secret-store routes (provisionScopeGate).
-  scope?: "sandbox-provision";
   // Set only for the organization's computer (work 080): its one-hour keys are
   // created_by COMPUTER_PRINCIPAL, a reserved id no person has. sessionKey is
   // the Slack thread the key was minted for, when the gateway named one.
   principal?: "computer";
   sessionKey?: string;
   // The key itself, for the computer API's assertion (work 084): blue records
-  // which key acted. Absent on provision tokens and on entries cached before
-  // these fields existed (the computer path re-reads those).
+  // which key acted. Absent on entries cached before these fields existed (the
+  // computer path re-reads those).
   key?: AssertedAPIKey;
   userName?: string | null;
   userEmail?: string | null;
@@ -779,17 +772,6 @@ async function authenticate(req: Request, env: Env, ctx?: ExecutionContext, prob
 }
 
 async function authenticateKey(apiKey: string, env: Env, ctx?: ExecutionContext, probe?: AuthProbe): Promise<Caller | null> {
-  // Act-as-org provisioning token (sessions-api): a signed JWT, not an osb_ key.
-  // Recognized only when OC_PROVISION_SECRET is configured — inert otherwise, so
-  // a stray JWT can't authenticate. The edge re-derives the org from the token;
-  // create stamps it, sub-ops match it, billing follows it.
-  if (
-    env.OC_PROVISION_SECRET &&
-    !apiKey.startsWith("osb_") &&
-    apiKey.split(".").length === 3
-  ) {
-    return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
-  }
   const tHash = Date.now();
   const hash = await hashAPIKey(apiKey);
   if (probe) probe.hashMs = Date.now() - tHash;
@@ -4865,17 +4847,9 @@ async function computerApiCall(
     caller = await authenticateKey(credential.key, env, ctx);
     // Entries cached before the key fields existed: re-read the row once, so
     // blue always learns which key acted.
-    if (caller && !caller.key && !caller.scope) {
+    if (caller && !caller.key) {
       await refreshAuth(env, await hashAPIKey(credential.key));
       caller = await authenticateKey(credential.key, env, ctx);
-    }
-    // The only non-user credential is the act-as-org provisioning token, a
-    // project-scoped credential: the computer API is a person's.
-    if (caller?.scope) {
-      facts.auth = "project_key";
-      return computerApiError(req, 403, "forbidden", "This credential cannot use the computer API.", {
-        reason: "project_key",
-      });
     }
     if (caller?.key && env.COMPUTER_API_RATE_LIMIT) {
       // Per key, ahead of blue. A limiter error fails open: blue still
@@ -4979,7 +4953,7 @@ async function authCLIRevoke(req: Request, env: Env, ctx?: ExecutionContext): Pr
   } catch {
     return finish(cliAuthError("credential_revocation_unavailable", 503), "storage_error");
   }
-  if (!caller || caller.scope) {
+  if (!caller) {
     return finish(cliAuthError("missing or invalid API key", 401), "unauthorized");
   }
   let keyID: string | null = caller.key?.id ?? null;
@@ -5179,59 +5153,6 @@ async function verifySessionJWT(secret: string, token: string): Promise<SessionC
   } catch {
     return null;
   }
-}
-
-// Verify an act-as-org provisioning token (sessions-api → OC sandbox API),
-// presented as the API key. HS256 signed with OC_PROVISION_SECRET; asserts
-// "operate as org X". Mintable only by the secret holder; we re-derive org X
-// from the verified token (never a client field). See agent-sandbox-ownership.md.
-async function verifyProvisionToken(secret: string, token: string): Promise<Caller | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [headerB64, payloadB64, sigB64] = parts;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
-  if (b64url(expected) !== sigB64) return null;
-  try {
-    const p = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as {
-      iss?: string; aud?: string; exp?: number; iat?: number; org_id?: string; scope?: string;
-    };
-    const now = Math.floor(Date.now() / 1000);
-    const SKEW = 120;          // clock-skew tolerance (s)
-    const MAX_AGE = 6 * 3600;  // sanity cap on lifetime; turn tokens live ~40min (maxTurnSeconds 1800 + 600)
-    if (p.iss !== "sessions-api" || p.aud !== "opencomputer-api") return null;
-    // P1-1: require the provisioning scope (gated to sandbox + secret-store routes).
-    if (p.scope !== "sandbox-provision") return null;
-    // P1-2: require finite exp + iat; reject expired, future-dated, or absurd-lifetime
-    // tokens (a no-exp token is no longer accepted).
-    if (typeof p.exp !== "number" || typeof p.iat !== "number") return null;
-    if (p.exp <= now) return null;
-    if (p.iat > now + SKEW) return null;
-    if (p.exp - p.iat > MAX_AGE || p.exp > now + MAX_AGE + SKEW) return null;
-    // P1-2: validate org_id shape (OC orgs are UUIDs).
-    if (typeof p.org_id !== "string" ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.org_id)) return null;
-    return { orgID: p.org_id, userID: null, scope: "sandbox-provision" };
-  } catch {
-    return null;
-  }
-}
-
-// Provision-scoped tokens (sessions-api act-as-org) are least-privilege: usable
-// ONLY for sandbox + secret-store provisioning, never snapshots/images/other org
-// resources. Call after authenticate() on any route OUTSIDE that allowlist to 403
-// a provision token; returns null (pass) for normal org keys.
-function provisionScopeGate(caller: Caller, path: string): Response | null {
-  if (caller.scope !== "sandbox-provision") return null;
-  if (path.startsWith("/api/sandboxes") || path.startsWith("/api/secret-stores")) return null;
-  return json({ error: "forbidden: provision-scoped token is limited to sandbox + secret-store operations" }, 403);
 }
 
 // ── Stripe webhook ───────────────────────────────────────────────────────
@@ -5777,8 +5698,9 @@ export default {
       const sig = req.headers.get("X-Signature") ?? "";
       const body = await req.text();
       // CF_ADMIN_SECRET authorizes both ops. `enable` is additionally accepted with the
-      // scoped OC_MANAGED_CRED_HMAC_SECRET, so sessions-api can ensure-provision at
-      // agent-create without holding the broad admin secret. `disable` stays admin-only.
+      // scoped OC_MANAGED_CRED_HMAC_SECRET (shared only with the managed agents
+      // backend), so it can ensure-provision without holding the broad admin secret.
+      // `disable` stays admin-only.
       const adminOk = constantTimeEqual(await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`), sig);
       const managedOk =
         path === "/internal/model-billing/enable" && env.OC_MANAGED_CRED_HMAC_SECRET
@@ -5920,7 +5842,6 @@ export default {
     if (path === "/api/snapshots") {
       const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listSnapshots(env, caller);
       if (req.method === "POST") return proxyToCellAuthed(req, env, caller); // build → home_cell, SSE
       return json({ error: "method not allowed" }, 405);
@@ -5936,7 +5857,6 @@ export default {
         const isPublishToggle = sub === "/publish" || sub === "/unpublish";
         const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
-        { const g = provisionScopeGate(caller, path); if (g) return g; }
         // Patches, publish/unpublish, and delete are cell-work — route to the
         // cell that owns the snapshot bytes (looked up from D1), not "any active
         // cell". is_public lives in the owning cell's image_cache.
@@ -5959,7 +5879,6 @@ export default {
     if (path === "/api/images") {
       const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listImages(env, caller);
       return json({ error: "method not allowed" }, 405);
     }
@@ -6079,8 +5998,6 @@ export default {
       if (!caller) {
         return json({ error: "missing or invalid API key" }, 401);
       }
-      const scopeError = provisionScopeGate(caller, path);
-      if (scopeError) return scopeError;
       if (path === "/api/managed-agents/sessions" && req.method === "POST") {
         try {
           const billing = await enableManagedBilling(env, caller.orgID, (id) =>
@@ -6227,7 +6144,6 @@ export default {
       if (cpm) {
         const caller = await authenticate(req, env, ctx);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
-        { const g = provisionScopeGate(caller, path); if (g) return g; }
         const cpRow = await env.OPENCOMPUTER_DB.prepare(
           `SELECT owner_cell_id FROM checkpoints_index WHERE id = ?1`,
         ).bind(cpm[1]).first<{ owner_cell_id: string }>();
@@ -6317,8 +6233,7 @@ export default {
     // world. proxyToCellAuthed streams the response (SSE-safe). This is a
     // backstop; prefer adding a native handler for high-traffic resources.
     // /api/whoami — return the authenticated caller's org (+ user). Lets a
-    // trusted service resolve an osb_ key to its OC org without custodying it
-    // (agent-sandbox-ownership Phase 0.5: sessions-api maps osb_ → oc-org:<id>).
+    // trusted service resolve an osb_ key to its OC org without custodying it.
     // /api/billing/credits — API-key credit status for the CLI (plan, balance,
     // low-balance flag, checkout deep links). See billing_onramp.ts.
     if (path === "/api/billing/credits" && req.method === "GET") {
@@ -6330,14 +6245,6 @@ export default {
     if (path === "/api/whoami" && req.method === "GET") {
       const caller = await authenticate(req, env, ctx);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      if (caller.scope) {
-        return json({
-          org_id: caller.orgID,
-          user_id: caller.userID,
-          email: null,
-          org_name: null,
-        });
-      }
       const identity = await env.OPENCOMPUTER_DB.prepare(
         `SELECT o.name AS org_name, u.email AS email
            FROM orgs o
