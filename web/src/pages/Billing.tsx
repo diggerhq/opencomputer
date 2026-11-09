@@ -171,8 +171,7 @@ function PlanTab() {
               </p>
             )}
             <p className="text-muted-foreground text-sm">
-              Upgrade to Pro for an additional $30 free credit and larger
-              machine sizes.
+              Upgrade to Pro for an additional $30 free credit.
             </p>
             <Button
               onClick={() => setupMutation.mutate()}
@@ -189,18 +188,6 @@ function PlanTab() {
             Payment method on file — billed monthly via Stripe
           </p>
         ) : null}
-
-        <p className="text-muted-foreground mt-3 text-xs">
-          Need more concurrency?{' '}
-          <a
-            href="https://cal.com/team/digger/opencomputer-founder-chat"
-            target="_blank"
-            rel="noreferrer"
-            className="text-foreground font-medium underline underline-offset-4"
-          >
-            Talk to us
-          </a>
-        </p>
       </Panel>
 
       {isPro || billing?.hasPaymentMethod ? (
