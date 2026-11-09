@@ -37,7 +37,6 @@ const authWith = (
       id: 'u1',
       email: 'a@b.c',
       orgId: 'org_1',
-      infrastructureEnabled: false,
       computerEnabled,
       onboardingExperience,
     },

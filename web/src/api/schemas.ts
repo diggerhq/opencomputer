@@ -17,7 +17,6 @@ export const MeResponseSchema = z.object({
   email: z.string(),
   orgId: z.string(),
   orgs: z.array(OrgInfoSchema).optional(),
-  infrastructureEnabled: z.boolean(),
   /** Work 052 rollout: the organization has its computer. Absent on older edges. */
   computerEnabled: z.boolean().optional(),
   /** Administrator-selected workspace landing experience; absent on older edges. */
@@ -197,60 +196,6 @@ export const InvoicesResponseSchema = z.object({
   invoices: z.array(StripeInvoiceSchema),
 })
 
-export const BrowserSessionSchema = z.object({
-  id: z.string(),
-  provider: z.string(),
-  provider_session_id: z.string(),
-  status: z.string(),
-  cdp_ws_url: z.string(),
-  webdriver_ws_url: z.string(),
-  live_view_url: z.string().nullable().optional(),
-  base_url: z.string().nullable().optional(),
-  headless: z.boolean().optional(),
-  stealth: z.boolean().optional(),
-  gpu: z.boolean().optional(),
-  timeout_seconds: z.number().optional(),
-  replay_id: z.string().optional(),
-  replay_view_url: z.string().optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-  deleted_at: z.string().nullable().optional(),
-  provider_deleted_at: z.string().nullable().optional(),
-  metered_at: z.string().nullable().optional(),
-  metered_seconds: z.number().nullable().optional(),
-  metered_usage_micro: z.number().nullable().optional(),
-  metering_error: z.string().nullable().optional(),
-  billable_seconds: z.number().optional(),
-  estimated_cost_usd: z.number().optional(),
-})
-export const BrowserSessionListSchema = z.object({
-  browsers: z.array(BrowserSessionSchema),
-})
-
-export const BrowserUsageSchema = z.object({
-  total_sessions: z.number(),
-  active_sessions: z.number(),
-  total_billable_seconds: z.number(),
-  total_usage_micro: z.number(),
-  total_cost_usd: z.number(),
-})
-
-export const BrowserProfileSchema = z.object({
-  id: z.string(),
-  provider: z.string(),
-  provider_profile_id: z.string(),
-  name: z.string().nullable().optional(),
-  created_at: z.string(),
-  updated_at: z.string().optional(),
-  deleted_at: z.string().nullable().optional(),
-  provider_created_at: z.string().optional(),
-  provider_updated_at: z.string().optional(),
-  provider_last_used_at: z.string().optional(),
-})
-export const BrowserProfileListSchema = z.object({
-  profiles: z.array(BrowserProfileSchema),
-})
-
 export type OrgInfo = z.infer<typeof OrgInfoSchema>
 export type MeResponse = z.infer<typeof MeResponseSchema>
 export type Org = z.infer<typeof OrgSchema>
@@ -264,5 +209,3 @@ export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type AgentSessionUsageRow = z.infer<typeof AgentSessionUsageRowSchema>
 export type AgentSessionUsage = z.infer<typeof AgentSessionUsageSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
-export type BrowserSession = z.infer<typeof BrowserSessionSchema>
-export type BrowserProfile = z.infer<typeof BrowserProfileSchema>

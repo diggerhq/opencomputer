@@ -57,11 +57,6 @@ export interface DashboardEnv extends BillingEventsEnv {
   // "true" → new signups are provisioned on Autumn (Stage 2 switch). Default
   // off keeps merge dormant; existing orgs are never auto-migrated by this.
   AUTUMN_NEW_ORGS?: string;
-  // Browser Sessions dashboard proxy. The browser API remains a separate
-  // Worker; this edge Worker only translates dashboard cookie auth into the
-  // internal service token plus org/user headers.
-  BROWSER_API_URL?: string;
-  BROWSER_API_SECRET?: string;
   // Private managed-agent backend. The browser only calls this Worker; it
   // never receives the backend URL or assertion secret.
   MANAGED_AGENTS_API_URL?: string;
@@ -621,39 +616,6 @@ async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: str
   });
 }
 
-async function proxyToBrowserAPI(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  upstreamPath: string,
-): Promise<Response> {
-  if (!env.BROWSER_API_SECRET) {
-    return json({ error: "browser sessions proxy unavailable: browser API secret not configured" }, 503);
-  }
-
-  const base = (env.BROWSER_API_URL ?? "https://browser.opencomputer.dev").replace(/\/+$/, "");
-  const url = new URL(req.url);
-  const target = `${base}${upstreamPath}${url.search}`;
-
-  const headers = new Headers();
-  headers.set("authorization", `Bearer ${env.BROWSER_API_SECRET}`);
-  headers.set("x-opencomputer-org-id", caller.orgID);
-  headers.set("x-opencomputer-user-id", caller.userID);
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
-  const accept = req.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-  const range = req.headers.get("range");
-  if (range) headers.set("range", range);
-
-  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.arrayBuffer(); // binary-safe — req.text() UTF-8-mangles zip/binary uploads
-  }
-
-  return fetch(target, init);
-}
-
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 export async function handleDashboard(
@@ -719,28 +681,6 @@ export async function handleDashboard(
       "/api/dashboard/managed-agents",
     );
   }
-
-  // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
-  if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
-  if (sub === "/browser-usage" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browser-usage");
-  {
-    const m = sub.match(/^\/browsers\/([^/]+)\/replays\/([^/]+)$/);
-    if (m && method === "GET") {
-      return proxyToBrowserAPI(
-        req,
-        env,
-        caller,
-        `/v1/browsers/${encodeURIComponent(m[1])}/replays/${encodeURIComponent(m[2])}`,
-      );
-    }
-  }
-  {
-    const m = sub.match(/^\/browsers\/([^/]+)$/);
-    if (m && (method === "GET" || method === "DELETE")) {
-      return proxyToBrowserAPI(req, env, caller, `/v1/browsers/${encodeURIComponent(m[1])}`);
-    }
-  }
-  if (sub === "/browser-profiles" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
 
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);

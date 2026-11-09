@@ -21,8 +21,6 @@ export type {
   AgentSessionUsage,
   AgentSessionUsageRow,
   StripeInvoice,
-  BrowserSession,
-  BrowserProfile,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -219,19 +217,6 @@ export const updateOrg = (updates: OrgUpdate) =>
     S.OrgSchema,
   )
 
-export type NavigationPreferenceUpdate = {
-  infrastructureEnabled?: boolean
-}
-
-export const updateNavigationPreferences = (
-  updates: NavigationPreferenceUpdate,
-) =>
-  apiFetch(
-    '/me/preferences',
-    { method: 'PUT', body: JSON.stringify(updates) },
-    S.MeResponseSchema,
-  )
-
 // Organization members
 export const getOrgMembers = () =>
   apiFetch('/org/members', {}, z.array(S.OrgMemberSchema))
@@ -341,30 +326,3 @@ export const setAutumnAutoTopup = (cfg: {
     body: JSON.stringify(cfg),
   })
 
-export const getBrowsers = (
-  params: { status?: string; limit?: number } = {},
-) => {
-  const q = new URLSearchParams()
-  if (params.status) q.set('status', params.status)
-  if (params.limit) q.set('limit', String(params.limit))
-  const qs = q.toString()
-  return apiFetch(
-    `/browsers${qs ? `?${qs}` : ''}`,
-    {},
-    S.BrowserSessionListSchema,
-  ).then((r) => r.browsers)
-}
-
-export const getBrowser = (id: string) =>
-  apiFetch(`/browsers/${encodeURIComponent(id)}`, {}, S.BrowserSessionSchema)
-
-export const getBrowserUsage = () =>
-  apiFetch('/browser-usage', {}, S.BrowserUsageSchema)
-
-export const deleteBrowser = (id: string) =>
-  apiFetch<void>(`/browsers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-
-export const getBrowserProfiles = () =>
-  apiFetch('/browser-profiles', {}, S.BrowserProfileListSchema).then(
-    (r) => r.profiles,
-  )

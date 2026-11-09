@@ -123,8 +123,6 @@ deleted_classes = ["VmSession"]
 #   OC_MANAGED_CRED_HMAC_SECRET — dedicated HMAC for handing a minted OR key to
 #                            the managed agents backend (shared only with it; NOT the
 #                            generic internal-auth — this route carries a live key)
-#   BROWSER_API_SECRET     — shared with browser.opencomputer.dev for dashboard
-#                            browser-session proxy requests
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend
 #   AGENT_FEEDBACK_TRIAGE_TOKEN — bearer token for the feedback.now triage

@@ -9,7 +9,6 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import {
   Rocket,
-  Monitor,
   KeyRound,
   CreditCard,
   Settings,
@@ -75,17 +74,6 @@ type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
 const LEGACY_NAV: LegacyNavGroup[] = [
   {
     items: [{ to: '/', label: 'Getting started', icon: Rocket, end: true }],
-  },
-  {
-    label: 'Browser Sessions',
-    items: [
-      {
-        to: '/browsers',
-        label: 'Browsers',
-        icon: Monitor,
-        preview: true,
-      },
-    ],
   },
   {
     label: 'Account',
@@ -309,7 +297,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const nav = managedAgentsExperimentEnabled
     ? managedAgentsNav({
         projectId,
-        infrastructureEnabled: user?.infrastructureEnabled ?? false,
         computerEnabled,
         swarmEnabled,
       })
