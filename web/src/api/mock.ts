@@ -21,98 +21,12 @@ const me = {
   id: 'user_2abc',
   email: 'igor@digger.dev',
   orgId: 'org_digger',
-  infrastructureEnabled: true,
   computerEnabled: true,
   orgs: [
     { id: 'org_digger', name: 'Digger', isPersonal: false, isActive: true },
     { id: 'org_personal', name: 'Personal', isPersonal: true, isActive: false },
   ],
 }
-
-const browserSessions = [
-  {
-    id: 'br_linkedin_live',
-    provider: 'kernel',
-    provider_session_id: 'kernel-live-1',
-    status: 'active',
-    cdp_ws_url: 'wss://proxy.example.onkernel.com/browser/cdp?jwt=mock',
-    webdriver_ws_url:
-      'wss://proxy.example.onkernel.com/browser/webdriver/session?jwt=mock',
-    live_view_url: 'https://proxy.example.onkernel.com/browser/live/mock',
-    base_url: 'https://proxy.example.onkernel.com/browser/kernel/mock',
-    headless: false,
-    stealth: true,
-    gpu: false,
-    timeout_seconds: 600,
-    replay_id: 'replay_live_1',
-    replay_view_url: 'https://api.onkernel.com/browser/replays?replay_id=1',
-    created_at: at(0, 1),
-    updated_at: at(0, 1),
-    deleted_at: null,
-    billable_seconds: 3600,
-    estimated_cost_usd: 0.48,
-  },
-  {
-    id: 'br_inbox_headless',
-    provider: 'kernel',
-    provider_session_id: 'kernel-headless-1',
-    status: 'active',
-    cdp_ws_url: 'wss://proxy.example.onkernel.com/browser/cdp?jwt=headless',
-    webdriver_ws_url:
-      'wss://proxy.example.onkernel.com/browser/webdriver/session?jwt=headless',
-    live_view_url: null,
-    base_url: 'https://proxy.example.onkernel.com/browser/kernel/headless',
-    headless: true,
-    stealth: true,
-    gpu: false,
-    timeout_seconds: 300,
-    created_at: at(0, 4),
-    updated_at: at(0, 4),
-    deleted_at: null,
-    billable_seconds: 14400,
-    estimated_cost_usd: 1.92,
-  },
-  {
-    id: 'br_old_replay',
-    provider: 'kernel',
-    provider_session_id: 'kernel-old-1',
-    status: 'deleted',
-    cdp_ws_url: 'wss://proxy.example.onkernel.com/browser/cdp?jwt=old',
-    webdriver_ws_url:
-      'wss://proxy.example.onkernel.com/browser/webdriver/session?jwt=old',
-    live_view_url: 'https://proxy.example.onkernel.com/browser/live/old',
-    base_url: 'https://proxy.example.onkernel.com/browser/kernel/old',
-    headless: false,
-    stealth: true,
-    gpu: false,
-    timeout_seconds: 600,
-    replay_id: 'replay_old_1',
-    replay_view_url: 'https://api.onkernel.com/browser/replays?replay_id=old',
-    created_at: at(2, 2),
-    updated_at: at(2, 1),
-    deleted_at: at(2, 1),
-    metered_at: at(2, 1),
-    metered_seconds: 3600,
-    metered_usage_micro: 480000,
-    billable_seconds: 3600,
-    estimated_cost_usd: 0.48,
-  },
-]
-
-const browserProfiles = [
-  {
-    id: 'prof_linkedin',
-    provider: 'kernel',
-    provider_profile_id: 'kernel-profile-linkedin',
-    name: 'linkedin',
-    created_at: at(4, 0),
-    updated_at: at(0, 1),
-    deleted_at: null,
-    provider_created_at: at(4, 0),
-    provider_updated_at: at(0, 1),
-    provider_last_used_at: at(0, 1),
-  },
-]
 
 const apiKeys = [
   {
@@ -889,9 +803,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
       turns: [],
     }),
   ],
-  [/^\/browsers\/[^/]+$/, () => browserSessions[0]],
-  [/^\/browsers(\?.*)?$/, () => ({ browsers: browserSessions })],
-  [/^\/browser-profiles$/, () => ({ profiles: browserProfiles })],
   [/^\/api-keys$/, () => apiKeys],
   [/^\/billing\/autumn$/, () => autumnMock()],
   [/^\/billing\/invoices/, () => ({ invoices: [] })],
@@ -986,14 +897,6 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
     if (!key) throw new ApiError('Not found', 404)
     key.name = name ?? key.name
     return key as T
-  }
-  if (method === 'PUT' && path === '/me/preferences') {
-    const body = typeof options.body === 'string' ? options.body : '{}'
-    const updates = JSON.parse(body) as Partial<
-      Pick<typeof me, 'infrastructureEnabled'>
-    >
-    Object.assign(me, updates)
-    return me as T
   }
   if (method !== 'GET' && path.startsWith('/managed-agents/computer/agent/')) {
     return previewAgentRequest(path, method, options.body) as T

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
-import { ME_QUERY_KEY, useAuth } from '@/hooks/useAuth'
+import { useAuth } from '@/hooks/useAuth'
 import { organizationPlanLabel } from '@/lib/plan-label'
 import {
   getAutumnBilling,
@@ -14,8 +14,6 @@ import {
   revokeInvitation,
   sendInvitation,
   updateOrg,
-  updateNavigationPreferences,
-  type NavigationPreferenceUpdate,
   type OrgInvitation,
   type OrgMember,
 } from '@/api/client'
@@ -30,7 +28,6 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Field, Input, Label } from '@/components/form'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogClose,
@@ -97,13 +94,6 @@ export default function Settings() {
     onError: (e) => notifyError("Couldn't save organization settings.", e),
   })
 
-  const navigationMutation = useMutation({
-    mutationFn: (updates: NavigationPreferenceUpdate) =>
-      updateNavigationPreferences(updates),
-    onSuccess: (updated) => queryClient.setQueryData(ME_QUERY_KEY, updated),
-    onError: (e) => notifyError("Couldn't save navigation settings.", e),
-  })
-
   if (isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)) {
     return (
       <div>
@@ -124,27 +114,6 @@ export default function Settings() {
       <PageHeader title="Settings" description="Organization configuration" />
 
       <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2">
-        <Panel className="p-6 lg:col-span-2">
-          <div className="mb-5">
-            <PanelTitle>Navigation</PanelTitle>
-            <PanelDescription className="mt-1">
-              Choose which advanced product areas appear in the sidebar.
-            </PanelDescription>
-          </div>
-          <div className="divide-y">
-            <NavigationToggle
-              id="infrastructure-enabled"
-              label="Enable infrastructure"
-              description="Show browsers."
-              checked={user?.infrastructureEnabled ?? false}
-              disabled={navigationMutation.isPending}
-              onCheckedChange={(checked) =>
-                navigationMutation.mutate({ infrastructureEnabled: checked })
-              }
-            />
-          </div>
-        </Panel>
-
         <Panel className="p-6 lg:col-span-2">
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
             <div>
@@ -255,37 +224,6 @@ export default function Settings() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  )
-}
-
-function NavigationToggle({
-  id,
-  label,
-  description,
-  checked,
-  disabled,
-  onCheckedChange,
-}: {
-  id: string
-  label: string
-  description: string
-  checked: boolean
-  disabled: boolean
-  onCheckedChange: (checked: boolean) => void
-}) {
-  return (
-    <div className="flex items-center justify-between gap-6 py-4 first:pt-0 last:pb-0">
-      <div>
-        <Label htmlFor={id}>{label}</Label>
-        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
-      </div>
-      <Switch
-        id={id}
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={onCheckedChange}
-      />
     </div>
   )
 }

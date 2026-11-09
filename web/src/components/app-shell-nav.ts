@@ -10,7 +10,6 @@ import {
   KeyRound,
   KeySquare,
   MessagesSquare,
-  Monitor,
   Plug,
   Radar,
   Rocket,
@@ -36,7 +35,6 @@ export type NavGroup = {
 
 export function managedAgentsNav(options: {
   projectId?: string
-  infrastructureEnabled: boolean
   computerEnabled?: boolean
   swarmEnabled?: boolean
 }): NavGroup[] {
@@ -151,15 +149,6 @@ export function managedAgentsNav(options: {
       },
     ],
   })
-
-  if (options.infrastructureEnabled) {
-    groups.push({
-      label: 'Infrastructure',
-      collapsible: true,
-      landingTo: '/browsers',
-      items: [{ to: '/browsers', label: 'Browsers', icon: Monitor }],
-    })
-  }
 
   return groups
 }

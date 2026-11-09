@@ -4,7 +4,6 @@ import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
   const defaults = {
-    infrastructureEnabled: false,
   }
 
   it('links Automations to its own page', () => {
@@ -82,20 +81,10 @@ describe('managed agents navigation', () => {
     )
   })
 
-  it('reveals the infrastructure area when enabled', () => {
-    expect(
-      managedAgentsNav({
-        ...defaults,
-        infrastructureEnabled: true,
-      }).map((group) => group.label),
-    ).toEqual([undefined, 'Account', 'Infrastructure'])
-  })
-
   it('shows only project-scoped navigation inside a project', () => {
     expect(
       managedAgentsNav({
         projectId: 'project-one',
-        infrastructureEnabled: true,
       }).map((group) => group.label),
     ).toEqual([undefined, undefined])
   })
