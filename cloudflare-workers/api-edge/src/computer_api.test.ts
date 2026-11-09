@@ -165,7 +165,7 @@ async function sessionCookie(secret = "test-session-secret"): Promise<string> {
   return `oc_session=${input}.${b64url(sig)}`;
 }
 
-// An act-as-org provisioning token (sessions-api): the project-scoped credential.
+// A JWT shaped like the removed act-as-org provisioning token.
 async function provisionToken(secret: string): Promise<string> {
   const enc = new TextEncoder();
   const now = Math.floor(Date.now() / 1000);
@@ -325,21 +325,16 @@ describe("computer API allowlist", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a project-scoped credential with 403 project_key", async () => {
+  it("no longer accepts an act-as-org provisioning token", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const token = await provisionToken("provision-secret");
     const res = await worker.fetch(
       api("/me", { headers: { authorization: `Bearer ${token}` } }),
-      testEnv(new FakeDB(), { OC_PROVISION_SECRET: "provision-secret" }),
+      testEnv(new FakeDB(), { OC_PROVISION_SECRET: "provision-secret" } as never),
       testCtx().ctx,
     );
-    expect(res.status).toBe(403);
-    expect(res.headers.get("x-request-id")).toMatch(/^req_/);
-    const body = (await res.json()) as { error: Record<string, unknown> };
-    expect(body.error).toMatchObject({ code: "forbidden", reason: "project_key", retryable: false });
-    expect(body.error.message).toEqual(expect.any(String));
-    expect(body.error.requestId).toMatch(/^req_/);
+    expect(res.status).toBe(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

@@ -164,7 +164,7 @@ deleted_classes = ["VmSession"]
 #                            per-org inference keys + reads analytics). Token
 #                            billing dormant until this is set. (token-billing.md)
 #   OC_MANAGED_CRED_HMAC_SECRET — dedicated HMAC for handing a minted OR key to
-#                            sessions-api (shared only with sessions-api; NOT the
+#                            the managed agents backend (shared only with it; NOT the
 #                            generic internal-auth — this route carries a live key)
 #   OC_SECURITY_NOTIFICATION_SECRET — dedicated HMAC for minimal Agent Hook
 #                            exposure alerts from sessions-api

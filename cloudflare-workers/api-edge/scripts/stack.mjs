@@ -146,8 +146,6 @@ async function up() {
     SESSION_JWT_SECRET: secrets.SESSION_JWT_SECRET,
     CF_ADMIN_SECRET: secrets.CF_ADMIN_SECRET,
     SECRET_ENCRYPTION_KEY: secrets.SECRET_ENCRYPTION_KEY,
-    OC_ORG_TOKEN_SECRET: secrets.OC_ORG_TOKEN_SECRET,
-    OC_PROVISION_SECRET: secrets.OC_PROVISION_SECRET,
     EVENT_SECRET: secrets.EVENT_SECRET,
   });
 
@@ -380,7 +378,6 @@ function writeConfig(stack) {
       WORKER_ENV: name,
       BURST_CELL_ID: "",
       MANAGED_AGENTS_API_URL: stack.edgeUrl ?? "",
-      SESSIONS_API_URL: stack.edgeUrl ?? "",
       MANAGED_DEFAULT_BUDGET_USD: "5",
       // Preview stacks give every organization its computer (work 052).
       COMPUTER_ENABLED_FOR_ALL: "true",
@@ -574,8 +571,6 @@ function loadSecrets() {
     "SESSION_JWT_SECRET",
     "CF_ADMIN_SECRET",
     "SECRET_ENCRYPTION_KEY",
-    "OC_ORG_TOKEN_SECRET",
-    "OC_PROVISION_SECRET",
     "EVENT_SECRET",
   ]) {
     secrets[key] ??= randomBytes(32).toString("hex");

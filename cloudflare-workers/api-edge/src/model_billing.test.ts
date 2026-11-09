@@ -116,7 +116,7 @@ class FakeStmt {
   }
 }
 
-// ── fetch router: OpenRouter + Autumn + sessions-api ────────────────────────
+// ── fetch router: OpenRouter + Autumn + managed agents backend ──────────────
 
 interface RouterOpts {
   remainingCredits?: number; // Autumn balance
@@ -150,7 +150,7 @@ function makeFetch(opts: RouterOpts = {}) {
       if (method === "PATCH") return new Response(JSON.stringify({ data: { hash: "hash-abc", limit: body?.limit } }), { status: 200 });
       return new Response(JSON.stringify({ data: { hash: "hash-abc", usage: 0.5, limit: 5, disabled: false } }), { status: 200 });
     }
-    // sessions-api hand-off
+    // managed agents backend hand-off
     if (url.includes("/internal/managed-credential")) {
       if (method === "POST") return new Response(JSON.stringify({ managed_credential_id: "cred_bound" }), { status: 200 });
       if (method === "DELETE") return new Response(JSON.stringify({ deleted: 1 }), { status: 200 });
@@ -169,7 +169,7 @@ function makeEnv(db: FakeDb): ModelBillingEnv {
     OPENROUTER_BASE_URL: "https://or.test/api/v1",
     AUTUMN_SECRET_KEY: "autumn-key",
     AUTUMN_BASE_URL: "https://autumn.test/v1",
-    SESSIONS_API_URL: "https://sa.test",
+    MANAGED_AGENTS_API_URL: "https://blue.test",
     OC_MANAGED_CRED_HMAC_SECRET: "hmac-secret",
   };
 }
@@ -410,7 +410,7 @@ describe("enableManagedBilling state machine", () => {
 });
 
 describe("disableManagedBilling (rollback / hard offboard)", () => {
-  it("deletes the OR key, revokes the sessions-api credential, drops rows, flips off", async () => {
+  it("deletes the OR key, revokes the managed credential, drops rows, flips off", async () => {
     const db = new FakeDb();
     const orgId = seedOrg(db, { model_billing_status: "active" });
     db.keys.push({
@@ -436,5 +436,16 @@ describe("disableManagedBilling (rollback / hard offboard)", () => {
     vi.stubGlobal("fetch", spy);
     await disableManagedBilling(makeEnv(db), orgId);
     expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
+  });
+
+  it("refuses the hand-off when MANAGED_AGENTS_API_URL is unset (no fallback)", async () => {
+    const db = new FakeDb();
+    const orgId = seedOrg(db, { model_billing_status: "active" });
+    const { spy } = makeFetch();
+    vi.stubGlobal("fetch", spy);
+    const env = { ...makeEnv(db), MANAGED_AGENTS_API_URL: undefined };
+    await expect(disableManagedBilling(env, orgId)).rejects.toThrow(/MANAGED_AGENTS_API_URL unset/);
+    expect(spy).not.toHaveBeenCalled();
+    expect(db.orgs.get(orgId)!.model_billing_status).toBe("active");
   });
 });
