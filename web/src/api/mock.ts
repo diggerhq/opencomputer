@@ -168,7 +168,6 @@ function autumnMock() {
     },
     concurrencyPlan: 'base',
     usagePlan: 'trial' as string,
-    maxConcurrentSandboxes: 5,
     autoTopup: { enabled: false, threshold: 5, quantity: 10, budget: 100 },
     hasToppedUp: false,
     hasPaidSubscription: false,
@@ -228,7 +227,6 @@ function autumnMock() {
 const billing = {
   plan: 'free',
   billingProvider: 'autumn',
-  maxConcurrentSandboxes: 5,
   freeCreditsRemainingCents: 0,
   stripeCreditCents: 0,
   hasPaymentMethod: false,
@@ -239,17 +237,8 @@ const org = {
   name: 'Digger',
   slug: 'digger',
   plan: 'pro',
-  maxConcurrentSandboxes: 25,
-  maxSandboxTimeoutSec: 3600,
   createdAt: at(120),
   updatedAt: at(2),
-  customDomain: 'acme.dev',
-  domainVerificationStatus: 'pending_validation',
-  domainSslStatus: 'pending',
-  verificationTxtName: '_oc-verify.acme.dev',
-  verificationTxtValue: 'oc-verify=abc123def456',
-  sslTxtName: '_acme-challenge.acme.dev',
-  sslTxtValue: 'xyz789uvw012',
   isPersonal: false,
   creditBalanceCents: 4210,
 }
@@ -909,7 +898,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/billing$/, () => billing],
   [/^\/org\/members$/, () => orgMembers],
   [/^\/org\/invitations$/, () => orgInvitations],
-  [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
 ]
 

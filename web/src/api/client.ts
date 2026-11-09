@@ -232,19 +232,6 @@ export const updateNavigationPreferences = (
     S.MeResponseSchema,
   )
 
-export const setCustomDomain = (domain: string) =>
-  apiFetch(
-    '/org/custom-domain',
-    { method: 'PUT', body: JSON.stringify({ domain }) },
-    S.OrgSchema,
-  )
-
-export const deleteCustomDomain = () =>
-  apiFetch('/org/custom-domain', { method: 'DELETE' }, S.OrgSchema)
-
-export const refreshCustomDomain = () =>
-  apiFetch('/org/custom-domain/refresh', { method: 'POST' }, S.OrgSchema)
-
 // Organization members
 export const getOrgMembers = () =>
   apiFetch('/org/members', {}, z.array(S.OrgMemberSchema))
@@ -314,12 +301,6 @@ export const autumnTopup = (credits: number) =>
   apiFetch<{ url: string | null }>('/billing/autumn/topup', {
     method: 'POST',
     body: JSON.stringify({ credits }),
-  })
-
-export const autumnSubscribeConcurrency = (plan: string) =>
-  apiFetch<{ url: string | null }>('/billing/autumn/concurrency', {
-    method: 'POST',
-    body: JSON.stringify({ plan }),
   })
 
 // Where a checkout was opened from; the edge records it on

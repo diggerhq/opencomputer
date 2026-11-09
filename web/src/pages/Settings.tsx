@@ -5,17 +5,14 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import { ME_QUERY_KEY, useAuth } from '@/hooks/useAuth'
 import { organizationPlanLabel } from '@/lib/plan-label'
 import {
-  deleteCustomDomain,
   getAutumnBilling,
   getBilling,
   getInvitations,
   getOrg,
   getOrgMembers,
-  refreshCustomDomain,
   removeMember,
   revokeInvitation,
   sendInvitation,
-  setCustomDomain,
   updateOrg,
   updateNavigationPreferences,
   type NavigationPreferenceUpdate,
@@ -32,7 +29,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Field, Input, Label } from '@/components/form'
-import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -53,27 +49,6 @@ function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
       <div className="bg-panel-2 text-muted-foreground flex h-8 items-center rounded-md border px-3 font-mono text-sm">
         {value}
       </div>
-    </div>
-  )
-}
-
-// Domain verification / SSL statuses → a lifecycle tone + clean label.
-function DomainStatus({ status }: { status: string }) {
-  const tone =
-    status === 'active'
-      ? 'running'
-      : !status || status === 'none'
-        ? 'stopped'
-        : 'pending'
-  const label =
-    !status || status === 'none' ? 'Not set' : status.replace(/_/g, ' ')
-  return <StatusBadge status={tone} label={label} />
-}
-
-function CodeBlock({ children }: { children: ReactNode }) {
-  return (
-    <div className="bg-panel-2 text-muted-foreground rounded-md border p-3 font-mono text-xs leading-relaxed break-all">
-      {children}
     </div>
   )
 }
@@ -109,8 +84,6 @@ export default function Settings() {
   // effect to sync the field with the query).
   const [draftName, setDraftName] = useState<string | null>(null)
   const [saved, markSaved] = useTransientFlag(2000)
-  const [domainInput, setDomainInput] = useState('')
-  const [confirmRemoveDomain, setConfirmRemoveDomain] = useState(false)
   const [showRuntimeProfileInfo, setShowRuntimeProfileInfo] = useState(false)
   const name = draftName ?? org?.name ?? ''
 
@@ -131,27 +104,6 @@ export default function Settings() {
     onError: (e) => notifyError("Couldn't save navigation settings.", e),
   })
 
-  const setDomainMutation = useMutation({
-    mutationFn: (domain: string) => setCustomDomain(domain),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['org'] })
-      setDomainInput('')
-    },
-    onError: (e) => notifyError("Couldn't set the custom domain.", e),
-  })
-
-  const deleteDomainMutation = useMutation({
-    mutationFn: () => deleteCustomDomain(),
-    onError: (e) => notifyError("Couldn't remove the custom domain.", e),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
-  })
-
-  const refreshDomainMutation = useMutation({
-    mutationFn: () => refreshCustomDomain(),
-    onError: (e) => notifyError("Couldn't refresh domain status.", e),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
-  })
-
   if (isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)) {
     return (
       <div>
@@ -165,7 +117,6 @@ export default function Settings() {
   }
 
   const unchanged = name === (org?.name ?? '')
-  const hasDomain = !!org?.customDomain && org.customDomain !== ''
   const plan = organizationPlanLabel(org, billing, autumn)
 
   return (
@@ -263,137 +214,6 @@ export default function Settings() {
           </div>
         </Panel>
 
-        {/* Custom domain */}
-        <Panel className="p-6">
-          <div className="mb-5">
-            <PanelTitle>Custom domain</PanelTitle>
-            <PanelDescription className="mt-1">
-              Serve sandbox preview URLs from your own domain.
-            </PanelDescription>
-          </div>
-
-          {hasDomain ? (
-            <div className="space-y-4">
-              <ReadOnlyField label="Domain" value={`*.${org.customDomain}`} />
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Verification</Label>
-                  <div>
-                    <DomainStatus status={org.domainVerificationStatus} />
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>SSL</Label>
-                  <div>
-                    <DomainStatus status={org.domainSslStatus} />
-                  </div>
-                </div>
-              </div>
-
-              {org.verificationTxtName || org.sslTxtName ? (
-                <div className="space-y-1.5">
-                  <Label>Required DNS TXT records</Label>
-                  <CodeBlock>
-                    {org.verificationTxtName ? (
-                      <div className={org.sslTxtName ? 'mb-3' : ''}>
-                        <div className="text-foreground font-semibold">
-                          Domain verification
-                        </div>
-                        <div>Name: {org.verificationTxtName}</div>
-                        <div>Value: {org.verificationTxtValue}</div>
-                      </div>
-                    ) : null}
-                    {org.sslTxtName ? (
-                      <div>
-                        <div className="text-foreground font-semibold">
-                          SSL validation
-                        </div>
-                        <div>Name: {org.sslTxtName}</div>
-                        <div>Value: {org.sslTxtValue}</div>
-                      </div>
-                    ) : null}
-                  </CodeBlock>
-                </div>
-              ) : null}
-
-              {org.domainVerificationStatus === 'active' ? (
-                <div className="space-y-1.5">
-                  <Label>Preview URL setup</Label>
-                  <CodeBlock>
-                    <div className="text-foreground mb-1.5 font-semibold">
-                      Add a wildcard CNAME record for preview URLs:
-                    </div>
-                    <div>
-                      Type: <span className="text-foreground">CNAME</span>
-                    </div>
-                    <div>
-                      Name:{' '}
-                      <span className="text-foreground">
-                        *.{org.customDomain}
-                      </span>
-                    </div>
-                    <div>
-                      Target:{' '}
-                      <span className="text-foreground">
-                        fallback-origin.opencomputer.dev
-                      </span>
-                    </div>
-                  </CodeBlock>
-                </div>
-              ) : null}
-
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => refreshDomainMutation.mutate()}
-                  disabled={refreshDomainMutation.isPending}
-                >
-                  {refreshDomainMutation.isPending
-                    ? 'Refreshing…'
-                    : 'Refresh status'}
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="text-status-error hover:bg-status-error-bg hover:text-status-error"
-                  onClick={() => setConfirmRemoveDomain(true)}
-                  disabled={deleteDomainMutation.isPending}
-                >
-                  Remove domain
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (domainInput.trim())
-                  setDomainMutation.mutate(domainInput.trim())
-              }}
-            >
-              <Field label="Domain" htmlFor="domain">
-                <div className="flex gap-2">
-                  <Input
-                    id="domain"
-                    value={domainInput}
-                    onChange={(e) => setDomainInput(e.target.value)}
-                    placeholder="acme.dev"
-                    className="flex-1"
-                  />
-                  <Button
-                    type="submit"
-                    disabled={
-                      setDomainMutation.isPending || !domainInput.trim()
-                    }
-                  >
-                    {setDomainMutation.isPending ? 'Setting up…' : 'Set domain'}
-                  </Button>
-                </div>
-              </Field>
-            </form>
-          )}
-        </Panel>
-
         {user?.capabilities?.manageMembers !== false ? (
           <>
             <div className="lg:col-span-2">
@@ -405,21 +225,6 @@ export default function Settings() {
           </>
         ) : null}
       </div>
-
-      <ConfirmDialog
-        open={confirmRemoveDomain}
-        onOpenChange={setConfirmRemoveDomain}
-        title="Remove custom domain?"
-        description="Sandbox preview URLs will revert to the default domain."
-        confirmLabel="Remove domain"
-        destructive
-        pending={deleteDomainMutation.isPending}
-        onConfirm={() =>
-          deleteDomainMutation.mutate(undefined, {
-            onSuccess: () => setConfirmRemoveDomain(false),
-          })
-        }
-      />
 
       <Dialog
         open={showRuntimeProfileInfo}
