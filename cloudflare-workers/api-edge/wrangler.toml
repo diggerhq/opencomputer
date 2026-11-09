@@ -170,8 +170,6 @@ deleted_classes = ["VmSession"]
 #                            until set. See .agents/work/token-billing.md.
 #   OC_MANAGED_CRED_HMAC_SECRET — dedicated HMAC for the minted-OR-key hand-off to
 #                            the managed agents backend (shared only with it).
-#   OC_SECURITY_NOTIFICATION_SECRET — dedicated HMAC for minimal Agent Hook
-#                            exposure alerts from sessions-api.
 #   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
 #                            managed-agents backend.
 #   AGENT_FEEDBACK_TRIAGE_TOKEN — bearer token for the feedback.now triage
