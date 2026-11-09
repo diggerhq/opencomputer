@@ -26,7 +26,6 @@ function env(db: D1Database = {} as D1Database): AutumnEnv {
     AUTUMN_WEBHOOK_SECRET: "whsec_test",
     EVENT_SECRET: "event-secret",
     BROWSER_USAGE_HMAC_SECRET: "browser-usage-secret",
-    CF_ADMIN_SECRET: "admin-secret",
     OPENCOMPUTER_DB: db,
   };
 }
@@ -73,7 +72,7 @@ describe("browser usage billing", () => {
       .mockResolvedValue(new Response(null, { status: 200 }));
 
     expect((await postUsage(env(db))).status).toBe(200);
-    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?7"))).toBe(true);
   });
 
   it("tracks browser runtime into Autumn with the signed usage payload", async () => {

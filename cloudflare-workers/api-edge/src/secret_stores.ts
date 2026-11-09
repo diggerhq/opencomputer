@@ -1,9 +1,8 @@
 // Edge-side secret stores — replaces the legacy per-cell PG-backed
 // /api/secret-stores routes. Stores live in D1; entries are envelope-
-// encrypted at the edge with SECRET_ENCRYPTION_KEY (Infisical /shared/,
-// also distributed to every CP). The CP fetches encrypted blobs from the
-// /internal/secret-stores/:id HMAC endpoint at sandbox-create time and
-// decrypts inside the cell using internal/crypto.
+// encrypted at the edge with SECRET_ENCRYPTION_KEY. The cell-facing side
+// (the /internal/secret-stores HMAC endpoints and the refresh fan-out) was
+// removed with the sandbox code in 097 step 7.2; only the D1 CRUD remains.
 //
 // JSON shapes mirror internal/api/projects.go (camelCase) so the existing
 // CLI/SDK and dashboard talk to the edge unchanged.
@@ -13,7 +12,6 @@ import { encryptSecret } from "./crypto";
 export interface SecretStoresEnv {
   OPENCOMPUTER_DB: D1Database;
   SECRET_ENCRYPTION_KEY: string;
-  EVENT_SECRET: string;
 }
 
 interface Caller {
@@ -204,100 +202,10 @@ export async function setEntry(
     .bind(id, storeID, name, encrypted, JSON.stringify(hosts), now)
     .run();
 
-  // Fan the new value out to running sandboxes via /internal/secret-refresh
-  // on every active cell. Each CP checks its local sandbox_sessions for the
-  // store-binding column and pushes the new value to the right workers over
-  // gRPC, so live sandboxes don't need a restart to pick up the change.
-  // Wire format: encrypted blob over HMAC; CP decrypts with its copy of the
-  // shared SECRET_ENCRYPTION_KEY so plaintext never crosses the cell boundary.
-  const fanout = await fanoutSecretRefresh(env, storeID, name, encrypted);
-  return json({ name, status: "set", refreshed: fanout.refreshed, cellsContacted: fanout.cells, failures: fanout.failures });
-}
-
-// fanoutSecretRefresh queries D1 for active cells, signs an HMAC POST per
-// cell with the encrypted blob, and aggregates the per-cell refresh counts.
-// Total time-bounded: a slow cell can't stall the user's PUT past ~12s.
-async function fanoutSecretRefresh(
-  env: SecretStoresEnv,
-  storeID: string,
-  name: string,
-  encryptedValue: Uint8Array,
-): Promise<{ refreshed: number; cells: number; failures: string[] }> {
-  const { results: cells } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT cell_id, base_url FROM cells WHERE status = 'active'`,
-  ).all<{ cell_id: string; base_url: string }>();
-  const active = cells ?? [];
-  if (active.length === 0) return { refreshed: 0, cells: 0, failures: [] };
-
-  const encryptedB64 = btoa(String.fromCharCode(...encryptedValue));
-  const body = JSON.stringify({ storeId: storeID, name, encryptedValueB64: encryptedB64 });
-  const ts = Math.floor(Date.now() / 1000).toString();
-
-  // Sign once — every cell shares EVENT_SECRET so the same signature works
-  // across the fan-out. Body is part of the signed payload to prevent body
-  // swap, matching the AdminAuth scheme on the CP side ("{ts}.{body}").
-  const sig = await hmacBody(env.EVENT_SECRET, ts, body);
-
-  // Per-cell timeout — bounded so one slow cell doesn't block the others.
-  // The CP-side fanoutSecretRefresh already has its own 15s ceiling against
-  // worker gRPC calls; this is the outer bound the user's PUT waits on.
-  const perCellTimeoutMs = 12_000;
-
-  const settled = await Promise.allSettled(
-    active.map(async (c) => {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), perCellTimeoutMs);
-      try {
-        const resp = await fetch(c.base_url.replace(/\/$/, "") + "/internal/secret-refresh", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "X-Timestamp": ts,
-            "X-Signature": sig,
-          },
-          body,
-          signal: ctrl.signal,
-        });
-        const text = await resp.text();
-        if (resp.status !== 200) {
-          return { cell: c.cell_id, refreshed: 0, error: `status ${resp.status}: ${text.slice(0, 200)}` };
-        }
-        const parsed = JSON.parse(text) as { refreshed?: number; failures?: string[] };
-        return { cell: c.cell_id, refreshed: parsed.refreshed ?? 0, error: null as string | null };
-      } catch (e) {
-        return { cell: c.cell_id, refreshed: 0, error: (e as Error).message };
-      } finally {
-        clearTimeout(t);
-      }
-    }),
-  );
-
-  let totalRefreshed = 0;
-  const failures: string[] = [];
-  for (const s of settled) {
-    if (s.status === "fulfilled") {
-      totalRefreshed += s.value.refreshed;
-      if (s.value.error) failures.push(`${s.value.cell}: ${s.value.error}`);
-    } else {
-      failures.push(`unknown cell: ${s.reason}`);
-    }
-  }
-  return { refreshed: totalRefreshed, cells: active.length, failures };
-}
-
-// hmacBody returns hex(HMAC-SHA256(secret, ts + "." + body)) — matches the
-// CP-side controlplane.AdminAuth verifier so /internal/secret-refresh
-// accepts our signature.
-async function hmacBody(secret: string, ts: string, body: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  // This used to fan the new value out to running sandboxes on every active
+  // cell. The cells are retired (097 step 7.2), so nothing is refreshed; the
+  // response keeps its shape for the CLI.
+  return json({ name, status: "set", refreshed: 0, cellsContacted: 0, failures: [] });
 }
 
 export async function deleteEntry(
@@ -334,103 +242,4 @@ export async function listEntries(
     .all<EntryRow>();
   // Never return plaintext or ciphertext on the user-facing route — names only.
   return json((results ?? []).map((r) => entryToJSON(r, false)));
-}
-
-// ── /internal/secret-stores/:id (HMAC, called by CP at sandbox-create) ──
-
-// HMAC scheme matches /internal/halt-list: "{X-Timestamp}.{path-with-query}"
-// signed with EVENT_SECRET (shared between edge + every CP), SHA-256 hex.
-async function hmacHex(secret: string, data: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-async function verifyHMAC(req: Request, env: SecretStoresEnv): Promise<boolean> {
-  const ts = req.headers.get("X-Timestamp") ?? "";
-  const sig = req.headers.get("X-Signature") ?? "";
-  if (!ts || !sig) return false;
-  const tsNum = Number.parseInt(ts, 10);
-  if (!Number.isFinite(tsNum)) return false;
-  if (Math.abs(Math.floor(Date.now() / 1000) - tsNum) > 5 * 60) return false;
-  const url = new URL(req.url);
-  const expected = await hmacHex(env.EVENT_SECRET, `${ts}.${url.pathname}${url.search}`);
-  return constantTimeEqual(expected, sig);
-}
-
-async function bundleStore(env: SecretStoresEnv, store: StoreRow): Promise<Response> {
-  const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, store_id, name, encrypted_value, allowed_hosts, created_at, updated_at
-       FROM secret_store_entries WHERE store_id = ?1`,
-  )
-    .bind(store.id)
-    .all<EntryRow>();
-  return json({
-    store: storeToJSON(store),
-    entries: (results ?? []).map((r) => entryToJSON(r, true)),
-  });
-}
-
-export async function internalGetStore(req: Request, env: SecretStoresEnv, storeID: string): Promise<Response> {
-  if (!(await verifyHMAC(req, env))) return json({ error: "signature mismatch" }, 401);
-  // No org scoping — CP already validated the cap-token whose claims pinned org_id.
-  const store = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, org_id, name, egress_allowlist, created_at, updated_at FROM secret_stores WHERE id = ?1`,
-  )
-    .bind(storeID)
-    .first<StoreRow>();
-  if (!store) return json({ error: "secret store not found" }, 404);
-  return bundleStore(env, store);
-}
-
-export async function internalDeleteStore(req: Request, env: SecretStoresEnv, storeID: string): Promise<Response> {
-  if (!(await verifyHMAC(req, env))) return json({ error: "signature mismatch" }, 401);
-  const url = new URL(req.url);
-  const orgID = url.searchParams.get("org_id") ?? "";
-  if (!orgID) return json({ error: "org_id is required" }, 400);
-
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id FROM secret_stores WHERE id = ?1 AND org_id = ?2`,
-  )
-    .bind(storeID, orgID)
-    .first<{ id: string }>();
-  if (!row) return json({ error: "secret store not found" }, 404);
-
-  await env.OPENCOMPUTER_DB.batch([
-    env.OPENCOMPUTER_DB.prepare(`DELETE FROM secret_store_entries WHERE store_id = ?1`).bind(storeID),
-    env.OPENCOMPUTER_DB.prepare(`DELETE FROM secret_stores WHERE id = ?1 AND org_id = ?2`).bind(storeID, orgID),
-  ]);
-  return new Response(null, { status: 204 });
-}
-
-// Lookup by (org_id, name) — what CP's resolveSecretStoreInto calls with
-// the user-supplied cfg.SecretStore string at sandbox-create time. Same
-// HMAC scheme as internalGetStore. Returns 404 if no store matches.
-export async function internalGetStoreByName(req: Request, env: SecretStoresEnv): Promise<Response> {
-  if (!(await verifyHMAC(req, env))) return json({ error: "signature mismatch" }, 401);
-  const url = new URL(req.url);
-  const orgID = url.searchParams.get("org_id") ?? "";
-  const name = url.searchParams.get("name") ?? "";
-  if (!orgID || !name) return json({ error: "org_id and name are required" }, 400);
-  const store = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, org_id, name, egress_allowlist, created_at, updated_at
-       FROM secret_stores WHERE org_id = ?1 AND name = ?2`,
-  )
-    .bind(orgID, name)
-    .first<StoreRow>();
-  if (!store) return json({ error: "secret store not found" }, 404);
-  return bundleStore(env, store);
 }

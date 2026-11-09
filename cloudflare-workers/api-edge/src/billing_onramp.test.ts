@@ -19,7 +19,6 @@ vi.mock("./autumn_webhook", async (importOriginal) => ({
   syncAutumnToD1: vi.fn(async () => ({
     customer: { subscriptions: [] },
     creditsRemaining: 10,
-    maxConcurrent: 1,
     halted: false,
     haltReason: null,
     wasHalted: false,
