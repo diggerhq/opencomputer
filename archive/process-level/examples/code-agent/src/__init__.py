@@ -1,1 +1,0 @@
-"""LangGraph Sandbox Coding Agent."""

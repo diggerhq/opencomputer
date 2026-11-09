@@ -1,1 +1,0 @@
-ALTER TABLE orgs DROP COLUMN IF EXISTS runtime;
