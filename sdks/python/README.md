@@ -1,5 +1,9 @@
 # opencomputer
 
+> **Deprecated.** `opencomputer-sdk` 1.2.0 is the final release; the package receives no further updates. It is a client for the OpenComputer sandbox platform, which is shut down. Importing `opencomputer` emits a `DeprecationWarning`.
+>
+> There is no Python replacement. For [Serverless Agents](https://opencomputer.dev/agents) call the [management API](https://opencomputer.dev/agents/api) over HTTP, or use the TypeScript client `@opencomputer/sdk/agents` (`npm install @opencomputer/sdk`). Pinning `opencomputer-sdk<1.2` avoids the warning.
+
 Python SDK for [OpenComputer](https://github.com/diggerhq/opensandbox) — cloud sandbox platform.
 
 ## Install
