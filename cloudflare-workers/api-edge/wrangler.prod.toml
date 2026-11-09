@@ -12,14 +12,6 @@ compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "b8f23cb87a7a6c64040d3134643da448"
 
-# Preview URL routing — same scheme as dev (`*.sb.<zone>/*`).
-# Requires an Advanced Certificate Manager cert for *.sb.opencomputer.dev
-# + sb.opencomputer.dev (two-level wildcard isn't covered by Universal SSL).
-# Order the ACM cert BEFORE the first deploy or the route will 525-error.
-routes = [
-  { pattern = "*.sb.opencomputer.dev/*", zone_name = "opencomputer.dev" },
-]
-
 # The deployed version on computer-API telemetry (work 084). The optional
 # TINYBIRD_API_URL and TINYBIRD_APPEND_TOKEN secrets switch it on; unset, the
 # edge sends nothing.
@@ -96,39 +88,6 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opencomputer-edge-prod"
 
-# Edge claim (src/pool_stock.ts): per-cell stock of pre-reserved hot pool boxes
-# so default-shape creates are answered at the edge.
-[[durable_objects.bindings]]
-name = "POOL_STOCK"
-class_name = "PoolStock"
-script_name = "opencomputer-edge-prod"
-
-# VM-DO exec data plane: one DO per sandbox holds the host-dialed WebSocket to
-# the QEMU worker. The class lives in the separate vm-do worker
-# (cloudflare-workers/vm-do → opencomputer-vmdo-prod) so edge deploys — which
-# happen on every merge touching web/ or edge code — don't reset the DOs and
-# sever the sockets. Deploy order on first cutover: vm-do worker BEFORE this.
-[[durable_objects.bindings]]
-name = "VM_SESSIONS"
-class_name = "VmSession"
-script_name = "opencomputer-vmdo-prod"
-
-# MicroVM exec data plane. Same worker, same reasoning; the DO dials the box's
-# AWS agent endpoint directly so exec never traverses the control plane.
-#
-# No migration accompanies this: MicrovmSession is defined in the vm-do script
-# (see its wrangler.prod.toml v2), and a cross-script binding only references a
-# class — it never creates one. Adding a migration here would try to define a
-# second, unrelated MicrovmSession inside the edge script.
-#
-# The edge guards every use with `env.MICROVM_SESSIONS &&`, so prod ran without
-# this binding rather than erroring — it silently skipped the detach-on-destroy
-# that stops the DO's keepalive alarm re-dialing a terminated box.
-[[durable_objects.bindings]]
-name = "MICROVM_SESSIONS"
-class_name = "MicrovmSession"
-script_name = "opencomputer-vmdo-prod"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
@@ -137,12 +96,13 @@ new_sqlite_classes = ["CreditAccount"]
 tag = "v2"
 new_sqlite_classes = ["PoolStock"]
 
+# PoolStock is now an empty stub, kept exported because of v2; nothing binds it.
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["VmSession"]
 
 # v4 removes the edge-local VmSession class — it moved to the vm-do worker
-# (see the VM_SESSIONS binding above). Safe to delete: VmSession keeps no
+# (cloudflare-workers/vm-do). Safe to delete: VmSession keeps no
 # durable state, only live sockets, and hosts redial the new namespace within
 # ~1s of the cutover deploy.
 [[migrations]]
@@ -151,15 +111,14 @@ deleted_classes = ["VmSession"]
 
 # Secrets (set via `wrangler secret put --config wrangler.prod.toml`):
 #   SESSION_JWT_SECRET     — fresh prod HMAC (DO NOT reuse dev secret)
-#   CF_ADMIN_SECRET        — fresh prod HMAC, shared with prod CPs
+#   CF_ADMIN_SECRET        — fresh prod HMAC for the /internal/* admin routes
 #   STRIPE_WEBHOOK_SECRET  — Stripe LIVE mode webhook signing secret
 #   STRIPE_API_KEY         — Stripe LIVE mode API key (sk_live_...)
 #   WORKOS_API_KEY         — prod WorkOS app API key
 #   WORKOS_CLIENT_ID       — prod WorkOS client identifier
-#   EVENT_SECRET           — fresh prod HMAC, shared with prod CPs + events-ingest
+#   EVENT_SECRET           — fresh prod HMAC for /internal/autumn-* and
+#                            /internal/webhooks/* callers
 #   SECRET_ENCRYPTION_KEY  — envelope-encryption key for D1 secret_store_entries
-#                            (must match Infisical /shared/ key the CPs use, so
-#                            plaintext stays in sync across edge ↔ cells)
 #   OPENROUTER_PROVISIONING_KEY — OpenRouter MANAGEMENT/provisioning key (mints
 #                            per-org inference keys + reads analytics). Token
 #                            billing dormant until this is set. (token-billing.md)
@@ -205,68 +164,8 @@ SLACK_CONNECT_TEAM_USER_IDS = "U06G42NTEK1,U06GFN8DJ7P,U06H7D98X40"
 # (`kind=channel,...`) moves a kind elsewhere, e.g. revenue alerts; credit
 # purchases alert from SLACK_ALERT_CREDITS_MIN dollars (default 100).
 SIGNUPS_SLACK_CHANNEL = "#signups"
-# PoolStock sizing. SHARDS × TARGET must stay ≤ the cell's MicroVM pool
-# (OPENSANDBOX_MICROVM_POOL_TARGET on the CP) or every shard sits permanently
-# below low-water, restocks on every claim, and competes for a supply that can
-# never satisfy it — creates then fall through to the ~10× slower CP path.
-#
-# 8 × 18 = 144 against prod's pool of 150. These were unset until 2026-08-20,
-# which meant the DO defaults (38 per shard = 304 fleet) applied against a pool
-# of 5 — every shard starved and edge-claim effectively never hit. Raise the CP
-# pool target FIRST, then this. See the SIZING INVARIANT in src/pool_stock.ts.
-POOL_STOCK_TARGET = "18"
-POOL_STOCK_LOW_WATER = "9"
-# Stated explicitly rather than inherited from the code default, because a shard
-# id is half of a DO NAME (`${cellID}#${gen}#${id}`) and therefore names a
-# different object — with different placement — in every cell. Sharing one
-# implicit list across environments silently asserted that prod's IAD placement
-# measurement also held for dev. It does not; dev now runs a single shard.
-#
-# These four are the prefix of the g5 set probed into IAD against THIS cell on
-# 2026-08-21. Do not extend without re-probing: of 64 candidates, only 27 landed
-# in IAD (EWR 17, ATL 9, MIA 7, ORD 4). No change in behaviour from before —
-# this is what the code default already resolved to.
-POOL_STOCK_SHARD_IDS = "1,4,6,12"
-# Cells eligible for new-org home assignment live in the D1 `cells` table
-# (`accepts_new_orgs` column), not an env list — toggle a row to onboard a cell,
-# no deploy. See pickHomeCell in src/index.ts.
-# Optional alpha route for Burst Sandboxes. Leave empty to disable.
-BURST_CELL_ID = "aws-us-east-2-burst-prod"
-# The MicroVM cell now runs the direct-exec (lite) backend, whose boxes have no
-# agent tunnel and whose warm set lives in the cell process. Both edge fast
-# paths assume the opposite, and neither can succeed against it:
-#
-#   EDGE_CLAIM — the stock DO can never be filled by a cell that holds its own
-#   warm set, so every create walked the shards and paid a CP round trip anyway.
-#   Measured on prod at 123ms of `claimmiss` on every create.
-#
-#   EDGE_EXEC — the session DO reaches a box by dialing its agent tunnel. With
-#   no tunnel to dial it can only answer vm_not_connected, after paying its
-#   entry grace. Measured on prod at 224ms of `vmdo` on every exec.
-#
-# Both scoped to the MicroVM runtime, so QEMU orgs sharing this edge keep the
-# edge-claim and DO exec paths untouched.
-MICROVM_EDGE_CLAIM = "0"
-MICROVM_EDGE_EXEC = "0"
-
 MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]
 service = "opencomputer-log-tail-prod"
-
-# Off-isolate edge-claim finalize (see FINALIZE_QUEUE in index.ts). createSandbox
-# enqueues a tiny finalize message; the queue() consumer runs the CP
-# claim-finalize + D1 insert on its own invocations, off the burst-create hot
-# path. PREREQ: the queue must exist before deploy — `wrangler queues create
-# edge-finalize` on the prod account (one-time). Inline fallback in code covers
-# any window where it's unbound.
-[[queues.producers]]
-binding = "FINALIZE_QUEUE"
-queue = "edge-finalize"
-
-[[queues.consumers]]
-queue = "edge-finalize"
-max_batch_size = 25
-max_batch_timeout = 2
-max_retries = 3
