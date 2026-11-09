@@ -4,11 +4,9 @@ import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
 import PublicTemplateRoute from './components/PublicTemplateRoute'
-import { managedAgentsExperimentEnabled } from './managed-agents/feature'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
 
 // Route pages are code-split so the initial bundle stays small.
-const Dashboard = lazy(() => import('./pages/Dashboard'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
@@ -54,7 +52,7 @@ function HomeRoute() {
   const [searchParams] = useSearchParams()
   if (searchParams.get('security') === '1')
     return <Navigate to="/security" replace />
-  return managedAgentsExperimentEnabled ? <ManagedAgentsHome /> : <Dashboard />
+  return <ManagedAgentsHome />
 }
 
 export default function App() {
@@ -73,24 +71,13 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route index element={<HomeRoute />} />
             <Route path="security" element={<ManagedSecurityOnboarding />} />
-            <Route
-              path="getting-started"
-              element={
-                managedAgentsExperimentEnabled ? (
-                  <ManagedAgentsHome />
-                ) : (
-                  <Dashboard />
-                )
-              }
-            />
+            <Route path="getting-started" element={<ManagedAgentsHome />} />
             <Route path="computer" element={<ManagedComputer />} />
             <Route
               path="computer/secrets"
               element={<ManagedComputerSecrets />}
             />
-            {managedAgentsExperimentEnabled ? (
-              <Route path="automations" element={<ManagedAgentsHome list />} />
-            ) : null}
+            <Route path="automations" element={<ManagedAgentsHome list />} />
             <Route
               path="model-access/callback"
               element={<ModelAccessCallback />}
