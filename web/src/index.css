@@ -196,9 +196,7 @@
   --code-foreground: hsl(40 12% 88%);
   --code-muted: hsl(40 6% 54%); /* line numbers, gutters */
   --code-border: hsl(36 8% 19%);
-  --terminal: hsl(
-    36 13% 7%
-  ); /* warm near-black (xterm bg matches in Terminal.tsx) */
+  --terminal: hsl(36 13% 7%); /* warm near-black */
 
   /* Charts — neutral ink ramp (light → dark) */
   --chart-1: hsl(45 8% 25%);

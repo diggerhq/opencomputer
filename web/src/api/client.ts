@@ -6,17 +6,10 @@ import { ApiError } from './errors'
 export { ApiError } from './errors'
 
 // Re-export the inferred response types (schemas are the single source of
-// truth) so existing `import { type Sandbox } from '@/api/client'` keeps working.
+// truth) so existing `import { type APIKey } from '@/api/client'` keeps working.
 export type {
   OrgInfo,
   MeResponse,
-  Sandbox,
-  PreviewURL,
-  SandboxDetail,
-  SandboxStats,
-  CheckpointItem,
-  CheckpointsResponse,
-  ImageCacheItem,
   Org,
   APIKey,
   OrgMember,
@@ -28,12 +21,8 @@ export type {
   AgentSessionUsage,
   AgentSessionUsageRow,
   StripeInvoice,
-  SandboxUsageRow,
-  SandboxUsage,
   BrowserSession,
   BrowserProfile,
-  SandboxWebhook,
-  SandboxWebhookDelivery,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -197,42 +186,6 @@ export async function refreshSession(): Promise<void> {
 // API functions
 export const getMe = () => apiFetch('/me', {}, S.MeResponseSchema)
 
-export const getSandboxes = (status?: string) =>
-  apiFetch(
-    `/sessions${status ? `?status=${status}` : ''}`,
-    {},
-    S.SandboxListSchema,
-  )
-
-// Create a sandbox from the dashboard. Proxied by the edge to the org's home
-// cell (POST /api/dashboard/sandboxes → cell /internal/sandboxes/create with a
-// cap-token), so the box is owned by + billed to the logged-in org. Returns the
-// new sandbox id so the caller can navigate straight into its live terminal.
-export const createSandbox = (body: {
-  memoryMB?: number
-  cpuCount?: number
-  networkEnabled?: boolean
-  image?: string
-}) =>
-  apiFetch<{ sandboxID: string; status?: string }>('/sandboxes', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
-// Expose a port on a running sandbox → a public preview URL (proxied edge→cell
-// to the cap-token-authed /api/sandboxes/:id/preview). Returns the registered
-// row incl. hostname; the sandbox detail page renders it in Preview URLs.
-export const createPreviewUrl = (sandboxId: string, port: number) =>
-  apiFetch<{ id: string; sandboxId: string; hostname: string; port: number }>(
-    `/sandboxes/${sandboxId}/preview`,
-    { method: 'POST', body: JSON.stringify({ port }) },
-  )
-
-export const deletePreviewUrl = (sandboxId: string, port: number) =>
-  apiFetch<void>(`/sandboxes/${sandboxId}/preview/${port}`, {
-    method: 'DELETE',
-  })
-
 export const getAPIKeys = () =>
   apiFetch('/api-keys', {}, z.array(S.APIKeySchema))
 
@@ -252,90 +205,6 @@ export const renameAPIKey = (keyId: string, name: string) =>
 
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
-
-export const getCheckpoints = (page = 1, perPage = 20) =>
-  apiFetch(
-    `/checkpoints?page=${page}&per_page=${perPage}`,
-    {},
-    S.CheckpointsResponseSchema,
-  )
-
-export const deleteCheckpointDashboard = (id: string) =>
-  apiFetch<void>(`/checkpoints/${id}`, { method: 'DELETE' })
-
-export const getImages = (all = false) =>
-  apiFetch(
-    `/images${all ? '?all=true' : ''}`,
-    {},
-    z.array(S.ImageCacheItemSchema),
-  )
-
-export const deleteImage = (id: string) =>
-  apiFetch<void>(`/images/${id}`, { method: 'DELETE' })
-
-export const deleteSnapshot = (name: string) =>
-  apiFetch<void>(`/snapshots/${encodeURIComponent(name)}`, { method: 'DELETE' })
-
-export const getSandboxDetail = (sandboxId: string) =>
-  apiFetch(`/sessions/${sandboxId}`, {}, S.SandboxDetailSchema)
-
-export const getSandboxStats = (sandboxId: string) =>
-  apiFetch(`/sessions/${sandboxId}/stats`, {}, S.SandboxStatsSchema)
-
-export const deleteSandbox = (sandboxId: string) =>
-  apiFetch<void>(`/sessions/${sandboxId}`, { method: 'DELETE' })
-
-// Soft restart: guest kernel reboots, QEMU process + workspace stay.
-export const rebootSandbox = (sandboxId: string) =>
-  apiFetch<void>(`/sessions/${sandboxId}/reboot`, { method: 'POST' })
-
-// Hard restart: QEMU process recreated, workspace data preserved.
-export const powerCycleSandbox = (sandboxId: string) =>
-  apiFetch<void>(`/sessions/${sandboxId}/power-cycle`, { method: 'POST' })
-
-// Sandbox session logs: SSE stream of /var/log + exec stdout/stderr.
-// The server proxies queries through to Axiom; the read token never
-// reaches the browser. The returned EventSource emits one `message`
-// event per log line (event.data = JSON-stringified LogEvent).
-export interface LogEvent {
-  _time: string
-  source: 'var_log' | 'exec_stdout' | 'exec_stderr' | 'agent'
-  line: string
-  sandbox_id?: string
-  path?: string
-  exec_id?: string
-  command?: string
-  argv?: string[]
-  exit_code?: number
-  // Client-assigned monotonic ingest order. Not from the API — set on parse so
-  // the live list has a stable React key under filtering + cap trimming.
-  _seq?: number
-}
-
-export interface LogStreamOptions {
-  tail?: boolean // default true; if false, returns historical batch then closes
-  q?: string // free-text search (server applies "line contains")
-  source?: string // comma-separated subset of source values
-  since?: string // RFC3339; default = sandbox.startedAt
-  limit?: number // historical batch cap; default 1000, max 10000
-}
-
-export function streamSandboxLogs(
-  sandboxId: string,
-  opts: LogStreamOptions = {},
-): EventSource {
-  const url = new URL(
-    `${API_BASE}/sessions/${encodeURIComponent(sandboxId)}/logs`,
-    window.location.origin,
-  )
-  if (opts.tail !== undefined) url.searchParams.set('tail', String(opts.tail))
-  if (opts.q) url.searchParams.set('q', opts.q)
-  if (opts.source) url.searchParams.set('source', opts.source)
-  if (opts.since) url.searchParams.set('since', opts.since)
-  if (opts.limit !== undefined)
-    url.searchParams.set('limit', String(opts.limit))
-  return new EventSource(url.toString(), { withCredentials: true })
-}
 
 export const getOrg = () => apiFetch('/org', {}, S.OrgSchema)
 
@@ -491,10 +360,6 @@ export const setAutumnAutoTopup = (cfg: {
     body: JSON.stringify(cfg),
   })
 
-// Per-sandbox usage breakdown (compute cost over a recent window)
-export const getSandboxUsage = (days = 30) =>
-  apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
-
 export const getBrowsers = (
   params: { status?: string; limit?: number } = {},
 ) => {
@@ -522,45 +387,3 @@ export const getBrowserProfiles = () =>
   apiFetch('/browser-profiles', {}, S.BrowserProfileListSchema).then(
     (r) => r.profiles,
   )
-
-// ── Sandbox lifecycle webhooks (org-scoped, Svix-backed at the edge) ─────────
-// Reached via /api/dashboard/webhooks* (cookie auth → org), mirroring the public
-// /api/webhooks API.
-export const getSandboxWebhooks = () =>
-  apiFetch('/webhooks', {}, S.SandboxWebhookListSchema).then((r) => r.data)
-
-// No BYO secret: Svix generates the signing secret (a user-typed value isn't
-// valid Svix whsec_ base64). Reveal it afterward via getSandboxWebhookSecret.
-export const createSandboxWebhook = (body: {
-  url: string
-  eventTypes?: string[]
-  name?: string
-}) =>
-  apiFetch(
-    '/webhooks',
-    { method: 'POST', body: JSON.stringify(body) },
-    S.SandboxWebhookSchema,
-  )
-
-export const deleteSandboxWebhook = (id: string) =>
-  apiFetch<void>(`/webhooks/${id}`, { method: 'DELETE' })
-
-export const testSandboxWebhook = (id: string) =>
-  apiFetch<void>(`/webhooks/${id}/test`, { method: 'POST' })
-
-export const getSandboxWebhookDeliveries = (id: string) =>
-  apiFetch(
-    `/webhooks/${id}/deliveries`,
-    {},
-    S.SandboxWebhookDeliveryListSchema,
-  ).then((r) => r.data)
-
-export const getSandboxWebhookSecret = (id: string) =>
-  apiFetch(`/webhooks/${id}/secret`, {}, z.object({ secret: z.string() })).then(
-    (r) => r.secret,
-  )
-
-export const redeliverSandboxWebhook = (id: string, deliveryId: string) =>
-  apiFetch<void>(`/webhooks/${id}/deliveries/${deliveryId}/redeliver`, {
-    method: 'POST',
-  })

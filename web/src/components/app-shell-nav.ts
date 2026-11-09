@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   BookOpen,
   Bot,
-  Boxes,
   BrainCircuit,
   CalendarClock,
   Computer,
@@ -10,10 +9,8 @@ import {
   FolderKanban,
   KeyRound,
   KeySquare,
-  Layers,
   MessagesSquare,
   Monitor,
-  Package,
   Plug,
   Radar,
   Rocket,
@@ -159,14 +156,8 @@ export function managedAgentsNav(options: {
     groups.push({
       label: 'Infrastructure',
       collapsible: true,
-      landingTo: '/sandboxes',
-      items: [
-        { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-        { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-        { to: '/templates', label: 'Sandbox templates', icon: Package },
-        { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-        { to: '/browsers', label: 'Browsers', icon: Monitor },
-      ],
+      landingTo: '/browsers',
+      items: [{ to: '/browsers', label: 'Browsers', icon: Monitor }],
     })
   }
 

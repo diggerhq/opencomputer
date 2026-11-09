@@ -31,15 +31,11 @@ function renderGettingStarted(path = '/') {
 }
 
 describe('getting started', () => {
-  it('shows the API key and the sandbox quickstart', () => {
+  it('shows the API key without the retired sandbox quickstart', () => {
     const markup = renderGettingStarted()
 
     expect(markup).toContain('API key ready')
-    expect(markup).toContain('Sandboxes')
-    expect(markup).toContain('Sandbox.create()')
-    expect(markup).toContain('Open sandbox quickstart')
-    expect(markup).toContain('Run commands in an isolated computer.')
-    expect(markup).not.toContain('oc.sessions.create')
-    expect(markup).not.toContain('Durable agent sessions')
+    expect(markup).not.toContain('Sandbox.create()')
+    expect(markup).not.toContain('sandbox quickstart')
   })
 })
