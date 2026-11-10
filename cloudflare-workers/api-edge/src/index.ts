@@ -46,7 +46,13 @@ import {
 } from "./billing_onramp";
 export { ManagedAgentBillingService } from "./managed_agent_billing_service";
 import { runRetentionSweep } from "./retention";
-import { createAPIKey, createAPIKeyWithHash, hashAPIKey } from "./api_keys";
+import {
+  COMPUTER_SESSION_KEY_SCOPES,
+  KEY_SCOPES,
+  createAPIKey,
+  createAPIKeyWithHash,
+  hashAPIKey,
+} from "./api_keys";
 import { envWithD1Retry } from "./d1_retry";
 import {
   handleAgentWebhookInvocation,
@@ -1429,6 +1435,7 @@ async function authCLIExchange(req: Request, env: Env, ctx?: ExecutionContext): 
       orgID: identity.org.id,
       userID: identity.user.id,
       name: credentialName,
+      scopes: KEY_SCOPES,
     });
     credential = made.created;
     // Tell the computer API about the key (work 084); never the key itself.
@@ -2187,6 +2194,7 @@ export default {
         orgID: parsed.org_id,
         userID: COMPUTER_PRINCIPAL,
         name: "Computer session",
+        scopes: COMPUTER_SESSION_KEY_SCOPES,
         expiresAt: Math.floor(Date.now() / 1000) + 3600,
         ...(sessionKey ? { sessionKey } : {}),
       });

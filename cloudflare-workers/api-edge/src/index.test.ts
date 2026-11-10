@@ -696,6 +696,8 @@ describe("/internal/computer-keys", () => {
     expect(runs[0][1]).toBe("org-x");
     expect(runs[0][2]).toBe("computer");
     expect(runs[0][8]).toBeNull();
+    // Work 095: an explicit list, never a wildcard and never secrets:write.
+    expect(runs[0][9]).toBe("sessions:read,sessions:write,asks:answer,terminals");
   });
 
   it("records the session a key is for, and refuses a malformed one", async () => {

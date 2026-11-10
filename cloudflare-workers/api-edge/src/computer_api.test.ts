@@ -815,7 +815,7 @@ describe("key create and revoke tell blue", () => {
         hash: await hashAPIKey(created.key),
         name: "ci",
         kind: "user",
-        scopes: ["sandbox:*"],
+        scopes: ["sessions:read", "sessions:write", "asks:answer", "terminals"],
         expiresAt: null,
         createdAt: created.createdAt,
         userId: USER,

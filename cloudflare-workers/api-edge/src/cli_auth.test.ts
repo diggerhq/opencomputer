@@ -451,7 +451,8 @@ describe("CLI device authorization edge contract", () => {
     expect(insert?.args[2]).toBe(userID);
     expect(insert?.args[3]).toMatch(/^[0-9a-f]{64}$/);
     expect(insert?.args).not.toContain(body.credential.key);
-    expect(insert?.sql).toContain("'sandbox:*'");
+    expect(insert?.sql).not.toContain("sandbox:*");
+    expect(insert?.args[9]).toBe("sessions:read,sessions:write,asks:answer,terminals");
     const [, providerInit] = providerFetch.mock.calls[0];
     const providerForm = new URLSearchParams(String(providerInit?.body));
     expect(providerForm.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:device_code");
@@ -504,7 +505,7 @@ describe("CLI device authorization edge contract", () => {
       hash: insert?.args[3],
       name: "oc CLI on test",
       kind: "user",
-      scopes: ["sandbox:*"],
+      scopes: ["sessions:read", "sessions:write", "asks:answer", "terminals"],
       expiresAt: null,
       userId: userID,
     });
@@ -843,12 +844,13 @@ describe("CLI identity and credential lifecycle", () => {
     expect(body.name).toBe("Dashboard key");
     expect(body.key).toMatch(/^osb_[0-9a-f]{64}$/);
     expect(body.keyPrefix).toBe(String(body.key).slice(0, 8));
-    expect(body.scopes).toEqual(["sandbox:*"]);
+    expect(body.scopes).toEqual(["sessions:read", "sessions:write", "asks:answer", "terminals"]);
     const insert = db.executed.find((entry) =>
       entry.sql.includes("INSERT INTO api_keys") && entry.args[5] === "Dashboard key"
     );
     expect(insert?.args).not.toContain(body.key);
     expect(insert?.args[7]).toBeNull();
+    expect(insert?.args[9]).toBe("sessions:read,sessions:write,asks:answer,terminals");
   });
 
   it("stores and returns an expiry when a dashboard key is created with one", async () => {
