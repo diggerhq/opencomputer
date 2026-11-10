@@ -26,7 +26,7 @@ import {
 } from "./autumn_webhook";
 import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_summary";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
-import { createAPIKeyWithHash } from "./api_keys";
+import { KEY_SCOPES, createAPIKeyWithHash } from "./api_keys";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 import {
   proxyManagedAgents,
@@ -502,6 +502,7 @@ async function handleCreateAPIKey(
     orgID: caller.orgID,
     userID: caller.userID,
     name,
+    scopes: KEY_SCOPES,
     expiresAt,
   });
   // Tell the computer API about the key (work 084); never the key itself.
