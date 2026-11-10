@@ -1,0 +1,94 @@
+DESCRIPTION >
+    Work 084 Q5, "how is the wire doing?", over `[since, until)`: one row per event and dimension, with n, the event's latency (p50/p95/max of `value`, named in `value_is`), and frame and byte totals. Rows: `wireworker.request` (the wire Worker, by result and reason: refusals before the relay), `ticket.minted` (by result; value the mint time), `wire.connect`, `wire.refused` (by status), `wire.close` (by close code; value the connection's lifetime; frames and bytes both ways), `wire.attach` (by via and outcome; value relay request → `sessions.attached` queued), `cli.attach` (by reconnect; value opc's socket open → first frame rendered), `cli.reconnect gap` (value the gap opc saw), `wire.flush` (value the longest outbox wait in the batch; `paused` counts batches where a queue paused), `wire.detached` (by reason), `wire.error` (by code), `wire.terminal` (value its duration), `wire.files` (by op and outcome) and `wire.sample` (by gauge: the peak of connections, members, attached sessions, terminals and queued bytes). Backpressure is `wire.flush` `queued_bytes`/`paused` and `wire.detached` `too_far_behind`. Synthetic traffic is excluded unless `include_synthetic`.
+
+TOKEN "calvin_read" READ
+
+NODE wi_events
+SQL >
+    %
+    SELECT event_name, outcome, duration_ms, data
+    FROM calvin_events
+    WHERE
+        event_name IN (
+            'wireworker.request', 'ticket.minted', 'wire.connect', 'wire.refused', 'wire.close', 'wire.attach', 'wire.flush',
+            'wire.detached', 'wire.error', 'wire.terminal', 'wire.files', 'wire.sample', 'cli.attach'
+        )
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE wi_units
+SQL >
+    SELECT
+        event_name AS event,
+        multiIf(
+            event_name = 'wireworker.request', concat(JSONExtractString(data, 'result'), if(JSONExtractString(data, 'reason') = '', '', concat(' ', JSONExtractString(data, 'reason')))),
+            event_name = 'ticket.minted', JSONExtractString(data, 'result'),
+            event_name = 'wire.refused', toString(JSONExtractUInt(data, 'status')),
+            event_name = 'wire.close', toString(JSONExtractUInt(data, 'code')),
+            event_name = 'wire.attach', concat(JSONExtractString(data, 'via'), ' ', outcome),
+            event_name = 'cli.attach', if(JSONExtractBool(data, 'reconnect'), 'reconnect', 'first'),
+            event_name = 'wire.flush', if(JSONExtractBool(data, 'paused'), 'paused', ''),
+            event_name = 'wire.detached', JSONExtractString(data, 'reason'),
+            event_name = 'wire.error', JSONExtractString(data, 'code'),
+            event_name = 'wire.terminal', if(JSONExtractBool(data, 'exited'), 'exited', 'hung up'),
+            event_name = 'wire.files', concat(JSONExtractString(data, 'op'), ' ', outcome),
+            ''
+        ) AS dim,
+        multiIf(
+            event_name = 'wire.attach', JSONExtract(data, 'attach_ms', 'Nullable(Int64)'),
+            event_name = 'cli.attach', JSONExtract(data, 'attach_ms', 'Nullable(Int64)'),
+            event_name = 'wire.flush', JSONExtract(data, 'wait_ms_max', 'Nullable(Int64)'),
+            toNullable(toInt64(duration_ms))
+        ) AS value,
+        multiIf(
+            event_name IN ('wire.attach', 'cli.attach'), 'attach_ms',
+            event_name = 'wire.flush', 'wait_ms_max',
+            event_name = 'wire.close', 'connection lifetime ms',
+            'duration_ms'
+        ) AS value_is,
+        JSONExtractUInt(data, 'frames_in') AS frames_in,
+        JSONExtractUInt(data, 'frames_out') + JSONExtractUInt(data, 'frames') AS frames_out,
+        JSONExtractUInt(data, 'bytes_in') + if(event_name = 'wire.files' AND JSONExtractString(data, 'op') = 'put', JSONExtractUInt(data, 'bytes'), 0) AS bytes_in,
+        JSONExtractUInt(data, 'bytes_out') + if(event_name = 'wire.flush' OR (event_name = 'wire.files' AND JSONExtractString(data, 'op') != 'put'), JSONExtractUInt(data, 'bytes'), 0) AS bytes_out,
+        JSONExtractUInt(data, 'queued_bytes') AS queued_bytes
+    FROM wi_events
+    WHERE event_name != 'wire.sample'
+    UNION ALL
+    SELECT 'cli.reconnect gap' AS event, '' AS dim, JSONExtract(data, 'gap_ms', 'Nullable(Int64)') AS value, 'gap_ms' AS value_is, 0, 0, 0, 0, 0
+    FROM wi_events
+    WHERE event_name = 'cli.attach' AND JSONExtractBool(data, 'reconnect')
+    UNION ALL
+    SELECT 'wire.sample' AS event, g.1 AS dim, toNullable(toInt64(g.2)) AS value, 'peak gauge' AS value_is, 0, 0, 0, 0, 0
+    FROM wi_events
+    ARRAY JOIN [
+        ('connections', JSONExtractUInt(data, 'connections')),
+        ('members', JSONExtractUInt(data, 'members')),
+        ('attached', JSONExtractUInt(data, 'attached')),
+        ('terminals', JSONExtractUInt(data, 'terminals')),
+        ('queued_bytes_max', JSONExtractUInt(data, 'queued_bytes_max'))
+    ] AS g
+    WHERE event_name = 'wire.sample'
+
+NODE endpoint
+SQL >
+    SELECT
+        event,
+        dim,
+        count() AS n,
+        any(value_is) AS value_is,
+        round(quantile(0.5)(value)) AS p50,
+        round(quantile(0.95)(value)) AS p95,
+        max(value) AS max,
+        sum(frames_in) AS frames_in,
+        sum(frames_out) AS frames_out,
+        sum(bytes_in) AS bytes_in,
+        sum(bytes_out) AS bytes_out,
+        max(queued_bytes) AS queued_bytes_max
+    FROM wi_units
+    GROUP BY event, dim
+    ORDER BY event, dim
+
+TYPE ENDPOINT

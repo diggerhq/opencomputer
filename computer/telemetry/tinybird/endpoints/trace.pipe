@@ -1,0 +1,81 @@
+DESCRIPTION >
+    One message's waterfall (work 054 runbook): every event of the trace with its start and end as offsets in ms from the person's `sent_at`, then the turn row as `name = 'turn'` with its milestone offsets in `detail`. K1 is the `ack.done` row's `end_ms`.
+
+TOKEN "calvin_read" READ
+
+NODE trace_events
+SQL >
+    %
+    SELECT *
+    FROM calvin_events
+    WHERE trace_id = {{ String(trace_id, required=True) }}
+    LIMIT 1 BY event_id
+
+NODE trace_turn
+SQL >
+    %
+    SELECT * FROM turns WHERE trace_id = {{ String(trace_id, required=True) }} LIMIT 1 BY turn_id
+
+NODE waterfall
+SQL >
+    WITH coalesce((SELECT min(sent_at) FROM trace_turn), (SELECT min(sent_at) FROM trace_events)) AS t0
+    SELECT
+        'event' AS kind,
+        event_name AS name,
+        service_name AS service,
+        toInt64(dateDiff('millisecond', t0, occurred_at)) - toInt64(ifNull(duration_ms, 0)) AS start_ms,
+        toInt64(dateDiff('millisecond', t0, occurred_at)) AS end_ms,
+        duration_ms,
+        outcome,
+        error_type,
+        tool_name,
+        data AS detail
+    FROM trace_events
+    UNION ALL
+    SELECT
+        'turn' AS kind,
+        'turn' AS name,
+        'runner' AS service,
+        toInt64(0) AS start_ms,
+        toInt64(ifNull(ended_ms, 0)) AS end_ms,
+        ended_ms AS duration_ms,
+        outcome,
+        error_type,
+        '' AS tool_name,
+        toJSONString(
+            map(
+                'received_ms',
+                received_ms,
+                'dispatched_ms',
+                dispatched_ms,
+                'host_received_ms',
+                host_received_ms,
+                'runner_ready_ms',
+                runner_ready_ms,
+                'harness_ready_ms',
+                harness_ready_ms,
+                'model_requested_ms',
+                model_requested_ms,
+                'first_token_ms',
+                first_token_ms,
+                'renderable_ms',
+                renderable_ms,
+                'first_visible_ms',
+                first_visible_ms,
+                'ended_ms',
+                ended_ms,
+                'overhead_ms',
+                overhead_ms,
+                'ttft_ms',
+                ttft_ms,
+                'max_silence_ms',
+                toNullable(max_silence_ms)
+            )
+        ) AS detail
+    FROM trace_turn
+
+NODE endpoint
+SQL >
+    SELECT * FROM waterfall ORDER BY end_ms, start_ms, name
+
+TYPE ENDPOINT

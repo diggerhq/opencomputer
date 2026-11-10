@@ -1,0 +1,76 @@
+DESCRIPTION >
+    Calvin turns (work 054): one wide row per turn, built by the runner from its own counters and the forwarded trace. `*_ms` offsets are from `sent_at` and null when the milestone did not happen. Deduplicate with `LIMIT 1 BY turn_id`. A dead runner never writes its row; `turn.abandoned` in `calvin_events` covers that turn.
+
+TOKEN "calvin_append_gateway" APPEND
+TOKEN "calvin_append_collector" APPEND
+TOKEN "calvin_read" READ
+
+SCHEMA >
+    `schema_version` UInt8 `json:$.schema_version`,
+    `turn_id` String `json:$.turn_id`,
+    `trace_id` String `json:$.trace_id`,
+    `session_key` String `json:$.session_key`,
+    `turn_seq` UInt32 `json:$.turn_seq` DEFAULT 0,
+    `org_id` String `json:$.org_id` DEFAULT '',
+    `surface` LowCardinality(String) `json:$.surface` DEFAULT '',
+    `surface_workspace_id` String `json:$.surface_workspace_id` DEFAULT '',
+    `conversation_id` String `json:$.conversation_id` DEFAULT '',
+    `person_id` String `json:$.person_id` DEFAULT '',
+    `host_id` String `json:$.host_id` DEFAULT '',
+    `region` LowCardinality(String) `json:$.region` DEFAULT '',
+    `gateway_version` LowCardinality(String) `json:$.gateway_version` DEFAULT '',
+    `host_version` LowCardinality(String) `json:$.host_version` DEFAULT '',
+    `runner_version` LowCardinality(String) `json:$.runner_version` DEFAULT '',
+    `path` LowCardinality(String) `json:$.path` DEFAULT '',
+    `harness` LowCardinality(String) `json:$.harness` DEFAULT '',
+    `provider` LowCardinality(String) `json:$.provider` DEFAULT '',
+    `model` LowCardinality(String) `json:$.model` DEFAULT '',
+    `tier` LowCardinality(String) `json:$.tier` DEFAULT '',
+    `substrate` LowCardinality(String) `json:$.substrate` DEFAULT '',
+    `synthetic` Bool `json:$.synthetic`,
+    `sent_at` DateTime64(3) `json:$.sent_at`,
+    `received_ms` Nullable(UInt32) `json:$.received_ms`,
+    `dispatched_ms` Nullable(UInt32) `json:$.dispatched_ms`,
+    `host_received_ms` Nullable(UInt32) `json:$.host_received_ms`,
+    `runner_ready_ms` Nullable(UInt32) `json:$.runner_ready_ms`,
+    `harness_ready_ms` Nullable(UInt32) `json:$.harness_ready_ms`,
+    `model_requested_ms` Nullable(UInt32) `json:$.model_requested_ms`,
+    `first_token_ms` Nullable(UInt32) `json:$.first_token_ms`,
+    `renderable_ms` Nullable(UInt32) `json:$.renderable_ms`,
+    `first_visible_ms` Nullable(UInt32) `json:$.first_visible_ms`,
+    `ended_ms` Nullable(UInt32) `json:$.ended_ms`,
+    `fork_ms` Nullable(UInt32) `json:$.fork_ms`,
+    `launch_ms` Nullable(UInt32) `json:$.launch_ms`,
+    `harness_init_ms` Nullable(UInt32) `json:$.harness_init_ms`,
+    `intro_ms` Nullable(UInt32) `json:$.intro_ms`,
+    `names_ms` Nullable(UInt32) `json:$.names_ms`,
+    `attachments_ms` Nullable(UInt32) `json:$.attachments_ms`,
+    `ttft_ms` Nullable(UInt32) `json:$.ttft_ms`,
+    `api_ms` Nullable(UInt32) `json:$.api_ms`,
+    `tool_ms` Nullable(UInt32) `json:$.tool_ms`,
+    `overhead_ms` Nullable(UInt32) `json:$.overhead_ms`,
+    `model_calls` UInt32 `json:$.model_calls` DEFAULT 0,
+    `tool_calls` UInt32 `json:$.tool_calls` DEFAULT 0,
+    `stream_flushes` UInt32 `json:$.stream_flushes` DEFAULT 0,
+    `steers` UInt32 `json:$.steers` DEFAULT 0,
+    `surface_calls` UInt32 `json:$.surface_calls` DEFAULT 0,
+    `surface_errors` UInt32 `json:$.surface_errors` DEFAULT 0,
+    `surface_rate_limited` UInt32 `json:$.surface_rate_limited` DEFAULT 0,
+    `max_silence_ms` UInt32 `json:$.max_silence_ms` DEFAULT 0,
+    `input_tokens` UInt32 `json:$.input_tokens` DEFAULT 0,
+    `output_tokens` UInt32 `json:$.output_tokens` DEFAULT 0,
+    `cache_read_tokens` UInt32 `json:$.cache_read_tokens` DEFAULT 0,
+    `cache_creation_tokens` UInt32 `json:$.cache_creation_tokens` DEFAULT 0,
+    `cost_usd` Float64 `json:$.cost_usd` DEFAULT 0,
+    `outcome` LowCardinality(String) `json:$.outcome`,
+    `error_type` LowCardinality(String) `json:$.error_type` DEFAULT ''
+
+INDEXES >
+    trace_id_bf trace_id TYPE bloom_filter GRANULARITY 4
+    turn_id_bf turn_id TYPE bloom_filter GRANULARITY 4
+    session_key_bf session_key TYPE bloom_filter GRANULARITY 4
+
+ENGINE MergeTree
+ENGINE_PARTITION_KEY toYYYYMM(sent_at)
+ENGINE_SORTING_KEY sent_at, org_id, path
+ENGINE_TTL toDateTime(sent_at) + toIntervalDay(400)

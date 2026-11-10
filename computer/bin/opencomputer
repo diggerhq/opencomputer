@@ -1,0 +1,32 @@
+#!/bin/sh
+# opencomputer shim for an organization's computer (work 067): runs the real
+# OpenComputer CLI with OPENCOMPUTER_API_KEY and OPENCOMPUTER_API_URL set to a
+# one-hour org key from the host agent's token socket (see
+# git-credential-slack-presence), so no long-lived key lives on the VM. A key
+# already in the environment wins. Finding the real CLI works like bin/gh: every
+# shim directory is skipped.
+
+self=$(cd "$(dirname "$0")" && pwd -P)
+real=${SP_REAL_OPENCOMPUTER:-}
+if [ -z "$real" ]; then
+  old_ifs=$IFS; IFS=:
+  for d in $PATH; do
+    case $d in /*) ;; *) continue ;; esac
+    [ -x "$d/opencomputer" ] || continue
+    [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self" ] && continue
+    [ -e "$d/git-credential-slack-presence" ] && continue
+    real=$d/opencomputer; break
+  done
+  IFS=$old_ifs
+fi
+[ -n "$real" ] || { [ -x /usr/local/bin/opencomputer ] && real=/usr/local/bin/opencomputer; }
+[ -n "$real" ] || { echo "opencomputer (slack-presence shim): no real opencomputer found; set SP_REAL_OPENCOMPUTER" >&2; exit 127; }
+
+[ -n "${OPENCOMPUTER_API_KEY:-}" ] && exec "$real" "$@"
+if out=$("$self/git-credential-slack-presence" opencomputer) && [ -n "$out" ]; then
+  key=$(printf '%s\n' "$out" | sed -n 1p)
+  url=$(printf '%s\n' "$out" | sed -n 2p)
+  OPENCOMPUTER_API_KEY=$key OPENCOMPUTER_API_URL=${OPENCOMPUTER_API_URL:-$url} exec "$real" "$@"
+fi
+echo "opencomputer (slack-presence shim): no key from the host; running without one" >&2
+exec "$real" "$@"

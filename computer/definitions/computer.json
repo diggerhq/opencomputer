@@ -1,0 +1,6 @@
+{
+  "name": "computer",
+  "about": "An organization's computer (work 052) before its gateway sends a workspace definition: no repositories. The gateway's definition (the organization's GitHub repositories) replaces this on the host's first connection. Paths in rootFiles are relative to this file.",
+  "repos": [],
+  "rootFiles": { "AGENTS.md": "computer/AGENTS.md" }
+}

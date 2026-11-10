@@ -1,0 +1,291 @@
+[
+ {
+  "step": "send refactor"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C2",
+   "text": "Thread C2",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": ":thread: Thread `C2`  ·  `!help` for commands"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C2"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": null,
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, does not mention you]\nrefactor",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C2",
+   "status": "processing",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "step": "feed session"
+ },
+ {
+  "persist": {
+   "mode": "default",
+   "sdk": "sdk-c"
+  }
+ },
+ {
+  "slack": "agents.conversations.setProperties",
+  "args": {
+   "channel_id": "C2",
+   "code_channel": {
+    "context_bar_items": [
+     {
+      "key": "cwd",
+      "label": "work",
+      "icon": "folder"
+     },
+     {
+      "key": "branch",
+      "label": "main",
+      "icon": "branch"
+     },
+     {
+      "key": "model",
+      "label": "sonnet-4-5",
+      "icon": "code"
+     },
+     {
+      "key": "mode",
+      "label": "default",
+      "icon": "terminal"
+     },
+     {
+      "key": "cost",
+      "label": "$0.00 · ctx 0",
+      "icon": "hierarchy"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool,tool_result"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C2",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Update(a.ts) · +1 −1",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C2",
+   "ts": "1.4",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Update(a.ts)",
+     "status": "complete",
+     "details": "+1 −1"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Refactored."
+    }
+   ],
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "sonnet-4-5 · default · 3s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "slack": "agents.conversations.setProperties",
+  "args": {
+   "channel_id": "C2",
+   "code_channel": {
+    "context_bar_items": [
+     {
+      "key": "cwd",
+      "label": "work",
+      "icon": "folder"
+     },
+     {
+      "key": "branch",
+      "label": "main",
+      "icon": "branch"
+     },
+     {
+      "key": "model",
+      "label": "sonnet-4-5",
+      "icon": "code"
+     },
+     {
+      "key": "mode",
+      "label": "default",
+      "icon": "terminal"
+     },
+     {
+      "key": "cost",
+      "label": "$0.20 · ctx 1.2k",
+      "icon": "hierarchy"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "slack": "agents.conversations.setView",
+  "args": {
+   "channel_id": "C2",
+   "type": "diff",
+   "content": "diff --git a/x.ts b/x.ts"
+  }
+ },
+ {
+  "busy": false
+ },
+ {
+  "step": "mode"
+ },
+ {
+  "persist": {
+   "mode": "plan",
+   "sdk": "sdk-c"
+  }
+ },
+ {
+  "harness": "setMode",
+  "v": "plan"
+ },
+ {
+  "slack": "agents.conversations.setProperties",
+  "args": {
+   "channel_id": "C2",
+   "code_channel": {
+    "context_bar_items": [
+     {
+      "key": "cwd",
+      "label": "work",
+      "icon": "folder"
+     },
+     {
+      "key": "branch",
+      "label": "main",
+      "icon": "branch"
+     },
+     {
+      "key": "model",
+      "label": "sonnet-4-5",
+      "icon": "code"
+     },
+     {
+      "key": "mode",
+      "label": "plan",
+      "icon": "terminal"
+     },
+     {
+      "key": "cost",
+      "label": "$0.20 · ctx 1.2k",
+      "icon": "hierarchy"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "step": "send quiet check"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, does not mention you]\nquiet check",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C2",
+   "status": "processing",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "step": "feed request,block,live,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C2",
+   "status": "active",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": false
+ }
+]

@@ -1,0 +1,39 @@
+{
+  "name": "slack-presence",
+  "version": "1.0.0",
+  "description": "Claude Code in a Slack thread, optimized for presence: live streaming, steering, approvals",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "check": "tsc && biome lint && vitest run && node scripts/max-lines.mjs && node scripts/boundaries.mjs && node scripts/api-schema.mjs --check && node scripts/wire-auth-vectors.mjs --check && node scripts/bundle-runner.mjs",
+    "typecheck": "tsc",
+    "lint": "biome lint",
+    "format": "biome format --write",
+    "test": "vitest run",
+    "perf-check": "tsx src/dev/perf-check.ts"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.295",
+    "@chat-adapter/slack": "4.44.0",
+    "@json-render/chat": "0.22.0",
+    "@json-render/core": "0.22.0",
+    "@slack/bolt": "^5.1.0",
+    "@slack/web-api": "^8.2.0",
+    "chat": "4.44.0",
+    "effect": "4.0.6",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@jridgewell/sourcemap-codec": "1.6.0",
+    "@types/node": "^26.6.4",
+    "@types/ws": "^8.18.2",
+    "esbuild": "0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "private": true,
+  "type": "module"
+}

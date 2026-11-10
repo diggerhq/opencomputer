@@ -1,0 +1,53 @@
+DESCRIPTION >
+    Work 084 Q3, "how fresh is what clients see?", over `[since, until)`: the age of an event (now − its runner `createdAt`) at each hop, one row per hop and surface with n, p50/p95/p99 and max. Hops, in order: `1 host sent` (`mirror.batch.oldest_age_ms`, includes the host's 100 ms flush window), `2 DO committed` (`mirror.ack.age_ms`, the newest covered event; `commit_ms` is the host → DO round trip alone), `2b blue commit lag` (`sessionlog.append.commit_lag_ms_max`, blue's clock), `3 API reader` (`httpapi.request.oldest_age_ms` of a non-empty events page), `4 wire socket` (`wire.flush.oldest_age_ms`, written to the opc socket), `5 opc drawn` (`cli.turn`: first output received → drawn). With `per_turn` set, one row per hop and turn instead (hops without a turn id drop out): max and p95 within the turn. The ages compare the runner's clock with the reader's, so they carry clock skew.
+
+TOKEN "calvin_read" READ
+
+NODE fr_ages
+SQL >
+    %
+    SELECT
+        multiIf(
+            event_name = 'mirror.batch', '1 host sent',
+            event_name = 'mirror.ack', '2 DO committed',
+            event_name = 'sessionlog.append', '2b blue commit lag',
+            event_name = 'httpapi.request', '3 API reader',
+            event_name = 'wire.flush', '4 wire socket',
+            '5 opc drawn'
+        ) AS hop,
+        surface,
+        turn_id,
+        multiIf(
+            event_name = 'mirror.batch', JSONExtract(data, 'oldest_age_ms', 'Nullable(Int64)'),
+            event_name = 'mirror.ack', JSONExtract(data, 'age_ms', 'Nullable(Int64)'),
+            event_name = 'sessionlog.append', JSONExtract(data, 'commit_lag_ms_max', 'Nullable(Int64)'),
+            event_name = 'httpapi.request', if(JSONExtractUInt(data, 'events') > 0, JSONExtract(data, 'oldest_age_ms', 'Nullable(Int64)'), NULL),
+            event_name = 'wire.flush', JSONExtract(data, 'oldest_age_ms', 'Nullable(Int64)'),
+            JSONExtract(data, 'first_output_ms', 'Nullable(Int64)') - JSONExtract(data, 'first_output_received_ms', 'Nullable(Int64)')
+        ) AS age_ms
+    FROM calvin_events
+    WHERE
+        event_name IN ('mirror.batch', 'mirror.ack', 'sessionlog.append', 'httpapi.request', 'wire.flush', 'cli.turn')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE endpoint
+SQL >
+    %
+    SELECT
+        hop,
+        {% if defined(per_turn) %} turn_id, {% else %} surface, {% end %}
+        count() AS n,
+        round(quantile(0.5)(age_ms)) AS p50,
+        round(quantile(0.95)(age_ms)) AS p95,
+        round(quantile(0.99)(age_ms)) AS p99,
+        max(age_ms) AS max
+    FROM fr_ages
+    WHERE age_ms IS NOT NULL {% if defined(per_turn) %} AND turn_id != '' {% end %}
+    GROUP BY hop, {% if defined(per_turn) %} turn_id {% else %} surface {% end %}
+    ORDER BY hop, {% if defined(per_turn) %} turn_id {% else %} surface {% end %}
+
+TYPE ENDPOINT
