@@ -1,17 +1,13 @@
 name: Deploy log tail
 
 # The collector receives every console line and exception from the API edge
-# and events-ingest Workers and forwards them to Axiom. It redacts webhook
-# credentials on the way, so it must be live before the edge starts issuing
-# credential-bearing webhook URLs: to release in that order, run this
-# workflow by hand from the branch first, then merge.
+# Worker and forwards them to Axiom, redacting webhook credentials on the way.
+#
+# Production deploys of opencomputer-log-tail-prod no longer run from this
+# repository on push (work 097 step 2). This manual trigger stays only for
+# the rollback window and is removed afterwards.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'cloudflare-workers/log-tail/**'
-      - '.github/workflows/deploy-log-tail.yml'
   workflow_dispatch:
 
 concurrency:
