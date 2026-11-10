@@ -1,0 +1,3147 @@
+[
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:11:16.438Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000001",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "1043617670a7b952853f8de4983c5a833707b3475911fdc27ceb951f8ff0b299",
+   "linear-timestamp": "1790892676306"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:11:16.229Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:11:15.389Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": null,
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790892676306,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:11:16.856Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000009"
+  },
+  "response": {
+   "status": 400,
+   "errors": [
+    {
+     "message": "Field \"content\" of type \"AgentActivityContent!\" must have a selection of subfields. Did you mean \"content { ... }\"?",
+     "locations": [
+      {
+       "line": 1,
+       "column": 122
+      }
+     ],
+     "extensions": {
+      "http": {
+       "status": 400,
+       "headers": {}
+      },
+      "code": "GRAPHQL_VALIDATION_FAILED",
+      "type": "graphql error",
+      "userError": true
+     }
+    }
+   ]
+  }
+ },
+ {
+  "at": "2026-10-01T22:11:17.080Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-00000000000a",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 400,
+   "errors": [
+    {
+     "message": "Field \"content\" of type \"AgentActivityContent!\" must have a selection of subfields. Did you mean \"content { ... }\"?",
+     "locations": [
+      {
+       "line": 1,
+       "column": 122
+      }
+     ],
+     "extensions": {
+      "http": {
+       "status": 400,
+       "headers": {}
+      },
+      "code": "GRAPHQL_VALIDATION_FAILED",
+      "type": "graphql error",
+      "userError": true
+     }
+    }
+   ]
+  }
+ },
+ {
+  "at": "2026-10-01T22:11:17.431Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-00000000000b"
+  },
+  "response": {
+   "status": 400,
+   "errors": [
+    {
+     "message": "Field \"content\" of type \"AgentActivityContent!\" must have a selection of subfields. Did you mean \"content { ... }\"?",
+     "locations": [
+      {
+       "line": 1,
+       "column": 122
+      }
+     ],
+     "extensions": {
+      "http": {
+       "status": 400,
+       "headers": {}
+      },
+      "code": "GRAPHQL_VALIDATION_FAILED",
+      "type": "graphql error",
+      "userError": true
+     }
+    }
+   ]
+  }
+ },
+ {
+  "at": "2026-10-01T22:11:17.711Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000000c",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 400,
+   "errors": [
+    {
+     "message": "Field \"content\" of type \"AgentActivityContent!\" must have a selection of subfields. Did you mean \"content { ... }\"?",
+     "locations": [
+      {
+       "line": 1,
+       "column": 122
+      }
+     ],
+     "extensions": {
+      "http": {
+       "status": 400,
+       "headers": {}
+      },
+      "code": "GRAPHQL_VALIDATION_FAILED",
+      "type": "graphql error",
+      "userError": true
+     }
+    }
+   ]
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:22.413Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000000d"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000000d",
+      "createdAt": "2026-10-01T22:12:22.304Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:22.752Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-00000000000e",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000000e",
+      "createdAt": "2026-10-01T22:12:22.661Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:23.073Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-00000000000f"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000000f",
+      "createdAt": "2026-10-01T22:12:22.978Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:23.575Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000010",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "createdAt": "2026-10-01T22:12:23.370Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:23.954Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000011"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000011",
+      "createdAt": "2026-10-01T22:12:23.846Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:24.161Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000011"
+  },
+  "response": {
+   "status": 200,
+   "errors": [
+    {
+     "message": "conflict on insert of AgentActivity",
+     "path": [
+      "agentActivityCreate"
+     ],
+     "locations": [
+      {
+       "line": 1,
+       "column": 48
+      }
+     ],
+     "extensions": {
+      "type": "invalid input",
+      "code": "INPUT_ERROR",
+      "statusCode": 400,
+      "userError": true,
+      "userPresentableMessage": "Entity AgentActivity with id 00000000-0000-4000-8000-000000000011 already exists."
+     }
+    }
+   ],
+   "data": null
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:24.361Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000011"
+  },
+  "response": {
+   "status": 200,
+   "errors": [
+    {
+     "message": "conflict on insert of AgentActivity",
+     "path": [
+      "agentActivityCreate"
+     ],
+     "locations": [
+      {
+       "line": 1,
+       "column": 48
+      }
+     ],
+     "extensions": {
+      "type": "invalid input",
+      "code": "INPUT_ERROR",
+      "statusCode": 400,
+      "userError": true,
+      "userPresentableMessage": "Entity AgentActivity with id 00000000-0000-4000-8000-000000000011 already exists."
+     }
+    }
+   ],
+   "data": null
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:12:26.437Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000012",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "efcabe912f20df9efe874f46eda43da29327437ec10372f0d9179817e1f61ae5",
+   "linear-timestamp": "1790892746350"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:12:26.259Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000013",
+    "createdAt": "2026-10-01T22:12:25.706Z",
+    "updatedAt": "2026-10-01T22:12:25.706Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000014",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000015",
+    "pullRequestId": null,
+    "slugId": "028a845c6a7a4",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000014",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000015"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000015",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-103",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": null,
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790892746350,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:26.792Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000013",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000016"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000016",
+      "createdAt": "2026-10-01T22:12:26.750Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:27.074Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000013",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-000000000017",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000017",
+      "createdAt": "2026-10-01T22:12:27.051Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:12:27.593Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000018",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "da82dd01355c241b4d2dd23d9b3f85354e4a5b96417f72bbb6e4300f3230892f",
+   "linear-timestamp": "1790892747497"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:12:27.430Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000019",
+    "createdAt": "2026-10-01T22:12:26.652Z",
+    "updatedAt": "2026-10-01T22:12:26.652Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-00000000001a",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-00000000001b",
+    "pullRequestId": null,
+    "slugId": "2afe551a55b20",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-00000000001a",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-00000000001b"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-00000000001b",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-105",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": null,
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790892747497,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:27.595Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000013",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-00000000001c"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000001c",
+      "createdAt": "2026-10-01T22:12:27.494Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:27.878Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000019",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000001d"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000001d",
+      "createdAt": "2026-10-01T22:12:27.831Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:27.963Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000013",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000001e",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000001e",
+      "createdAt": "2026-10-01T22:12:27.867Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:12:28.279Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-00000000001f",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "3572eb37396b954e7bf2dcf08c7911ced664a91d3d81062ef2b5eb6b9f10f697",
+   "linear-timestamp": "1790892748210"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:12:28.054Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000020",
+    "createdAt": "2026-10-01T22:12:26.652Z",
+    "updatedAt": "2026-10-01T22:12:26.652Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000021",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000022",
+    "pullRequestId": null,
+    "slugId": "9b3523428f50e",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000021",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000022"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000022",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-106",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": null,
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790892748210,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:28.457Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000019",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-000000000023",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000023",
+      "createdAt": "2026-10-01T22:12:28.411Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:28.759Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000019",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-000000000024"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000024",
+      "createdAt": "2026-10-01T22:12:28.733Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:29.014Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000020",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000025"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000025",
+      "createdAt": "2026-10-01T22:12:28.816Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:29.128Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000019",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000026",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000026",
+      "createdAt": "2026-10-01T22:12:29.039Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:29.353Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000020",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-000000000027",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000027",
+      "createdAt": "2026-10-01T22:12:29.304Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:29.630Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000020",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-000000000028"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000028",
+      "createdAt": "2026-10-01T22:12:29.589Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:12:30.002Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000020",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000029",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000029",
+      "createdAt": "2026-10-01T22:12:29.883Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:13:30.386Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000013",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000002a"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000002a",
+      "createdAt": "2026-10-01T22:13:30.243Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:13:30.746Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000019",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000002b"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000002b",
+      "createdAt": "2026-10-01T22:13:30.610Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:13:31.149Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000020",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000002c"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000002c",
+      "createdAt": "2026-10-01T22:13:31.002Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:18:29.969Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000002d",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000002d",
+      "createdAt": "2026-10-01T22:18:29.828Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:21:40.623Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-00000000002e",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "b3392f5891b9178c85c874fddc2d0df3c83dedb373a28468f9f7f833e6cc33c6",
+   "linear-timestamp": "1790893300500"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:21:40.396Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:21:40.147Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:12:23.883Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": {
+     "entries": [
+      {
+       "status": "completed",
+       "content": "Read the repository"
+      },
+      {
+       "status": "inProgress",
+       "content": "Write the design"
+      },
+      {
+       "status": "pending",
+       "content": "Open pull requests"
+      }
+     ],
+     "updatedAt": "2026-10-01T22:12:24.874Z"
+    },
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-00000000002f",
+    "createdAt": "2026-10-01T22:21:39.579Z",
+    "updatedAt": "2026-10-01T22:21:39.579Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-000000000030",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "Fixture message."
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893300500,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:21:41.514Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000032"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000032",
+      "createdAt": "2026-10-01T22:21:41.433Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:23:53.638Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000033",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "3c425543981a6b8b66069344fb5190b4b2c6814c754fd7eeeaec5d719544f409",
+   "linear-timestamp": "1790893433501"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:23:53.437Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:23:53.260Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:12:23.883Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000034",
+    "createdAt": "2026-10-01T22:23:53.138Z",
+    "updatedAt": "2026-10-01T22:23:53.138Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-000000000035",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "go"
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893433501,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:23:54.321Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000036"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000036",
+      "createdAt": "2026-10-01T22:23:54.215Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:24:49.737Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000037",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "Yes, buttons",
+      "value": "yes"
+     },
+     {
+      "label": "No buttons",
+      "value": "no"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000037",
+      "createdAt": "2026-10-01T22:24:49.562Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:26:50.954Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000038",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "b833f97f54d90ff600955318e5d58673ac7a6ee0ed6bef60d8e883dd19011ec7",
+   "linear-timestamp": "1790893610879"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:26:50.595Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:26:50.235Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:12:23.883Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000039",
+    "createdAt": "2026-10-01T22:26:50.028Z",
+    "updatedAt": "2026-10-01T22:26:50.028Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-00000000003a",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "yes"
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893610879,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:26:51.601Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000003b"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000003b",
+      "createdAt": "2026-10-01T22:26:51.505Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:27:13.186Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000003c"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000003c",
+      "createdAt": "2026-10-01T22:27:11.858Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:28:27.608Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-00000000003d",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "1acb9c883fd0dcd61ffe3cf637e7f4b88bf3c68781a627371d18997253d336cf",
+   "linear-timestamp": "1790893707485"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:28:27.404Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:27:12.055Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "active",
+    "startedAt": "2026-10-01T22:27:12.054Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-00000000003e",
+    "createdAt": "2026-10-01T22:28:23.803Z",
+    "updatedAt": "2026-10-01T22:28:26.991Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-00000000003f",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": "2026-10-01T22:28:26.939Z",
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "Fixture message."
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893707485,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:28:28.989Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000040"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000040",
+      "createdAt": "2026-10-01T22:28:28.607Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:29:30.625Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000041"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000041",
+      "createdAt": "2026-10-01T22:29:30.525Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:30:08.836Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000042",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "e7c4048757b3627f5638780b97f7a5e1c7e74505bf7af5eb7a149dd77465bd70",
+   "linear-timestamp": "1790893808741"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:30:08.668Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:30:08.448Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "stopping",
+    "startedAt": "2026-10-01T22:29:30.557Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000043",
+    "createdAt": "2026-10-01T22:30:08.405Z",
+    "updatedAt": "2026-10-01T22:30:08.405Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": null,
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": "stop",
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "stop"
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893808741,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:30:09.689Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "error",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000044"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000044",
+      "createdAt": "2026-10-01T22:30:09.588Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityErrorContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:30:41.472Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000045"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000045",
+      "createdAt": "2026-10-01T22:30:41.362Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:31:35.215Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000046"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000046",
+      "createdAt": "2026-10-01T22:31:35.029Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:31:35.742Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000047",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "f495076d072ebd6b459f48d99c4bb5f33cf49c23aea64130ff8024e4f607605f",
+   "linear-timestamp": "1790893895649"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:31:35.565Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:31:35.357Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:30:41.395Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000048",
+    "createdAt": "2026-10-01T22:31:13.673Z",
+    "updatedAt": "2026-10-01T22:31:35.323Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-000000000049",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": "2026-10-01T22:31:35.275Z",
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "Fixture message."
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790893895649,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:31:36.383Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000004a"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000004a",
+      "createdAt": "2026-10-01T22:31:36.302Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:32:48.533Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000004b"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000004b",
+      "createdAt": "2026-10-01T22:32:48.434Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:33:05.926Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-00000000004c",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "86b856f36b45d4f0d25cf9af415f35864735b54ef8cc8aa3b695197e4c059eff",
+   "linear-timestamp": "1790893985809"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:33:05.681Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-00000000004d",
+    "createdAt": "2026-10-01T22:33:05.214Z",
+    "updatedAt": "2026-10-01T22:33:05.214Z",
+    "archivedAt": null,
+    "creatorId": "00000000-0000-4000-8000-000000000031",
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-00000000004e",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "d6a42d0ef1de9",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": {
+     "type": "comment",
+     "agentSessionMetadata": {
+      "sourceCommentId": "00000000-0000-4000-8000-00000000004e"
+     }
+    },
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "creator": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    },
+    "comment": {
+     "id": "00000000-0000-4000-8000-00000000004e",
+     "body": "Fixture message.",
+     "userId": "00000000-0000-4000-8000-000000000031",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": [
+    {
+     "id": "00000000-0000-4000-8000-00000000004e",
+     "body": "Fixture message.",
+     "userId": "00000000-0000-4000-8000-000000000031",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    }
+   ],
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790893985809,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:33:06.690Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000004d",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000004f"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000004f",
+      "createdAt": "2026-10-01T22:33:06.317Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:33:07.207Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000004d",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-000000000050",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000050",
+      "createdAt": "2026-10-01T22:33:06.975Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:33:07.461Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000004d",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-000000000051"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000051",
+      "createdAt": "2026-10-01T22:33:07.419Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:33:07.806Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000004d",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000052",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000052",
+      "createdAt": "2026-10-01T22:33:07.710Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:34:07.395Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000053",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "it did",
+      "value": "released"
+     },
+     {
+      "label": "it did not",
+      "value": "held"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000053",
+      "createdAt": "2026-10-01T22:34:07.225Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:36:03.507Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000054",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "8c885f1d819037aa7f1e2a6b6e644012b437afa78b195699e27d4b3bfcb19a5f",
+   "linear-timestamp": "1790894163410"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:36:03.328Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:36:03.131Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:32:48.460Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000055",
+    "createdAt": "2026-10-01T22:36:03.064Z",
+    "updatedAt": "2026-10-01T22:36:03.064Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-000000000056",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "held"
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790894163410,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:04.352Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000057"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000057",
+      "createdAt": "2026-10-01T22:36:04.252Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:36:04.891Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000058",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "84d9c3bf7888ed0b6569c03556bb3aed9af71fe18a3ca03a103b20091a9c3b1a",
+   "linear-timestamp": "1790894164808"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:36:04.740Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "createdAt": "2026-10-01T22:11:15.389Z",
+    "updatedAt": "2026-10-01T22:36:04.551Z",
+    "archivedAt": null,
+    "creatorId": null,
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-000000000005",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-000000000006",
+    "pullRequestId": null,
+    "slugId": "8ccb36dde7f1f",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:32:48.460Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [
+     {
+      "url": "https://linear.example/fixture",
+      "label": "Pull request"
+     }
+    ],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "comment": {
+     "id": "00000000-0000-4000-8000-000000000005",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-000000000006"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-000000000006",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-102",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000059",
+    "createdAt": "2026-10-01T22:33:36.860Z",
+    "updatedAt": "2026-10-01T22:36:04.522Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-000000000004",
+    "sourceCommentId": "00000000-0000-4000-8000-00000000005a",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": "2026-10-01T22:36:04.482Z",
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "Fixture message."
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790894164808,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:05.508Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000004",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000005b"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000005b",
+      "createdAt": "2026-10-01T22:36:05.410Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:36:38.023Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-00000000005c",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "ff2e692813f99bcae94e3f32c88b45f8c8f8f12ac021b195c7f8b8c56fe2efe7",
+   "linear-timestamp": "1790894197944"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "created",
+   "createdAt": "2026-10-01T22:36:37.873Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-00000000005d",
+    "createdAt": "2026-10-01T22:36:37.442Z",
+    "updatedAt": "2026-10-01T22:36:37.442Z",
+    "archivedAt": null,
+    "creatorId": "00000000-0000-4000-8000-000000000031",
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-00000000005e",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-00000000005f",
+    "pullRequestId": null,
+    "slugId": "f5f10e55a777c",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": null,
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "creator": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    },
+    "comment": {
+     "id": "00000000-0000-4000-8000-00000000005e",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-00000000005f"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-00000000005f",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-109",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "previousComments": null,
+   "guidance": null,
+   "promptContext": "<issue><title>Fixture issue</title></issue>",
+   "webhookTimestamp": 1790894197944,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:38.318Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+   "content": {
+    "type": "thought",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000060"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000060",
+      "createdAt": "2026-10-01T22:36:38.260Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityThoughtContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:38.552Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+   "content": {
+    "type": "action",
+    "action": "Inspecting",
+    "parameter": "repository (ephemeral)"
+   },
+   "id": "00000000-0000-4000-8000-000000000061",
+   "ephemeral": true
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000061",
+      "createdAt": "2026-10-01T22:36:38.521Z",
+      "signal": null,
+      "ephemeral": true,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:38.919Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+   "content": {
+    "type": "action",
+    "action": "Inspected",
+    "parameter": "repository",
+    "result": "3 files relevant"
+   },
+   "id": "00000000-0000-4000-8000-000000000062"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000062",
+      "createdAt": "2026-10-01T22:36:38.883Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityActionContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:36:39.265Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+   "content": {
+    "type": "elicitation",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000063",
+   "signal": "select",
+   "signalMetadata": {
+    "options": [
+     {
+      "label": "go",
+      "value": "go"
+     },
+     {
+      "label": "plan first",
+      "value": "plan"
+     },
+     {
+      "label": "just ship it",
+      "value": "ship"
+     }
+    ]
+   }
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000063",
+      "createdAt": "2026-10-01T22:36:39.137Z",
+      "signal": "select",
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityElicitationContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "delivery",
+  "at": "2026-10-01T22:37:15.617Z",
+  "headers": {
+   "content-type": "application/json; charset=utf-8",
+   "linear-delivery": "00000000-0000-4000-8000-000000000064",
+   "linear-event": "AgentSessionEvent",
+   "linear-signature": "48a90461ee4929239094fc7af9366218fa14658a9fa2e5a7838462e8b6b795c0",
+   "linear-timestamp": "1790894235503"
+  },
+  "body": {
+   "type": "AgentSessionEvent",
+   "action": "prompted",
+   "createdAt": "2026-10-01T22:37:15.443Z",
+   "organizationId": "00000000-0000-4000-8000-000000000002",
+   "oauthClientId": "00000000000000000000000000000001",
+   "appUserId": "00000000-0000-4000-8000-000000000003",
+   "agentSession": {
+    "id": "00000000-0000-4000-8000-00000000005d",
+    "createdAt": "2026-10-01T22:36:37.442Z",
+    "updatedAt": "2026-10-01T22:37:15.199Z",
+    "archivedAt": null,
+    "creatorId": "00000000-0000-4000-8000-000000000031",
+    "appUserId": "00000000-0000-4000-8000-000000000003",
+    "commentId": "00000000-0000-4000-8000-00000000005e",
+    "sourceCommentId": null,
+    "issueId": "00000000-0000-4000-8000-00000000005f",
+    "pullRequestId": null,
+    "slugId": "f5f10e55a777c",
+    "status": "pending",
+    "startedAt": "2026-10-01T22:36:38.290Z",
+    "endedAt": null,
+    "dismissedAt": null,
+    "dismissedById": null,
+    "externalLink": null,
+    "summary": "Fixture text.",
+    "sourceMetadata": null,
+    "modelSelection": null,
+    "plan": null,
+    "workspaceDiff": null,
+    "context": [],
+    "url": "https://linear.example/fixture",
+    "externalUrls": [],
+    "organizationId": "00000000-0000-4000-8000-000000000002",
+    "creator": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    },
+    "comment": {
+     "id": "00000000-0000-4000-8000-00000000005e",
+     "body": "Fixture message.",
+     "issueId": "00000000-0000-4000-8000-00000000005f"
+    },
+    "issue": {
+     "id": "00000000-0000-4000-8000-00000000005f",
+     "title": "Fixture text.",
+     "teamId": "00000000-0000-4000-8000-000000000007",
+     "team": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "key": "OPE",
+      "name": "Fixture Person"
+     },
+     "identifier": "OPE-109",
+     "url": "https://linear.example/fixture",
+     "description": "Fixture text."
+    }
+   },
+   "agentActivity": {
+    "id": "00000000-0000-4000-8000-000000000065",
+    "createdAt": "2026-10-01T22:37:15.135Z",
+    "updatedAt": "2026-10-01T22:37:15.135Z",
+    "archivedAt": null,
+    "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+    "sourceCommentId": "00000000-0000-4000-8000-000000000066",
+    "userId": "00000000-0000-4000-8000-000000000031",
+    "sourceMetadata": null,
+    "executionSkippedReason": null,
+    "signal": null,
+    "ephemeral": false,
+    "pushSummary": null,
+    "queued": false,
+    "sentAt": null,
+    "signalMetadata": null,
+    "content": {
+     "type": "prompt",
+     "body": "plan"
+    },
+    "user": {
+     "id": "00000000-0000-4000-8000-000000000031",
+     "name": "Fixture Person",
+     "email": "person@example.test",
+     "url": "https://linear.example/fixture"
+    }
+   },
+   "webhookTimestamp": 1790894235503,
+   "webhookId": "00000000-0000-4000-8000-000000000008"
+  }
+ },
+ {
+  "at": "2026-10-01T22:37:16.286Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000005d",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000067"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-000000000067",
+      "createdAt": "2026-10-01T22:37:16.188Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "at": "2026-10-01T22:38:46.600Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-000000000068",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-000000000069"
+  },
+  "response": {
+   "status": 200,
+   "errors": [
+    {
+     "message": "Argument Validation Error",
+     "path": [
+      "agentActivityCreate"
+     ],
+     "locations": [
+      {
+       "line": 1,
+       "column": 48
+      }
+     ],
+     "extensions": {
+      "code": "INVALID_INPUT",
+      "validationErrors": [
+       {
+        "target": {
+         "content": {
+          "type": "response",
+          "body": "Fixture message."
+         },
+         "id": "00000000-0000-4000-8000-000000000069",
+         "agentSessionId": "00000000-0000-4000-8000-000000000068"
+        },
+        "value": "00000000-0000-4000-8000-000000000068",
+        "property": "agentSessionId",
+        "children": [],
+        "constraints": {
+         "isUuid": "agentSessionId must be a UUID"
+        }
+       }
+      ],
+      "type": "invalid input",
+      "userError": true,
+      "userPresentableMessage": "agentSessionId must be a UUID."
+     }
+    }
+   ],
+   "data": null
+  }
+ },
+ {
+  "at": "2026-10-01T22:38:49.738Z",
+  "kind": "activity_create",
+  "input": {
+   "agentSessionId": "00000000-0000-4000-8000-00000000004d",
+   "content": {
+    "type": "response",
+    "body": "Fixture message."
+   },
+   "id": "00000000-0000-4000-8000-00000000006a"
+  },
+  "response": {
+   "status": 200,
+   "data": {
+    "agentActivityCreate": {
+     "success": true,
+     "agentActivity": {
+      "id": "00000000-0000-4000-8000-00000000006a",
+      "createdAt": "2026-10-01T22:38:49.568Z",
+      "signal": null,
+      "ephemeral": false,
+      "content": {
+       "__typename": "AgentActivityResponseContent"
+      }
+     }
+    }
+   }
+  }
+ }
+]

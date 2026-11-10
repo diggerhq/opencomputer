@@ -1,0 +1,93 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "blue-edge",
+  "main": "src/edge/index.ts",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "BLUE_ENVIRONMENT": "development",
+    "EXTERNAL_SESSION_RUNTIME": "true",
+    "BLUE_ACCOUNT_ID": "local",
+    "BLUE_DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4.6",
+    "BLUE_GOOGLE_CLIENT_ID": "test-google-client",
+    "BLUE_CHANNEL_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "OC_MANAGED_CRED_HMAC_SECRET": "test-managed-credential-secret",
+    "BLUE_SESSION_INDEX_ADMIN_SECRET": "test-session-index-admin-secret",
+    "MANAGED_RUNTIME_PROFILES": "{\"acme-scanner\":{\"displayName\":\"Acme scanning\",\"imageArn\":\"dedicated-acme-image\",\"imageVersion\":\"1.0\"}}",
+    "OPENCOMPUTER_APP_URL": "https://app.example",
+    "COMPUTER_API_ORGS": "*",
+    "BLUE_SLACK_OAUTH_REDIRECT_URI": "https://api.example/api/managed-agents/slack/callback"
+  },
+  "d1_databases": [
+    {
+      "binding": "SERVERLESS_AGENTS_DB",
+      "database_name": "serverless-agents-local",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Work 084: session log segments and event bodies over 8 KiB; the key index the wire Worker reads.
+  // The KV id and the bucket are created at rollout (no Cloudflare resources from the build).
+  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "serverless-agents-session-log-local" }],
+  "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNTS",
+        "class_name": "AccountDurableObject"
+      },
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionDurableObject"
+      },
+      {
+        "name": "POOLS",
+        "class_name": "DeploymentPoolDurableObject"
+      },
+      {
+        "name": "MEMORY",
+        "class_name": "MemoryDurableObject"
+      },
+      {
+        "name": "DATABASES",
+        "class_name": "ProjectDatabaseDurableObject"
+      },
+      {
+        "name": "COMPUTERS",
+        "class_name": "ComputerDurableObject"
+      },
+      // Work 084: one per computer session, the API's copy of its event log.
+      { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AccountDurableObject",
+        "SessionDurableObject"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["DeploymentPoolDurableObject"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MemoryDurableObject"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ProjectDatabaseDurableObject"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["ComputerDurableObject"]
+    },
+    { "tag": "v6", "new_sqlite_classes": ["SessionLogDurableObject"] }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

@@ -1,0 +1,141 @@
+name: Managed agents
+
+# CI for services/managed-agents: its tests, typecheck, build, a dry-run
+# bundle of each Worker, and a secret scan. Nothing here deploys, and no job
+# has a secret.
+
+on:
+  pull_request:
+    paths:
+      - services/managed-agents/**
+      - .github/workflows/managed-agents.yml
+  push:
+    branches: [main]
+    paths:
+      - services/managed-agents/**
+      - .github/workflows/managed-agents.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-agents-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: services/managed-agents
+
+jobs:
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Node
+            projects: --project node
+          # The Edge suites are split by file so no group sets the pace of the
+          # whole workflow.
+          - name: Edge sessions
+            projects: >-
+              --project managed-session-workerd
+              test/managed-session-workerd.test.ts
+          - name: Edge questions
+            projects: >-
+              --project managed-session-workerd
+              test/questions.test.ts
+              test/consult.test.ts
+              test/session-creation-intent.test.ts
+              test/template-runtime-parity.test.ts
+          - name: Edge worker
+            projects: >-
+              --project worker
+              --project memory
+              --project do-first-session-full-example
+              --project do-first-session-spike
+          # The computer suite runs on its own: alongside the session suites
+          # its WebSockets and alarms added enough load to time out unrelated,
+          # timing-sensitive Edge tests.
+          - name: Computer
+            projects: >-
+              --project computer
+              --project computer-pool
+              --project platform-admission
+          - name: Computer API
+            projects: >-
+              --project session-log
+              --project wire
+          # Its own process: it shares fakeComputerOutbound's recorded Tinybird
+          # posts with the computer project, whose routes test expects none.
+          - name: Computer telemetry
+            projects: --project computer-telemetry
+          - name: Workerd memory
+            projects: >-
+              --project workerd-memory
+              --project memory-integrated
+          - name: Command integration
+            projects: >-
+              --project commands-integrated
+          - name: Linear
+            projects: >-
+              --project linear-fault-matrix
+              --project linear-ask-integrated
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            services/managed-agents/package-lock.json
+            services/managed-agents/src/workerd-runtime/package-lock.json
+      - run: npm ci && npm ci --prefix src/workerd-runtime
+      - run: npm test -- ${{ matrix.projects }}
+
+  static:
+    name: Check, build and dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            services/managed-agents/package-lock.json
+            services/managed-agents/src/workerd-runtime/package-lock.json
+      - run: npm ci && npm ci --prefix src/workerd-runtime
+      - run: npm run check
+      - run: npm run build
+      - name: Dry-run each Worker
+        run: |
+          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc; do
+            npx wrangler deploy --config "$config" --dry-run --outdir "$RUNNER_TEMP/$config"
+          done
+      - name: Profile Workerd runtime startup
+        run: npx wrangler check startup --config wrangler.workerd.jsonc --outfile "$RUNNER_TEMP/workerd-startup.cpuprofile"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: gitleaks
+        run: |
+          version=8.30.1
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${version}/$archive"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --redact --no-banner

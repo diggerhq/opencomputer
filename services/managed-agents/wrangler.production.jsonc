@@ -1,0 +1,165 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "managed-agents",
+  "main": "src/edge/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "managedagents.example.com",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "BLUE_AWS_REGION": "us-east-1",
+    "COMPUTER_HOST_GATEWAY_URL": "wss://managedagents.example.com",
+    "TINYBIRD_API_URL": "https://api.us-east.tinybird.co",
+    "TELEMETRY_COLLECTOR_URL": "https://telemetry.example.com",
+    "COMPUTER_DEFAULT_SIZE": "Standard_D16as_v7",
+    "COMPUTER_MAX_SIZE": "Standard_D16as_v7",
+    "COMPUTER_DEFAULT_DISK_GIB": "128",
+    "COMPUTER_MAX_DISK_GIB": "1024",
+    "COMPUTER_POOL_SIZE": "5",
+    // Work 084: the computer API's per-org rollout gate (canary and kill switch). Empty: every host
+    // is welcomed at protocol 3; "*": everybody at 4; otherwise comma-separated organization ids.
+    "COMPUTER_API_ORGS": "*",
+    "COMPUTER_PUBLIC_ORIGIN": "https://app.example.com",
+    "PREVIEW_DOMAIN": "example.app",
+    // Work 084: where opc opens its WebSocket (GET /me computer.wireUrl) and the wire tunnel hostnames.
+    "WIRE_PUBLIC_URL": "wss://wire.example.com/v1",
+    "WIRE_TUNNEL_DOMAIN": "w.example.com",
+    "SLACK_COMPUTER_SCOPES": "app_mentions:read,assistant:write,channels:history,channels:read,channels:manage,groups:history,groups:read,groups:write,im:history,im:read,im:write,chat:write,files:read,files:write,reactions:write,users:read,users:read.email",
+    "BLUE_ENVIRONMENT": "production",
+    "BLUE_ACCOUNT_ID": "unused",
+    "OC_MANAGED_AGENTS_ONLY": "true",
+    // Work 078: the sandbox session runtime is the default. Every account's new sessions run
+    // OpenCode in a sandbox (DO-first start, platform BLUE_SESSION_RUNTIME_PROVIDER); existing
+    // sessions stay where they started. Narrow to a comma-separated account list to roll back.
+    "SESSION_SANDBOX_ACCOUNTS": "*",
+    "DO_FIRST_SESSION_SPIKE": "true",
+    "WORKERD_PREWARM_TARGET": "3",
+    "BLUE_WORKOS_ISSUER": "https://authenticator.example.com",
+    "BLUE_DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4.6",
+    "COMPOSIO_APP_NAME": "OpenComputer",
+    "TURSO_ORGANIZATION": "example",
+    "TURSO_GROUP": "default",
+    "OPENCOMPUTER_APP_URL": "https://app.example.com",
+    "BLUE_SLACK_OAUTH_REDIRECT_URI": "https://app.example.com/api/managed-agents/slack/callback",
+    "OC_GITHUB_APP_ID": "0",
+    "OC_GITHUB_APP_SLUG": "example-app",
+    "OC_GITHUB_APP_CLIENT_ID": "example-client-id",
+    "COMPOSIO_GOOGLE_OAUTH_REDIRECT_URI": "https://managedagents.example.com/v1/connections/google/oauth/callback",
+    "COMPOSIO_CONNECTION_CALLBACK_URL": "https://managedagents.example.com/v1/connections/google/callback"
+  },
+  // The idle sandbox sweep (src/edge/sandbox-sweep.ts).
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "SERVERLESS_AGENTS_DB",
+      "database_name": "serverless-agents",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  // Work 054: the deployed version stamped on the computer gateway's telemetry
+  // (src/computer/telemetry/gateway.ts); metadata only, no resource.
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  // Work 084: session log segments and event bodies over 8 KiB; the key index the wire Worker reads.
+  // The KV id and the bucket are created at rollout (no Cloudflare resources from the build).
+  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "managed-agents-session-log" }],
+  "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNTS",
+        "class_name": "AccountDurableObject"
+      },
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionDurableObject"
+      },
+      {
+        "name": "POOLS",
+        "class_name": "DeploymentPoolDurableObject"
+      },
+      {
+        "name": "MEMORY",
+        "class_name": "MemoryDurableObject"
+      },
+      {
+        "name": "DATABASES",
+        "class_name": "ProjectDatabaseDurableObject"
+      },
+      {
+        "name": "COMPUTERS",
+        "class_name": "ComputerDurableObject"
+      },
+      // Work 084: one per computer session, the API's copy of its event log.
+      { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject" },
+      // Work 074: preview names, owned by the `previews` Worker (deploy it
+      // first). Previews stay off until PREVIEW_PLATFORM_KEY,
+      // PREVIEW_CF_API_TOKEN, PREVIEW_CF_ACCOUNT_ID and PREVIEW_CF_ZONE_ID are
+      // set as secrets (src/computer/previews.ts).
+      {
+        "name": "PREVIEWS",
+        "class_name": "PreviewDurableObject",
+        "script_name": "previews"
+      }
+    ]
+  },
+  "services": [
+    {
+      "binding": "WORKERD_RUNTIME",
+      "service": "managed-agents-opencode-workerd"
+    },
+    {
+      "binding": "DEPLOYMENTS",
+      "service": "managed-agents-platform"
+    },
+    {
+      "binding": "RUNTIMES",
+      "service": "managed-agents-platform"
+    },
+    {
+      "binding": "OPENCOMPUTER_BILLING",
+      "service": "opencomputer-edge-prod",
+      "entrypoint": "ManagedAgentBillingService"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountDurableObject", "SessionDurableObject"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["DeploymentPoolDurableObject"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MemoryDurableObject"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ProjectDatabaseDurableObject"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["ComputerDurableObject"]
+    },
+    { "tag": "v6", "new_sqlite_classes": ["SessionLogDurableObject"] }
+  ],
+  // Console output and exceptions go to Axiom (dataset oc-platform-edge)
+  // through the tail Worker cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

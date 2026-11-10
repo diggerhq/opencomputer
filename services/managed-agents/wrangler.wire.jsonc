@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Work 084: the wire's front door, `wire.example.com`. Checks the
+  // credential on the WebSocket upgrade (`/v1`) and the workspace file routes,
+  // signs for the computer's relay (X-Wire-*) and hands the organization's
+  // tunnel (`<tunnelId>.w.example.com`) the request. No DO, no D1: the
+  // key records in WIRE_KEYS are written by `managed-agents`.
+  //
+  // Secrets (wrangler secret put --config wrangler.wire.jsonc):
+  //   WIRE_TICKET_KEY       verifies tickets; the same value as in `managed-agents`
+  //   PREVIEW_PLATFORM_KEY  derives each computer's key; the same value as in `managed-agents` and `previews`
+  //   TINYBIRD_API_URL, TINYBIRD_APPEND_TOKEN  optional (work 084 instrumentation): the gateway's
+  //                         Tinybird append settings; set, each request sends one `wireworker.request`
+  "name": "opencomputer-wire",
+  "main": "src/wire/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "wire.example.com", "custom_domain": true }
+  ],
+  "vars": {
+    "WIRE_TUNNEL_DOMAIN": "w.example.com"
+  },
+  "kv_namespaces": [
+    { "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }
+  ],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  // Logs to Axiom through cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": { "enabled": true }
+}

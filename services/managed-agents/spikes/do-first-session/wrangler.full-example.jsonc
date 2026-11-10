@@ -1,0 +1,35 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "do-first-session-full-example-local",
+  "main": "../../src/edge/index.ts",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "BLUE_ENVIRONMENT": "development",
+    "BLUE_ACCOUNT_ID": "local",
+    "DO_FIRST_SESSION_SPIKE": "true",
+    "EXTERNAL_SESSION_RUNTIME": "true",
+    "BLUE_DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4.6",
+    "OPENCOMPUTER_APP_URL": "https://app.example"
+  },
+  "d1_databases": [
+    {
+      "binding": "SERVERLESS_AGENTS_DB",
+      "database_name": "serverless-agents-do-first-local",
+      "database_id": "00000000-0000-0000-0000-000000000018",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ACCOUNTS", "class_name": "AccountDurableObject" },
+      { "name": "SESSIONS", "class_name": "SessionDurableObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountDurableObject", "SessionDurableObject"]
+    }
+  ]
+}

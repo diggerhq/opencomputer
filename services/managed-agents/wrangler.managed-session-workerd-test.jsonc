@@ -1,0 +1,61 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "managed-session-workerd-test",
+  "main": "src/edge/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "BLUE_ENVIRONMENT": "development",
+    "BLUE_ACCOUNT_ID": "local",
+    "BLUE_DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4.6",
+    "BLUE_GOOGLE_CLIENT_ID": "test-google-client",
+    "BLUE_CHANNEL_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "OC_MANAGED_CRED_HMAC_SECRET": "test-managed-credential-secret",
+    "BLUE_SESSION_INDEX_ADMIN_SECRET": "test-session-index-admin-secret",
+    "OPENCOMPUTER_APP_URL": "https://app.example",
+    "OPENROUTER_API_KEY": "test-openrouter-key"
+  },
+  "d1_databases": [
+    {
+      "binding": "SERVERLESS_AGENTS_DB",
+      "database_name": "managed-session-workerd-test",
+      "database_id": "00000000-0000-0000-0000-000000000019",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ACCOUNTS", "class_name": "AccountDurableObject" },
+      { "name": "SESSIONS", "class_name": "SessionDurableObject" },
+      { "name": "POOLS", "class_name": "DeploymentPoolDurableObject" },
+      { "name": "MEMORY", "class_name": "MemoryDurableObject" },
+      { "name": "DATABASES", "class_name": "ProjectDatabaseDurableObject" },
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AccountDurableObject",
+        "SessionDurableObject"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["DeploymentPoolDurableObject"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MemoryDurableObject"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ProjectDatabaseDurableObject"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["ComputerDurableObject"]
+    }
+  ]
+}
