@@ -1,13 +1,9 @@
 name: Deploy API Edge
 
+# Production deploys of api-edge now run from diggerhq/opencomputer-deploy
+# (work 097 Track H). The push trigger is gone; manual dispatch stays for the
+# rollback window and goes with this file once the cutover has held.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'cloudflare-workers/api-edge/**'
-      - 'cloudflare-workers/shared/**'
-      - 'web/**'
-      - '.github/workflows/deploy-api-edge.yml'
   workflow_dispatch:
 
 concurrency:
