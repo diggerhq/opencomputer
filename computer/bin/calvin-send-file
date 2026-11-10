@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+// Post a file into this session's Slack thread from a script, the way the
+// send_file tool does, but without a model step in between: render, then post,
+// in one command (work 063).
+//
+//   calvin-send-file <path> [comment] [--title T] [--alt TEXT]
+//
+// Talks to the runner on $SP_FILES_SOCKET (src/runner/send-file-socket.ts).
+// Exits 0 when posted; otherwise prints why to stderr and exits 1.
+
+(async () => {
+  const net = await import('node:net');
+  const fail = (msg) => (process.stderr.write(`calvin-send-file: ${msg}\n`), process.exit(1));
+  const usage = 'usage: calvin-send-file <path> [comment words...] [--title T] [--alt TEXT]';
+  const opts = {};
+  const words = [];
+  for (const a of process.argv.slice(2)) {
+    if (opts.pending) (opts[opts.pending] = a), (opts.pending = undefined);
+    else if (a === '--title' || a === '--alt') opts.pending = a.slice(2);
+    else if (a === '-h' || a === '--help') fail(usage);
+    else if (a.startsWith('--')) fail(`unknown option ${a}; ${usage}`);
+    else words.push(a);
+  }
+  if (opts.pending) fail(`--${opts.pending} needs a value; ${usage}`);
+  const [file, ...rest] = words;
+  const comment = rest.length ? rest.join(' ') : undefined;
+  const { title, alt: alt_text } = opts;
+  if (!file) fail(usage);
+  const sock = process.env.SP_FILES_SOCKET;
+  if (!sock) fail('SP_FILES_SOCKET is not set: run this inside a Calvin session');
+
+  const res = await new Promise((resolve, reject) => {
+    const c = net.connect(sock);
+    let buf = '';
+    c.setTimeout(300000, () => c.destroy(new Error('timed out'))); // above the runner's own upload bound
+    c.on('connect', () => c.write(JSON.stringify({ path: file, comment, title, alt_text, cwd: process.cwd() }) + '\n'));
+    c.on('data', (d) => (buf += d));
+    c.on('end', () => {
+      try {
+        resolve(JSON.parse(buf.trim()));
+      } catch {
+        reject(new Error('no answer from the runner'));
+      }
+    });
+    c.on('error', reject);
+  }).catch((e) => fail(e.message));
+  if (!res.ok) fail(res.text);
+  process.stdout.write(`${res.text}\n`);
+})();

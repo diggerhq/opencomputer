@@ -1,0 +1,72 @@
+DESCRIPTION >
+    Work 084 Q7, "what does an opc user experience?", over `[since, until)`, measured by opc itself (`cli.*`, sent on the wire, `surface = cli`; opted-out clients send nothing). One row per metric, detail, opc version and OS with n, p50/p95/p99 and max. Metrics: `first_output_ms` (Enter → first output drawn: K2 for opc; detail `interrupted` when the turn ended before any output), `first_event_ms`, `attach_ms` and `connect_ms` (detail first or reconnect), `reconnect_gap_ms`, `control_round_trip_ms` and `control_applied_ms` (by kind: steer, interrupt, answer, cancel; `failed` counts `ok = false`), `render_lag_ms` and `draw_ms` (slow draws only), `connection_up_ms` (by close code), `error` (by class; n is the count) and `overflow_dropped` (the value is the events dropped). Pass `client_version` or `os` to filter.
+
+TOKEN "calvin_read" READ
+
+NODE cx_events
+SQL >
+    %
+    SELECT event_name, data, JSONExtractString(data, 'client_version') AS client_version, JSONExtractString(data, 'os') AS os
+    FROM calvin_events
+    WHERE
+        event_name IN ('cli.turn', 'cli.attach', 'cli.control', 'cli.error', 'cli.render', 'cli.connection', 'cli.overflow')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if defined(client_version) %} AND JSONExtractString(data, 'client_version') = {{ String(client_version) }} {% end %}
+        {% if defined(os) %} AND JSONExtractString(data, 'os') = {{ String(os) }} {% end %}
+    LIMIT 1 BY event_id
+
+NODE cx_units
+SQL >
+    SELECT client_version, os, m.1 AS metric, m.2 AS detail, m.3 AS value, m.4 AS failed
+    FROM cx_events
+    ARRAY JOIN
+        multiIf(
+            event_name = 'cli.turn',
+            [
+                ('first_output_ms', if(JSONExtractBool(data, 'interrupted'), 'interrupted', ''), JSONExtract(data, 'first_output_ms', 'Nullable(Int64)'), false),
+                ('first_event_ms', '', JSONExtract(data, 'first_event_ms', 'Nullable(Int64)'), false)
+            ],
+            event_name = 'cli.attach',
+            [
+                ('attach_ms', if(JSONExtractBool(data, 'reconnect'), 'reconnect', 'first'), JSONExtract(data, 'attach_ms', 'Nullable(Int64)'), false),
+                ('connect_ms', if(JSONExtractBool(data, 'reconnect'), 'reconnect', 'first'), JSONExtract(data, 'connect_ms', 'Nullable(Int64)'), false),
+                ('reconnect_gap_ms', '', if(JSONExtractBool(data, 'reconnect'), JSONExtract(data, 'gap_ms', 'Nullable(Int64)'), NULL), false)
+            ],
+            event_name = 'cli.control',
+            [
+                ('control_round_trip_ms', JSONExtractString(data, 'kind'), JSONExtract(data, 'round_trip_ms', 'Nullable(Int64)'), NOT JSONExtractBool(data, 'ok')),
+                ('control_applied_ms', JSONExtractString(data, 'kind'), JSONExtract(data, 'applied_ms', 'Nullable(Int64)'), false)
+            ],
+            event_name = 'cli.render',
+            [
+                ('render_lag_ms', '', JSONExtract(data, 'lag_ms', 'Nullable(Int64)'), false),
+                ('draw_ms', '', JSONExtract(data, 'draw_ms', 'Nullable(Int64)'), false)
+            ],
+            event_name = 'cli.connection',
+            [('connection_up_ms', toString(JSONExtractUInt(data, 'close_code')), JSONExtract(data, 'up_ms', 'Nullable(Int64)'), false)],
+            event_name = 'cli.error',
+            [('error', JSONExtractString(data, 'class'), toNullable(toInt64(1)), true)],
+            [('overflow_dropped', '', JSONExtract(data, 'dropped', 'Nullable(Int64)'), false)]
+        ) AS m
+    WHERE m.3 IS NOT NULL OR m.1 = 'first_output_ms'
+
+NODE endpoint
+SQL >
+    SELECT
+        metric,
+        detail,
+        client_version,
+        os,
+        count() AS n,
+        countIf(failed) AS failed,
+        round(quantile(0.5)(value)) AS p50,
+        round(quantile(0.95)(value)) AS p95,
+        round(quantile(0.99)(value)) AS p99,
+        max(value) AS max
+    FROM cx_units
+    GROUP BY metric, detail, client_version, os
+    ORDER BY metric, detail, client_version, os
+
+TYPE ENDPOINT

@@ -1,0 +1,19 @@
+# Secrets and local state: never in an image.
+.env
+.env.*
+!.env.example
+.dev.vars
+state.json
+workspaces/
+*.db
+*.db-wal
+*.db-shm
+
+# Rebuilt inside the image.
+node_modules
+
+# Not needed by the gateway.
+.git
+deploy/vm/
+*.md
+!README.md

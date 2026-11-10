@@ -1,0 +1,25 @@
+# gitleaks configuration for computer: the default rules, minus the fake
+# values tests use. Add an entry only for a value that is not a secret, as
+# narrowly as it can be matched.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "signed-header test vectors shared with the managed-agents service (generated, no live key)"
+paths = ['''schema/wire-auth-vectors\.json$''']
+
+# Matched on the whole line, with no path condition: gitleaks skips a file
+# outright when an allowlist names its path.
+[[allowlists]]
+description = "fake keys and tokens in tests and checks; the key the wire-auth vectors are generated with; a metric name"
+regexTarget = "line"
+regexes = [
+  '''const KEY = 'wvKchOLW_FTP0NokuvL3tl2OEXIXZklLRTZLhoTXXHU';''',
+  '''export const KEY = 'test-wire-key-0123456789abcdef';''',
+  ''''sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',''',
+  '''process\.env\.API_KEY === 'sk-live-123456'\)''',
+  '''state\('MONID_API_KEY', 'mk_live_0123456789\\n', 'session'\)''',
+  '''^\s+'sk_live_abcdefghijkl',$''',
+  '''^\s+'AKIAABCDEFGHIJKLMNOP',$''',
+  '''find\(api, 'do_busy_ms_per_min_p95'\)''',
+]

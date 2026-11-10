@@ -1,0 +1,89 @@
+DESCRIPTION >
+    Work 084 Q6, "recovery and the hairy parts", over `[since, until)`: one row per kind and detail with n, failed, duration p50/p95/max (`value`, in ms) and `extra` (a count named in `extra_is`). From blue: `sessionlog.recovery` by kind (gap_4010, stale_epoch, recover_alarm with its reason, session_recovered, epoch_sent, tail_retry), held writes (`computer.write` with `held`: value held_ms; detail timed_out), writes answered from the idempotency record (`replayed`) and timed-out writes, and duplicate or mismatched events an append found (`sessionlog.append` dupes, mismatches). From the host: frames held for an adoption (`api.held`, detail asked), stale-epoch drops (`api.stale_epoch`), adoptions (`api.epoch_adopted` by outcome, torn or not: value frame → adopted; extra the frames held at commit), batches resent after a reconnect (`mirror.batch` resent). From the relay: events dropped as duplicates by seq (`wire.flush` duplicates) and clients detached for an epoch change. Synthetic traffic is included.
+
+TOKEN "calvin_read" READ
+
+NODE rc_events
+SQL >
+    %
+    SELECT event_name, outcome, duration_ms, data
+    FROM calvin_events
+    WHERE
+        event_name IN (
+            'sessionlog.recovery', 'computer.write', 'sessionlog.append', 'api.held', 'api.stale_epoch', 'api.epoch_adopted',
+            'mirror.batch', 'wire.flush', 'wire.detached'
+        )
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+    LIMIT 1 BY event_id
+
+NODE rc_units
+SQL >
+    SELECT
+        multiIf(
+            event_name = 'sessionlog.recovery', concat('blue ', JSONExtractString(data, 'kind')),
+            event_name = 'computer.write' AND JSONExtractBool(data, 'held'), 'blue held write',
+            event_name = 'computer.write' AND JSONExtractBool(data, 'replayed'), 'blue write replayed',
+            event_name = 'computer.write', 'blue write timed out',
+            event_name = 'sessionlog.append', 'blue append dupes/mismatches',
+            event_name = 'api.held', 'host held frame',
+            event_name = 'api.stale_epoch', 'host stale epoch drop',
+            event_name = 'api.epoch_adopted', 'host epoch adopted',
+            event_name = 'mirror.batch', 'host batch resent',
+            event_name = 'wire.flush', 'relay duplicates dropped',
+            'relay detached on epoch change'
+        ) AS kind,
+        multiIf(
+            event_name = 'sessionlog.recovery', JSONExtractString(data, 'reason'),
+            event_name = 'computer.write', if(JSONExtractBool(data, 'timed_out'), 'timed out', ''),
+            event_name = 'api.held', if(JSONExtractBool(data, 'asked'), 'asked for epoch', ''),
+            event_name = 'api.epoch_adopted', concat(outcome, if(JSONExtractBool(data, 'torn'), ' torn', '')),
+            ''
+        ) AS detail,
+        outcome = 'failed' AS failed,
+        if(event_name = 'computer.write' AND JSONExtractBool(data, 'held'), toNullable(JSONExtractInt(data, 'held_ms')), toNullable(toInt64(duration_ms))) AS value,
+        multiIf(
+            event_name = 'sessionlog.recovery', JSONExtractUInt(data, 'events') + JSONExtractUInt(data, 'sessions'),
+            event_name = 'sessionlog.append', JSONExtractUInt(data, 'dupes') + JSONExtractUInt(data, 'mismatches'),
+            event_name = 'api.epoch_adopted', JSONExtractUInt(data, 'held_frames'),
+            event_name = 'mirror.batch', JSONExtractUInt(data, 'events'),
+            event_name = 'wire.flush', JSONExtractUInt(data, 'duplicates'),
+            0
+        ) AS extra,
+        multiIf(
+            event_name = 'sessionlog.recovery', 'events + sessions',
+            event_name = 'sessionlog.append', 'dupes + mismatches',
+            event_name = 'api.epoch_adopted', 'held frames at commit',
+            event_name = 'mirror.batch', 'events resent',
+            event_name = 'wire.flush', 'duplicates',
+            ''
+        ) AS extra_is
+    FROM rc_events
+    WHERE
+        multiIf(
+            event_name = 'computer.write', JSONExtractBool(data, 'held') OR JSONExtractBool(data, 'replayed') OR JSONExtractBool(data, 'timed_out'),
+            event_name = 'sessionlog.append', JSONExtractUInt(data, 'dupes') + JSONExtractUInt(data, 'mismatches') > 0,
+            event_name = 'mirror.batch', JSONExtractBool(data, 'resent'),
+            event_name = 'wire.flush', JSONExtractUInt(data, 'duplicates') > 0,
+            event_name = 'wire.detached', JSONExtractString(data, 'reason') = 'epoch_changed',
+            1
+        )
+
+NODE endpoint
+SQL >
+    SELECT
+        kind,
+        detail,
+        count() AS n,
+        countIf(failed) AS failed,
+        round(quantile(0.5)(value)) AS p50,
+        round(quantile(0.95)(value)) AS p95,
+        max(value) AS max,
+        sum(extra) AS extra,
+        any(extra_is) AS extra_is
+    FROM rc_units
+    GROUP BY kind, detail
+    ORDER BY kind, detail
+
+TYPE ENDPOINT

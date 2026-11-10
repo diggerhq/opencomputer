@@ -1,0 +1,109 @@
+DESCRIPTION >
+    K1 to K8 (work 054, "KPIs") over `[since, until)`, one row per path: p50/p95/p99 rounded to ms with sample counts. Synthetic (canary) traffic is excluded unless `include_synthetic` is set. Silent turns are left out of K2 and K3. K1 (gateway acknowledgement) and K6 (steer latency) have no path and repeat on every row. K7 counts failed turns and abandoned turns (a dead runner writes no row) against all started turns.
+
+TOKEN "calvin_read" READ
+
+NODE turns_in_window
+SQL >
+    %
+    SELECT *
+    FROM turns
+    WHERE
+        sent_at >= {{ DateTime(since, required=True) }}
+        AND sent_at < {{ DateTime(until, required=True) }}
+        {% if defined(path) %} AND path = {{ String(path) }} {% end %}
+        {% if defined(harness) %} AND harness = {{ String(harness) }} {% end %}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY turn_id
+
+NODE events
+SQL >
+    %
+    SELECT event_name, path, duration_ms, data
+    FROM calvin_events
+    WHERE
+        occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        AND event_name
+        IN ('ack.done', 'turn.abandoned', 'surface.call', 'queue.failed')
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE steer_rows
+SQL >
+    %
+    SELECT latency_ms
+    FROM steers
+    WHERE
+        occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+
+NODE per_path
+SQL >
+    SELECT
+        path,
+        count() AS turns,
+        countIf(outcome = 'failed') AS failed,
+        countIf(outcome != 'silent' AND first_visible_ms IS NOT NULL) AS k2_n,
+        round(quantileIf(0.5)(first_visible_ms, outcome != 'silent')) AS k2_p50,
+        round(quantileIf(0.95)(first_visible_ms, outcome != 'silent')) AS k2_p95,
+        round(quantileIf(0.99)(first_visible_ms, outcome != 'silent')) AS k2_p99,
+        round(quantileIf(0.5)(overhead_ms, outcome != 'silent')) AS k3_p50,
+        round(quantileIf(0.95)(overhead_ms, outcome != 'silent')) AS k3_p95,
+        round(quantileIf(0.99)(overhead_ms, outcome != 'silent')) AS k3_p99,
+        round(quantile(0.5)(ttft_ms)) AS k4_p50,
+        round(quantile(0.95)(ttft_ms)) AS k4_p95,
+        round(quantile(0.99)(ttft_ms)) AS k4_p99,
+        round(quantileIf(0.5)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL)) AS k5_p50,
+        round(quantileIf(0.95)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL)) AS k5_p95,
+        round(quantileIf(0.99)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL)) AS k5_p99,
+        sum(surface_calls) AS k8_calls,
+        sum(surface_errors) AS k8_errors,
+        sum(surface_rate_limited) AS k8_rate_limited
+    FROM turns_in_window
+    GROUP BY path
+
+NODE abandoned
+SQL >
+    SELECT path, count() AS abandoned FROM events WHERE event_name = 'turn.abandoned' GROUP BY path
+
+NODE endpoint
+SQL >
+    SELECT
+        p.path AS path,
+        p.turns AS turns,
+        p.k2_n AS k2_n,
+        p.k2_p50 AS k2_p50,
+        p.k2_p95 AS k2_p95,
+        p.k2_p99 AS k2_p99,
+        p.k3_p50 AS k3_p50,
+        p.k3_p95 AS k3_p95,
+        p.k3_p99 AS k3_p99,
+        p.k4_p50 AS k4_p50,
+        p.k4_p95 AS k4_p95,
+        p.k4_p99 AS k4_p99,
+        p.k5_p50 AS k5_p50,
+        p.k5_p95 AS k5_p95,
+        p.k5_p99 AS k5_p99,
+        p.failed AS failed,
+        a.abandoned AS abandoned,
+        round((p.failed + a.abandoned) / (p.turns + a.abandoned), 4) AS k7_failure_ratio,
+        p.k8_calls AS k8_calls,
+        p.k8_errors AS k8_errors,
+        p.k8_rate_limited AS k8_rate_limited,
+        (SELECT count() FROM events WHERE event_name = 'ack.done') AS k1_n,
+        (SELECT round(quantile(0.5)(duration_ms)) FROM events WHERE event_name = 'ack.done') AS k1_p50,
+        (SELECT round(quantile(0.95)(duration_ms)) FROM events WHERE event_name = 'ack.done') AS k1_p95,
+        (SELECT round(quantile(0.99)(duration_ms)) FROM events WHERE event_name = 'ack.done') AS k1_p99,
+        (SELECT count() FROM steer_rows) AS k6_n,
+        (SELECT round(quantile(0.95)(latency_ms)) FROM steer_rows) AS k6_p95,
+        (SELECT count() FROM events WHERE event_name = 'queue.failed') AS queue_failed
+    FROM per_path AS p
+    LEFT JOIN abandoned AS a ON a.path = p.path
+    ORDER BY path
+
+TYPE ENDPOINT

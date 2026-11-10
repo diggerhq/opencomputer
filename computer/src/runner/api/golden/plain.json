@@ -1,0 +1,156 @@
+[
+ {
+  "step": "send hi there"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Thread C1-1-0",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": ":thread: Thread `C1-1-0`  ·  `!help` for commands"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": null,
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nhi there",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed session,request"
+ },
+ {
+  "persist": {
+   "mode": "default",
+   "sdk": "sdk-1"
+  }
+ },
+ {
+  "step": "feed request,block,live,block,thinking"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.3",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Thought for 1s · pondering the greeting",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed block,live,live,live,block,text,message,request"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.3",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Thought for 1s",
+     "status": "complete",
+     "details": "pondering the greeting"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Hello! How can I help?"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.3",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "opus-4-5 · default · 6s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]

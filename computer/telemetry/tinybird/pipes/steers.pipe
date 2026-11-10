@@ -1,0 +1,16 @@
+DESCRIPTION >
+    K6, steer latency (work 054), one row per steer: from the person sending a mid-turn message to the runner pushing it into the running turn (`prompt.pushed` with `steer`). The wait for the running tool to finish is the model's turn structure, not ours, so it is left out. Runners before calvin#49 reported `steer.delivered` with the latency already computed.
+
+TOKEN "calvin_read" READ
+
+NODE steers_all
+SQL >
+    SELECT occurred_at, org_id, path, harness, synthetic, toInt64(dateDiff('millisecond', assumeNotNull(sent_at), occurred_at)) AS latency_ms
+    FROM calvin_events
+    WHERE event_name = 'prompt.pushed' AND JSONExtractBool(data, 'steer') AND sent_at IS NOT NULL
+    LIMIT 1 BY event_id
+    UNION ALL
+    SELECT occurred_at, org_id, path, harness, synthetic, greatest(0, toInt64(duration_ms) - JSONExtractInt(data, 'boundary_wait_ms')) AS latency_ms
+    FROM calvin_events
+    WHERE event_name = 'steer.delivered' AND duration_ms IS NOT NULL
+    LIMIT 1 BY event_id

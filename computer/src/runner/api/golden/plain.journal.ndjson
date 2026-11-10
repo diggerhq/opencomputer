@@ -1,0 +1,9 @@
+{"seq":1,"type":"message.received","turnId":"tn#1","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nhi there","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":2,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":null,"to":"claude-opus-5-5"}}}}
+{"seq":3,"type":"turn.started","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
+{"seq":5,"type":"reasoning.completed","turnId":"tn#1","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"pondering the greeting","redacted":false,"durationMs":0}}
+{"seq":6,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"1","parentCallId":null,"text":"Hello! How can I help?"}}
+{"seq":7,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-4-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.0123","firstTokenMs":2000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":8,"type":"turn.completed","turnId":"tn#1","actor":null,"data":{"text":"Hello! How can I help?","durationMs":6000,"silent":false}}
+{"seq":9,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

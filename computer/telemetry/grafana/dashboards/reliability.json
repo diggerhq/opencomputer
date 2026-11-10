@@ -1,0 +1,235 @@
+{
+  "uid": "calvin-reliability",
+  "title": "Calvin · Reliability",
+  "tags": [
+    "calvin",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Tinybird",
+        "query": "grafana-clickhouse-datasource",
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Calvin",
+      "type": "dashboards",
+      "tags": [
+        "calvin"
+      ],
+      "asDropdown": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Turn outcomes",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, outcome, count() AS turns FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time, outcome ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Gateway and host trouble",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, event_name, count() AS n\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('queue.retried', 'queue.failed', 'dispatch.parked', 'dispatch.resent', 'turn.abandoned', 'host.connected', 'host.disconnected') LIMIT 1 BY event_id)\nGROUP BY time, event_name ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "K8 slow, failed or rate-limited frontend calls by method",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT JSONExtractString(data, 'method') AS method, count() AS calls, countIf(JSONExtractBool(data, 'rate_limited')) AS rate_limited, quantile(0.95)(duration_ms) AS p95_ms\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('surface.call') LIMIT 1 BY event_id) GROUP BY method ORDER BY calls DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Telemetry dropped by reason",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, JSONExtractString(data, 'reason') AS reason, sum(JSONExtractUInt(data, 'count')) AS dropped\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('telemetry.dropped') LIMIT 1 BY event_id) GROUP BY time, reason ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Host batch gaps",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT host_id, JSONExtractString(data, 'host_boot_id') AS boot, count() AS batches,\n  max(JSONExtractUInt(data, 'batch_seq')) - min(JSONExtractUInt(data, 'batch_seq')) + 1 - uniqExact(JSONExtractUInt(data, 'batch_seq')) AS missing\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('telemetry.batch') LIMIT 1 BY event_id) GROUP BY host_id, boot ORDER BY missing DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

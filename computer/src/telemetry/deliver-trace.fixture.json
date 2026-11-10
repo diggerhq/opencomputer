@@ -1,0 +1,30 @@
+{
+  "t": "deliver",
+  "id": "d-0001",
+  "session": {
+    "key": "T0TESTTEAM0:C0TESTCHAN0:1791840824.236589",
+    "kind": "thread",
+    "channel": "C0TESTCHAN0",
+    "threadTs": "1791840824.236589",
+    "owner": { "slackUserId": "U0TESTUSER0", "dir": "owner", "gitName": "Owner", "gitEmail": "owner@example.com" },
+    "teamId": "T0TESTTEAM0",
+    "title": "telemetry",
+    "mode": "bypassPermissions"
+  },
+  "msg": { "userId": "U0TESTUSER0", "text": "hello", "ts": "1791840900.000100", "mentioned": true },
+  "trace": {
+    "id": "019a3b4c-0000-7000-8000-000000000001",
+    "sentAt": 1791840900000,
+    "receivedAt": 1791840900180,
+    "dispatchedAt": 1791840900230,
+    "surface": "slack",
+    "surfaceWorkspaceId": "T0TESTTEAM0",
+    "conversationId": "C0TESTCHAN0",
+    "personId": "U0TESTUSER0",
+    "surfaceEventId": "Ev0123456789",
+    "gatewayVersion": "w-2026-10-12",
+    "gatewayRegion": "SJC",
+    "gatewaySessionId": "6f1c2b9e-1111-4222-8333-944455556666",
+    "synthetic": false
+  }
+}

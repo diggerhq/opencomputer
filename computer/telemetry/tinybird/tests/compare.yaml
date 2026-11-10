@@ -1,0 +1,25 @@
+- name: by_path
+  description: new vs warm, canary excluded
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&by=path
+  expected_result: |
+    {"dimension":"new","turns":1,"k2_p50":5200,"k2_p95":5200,"k3_p50":3500,"k3_p95":3500,"k4_p50":1500,"k4_p95":1500,"k5_p95":2000,"client_lag_p95":null,"loop_lag_p95":null,"cache_hit_ratio":0.75,"tokens_per_turn":4200,"cost_per_turn_usd":0.02,"failed_ratio":0}
+    {"dimension":"warm","turns":3,"k2_p50":2550,"k2_p95":2955,"k3_p50":375,"k3_p95":442,"k4_p50":1000,"k4_p95":1180,"k5_p95":4900,"client_lag_p95":null,"loop_lag_p95":null,"cache_hit_ratio":0.9,"tokens_per_turn":4467,"cost_per_turn_usd":0.015,"failed_ratio":0}
+
+- name: by_model
+  description: one model
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&by=model
+  expected_result: |
+    {"dimension":"claude-opus-5-5","turns":4,"k2_p50":3000,"k2_p95":4980,"k3_p50":450,"k3_p95":3195,"k4_p50":1100,"k4_p95":1455,"k5_p95":4800,"client_lag_p95":null,"loop_lag_p95":null,"cache_hit_ratio":0.8647,"tokens_per_turn":4400,"cost_per_turn_usd":0.01625,"failed_ratio":0}
+
+- name: by_ctx
+  description: context buckets; turns from runners before work 068 have none
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&by=ctx
+  expected_result: |
+    {"dimension":"unknown","turns":4,"k2_p50":3000,"k2_p95":4980,"k3_p50":450,"k3_p95":3195,"k4_p50":1100,"k4_p95":1455,"k5_p95":4800,"client_lag_p95":null,"loop_lag_p95":null,"cache_hit_ratio":0.8647,"tokens_per_turn":4400,"cost_per_turn_usd":0.01625,"failed_ratio":0}
+
+- name: bad_dimension
+  description: by outside the allowed list is a 400
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&by=person_id
+  expected_result: |-
+    by must be one of harness, provider, model, surface, substrate, path, ctx
+  expected_http_status: 400

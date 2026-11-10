@@ -1,0 +1,21 @@
+{"seq":1,"type":"message.received","turnId":"tn#1","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ndeploy","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":2,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":null,"to":"claude-opus-5-5"}}}}
+{"seq":3,"type":"turn.started","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
+{"seq":5,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"Deploying."}}
+{"seq":6,"type":"tool.started","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Bash","callId":"tu_1","parentCallId":null,"title":"Bash(./deploy.sh)","input":{"command":"./deploy.sh"},"inputTruncated":false}}
+{"seq":7,"type":"ask.opened","turnId":"tn#1","actor":null,"data":{"ask":{"id":"ak#3","sessionId":"cs#4","turnId":"tn#1","kind":"approval","status":"open","createdAt":"2026-10-26T00:00:02.000Z","closedAt":null,"closedBy":null,"answer":null,"approval":{"toolName":"Bash","callId":"tu_1","input":{"command":"./deploy.sh"},"title":"Claude wants to use Bash","alwaysAllows":"Bash"},"question":null,"secret":null}}}
+{"seq":8,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"waiting"}}
+{"seq":9,"type":"ask.closed","turnId":"tn#1","actor":null,"data":{"ask":{"id":"ak#3","sessionId":"cs#4","turnId":"tn#1","kind":"approval","status":"interrupted","createdAt":"2026-10-26T00:00:02.000Z","closedAt":"2026-10-26T00:00:03.000Z","closedBy":null,"answer":null,"approval":{"toolName":"Bash","callId":"tu_1","input":{"command":"./deploy.sh"},"title":"Claude wants to use Bash","alwaysAllows":"Bash"},"question":null,"secret":null}}}
+{"seq":10,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"waiting","to":"running"}}
+{"seq":11,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":1,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":null,"firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":12,"type":"tool.failed","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Bash","callId":"tu_1","parentCallId":null,"title":"Bash(./deploy.sh)","message":"the turn ended before the call did","settledBy":"turn.cancelled"}}
+{"seq":13,"type":"turn.cancelled","turnId":"tn#1","actor":null,"data":{"reason":"interrupted","forced":false,"input":null}}
+{"seq":14,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}
+{"seq":15,"type":"message.received","turnId":"tn#5","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ntry again later","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":16,"type":"turn.started","turnId":"tn#5","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":17,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"idle","to":"running"}}
+{"seq":18,"type":"message.completed","turnId":"tn#5","actor":null,"data":{"blockId":"1","parentCallId":null,"text":"Ok."}}
+{"seq":19,"type":"usage.recorded","turnId":"tn#5","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.0123","firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":20,"type":"turn.completed","turnId":"tn#5","actor":null,"data":{"text":"Ok.","durationMs":1000,"silent":false}}
+{"seq":21,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

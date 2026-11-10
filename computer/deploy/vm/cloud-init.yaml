@@ -1,0 +1,41 @@
+#cloud-config
+# EC2 alternative (production runs on the hosts: deploy/update.sh).
+# User-data for the shared slack-presence VM (Ubuntu 24.04, EC2). Template:
+# replace the three __PLACEHOLDERS__ before `aws ec2 run-instances
+# --user-data file://...` (deploy/RUNBOOK.md, D3). It fetches provision.sh from
+# the (private) repository and runs it.
+#
+# What is NOT in here on purpose: the host token. User-data stays readable from
+# the instance metadata service for the instance's lifetime, so only a
+# short-lived, read-only token for cloning goes here (a fine-grained PAT with
+# Contents: read on slack-presence only, expiring in 1 day). The host token is
+# written afterwards over SSM by re-running provision.sh with SP_HOST_TOKEN.
+# (provision.sh also blocks the metadata service for the `agent` user.)
+#
+# Logs: /var/log/cloud-init-output.log
+
+write_files:
+  - path: /root/slack-presence-provision.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      REPO_URL=https://github.com/__GITHUB_REPO__.git
+      REPO_REF=main
+      CLOUD=aws
+      REPO_TOKEN=__REPO_TOKEN__
+      DATA_VOLUME_ID=__DATA_VOLUME_ID__
+
+runcmd:
+  - - bash
+    - -c
+    - |
+      set -euo pipefail
+      set -a; . /root/slack-presence-provision.env; set +a
+      curl -fsSL \
+        -H "Authorization: Bearer ${REPO_TOKEN}" \
+        -H "Accept: application/vnd.github.raw" \
+        "https://api.github.com/repos/__GITHUB_REPO__/contents/deploy/vm/provision.sh?ref=${REPO_REF}" \
+        -o /root/provision.sh
+      bash /root/provision.sh
+      # The clone token is not needed again; later updates pass a fresh one.
+      sed -i 's/^REPO_TOKEN=.*/REPO_TOKEN=/' /root/slack-presence-provision.env

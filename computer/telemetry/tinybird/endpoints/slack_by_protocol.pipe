@@ -1,0 +1,160 @@
+DESCRIPTION >
+    Work 084 Q1, "did Slack get slower because of 084?": K1 to K6 of Slack turns over `[since, until)` per runner protocol and path. `protocol` comes from the runner's `turn.started`: `v3` (no journal, or a runner from before 084), `v4` (the runner wrote the session's journal) or `v4+client` (an API client such as opc was attached when the turn started). K1 joins on `trace_id`; K6 takes the protocol of the session's latest turn before the push. K1 and K6 have no path and repeat on every row of their protocol. The journal's cost per v4 turn of that protocol and path: batches and events shipped to the Computer DO (`mirror.batch`) and the p95 runner → host send age of urgent batches (no flush wait). Synthetic traffic is excluded unless `include_synthetic`. The CI answer to the same question is `npm run perf-check`.
+
+TOKEN "calvin_read" READ
+
+NODE sbp_protocol
+SQL >
+    %
+    SELECT
+        turn_id,
+        trace_id,
+        session_key,
+        occurred_at AS started_at,
+        path,
+        multiIf(
+            JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client',
+            JSONExtractUInt(data, 'host_protocol') = 4, 'v4',
+            'v3'
+        ) AS protocol
+    FROM calvin_events
+    WHERE
+        event_name = 'turn.started'
+        AND turn_id != ''
+        AND occurred_at >= {{ DateTime(since, required=True) }} - INTERVAL 1 DAY
+        AND occurred_at < {{ DateTime(until, required=True) }} + INTERVAL 1 HOUR
+    LIMIT 1 BY turn_id
+
+NODE sbp_turns
+SQL >
+    %
+    SELECT t.path AS path, if(p.protocol = '', 'v3', p.protocol) AS protocol, t.outcome AS outcome,
+        t.first_visible_ms AS first_visible_ms, t.overhead_ms AS overhead_ms, t.ttft_ms AS ttft_ms, t.max_silence_ms AS max_silence_ms
+    FROM
+        (
+            SELECT *
+            FROM turns
+            WHERE
+                sent_at >= {{ DateTime(since, required=True) }}
+                AND sent_at < {{ DateTime(until, required=True) }}
+                AND surface = 'slack'
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+                {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+            LIMIT 1 BY turn_id
+        ) AS t
+    LEFT JOIN sbp_protocol AS p ON p.turn_id = t.turn_id
+
+NODE sbp_acks
+SQL >
+    %
+    SELECT if(p.protocol = '', 'v3', p.protocol) AS protocol, a.duration_ms AS k1_ms
+    FROM
+        (
+            SELECT trace_id, duration_ms
+            FROM calvin_events
+            WHERE
+                event_name = 'ack.done'
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+                {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+            LIMIT 1 BY event_id
+        ) AS a
+    LEFT JOIN (SELECT trace_id, any(protocol) AS protocol FROM sbp_protocol GROUP BY trace_id) AS p ON p.trace_id = a.trace_id
+
+NODE sbp_steers
+SQL >
+    %
+    SELECT if(p.protocol = '', 'v3', p.protocol) AS protocol, s.latency_ms AS k6_ms
+    FROM
+        (
+            SELECT session_key, occurred_at, toInt64(dateDiff('millisecond', assumeNotNull(sent_at), occurred_at)) AS latency_ms
+            FROM calvin_events
+            WHERE
+                event_name = 'prompt.pushed'
+                AND JSONExtractBool(data, 'steer')
+                AND sent_at IS NOT NULL
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+                {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+            LIMIT 1 BY event_id
+        ) AS s
+    ASOF LEFT JOIN sbp_protocol AS p ON p.session_key = s.session_key AND s.occurred_at >= p.started_at
+
+NODE sbp_journal
+SQL >
+    %
+    SELECT if(p.protocol = '', 'v3', p.protocol) AS protocol, p.path AS path, b.batches AS batches, b.events AS events, b.urgent_age_max AS urgent_age_max
+    FROM
+        (
+            SELECT
+                turn_id,
+                count() AS batches,
+                sum(JSONExtractUInt(data, 'events')) AS events,
+                maxIf(JSONExtractUInt(data, 'newest_age_ms'), JSONExtractBool(data, 'urgent')) AS urgent_age_max
+            FROM
+                (
+                    SELECT turn_id, data
+                    FROM calvin_events
+                    WHERE
+                        event_name = 'mirror.batch'
+                        AND turn_id != ''
+                        AND occurred_at >= {{ DateTime(since, required=True) }}
+                        AND occurred_at < {{ DateTime(until, required=True) }} + INTERVAL 1 HOUR
+                        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+                    LIMIT 1 BY event_id
+                )
+            GROUP BY turn_id
+        ) AS b
+    INNER JOIN sbp_protocol AS p ON p.turn_id = b.turn_id
+
+NODE sbp_by_protocol
+SQL >
+    SELECT
+        protocol,
+        path,
+        count() AS turns,
+        countIf(outcome != 'silent' AND first_visible_ms IS NOT NULL) AS k2_n,
+        round(quantileIf(0.5)(first_visible_ms, outcome != 'silent')) AS k2_p50,
+        round(quantileIf(0.95)(first_visible_ms, outcome != 'silent')) AS k2_p95,
+        round(quantileIf(0.5)(overhead_ms, outcome != 'silent')) AS k3_p50,
+        round(quantileIf(0.95)(overhead_ms, outcome != 'silent')) AS k3_p95,
+        round(quantile(0.95)(ttft_ms)) AS k4_p95,
+        round(quantileIf(0.95)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL)) AS k5_p95
+    FROM sbp_turns
+    GROUP BY protocol, path
+
+NODE endpoint
+SQL >
+    SELECT
+        k.protocol AS protocol,
+        k.path AS path,
+        k.turns AS turns,
+        k.k2_n AS k2_n,
+        k.k2_p50 AS k2_p50,
+        k.k2_p95 AS k2_p95,
+        k.k3_p50 AS k3_p50,
+        k.k3_p95 AS k3_p95,
+        k.k4_p95 AS k4_p95,
+        k.k5_p95 AS k5_p95,
+        a.k1_n AS k1_n,
+        if(a.k1_n = 0, NULL, a.k1_p95) AS k1_p95,
+        s.k6_n AS k6_n,
+        if(s.k6_n = 0, NULL, s.k6_p95) AS k6_p95,
+        j.journal_turns AS journal_turns,
+        if(j.journal_turns = 0, NULL, j.batches_per_turn_p95) AS batches_per_turn_p95,
+        if(j.journal_turns = 0, NULL, j.events_per_turn_p95) AS events_per_turn_p95,
+        if(j.journal_turns = 0, NULL, j.urgent_send_age_p95) AS urgent_send_age_p95
+    FROM sbp_by_protocol AS k
+    LEFT JOIN (SELECT protocol, count() AS k1_n, round(quantile(0.95)(k1_ms)) AS k1_p95 FROM sbp_acks GROUP BY protocol) AS a ON a.protocol = k.protocol
+    LEFT JOIN (SELECT protocol, count() AS k6_n, round(quantile(0.95)(k6_ms)) AS k6_p95 FROM sbp_steers GROUP BY protocol) AS s ON s.protocol = k.protocol
+    LEFT JOIN
+        (
+            SELECT protocol, path, count() AS journal_turns, round(quantile(0.95)(batches)) AS batches_per_turn_p95,
+                round(quantile(0.95)(events)) AS events_per_turn_p95, round(quantile(0.95)(urgent_age_max)) AS urgent_send_age_p95
+            FROM sbp_journal GROUP BY protocol, path
+        ) AS j ON j.protocol = k.protocol AND j.path = k.path
+    ORDER BY protocol, path
+
+TYPE ENDPOINT

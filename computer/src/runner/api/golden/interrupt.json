@@ -1,0 +1,302 @@
+[
+ {
+  "step": "send deploy"
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ndeploy",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Deploying."
+    },
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Bash(./deploy.sh)",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate Bash"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Claude wants to use Bash",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Claude wants to use Bash*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "```\n./deploy.sh\n```"
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow"
+       },
+       "action_id": "p:QzEtMS4w:00000003:allow",
+       "value": "allow",
+       "style": "primary"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow Bash for this session"
+       },
+       "action_id": "p:QzEtMS4w:00000003:always",
+       "value": "always"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Deny"
+       },
+       "action_id": "p:QzEtMS4w:00000003:deny",
+       "value": "deny",
+       "style": "danger"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here to decline and say what to do instead"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Bash(./deploy.sh) · waiting for approval ↓",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "interrupt"
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.4"
+  }
+ },
+ {
+  "decision": "tu_1",
+  "d": {
+   "behavior": "deny",
+   "message": "Interrupted by the user.",
+   "interrupt": true
+  }
+ },
+ {
+  "harness": "interrupt"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Bash(./deploy.sh)",
+     "status": "error",
+     "details": "interrupted"
+    }
+   ],
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "⏹ interrupted · default · default · 3s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ },
+ {
+  "step": "send try again later"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ntry again later",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.9",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Ok."
+    }
+   ],
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · default · 1s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]
