@@ -1,0 +1,60 @@
+{
+  "name": "@opencomputer/managed-agents-backend",
+  "version": "0.0.19",
+  "description": "OpenComputer managed-agent control plane and runtime.",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit && npm run check --prefix src/workerd-runtime",
+    "runtime": "tsx src/runtime/local-runtime.ts",
+    "test": "vitest run",
+    "test:reactive:e2e": "vitest run test/opencode2-reactive-e2e.test.ts",
+    "test:watch": "vitest",
+    "typegen": "wrangler types",
+    "deploy": "wrangler deploy",
+    "deploy:edge:production": "wrangler deploy --config wrangler.production.jsonc",
+    "deploy:workerd:production": "wrangler deploy --config wrangler.workerd.jsonc",
+    "deploy:platform": "wrangler deploy --config wrangler.platform.jsonc",
+    "deploy:previews:production": "wrangler deploy --config wrangler.previews.jsonc",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "check:startup": "wrangler check startup",
+    "telemetry-credential": "tsx scripts/telemetry-credential.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1094.0",
+    "@cfworker/json-schema": "^4.1.1",
+    "@libsql/client": "^0.18.0",
+    "@opencode-ai/cli-v2": "npm:@opencode-ai/cli@0.0.0-next-17055",
+    "@opencode-ai/client-v2": "npm:@opencode-ai/client@0.0.0-next-17055",
+    "@opencode-ai/plugin-v2": "npm:@opencode-ai/plugin@0.0.0-next-17055",
+    "@opencode-ai/sdk": "1.18.4",
+    "@opencomputer/sdk": "^0.15.7",
+    "@pierre/storage": "^1.16.2",
+    "@slack/web-api": "^8.0.0",
+    "@trigger.dev/sdk": "^4.5.15",
+    "@tursodatabase/api": "^2.0.5",
+    "@xmldom/xmldom": "^0.9.12",
+    "croner": "^9.1.0",
+    "jose": "^6.2.4",
+    "opencode-ai": "1.18.4",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@aws-sdk/s3-request-presigner": "^3.1095.0",
+    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@cloudflare/workers-types": "5.20260723.1",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "trigger.dev": "^4.5.15",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "4.1.10",
+    "wrangler": "4.114.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

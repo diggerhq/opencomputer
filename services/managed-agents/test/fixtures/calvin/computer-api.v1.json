@@ -1,0 +1,6691 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencomputer.dev/schemas/computer-api.v1.json",
+  "title": "OpenComputer Computer API v1",
+  "description": "Objects, events, WebSocket methods and notifications of the Computer API. Generated from calvin src/api/schema.ts; do not edit.",
+  "x-eventTypes": [
+    "session.created",
+    "session.status_changed",
+    "session.updated",
+    "session.compacted",
+    "message.received",
+    "turn.queued",
+    "turn.steered",
+    "turn.started",
+    "turn.status_changed",
+    "turn.completed",
+    "turn.failed",
+    "turn.cancelled",
+    "message.completed",
+    "reasoning.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "subagent.started",
+    "subagent.ended",
+    "ask.opened",
+    "ask.closed",
+    "usage.recorded",
+    "model.rate_limited",
+    "runtime.starting",
+    "runtime.connected",
+    "runtime.suspended",
+    "files.pushed",
+    "terminal.opened",
+    "terminal.closed"
+  ],
+  "x-methods": {
+    "sessions.attach": "-",
+    "sessions.detach": "-",
+    "sessions.get": "GET /sessions/{id}",
+    "sessions.update": "PATCH /sessions/{id}",
+    "sessions.interrupt": "POST /sessions/{id}/interrupt",
+    "sessions.compact": "POST /sessions/{id}/compact",
+    "sessions.suspend": "POST /sessions/{id}/suspend",
+    "sessions.resume": "POST /sessions/{id}/resume",
+    "turns.send": "POST /sessions/{id}/turns",
+    "turns.get": "GET /sessions/{id}/turns/{turnId}",
+    "turns.cancel": "POST /sessions/{id}/turns/{turnId}/cancel",
+    "asks.list": "GET /sessions/{id}/asks",
+    "asks.get": "GET /sessions/{id}/asks/{askId}",
+    "asks.answer": "POST /sessions/{id}/asks/{askId}/answer (body: the answer)",
+    "asks.dismiss": "POST /sessions/{id}/asks/{askId}/dismiss",
+    "subagents.list": "GET /sessions/{id}/subagents",
+    "subagents.get": "GET /sessions/{id}/subagents/{subagentId}",
+    "subagents.stop": "POST /sessions/{id}/subagents/{subagentId}/stop",
+    "events.list": "GET /sessions/{id}/events",
+    "terminals.open": "-",
+    "terminals.resize": "-",
+    "terminals.eof": "-",
+    "terminals.close": "-",
+    "ping": "-"
+  },
+  "type": "object",
+  "properties": {
+    "objects": {
+      "type": "object",
+      "properties": {
+        "Session": {
+          "$ref": "#/$defs/Session"
+        },
+        "Turn": {
+          "$ref": "#/$defs/Turn"
+        },
+        "TurnSummary": {
+          "$ref": "#/$defs/TurnSummary"
+        },
+        "Ask": {
+          "$ref": "#/$defs/Ask"
+        },
+        "DeclineAnswer": {
+          "$ref": "#/$defs/DeclineAnswer"
+        },
+        "Actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "Person": {
+          "$ref": "#/$defs/Person"
+        },
+        "Capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        },
+        "Secret": {
+          "$ref": "#/$defs/Secret"
+        },
+        "Result": {
+          "$ref": "#/$defs/Result"
+        },
+        "Error": {
+          "$ref": "#/$defs/Error"
+        },
+        "Event": {
+          "$ref": "#/$defs/Event"
+        },
+        "Delta": {
+          "$ref": "#/$defs/Delta"
+        }
+      },
+      "required": [
+        "Session",
+        "Turn",
+        "TurnSummary",
+        "Ask",
+        "DeclineAnswer",
+        "Actor",
+        "Person",
+        "Capabilities",
+        "Secret",
+        "Result",
+        "Error",
+        "Event",
+        "Delta"
+      ],
+      "additionalProperties": true
+    },
+    "methods": {
+      "type": "object",
+      "properties": {
+        "sessions.attach": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "after": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "tailTurns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50
+                },
+                "deltas": {
+                  "type": "boolean"
+                },
+                "resume": {
+                  "type": "boolean"
+                },
+                "readOnly": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/AttachResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.detach": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "not": {
+                "type": "null"
+              }
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.get": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "minSeq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/Session"
+                }
+              },
+              "required": [
+                "session"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.update": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "model": {
+                  "type": "string"
+                },
+                "effort": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "archived": {
+                  "type": "boolean"
+                },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SessionResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.interrupt": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SessionResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.compact": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "instructions": {
+                  "type": "string",
+                  "maxLength": 10000
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SendResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.suspend": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "ifIdle": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SessionResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.resume": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SessionResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "turns.send": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "input": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100000
+                },
+                "ifBusy": {
+                  "type": "string",
+                  "enum": [
+                    "queue",
+                    "steer",
+                    "interrupt"
+                  ]
+                }
+              },
+              "required": [
+                "sessionId",
+                "input"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/SendResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "turns.get": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                },
+                "waitMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 60000
+                },
+                "status": {
+                  "type": "string"
+                },
+                "minSeq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "sessionId",
+                "turnId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "turn": {
+                  "$ref": "#/$defs/Turn"
+                }
+              },
+              "required": [
+                "turn"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "turns.cancel": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "sessionId",
+                "turnId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "turn": {
+                  "$ref": "#/$defs/Turn"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "turn",
+                "seq"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "asks.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "cursor": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "asks": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Ask"
+                  }
+                },
+                "nextCursor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "asks",
+                "nextCursor"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "asks.get": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "askId": {
+                  "type": "string",
+                  "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`ak_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "sessionId",
+                "askId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "ask": {
+                  "$ref": "#/$defs/Ask"
+                }
+              },
+              "required": [
+                "ask"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "asks.answer": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "askId": {
+                  "type": "string",
+                  "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`ak_` + 12 lowercase Crockford base32"
+                },
+                "answer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ApprovalAnswer"
+                    },
+                    {
+                      "$ref": "#/$defs/QuestionAnswer"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "sessionId",
+                "askId",
+                "answer"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/AskResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "asks.dismiss": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "askId": {
+                  "type": "string",
+                  "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`ak_` + 12 lowercase Crockford base32"
+                },
+                "message": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "required": [
+                "sessionId",
+                "askId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "$ref": "#/$defs/AskResult"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "subagents.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "running",
+                    "all"
+                  ]
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "cursor": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Subagent"
+                  }
+                },
+                "nextCursor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "subagents",
+                "nextCursor"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "subagents.get": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "subagentId": {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "sessionId",
+                "subagentId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "subagent": {
+                  "$ref": "#/$defs/Subagent"
+                }
+              },
+              "required": [
+                "subagent"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "subagents.stop": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255
+                },
+                "subagentId": {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "sessionId",
+                "subagentId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "subagent": {
+                  "$ref": "#/$defs/Subagent"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "subagent",
+                "seq"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "events.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "after": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 500
+                },
+                "waitMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 60000
+                },
+                "tailTurns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                },
+                "types": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Event"
+                  }
+                },
+                "earlierTurns": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/Turn"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lastSeq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "hasMore": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "events",
+                "earlierTurns",
+                "lastSeq",
+                "hasMore"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "terminals.open": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "cols": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "rows": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "command": {
+                  "type": "string",
+                  "maxLength": 10000
+                },
+                "tty": {
+                  "type": "boolean"
+                },
+                "term": {
+                  "type": "string",
+                  "maxLength": 64
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "terminal": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^tm_[0-9a-hjkmnp-tv-z]{12}$",
+                      "description": "`tm_` + 12 lowercase Crockford base32"
+                    },
+                    "channel": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "stderrChannel": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "channel",
+                    "stderrChannel"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "terminal"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "terminals.resize": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "terminalId": {
+                  "type": "string",
+                  "pattern": "^tm_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tm_` + 12 lowercase Crockford base32"
+                },
+                "cols": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "rows": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                }
+              },
+              "required": [
+                "terminalId",
+                "cols",
+                "rows"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "not": {
+                "type": "null"
+              }
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "terminals.eof": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "terminalId": {
+                  "type": "string",
+                  "pattern": "^tm_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tm_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "terminalId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "not": {
+                "type": "null"
+              }
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "terminals.close": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "terminalId": {
+                  "type": "string",
+                  "pattern": "^tm_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tm_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "terminalId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "not": {
+                "type": "null"
+              }
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "ping": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "not": {
+                "type": "null"
+              }
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "timing": {
+                  "type": "object",
+                  "properties": {
+                    "serverUs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "serverUs"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "timing"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "sessions.attach",
+        "sessions.detach",
+        "sessions.get",
+        "sessions.update",
+        "sessions.interrupt",
+        "sessions.compact",
+        "sessions.suspend",
+        "sessions.resume",
+        "turns.send",
+        "turns.get",
+        "turns.cancel",
+        "asks.list",
+        "asks.get",
+        "asks.answer",
+        "asks.dismiss",
+        "subagents.list",
+        "subagents.get",
+        "subagents.stop",
+        "events.list",
+        "terminals.open",
+        "terminals.resize",
+        "terminals.eof",
+        "terminals.close",
+        "ping"
+      ],
+      "additionalProperties": true
+    },
+    "notifications": {
+      "type": "object",
+      "properties": {
+        "ready": {
+          "type": "object",
+          "properties": {
+            "connectionId": {
+              "type": "string"
+            },
+            "server": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "region": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "version",
+                "region"
+              ],
+              "additionalProperties": true
+            },
+            "protocol": {
+              "type": "object",
+              "properties": {
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "features"
+              ],
+              "additionalProperties": true
+            },
+            "limits": {
+              "$ref": "#/$defs/Limits"
+            },
+            "expiresAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expiresInMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "connectionId",
+            "server",
+            "protocol",
+            "limits",
+            "expiresAt",
+            "expiresInMs"
+          ],
+          "additionalProperties": true
+        },
+        "sessions.attached": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Error"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Session"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "logEpoch": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "epochStartSeq": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capabilities": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Capabilities"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "earlierTurns": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Turn"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "timing": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "serverUs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "serverUs"
+                  ],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sessionId",
+            "error",
+            "session",
+            "logEpoch",
+            "epochStartSeq",
+            "capabilities",
+            "earlierTurns",
+            "timing"
+          ],
+          "additionalProperties": true
+        },
+        "event": {
+          "$ref": "#/$defs/Event"
+        },
+        "delta": {
+          "$ref": "#/$defs/Delta"
+        },
+        "session.detached": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "logEpoch": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "Infinity",
+                    "-Infinity",
+                    "NaN"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "epochStartSeq": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "Infinity",
+                    "-Infinity",
+                    "NaN"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sessionId",
+            "reason"
+          ],
+          "additionalProperties": true
+        },
+        "terminal.exited": {
+          "type": "object",
+          "properties": {
+            "terminalId": {
+              "type": "string",
+              "pattern": "^tm_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tm_` + 12 lowercase Crockford base32"
+            },
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "signal": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "terminalId",
+            "exitCode",
+            "signal"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "ready",
+        "sessions.attached",
+        "event",
+        "delta",
+        "session.detached",
+        "terminal.exited"
+      ],
+      "additionalProperties": true
+    },
+    "clientNotifications": {
+      "type": "object",
+      "properties": {
+        "sessions.ack": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "sessionId",
+            "seq"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "sessions.ack"
+      ],
+      "additionalProperties": true
+    },
+    "http": {
+      "type": "object",
+      "properties": {
+        "createSession": {
+          "$ref": "#/$defs/CreateSessionBody"
+        }
+      },
+      "required": [
+        "createSession"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "objects",
+    "methods",
+    "notifications",
+    "clientNotifications",
+    "http"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "SessionId": {
+      "type": "string",
+      "pattern": "^cs_[0-9a-hjkmnp-tv-z]{16}$",
+      "description": "`cs_` + 16 lowercase Crockford base32"
+    },
+    "Person": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "email"
+      ],
+      "additionalProperties": true
+    },
+    "Origin": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "One of `slack`, `opc`, `dashboard`, `api`; may gain values.",
+          "examples": [
+            "slack"
+          ]
+        },
+        "client": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "slack": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "teamId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "channelId": {
+                  "type": "string"
+                },
+                "channelName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "threadTs": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "teamId",
+                "channelId",
+                "channelName",
+                "threadTs",
+                "url"
+              ],
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "client",
+        "slack"
+      ],
+      "additionalProperties": true
+    },
+    "Settings": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "effort",
+        "mode"
+      ],
+      "additionalProperties": true
+    },
+    "Actor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "via": {
+          "type": "string",
+          "description": "One of `slack`, `opc`, `dashboard`, `api`; may gain values.",
+          "examples": [
+            "slack"
+          ]
+        },
+        "client": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "via",
+        "client"
+      ],
+      "additionalProperties": true
+    },
+    "TurnError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "One of `model_rejected`, `model_unavailable`, `model_stream_failed`, `context_too_long`, `runtime_lost`, `runtime_failed`, `tool_failed`, `agent_failed`; may gain values.",
+          "examples": [
+            "model_rejected"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reasoningTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cachedTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheWriteTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "costUsd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A decimal string, such as \"0.41\"; null on the organization's own model account"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "reasoningTokens",
+        "cachedTokens",
+        "cacheWriteTokens",
+        "costUsd"
+      ],
+      "additionalProperties": true
+    },
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`tn_` + 12 lowercase Crockford base32"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `queued`, `running`, `cancelling`, `completed`, `failed`, `cancelled`; may gain values.",
+          "examples": [
+            "queued"
+          ]
+        },
+        "trigger": {
+          "type": "string",
+          "description": "One of `message`, `subagent`; may gain values.",
+          "examples": [
+            "message"
+          ]
+        },
+        "subagentId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`sa_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ifBusy": {
+          "type": "string",
+          "description": "One of `queue`, `steer`, `interrupt`; may gain values.",
+          "examples": [
+            "queue"
+          ]
+        },
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when the turn was not started by a message (`trigger` other than `message`)"
+        },
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when `trigger` is `subagent`"
+        },
+        "steering": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "string"
+              },
+              "author": {
+                "$ref": "#/$defs/Actor"
+              },
+              "createdAt": {
+                "type": "string",
+                "description": "ISO 8601, UTC, milliseconds",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "input",
+              "author",
+              "createdAt"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "ISO 8601, UTC, milliseconds",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "ISO 8601, UTC, milliseconds",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "One of `interrupted`, `withdrawn`; may gain values.",
+              "examples": [
+                "interrupted"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "forced": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "status",
+        "trigger",
+        "subagentId",
+        "ifBusy",
+        "input",
+        "author",
+        "steering",
+        "createdAt",
+        "startedAt",
+        "endedAt",
+        "text",
+        "error",
+        "reason",
+        "forced",
+        "usage"
+      ],
+      "additionalProperties": true
+    },
+    "Approval": {
+      "type": "object",
+      "properties": {
+        "toolName": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "input": {},
+        "title": {
+          "type": "string"
+        },
+        "alwaysAllows": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "toolName",
+        "callId",
+        "input",
+        "title",
+        "alwaysAllows"
+      ],
+      "additionalProperties": true
+    },
+    "Question": {
+      "type": "object",
+      "properties": {
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "header": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "multiSelect": {
+                "type": "boolean"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "description"
+                  ],
+                  "additionalProperties": true
+                }
+              }
+            },
+            "required": [
+              "id",
+              "header",
+              "text",
+              "multiSelect",
+              "options"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "additionalProperties": true
+    },
+    "SecretRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "file": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "purpose",
+        "file"
+      ],
+      "additionalProperties": true
+    },
+    "Ask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`ak_` + 12 lowercase Crockford base32"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "type": "string",
+          "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`tn_` + 12 lowercase Crockford base32"
+        },
+        "kind": {
+          "type": "string",
+          "description": "One of `approval`, `question`, `secret`; may gain values.",
+          "examples": [
+            "approval"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `open`, `answered`, `dismissed`, `declined`, `interrupted`; may gain values.",
+          "examples": [
+            "open"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "closedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "ISO 8601, UTC, milliseconds",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "answer": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ApprovalAnswer, QuestionAnswer, `{ scope }` for a secret ask, or DeclineAnswer when status is `declined`"
+        },
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Approval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Question"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secret": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "turnId",
+        "kind",
+        "status",
+        "createdAt",
+        "closedAt",
+        "closedBy",
+        "answer",
+        "approval",
+        "question",
+        "secret"
+      ],
+      "additionalProperties": true
+    },
+    "Subagent": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`sa_` + 12 lowercase Crockford base32"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "type": "string",
+          "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`tn_` + 12 lowercase Crockford base32"
+        },
+        "callId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "agentType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "background": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `running`, `completed`, `failed`, `stopped`; may gain values.",
+          "examples": [
+            "running"
+          ]
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "ISO 8601, UTC, milliseconds",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultTruncated": {
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stoppedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "who stopped it, when it was stopped through the API"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "turnId",
+        "callId",
+        "name",
+        "agentType",
+        "background",
+        "status",
+        "activity",
+        "toolCalls",
+        "tokens",
+        "createdAt",
+        "endedAt",
+        "durationMs",
+        "result",
+        "resultTruncated",
+        "error",
+        "stoppedBy"
+      ],
+      "additionalProperties": true
+    },
+    "TurnSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`tn_` + 12 lowercase Crockford base32"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `completed`, `failed`, `cancelled`; may gain values.",
+          "examples": [
+            "completed"
+          ]
+        },
+        "endedAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "One of `interrupted`, `withdrawn`; may gain values.",
+              "examples": [
+                "interrupted"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "forced": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "endedAt",
+        "text",
+        "error",
+        "reason",
+        "forced"
+      ],
+      "additionalProperties": true
+    },
+    "Session": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `starting`, `running`, `waiting`, `idle`, `suspended`; may gain values.",
+          "examples": [
+            "starting"
+          ]
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "owner": {
+          "$ref": "#/$defs/Person"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "settings": {
+          "$ref": "#/$defs/Settings"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "activeTurnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queued": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Turn"
+          }
+        },
+        "asks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Ask"
+          }
+        },
+        "subagents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Subagent"
+          }
+        },
+        "lastTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastText": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "usedTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "windowTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "usedTokens",
+            "windowTokens"
+          ],
+          "additionalProperties": true
+        },
+        "lastSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "logEpoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "epochStartSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "syncedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "ISO 8601, UTC, milliseconds",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urls": {
+          "type": "object",
+          "properties": {
+            "dashboard": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "dashboard"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "archived",
+        "owner",
+        "origin",
+        "settings",
+        "metadata",
+        "activeTurnId",
+        "queued",
+        "asks",
+        "subagents",
+        "lastTurn",
+        "lastText",
+        "context",
+        "lastSeq",
+        "logEpoch",
+        "epochStartSeq",
+        "createdAt",
+        "lastActiveAt",
+        "syncedAt",
+        "urls"
+      ],
+      "additionalProperties": true
+    },
+    "DeclineAnswer": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "messageSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "message",
+        "messageSeq"
+      ],
+      "additionalProperties": true
+    },
+    "Capabilities": {
+      "type": "object",
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "efforts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "contextWindow": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "default": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "efforts",
+              "contextWindow",
+              "default"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "features": {
+          "type": "object",
+          "properties": {
+            "steer": {
+              "type": "boolean"
+            },
+            "compact": {
+              "type": "boolean"
+            },
+            "terminal": {
+              "type": "boolean"
+            },
+            "workspace": {
+              "type": "boolean"
+            },
+            "reasoning": {
+              "type": "boolean"
+            },
+            "subagents": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "steer",
+            "compact",
+            "terminal",
+            "workspace",
+            "reasoning",
+            "subagents"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "models",
+        "modes",
+        "features"
+      ],
+      "additionalProperties": true
+    },
+    "Secret": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "description": "One of `session`, `me`, `organization`; may gain values.",
+          "examples": [
+            "session"
+          ]
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file": {
+          "type": "boolean"
+        },
+        "effective": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "setBy": {
+          "$ref": "#/$defs/Actor"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "sessionId",
+        "file",
+        "effective",
+        "setBy",
+        "updatedAt"
+      ],
+      "additionalProperties": true
+    },
+    "SubagentSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`sa_` + 12 lowercase Crockford base32"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `running`, `completed`, `failed`, `stopped`; may gain values.",
+          "examples": [
+            "running"
+          ]
+        },
+        "background": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "background"
+      ],
+      "additionalProperties": true
+    },
+    "Result": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "result"
+          ]
+        },
+        "subtype": {
+          "type": "string",
+          "description": "One of `success`, `error`, `cancelled`, `waiting`; may gain values.",
+          "examples": [
+            "success"
+          ]
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "type": "string",
+          "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+          "description": "`tn_` + 12 lowercase Crockford base32"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `completed`, `failed`, `cancelled`, `waiting`; may gain values.",
+          "examples": [
+            "completed"
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "One of `interrupted`, `withdrawn`; may gain values.",
+              "examples": [
+                "interrupted"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ask"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subagents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubagentSummary"
+          }
+        },
+        "turn": {
+          "$ref": "#/$defs/Turn"
+        }
+      },
+      "required": [
+        "type",
+        "subtype",
+        "isError",
+        "sessionId",
+        "turnId",
+        "status",
+        "result",
+        "error",
+        "reason",
+        "ask",
+        "url",
+        "durationMs",
+        "usage",
+        "subagents",
+        "turn"
+      ],
+      "additionalProperties": true
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "One of `invalid_request`, `unsupported_model`, `unsupported_effort`, `unsupported_mode`, `invalid_answer`, `answer_with_secret`, `invalid_path`, `invalid_archive`, `invalid_cursor`, `unauthenticated`, `insufficient_credits`, `forbidden`, `admin_required`, `not_found`, `session_not_found`, `turn_not_found`, `ask_not_found`, `path_not_found`, `secret_not_found`, `id_conflict`, `idempotency_conflict`, `ask_closed`, `session_busy`, `turn_not_cancellable`, `queue_full`, `cursor_ahead`, `path_exists`, `feature_unavailable`, `computer_not_set_up`, `too_large`, `upgrade_required`, `rate_limited`, `internal`, `computer_unavailable`, `unavailable`, `terminal_not_found`, `too_far_behind`, `too_many_attached`, `too_many_terminals`, `subagent_not_found`, `subagent_ended`; may gain values.",
+          "examples": [
+            "invalid_request"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "Event.session.created": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "session.created"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "settings": {
+              "$ref": "#/$defs/Settings"
+            }
+          },
+          "required": [
+            "title",
+            "origin",
+            "settings"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.session.status_changed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "session.status_changed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.session.updated": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "session.updated"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "changes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "from": {},
+                  "to": {}
+                },
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "additionalProperties": true
+              }
+            }
+          },
+          "required": [
+            "changes"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.session.compacted": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "session.compacted"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "beforeTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "afterTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "auto": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "beforeTokens",
+            "afterTokens",
+            "auto"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.message.received": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "message.received"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string"
+            },
+            "ifBusy": {
+              "type": "string",
+              "description": "One of `queue`, `steer`, `interrupt`; may gain values.",
+              "examples": [
+                "queue"
+              ]
+            },
+            "delivery": {
+              "type": "string",
+              "description": "One of `started`, `queued`, `steered`; may gain values.",
+              "examples": [
+                "started"
+              ]
+            },
+            "interruptedTurnIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                "description": "`tn_` + 12 lowercase Crockford base32"
+              }
+            },
+            "declinedAskIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
+                "description": "`ak_` + 12 lowercase Crockford base32"
+              }
+            }
+          },
+          "required": [
+            "input",
+            "ifBusy",
+            "delivery",
+            "interruptedTurnIds",
+            "declinedAskIds"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.queued": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.queued"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "position": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "trigger": {
+              "type": "string",
+              "description": "One of `message`, `subagent`; may gain values.",
+              "examples": [
+                "message"
+              ]
+            },
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "position",
+            "trigger",
+            "subagentId"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.steered": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.steered"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "messageSeq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "messageSeq"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.started": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.started"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "trigger": {
+              "type": "string",
+              "description": "One of `message`, `subagent`; may gain values.",
+              "examples": [
+                "message"
+              ]
+            },
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "effort",
+            "mode",
+            "trigger",
+            "subagentId"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.status_changed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.status_changed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.completed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.completed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "durationMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "silent": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "text",
+            "durationMs",
+            "silent"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.failed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.failed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/TurnError"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.turn.cancelled": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "turn.cancelled"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "One of `interrupted`, `withdrawn`; may gain values.",
+              "examples": [
+                "interrupted"
+              ]
+            },
+            "forced": {
+              "type": "boolean"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "reason",
+            "forced",
+            "input"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.message.completed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "message.completed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "blockId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "blockId",
+            "parentCallId",
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.reasoning.completed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "reasoning.completed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "blockId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "redacted": {
+              "type": "boolean"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "blockId",
+            "parentCallId",
+            "text",
+            "redacted",
+            "durationMs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.tool.started": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool.started"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "toolName": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "input": {},
+            "inputTruncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subagentId",
+            "toolName",
+            "callId",
+            "parentCallId",
+            "title",
+            "input",
+            "inputTruncated"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "FileChange": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "One of `added`, `modified`, `deleted`; may gain values.",
+          "examples": [
+            "added"
+          ]
+        },
+        "added": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removed": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "added",
+        "removed"
+      ],
+      "additionalProperties": true
+    },
+    "Event.tool.completed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool.completed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "toolName": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "output": {},
+            "outputTruncated": {
+              "type": "boolean"
+            },
+            "fileChanges": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/FileChange"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "subagentId",
+            "toolName",
+            "callId",
+            "parentCallId",
+            "title",
+            "output",
+            "outputTruncated",
+            "fileChanges",
+            "durationMs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.tool.failed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool.failed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "toolName": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "settledBy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The turn-ending event type that settled a call still open, else null"
+            }
+          },
+          "required": [
+            "subagentId",
+            "toolName",
+            "callId",
+            "parentCallId",
+            "title",
+            "message",
+            "settledBy"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.subagent.started": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "subagent.started"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagent": {
+              "$ref": "#/$defs/Subagent"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.subagent.ended": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "subagent.ended"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagent": {
+              "$ref": "#/$defs/Subagent"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.ask.opened": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ask.opened"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "ask": {
+              "$ref": "#/$defs/Ask"
+            }
+          },
+          "required": [
+            "ask"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.ask.closed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ask.closed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "ask": {
+              "$ref": "#/$defs/Ask"
+            }
+          },
+          "required": [
+            "ask"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.usage.recorded": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "usage.recorded"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "reasoningTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cachedTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheWriteTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "firstTokenMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "usedTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "windowTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "reasoningTokens",
+            "cachedTokens",
+            "cacheWriteTokens",
+            "costUsd",
+            "firstTokenMs",
+            "durationMs",
+            "usedTokens",
+            "windowTokens"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.model.rate_limited": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "model.rate_limited"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "retryAfterMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "model",
+            "retryAfterMs",
+            "attempt"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.runtime.starting": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "runtime.starting"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "phase": {
+              "type": "string",
+              "description": "One of `computer`, `agent`; may gain values.",
+              "examples": [
+                "computer"
+              ]
+            }
+          },
+          "required": [
+            "phase"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.runtime.connected": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "runtime.connected"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "warm": {
+              "type": "boolean"
+            },
+            "resumed": {
+              "type": "boolean"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "warm",
+            "resumed",
+            "durationMs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.runtime.suspended": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "runtime.suspended"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "One of `idle`, `requested`, `lost`; may gain values.",
+              "examples": [
+                "idle"
+              ]
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.files.pushed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "files.pushed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "replaced": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "files",
+            "bytes",
+            "replaced"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.terminal.opened": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "terminal.opened"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "terminalId": {
+              "type": "string"
+            },
+            "command": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "terminalId",
+            "command"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.terminal.closed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "terminal.closed"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "terminalId": {
+              "type": "string"
+            },
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "terminalId",
+            "exitCode"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event.other": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ev_[0-9a-hjkmnp-tv-z]{16}$",
+          "description": "`ev_` + 16 lowercase Crockford base32"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601, UTC, milliseconds",
+          "format": "date-time"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "createdAt",
+        "sessionId",
+        "turnId",
+        "actor",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Event": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Event.session.created"
+        },
+        {
+          "$ref": "#/$defs/Event.session.status_changed"
+        },
+        {
+          "$ref": "#/$defs/Event.session.updated"
+        },
+        {
+          "$ref": "#/$defs/Event.session.compacted"
+        },
+        {
+          "$ref": "#/$defs/Event.message.received"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.queued"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.steered"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.started"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.status_changed"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.completed"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.failed"
+        },
+        {
+          "$ref": "#/$defs/Event.turn.cancelled"
+        },
+        {
+          "$ref": "#/$defs/Event.message.completed"
+        },
+        {
+          "$ref": "#/$defs/Event.reasoning.completed"
+        },
+        {
+          "$ref": "#/$defs/Event.tool.started"
+        },
+        {
+          "$ref": "#/$defs/Event.tool.completed"
+        },
+        {
+          "$ref": "#/$defs/Event.tool.failed"
+        },
+        {
+          "$ref": "#/$defs/Event.subagent.started"
+        },
+        {
+          "$ref": "#/$defs/Event.subagent.ended"
+        },
+        {
+          "$ref": "#/$defs/Event.ask.opened"
+        },
+        {
+          "$ref": "#/$defs/Event.ask.closed"
+        },
+        {
+          "$ref": "#/$defs/Event.usage.recorded"
+        },
+        {
+          "$ref": "#/$defs/Event.model.rate_limited"
+        },
+        {
+          "$ref": "#/$defs/Event.runtime.starting"
+        },
+        {
+          "$ref": "#/$defs/Event.runtime.connected"
+        },
+        {
+          "$ref": "#/$defs/Event.runtime.suspended"
+        },
+        {
+          "$ref": "#/$defs/Event.files.pushed"
+        },
+        {
+          "$ref": "#/$defs/Event.terminal.opened"
+        },
+        {
+          "$ref": "#/$defs/Event.terminal.closed"
+        },
+        {
+          "$ref": "#/$defs/Event.other"
+        }
+      ]
+    },
+    "Delta.message.delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "message.delta"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "blockId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "blockId",
+            "parentCallId",
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta.reasoning.delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "reasoning.delta"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "blockId": {
+              "type": "string"
+            },
+            "parentCallId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "blockId",
+            "parentCallId",
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta.tool.preparing": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool.preparing"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`sa_` + 12 lowercase Crockford base32"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "callId": {
+              "type": "string"
+            },
+            "toolName": {
+              "type": "string"
+            },
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lines": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "subagentId",
+            "callId",
+            "toolName",
+            "path",
+            "description",
+            "lines"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta.tool.delta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool.delta"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "callId",
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta.session.compacting": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "session.compacting"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "not": {
+            "type": "null"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta.subagent.progress": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "subagent.progress"
+          ]
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "subagentId": {
+              "type": "string",
+              "pattern": "^sa_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`sa_` + 12 lowercase Crockford base32"
+            },
+            "activity": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "toolCalls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "subagentId",
+            "activity",
+            "toolCalls",
+            "tokens"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "turnId",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    "Delta": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Delta.message.delta"
+        },
+        {
+          "$ref": "#/$defs/Delta.reasoning.delta"
+        },
+        {
+          "$ref": "#/$defs/Delta.tool.preparing"
+        },
+        {
+          "$ref": "#/$defs/Delta.tool.delta"
+        },
+        {
+          "$ref": "#/$defs/Delta.session.compacting"
+        },
+        {
+          "$ref": "#/$defs/Delta.subagent.progress"
+        }
+      ]
+    },
+    "AttachResult": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session"
+        },
+        "logEpoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "epochStartSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        },
+        "earlierTurns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Turn"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timing": {
+          "type": "object",
+          "properties": {
+            "serverUs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "serverUs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "session",
+        "logEpoch",
+        "epochStartSeq",
+        "capabilities",
+        "earlierTurns",
+        "timing"
+      ],
+      "additionalProperties": true
+    },
+    "SessionResult": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "session",
+        "seq"
+      ],
+      "additionalProperties": true
+    },
+    "SendResult": {
+      "type": "object",
+      "properties": {
+        "turn": {
+          "$ref": "#/$defs/Turn"
+        },
+        "delivery": {
+          "type": "string",
+          "enum": [
+            "started",
+            "queued",
+            "steered"
+          ]
+        },
+        "duplicate": {
+          "type": "boolean"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "timing": {
+          "type": "object",
+          "properties": {
+            "serverUs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "serverUs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "turn",
+        "delivery",
+        "duplicate",
+        "seq"
+      ],
+      "additionalProperties": true
+    },
+    "ApprovalAnswer": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny",
+            "always"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "additionalProperties": true
+    },
+    "QuestionAnswer": {
+      "type": "object",
+      "properties": {
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "questionId": {
+                "type": "string"
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "questionId",
+              "choices",
+              "text"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "answers"
+      ],
+      "additionalProperties": true
+    },
+    "AskResult": {
+      "type": "object",
+      "properties": {
+        "ask": {
+          "$ref": "#/$defs/Ask"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "ask",
+        "seq"
+      ],
+      "additionalProperties": true
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "maxAttached": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxMessageBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxRequestsPerSecond": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "maxAttached",
+        "maxMessageBytes",
+        "maxRequestsPerSecond"
+      ],
+      "additionalProperties": true
+    },
+    "CreateSessionBody": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100000
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Work 084 tests: the wire Worker alone, with a local KV namespace.
+  "name": "opencomputer-wire-test",
+  "main": "src/wire/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "WIRE_TUNNEL_DOMAIN": "w.opencomputer.test",
+    "WIRE_TICKET_KEY": "test-wire-ticket-key",
+    "PREVIEW_PLATFORM_KEY": "test-preview-platform-key"
+  },
+  "kv_namespaces": [
+    { "binding": "WIRE_KEYS", "id": "wire-keys-test" }
+  ]
+}

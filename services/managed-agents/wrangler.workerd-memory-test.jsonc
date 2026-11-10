@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "workerd-memory-test",
+  "main": "test/fixtures/workerd-memory-worker.mjs",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SANDBOX_IDLE_GRACE_MS": "60000",
+    "DATABASE_MCP_ENABLED": "false"
+  },
+  "worker_loaders": [{ "binding": "AGENT_LOADER" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "OPENCODE_SESSIONS", "class_name": "OpenCodeSessionDurableObject" },
+      { "name": "MEMORY", "class_name": "MemoryDurableObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OpenCodeSessionDurableObject", "MemoryDurableObject"]
+    }
+  ]
+}

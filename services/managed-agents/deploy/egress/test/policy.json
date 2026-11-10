@@ -1,0 +1,7 @@
+{
+  "deployments": {
+    "smoke-allow": { "domains": ["example.com", "*.github.com"], "cidrs": ["1.1.1.1/32"] },
+    "smoke-cidr": { "domains": [], "cidrs": ["8.8.8.8/32"] },
+    "smoke-open": null
+  }
+}

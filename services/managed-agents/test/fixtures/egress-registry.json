@@ -1,0 +1,292 @@
+{
+  "exits": [
+    {
+      "region": "ams",
+      "fly_region": "ams",
+      "app": "oc-exit-ams-1",
+      "server": "192.0.2.1",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.1",
+      "reality": {
+        "public_key": "YGoyKhcFepofJckcCDBLZxP03lUV5gcJlYOazi_CEI0",
+        "short_id": "606a322a17057a9a",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "arn",
+      "fly_region": "arn",
+      "app": "oc-exit-arn-1",
+      "server": "192.0.2.2",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.2",
+      "reality": {
+        "public_key": "53NQCMuw4xk-OR5sO_A-XgkivnppoJxlqe7HdsKfXO4",
+        "short_id": "e7735008cbb0e319",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "au",
+      "fly_region": "syd",
+      "app": "oc-exit-au-1",
+      "server": "192.0.2.3",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.3",
+      "reality": {
+        "public_key": "Q724dRorCKtHzcVlOPgjrtPbfVN_7Yk2KSdGgbxodUI",
+        "short_id": "43bdb8751a2b08ab",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "au",
+      "fly_region": "syd",
+      "app": "oc-exit-au-2",
+      "server": "192.0.2.4",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.4",
+      "reality": {
+        "public_key": "b6IDwLv22zvlYsl1pMraB7oae6sNUl4wyAGIXdCCASE",
+        "short_id": "6fa203c0bbf6db3b",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "cdg",
+      "fly_region": "cdg",
+      "app": "oc-exit-cdg-1",
+      "server": "192.0.2.5",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.5",
+      "reality": {
+        "public_key": "zxoJUDS0znp-o-QE1-LfRvM6ph2eLKy_7rmDY4YR1Us",
+        "short_id": "cf1a095034b4ce7a",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "dfw",
+      "fly_region": "dfw",
+      "app": "oc-exit-dfw-1",
+      "server": "192.0.2.6",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.6",
+      "reality": {
+        "public_key": "iApY9j4kuM0ApfoecKTB9a0rMqCPj9hmK_rsEt4e9rM",
+        "short_id": "880a58f63e24b8cd",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "ewr",
+      "fly_region": "ewr",
+      "app": "oc-exit-ewr-1",
+      "server": "192.0.2.7",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.7",
+      "reality": {
+        "public_key": "ec_a7x3tB53My9xRJue_SqGCEyHTy6zfhvsoa_D-sDs",
+        "short_id": "79cfdaef1ded079d",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "fra",
+      "fly_region": "fra",
+      "app": "oc-exit-fra-1",
+      "server": "192.0.2.8",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.8",
+      "reality": {
+        "public_key": "pXOlVRmjcWo6BxBtXfrdYMm1ltcfTmAraRBWyiWL5II",
+        "short_id": "a573a55519a3716a",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "gru",
+      "fly_region": "gru",
+      "app": "oc-exit-gru-1",
+      "server": "192.0.2.9",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.9",
+      "reality": {
+        "public_key": "S4S-TtG4JBNpytyxbFuWsrPXvVzef3jiaWlUJuz7EAE",
+        "short_id": "4b84be4ed1b82413",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "iad",
+      "fly_region": "iad",
+      "app": "oc-exit-iad-1",
+      "server": "192.0.2.10",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.10",
+      "reality": {
+        "public_key": "bdoN6NxV7jbN0rPkMt_irY7hQLlGd6TSYNKbWXKT498",
+        "short_id": "6dda0de8dc55ee36",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "jnb",
+      "fly_region": "jnb",
+      "app": "oc-exit-jnb-1",
+      "server": "192.0.2.11",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.11",
+      "reality": {
+        "public_key": "dZqg8NUDvRZmnCN1EJYg9pV2X-C-RHAh3_ymIJ7o1VI",
+        "short_id": "759aa0f0d503bd16",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "lax",
+      "fly_region": "lax",
+      "app": "oc-exit-lax-1",
+      "server": "192.0.2.12",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.12",
+      "reality": {
+        "public_key": "PKYzQl0F6BtAKHDMAC0AVTrWRkPy1CnW3AzdXmqhmAM",
+        "short_id": "3ca633425d05e81b",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "lhr",
+      "fly_region": "lhr",
+      "app": "oc-exit-lhr-1",
+      "server": "192.0.2.13",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.13",
+      "reality": {
+        "public_key": "FNV2YyJzHxXymSchleHpYgi1n6UB0sXtIIJMFiXI1jA",
+        "short_id": "14d5766322731f15",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "nrt",
+      "fly_region": "nrt",
+      "app": "oc-exit-nrt-1",
+      "server": "192.0.2.14",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.14",
+      "reality": {
+        "public_key": "GeSKMX7fzIQ9uuif5dEPbltyu-RD2LiqvzQgHGR_XEY",
+        "short_id": "19e48a317edfcc84",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "ord",
+      "fly_region": "ord",
+      "app": "oc-exit-ord-1",
+      "server": "192.0.2.15",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.15",
+      "reality": {
+        "public_key": "dMPvwdPQ-m6P1M2Y2n9h-FN1y86wfrPdZk2D8qgUVz4",
+        "short_id": "74c3efc1d3d0fa6e",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "sin",
+      "fly_region": "sin",
+      "app": "oc-exit-sin-1",
+      "server": "192.0.2.16",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.16",
+      "reality": {
+        "public_key": "yAwpp0Nkk3GlHp1ixRaxxriJ0fDOCmTdxYpvLGrK0EQ",
+        "short_id": "c80c29a743649371",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "sjc",
+      "fly_region": "sjc",
+      "app": "oc-exit-sjc-1",
+      "server": "192.0.2.17",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.17",
+      "reality": {
+        "public_key": "YYQWHWsoU8y6Vbq-lKD44wJYGANHRt3vSKV2FxRxp94",
+        "short_id": "6184161d6b2853cc",
+        "server_name": "example.com"
+      }
+    },
+    {
+      "region": "yyz",
+      "fly_region": "yyz",
+      "app": "oc-exit-yyz-1",
+      "server": "192.0.2.18",
+      "ports": [
+        443,
+        8443
+      ],
+      "egress_ipv4": "203.0.113.18",
+      "reality": {
+        "public_key": "9YL_pylA1mvT9ZZhh5CCYHlpeMba_fdUBKKzJyWCJGE",
+        "short_id": "f582ffa72940d66b",
+        "server_name": "example.com"
+      }
+    }
+  ]
+}
