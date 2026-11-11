@@ -54,6 +54,10 @@ From launch post, candidate bullets:
 
 _Goal: the fastest path to a working @computer, in three steps and about two minutes. This is the main CTA._
 
+<p align="center">
+  <a href="https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/"><img src="docs/images/readme-benchmark.gif" alt="Slack message to first push, median of 5 runs: @Computer finishes first, ahead of Replicas, Capy, Hoplite and Devin" width="100%"></a>
+</p>
+
 - **3.3x faster than Devin**: all 4 PRs open with CI green in 56s vs 185s ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
 - **2.6x faster than the average of the 4 most popular cloud agents**: first push in 24s vs a 62s average ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
 - **3-day free trial** with 600 work minutes
