@@ -15,7 +15,11 @@ TODO: logo (light/dark), badges (license, release, Slack community).
 
 TODO: link "3x faster" to the published benchmark (speedbench runs computer vs devin; results not yet in its README).
 
-TODO: primary CTA button **Try OpenComputer in Cloud** → app.opencomputer.dev. Secondary links: Docs · Self-host · Community.
+<p align="center">
+  <a href="https://app.opencomputer.dev"><img alt="Try OpenComputer in Slack" src="https://img.shields.io/badge/Try_OpenComputer_in_Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white"></a>
+</p>
+
+TODO: secondary links under the button: Docs · Self-host · Community.
 
 ## See it work
 
