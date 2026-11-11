@@ -102,11 +102,11 @@ From launch post: an always-on team VM gets cheaper than a sandbox per session a
 
 ## How it works
 
-We opted for simplicity of self-hosting without compromising scale and security. The entire OpenComputer stack can be hosted on a single VM. It is recommended that the VM is air-gapped from external networking.
+OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
 
-The VM is host to the gateway component (Calvin). It is a thin bridge that listens for events from Slack and spawns sessions using Claude Code, Codex or OpenCode, according to your configuration. The rest of the stack is Cloudflare-hosted Workers and Durable Objects (soon available on Fly and other stacks).
+The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
 
-The isolation layer for each session is rootless Podman. Durability is first achieved on the VM's local disk, then persisted to a git-backed store.
+The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
 
 TODO: diagram (image, not ASCII). Link to Architecture.
 
