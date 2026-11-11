@@ -32,7 +32,7 @@ From launch post: "the open source and self-hostable alternative to Devin", open
 _Goal: the reader sees a real thread in under 10 seconds: mention, live progress, steering mid-turn, PR opened._
 
 <p align="center">
-  <img src="docs/images/readme-slack.gif" alt="A Slack thread: someone mentions @Computer, and it replies in the thread within seconds" width="100%">
+  <img src="docs/images/readme-slack.gif" alt="A Slack thread: someone mentions @Computer, and it replies in the thread within seconds" width="70%">
 </p>
 
 TODO: caption on how fast it answers in Slack. Still wanted: a longer thread showing live progress, steering mid-turn and a PR opened.
