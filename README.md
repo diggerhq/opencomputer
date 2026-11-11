@@ -9,10 +9,6 @@ link in "Docs".
   <img src="docs/images/readme-banner.svg" alt="OpenComputer" width="100%">
 </p>
 
-# OpenComputer: Open-source Devin alternative
-
-**3x faster than Devin.**
-
 <p align="center">
   The open-source Devin alternative: a coding agent your team works with in Slack, on its own computers, in your cloud or ours.
 </p>
