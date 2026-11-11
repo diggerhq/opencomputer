@@ -42,6 +42,8 @@ We built it to feel as fast as Claude Code on your laptop: in our benchmark it o
   <img src="docs/images/readme-slack.gif" alt="A Slack thread: someone mentions @Computer, and it replies in the thread within seconds" width="70%">
 </p>
 
+## As fast as local
+
 <p align="center">
   <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @computer in the cloud; @computer finishes in 32.0s, local in 36.2s" width="70%">
 </p>
