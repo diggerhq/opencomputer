@@ -22,32 +22,22 @@
   },
   "favicon": "/images/favicon.svg",
   "navigation": {
-    "tabs": [
+    "groups": [
       {
-        "tab": "Getting started",
-        "groups": [
-          {
-            "group": "Getting started",
-            "pages": [
-              "getting-started/introduction",
-              "getting-started/quickstart",
-              "getting-started/architecture",
-              "getting-started/local-development"
-            ]
-          }
+        "group": "Getting started",
+        "pages": [
+          "getting-started/introduction",
+          "getting-started/quickstart",
+          "getting-started/architecture",
+          "getting-started/local-development"
         ]
       },
       {
-        "tab": "Self-hosting",
-        "groups": [
-          {
-            "group": "Self-hosting @computer",
-            "pages": [
-              "self-hosting/overview",
-              "self-hosting/gateway",
-              "self-hosting/host-vm"
-            ]
-          },
+        "group": "Self-hosting @computer",
+        "pages": [
+          "self-hosting/overview",
+          "self-hosting/gateway",
+          "self-hosting/host-vm",
           {
             "group": "Providers",
             "pages": [
@@ -57,32 +47,22 @@
               "self-hosting/providers/vps"
             ]
           },
-          {
-            "group": "Run it",
-            "pages": [
-              "self-hosting/github",
-              "self-hosting/configure",
-              "self-hosting/operate",
-              "self-hosting/security",
-              "self-hosting/troubleshooting"
-            ]
-          }
+          "self-hosting/github",
+          "self-hosting/configure",
+          "self-hosting/operate",
+          "self-hosting/security",
+          "self-hosting/troubleshooting"
         ]
       },
       {
-        "tab": "API",
-        "groups": [
-          {
-            "group": "API",
-            "pages": [
-              "api/overview"
-            ]
-          }
+        "group": "API",
+        "pages": [
+          "api/overview"
         ]
       },
       {
-        "tab": "Serverless Agents",
-        "groups": [
+        "group": "Serverless Agents",
+        "pages": [
           {
             "group": "Getting started",
             "pages": [
