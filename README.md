@@ -1,73 +1,66 @@
-# OpenComputer
+<!--
+README outline for the @computer OSS launch. Headings and a one-line goal per
+section only; copy to be written once the shape is agreed.
+Scope: @computer only. Serverless Agents and the sandbox platform get at most a
+link in "Docs".
+-->
 
-Build, steer, and deploy serverless agents as code. An OpenComputer project
-contains one or more agents that run in the cloud.
+# @computer
 
-```bash
-npx @opencomputer/cli init my-agent
-cd my-agent
-npm install
-npx --package @opencomputer/cli opencomputer login
-```
+_Goal: in one line, the reader knows what it is ("a coding agent that works live in a Slack thread") and sees the Cloud button before anything else._
 
-Watch agent code and deploy changes to Development (Cloud):
+TODO: logo (light/dark), one-line pitch, badges (license, release, Slack community).
 
-```bash
-npm run deploy -- --watch
-```
+TODO: primary CTA button **Try @computer in Cloud** → app.opencomputer.dev. Secondary links: Docs · Self-host · Community.
 
-[Documentation](https://docs.opencomputer.dev/agents/overview) · [Quickstart](https://docs.opencomputer.dev/agents/quickstart) · [Dashboard](https://app.opencomputer.dev)
+## See it work
 
-## Project structure
+_Goal: the reader sees a real thread in under 10 seconds: mention, live progress, steering mid-turn, PR opened._
 
-`npx @opencomputer/cli init <directory|.>` creates a hello-world agent project:
+TODO: GIF or short video of a Slack thread (no credentials or personal data on screen).
 
-```text
-my-agent/
-├── opencomputer/
-│   ├── project.ts
-│   └── agents/
-│       └── hello-world/
-│           └── agent.ts
-└── package.json
-```
+## What it does
 
-The `opencomputer/` tree contains the cloud agent definitions and is designed
-to grow to multiple agents in one project. A browser application can live in
-the same repository, but it has its own development and deployment lifecycle.
+_Goal: 4–6 bullets of what makes it different, each one concrete._
 
-## Develop and deploy
+TODO: candidates: works live in the thread and you can steer it mid-turn; its own computer per task; work leaves through git as a PR; runs Claude Code or Codex on your own plan; parallel threads; Slack, GitHub and Linear built in.
 
-On the first `npm run deploy -- --watch`, choose an existing project from your account or
-create a new one. That binding is reused on later runs. The CLI uses
-`https://app.opencomputer.dev` by default; pass `--api-url` or set
-`OPENCOMPUTER_API_URL` only when intentionally targeting another service.
+## Try it in Cloud
 
-Edit the agent function, tools, connections, and routing while watched cloud
-deployment is running. Test it from the dashboard or CLI.
+_Goal: the fastest path to a working @computer, in three steps and about two minutes. This is the main CTA._
 
-When the project is ready, publish an immutable deployment:
+TODO: 1. Sign up · 2. Add to Slack and connect GitHub · 3. Mention `@computer` with a task. Link to pricing / free trial.
 
-```bash
-npm run deploy -- --alias production
-```
+## Self-host
 
-Deployments are versioned. The dashboard project view exposes the debug
-playground, deployments, sessions, schedules, webhooks, memory, database,
-secrets, and connections while keeping infrastructure details behind the
-OpenComputer API.
+_Goal: the reader knows self-hosting is real and supported, what it needs, and where the guide is, without the README becoming the guide._
 
-## CLI
+TODO: requirements in one line (Slack app, GitHub App, model key, domain, one VM), a short install snippet, links to the quickstart and AWS / Azure / GCP / VPS guides.
 
-The TypeScript `opencomputer` CLI is focused on managed agents and is separate
-from the legacy Go `oc` CLI. Common commands are:
+## Cloud or self-hosted
 
-```bash
-opencomputer whoami
-opencomputer init my-agent
-opencomputer agents
-opencomputer session "Say hello"
-opencomputer deploy --watch
-opencomputer deploy --alias production
-opencomputer run hello-world "Say hello"
-```
+_Goal: an honest comparison that makes Cloud the obvious default for most teams and self-hosting the right call for some._
+
+TODO: small table: setup time, maintenance, computers per task, scaling, where data lives, price.
+
+## How it works
+
+_Goal: the reader can draw Slack → gateway ← host → runner and knows what each piece owns._
+
+TODO: diagram (image, not ASCII) and one sentence per piece. Link to Architecture.
+
+## Docs
+
+_Goal: one list of links to the docs that matter._
+
+TODO: Quickstart · Architecture · Self-hosting · Configuration · Security · API.
+
+## Community and contributing
+
+_Goal: where to ask, how to report a bug, how to contribute._
+
+TODO: Slack community, GitHub issues, CONTRIBUTING.md, security contact.
+
+## License
+
+TODO: which license (repo root has LICENSE; `computer/` has its own NOTICE).
