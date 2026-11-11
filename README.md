@@ -38,21 +38,13 @@ We built it to feel as fast as Claude Code on your laptop: in our benchmark it o
 
 ## See it work
 
-_Goal: the reader sees a real thread in under 10 seconds: mention, live progress, steering mid-turn, PR opened._
-
 <p align="center">
   <img src="docs/images/readme-slack.gif" alt="A Slack thread: someone mentions @Computer, and it replies in the thread within seconds" width="70%">
 </p>
 
-TODO: caption on how fast it answers in Slack. Still wanted: a longer thread showing live progress, steering mid-turn and a PR opened.
-
 <p align="center">
   <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @computer in the cloud; @computer finishes in 32.0s, local in 36.2s" width="70%">
 </p>
-
-TODO: caption: "As fast as Claude Code on your own machine." Same task, same model, real time.
-
-From launch post: it also wants GIFs that show the speed; make one set for both.
 
 ## How it works
 
