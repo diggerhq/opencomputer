@@ -25,6 +25,12 @@ TODO
 
 TODO
 
-## How this maps to OpenComputer sandboxes
+## Sandboxes only when you need them
 
-TODO
+Most platforms give every session its own sandbox, which sleeps and wakes up between turns. We tried that in early iterations of the product and ran into three problems:
+
+- **It's slow.** Starting and resuming a session this way was too slow, even with several optimizations applied.
+- **Cost scales linearly with sessions.** Every session pays for its own sandbox.
+- **Most sessions don't need one.** Think of an exploratory session where you fix a few items in your docs: it doesn't need a separate sandbox and dedicated compute.
+
+In many cases a shared VM can handle hundreds of concurrent sessions. A session only needs a sandbox when it runs a heavy build or spins up a preview environment, and at that moment OpenComputer delegates the session to the sandbox.
