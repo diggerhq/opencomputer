@@ -11,15 +11,15 @@ description: "How Slack, the gateway, hosts and runners fit together"
 
 ## Gateway
 
-TODO
+The front door. Messages from Slack, the web dashboard, the API and the CLI arrive here, and the gateway passes them on to the right session. It also handles setup and connects to GitHub. It doesn't run any agents itself, so you can restart it at any time without losing work.
 
 ## Host agent
 
-TODO
+The manager on your VM. It connects to the gateway and picks up new work. For every thread it creates a workspace with a copy of your repositories and starts a session in it. It stops sessions that go quiet and brings them back after a restart.
 
 ## Runner
 
-TODO
+One coding agent working on one thread. Each session in the diagram is a runner. It posts its replies straight to Slack, so you see the agent's work as it happens.
 
 ## Where state lives
 
