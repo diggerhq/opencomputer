@@ -31,7 +31,11 @@ From launch post: "the open source and self-hostable alternative to Devin", open
 
 _Goal: the reader sees a real thread in under 10 seconds: mention, live progress, steering mid-turn, PR opened._
 
-TODO: GIF or short video of a Slack thread (no credentials or personal data on screen).
+<p align="center">
+  <img src="docs/images/readme-slack.gif" alt="A Slack thread: someone mentions @Computer, and it replies in the thread within seconds" width="100%">
+</p>
+
+TODO: caption on how fast it answers in Slack. Still wanted: a longer thread showing live progress, steering mid-turn and a PR opened.
 
 <p align="center">
   <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @computer in the cloud; @computer finishes in 32.0s, local in 36.2s" width="100%">
