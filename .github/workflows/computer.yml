@@ -47,6 +47,29 @@ jobs:
       # Did Slack get slower: the Slack path with the journal and an API client against none.
       - run: npm run perf-check
 
+  selfhost:
+    name: Self-host image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build -f deploy/docker/Dockerfile --build-arg SP_VERSION=${GITHUB_SHA::7} -t computer:ci .
+      # The gateway and the host come up in one container and the host connects; setup is reachable.
+      - name: Start and wait for the host
+        run: |
+          docker run -d --name computer -p 8080:8080 computer:ci
+          for i in $(seq 1 60); do
+            curl -fsS localhost:8080/healthz | grep -q '"hosts":\["local"\]' && break
+            sleep 2
+          done
+          docker logs computer 2>&1 | sed -E 's/token=[0-9a-f]+/token=<redacted>/'
+          curl -fsS localhost:8080/healthz | grep '"hosts":\["local"\]'
+          docker logs computer 2>&1 | grep -q 'localhost:8080/setup?token='
+          docker exec computer test -s /data/instance.env
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/setup)" = 401
+
   collector:
     name: Telemetry collector
     runs-on: ubuntu-latest

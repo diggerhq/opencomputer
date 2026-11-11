@@ -1,0 +1,41 @@
+# Self-host Computer (work 101): `docker compose up` from this directory.
+# Open the /setup link it prints. The data volume is the whole instance.
+#
+# On a VM with a domain pointed at it, add HTTPS with Caddy:
+#   SP_DOMAIN=computer.example.com docker compose --profile https up -d
+# (SP_ORIGIN then defaults to https://$SP_DOMAIN, which is what Slack calls.)
+
+services:
+  computer:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: computer:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SP_ORIGIN: ${SP_ORIGIN:-}
+      SP_DOMAIN: ${SP_DOMAIN:-}
+      SP_PEOPLE: ${SP_PEOPLE:-}
+      GITHUB_ORG: ${GITHUB_ORG:-}
+      # Optional: the Claude credential, instead of pasting it into /setup.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - computer-data:/data
+
+  caddy:
+    profiles: [https]
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${SP_DOMAIN:-localhost} --to computer:8080
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  computer-data:
+  caddy-data:

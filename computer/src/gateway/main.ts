@@ -39,6 +39,7 @@ import { Vault } from './vault.js';
 import { createSecretsUi, SECRET_VIEW, type SecretsUi } from './secrets-ui.js';
 import { createVariablesUi } from './variables-ui.js';
 import { createRouter, type Ctx, type Msg, type Router } from './routing.js';
+import { installerPerson, type SlackProfile } from './first-person.js';
 import { errorText, log } from '../log.js';
 
 loadEnv();
@@ -245,6 +246,14 @@ function boltHandler(): RequestListener {
       if (laptop) setEnv(values);
       else for (const [k, v] of Object.entries(values)) if (v) secrets.set(k, v);
       log.info(`installed to ${i.team?.name ?? i.team?.id}`);
+      // A fresh instance answers its installer without SP_PEOPLE (work 101, first-person.ts).
+      const installer = i.user?.id;
+      if (installer && !store.people().length) {
+        const info = await new WebClient(i.bot?.token, slackClientOptions).users.info({ user: installer }).catch(() => undefined);
+        store.putPerson(installerPerson(installer, info?.user as SlackProfile | undefined));
+        log.info(`${installer} installed the app and is the first person (admin)`);
+        hub.broadcast({ t: 'people', people: store.people() });
+      }
       hub.refreshCredentials();
     },
     fetchInstallation: async () => {

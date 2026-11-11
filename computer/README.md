@@ -348,6 +348,37 @@ reach the cloud metadata server. Hosts take new code as a release bundle
 The Node gateway in `src/gateway/` is the self-hosted alternative and what the
 laptop and the e2e checks use; the `Dockerfile` packages it as a container.
 
+### Self-host with Docker
+
+One image runs the gateway, the host agent and its runners, with one data
+volume. The same container runs on a laptop and on a VM; to move an instance,
+move the volume.
+
+```sh
+cd deploy/docker
+docker compose up
+```
+
+It prints a `/setup?token=…` link. Open it and paste a Claude credential (or
+pass `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` to compose). Then create
+the Slack app from the same page. Slack must reach the gateway over HTTPS, so
+on a laptop point a tunnel at port 8080 and start with
+`SP_ORIGIN=https://<tunnel>`. On a VM with a domain pointed at it, Caddy gets
+a certificate for you:
+
+```sh
+SP_DOMAIN=computer.example.com docker compose --profile https up -d
+```
+
+Whoever installs the Slack app becomes the first person and an admin. Add
+the rest of a team with `SP_PEOPLE`. The keys the instance generated on first
+start (setup token, store key, host token) are in `/data/instance.env`.
+
+> [!WARNING]
+> Every session runs as the same user in this container, so sessions can read
+> each other's files and the instance's keys. Use it to try Computer, not
+> yet for a team you do not trust.
+
 
 ### Workspaces
 
