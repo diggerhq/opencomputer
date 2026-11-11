@@ -23,7 +23,11 @@ One coding agent working on one thread. Each session in the diagram is a runner.
 
 ## Where state lives
 
-TODO
+A session's state is written to the VM's durable disk first, then persisted to a durable git store. The disk keeps sessions fast; the git store makes them portable.
+
+Portability is what lets you scale horizontally: another VM can pick up the same session when needed. If two copies of a session conflict, git resolves it.
+
+The gateway keeps its own small SQLite database: which session runs on which VM, the people and VMs it knows, and messages waiting for a VM that's offline.
 
 ## Sandboxes only when you need them
 
