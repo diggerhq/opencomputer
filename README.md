@@ -5,13 +5,17 @@ Scope: @computer only. Serverless Agents and the sandbox platform get at most a
 link in "Docs".
 -->
 
-# @computer
+# OpenComputer: Open-source Devin alternative
 
-_Goal: in one line, the reader knows what it is ("a coding agent that works live in a Slack thread") and sees the Cloud button before anything else._
+**3x faster than Devin.**
 
-TODO: logo (light/dark), one-line pitch, badges (license, release, Slack community).
+_Goal: in one glance the reader gets the tagline, the speed claim with its source, and the Cloud button._
 
-TODO: primary CTA button **Try @computer in Cloud** → app.opencomputer.dev. Secondary links: Docs · Self-host · Community.
+TODO: logo (light/dark), badges (license, release, Slack community).
+
+TODO: link "3x faster" to the published benchmark (speedbench runs computer vs devin; results not yet in its README).
+
+TODO: primary CTA button **Try OpenComputer in Cloud** → app.opencomputer.dev. Secondary links: Docs · Self-host · Community.
 
 ## See it work
 
