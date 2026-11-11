@@ -41,7 +41,12 @@ TODO: candidates: works live in the thread and you can steer it mid-turn; its ow
 
 _Goal: the fastest path to a working @computer, in three steps and about two minutes. This is the main CTA._
 
-TODO: 1. Sign up · 2. Add to Slack and connect GitHub · 3. Mention `@computer` with a task. Link to pricing / free trial.
+- **3.3x faster than Devin**: all 4 PRs open with CI green in 56s vs 185s ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
+- **2.6x faster than the average of the 4 most popular cloud agents**: first push in 24s vs a 62s average ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
+- **3-day free trial** with 600 work minutes
+- **Bring your own ChatGPT / Codex subscription**
+
+TODO: 1. Sign up · 2. Add to Slack and connect GitHub · 3. Mention `@computer` with a task.
 
 ## Self-host
 
