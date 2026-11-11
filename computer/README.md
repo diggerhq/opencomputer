@@ -362,13 +362,16 @@ docker compose up
 It prints a `/setup?token=…` link. Open it and paste a Claude credential (or
 pass `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` to compose). Then create
 the Slack app from the same page. Slack must reach the gateway over HTTPS, so
-on a laptop point a tunnel at port 8080 and start with
-`SP_ORIGIN=https://<tunnel>`. On a VM with a domain pointed at it, Caddy gets
-a certificate for you:
+point a tunnel at port 8080 and start with its URL:
 
 ```sh
-SP_DOMAIN=computer.example.com docker compose --profile https up -d
+ngrok http 8080                                  # on a laptop
+cloudflared tunnel --url http://localhost:8080   # or on a VM
+SP_ORIGIN=https://<tunnel> docker compose up
 ```
+
+A quick tunnel gets a new URL each time it starts; re-run the Slack step in
+`/setup` to point the app at the new one, or use a fixed domain.
 
 Whoever installs the Slack app becomes the first person and an admin. Add
 the rest of a team with `SP_PEOPLE`. The keys the instance generated on first

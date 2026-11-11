@@ -6,9 +6,8 @@
 # whole instance (move it to move the instance).
 #
 #   SP_HOME     data volume (/data): instance.env, gateway.db, host/, workspaces/
-#   SP_ORIGIN   public origin Slack and browsers use (https://$SP_DOMAIN, else
-#               http://localhost:$PORT); Slack events need HTTPS, so set it to a
-#               tunnel's URL or give the VM's domain as SP_DOMAIN
+#   SP_ORIGIN   public origin Slack and browsers use (http://localhost:$PORT);
+#               Slack events need HTTPS, so set it to a tunnel's URL
 #   PORT        gateway port in the container (8080)
 #
 # Started as root only to hand the volume to `node`; it re-runs itself as
@@ -41,8 +40,7 @@ set -a
 . "$ENV_FILE"
 set +a
 
-ORIGIN="${SP_ORIGIN:-${SP_DOMAIN:+https://$SP_DOMAIN}}"
-ORIGIN="${ORIGIN:-http://localhost:$PORT}"
+ORIGIN="${SP_ORIGIN:-http://localhost:$PORT}"
 ORIGIN="${ORIGIN%/}"
 
 # Compose passes unset variables as empty strings; drop them (the gateway parses SP_PEOPLE as JSON).
