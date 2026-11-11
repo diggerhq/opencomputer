@@ -93,18 +93,6 @@ TODO: requirements in one line (Slack app, GitHub App, model key, domain, one VM
 
 From launch post: AWS, Azure, GCP and OCI, Kubernetes soon; the whole stack can run on a single VM. (Docs nav lists AWS / Azure / GCP / VPS, no OCI yet.)
 
-## Docs
-
-_Goal: one list of links to the docs that matter._
-
-TODO: Quickstart · Architecture · Self-hosting · Configuration · Security · API.
-
-## Community and contributing
-
-_Goal: where to ask, how to report a bug, how to contribute._
-
-TODO: Slack community, GitHub issues, CONTRIBUTING.md, security contact.
-
 ## License
 
 TODO: which license (repo root has LICENSE; `computer/` has its own NOTICE).
