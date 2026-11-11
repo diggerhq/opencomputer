@@ -92,14 +92,6 @@ TODO: requirements in one line (Slack app, GitHub App, model key, domain, one VM
 
 From launch post: AWS, Azure, GCP and OCI, Kubernetes soon; the whole stack can run on a single VM. (Docs nav lists AWS / Azure / GCP / VPS, no OCI yet.)
 
-## Cloud or self-hosted
-
-_Goal: an honest comparison that makes Cloud the obvious default for most teams and self-hosting the right call for some._
-
-TODO: small table: setup time, maintenance, computers per task, scaling, where data lives, price.
-
-From launch post: an always-on team VM gets cheaper than a sandbox per session at around 500 PRs a month (their chart compares against E2B 2 vCPU / 8 GB). Fits a self-host or cost row.
-
 ## How it works
 
 OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
@@ -108,7 +100,11 @@ The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and
 
 The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
 
-TODO: diagram (image, not ASCII). Link to Architecture.
+<p align="center">
+  <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
+</p>
+
+TODO: link to Architecture docs. Diagram source: `scripts/readme-architecture.html`.
 
 From launch post: it wants the same two visuals: (1) VM per session vs one VM per team with isolated sessions on top; (2) the gateway spawning sessions and worktrees, backing them up after each turn, scaling out. Draw once, use in both.
 
