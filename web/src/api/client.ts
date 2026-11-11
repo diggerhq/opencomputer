@@ -251,6 +251,25 @@ export const switchOrg = (orgId: string) =>
 // Credits
 export const getCredits = () => apiFetch('/org/credits', {}, S.CreditsSchema)
 
+// Onboarding "star us on GitHub" bonus (api-edge github_star.ts).
+const GitHubStarSchema = z.object({
+  eligible: z.boolean(),
+  claimed: z.boolean(),
+  started: z.boolean(),
+  bonusUsd: z.number(),
+  repoUrl: z.string(),
+})
+export type GitHubStar = z.infer<typeof GitHubStarSchema>
+
+export const getGitHubStar = () =>
+  apiFetch('/github-star', {}, GitHubStarSchema)
+
+export const startGitHubStar = () =>
+  apiFetch('/github-star/start', { method: 'POST' }, GitHubStarSchema)
+
+export const claimGitHubStar = () =>
+  apiFetch('/github-star/claim', { method: 'POST' }, GitHubStarSchema)
+
 // Billing API
 export const getBilling = () => apiFetch('/billing', {}, S.BillingStateSchema)
 
@@ -325,4 +344,3 @@ export const setAutumnAutoTopup = (cfg: {
     method: 'POST',
     body: JSON.stringify(cfg),
   })
-

@@ -37,6 +37,7 @@ import { enableManagedBilling } from "./model_billing";
 import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 import { sendSlackAlert, teammateInvitedAlert } from "./slack_alerts";
+import { handleGitHubStarClaim, handleGitHubStarStart, handleGitHubStarState } from "./github_star";
 
 export interface DashboardEnv extends BillingEventsEnv {
   /** Computer rollout (work 052): see computerEnabledFor in computer.ts. */
@@ -65,6 +66,8 @@ export interface DashboardEnv extends BillingEventsEnv {
   OPENROUTER_BASE_URL?: string;
   OPENROUTER_MARKUP_BPS?: string;
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Optional read-only token for the onboarding star bonus (github_star.ts).
+  GITHUB_TOKEN?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -702,6 +705,9 @@ export async function handleDashboard(
     if (m && method === "DELETE") return handleRevokeInvitation(req, env, caller, m[1]);
   }
   if (sub === "/org/credits" && method === "GET") return handleGetCredits(req, env, caller);
+  if (sub === "/github-star" && method === "GET") return handleGitHubStarState(env, caller.orgID);
+  if (sub === "/github-star/start" && method === "POST") return handleGitHubStarStart(env, caller.orgID);
+  if (sub === "/github-star/claim" && method === "POST") return handleGitHubStarClaim(env, caller.orgID);
 
   // ── api keys ───────────────────────────────────────────────────────────
   if (sub === "/api-keys" && method === "GET") return handleListAPIKeys(req, env, caller);

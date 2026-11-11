@@ -55,6 +55,7 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import { PixelScene } from './pixel-scene'
 import { AuthContext } from '@/hooks/useAuth'
 import { addManagedGitHubConnection } from './api'
+import { GitHubStarBonus } from './GitHubStarBonus'
 import { launchAuthorizationWindow } from './authorization-window'
 import { SlackInstallButton, UnlinkSlackDialog } from './computer-slack'
 import {
@@ -988,11 +989,10 @@ function Setup({
               </p>
             </SetupItem>
           </ol>
-          <SetupContext
-            step={step}
-            agentCard={agentCard}
-            className="xl:[grid-area:context]"
-          />
+          <div className="flex flex-col gap-6 self-start xl:[grid-area:context]">
+            <SetupContext step={step} agentCard={agentCard} />
+            <GitHubStarBonus />
+          </div>
           {/* The scene only uses height nobody else needs: its area is a size
               container that adds nothing to the page (no row gap either), and
               the scene shows when the space left fits it plus clearance. */}
