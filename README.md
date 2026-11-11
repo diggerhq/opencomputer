@@ -5,6 +5,10 @@ Scope: @computer only. Serverless Agents and the sandbox platform get at most a
 link in "Docs".
 -->
 
+<p align="center">
+  <img src="docs/images/readme-banner.svg" alt="OpenComputer" width="100%">
+</p>
+
 # OpenComputer: Open-source Devin alternative
 
 **3x faster than Devin.**
