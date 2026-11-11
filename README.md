@@ -54,20 +54,21 @@ TODO: caption: "As fast as Claude Code on your own machine." Same task, same mod
 
 From launch post: it also wants GIFs that show the speed; make one set for both.
 
-## What it does
+## How it works
 
-_Goal: 4–6 bullets of what makes it different, each one concrete._
+OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
 
-TODO: candidates: works live in the thread and you can steer it mid-turn; its own computer per task; work leaves through git as a PR; runs Claude Code or Codex on your own plan; parallel threads; Slack, GitHub and Linear built in.
+The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
 
-From launch post, candidate bullets:
-- Open source end to end, from the compute layer up; run it entirely in your own cloud account.
-- Fast because the agent and its computer share one durable VM: no network round trip per `bash` or `grep`, no S3-backed disk. "Feels as fast as local Claude Code."
-- Real QEMU VMs with local disks, because disk speed matters for code work.
-- One VM per team with isolated sessions on top: repos, packages and caches are already warm, and one VM runs hundreds of sessions in parallel.
-- Stateless on a persistent disk: each session is backed up to a repo after every turn, so sessions move between VMs and the fleet scales out.
-- Multiplayer: the whole team starts and follows sessions in Slack, for PRs, data analysis, incident investigation or product brainstorming.
-- Not a like-for-like copy of Devin: opinionated where we chose differently.
+The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
+
+<p align="center">
+  <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
+</p>
+
+TODO: link to Architecture docs. Diagram source: `scripts/readme-architecture.html`.
+
+From launch post: it wants the same two visuals: (1) VM per session vs one VM per team with isolated sessions on top; (2) the gateway spawning sessions and worktrees, backing them up after each turn, scaling out. Draw once, use in both.
 
 ## Try it in Cloud
 
@@ -91,22 +92,6 @@ _Goal: the reader knows self-hosting is real and supported, what it needs, and w
 TODO: requirements in one line (Slack app, GitHub App, model key, domain, one VM), a short install snippet, links to the quickstart and AWS / Azure / GCP / VPS guides.
 
 From launch post: AWS, Azure, GCP and OCI, Kubernetes soon; the whole stack can run on a single VM. (Docs nav lists AWS / Azure / GCP / VPS, no OCI yet.)
-
-## How it works
-
-OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
-
-The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
-
-The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
-
-<p align="center">
-  <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
-</p>
-
-TODO: link to Architecture docs. Diagram source: `scripts/readme-architecture.html`.
-
-From launch post: it wants the same two visuals: (1) VM per session vs one VM per team with isolated sessions on top; (2) the gateway spawning sessions and worktrees, backing them up after each turn, scaling out. Draw once, use in both.
 
 ## Docs
 
