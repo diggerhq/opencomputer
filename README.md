@@ -95,4 +95,4 @@ From launch post: AWS, Azure, GCP and OCI, Kubernetes soon; the whole stack can 
 
 ## License
 
-TODO: which license (repo root has LICENSE; `computer/` has its own NOTICE).
+Apache 2.0. See [LICENSE](LICENSE).
