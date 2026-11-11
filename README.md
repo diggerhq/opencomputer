@@ -14,7 +14,7 @@ link in "Docs".
 </p>
 
 <p align="center">
-  <a href="#">Cloud</a> | <a href="#">Self-hosting</a> | <a href="#">Docs</a> | <a href="#">Website</a> | <a href="#">Benchmark</a> | <a href="#">Community</a> | <a href="#">X</a>
+  <a href="#">Cloud</a> | <a href="#">Self-hosting</a> | <a href="#">Docs</a> | <a href="#">Website</a> | <a href="#">Benchmark</a> | <a href="https://join.slack.com/t/opencomputercommunity/shared_invite/zt-4gtztz4io-~LZMreyHyTryoEVhs2hUPA">Community</a> | <a href="#">X</a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@ link in "Docs".
   <a href="https://app.opencomputer.dev"><img alt="Try OpenComputer in Slack" src="https://img.shields.io/badge/Try_OpenComputer_in_Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white"></a>
 </p>
 
-TODO: replace the dummy `#` links. Benchmark → https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/; Community and X still to decide; Self-hosting once the docs in #1024 have content.
+TODO: replace the dummy `#` links. Benchmark → https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/; X still to decide; Self-hosting once the docs in #1024 have content.
 
 ## Introduction
 
