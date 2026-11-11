@@ -33,6 +33,12 @@ _Goal: the reader sees a real thread in under 10 seconds: mention, live progress
 
 TODO: GIF or short video of a Slack thread (no credentials or personal data on screen).
 
+<p align="center">
+  <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @computer in the cloud; @computer finishes in 32.0s, local in 36.2s" width="100%">
+</p>
+
+TODO: caption: "As fast as Claude Code on your own machine." Same task, same model, real time.
+
 From launch post: it also wants GIFs that show the speed; make one set for both.
 
 ## What it does
