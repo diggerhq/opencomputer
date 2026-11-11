@@ -187,6 +187,14 @@ const orgInvitations = [
 
 type Handler = () => unknown
 
+let githubStar = {
+  eligible: true,
+  claimed: false,
+  started: false,
+  bonusUsd: 5,
+  repoUrl: 'https://github.com/diggerhq/opencomputer',
+}
+
 // A handler may return NOT_FOUND to mimic a 404 (mockFetch throws, like a real
 // missing resource). No handler uses it today.
 const NOT_FOUND = Symbol('not_found')
@@ -804,6 +812,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
     }),
   ],
   [/^\/api-keys$/, () => apiKeys],
+  [/^\/github-star$/, () => githubStar],
   [/^\/billing\/autumn$/, () => autumnMock()],
   [/^\/billing\/invoices/, () => ({ invoices: [] })],
   [/^\/billing$/, () => billing],
@@ -815,6 +824,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [/^\/github-star\/start$/, () => (githubStar = { ...githubStar, started: true })],
+  [
+    /^\/github-star\/claim$/,
+    () => (githubStar = { ...githubStar, eligible: false, claimed: true }),
+  ],
   [/^\/managed-agents\/computer$/, previewComputer],
   [
     /^\/managed-agents\/computer\/slack\/install$/,
