@@ -72,7 +72,7 @@ From launch post: it wants the same two visuals: (1) VM per session vs one VM pe
 
 ## Try it in Cloud
 
-_Goal: the fastest path to a working @computer, in three steps and about two minutes. This is the main CTA._
+The fastest way to experience `@Computer` is to install the Slack app from the cloud: [sign up here](https://app.opencomputer.dev), connect your repos, and install the Slack app to get started.
 
 <p align="center">
   <a href="https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/"><img src="docs/images/readme-benchmark.gif" alt="Slack message to first push, median of 5 runs: @Computer finishes first, ahead of Replicas, Capy, Hoplite and Devin" width="70%"></a>
@@ -82,8 +82,6 @@ _Goal: the fastest path to a working @computer, in three steps and about two min
 - **2.6x faster than the average of the 4 most popular cloud agents**: first push in 24s vs a 62s average ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
 - **3-day free trial** with 600 work minutes
 - **Bring your own ChatGPT / Codex subscription**
-
-TODO: 1. Sign up · 2. Add to Slack and connect GitHub · 3. Mention `@computer` with a task.
 
 ## Self-host
 
