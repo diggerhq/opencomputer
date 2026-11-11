@@ -5,14 +5,6 @@ description: "How Slack, the gateway, hosts and runners fit together"
 
 {/* Goal: the reader can draw Slack → gateway ← host → runner and knows what each owns and where state lives. */}
 
-## How it works
-
-OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
-
-The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
-
-The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
-
 ## The pieces
 
 TODO: diagram.
