@@ -13,19 +13,32 @@ link in "Docs".
 
 **3x faster than Devin.**
 
-_Goal: in one glance the reader gets the tagline, the speed claim with its source, and the Cloud button._
+<p align="center">
+  The open-source Devin alternative: a coding agent your team works with in Slack, on its own computers, in your cloud or ours.
+</p>
 
-TODO: logo (light/dark), badges (license, release, Slack community).
+<p align="center">
+  <a href="#">Cloud</a> | <a href="#">Self-hosting</a> | <a href="#">Docs</a> | <a href="#">Website</a> | <a href="#">Benchmark</a> | <a href="#">Community</a> | <a href="#">X</a>
+</p>
 
-TODO: link "3x faster" to the published benchmark (speedbench runs computer vs devin; results not yet in its README).
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/diggerhq/opencomputer?style=for-the-badge"></a>
+  <a href="https://github.com/diggerhq/opencomputer/releases"><img alt="Release" src="https://img.shields.io/github/v/release/diggerhq/opencomputer?style=for-the-badge"></a>
+</p>
 
 <p align="center">
   <a href="https://app.opencomputer.dev"><img alt="Try OpenComputer in Slack" src="https://img.shields.io/badge/Try_OpenComputer_in_Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white"></a>
 </p>
 
-TODO: secondary links under the button: Docs · Self-host · Community.
+TODO: replace the dummy `#` links. Benchmark → https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/; Community and X still to decide; Self-hosting once the docs in #1024 have content.
 
-From launch post: "the open source and self-hostable alternative to Devin", open source "from the compute layer all the way to the top".
+## Introduction
+
+OpenComputer is the open source, self hostable alternative to Devin. Mention `@computer` in a Slack thread with a task, it works on its own computer, you & your team can watch and steer it as it goes, and the result lands as a pull request.
+
+It is open source from the compute layer up, so you can run all of it in your own cloud account, or start on OpenComputer Cloud in two minutes.
+
+We built it to feel as fast as Claude Code on your laptop: in our benchmark it opens PRs 3.3x faster than Devin.
 
 ## See it work
 
