@@ -102,9 +102,13 @@ From launch post: an always-on team VM gets cheaper than a sandbox per session a
 
 ## How it works
 
-_Goal: the reader can draw Slack → gateway ← host → runner and knows what each piece owns._
+We opted for simplicity of self-hosting without compromising scale and security. The entire OpenComputer stack can be hosted on a single VM. It is recommended that the VM is air-gapped from external networking.
 
-TODO: diagram (image, not ASCII) and one sentence per piece. Link to Architecture.
+The VM is host to the gateway component (Calvin). It is a thin bridge that listens for events from Slack and spawns sessions using Claude Code, Codex or OpenCode, according to your configuration. The rest of the stack is Cloudflare-hosted Workers and Durable Objects (soon available on Fly and other stacks).
+
+The isolation layer for each session is rootless Podman. Durability is first achieved on the VM's local disk, then persisted to a git-backed store.
+
+TODO: diagram (image, not ASCII). Link to Architecture.
 
 From launch post: it wants the same two visuals: (1) VM per session vs one VM per team with isolated sessions on top; (2) the gateway spawning sessions and worktrees, backing them up after each turn, scaling out. Draw once, use in both.
 
