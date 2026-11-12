@@ -40,7 +40,7 @@ import { moveFlatJournals, moveFlatSessionLogged } from './journal-flat-move.js'
 import { journalReports } from './journal-reports.js';
 import { type HostWriterOptions, HostSessionWriter, scanJournals } from './session-writer.js';
 import { isSessionId } from '../session-ids.js';
-import { runnersDir as runnersDirOf } from '../ipc.js';
+import { type RunRoot, runnersDir as runnersDirOf } from '../ipc.js';
 import { log } from '../log.js';
 import { apiBridge, localPort, type WriterPort } from './api-bridge.js';
 import { mirrorAcks } from './mirror-acks.js';
@@ -461,8 +461,8 @@ export function apiHost(d: ApiHostDeps) {
       }
     },
 
-    /** Before a runner is launched or claimed for `spec`: its RunnerApi, with the host's writer handed off; undefined off the API. */
-    async mint(spec: SessionSpec, runnerId: string): Promise<RunnerApi | undefined> {
+    /** Before a runner is launched or claimed for `spec`: its RunnerApi, with the host's writer handed off; undefined off the API. `run`: the runner's own run root, when it has one (work 103). */
+    async mint(spec: SessionSpec, runnerId: string, run?: RunRoot): Promise<RunnerApi | undefined> {
       const sessionId = spec.sessionId;
       if (!v4 || !isSessionId(sessionId)) return undefined;
       specs.set(sessionId, spec);
@@ -474,7 +474,7 @@ export function apiHost(d: ApiHostDeps) {
       const { epoch, lastSeq } = logOf(sessionId);
       ensureSessionJournalDir(d.dataDir, sessionId); // the runner opens the journal there and cannot make the directory itself
       moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
-      const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, runnersDir), token: mintToken() };
+      const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, run ? runnersDirOf(run) : runnersDir), token: mintToken() };
       tokens.set(runnerId, api);
       return api;
     },

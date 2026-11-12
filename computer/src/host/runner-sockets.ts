@@ -10,7 +10,7 @@
 
 import net from 'node:net';
 import path from 'node:path';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import type { HostToRunner, RunnerSpec } from '../protocol.js';
 import { type RunRoot, pidFileFor, runnersDir, secretsFor, send } from '../ipc.js';
 import { log } from '../log.js';
@@ -34,26 +34,56 @@ export function dialRunner(socket: string): Promise<net.Socket> {
   });
 }
 
-/** Launch a runner (`runner.launched`) and connect to it once it listens (`runner.ready`). */
-export async function launchRunner(rs: RunnerSpec, o: { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; f?: Dimensions }) {
-  const { tm, f = {} } = o;
+/**
+ * `dialRunner` for a socket in a directory a session can write (work 103): connected to only when it is a socket,
+ * never through a link the session put there. Undefined when nothing is there or nothing answers.
+ */
+export async function dialSocket(socket: string): Promise<net.Socket | undefined> {
+  try {
+    if (!lstatSync(socket).isSocket()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return dialRunner(socket).catch(() => undefined);
+}
+
+export interface LaunchOptions { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; f?: Dimensions }
+
+/** Launch a runner's process (`runner.launched`); resolves once it was spawned, with when the launch began. */
+export async function launchProcess(rs: RunnerSpec, o: LaunchOptions): Promise<number> {
   const t0 = Date.now();
-  const launched = tm.start('runner.launched', { ...f, data: { launch_mode: o.mode } });
+  const launched = o.tm.start('runner.launched', { ...o.f, data: { launch_mode: o.mode } });
   await launch(rs, o.mode, o.env, o.root).catch((e) => {
     launched.end({ outcome: 'failed', error_type: 'launch' });
     throw e;
   });
   launched.end({ outcome: 'completed' });
-  const { value: sock, polls } = await pollReady(() => dialRunner(rs.socket).catch(() => undefined));
+  return t0;
+}
+
+/**
+ * Connect to a launched runner once it listens (`runner.ready`), 30 s at most. `t0`: when its launch began.
+ * `dial`: how its socket is reached, when not plainly; `why`: more for the error of one that never listened.
+ */
+export async function awaitRunner(
+  rs: RunnerSpec,
+  o: { tm: Telemetry; f?: Dimensions; t0: number; dial?: () => Promise<net.Socket | undefined>; why?: () => Promise<string> },
+): Promise<net.Socket> {
+  const { tm, f = {}, t0 } = o;
+  const { value: sock, polls } = await pollReady(o.dial ?? (() => dialRunner(rs.socket).catch(() => undefined)));
   if (!sock) {
     tm.emit('runner.ready', { ...f, outcome: 'timed_out', error_type: 'launch', duration_ms: Date.now() - t0, data: { polls } });
-    throw new Error('runner did not start within 30 s');
+    const why = await o.why?.();
+    throw new Error(`runner did not start within 30 s${why ? `\n${why}` : ''}`);
   }
   const launchMs = Date.now() - t0;
   log.info(`runner ${rs.id} up for ${rs.session?.key ?? 'the pool'} in ${launchMs} ms`);
   tm.emit('runner.ready', { ...f, duration_ms: launchMs, data: { polls } });
   return sock;
 }
+
+/** Launch a runner and connect to it once it listens. */
+export const launchRunner = async (rs: RunnerSpec, o: LaunchOptions) => awaitRunner(rs, { ...o, t0: await launchProcess(rs, o) });
 
 /**
  * After a restart: connect to every runner still listening and hand it to `adopt` (by its socket's

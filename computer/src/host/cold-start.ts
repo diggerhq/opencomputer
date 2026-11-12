@@ -1,6 +1,6 @@
-// A runner's cold start on the host: the session's fork and the runner's
-// launch, concurrently when the fork's directory is known up front, then the
-// first connection to the runner's socket.
+// A runner's cold start on the host, one orchestration for both launch modes
+// (work 103): bring the runner's process up, then make the session's fork and
+// wait for the runner's socket together.
 //
 // Invariant: the fork is complete (every worktree added, .fork.json written)
 // before `coldStart` resolves, and the host hands the runner its socket
@@ -8,8 +8,8 @@
 // that (host/start-runner.ts `adopt`). The runner process itself may boot inside the
 // still-empty fork directory: until it has credentials it only listens on its
 // socket and never reads its cwd, so Claude Code never starts, nor sees the
-// fork, before the worktrees exist. If the fork fails, a runner that already
-// came up is told to go (`abandon`) and the start fails as before.
+// fork, before the worktrees exist. If either step fails, the runner is made
+// to go (`abandon`) and the start fails with the first failure.
 
 import type { SessionSpec } from '../protocol.js';
 import type { Telemetry } from '../telemetry/emitter.js';
@@ -45,37 +45,25 @@ export async function pollReady<T>(dial: () => Promise<T | undefined>, intervalM
   }
 }
 
-export interface ColdStartSteps<T> {
-  /** The fork's directory when it is known before forking (a workspace fork); the runner launches in it right away. */
-  dir?: string;
-  /** Creates (or completes) the fork and returns its path; absent when the fork already exists at `dir`. */
-  fork?: () => Promise<string>;
-  /** Starts the runner in `dir` and resolves once it answers on its socket. */
-  start: (dir: string) => Promise<T>;
-  /** The fork failed after the runner came up: make it go. */
-  abandon: (ready: T) => void;
+export interface StartSteps<T> {
+  /** Bring the runner's process up: launch it (detached), or create/start/mount its container. */
+  up: () => Promise<void>;
+  /** Make the fork's content; absent when it exists (a resume). */
+  prepare?: () => Promise<void>;
+  /** Resolves once the runner answers on its socket. */
+  ready: () => Promise<T>;
+  /** A step failed after `up`: make it go. */
+  abandon: () => Promise<void>;
 }
 
-/** Fork and start the runner, concurrently when `dir` is known; resolves once both are done. */
-export async function coldStart<T>(s: ColdStartSteps<T>): Promise<{ ready: T; forkPath: string }> {
-  if (!s.fork) {
-    if (s.dir === undefined) throw new Error('cold start without a fork or its directory');
-    return { ready: await s.start(s.dir), forkPath: s.dir };
+/** `up`, then `prepare` and `ready` together; any rejection abandons and rethrows the first. */
+export async function coldStart<T>(s: StartSteps<T>): Promise<T> {
+  await s.up(); // a failed `up` leaves nothing behind itself
+  try {
+    const [ready] = await Promise.all([s.ready(), s.prepare?.()]);
+    return ready;
+  } catch (e) {
+    await s.abandon().catch(() => {}); // the first failure is the one to report
+    throw e;
   }
-  if (s.dir === undefined) {
-    const forkPath = await s.fork();
-    return { ready: await s.start(forkPath), forkPath };
-  }
-  const [forked, started] = await Promise.allSettled([s.fork(), s.start(s.dir)]);
-  if (forked.status === 'rejected') {
-    if (started.status === 'fulfilled') s.abandon(started.value);
-    throw forked.reason;
-  }
-  if (started.status === 'rejected') throw started.reason;
-  if (forked.value !== s.dir) {
-    // Never expected (the fork lands where forkDir says); the runner's cwd would be wrong.
-    s.abandon(started.value);
-    throw new Error(`fork landed at ${forked.value}, runner started in ${s.dir}`);
-  }
-  return { ready: started.value, forkPath: forked.value };
 }

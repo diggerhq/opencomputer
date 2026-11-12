@@ -1,7 +1,8 @@
 // Starting runners and taking them on (work 045, 069; split out of host/main.ts
 // for work 103): `adopt` makes a connected runner the host's (its session's, or
 // a spare), `startRunner` gets a session its runner (a claimed spare, else a
-// cold start in its fork), `launchSpare` starts one for the pool.
+// cold start in its fork; on a `podman` host its thread's container,
+// sandbox/start.ts), `launchSpare` starts one for the pool.
 // host/main.ts keeps the registry (`runners`), what a runner's messages mean,
 // and delivery; it passes those in as `StartDeps`.
 //
@@ -12,6 +13,8 @@
 //   always starts cold, to resume.
 // - The API token of a cold-started runner goes over its socket, never in
 //   argv or the environment.
+// - A sandboxed runner serves the thread of its record (work 103): the key is
+//   the record's, and a report naming another stops the runner.
 
 import type net from 'node:net';
 import { randomBytes } from 'node:crypto';
@@ -39,7 +42,9 @@ import { claimSpare } from './claim.js';
 import { coldStart, forkFor } from './cold-start.js';
 import type { Pool } from './pool.js';
 import { callRunner as call } from './runner-call.js';
-import { launchRunner } from './runner-sockets.js';
+import { awaitRunner, launchProcess, launchRunner } from './runner-sockets.js';
+import type { SandboxRecord } from './sandbox/records.js';
+import type { SandboxStarts } from './sandbox/start.js';
 import type { ColdStart, Forwarded } from './trace.js';
 
 export interface Runner {
@@ -62,7 +67,11 @@ export interface Runner {
   /** The last trace forwarded (also in `<key>.trace.json`), for `turn.abandoned`. */
   forwarded?: Forwarded;
   calls: Map<string, (r: { ok: boolean; error?: string }) => void>;
+  /** Work 103: the thread's record and run root, for a runner in a container. */
+  sandbox?: Sandboxed;
 }
+
+export interface Sandboxed { record: SandboxRecord; run: RunRoot }
 
 /** What host/main.ts owns and a start needs. Everything is asked for when used, so main.ts may wire it before its parts exist. */
 export interface StartDeps {
@@ -81,8 +90,10 @@ export interface StartDeps {
   routeMode(key: string): string;
   /** Work 084: the session's journal, socket and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string): Promise<RunnerApi | undefined>;
-  /** The runner's own token socket, naming the session it serves now (tokens.ts). */
-  serveTokens(id: string, session: () => string | undefined): { close(): void };
+  /** The runner's own token socket below its run root, naming the session it serves now (tokens.ts). */
+  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /** Work 103: on a `podman` host, how a thread's runner starts; every session then starts through it. */
+  sandbox?: SandboxStarts;
   fillPool(): void;
   /** Run a fork so its workspace events join the delivery's trace. */
   inFork<T>(f: Dimensions, fn: () => Promise<T>): Promise<T>;
@@ -108,9 +119,10 @@ export function runnerStarts(d: StartDeps) {
   /** Take a connected runner on (adoption.ts): register it as its session's, or as a spare, follow its messages, send it `credentials`.
    * `key`: the session it was launched for; a verified runner names it in its first report, and one with no session is a spare.
    * `first`: the delivery's credentials, sent instead of the welcome ones, since the runner starts its harness with the first it gets. */
-  function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName } = {}): Promise<Runner> {
-    const r: Runner = { id, key: o.key ?? '', sock, lastDelivery: Date.now(), connectedAt: Date.now(), calls: new Map(), harness: o.harness };
-    const tokens = d.serveTokens(id, () => r.key); // its own token socket names the session it serves now (work 080)
+  function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName; sandbox?: Sandboxed } = {}): Promise<Runner> {
+    const r: Runner = { id, key: o.sandbox?.record.key ?? o.key ?? '', sock, lastDelivery: Date.now(), connectedAt: Date.now(), calls: new Map(), harness: o.harness, sandbox: o.sandbox };
+    // Its own token socket names the session it serves now (work 080). A container's is open since before its start (the same one: idempotent).
+    const tokens = d.serveTokens(o.sandbox?.run ?? d.run, id, () => r.key);
     sock.once('close', () => tokens.close()); // gone with the runner
     return new Promise((resolve, reject) => {
       const take = (m?: First) => {
@@ -126,18 +138,36 @@ export function runnerStarts(d: StartDeps) {
         if (c) send(sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
         resolve(r);
       };
-      const stop = (why: string) => {
+      const stopped = (why: string) => {
         log.warn(`runner ${id}: ${why}; stopping it`);
         d.exit(sock);
+      };
+      const stop = (why: string) => {
+        stopped(why);
         reject(new Error(why));
       };
       const a = adoption({ verify: !!o.verify, complete: forkComplete, take, stop, gone: () => reject(new Error('runner gone')) });
-      lines(sock, (m: RunnerToHost) => a.message(m) && void d.message(r, m));
+      lines(sock, (m: RunnerToHost) => {
+        // Which thread a container serves is the record's word, never the runner's.
+        if (o.sandbox && m.t === 'report' && m.report.key !== o.sandbox.record.key) return stopped(`it reports ${m.report.key}, not its record's ${o.sandbox.record.key}`);
+        return a.message(m) && void d.message(r, m);
+      });
       sock.once('close', () => a.closed());
     });
   }
 
+  /** Work 103: the thread's runner in its container; a new thread and a resume alike. Never the pool (until spares are containers). */
+  async function startSandboxed(sandbox: SandboxStarts, spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
+    const s = await sandbox.start(spec, f);
+    if (s.sock.destroyed) throw new Error('runner exited while it started');
+    const r = await adopt(s.record.id, s.sock, { first, harness: spec.harness, sandbox: { record: s.record, run: s.run } });
+    if (s.api) send(s.sock, { t: 'api', api: s.api } satisfies HostToRunner); // the token stays out of boot.env
+    r.cold = { resumed: !!s.session.sdkSessionId };
+    return r;
+  }
+
   async function startRunner(spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
+    if (d.sandbox) return startSandboxed(d.sandbox, spec, f, first);
     let existing = spec.forkPath && existsSync(spec.forkPath) && forkComplete(spec.forkPath) ? spec.forkPath : undefined;
     // A new session in a prepared workspace may take a spare (work 069); a resumed one starts cold, to resume.
     // Claude takes one on the managed route, whose credential spares park with; Codex (work 082) on its ChatGPT subscription.
@@ -175,15 +205,30 @@ export function runnerStarts(d: StartDeps) {
       existing ??= got.forkPath;
     }
     // A workspace fork's directory is known before forking: the runner boots in it while the worktrees are added.
-    const dir = existing ?? (workspacesEnabled() ? forkDir(spec.owner, spec.key) : undefined);
-    if (dir && !existing) await mkdirAsRunner(dir);
+    // Elsewhere (a laptop) the fork says where it is, so it comes first.
+    const fork = () => d.inFork(f, () => forkFor(tm, spec, f));
+    const dir = existing ?? (workspacesEnabled() ? forkDir(spec.owner, spec.key) : await fork());
+    const forking = !existing && workspacesEnabled();
+    if (forking) await mkdirAsRunner(dir);
     const id = newRunnerId();
     const runnerApi = await d.mint(spec, id); // work 084: the session's journal, socket and token; undefined off the API
-    const { ready: sock } = await coldStart({
-      dir,
-      fork: existing ? undefined : () => d.inFork(f, () => forkFor(tm, spec, f)),
-      start: (cwd) => launchRunner({ id, session: { ...spec, forkPath: cwd }, socket: socketFor(d.run, id), api: runnerApi && { ...runnerApi, token: '' }, version: d.version }, { ...d.launch, f }),
-      abandon: d.exit,
+    const rs = { id, session: { ...spec, forkPath: dir }, socket: socketFor(d.run, id), api: runnerApi && { ...runnerApi, token: '' }, version: d.version };
+    let t0 = Date.now();
+    let ready: Promise<net.Socket> | undefined;
+    const sock = await coldStart({
+      up: async () => void (t0 = await launchProcess(rs, { ...d.launch, f })),
+      prepare: forking
+        ? async () => {
+            const at = await fork();
+            if (at !== dir) throw new Error(`fork landed in ${at}, not in ${dir} where the runner was started`);
+          }
+        : undefined,
+      ready: () => (ready = awaitRunner(rs, { tm, f, t0 })),
+      // The fork failed: the runner goes once it is up (it only listens until then).
+      abandon: async () => {
+        const up = await ready?.catch(() => undefined);
+        if (up) d.exit(up);
+      },
     });
     if (sock.destroyed) throw new Error('runner exited while its fork was made');
     const r = await adopt(id, sock, { key: spec.key, first, harness: spec.harness });

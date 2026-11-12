@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readlinkSync, statSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -86,6 +86,8 @@ describe('token relay', () => {
     const sock = path.join(dir, 'r1.sock');
     expect(sock).toBe(tokenSocketFor(root, 'r1'));
     await vi.waitFor(() => expect(existsSync(sock)).toBe(true));
+    // Work 103: in a run root that is not the host's, the name the helpers know leads to the runner's own socket.
+    expect(readlinkSync(path.join(root, 'token.sock'))).toBe('tokens/r1.sock');
     serving.close();
     await vi.waitFor(() => expect(existsSync(sock)).toBe(false));
   });

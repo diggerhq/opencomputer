@@ -7,9 +7,12 @@
 //   [SP_DEFINITION]            workspace definition: fork with src/workspaces (VM); unset: ensureWorkdir (laptop).
 //                              A definition in the gateway's welcome replaces it (<SP_DATA>/definition.json).
 //   [SP_IDLE_MS=7200000]       tell a runner to exit after this long without deliveries
-//   [SP_LAUNCH=systemd|detached]  default systemd on Linux, detached elsewhere
+//   [SP_LAUNCH=systemd|podman|detached]  default systemd on Linux, detached elsewhere. podman (work 103): every
+//                              thread in its own container (sandbox/); needs SP_RUNNER_USER and SP_POOL_SIZE=0
+//   [SP_IMAGE] [SP_IMAGE_ABI]  the session image and its ABI, from the release's .sp-version.env; required by podman
 //   [SP_SYSTEMD_RUN="systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=12G -p MemoryMax=16G"]
-//                              prefix for the transient unit (--unit, --collect, --setenv are added); the
+//                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
+//                              unit gets no --setenv); the
 //                              default sizes MemoryHigh/MemoryMax from the machine (runner-limits.ts)
 //   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off
 //   [SP_VERSION]               code version (the release's commit); else `git rev-parse`
@@ -36,7 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, PROTOCOL_VERSION } from '../protocol.js';
-import { codexBin } from '../runner-env.js';
+import { codexBin, runnerVars } from '../runner-env.js';
 import { prereadCodex } from './codex-preread.js';
 import type {
   Delivery,
@@ -45,6 +48,7 @@ import type {
   HostToGateway,
   ModelRoute,
   HostToRunner,
+  Person,
   RunnerToHost,
   SessionSecret,
   SessionSpec,
@@ -55,6 +59,9 @@ import {
   checkoutRepos,
   configureAsRunner,
   fetchRepo,
+  definitionFile,
+  forkDir,
+  mkdirAsRunner,
   prepareInBackground,
   observeWorkspaces,
   oldestFetchAgeS,
@@ -62,7 +69,7 @@ import {
   touchFork,
   workspacesEnabled,
 } from '../workspaces/index.js';
-import { send, socketFor } from '../ipc.js';
+import { sandboxRunFor, send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
 import { closed, rediscover, retire } from './runner-sockets.js';
 import { type Runner, runnerStarts } from './start-runner.js';
@@ -82,6 +89,11 @@ import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
 import { wireFor } from './api-wire.js';
+import { launch } from './launch.js';
+import { containers } from './sandbox/containers.js';
+import { asRunner } from './sandbox/podman.js';
+import { type SandboxRecord, sandboxRecords } from './sandbox/records.js';
+import { sandboxStarts } from './sandbox/start.js';
 
 const env = process.env;
 const IDENTITY_FILE = identityFile(HOST_DATA);
@@ -142,11 +154,32 @@ const starting = new Map<string, Promise<Runner>>();
 /** Set on SIGTERM: runner sockets closing then are the host leaving, not the runners. */
 let stopping = false;
 
+/** A sandboxed thread's workspace on the host, from its record: the runner itself knows it as `/workspace`. */
+const sandboxWorkspace = (r: SandboxRecord) => forkDir({ dir: r.person } as Person, r.key);
+/** Work 103: on a `podman` host every thread runs in its own container, and nothing runs outside one. */
+function sandboxHost() {
+  const user = runnerUser(env);
+  if (!user) throw new Error('SP_LAUNCH=podman needs a runner user (SP_RUNNER_USER): this host would run sessions as itself. deploy/vm/sp-host.sh sets one up.');
+  const { SP_IMAGE: image, SP_IMAGE_ABI: abi } = env;
+  if (!image || !abi) throw new Error("SP_LAUNCH=podman needs SP_IMAGE and SP_IMAGE_ABI; the release's .sp-version.env sets both");
+  if (POOL_SIZE) throw new Error('SP_LAUNCH=podman: spares are not containers yet; set SP_POOL_SIZE=0');
+  const runRoot = (id: string) => sandboxRunFor(HOST_RUN, id);
+  const records = sandboxRecords(path.join(HOST_DATA, 'state', 'sandboxes'));
+  const all = containers({
+    as: asRunner(user.sudo), runRoot, dataDir: HOST_DATA, root: ROOT, image, abi,
+    start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: VERSION }, 'podman', env, ROOT, ms),
+    vars: () => runnerVars(env), definition: definitionFile, serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+  });
+  return sandboxStarts({ tm, records, containers: all, runRoot, image, abi, version: VERSION,
+    mint: (spec, id, run) => api.mint(spec, id, run), workspace: sandboxWorkspace, mkdir: mkdirAsRunner });
+}
+
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
-  mint: (spec, id) => api.mint(spec, id), serveTokens: (id, session) => tokens.serveRunner(HOST_RUN, id, session),
+  mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+  sandbox: LAUNCH === 'podman' ? sandboxHost() : undefined,
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -183,6 +216,7 @@ async function onRunner(r: Runner, m: RunnerToHost) {
     case 'telemetry':
       return telemetry.relay(m.batch);
     case 'report':
+      if (r.sandbox) m.report.forkPath = sandboxWorkspace(r.sandbox.record); // the runner says /workspace; the gateway keeps seeing host paths
       r.report = m.report;
       // A spare reports as it is claimed, before the host has it as the session's runner (startRunner forwards it then).
       return runners.get(r.key) === r && toGateway({ t: 'session', report: m.report });

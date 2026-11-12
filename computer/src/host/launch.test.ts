@@ -54,6 +54,35 @@ describe('launchCommand', () => {
   });
 });
 
+describe('launchCommand, podman', () => {
+  const rs = { id: 'ab12', socket: '/run/x/runners/ab12.sock', version: 'v' } as never;
+  const env = { SP_RUNNER_USER: 'root', SP_SYSTEMD_RUN: 'systemd-run --user --slice=s.slice' };
+  const yes = () => true;
+
+  it('starts the container attached, in a unit named by the runner, with no environment and no directory', () => {
+    const c = launchCommand(rs, 'podman', env, '/r', yes);
+    expect(c.detached).toBe(false);
+    expect(c.cmd).toBe('/usr/bin/sudo');
+    const at = c.args.indexOf('--');
+    expect(c.args.slice(0, at).slice(0, 3)).toEqual(['-n', '-u', 'root']);
+    expect(c.args.slice(at + 1)).toEqual([
+      'systemd-run', '--user', '--slice=s.slice',
+      '-p', 'Delegate=yes', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=20', '-p', 'StandardOutput=null', '-p', 'StandardError=journal',
+      '--unit=sp-runner-ab12', '--collect', '--quiet',
+      '--', '/usr/bin/podman', 'start', '--attach', 'sp-runner-ab12',
+    ]);
+    expect(c.args.some((a) => /^--setenv|^--working-directory/.test(a))).toBe(false);
+  });
+
+  it('throws without the bundle: a container has no tsx fallback', () => {
+    expect(() => launchCommand(rs, 'podman', env, '/r', () => false)).toThrow('/r/dist/runner-boot.mjs');
+  });
+
+  it('throws without a runner user, naming what sets one up', () => {
+    expect(() => launchCommand(rs, 'podman', { SP_SYSTEMD_RUN: 'systemd-run --user' }, '/r', yes)).toThrow('sp-host.sh');
+  });
+});
+
 describe('dropEmpty', () => {
   it('unsets runner variables the host set empty, and only those', () => {
     const env: NodeJS.ProcessEnv = { SP_CODEX_BIN: '', SP_MODEL_SOCKET: '/m', OTHER: '' };

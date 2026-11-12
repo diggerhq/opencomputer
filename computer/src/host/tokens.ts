@@ -14,9 +14,9 @@
 
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
-import type { GitHubToken, HostToGateway, TokenKind } from '../protocol.js';
+import { type GitHubToken, HOST_RUN, HOST_TOKEN_SOCKET, type HostToGateway, RUNNER_TOKEN_DIR, type TokenKind } from '../protocol.js';
 import { type RunRoot, lines, tokenSocketFor } from '../ipc.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 
@@ -33,6 +33,8 @@ export interface TokenRelay {
   /**
    * A runner's own token socket below its run root (`tokenSocketFor`); `session` is the host's word for who asks.
    * Idempotent per id; the caller closes it when the runner is gone. The directory is the caller's to make (`freshTokenDir`).
+   * In a sandbox's run root (work 103) it also makes `token.sock` a relative link to it, so the helpers find it under the
+   * name they know; at HOST_RUN that name is the host's shared token socket and stays.
    */
   serveRunner(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
 }
@@ -105,6 +107,12 @@ export function tokenRelay(ask: (m: Extract<HostToGateway, { t: 'token' }>) => b
       const open = served.get(socket);
       if (open) return open;
       const server = relay.serve(socket, session);
+      if (path.resolve(run) !== path.resolve(HOST_RUN)) {
+        const link = path.join(run, HOST_TOKEN_SOCKET);
+        rmSync(`${link}.tmp`, { force: true });
+        symlinkSync(path.join(RUNNER_TOKEN_DIR, `${id}.sock`), `${link}.tmp`);
+        renameSync(`${link}.tmp`, link);
+      }
       const handle = { close: () => void (served.get(socket) === handle && (served.delete(socket), server.close())) };
       served.set(socket, handle);
       return handle;
