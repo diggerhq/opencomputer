@@ -8,6 +8,8 @@
 # - one line per repository on stdout, tab-separated: the repository, `ok` or
 #   `failed`, then what the script documents; a failed line's third field is a
 #   one-line message. The exit status is non-zero only for a wrong call.
+#   A field never holds a tab or a newline: a name that could (a directory a
+#   session made) is answered by its position in the input (ws-inspect.sh).
 # - running it twice gives the same result.
 # - git never prompts, and a command that can take long (clone, fetch, a
 #   checkout) ends with the script when the script is signalled.

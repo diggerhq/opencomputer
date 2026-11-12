@@ -25,7 +25,8 @@ export async function pruneFork(forkPath: string): Promise<string | undefined> {
   const s = hostScripts(clonesOf(forkPath));
   const names = wts.map((wt) => path.basename(wt));
   const out = names.length ? await s.run('ws-inspect.sh', ['--only=state', s.clones, s.workspace(forkPath), ...names], { timeoutMs: 0 }) : '';
-  const state = new Map(names.map((name) => [name, row(out, name)] as const));
+  // Answered by position, from 1: a worktree's name may hold a tab.
+  const state = new Map(names.map((name, n) => [name, row(out, String(n + 1))] as const));
   const reasons: string[] = [];
   for (const name of names) {
     const [dirty, unpushed] = state.get(name)!;

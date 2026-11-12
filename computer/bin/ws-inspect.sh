@@ -11,10 +11,16 @@
 #          say), the number of commits on no remote (-1: cannot count; not
 #          counted, `-`, when dirty), its branch (empty when detached) and its
 #          clone's git directory as git names it.
-# ignored: of the directories named on stdin, one `<worktree><TAB><path below
-#          it>` per line, the ones git ignores (tracked files are never ignored).
+# ignored: of the directories named on stdin, one `<n><TAB><path below the
+#          n-th worktree>` per line, the ones git ignores (tracked files are
+#          never ignored).
 #
-# Prints `<worktree> ok <dirty|clean> <unpushed> <branch> <git dir> <ignored path>…`;
+# Nothing a session named is printed: a directory's name may hold a tab, which
+# would read as another field. A worktree is answered by its position among
+# the arguments and a directory by its line on stdin, both from 1. A path with
+# a tab or a newline cannot be asked about; the caller leaves those out.
+#
+# Prints `<n> ok <dirty|clean> <unpushed> <branch> <git dir> <ignored line>…`;
 # with --only=ignored the four state fields are `-`, with --only=state stdin is not read.
 set -eu
 . "$(dirname "$0")/ws-lib.sh"
@@ -25,7 +31,9 @@ workspace=$2
 shift 2
 if [ "$only" = state ]; then : >"$ws_tmp/dirs"; else cat >"$ws_tmp/dirs"; fi
 
+n=0
 for repo in "$@"; do
+  n=$((n + 1))
   wt=$workspace/$repo
   state=- unpushed=- branch=- common=-
   if [ "$only" != ignored ]; then
@@ -38,10 +46,12 @@ for repo in "$@"; do
     common=$(ws_q "$wt" git rev-parse --git-common-dir) || common=
   fi
   set -- "$state" "$unpushed" "$branch" "$common"
-  while IFS=$ws_tab read -r r rel; do
-    [ "$r" = "$repo" ] && [ -n "$rel" ] || continue
+  line=0
+  while IFS=$ws_tab read -r of rel; do
+    line=$((line + 1))
+    [ "$of" = "$n" ] && [ -n "$rel" ] || continue
     # check-ignore exits 0 only for an ignored path.
-    if ws_q "$wt" git check-ignore -q "$rel"; then set -- "$@" "$rel"; fi
+    if ws_q "$wt" git check-ignore -q "$rel"; then set -- "$@" "$line"; fi
   done <"$ws_tmp/dirs"
-  ws_ok "$repo" "$@"
+  ws_ok "$n" "$@"
 done

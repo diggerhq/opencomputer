@@ -141,20 +141,21 @@ describe('workspace scripts', () => {
     const wt = path.join(workspace, 'alpha');
     const common = git(wt, 'rev-parse', '--git-common-dir');
     const state = () => run('ws-inspect.sh', ['--only=state', clones, workspace, 'alpha']);
-    expect(await state()).toBe(`alpha\tok\tclean\t0\tsp/k1\t${common}\n`);
-    expect(await state()).toBe(`alpha\tok\tclean\t0\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t0\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t0\tsp/k1\t${common}\n`);
     writeFileSync(path.join(wt, 'new.txt'), 'n');
-    expect(await state()).toBe(`alpha\tok\tdirty\t-\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tdirty\t-\tsp/k1\t${common}\n`);
     git(wt, 'add', '-A');
     git(wt, 'commit', '--quiet', '-m', 'local');
-    expect(await state()).toBe(`alpha\tok\tclean\t1\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t1\tsp/k1\t${common}\n`);
     mkdirSync(path.join(wt, 'node_modules'));
     mkdirSync(path.join(wt, 'pkg', 'node_modules'), { recursive: true });
     mkdirSync(path.join(wt, 'venv'));
-    const asked = 'alpha\tnode_modules\nalpha\tvenv\nother\tnode_modules\nalpha\tpkg/node_modules\n';
-    expect(await run('ws-inspect.sh', ['--only=ignored', clones, workspace, 'alpha'], asked)).toBe('alpha\tok\t-\t-\t-\t-\tnode_modules\tpkg/node_modules\n');
+    // Answered by position: the worktree's among the arguments, the directory's line on stdin.
+    const asked = '1\tnode_modules\n1\tvenv\n2\tnode_modules\n1\tpkg/node_modules\n';
+    expect(await run('ws-inspect.sh', ['--only=ignored', clones, workspace, 'alpha'], asked)).toBe('1\tok\t-\t-\t-\t-\t1\t4\n');
     expect(await run('ws-inspect.sh', [clones, workspace, 'alpha', 'missing'], asked)).toBe(
-      `alpha\tok\tclean\t1\tsp/k1\t${common}\tnode_modules\tpkg/node_modules\nmissing\tok\tdirty\t-\t\t\n`,
+      `1\tok\tclean\t1\tsp/k1\t${common}\t1\t4\n2\tok\tdirty\t-\t\t\n`,
     );
   });
 
