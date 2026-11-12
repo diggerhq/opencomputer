@@ -153,6 +153,10 @@ export interface ModelSession {
   ownerId: string;
   channelId: string;
   threadTs: string;
+  /** `starting`, `idle` or `busy`; absent from a seam that doesn't say. */
+  status?: string;
+  /** When the thread last had a turn or changed status (ms); absent from a seam that doesn't say. */
+  activeAt?: number;
 }
 
 /** A session's route and why. `route.mode === "refuse"` is never delivered, only pushed. */
