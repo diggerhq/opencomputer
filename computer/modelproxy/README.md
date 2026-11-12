@@ -4,7 +4,7 @@ A small reverse proxy between the model clients in a computer's sessions (Claude
 
 Everything the proxy knows about an upstream is configuration: a **profile** names the upstream, the routes a session may call, the headers that carry the credential, and what to report back. The proxy has no built-in providers.
 
-Go, standard library only. One static binary.
+Go, the standard library and one dependency ([tableflip](https://github.com/cloudflare/tableflip), for the restart). One static binary.
 
 ```
 session's client ──HTTP──▶ api socket ─────────┐
@@ -164,14 +164,14 @@ Rules that hold:
 | `-identity` | `cgroup` | `cgroup` or `single` |
 | `-bindings-file` | `/run/oc-modelproxy/profile-bindings.json` | persisted bindings, without variables (empty: off) |
 | `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for a free upstream connection |
-| `-drain-timeout` | `630s` | on SIGTERM, how long streams in flight may finish |
+| `-drain-timeout` | `630s` | on SIGTERM or after a handoff, how long streams in flight may finish |
 | `-max-inflight-per-caller` | `32` | concurrent requests per caller, held ones included (0: no limit) |
 | `-max-conns-per-caller` | `128` | connections a caller may have open on the API socket (0: no limit) |
 | `-ws-idle-timeout` | `5m` | close a WebSocket idle this long between responses (0: never) |
 | `-max-idle-conns-per-host`, `-max-conns-per-host`, `-idle-conn-timeout` | `96`, `256`, `50s` | upstream connection pool, per profile |
 | `-debug`, `-version` | | |
 
-Profiles are read at start; to change them, restart the proxy. Bindings survive the restart and streams in flight finish first. The garbage collector runs at `GOGC=400` unless the environment sets `GOGC`.
+Profiles are read at start; to change them, or the binary, send `SIGUSR2`. The proxy starts its replacement with the same command line and the listening sockets, and when that is ready stops accepting and exits once its streams end. No connection is refused in between: the replacement holds each caller's requests until the binder, whose connection the old process closes, has re-bound. A replacement that does not start changes nothing; the old process logs `handoff failed; still serving`. Under systemd the unit needs `Type=notify` and `NotifyAccess=all`, since the replacement reports itself as the new main pid. `SIGTERM` stops the proxy: bindings survive, streams in flight finish first, and new connections wait for the next start only if systemd owns the sockets. The garbage collector runs at `GOGC=400` unless the environment sets `GOGC`.
 
 ## Build and test
 
