@@ -468,6 +468,9 @@ try {
   check(!!(await until(() => existsSync(wireSocket) || undefined, 10_000)), `the host serves its wire socket ${wireSocket}`);
   wire = await wireClient(wireSocket);
   const byId = (cid: string) => all.find((t) => t.id() === cid) ?? refuse(`no thread ${cid}`);
+  // Started here as the host starts them; nothing in this process runs a workspace script through it, so it is given no way to.
+  const files = sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
+    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')) });
   const kit: Kit = {
     root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
     inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),
@@ -475,6 +478,7 @@ try {
     asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
     status: (cid) => byId(cid).inspect('{{.State.Status}}'),
     tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
+    filesPlace: (t, running) => files.filesPlace({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
   };
   await reachRunning(kit, a, b, q);
 

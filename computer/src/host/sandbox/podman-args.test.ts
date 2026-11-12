@@ -108,6 +108,8 @@ ghcr.io/diggerhq/computer-session:abc`);
     ]);
     expect(a.slice(-8)).toEqual(['--entrypoint', '/bin/sh', 'img:1', ...h.sh]);
     expect(a).not.toContain('--interactive');
+    expect(a).not.toContain('--name');
+    expect(helperArgs({ ...h, name: 'sp-files-ab12' }).slice(0, 4)).toEqual(['run', '--rm', '--name', 'sp-files-ab12']);
     const net = helperArgs({ ...h, network: true, stdin: true });
     expect(net).toContain('--network=pasta');
     expect(net[2]).toBe('--interactive');

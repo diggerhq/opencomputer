@@ -66,8 +66,19 @@ exec tar -c --exclude=.git --owner=0 --group=0 --numeric-owner --mode=u+rw,go-w,
 /** `<name>`: `exists` when the workspace has that name (a dangling link too), else `free`. */
 export const CAN_UPLOAD = `if [ -e "$1/$2" ] || [ -L "$1/$2" ]; then echo exists; else echo free; fi`;
 
-/** `<tmp>`: unpack the tar on standard input into a new directory `tmp` of the workspace. */
-export const UNPACK = `mkdir -- "$1/$2" && exec tar -x --no-same-owner --no-same-permissions -C "$1/$2" -f -`;
+/**
+ * `<tmp>`: unpack the tar on standard input into a new directory `tmp` of the workspace, and remove that directory
+ * unless all of it was unpacked: when tar fails, when the input stops, and when the script is told to end (it waits for
+ * `mkdir` or tar first, so no directory appears after it is gone). What an earlier upload left because it was killed
+ * outright goes first: uploads of one session are one at a time, so every such name is a leftover.
+ */
+export const UNPACK = `trap 'exit 143' TERM HUP INT
+rm -rf -- "$1"/.opc-upload-* "$1"/.opc-replaced-*
+mkdir -- "$1/$2" || exit 1
+ok=
+trap '[ -n "$ok" ] || rm -rf -- "$1/$2"' EXIT
+tar -x --no-same-owner --no-same-permissions -C "$1/$2" -f - && ok=1
+`;
 
 /**
  * `<tmp> <name> <trash> <replace>`: `tmp` becomes `name`; with `replace`, what was there goes first. `-T`: never

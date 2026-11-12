@@ -19,8 +19,17 @@
 //   earlier. Paths and names reach a script as arguments, never as its text.
 // - An upload is checked as it streams (tar-check.ts), unpacked into a hidden
 //   directory beside its target, and renamed into place only when complete;
-//   a failure removes it and changes nothing. A name that exists and was not
-//   uploaded is `path_exists`; uploads in one session are serialized.
+//   a failure removes it and changes nothing. The script that unpacks removes
+//   its own directory when it does not finish, and the next upload of the
+//   session removes what a killed one left: the host's own removal is not
+//   relied on, since the script may outlive the process the host started. A
+//   name that exists and was not uploaded is `path_exists`; uploads in one
+//   session are serialized.
+// - A script is ended before it is done (its time is up, it printed too
+//   much, its upload failed, the reader of its download went away) with
+//   SIGTERM, never SIGKILL: the place decides what that ends (on a `podman`
+//   host timeout(1) under sudo, and the limit inside the container or of the
+//   helper, sandbox/scripts.ts `filesPlace`).
 // - Which top-level names were uploaded, when and by whom, is kept in
 //   `<stateDir>/<sessionId>.json` (0600, the host's); losing it fails safe
 //   (a re-push of that name is refused until it is removed).
@@ -29,7 +38,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Readable, Writable } from 'node:stream';
+import { type Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import type { ApiActor, ApiError } from '../protocol.js';
@@ -47,6 +56,8 @@ const SCRIPT_WAIT_MS = 30_000;
 /** Seconds a script that carries a file, an archive or an upload may take. */
 const STREAM_WAIT_S = 3600;
 const OUTPUT_MAX = 64 * 2 ** 20;
+/** How long a script that was told to end has before its process is killed: past timeout(1)'s own 2 s (sandbox/podman.ts). */
+const LAST_RESORT_MS = 5_000;
 
 export interface Workspace {
   sessionId: string;
@@ -105,6 +116,8 @@ export interface WorkspaceFilesOptions {
   /** Where upload records live; should survive a reboot (HOST_DATA/state/uploads). Default `<dir>/state`. */
   stateDir?: string;
   user?: RunnerUser;
+  /** How long a script that answers with a few lines may take (30 s); tests pass less. */
+  scriptWaitMs?: number;
   /** Where a workspace's scripts run. Default: on this machine, as `user`, at the workspace's own path. */
   place?(ws: Workspace): Place;
 }
@@ -156,6 +169,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   const stateDir = o.stateDir ?? path.join(o.dir, 'state');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const chains = new Map<string, Promise<unknown>>();
+  const waitMs = o.scriptWaitMs ?? SCRIPT_WAIT_MS;
 
   const onHost = (ws: Workspace): Place => ({
     root: ws.forkPath,
@@ -165,6 +179,20 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
     },
   });
   const placeOf = o.place ?? onHost;
+
+  /**
+   * End a script before its time: SIGTERM, which sudo passes on and timeout(1) turns into the end of the command and
+   * all it started (sandbox/podman.ts), and which a script that cleans up after itself acts on. SIGKILL would stop at
+   * sudo, or at the shell, and leave the rest running. `LAST_RESORT_MS` later the child itself is killed, so that
+   * whoever waits for its exit never waits for good.
+   */
+  function end(p: ChildProcess) {
+    if (p.exitCode !== null || p.signalCode !== null) return;
+    p.kill('SIGTERM');
+    const last = setTimeout(() => p.kill('SIGKILL'), LAST_RESORT_MS);
+    last.unref();
+    p.once('exit', () => clearTimeout(last));
+  }
 
   /** Start `script` with the workspace's root as `$1` and `args` after it. */
   function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): ChildProcess {
@@ -178,14 +206,14 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   /** Run `script` to its end: its exit code and what it printed. Rejects when it cannot start, runs too long or prints too much. */
   function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
     return new Promise((resolve, reject) => {
-      const p = start(ws, script, args, { ...mode, seconds: SCRIPT_WAIT_MS / 1000 });
+      const p = start(ws, script, args, { ...mode, seconds: waitMs / 1000 });
       const out: Buffer[] = [];
       let bytes = 0;
       let err = '';
-      const timer = setTimeout(() => (p.kill('SIGKILL'), reject(new Error(`workspace script ran over ${SCRIPT_WAIT_MS} ms`))), SCRIPT_WAIT_MS);
+      const timer = setTimeout(() => (end(p), reject(new Error(`workspace script ran over ${waitMs} ms`))), waitMs);
       p.stdout?.on('data', (d: Buffer) => {
         out.push(d);
-        if ((bytes += d.length) > OUTPUT_MAX) p.kill('SIGKILL'), reject(new Error('workspace script printed too much'));
+        if ((bytes += d.length) > OUTPUT_MAX) end(p), reject(new Error('workspace script printed too much'));
       });
       p.stderr?.on('data', (d: Buffer) => (err = (err + d.toString('utf8')).slice(-2000)));
       p.once('error', (e) => (clearTimeout(timer), reject(e)));
@@ -211,7 +239,10 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
       p.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(err.trim() || `workspace script exited ${code}`))));
     });
     done.catch(() => {});
-    return { stream: p.stdout as Readable, done };
+    // Whoever read it went away before its end (the request was cut): nobody is left to end the script by closing it.
+    const stream = p.stdout as Readable;
+    stream.once('close', () => stream.readableEnded || end(p));
+    return { stream, done };
   };
 
   const statePath = (sessionId: string) => path.join(stateDir, `${sessionId}.json`);
@@ -334,14 +365,25 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
           tar.once('exit', resolve);
           tar.once('error', () => resolve(-1));
         });
+        // tar stops reading at the end-of-archive mark and may exit before the body's last bytes (padding) are written:
+        // its closed input is then no failure of the body, so the rest is checked and written to nobody. A tar that
+        // failed ends the transfer at once.
         const sink = tar.stdin as Writable;
+        let closed = false;
+        sink.once('close', () => (closed = true));
+        const toTar = new Writable({
+          write: (chunk, _enc, cb) => (closed ? cb() : void sink.write(chunk, () => cb())),
+          final: (cb) => (closed ? cb() : void sink.end(() => cb())),
+          destroy: (err, cb) => (sink.destroy(), cb(err)),
+        });
+        tar.once('exit', (code) => code !== 0 && toTar.destroy(new Error('tar failed')));
         const z = format === 'tar+gzip' ? zlib.createGunzip() : format === 'tar+zstd' ? zlib.createZstdDecompress() : undefined;
         let failure: ApiError | undefined;
         try {
-          await (z ? pipeline(body, z, check, sink) : pipeline(body, check, sink));
+          await (z ? pipeline(body, z, check, toTar) : pipeline(body, check, toTar));
         } catch (e) {
           failure = e instanceof TarError ? e.error : apiError('invalid_archive', `The body could not be read as ${format}.`, 400);
-          tar.kill('SIGKILL');
+          end(tar);
         }
         const code = await exited;
         // tar quitting first breaks the pipe: its own message says why, the pipe's does not.
