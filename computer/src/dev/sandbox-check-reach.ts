@@ -365,6 +365,14 @@ export async function reachStopped(k: Kit, a: Thread, b: Thread, q: Thread) {
   const qa = await k.wire.get(a.sessionId, k.member, 's9-q-stopped/q.txt', true);
   check(pq.result?.upload.files === 1 && lq.includes('s9-q-stopped/q.txt') && lq.includes('s9-q/q.txt') && code(qa)?.code === 'path_not_found',
     `an upload to the other person's stopped session is in their listing, beside the one made while it ran, and from A it is ${code(qa)?.code}: ${JSON.stringify(pq.result ?? pq.error)}`);
+  // Q's runner is gone: the host's own writer records the upload in Q's journal (this process is the host's user: it reads the file itself).
+  const sq = (pq.result as { seq?: number | null } | undefined)?.seq;
+  const journal = path.join(k.dataDir, 'journals', q.sessionId, `${q.sessionId}.jsonl`);
+  const logged = await k.until(async () => {
+    const lines = readFileSync(journal, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { seq: number; type: string; data?: Record<string, unknown> });
+    return lines.find((e) => e.type === 'files.pushed' && e.data?.path === 's9-q-stopped');
+  }, 5000).catch(() => undefined);
+  check(typeof sq === 'number' && logged?.seq === sq, `the upload to stopped Q is in its journal, written by the host's writer: seq ${sq}, on file ${JSON.stringify(logged)}`);
   await filesEnded(k, a, false);
   check((await k.status(a.id)) === 'exited' && (await k.status(b.id)) === 'exited' && (await k.status(q.id)) === 'exited', 'none of it started a container');
 }

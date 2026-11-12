@@ -30,7 +30,8 @@ const until = async (f: () => boolean, ms = 3000) => {
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  // Retried: a writer a test stopped may still be closing a file in it (seen under load: ENOTEMPTY).
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 /** The SessionLog DO as far as the mirror sees it: stores batches of its epoch, gapless, acks them. */
