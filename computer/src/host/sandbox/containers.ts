@@ -24,6 +24,8 @@
 // - Stop, Remove and the lists are `repeatable` behind the image lock
 //   (podman.ts): each leaves the same behind made twice. Create, an exec, Pid
 //   (polled anyway) and what empties a run directory are made once.
+// - An id the Inventory gives is sixteen hex digits: a label or a volume name
+//   that is anything else is left out, before it reaches a path or an argv.
 // - A container is this host's only when it is mounted on this host's run
 //   directory for its id (Create mounts it at its own path). The runners'
 //   user's Podman is one per computer, and another host of the computer (other
@@ -115,6 +117,8 @@ function dir(p: string, mode: number) {
   chmodSync(p, mode);
 }
 
+/** A sandbox id as the host makes one (start.ts): what Podman lists under any other is not ours, and never becomes a path or an argument. */
+const SANDBOX_ID = /^[0-9a-f]{16}$/;
 const absent = (e: unknown) => /no such container|no container with name or ID/i.test(String((e as { stderr?: string })?.stderr ?? ''));
 
 export function containers(d: ContainersDeps) {
@@ -257,12 +261,12 @@ export function containers(d: ContainersDeps) {
       containers: parse(cs).flatMap((c) => {
         const id = c?.Labels?.['sp.runner'];
         // The label and the name agree for every container the host made; anything else is not ours to touch.
-        if (typeof id !== 'string' || !c.Names?.includes?.(containerName(id))) return [];
+        if (typeof id !== 'string' || !SANDBOX_ID.test(id) || !c.Names?.includes?.(containerName(id))) return [];
         if (!Array.isArray(c.Mounts) || !c.Mounts.includes(d.runRoot(id))) return (foreign.push(id), []);
         return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000 }];
       }),
       volumes: parse(vs).flatMap((v) => {
-        const m = /^sp-home-(.+)$/.exec(String(v?.Name ?? ''));
+        const m = /^sp-home-([0-9a-f]{16})$/.exec(String(v?.Name ?? ''));
         return m ? [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0 }] : [];
       }),
       foreign,

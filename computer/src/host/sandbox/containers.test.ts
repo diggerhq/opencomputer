@@ -230,6 +230,17 @@ describe('containers', () => {
     await expect(rig(() => fail('', true)).c.inventory()).rejects.toThrow();
   });
 
+  it('inventory: an id is sixteen hex digits; a label or a volume name that is anything else is nobody\'s, and reaches no path and no argv', async () => {
+    const bad = ['../../etc', '--all', 'AAAAAAAAAAAAAAAA', `${ID}0`, `${ID}/..`, 'a b', ''];
+    const t = rig((a) => (a[1] === 'ps'
+      ? JSON.stringify(bad.flatMap((id) => [
+          { Names: [`sp-runner-${id}`], State: 'running', Labels: { 'sp.runner': id, 'sp.abi': '1' }, Mounts: [path.join(path.dirname(t.run), id)] },
+          { Names: [`sp-runner-${id}`], State: 'running', Labels: { 'sp.runner': id, 'sp.abi': '1' }, Mounts: ['/elsewhere'] },
+        ]))
+      : JSON.stringify(bad.map((id) => ({ Name: `sp-home-${id}`, CreatedAt: '2026-11-12T10:00:00Z' })))));
+    expect(await t.c.inventory()).toEqual({ containers: [], volumes: [], foreign: [] });
+  });
+
   const info = { id: ID, state: 'running', abi: '1', image: '', createdAt: 0 };
   const at = { runRoot: (id: string) => `/r/${id}` };
   const ps = (state: string) => JSON.stringify([{ Names: [`sp-runner-${ID}`], State: state, Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Mounts: [`/r/${ID}`] }]);
