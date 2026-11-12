@@ -348,6 +348,40 @@ reach the cloud metadata server. Hosts take new code as a release bundle
 The Node gateway in `src/gateway/` is the self-hosted alternative and what the
 laptop and the e2e checks use; the `Dockerfile` packages it as a container.
 
+### Self-host with Docker
+
+One image runs the gateway, the host agent and its runners, with one data
+volume. The same container runs on a laptop and on a VM; to move an instance,
+move the volume.
+
+```sh
+cd deploy/docker
+docker compose up
+```
+
+It prints a `/setup?token=…` link. Open it and paste a Claude credential (or
+pass `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` to compose). Then create
+the Slack app from the same page. Slack must reach the gateway over HTTPS, so
+point a tunnel at port 8080 and start with its URL:
+
+```sh
+ngrok http 8080                                  # on a laptop
+cloudflared tunnel --url http://localhost:8080   # or on a VM
+SP_ORIGIN=https://<tunnel> docker compose up
+```
+
+A quick tunnel gets a new URL each time it starts; re-run the Slack step in
+`/setup` to point the app at the new one, or use a fixed domain.
+
+Whoever installs the Slack app becomes the first person and an admin. Add
+the rest of a team with `SP_PEOPLE`. The keys the instance generated on first
+start (setup token, store key, host token) are in `/data/instance.env`.
+
+> [!WARNING]
+> Every session runs as the same user in this container, so sessions can read
+> each other's files and the instance's keys. Use it to try Computer, not
+> yet for a team you do not trust.
+
 
 ### Workspaces
 

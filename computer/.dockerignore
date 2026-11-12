@@ -17,3 +17,6 @@ node_modules
 deploy/vm/
 *.md
 !README.md
+# The runner reads these at run time (self-host image, deploy/docker/).
+!src/**/*.md
+!definitions/**/*.md

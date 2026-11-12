@@ -1,7 +1,8 @@
 # Image for the Node gateway: runs `tsx src/gateway/main.ts` on any container
 # platform with a volume at /data. Production uses the backend's Cloudflare gateway.
 # The host agent and runners do NOT run from this image; they run on the VM
-# (deploy/vm/provision.sh) or on a laptop.
+# (deploy/vm/provision.sh), on a laptop, or in the self-host image that holds
+# all three (deploy/docker/).
 #
 # Build: `docker build --build-arg SP_VERSION=$(git rev-parse --short HEAD) -t slack-presence-gateway .`
 

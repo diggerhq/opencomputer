@@ -1,0 +1,27 @@
+# Self-host Computer (work 101): `docker compose up` from this directory.
+# Open the /setup link it prints. The data volume is the whole instance.
+#
+# Slack calls the gateway over HTTPS: point a tunnel at port 8080 (ngrok on a
+# laptop, cloudflared on a VM) and start with SP_ORIGIN=https://<tunnel>.
+
+services:
+  computer:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: computer:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SP_ORIGIN: ${SP_ORIGIN:-}
+      SP_PEOPLE: ${SP_PEOPLE:-}
+      GITHUB_ORG: ${GITHUB_ORG:-}
+      # Optional: the Claude credential, instead of pasting it into /setup.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - computer-data:/data
+
+volumes:
+  computer-data:
