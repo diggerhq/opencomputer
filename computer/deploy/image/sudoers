@@ -1,0 +1,1 @@
+agent ALL=(ALL) NOPASSWD: ALL

@@ -1,0 +1,141 @@
+# The image every session container on a computer starts from (work 103): the
+# tools a session uses, the `agent` user, and an entrypoint that starts the
+# runner the host describes in $SP_RUN/boot.env. It holds no code from
+# computer/: the release is mounted at /opt/slack-presence. No cloudflared, no
+# Docker engine (Docker inside a session is rootless Podman, C11).
+#
+# Invariants:
+# - Built for linux/amd64 only, by .github/workflows/computer-image.yml, with
+#   this directory as the whole build context. The tag is this directory's git
+#   tree hash, so every input of the image must be a file here.
+# - Every version comes from versions.env as a build argument; a build without
+#   them fails. Nothing is installed as `latest`.
+# - Layers go from what changes least to what changes most: system packages;
+#   Chromium and Playwright; toolchains; CLIs; user and config. (Node sits
+#   before Playwright because Playwright is installed with npm.)
+# - Nothing baked at build time lives under /home: /home/agent is a volume.
+#   That is why ENV (which sets HOME) is the last instruction that could write.
+# - ABI (beside this file) is bumped when a release needs something an older
+#   image lacks.
+
+FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.source="https://github.com/diggerhq/opencomputer" \
+      org.opencontainers.image.description="Session image of a computer (computer/deploy/image)"
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---- system packages
+# The session's tools as the host has them today (deploy/vm/provision.sh), the
+# fonts tier (Latin, CJK, emoji) and ffmpeg for visuals, and Podman for
+# containers inside (crun is the runtime containers.conf names). procps: the
+# host closes a terminal with pkill. python3: the host's terminal helper.
+RUN apt-get update -q \
+ && apt-get install -y -q --no-install-recommends \
+      ca-certificates curl git git-lfs openssh-client \
+      build-essential pkg-config make \
+      jq ripgrep fd-find tree unzip zip xz-utils rsync less file lsof procps \
+      python3 python3-venv python3-pip sqlite3 \
+      tmux htop sudo util-linux iproute2 tini \
+      ffmpeg fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
+      podman podman-docker podman-compose buildah crun uidmap fuse-overlayfs slirp4netns netavark aardvark-dns \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---- Node.js, from the official tarball, checksum-verified
+ARG NODE_VERSION
+RUN : "${NODE_VERSION:?}" \
+ && tmp="$(mktemp -d)" && dist="https://nodejs.org/dist/v${NODE_VERSION}" \
+ && tarball="node-v${NODE_VERSION}-linux-x64.tar.xz" \
+ && curl -fsSL --retry 5 "$dist/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt" \
+ && curl -fsSL --retry 5 "$dist/$tarball" -o "$tmp/$tarball" \
+ && (cd "$tmp" && grep " $tarball\$" SHASUMS256.txt | sha256sum -c -) \
+ && tar -xJf "$tmp/$tarball" -C /usr/local --strip-components=1 --no-same-owner \
+ && rm -rf "$tmp" \
+ && node --version
+
+# ---- Chromium and Playwright
+# The library is global (`npm link playwright` in a project gets the matching
+# one); the browsers are in /opt/ms-playwright, readable by everyone, and
+# Chromium's system libraries come from Playwright's own list.
+ARG PLAYWRIGHT_VERSION
+RUN : "${PLAYWRIGHT_VERSION:?}" \
+ && npm install -g --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}" \
+ && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium chromium-headless-shell \
+ && chmod -R a+rX /opt/ms-playwright \
+ && rm -rf /var/lib/apt/lists/* /root/.npm /root/.cache
+
+# ---- toolchains: Go, uv, gh; each checksum-verified against its release
+ARG GO_VERSION
+ARG UV_VERSION
+ARG GH_VERSION
+RUN : "${GO_VERSION:?}" "${UV_VERSION:?}" "${GH_VERSION:?}" \
+ && tmp="$(mktemp -d)" && cd "$tmp" \
+ && go_tgz="go${GO_VERSION}.linux-amd64.tar.gz" \
+ && curl -fsSL --retry 5 "https://dl.google.com/go/$go_tgz" -o "$go_tgz" \
+ && echo "$(curl -fsSL --retry 5 "https://dl.google.com/go/$go_tgz.sha256")  $go_tgz" | sha256sum -c - \
+ && tar -C /usr/local -xzf "$go_tgz" \
+ && uv_tgz="uv-x86_64-unknown-linux-gnu.tar.gz" \
+ && uv_url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}" \
+ && curl -fsSL --retry 5 "$uv_url/$uv_tgz" -o "$uv_tgz" \
+ && curl -fsSL --retry 5 "$uv_url/$uv_tgz.sha256" | sha256sum -c - \
+ && tar -xzf "$uv_tgz" -C /usr/local/bin --strip-components=1 --no-same-owner \
+ && gh_deb="gh_${GH_VERSION}_linux_amd64.deb" \
+ && gh_url="https://github.com/cli/cli/releases/download/v${GH_VERSION}" \
+ && curl -fsSL --retry 5 "$gh_url/$gh_deb" -o "$gh_deb" \
+ && curl -fsSL --retry 5 "$gh_url/gh_${GH_VERSION}_checksums.txt" | grep " $gh_deb\$" | sha256sum -c - \
+ && dpkg -i "$gh_deb" \
+ && cd / && rm -rf "$tmp" \
+ && /usr/local/go/bin/go version && uv --version && /usr/bin/gh --version
+
+# ---- CLIs
+# Codex in its own prefix, off PATH: runners find it through SP_CODEX_BIN, and
+# a session's `codex` is whatever the person installs.
+ARG CODEX_VERSION
+ARG CLAUDE_CODE_VERSION
+ARG OPENCOMPUTER_CLI_VERSION
+RUN : "${CODEX_VERSION:?}" "${CLAUDE_CODE_VERSION:?}" "${OPENCOMPUTER_CLI_VERSION:?}" \
+ && npm install -g --no-audit --no-fund \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@opencomputer/cli@${OPENCOMPUTER_CLI_VERSION}" \
+ && npm install -g --prefix /usr/local/lib/codex --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
+ && rm -rf /root/.npm /root/.cache \
+ && claude --version && /usr/local/bin/opencomputer --version && /usr/local/lib/codex/bin/codex --version
+
+# ---- user and config
+# agent is uid and gid 1500, as on every computer (`--userns=keep-id` maps the
+# host's agent onto it). Podman copies the image's content at /home/agent into
+# a new home volume, so the parents a session's tools would otherwise create
+# as root exist here, owned by agent. /workspace and /clones are mount targets.
+RUN groupadd --gid 1500 agent \
+ && useradd --uid 1500 --gid 1500 --create-home --home-dir /home/agent --shell /bin/bash agent \
+ && install -d -o 1500 -g 1500 \
+      /home/agent/.local /home/agent/.local/share /home/agent/.local/share/containers \
+      /home/agent/.local/bin /home/agent/.cache /home/agent/go \
+      /workspace /clones \
+ && install -d /etc/containers && touch /etc/containers/nodocker
+COPY --chmod=0644 subuid /etc/subuid
+COPY --chmod=0644 subuid /etc/subgid
+COPY --chmod=0440 sudoers /etc/sudoers.d/agent
+COPY --chmod=0644 containers.conf /etc/containers/containers.conf
+COPY --chmod=0644 gitconfig /etc/gitconfig
+COPY --chmod=0755 sp-session-init /usr/local/bin/sp-session-init
+
+# The one owner of every constant a process in the container needs. The host
+# adds per-container values at create and per-start values through boot.env.
+ENV PATH=/opt/slack-presence/current/bin:/usr/local/go/bin:/home/agent/go/bin:/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/home/agent \
+    USER=agent \
+    LOGNAME=agent \
+    SHELL=/bin/bash \
+    LANG=C.UTF-8 \
+    TMPDIR=/tmp \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    SP_CODEX_BIN=/usr/local/lib/codex/bin/codex \
+    SP_REAL_GH=/usr/bin/gh \
+    SP_REAL_OPENCOMPUTER=/usr/local/bin/opencomputer \
+    SP_MODEL_SOCKET=/run/oc-modelproxy/api/api.sock \
+    DISABLE_AUTOUPDATER=1 \
+    __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.opencomputer.app
+
+USER 1500:1500
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sp-session-init"]
