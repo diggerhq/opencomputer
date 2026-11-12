@@ -1,6 +1,6 @@
 // bin/ws-*.sh against real git in a temp dir: the line each prints, and that a second run gives the same.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -71,6 +71,25 @@ describe('workspace scripts', () => {
     );
     expect(existsSync(path.join(clones, 'beta', '.git'))).toBe(true); // the clone stays
     expect(existsSync(path.join(clones, 'beta', '.not-reached'))).toBe(false);
+  });
+
+  it('ws-clone.sh renames over an empty directory and never moves the clone into one that is not', async () => {
+    // As rename(2) did before the script: an empty directory is replaced.
+    mkdirSync(path.join(clones, 'empty'));
+    expect(await run('ws-clone.sh', [clones, 'empty', remote, '', ''])).toBe('empty\tok\tcloned\n');
+    expect(existsSync(path.join(clones, 'empty', '.git'))).toBe(true);
+    // One with something in it fails the rename, with mv's message, and is left as it was.
+    mkdirSync(path.join(clones, 'full'));
+    writeFileSync(path.join(clones, 'full', 'mine.txt'), 'x');
+    const [status, why] = rows(await run('ws-clone.sh', [clones, 'full', remote, '', '', 'touch .not-reached'])).get('full')!;
+    expect([status, why]).toEqual(['failed', expect.stringMatching(/^mv: .*full/)]);
+    expect(execFileSync('ls', ['-A', path.join(clones, 'full')], { encoding: 'utf8' })).toBe('mine.txt\n');
+  });
+
+  it('ws-clone.sh runs setup commands without GIT_TERMINAL_PROMPT, as before the script', async () => {
+    const args = [clones, 'gamma', remote, '', '', 'echo "${GIT_TERMINAL_PROMPT-unset}" >.git/prompt'];
+    expect(await run('ws-clone.sh', args)).toBe('gamma\tok\tcloned\n');
+    expect(readFileSync(path.join(clones, 'gamma', '.git', 'prompt'), 'utf8')).toBe('unset\n');
   });
 
   it('ws-sync.sh names the base, fetches, and only ever fast-forwards the checkout', async () => {

@@ -21,10 +21,6 @@ if [ -e "$clone/.git" ]; then
   ws_ok "$repo" present
   exit 0
 fi
-if [ -e "$clone" ] && ! rmdir -- "$clone" 2>/dev/null; then
-  ws_failed "$repo" "$clone exists and is not a clone"
-  exit 0
-fi
 ws_cleanup() { rm -rf -- "$tmp"; }
 rm -rf -- "$tmp"
 mkdir -p -- "$clones"
@@ -32,8 +28,15 @@ if ! ws_in "$clones" git clone --quiet ${filter:+"--filter=$filter"} ${branch:+-
   ws_failed "$repo" "$(ws_why "Command failed: git clone --quiet $url $tmp")"
   exit 0
 fi
-mv -- "$tmp" "$clone"
+# -T: onto <clone>, never into it. An empty directory there is replaced; one
+# with something in it fails the rename, and <repo>.cloning stays until the next call.
 ws_cleanup() { :; }
+if ! mv -T -- "$tmp" "$clone" 2>"$ws_tmp/err"; then
+  ws_failed "$repo" "$(ws_why "Command failed: mv -T $tmp $clone")"
+  exit 0
+fi
+# Setup commands are the repository's own: they run without the script's GIT_TERMINAL_PROMPT.
+unset GIT_TERMINAL_PROMPT
 for cmd in "$@"; do
   if ! ws_in "$clone" sh -c "$cmd" >/dev/null; then
     ws_failed "$repo" "setup \`$cmd\`: $(ws_why "Command failed: sh -c $cmd")"
