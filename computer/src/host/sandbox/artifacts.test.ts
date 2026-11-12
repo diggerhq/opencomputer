@@ -8,6 +8,7 @@ import { mounts } from './mounts.js';
 import type { AsRunner } from './podman.js';
 import type { Bind } from './podman-args.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
+import { threadLocks } from './thread-lock.js';
 
 const HOUR = 3600e3;
 const ago = (ms: number) => new Date(Date.now() - ms);
@@ -16,7 +17,8 @@ const ignoredLine = (stdin: string) => stdin.split('\n').indexOf('1\tnode_module
 const repos = { alpha: { branch: 'sp/k', from: 'origin/main', base: 'abc' } };
 
 /** One person's stopped thread with a worktree `alpha` holding node_modules (ignored) and .venv (tracked). */
-function rig(o: { usedHoursAgo?: number; answer?: string; running?: () => boolean } = {}) {
+function rig(o: { usedHoursAgo?: number; answer?: string; running?: () => boolean; asked?: () => void } = {}) {
+  const locks = threadLocks();
   const data = mkdtempSync(path.join(os.tmpdir(), 'sp-art-'));
   const log: string[] = [];
   const helped: { person: string; binds: Bind[]; args: string[]; stdin?: string | Buffer }[] = [];
@@ -36,10 +38,10 @@ function rig(o: { usedHoursAgo?: number; answer?: string; running?: () => boolea
   }
   const helper = (person: string, binds: Bind[]): ScriptRunner => ({
     clones: '/clones', workspace: () => '/workspace',
-    run: async (script, args, r) => (helped.push({ person, binds, args: [script, ...args], stdin: r.stdin }), o.answer ?? `1\tok\t-\t-\t-\t-\t${ignoredLine(String(r.stdin))}\n`),
+    run: async (script, args, r) => (helped.push({ person, binds, args: [script, ...args], stdin: r.stdin }), o.asked?.(), o.answer ?? `1\tok\t-\t-\t-\t-\t${ignoredLine(String(r.stdin))}\n`),
   });
-  const a = sandboxArtifacts({ as, records, mounts: m, helper, running: o.running ?? (() => false) });
-  return { a, log, helped, record, records, wt, admin, data };
+  const a = sandboxArtifacts({ as, records, locks, mounts: m, helper, running: o.running ?? (() => false) });
+  return { a, log, helped, record, records, locks, wt, admin, data };
 }
 
 describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
@@ -97,7 +99,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     const other = path.join(t.data, 'people/quinn/sessions/C2-2-2/theirs');
     mkdirSync(path.join(other, 'node_modules'), { recursive: true });
     const a = sandboxArtifacts({
-      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
+      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
       helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async (_s, _a, r) => {
         rmSync(t.wt, { recursive: true });
         symlinkSync(other, t.wt);
@@ -116,6 +118,17 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     await started.a.pruneIdle('pat');
     expect(started.helped.length).toBe(1);
     expect([none.log, started.log]).toEqual([[], []]);
+  });
+
+  it('nothing is removed while a start has the thread\'s turn, nor after it: the start wrote the record', async () => {
+    let end!: () => void;
+    const t = rig({ asked: () => void t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (end = () => (t.records.write({ ...t.record, usedAt: new Date().toISOString() }), r())))) });
+    const done = t.a.pruneArtifacts(t.record);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.log).toEqual([]);
+    end();
+    expect(await done).toEqual([]);
+    expect(t.log).toEqual([]);
   });
 
   it('pruneIdle: only this person\'s threads, idle long enough, without a runner, and each once per use', async () => {
@@ -139,7 +152,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
   it('a helper that fails removes nothing and does not stop the others', async () => {
     const t = rig();
     const a = sandboxArtifacts({
-      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
+      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
       helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async () => Promise.reject(new Error('ws-inspect.sh: timed out')) }), running: () => false,
     });
     await a.pruneIdle('pat');

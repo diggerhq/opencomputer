@@ -165,7 +165,7 @@ const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
   mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE,
+  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE, stopSandbox: (id) => sandbox!.stop(id, 0),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -306,7 +306,7 @@ async function onGateway(m: GatewayToHost) {
       org.welcome(m);
       if (m.definition !== undefined && applyGatewayDefinition(m.definition)) (sandbox?.definitionChanged([...runners.values()].flatMap((r) => (r.sandbox ? r.id : []))), housekeeper?.now());
       if (m.telemetryCredential) telemetry.renew(m.telemetryCredential, m.telemetryUrl);
-      previews.configure(m.preview);
+      (previews.configure(m.preview), previews.connected());
       return housekeeping();
     case 'previews': return previews.configure(m.preview);
     case 'previewed': return previews.answer(m);

@@ -10,8 +10,10 @@
 // directories without host git (artifacts.ts), then prunes the threads idle
 // beyond retention (prune.ts).
 //
-// Invariant: a sandbox that is removed, by whichever path, has its named
-// previews unpreviewed at the gateway before its virtual ports are freed.
+// Invariant: a sandbox whose container was removed, by whichever path, has
+// its named previews unpreviewed at the gateway before its virtual ports are
+// freed; a name the gateway did not hear of stays owed (previews.ts). While
+// Podman still has the container (a Remove that failed) it keeps both.
 //
 // Invariant: a `podman` host that cannot sandbox every session does not start.
 // Without a runners' user it would run sessions as itself, without SP_IMAGE
@@ -49,6 +51,7 @@ import { sandboxSpares } from './spares.js';
 import { sandboxPrune } from './prune.js';
 import { sandboxStarts } from './start.js';
 import { SWEEP_AGE_MS, sandboxSweep } from './sweep.js';
+import { threadLocks } from './thread-lock.js';
 import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
@@ -87,6 +90,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   if (!image || !abi) throw new Error("SP_LAUNCH=podman needs SP_IMAGE and SP_IMAGE_ABI; the release's .sp-version.env sets both");
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
+  const locks = threadLocks();
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
   const as = asRunner(user.sudo);
   // A container's token socket asks for its record's thread; one with no record (a spare) is refused.
@@ -109,23 +113,23 @@ export function sandboxHost(d: SandboxHostDeps) {
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
-  const artifacts = sandboxArtifacts({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running });
+  const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   const dial = (socket: string) => dialSocket(socket, { uid: user.uid });
-  const sweep = sandboxSweep({ as, tm: d.tm, records, containers: all, runDir: path.join(d.run, 'sandbox'), runRoot, dataDir: d.data,
+  const sweep = sandboxSweep({ as, tm: d.tm, records, locks, containers: all, runDir: path.join(d.run, 'sandbox'), runRoot, dataDir: d.data,
     serveTokens, dial, adopt: d.adopt, ageMs: d.sweepAgeMs,
     // A spare is this host's from before its Create, though its runner connects only seconds later: never swept meanwhile.
     running: (id) => d.running(id) || spares.has(id) });
   /** Step 10: spares are containers too (spares.ts); pool.ts decides how many. */
   const spares = sandboxSpares({ tm: d.tm, records, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
-  const prune = sandboxPrune({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
+  const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
     remove: all.remove, deleteRun: sweep.deleteRun });
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));
   return {
     stop: all.stop,
     spares,
-    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
+    starts: sandboxStarts({ tm: d.tm, records, locks, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
     /** Host restart: the running containers taken back, by id (sweep.ts). */
     reconcile: sweep.reconcile,
     /** One sweep of what belongs to no thread; never rejects. */

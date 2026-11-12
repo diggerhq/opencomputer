@@ -14,7 +14,10 @@
 // - The API token of a cold-started runner goes over its socket, never in
 //   argv or the environment.
 // - A sandboxed runner serves the thread of its record (work 103): the key is
-//   the record's, and a report naming another stops the runner.
+//   the record's, and a report naming another stops the runner, before or
+//   after it was taken on. It is not asked to go, which it could ignore: its
+//   socket is destroyed, so nothing it sends is read again, and its container
+//   is stopped.
 // - A sandboxed runner that started and was not adopted (it exited meanwhile,
 //   or adoption refused it) leaves no container running and no token socket.
 // - On a `podman` host a spare is a container (step 10, sandbox/spares.ts). It
@@ -109,6 +112,8 @@ export interface StartDeps {
   /** Step 10: its spares, and the image they are made from (for telemetry). */
   spares?: SandboxSpares;
   image?: string;
+  /** Work 103: stop a runner's container with no grace (sandbox/containers.ts `stop`). */
+  stopSandbox?(id: string): Promise<void>;
   fillPool(): void;
   /** Run a fork so its workspace events join the delivery's trace. */
   inFork<T>(f: Dimensions, fn: () => Promise<T>): Promise<T>;
@@ -154,9 +159,14 @@ export function runnerStarts(d: StartDeps) {
         if (c) send(sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
         resolve(r);
       };
+      /** Set when a sandboxed runner was stopped: what it had already sent is not read either. */
+      let refused = false;
       const stopped = (why: string) => {
         log.warn(`runner ${id}: ${why}; stopping it`);
-        d.exit(sock);
+        if (!o.sandbox) return d.exit(sock);
+        refused = true;
+        sock.destroy();
+        void d.stopSandbox?.(id).catch((e) => log.warn(`sandbox ${id} not stopped: ${e?.message ?? e}`));
       };
       const stop = (why: string) => {
         stopped(why);
@@ -166,6 +176,7 @@ export function runnerStarts(d: StartDeps) {
       const complete = o.sandbox ? () => !workspacesEnabled() || !!o.sandbox!.record.repos : forkComplete;
       const a = adoption({ verify: !!o.verify, complete, take, stop, gone: () => reject(new Error('runner gone')) });
       lines(sock, (m: RunnerToHost) => {
+        if (refused) return;
         // Which thread a container serves is the record's word, never the runner's; a spare's container has none until it is bound.
         if (r.sandbox && m.t === 'report' && m.report.key !== r.sandbox.record.key) return stop(`it reports ${m.report.key}, not its record's ${r.sandbox.record.key}`);
         if (d.sandbox && !r.sandbox && m.t === 'report') return stop(`it reports ${m.report.key} and has no record`);

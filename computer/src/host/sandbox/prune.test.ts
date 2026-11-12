@@ -8,6 +8,7 @@ import type { AsRunner } from './podman.js';
 import type { Bind } from './podman-args.js';
 import { sandboxPrune } from './prune.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
+import { threadLocks } from './thread-lock.js';
 
 const DAY = 24 * 3600e3;
 const ID = '00aa11bb22cc33dd';
@@ -15,11 +16,19 @@ const repos = { alpha: { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' }
 const CLEAN = '1\tok\tclean\t0\tsp/C1-1-1\t/x\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n';
 
 /** One person's stopped thread, last used `usedDaysAgo` days ago, with two worktrees. Everything done is in `log`, in order. */
-function rig(o: { usedDaysAgo?: number; state?: string | Error; running?: () => boolean; remove?: boolean; repos?: SandboxRecord['repos'] | null; during?: () => void } = {}) {
+function rig(o: { usedDaysAgo?: number; state?: string | Error; running?: () => boolean; remove?: boolean; repos?: SandboxRecord['repos'] | null; during?: () => void;
+  /** Called at each Podman call and at Remove. */
+  at?: (what: string) => unknown; rm?: Error } = {}) {
   const data = mkdtempSync(path.join(os.tmpdir(), 'sp-prune-'));
   const log: string[] = [];
   const helped: { person: string; binds?: Bind[]; args: string[] }[] = [];
-  const as: AsRunner = { run: async () => '', podman: async (args) => (log.push(`podman ${args.join(' ').replaceAll(data, '')}`), '') };
+  const locks = threadLocks();
+  const as: AsRunner = { run: async () => '', podman: async (args) => {
+    log.push(`podman ${args.join(' ').replaceAll(data, '')}`);
+    await o.at?.(args[0]);
+    if (o.rm && args[0] === 'unshare') throw o.rm;
+    return '';
+  } };
   const m = mounts({ as, root: '/opt/r1', dataDir: data });
   const records = sandboxRecords(path.join(data, 'records'));
   const real = records.delete;
@@ -41,10 +50,10 @@ function rig(o: { usedDaysAgo?: number; state?: string | Error; running?: () => 
   });
   let clock = Date.now();
   const p = sandboxPrune({
-    as, records, mounts: m, helper, running: o.running ?? (() => false), lastUsed: async (r) => Date.parse(r.usedAt),
-    remove: async (id) => (log.push(`remove ${id}`), o.remove ?? true), deleteRun: async (id) => (log.push(`run deleted ${id}`), true), now: () => clock,
+    as, records, mounts: m, helper, locks, running: o.running ?? (() => false), lastUsed: async (r) => Date.parse(r.usedAt),
+    remove: async (id) => (log.push(`remove ${id}`), o.at?.('remove'), o.remove ?? true), deleteRun: async (id) => (log.push(`run deleted ${id}`), true), now: () => clock,
   });
-  return { p, log, helped, record, records, m, data, later: (ms: number) => void (clock += ms) };
+  return { p, log, helped, record, records, m, data, locks, later: (ms: number) => void (clock += ms) };
 }
 
 describe('pruning a sandboxed thread (work 103, Prune)', () => {
@@ -76,6 +85,14 @@ describe('pruning a sandboxed thread (work 103, Prune)', () => {
   it('a count git could not make keeps the thread too', async () => {
     const t = rig({ state: '1\tok\tclean\t-1\tsp/C1-1-1\t/x\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n' });
     expect((await t.p.pruneIdle('pat'))[0].problem).toContain('alpha: cannot count unpushed commits');
+    // Only a number of digits is a count: a field that is empty, missing, or anything else keeps the thread.
+    for (const field of ['', 'NaN', 'none', '1e2', ' 0', '0x0']) {
+      const odd = rig({ state: `1\tok\tclean\t${field}\tsp/C1-1-1\t/x\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n` });
+      expect((await odd.p.pruneIdle('pat'))[0]?.problem, JSON.stringify(field)).toContain('alpha: cannot count unpushed commits');
+      expect(odd.records.get(ID)).toBeDefined();
+    }
+    const short = rig({ state: '1\tok\tclean\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n' });
+    expect((await short.p.pruneIdle('pat'))[0]?.problem).toContain('alpha: cannot count unpushed commits');
   });
 
   it('a kept thread is reported at every pass, and asked about again only after an hour or a use', async () => {
@@ -106,6 +123,47 @@ describe('pruning a sandboxed thread (work 103, Prune)', () => {
     const used = rig({ during: () => used.records.write({ ...used.record, usedAt: new Date().toISOString() }) });
     expect(await used.p.pruneIdle('pat')).toEqual([]);
     expect(used.log).toEqual(['ws-inspect.sh']);
+  });
+
+  it('a start that arrives while a thread is removed waits until all of it went, the record too', async () => {
+    let started: Promise<unknown> | undefined;
+    const t = rig({ at: (what) => what === 'remove' && (started = t.locks.run('pat', 'C1:1.1', async () => void t.log.push(`start finds ${t.records.find('pat', 'C1:1.1')?.id ?? 'no record'}`))) });
+    await t.p.pruneIdle('pat');
+    await started;
+    expect(t.log.slice(-3)).toEqual([`run deleted ${ID}`, `record deleted ${ID}`, 'start finds no record']);
+  });
+
+  it('a start that arrives while a kept thread\'s container is removed waits for that', async () => {
+    let started: Promise<unknown> | undefined;
+    const t = rig({ state: '1\tok\tdirty\t0\tb\t/x\n2\tok\tclean\t0\tb\t/y\n', at: async (what) => {
+      if (what !== 'rm') return;
+      started = t.locks.run('pat', 'C1:1.1', async () => void t.log.push('start'));
+      await new Promise((r) => setTimeout(r, 10));
+      t.log.push('rm ended');
+    } });
+    await t.p.pruneIdle('pat');
+    await started;
+    expect(t.log).toEqual(['ws-inspect.sh', `podman rm --force sp-runner-${ID}`, 'rm ended', 'start']);
+  });
+
+  it('a thread that is starting when its turn comes is left whole: nothing is removed while a start has the turn', async () => {
+    // The start took the turn while git was asked, and writes its record as every start does.
+    let end!: () => void;
+    const t = rig({ during: () => void t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (end = () => (t.records.write({ ...t.record, usedAt: new Date().toISOString() }), r())))) });
+    const done = t.p.pruneIdle('pat');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.log).toEqual(['ws-inspect.sh']);
+    end();
+    expect(await done).toEqual([]);
+    expect(t.log).toEqual(['ws-inspect.sh']);
+  });
+
+  it('a removal that fails half way leaves a record without `repos`: the next start prepares the workspace again, and the next pass goes on', async () => {
+    const t = rig({ rm: new Error('rm: timed out') });
+    expect((await t.p.pruneIdle('pat'))[0].problem).toContain('prune failed: rm: timed out');
+    expect(t.records.get(ID)).toBeDefined();
+    expect(t.records.get(ID)?.repos).toBeUndefined();
+    expect(t.records.get(ID)?.usedAt).toBe(t.record.usedAt);
   });
 
   it('a failed inspection or a failed Remove keeps everything, says so, and is tried again at the next pass', async () => {

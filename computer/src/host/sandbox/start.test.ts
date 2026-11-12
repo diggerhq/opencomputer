@@ -1,5 +1,5 @@
 import type net from 'node:net';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import type { TelemetryEvent } from '../../telemetry/envelope.js';
 import type { ContainerInfo } from './containers.js';
 import { sandboxRecords } from './records.js';
 import { type SandboxStartDeps, imageTag, sandboxStarts } from './start.js';
+import { threadLocks } from './thread-lock.js';
 
 const IMAGE = 'ghcr.io/diggerhq/computer-session:64a672bb773b059c82f67c9f52741a0540ca1d1c';
 const owner = { dir: 'pat', gitName: 'Pat', gitEmail: 'pat@example.com' };
@@ -18,12 +19,15 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 
 function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory' | 'mount' | 'prepare', Error>>; stale?: boolean;
-  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean } = {}) {
+  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean } = {}) {
   const log: string[] = [];
   const ups: RunnerSpec[] = [];
   const sent: TelemetryEvent[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(...b.events) });
-  const records = sandboxRecords(mkdtempSync(path.join(tmpdir(), 'records-')));
+  const dir = mkdtempSync(path.join(tmpdir(), 'records-'));
+  if (o.unread) writeFileSync(path.join(dir, `${o.unread}.json`), '{"id":');
+  const records = sandboxRecords(dir);
+  const locks = threadLocks();
   const step = async <T>(name: string, v: T): Promise<T> => {
     log.push(name);
     const e = o.fail?.[name.split(' ')[0] as 'create'];
@@ -31,7 +35,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     return v;
   };
   const d: SandboxStartDeps = {
-    tm, records, image: IMAGE, abi: '2', version: 'v9',
+    tm, records, locks, image: IMAGE, abi: '2', version: 'v9',
     runRoot: (id) => `/run/sp/sandbox/${id}`,
     containers: {
       create: (id) => step(`create ${id}`, 11),
@@ -53,6 +57,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     workspaces: () => !!o.definition,
     workspace: {
       repos: (r) => (r.repos ? Object.keys(r.repos) : (o.clones ?? [])),
+      there: () => !!o.there,
       dirs: async (r, names) => void log.push(`dirs ${r.key} ${names.join(',')}`),
       binds: (r, names, journal) => [{ src: `ws:${r.key}`, dst: '/workspace' }, ...names.map((n) => ({ src: n, dst: `/clones/${n}` })), ...(journal ? [{ src: journal, dst: journal }] : [])],
       mount: (id, pid, person, b) => step(`mount ${id} ${pid} ${person} ${b.map((x) => x.dst).join(' ')}`, undefined),
@@ -66,7 +71,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     dial: o.dial ?? (async () => sock),
   };
   const events = async () => (await tm.flush(), sent);
-  return { ...sandboxStarts(d), log, ups, records, events, tm };
+  return { ...sandboxStarts(d), log, ups, records, locks, events, tm };
 }
 const container = (id: string, over: Partial<ContainerInfo> = {}): ContainerInfo => ({ id, state: 'exited', abi: '2', image: IMAGE, createdAt: 0, ...over });
 
@@ -107,12 +112,41 @@ describe('sandbox start', () => {
     expect((await again.events()).find((e) => e.event_name === 'runner.launched')?.data).toMatchObject({ 'container.recreated': false });
   });
 
+  it('a start waits for the thread\'s turn, and only then looks for its record: a thread pruned meanwhile starts as a new one and is prepared', async () => {
+    const t = rig({ definition: true, clones: ['alpha'] });
+    const old = { id: 'aaaaaaaaaaaaaaaa', person: 'pat', key: 'C1:1.1', createdAt: '', usedAt: '', repos: { alpha: { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' } } };
+    t.records.write(old);
+    let pruned!: () => void;
+    // What prune.ts does with the turn: everything of the thread goes, its record last.
+    void t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (pruned = () => (t.records.delete(old.id), r()))));
+    const starting = t.start(spec, {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.log).toEqual([]);
+    expect(t.records.get(old.id)).toEqual(old); // not written by a start that has not begun
+    pruned();
+    const s = await starting;
+    expect(s.record.id).not.toBe(old.id);
+    expect(s.resumed).toBe(false);
+    expect(t.log).toContain(`create ${s.record.id}`);
+    expect(t.log).toContain(`prepare ${s.record.id} alpha`);
+  });
+
   const resume = async (o: Parameters<typeof rig>[0], id = 'aaaaaaaaaaaaaaaa', sent: Partial<SessionSpec> = {}) => {
     const t = rig(o);
     t.records.write({ id, person: 'pat', key: 'C1:1.1', createdAt: 'then', usedAt: 'then' });
     const s = await t.start({ ...spec, ...sent }, {});
     return { t, s, id };
   };
+
+  it('a thread with files but no record, while a record file did not load, is not started: nothing is made over what may be its', async () => {
+    const t = rig({ unread: 'abababababababab', there: true });
+    await expect(t.start(spec, {})).rejects.toThrow("this thread has files but no sandbox record, and the record abababababababab.json did not load; nothing was started. Repair that file in the host's state/sandboxes, or remove it for a new sandbox");
+    expect(t.log).toEqual([]);
+    expect(t.records.all()).toEqual([]);
+    // A thread with no files is new whatever did not load, and so is every thread once all records load.
+    expect((await rig({ unread: 'abababababababab' }).start(spec, {})).resumed).toBe(false);
+    expect((await rig({ there: true }).start(spec, {})).resumed).toBe(false);
+  });
 
   it('a resume keeps the transcript only when the home was there before this start', async () => {
     const id = 'aaaaaaaaaaaaaaaa';

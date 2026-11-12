@@ -22,7 +22,14 @@
 //   `--force`, which would take a container using it along.
 // - A run directory goes only when its id has no container and no volume, no
 //   runner, and nothing touched it (or its record) for `ageMs`: a start makes
-//   the directory before the container.
+//   the directory before the container. The directory of an id that has a
+//   record goes in its thread's turn (thread-lock.ts), asked about again
+//   there: never under a start, which mounts it. Nothing else the sweep
+//   removes can be a starting thread's: a start writes its record first, and
+//   what has a record is not removed here.
+// - An id whose record file is there but did not load (records.ts `unread`)
+//   has a record, for all of the above: nothing of it is removed, at the
+//   start or by a sweep. Running, it is stopped: nobody can say whose it is.
 // - Records are never deleted here (prune.ts does, last).
 
 import type net from 'node:net';
@@ -36,6 +43,7 @@ import { TIMEOUTS } from './containers.js';
 import type { AsRunner } from './podman.js';
 import { emptyRunArgs, volumeRmArgs } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 
 /** "Only objects older than 10 minutes." */
 export const SWEEP_AGE_MS = 10 * 60_000;
@@ -45,7 +53,9 @@ const ID = /^[0-9a-f]{16}$/;
 export interface SweepDeps {
   as: AsRunner;
   tm: Telemetry;
-  records: Pick<Records, 'all' | 'get'>;
+  records: Pick<Records, 'all' | 'get' | 'unread'>;
+  /** The threads' turns, shared with the starts. */
+  locks: ThreadLocks;
   containers: Pick<Containers, 'inventory' | 'stop' | 'remove'>;
   /** `$SP_RUN/sandbox`, and a runner's run root in it. */
   runDir: string;
@@ -87,6 +97,8 @@ export function sandboxSweep(d: SweepDeps) {
   const now = d.now ?? Date.now;
   const age = d.ageMs ?? SWEEP_AGE_MS;
   let health: SandboxHealth | undefined;
+  /** True when the id has a record, loaded or not. */
+  const known = (id: string) => !!d.records.get(id) || d.records.unread().includes(id);
 
   /** Delete a run directory: what the session wrote goes inside Podman's user namespace, the rest is the host's. Never rejects; true when it is gone. */
   async function deleteRun(id: string): Promise<boolean> {
@@ -116,6 +128,11 @@ export function sandboxSweep(d: SweepDeps) {
     }
     await Promise.all(inventory.containers.map(async ({ id, state }) => {
       const record = d.records.get(id);
+      if (!record && known(id)) {
+        log.warn(`sandbox ${id}: its record did not load; kept${state === 'running' ? ', stopped' : ''}`);
+        if (state === 'running') await c.stop(id).catch((x) => log.warn(`sandbox ${id} not stopped: ${msg(x)}`));
+        return;
+      }
       // C14: a spare of the host before this one (or a start that never got its record); its run directory serves nobody either.
       if (!record) return void ((await c.remove(id)) && (await deleteRun(id)), log.info(`sandbox ${id}: a container without a record, removed`));
       if (state !== 'running') return; // the next message resumes it (start.ts)
@@ -145,7 +162,7 @@ export function sandboxSweep(d: SweepDeps) {
     const out = await as.run([SYSTEMCTL, '--user', 'list-units', '--state=failed', '--plain', '--no-legend', 'sp-runner-*.service'], { timeoutMs: TIMEOUTS.unit });
     const units = out.split('\n').map((l) => l.trim().split(/\s+/)[0]).filter((u) => {
       const id = /^sp-runner-([0-9a-f]{16})\.service$/.exec(u)?.[1];
-      return !!id && (!!d.records.get(id) || mine.has(id));
+      return !!id && (known(id) || mine.has(id));
     });
     if (units.length) await as.run([SYSTEMCTL, '--user', 'reset-failed', ...units], { timeoutMs: TIMEOUTS.unit });
     return units.length;
@@ -176,7 +193,7 @@ export function sandboxSweep(d: SweepDeps) {
       // no figure
     }
     try {
-      const rows = JSON.parse(await as.podman(['system', 'df', '--format', 'json'], { timeoutMs: TIMEOUTS.inventory })) as { RawSize?: number }[];
+      const rows = JSON.parse(await as.podman(['system', 'df', '--format', 'json'], { timeoutMs: TIMEOUTS.inventory, repeatable: true })) as { RawSize?: number }[];
       h.podman_bytes = rows.reduce((sum, r) => sum + (Number(r?.RawSize) || 0), 0);
     } catch (e) {
       log.warn(`sandbox: podman system df: ${msg(e)}`);
@@ -196,7 +213,7 @@ export function sandboxSweep(d: SweepDeps) {
     const swept: Swept = { containers: 0, volumes: 0, run_dirs: 0, units: 0 };
     try {
       const old = (at: number) => now() - at >= age;
-      const idle = (id: string) => !d.records.get(id) && !d.running(id);
+      const idle = (id: string) => !known(id) && !d.running(id);
       const has = new Set([...inventory.containers.map((x) => x.id), ...inventory.foreign]);
       const homes = new Set(inventory.volumes.map((v) => v.id));
       for (const x of inventory.containers) {
@@ -214,11 +231,17 @@ export function sandboxSweep(d: SweepDeps) {
       }
       const dirs = runDirs();
       for (const id of dirs) {
-        if (has.has(id) || homes.has(id) || d.running(id)) continue;
-        const st = lstatSync(path.join(d.runDir, id), { throwIfNoEntry: false });
-        const used = Date.parse(d.records.get(id)?.usedAt ?? '') || 0;
-        if (!st || !old(Math.max(st.mtimeMs, st.ctimeMs, used))) continue;
-        if (await deleteRun(id)) swept.run_dirs++;
+        if (has.has(id) || homes.has(id) || d.running(id) || d.records.unread().includes(id)) continue;
+        const unused = () => {
+          const st = lstatSync(path.join(d.runDir, id), { throwIfNoEntry: false });
+          const used = Date.parse(d.records.get(id)?.usedAt ?? '') || 0;
+          return !!st && old(Math.max(st.mtimeMs, st.ctimeMs, used));
+        };
+        if (!unused()) continue;
+        // A thread's directory goes in the thread's turn: a start that had it wrote the record, and this looks again.
+        const r = d.records.get(id);
+        const gone = r ? await d.locks.run(r.person, r.key, async () => !d.running(id) && unused() && deleteRun(id)) : await deleteRun(id);
+        if (gone) swept.run_dirs++;
       }
       swept.units = await resetFailed(new Set(dirs)).catch((e) => (log.warn(`sandbox: failed units not reset: ${msg(e)}`), 0));
       await measure(inventory);

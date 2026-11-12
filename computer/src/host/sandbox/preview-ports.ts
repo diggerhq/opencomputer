@@ -6,6 +6,9 @@
 //
 // Invariants:
 // - One number per `(id, port)`, and one entry per number.
+// - One entry per name: giving an entry a name frees the entry that had it
+//   (the gateway points a name at one number). Whether a sandbox may ask for
+//   a name is previews.ts's to decide, before the gateway is asked.
 // - A new number is the next free one after the last handed out, wrapping
 //   round: never the lowest free, so a number just freed is not given to
 //   another session while a public name may still point at it. The place in
@@ -16,6 +19,11 @@
 //   written whole to a temporary file and renamed). A file that does not
 //   parse is logged and read as empty: the names it held answer "port not
 //   previewed" until their sessions call `preview` again.
+// - `owed` are the names of removed sandboxes the gateway has not been heard
+//   to take away yet (previews.ts `forget`), each with the thread it was
+//   for: kept in the same file, so neither a gateway that is away nor a host
+//   restart leaves a public name behind. A name given to an entry again is
+//   not owed any more.
 // - The range holds none of the host's own ports (preview-proxy.ts
 //   `HOST_PORTS`); the unit test asserts it.
 
@@ -43,34 +51,44 @@ export interface PreviewPorts {
   assign(id: string, port: number): { entry: PreviewEntry; fresh: boolean };
   get(virtual: number): PreviewEntry | undefined;
   byName(name: string): PreviewEntry | undefined;
+  /** `name` is this entry's from now on; an entry that held it is freed. */
   setName(virtual: number, name: string): void;
   release(virtual: number): void;
   /** Free every entry of a sandbox (Remove); how many there were. */
   releaseAll(id: string): number;
   all(): PreviewEntry[];
+  /** The gateway is to be told `name` is gone, for the thread `from` ('' when there was no record). */
+  owe(name: string, from: string): void;
+  /** The gateway heard it, or the name is some entry's again. */
+  settle(name: string): void;
+  owed(): Owed[];
 }
+
+/** A removed sandbox's preview name, and the thread to say it for. */
+export interface Owed { name: string; from: string }
 
 const inRange = (n: unknown, r: { first: number; last: number }): n is number => Number.isInteger(n) && (n as number) >= r.first && (n as number) <= r.last;
 
-function read(file: string, range: { first: number; last: number }): { next: number; entries: PreviewEntry[] } {
+function read(file: string, range: { first: number; last: number }): { next: number; entries: PreviewEntry[]; owed: Owed[] } {
   let text: string;
   try {
     text = readFileSync(file, 'utf8');
   } catch {
-    return { next: range.first, entries: [] }; // no file yet
+    return { next: range.first, entries: [], owed: [] }; // no file yet
   }
   try {
-    const j = JSON.parse(text) as { next?: unknown; entries?: unknown };
+    const j = JSON.parse(text) as { next?: unknown; entries?: unknown; owed?: unknown };
     if (!Array.isArray(j.entries)) throw new Error('no entries');
     const entries: PreviewEntry[] = [];
     for (const e of j.entries as Partial<PreviewEntry>[]) {
       if (!inRange(e?.virtual, range) || typeof e.id !== 'string' || !inRange(e.port, { first: 1, last: 65535 })) throw new Error('a bad entry');
       entries.push({ virtual: e.virtual, id: e.id, port: e.port, ...(typeof e.name === 'string' && { name: e.name }) });
     }
-    return { next: inRange(j.next, range) ? j.next : range.first, entries };
+    const owed = (Array.isArray(j.owed) ? (j.owed as Partial<Owed>[]) : []).flatMap((x) => (typeof x?.name === 'string' && typeof x.from === 'string' ? [{ name: x.name, from: x.from }] : []));
+    return { next: inRange(j.next, range) ? j.next : range.first, entries, owed };
   } catch (e) {
     log.warn(`preview ports: ${file} not read (${(e as Error)?.message ?? e}); starting empty`);
-    return { next: range.first, entries: [] };
+    return { next: range.first, entries: [], owed: [] };
   }
 }
 
@@ -81,10 +99,12 @@ export function previewPorts(file: string, range: { first: number; last: number 
   let next = loaded.next;
   const byVirtual = new Map<number, PreviewEntry>();
   for (const e of loaded.entries) byVirtual.set(e.virtual, e);
+  const owed = new Map(loaded.owed.map((x) => [x.name, x.from]));
+  const list = () => [...owed].map(([name, from]) => ({ name, from }));
 
   function save() {
     const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ next, entries: [...byVirtual.values()] }, null, 1) + '\n', { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ next, entries: [...byVirtual.values()], ...(owed.size > 0 && { owed: list() }) }, null, 1) + '\n', { mode: 0o600 });
     renameSync(tmp, file);
   }
   const find = (f: (e: PreviewEntry) => boolean) => [...byVirtual.values()].find(f);
@@ -113,7 +133,10 @@ export function previewPorts(file: string, range: { first: number; last: number 
     setName(virtual, name) {
       const e = byVirtual.get(virtual);
       if (!e || e.name === name) return;
+      // The gateway points a name at one number: whatever held it before points nowhere now.
+      for (const x of [...byVirtual.values()]) if (x.name === name) byVirtual.delete(x.virtual);
       e.name = name;
+      owed.delete(name);
       save();
     },
     release(virtual) {
@@ -126,5 +149,13 @@ export function previewPorts(file: string, range: { first: number; last: number 
       return mine.length;
     },
     all: () => [...byVirtual.values()],
+    owe(name, from) {
+      owed.set(name, from);
+      save();
+    },
+    settle(name) {
+      if (owed.delete(name)) save();
+    },
+    owed: list,
   };
 }

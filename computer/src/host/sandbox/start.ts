@@ -7,6 +7,14 @@
 // - A thread has a record before it has a container, and the record decides:
 //   a hit resumes under the record's id, a miss is a new thread, which starts
 //   with no transcript and no fork path whatever the gateway sent.
+// - A start has its thread's turn (thread-lock.ts) from before it looks for
+//   the record until it is connected or failed: whatever removes a thread's
+//   things (prune.ts) waits for it, and a start that waited for a prune finds
+//   no record and starts a new thread, cold, with its workspace prepared.
+// - A thread without a record that has files, while some record's file did
+//   not load (records.ts `unread`), may be that record's: it is not started,
+//   and the error names the files. A new sandbox over it would prepare a
+//   workspace that has work in it and leave its home behind.
 // - The runner's view of its workspace is `/workspace`, in the spec it boots
 //   from; the host path never goes in.
 // - A start that fails leaves no container running and no token socket open;
@@ -47,6 +55,7 @@ import { awaitRunner, dialSocket } from '../runner-sockets.js';
 import type { Containers, Inventory } from './containers.js';
 import { WORKSPACE } from './mounts.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 import type { SandboxWorkspace } from './workspace.js';
 
 export { WORKSPACE };
@@ -54,6 +63,8 @@ export { WORKSPACE };
 export interface SandboxStartDeps {
   tm: Telemetry;
   records: Records;
+  /** The threads' turns, shared with prune and the sweep. */
+  locks: ThreadLocks;
   containers: Pick<Containers, 'create' | 'up' | 'stop' | 'remove' | 'recreate' | 'inventory' | 'stale' | 'unitActive' | 'diagnose'>;
   runRoot(id: string): RunRoot;
   /** SP_IMAGE and SP_IMAGE_ABI of the host's release. */
@@ -63,7 +74,7 @@ export interface SandboxStartDeps {
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
   /** The thread's files: directories, mounts, worktrees (workspace.ts). */
-  workspace: Pick<SandboxWorkspace, 'repos' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
+  workspace: Pick<SandboxWorkspace, 'repos' | 'there' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
   /** True when a workspace definition is in effect (`workspacesEnabled`). */
   workspaces(): boolean;
   /** Connect to a runner's socket; undefined when nothing answers. */
@@ -104,10 +115,15 @@ export function sandboxStarts(d: SandboxStartDeps) {
     return { recreated: false };
   }
 
-  /** Start the runner of `spec`'s thread and connect to it. `f`: the delivery's trace. */
-  async function start(spec: SessionSpec, f: Dimensions): Promise<Started> {
+  /** Start the runner of `spec`'s thread and connect to it, in the thread's turn. `f`: the delivery's trace. */
+  const start = (spec: SessionSpec, f: Dimensions): Promise<Started> => d.locks.run(spec.owner.dir, spec.key, () => startNow(spec, f));
+
+  async function startNow(spec: SessionSpec, f: Dimensions): Promise<Started> {
     const now = new Date().toISOString();
     const found = d.records.find(spec.owner.dir, spec.key);
+    const unread = found ? [] : d.records.unread();
+    if (unread.length && d.workspace.there(spec.owner.dir, spec.key))
+      throw new Error(`this thread has files but no sandbox record, and the record ${unread.map((id) => `${id}.json`).join(', ')} did not load; nothing was started. Repair that file in the host's state/sandboxes, or remove it for a new sandbox`);
     const { sdkSessionId, forkPath: _fork, ...fresh } = spec;
     let record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
     d.records.write(record);

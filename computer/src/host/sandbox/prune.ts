@@ -11,9 +11,17 @@
 //   the next message creates the container again. Why it was kept is reported.
 // - Git is asked in a helper container that sees the workspace read-only, for
 //   the repositories the record names; the branch forgotten is the record's.
-// - Only a thread with no runner is pruned, asked again once git answered and
-//   once more before the record goes: a thread that started meanwhile keeps
-//   its record, and starts as one whose container and home are gone.
+// - Only a thread with no runner is pruned, and nothing of it is removed but
+//   in the thread's turn (thread-lock.ts), which every start takes too. Git is
+//   asked before the turn; in the turn the thread is left whole if it has a
+//   runner or its record was written since (every start writes it). A start
+//   that arrives while the thread is removed waits for all of it, the record
+//   included, and then starts a new thread; while a kept thread's container
+//   is removed, it waits and resumes, creating the container again.
+// - Before the workspace is touched the record loses its `repos` (workspace.ts:
+//   a record has them only while the workspace is whole). So a removal that
+//   fails half way leaves a thread whose next start prepares its workspace
+//   again, and whose next pass here goes on removing.
 // - The record is deleted last, and only when the container and the home went:
 //   until then the next pass finds the thread and tries again.
 // - A thread that was kept is asked about again when it was used, or an hour
@@ -29,6 +37,7 @@ import { CLONES, type Mounts, WORKSPACE } from './mounts.js';
 import type { AsRunner } from './podman.js';
 import { type Bind, recreateRemoveArgs, unshareRmArgs } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 
 type RepoStatus = WorkspaceStatus['repos'][number];
 
@@ -40,6 +49,8 @@ const ASK_AGAIN_MS = 3600e3;
 export interface PruneDeps {
   as: AsRunner;
   records: Records;
+  /** The threads' turns, shared with the starts. */
+  locks: ThreadLocks;
   mounts: Mounts;
   /** `sandboxScripts.helperScripts`. */
   helper(person: string, binds?: Bind[]): ScriptRunner;
@@ -76,7 +87,8 @@ export function sandboxPrune(d: PruneDeps) {
     names.forEach((name, i) => {
       // Answered by position, from 1.
       const [dirty, unpushed] = row(out, String(i + 1));
-      const n = Number(unpushed);
+      // Only digits are a count: anything else (`-1`, nothing, a field the script did not print) is not zero.
+      const n = /^\d+$/.test(unpushed ?? '') ? Number(unpushed) : -1;
       if (dirty !== 'clean') reasons.push(`${name} has uncommitted changes`);
       else if (n) reasons.push(n > 0 ? `${name} has ${n} unpushed commit${n > 1 ? 's' : ''}` : `${name}: cannot count unpushed commits`);
     });
@@ -88,24 +100,28 @@ export function sandboxPrune(d: PruneDeps) {
   /** Prune one thread. Returns why it was kept; undefined when it is gone, or in use again. */
   async function prune(r: SandboxRecord): Promise<string | undefined> {
     const why = await unsaved(r);
-    if (inUse(r)) return undefined;
-    if (why) {
-      await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS });
-      return why;
-    }
-    if (!(await d.remove(r.id))) throw new Error('its container or its home was not removed');
-    await d.as.podman(unshareRmArgs([m.workspace(r), path.dirname(m.registry(r, 'x'))]), { timeoutMs: REMOVE_TIMEOUT_MS });
-    // One branch per thread, normally; a branch the session did not get from the host (`sp/…`) is not the host's to delete.
-    const byBranch = new Map<string, string[]>();
-    for (const [name, repo] of Object.entries(r.repos ?? {})) if (repo.branch.startsWith('sp/')) byBranch.set(repo.branch, [...(byBranch.get(repo.branch) ?? []), name]);
-    for (const [branch, names] of byBranch)
-      await d.helper(r.person).run('ws-forget.sh', [CLONES, branch, ...names], { timeoutMs: FORGET_TIMEOUT_MS }).catch((e) => log.warn(`workspaces: branch ${branch} of ${r.key} not forgotten: ${msg(e)}`));
-    await d.deleteRun(r.id);
-    // It started again while it was removed: its record is what lets that start, and the next, find it.
-    if (inUse(r)) return undefined;
-    d.records.delete(r.id);
-    log.info(`workspaces: pruned thread ${r.key} (${r.person}), sandbox ${r.id}`);
-    return undefined;
+    return d.locks.run(r.person, r.key, async () => {
+      // A start had the turn since git was asked (it wrote the record), or the thread runs: what git said is old.
+      if (inUse(r)) return undefined;
+      if (why) {
+        await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS, repeatable: true });
+        return why;
+      }
+      if (!(await d.remove(r.id))) throw new Error('its container or its home was not removed');
+      // From here the workspace is not whole: a start that finds this record prepares it again.
+      const { repos, ...bare } = r;
+      if (repos) d.records.write(bare);
+      await d.as.podman(unshareRmArgs([m.workspace(r), path.dirname(m.registry(r, 'x'))]), { timeoutMs: REMOVE_TIMEOUT_MS });
+      // One branch per thread, normally; a branch the session did not get from the host (`sp/…`) is not the host's to delete.
+      const byBranch = new Map<string, string[]>();
+      for (const [name, repo] of Object.entries(repos ?? {})) if (repo.branch.startsWith('sp/')) byBranch.set(repo.branch, [...(byBranch.get(repo.branch) ?? []), name]);
+      for (const [branch, names] of byBranch)
+        await d.helper(r.person).run('ws-forget.sh', [CLONES, branch, ...names], { timeoutMs: FORGET_TIMEOUT_MS }).catch((e) => log.warn(`workspaces: branch ${branch} of ${r.key} not forgotten: ${msg(e)}`));
+      await d.deleteRun(r.id);
+      d.records.delete(r.id);
+      log.info(`workspaces: pruned thread ${r.key} (${r.person}), sandbox ${r.id}`);
+      return undefined;
+    });
   }
 
   /** Prune `person`'s threads unused for SP_FORK_RETENTION_DAYS, except those with a runner. Returns the ones kept, as housekeeping reports them. */

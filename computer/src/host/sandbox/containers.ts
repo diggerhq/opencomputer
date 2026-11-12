@@ -21,6 +21,11 @@
 //   ended between two looks.
 // - `stop` resolves only for a container that is down: one that outlived
 //   Podman's stop and the kill of its cgroup rejects.
+// - Stop, Remove and the lists are `repeatable` behind the image lock
+//   (podman.ts): each leaves the same behind made twice. Create, an exec, Pid
+//   (polled anyway) and what empties a run directory are made once.
+// - An id the Inventory gives is sixteen hex digits: a label or a volume name
+//   that is anything else is left out, before it reaches a path or an argv.
 // - A container is this host's only when it is mounted on this host's run
 //   directory for its id (Create mounts it at its own path). The runners'
 //   user's Podman is one per computer, and another host of the computer (other
@@ -81,7 +86,7 @@ export interface ContainersDeps {
   definition(): string | undefined;
   /** `tokens.serveRunner`. */
   serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
-  /** A sandbox was removed: what else the host keeps by its id goes too (its preview ports, C9). */
+  /** A sandbox's container was removed: what else the host keeps by its id goes too (its preview ports, C9). Not called while Podman still has the container. */
   removed?(id: string): void;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -112,6 +117,8 @@ function dir(p: string, mode: number) {
   chmodSync(p, mode);
 }
 
+/** A sandbox id as the host makes one (start.ts): what Podman lists under any other is not ours, and never becomes a path or an argument. */
+const SANDBOX_ID = /^[0-9a-f]{16}$/;
 const absent = (e: unknown) => /no such container|no container with name or ID/i.test(String((e as { stderr?: string })?.stderr ?? ''));
 
 export function containers(d: ContainersDeps) {
@@ -211,7 +218,7 @@ export function containers(d: ContainersDeps) {
    */
   async function stop(id: string, seconds = 10): Promise<void> {
     try {
-      await as.podman(stopArgs(id, seconds), { timeoutMs: TIMEOUTS.stop });
+      await as.podman(stopArgs(id, seconds), { timeoutMs: TIMEOUTS.stop, repeatable: true });
     } catch (e) {
       if (absent(e)) return;
       log.warn(`podman stop ${containerName(id)} failed (${(e as Error)?.message ?? e}); killing its cgroup`);
@@ -221,20 +228,20 @@ export function containers(d: ContainersDeps) {
 
   /** Remove the container and its home (30 s each). Never rejects: what stays is logged and the sweep's. True when both went. */
   async function remove(id: string): Promise<boolean> {
-    let ok = true;
-    for (const args of removeArgs(id))
-      await as.podman(args, { timeoutMs: TIMEOUTS.remove }).catch((e) => {
-        ok = false;
-        log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`);
-      });
-    d.removed?.(id);
+    const [container, ...rest] = removeArgs(id);
+    const rm = (args: string[]) => as.podman(args, { timeoutMs: TIMEOUTS.remove, repeatable: true }).then(() => true, (e) => (log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`), false));
+    const gone = await rm(container);
+    let ok = gone;
+    for (const args of rest) ok = (await rm(args)) && ok;
+    // A container that stayed still has its previews; whoever removes it later says so then.
+    if (gone) d.removed?.(id);
     return ok;
   }
 
   /** Remove the container alone and create it again from the current image; the home volume stays. Resolves with the time taken. */
   async function recreate(id: string): Promise<number> {
     const t0 = Date.now();
-    await as.podman(recreateRemoveArgs(id), { timeoutMs: TIMEOUTS.remove });
+    await as.podman(recreateRemoveArgs(id), { timeoutMs: TIMEOUTS.remove, repeatable: true });
     await create(id);
     return Date.now() - t0;
   }
@@ -242,23 +249,24 @@ export function containers(d: ContainersDeps) {
   /** Every sandbox container and home volume Podman has (10 s each). */
   async function inventory(): Promise<Inventory> {
     const args = inventoryArgs();
-    const [cs, vs] = await Promise.all([as.podman(args.containers, { timeoutMs: TIMEOUTS.inventory }), as.podman(args.volumes, { timeoutMs: TIMEOUTS.inventory })]);
-    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: string[] }[] => {
+    const list = { timeoutMs: TIMEOUTS.inventory, repeatable: true };
+    const [cs, vs] = await Promise.all([as.podman(args.containers, list), as.podman(args.volumes, list)]);
+    const parse = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: string[] }[] => {
       const v = JSON.parse(text.trim() || '[]');
       if (!Array.isArray(v)) throw new Error('podman: not a list');
       return v;
     };
     const foreign: string[] = [];
     return {
-      containers: list(cs).flatMap((c) => {
+      containers: parse(cs).flatMap((c) => {
         const id = c?.Labels?.['sp.runner'];
         // The label and the name agree for every container the host made; anything else is not ours to touch.
-        if (typeof id !== 'string' || !c.Names?.includes?.(containerName(id))) return [];
+        if (typeof id !== 'string' || !SANDBOX_ID.test(id) || !c.Names?.includes?.(containerName(id))) return [];
         if (!Array.isArray(c.Mounts) || !c.Mounts.includes(d.runRoot(id))) return (foreign.push(id), []);
         return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000 }];
       }),
-      volumes: list(vs).flatMap((v) => {
-        const m = /^sp-home-(.+)$/.exec(String(v?.Name ?? ''));
+      volumes: parse(vs).flatMap((v) => {
+        const m = /^sp-home-([0-9a-f]{16})$/.exec(String(v?.Name ?? ''));
         return m ? [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0 }] : [];
       }),
       foreign,

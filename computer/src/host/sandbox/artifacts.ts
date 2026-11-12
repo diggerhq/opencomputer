@@ -11,9 +11,10 @@
 //   that sees the workspace read-only, with no network.
 // - Directories are removed inside Podman's user namespace (`podman unshare
 //   rm -rf`): what a session made as root belongs to subordinate uids.
-// - Only a thread with no runner is pruned, asked again just before anything
-//   is removed. A thread that starts between that look and the removal can
-//   lose a directory it just made again; an install brings it back.
+// - Only a thread with no runner is pruned, and its directories are removed
+//   in the thread's turn (thread-lock.ts): a thread that has a runner then, or
+//   whose record a start wrote since git was asked, loses nothing, and a start
+//   that arrives during the removal waits for it.
 // - A thread is looked at again only once it was used again.
 
 import { lstat } from 'node:fs/promises';
@@ -25,6 +26,7 @@ import { CLONES, type Mounts, WORKSPACE } from './mounts.js';
 import type { AsRunner } from './podman.js';
 import { type Bind, unshareRmArgs } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 
 const INSPECT_TIMEOUT_MS = 60_000;
 const REMOVE_TIMEOUT_MS = 120_000;
@@ -32,6 +34,8 @@ const REMOVE_TIMEOUT_MS = 120_000;
 export interface ArtifactsDeps {
   as: AsRunner;
   records: Records;
+  /** The threads' turns, shared with the starts. */
+  locks: ThreadLocks;
   mounts: Mounts;
   /** `sandboxScripts.helperScripts`. */
   helper(person: string, binds: Bind[]): ScriptRunner;
@@ -68,12 +72,14 @@ export function sandboxArtifacts(d: ArtifactsDeps) {
       ...Object.keys(r.repos ?? {}).map((name) => ({ src: m.registry(r, name), dst: `${CLONES}/${name}/.git/worktrees` })),
     ];
     const out = await d.helper(r.person, binds).run('ws-inspect.sh', ['--only=ignored', CLONES, WORKSPACE, ...q.names], { stdin: q.lines, timeoutMs: INSPECT_TIMEOUT_MS });
-    // No runner first, then the paths: a thread that is not running cannot move them after they were resolved.
-    if (d.running(r.id)) return [];
-    const ignored = await stillInside(ws, ignoredArtifacts(q, out));
-    if (!ignored.length) return [];
-    await d.as.podman(unshareRmArgs(ignored), { timeoutMs: REMOVE_TIMEOUT_MS });
-    return ignored;
+    return d.locks.run(r.person, r.key, async () => {
+      // No runner and no start since git was asked first, then the paths: a thread that is not running cannot move them after they were resolved.
+      if (d.running(r.id) || d.records.get(r.id)?.usedAt !== r.usedAt) return [];
+      const ignored = await stillInside(ws, ignoredArtifacts(q, out));
+      if (!ignored.length) return [];
+      await d.as.podman(unshareRmArgs(ignored), { timeoutMs: REMOVE_TIMEOUT_MS });
+      return ignored;
+    });
   }
 
   /** Prune the build and dependency directories of `person`'s threads idle for SP_ARTIFACTS_IDLE_HOURS, except those with a runner. */

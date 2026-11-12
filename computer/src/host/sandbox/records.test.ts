@@ -56,4 +56,17 @@ describe('sandbox records', () => {
     expect(sandboxRecords(dir).all()).toEqual([]);
     expect(() => r0.write(rec('../x'))).toThrow(/bad sandbox id/);
   });
+
+  it('says which record files are there but did not load, until one is written again', () => {
+    sandboxRecords(dir);
+    writeFileSync(path.join(dir, `${A}.json`), '{"id":"00000000000000aa","person":"U1","ke');
+    writeFileSync(path.join(dir, `${B}.json`), '');
+    writeFileSync(path.join(dir, 'notes.json'), '{');
+    const r = sandboxRecords(dir);
+    expect(r.all()).toEqual([]);
+    expect(r.get(A)).toBeUndefined();
+    expect(r.unread().sort()).toEqual([A, B]);
+    r.write(rec(A));
+    expect(r.unread()).toEqual([B]);
+  });
 });
