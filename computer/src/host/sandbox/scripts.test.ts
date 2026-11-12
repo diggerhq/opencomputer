@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createTelemetry } from '../../telemetry/emitter.js';
 import type { TelemetryEvent } from '../../telemetry/envelope.js';
 import { ScriptError } from '../../workspaces/script-runner.js';
@@ -75,6 +75,22 @@ describe('workspace scripts in containers (work 103, C12)', () => {
       const e2 = await late.s.helperScripts('pat').run('ws-sync.sh', [], { timeoutMs: 0 }).catch((e) => e);
       expect([e2.killed, e2.message, e2.stderr]).toEqual([true, 'ws-sync.sh: timed out', 'timed out after 120 s']);
       expect((await late.events()).filter((e) => e.event_name === 'sandbox.helper').map((e) => [e.outcome, e.error_type])).toEqual([['failed', 'timeout']]);
+    }
+  });
+
+  it('a helper Podman ended at its --timeout (exit 255, no word) ran out of time; the same exit sooner did not', async () => {
+    const quick = rig(() => new PodmanError('failed', 255, '', false));
+    const e1 = await quick.s.helperScripts('pat').run('ws-sync.sh', [], { timeoutMs: 0 }).catch((e) => e);
+    expect(e1.killed).toBe(false);
+    const real = Date.now;
+    let t = real();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => (t += 130_000));
+    try {
+      const slow = rig(() => new PodmanError('failed', 255, '', false));
+      const e2 = await slow.s.helperScripts('pat').run('ws-sync.sh', [], { timeoutMs: 0 }).catch((e) => e);
+      expect([e2.killed, e2.stderr]).toEqual([true, 'timed out after 120 s']);
+    } finally {
+      now.mockRestore();
     }
   });
 });

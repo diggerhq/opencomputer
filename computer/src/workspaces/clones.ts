@@ -74,7 +74,13 @@ export function errText(e: any): string {
   return lines.find((l) => /^(fatal|error):/.test(l)) ?? lines.pop() ?? 'failed';
 }
 /** A clone has a `.git` directory. Never followed: a session can write in a clone. */
-export const isClone = (dir: string) => lstatSync(path.join(dir, '.git'), { throwIfNoEntry: false })?.isDirectory() ?? false;
+export const isClone = (dir: string) => {
+  try {
+    return lstatSync(path.join(dir, '.git'), { throwIfNoEntry: false })?.isDirectory() ?? false;
+  } catch {
+    return false; // `dir` is a file (ENOTDIR), or cannot be looked into
+  }
+};
 export const fetchErrorType = (e: unknown) => ((e as { killed?: boolean })?.killed ? 'timeout' : 'git_fetch');
 
 /** Timings the host agent reports as telemetry (work 054); calls never affect the work. */

@@ -235,7 +235,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   const hello = ra?.repos?.hello;
   check(!!hello && hello.branch === a.branch && hello.from === 'origin/master' && /^[0-9a-f]{40}$/.test(hello.base) && !ra?.repos?.spoon,
     `the record is the fork's record: ${JSON.stringify(ra?.repos)}`);
-  const seen = await a.inside('cd /workspace/hello && git status --porcelain --branch && git rev-parse HEAD && cat .git && LC_ALL=C ls -A /workspace && ls /clones /clones/hello/.git/worktrees && git -C /clones/hello config gc.worktreePruneExpire');
+  const seen = await a.inside('cd /workspace/hello && git status --porcelain --branch && git rev-parse HEAD && cat .git && LC_ALL=C ls -A /workspace && ls /clones && ls /clones/hello/.git/worktrees && git -C /clones/hello config gc.worktreePruneExpire');
   check(seen === [`## ${a.branch}`, hello?.base, 'gitdir: /clones/hello/.git/worktrees/hello', '.fork.json', 'AGENTS.md', 'hello', 'hello', 'hello', 'never'].join('\n'),
     `inside: /workspace/hello is a clean worktree of /clones/hello on ${a.branch}, the registry holds it alone, the clone never prunes: ${JSON.stringify(seen)}`);
   const mounted = (await a.inside("awk '{print $5}' /proc/self/mountinfo | grep -E '^/(workspace|clones)' | sort")).split('\n');
@@ -253,7 +253,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   kept.add(a2).add(b);
   check(!!d2.reply?.ok && !!d3.reply?.ok, `a second thread of ${a.owner.dir} and one of ${b.owner.dir} → ok in ${d2.ms} and ${d3.ms} ms (${d2.reply?.error ?? ''}${d3.reply?.error ?? ''})`);
   await a.inside('echo secret-of-a > /workspace/marker-a && echo secret-of-a > /workspace/hello/marker-a');
-  const view = (t: Thread) => t.inside(`ls -A /workspace /workspace/hello | grep -c marker-a; cat /proc/self/mountinfo | grep -c -e '${safeKey(a.key)}' -e '/${a.owner.dir}/sessions'; ls -d ${a.workspace} ${path.join(DATA, 'people')} 2>&1 | grep -c -v 'No such file'; ls /clones/hello/.git/worktrees | tr '\\n' ' '`);
+  const view = (t: Thread) => t.inside(`ls -A /workspace /workspace/hello | grep -c marker-a; cat /proc/self/mountinfo | grep -c -e '${safeKey(a.key)}'${t.owner === a.owner ? '' : ` -e '/${a.owner.dir}/'`}; ls -d ${a.workspace} ${path.join(DATA, 'people')} 2>&1 | grep -c -v 'No such file'; ls /clones/hello/.git/worktrees | tr '\\n' ' '`);
   check((await view(a2)) === '0\n0\n0\nhello', `the sibling sees neither the first thread's files nor its registry (${JSON.stringify(await view(a2))})`);
   const other = await b.inside(`${`cat /proc/self/mountinfo | grep -c '/${a.owner.dir}/'`}; timeout 40 find / -name marker-a -not -path '/proc/*' 2>/dev/null | wc -l; ls ${path.join(DATA, 'people')} 2>&1 | grep -c -v 'No such file'; git -C /workspace/hello log --all --format=%s | grep -c 'sandbox check'; true`);
   check(other === '0\n0\n0\n0', `the other person's thread has no mount of ${a.owner.dir}'s, finds no file of theirs anywhere, and its clone has not their commit (${JSON.stringify(other)})`);

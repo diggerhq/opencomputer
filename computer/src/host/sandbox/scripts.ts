@@ -45,10 +45,11 @@ export interface ScriptsDeps {
 
 export type SandboxScripts = ReturnType<typeof sandboxScripts>;
 
-const failed = (script: string, e: unknown, seconds: number) => {
+/** `ranOut`: the command failed no sooner than its limit. `podman run --timeout` ends a container with exit 255 and says nothing (measured, Podman 4.9.3), so only the time tells. */
+const failed = (script: string, e: unknown, seconds: number, ranOut = false) => {
   if (!(e instanceof PodmanError)) return e;
-  // 124: `timeout` ended it; 255 with Podman's own word: `--timeout` did.
-  const killed = e.timedOut || e.code === 124 || /timed out|timeout/i.test(e.stderr.split('\n').slice(-2).join(' '));
+  // 124: timeout(1) ended it.
+  const killed = e.timedOut || e.code === 124 || ranOut;
   return new ScriptError(script, e.code ?? null, killed ? `timed out after ${seconds} s` : e.stderr, killed);
 };
 
@@ -87,12 +88,13 @@ export function sandboxScripts(d: ScriptsDeps) {
           stdin: o.stdin !== undefined, binds, script: bin(script), args,
         });
         const span = d.tm.start('sandbox.helper', { data: { script } });
+        const t0 = Date.now();
         try {
           const out = await d.as.run([...HELPER_SCOPE, PODMAN, ...argv], { timeoutMs: seconds * 1000 + GRACE_MS, stdin: o.stdin });
           span.end({ outcome: 'completed' });
           return out;
         } catch (e) {
-          const err = failed(script, e, seconds);
+          const err = failed(script, e, seconds, Date.now() - t0 >= seconds * 1000);
           span.end({ outcome: 'failed', error_type: (err as ScriptError).killed ? 'timeout' : 'unknown' });
           throw err;
         }
