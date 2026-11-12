@@ -35,7 +35,7 @@ import type net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, PROTOCOL_VERSION, RUNNER_TOKEN_DIR } from '../protocol.js';
+import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, PROTOCOL_VERSION } from '../protocol.js';
 import { codexBin } from '../runner-env.js';
 import { prereadCodex } from './codex-preread.js';
 import type {
@@ -68,7 +68,7 @@ import { closed, rediscover, retire } from './runner-sockets.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
 import { credentialFingerprint } from '../credential-fingerprint.js';
-import { tokenRelay } from './tokens.js';
+import { freshTokenDir, tokenRelay } from './tokens.js';
 import { hostPreviews } from './previews.js';
 import { startHostTelemetry, workspaceTelemetry } from './telemetry.js';
 import { diskReport, hostSampler } from './sample.js';
@@ -135,7 +135,7 @@ function exitRunner(sock: net.Socket) {
 }
 /** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s. */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
-  r && ((r.exiting = true), retire(r.sock, socketFor(r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {})));
+  r && ((r.exiting = true), retire(r.sock, socketFor(HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {})));
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
 const starting = new Map<string, Promise<Runner>>();
@@ -144,9 +144,9 @@ let stopping = false;
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
-  tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, version: VERSION, pool,
+  tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
-  mint: (spec, id) => api.mint(spec, id), serveTokens: (id, sock, session) => tokens.serveRunner(id, sock, session),
+  mint: (spec, id) => api.mint(spec, id), serveTokens: (id, session) => tokens.serveRunner(HOST_RUN, id, session),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -425,7 +425,8 @@ function housekeeping() {
 
 // ---------------------------------------------------------------- GitHub tokens
 
-const tokens = tokenRelay(link.ask, tm, path.join(HOST_RUN, RUNNER_TOKEN_DIR));
+freshTokenDir(HOST_RUN); // no runner's token socket outlives the host that served it
+const tokens = tokenRelay(link.ask, tm);
 const previews = hostPreviews({ ask: link.ask });
 
 // ---------------------------------------------------------------- start
@@ -433,7 +434,7 @@ const previews = hostPreviews({ ask: link.ask });
 mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
-api.rediscovered(await rediscover((id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+api.rediscovered(await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();

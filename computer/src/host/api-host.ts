@@ -32,12 +32,13 @@ import type {
   ApiSessionStatus, Delivery, GatewayToHost, HostCredentials, HostToGateway, JournalReport, ModelRoute, Person,
   RunnerApi, SessionAccess, SessionSecret, SessionSpec, SessionStatus,
 } from '../protocol.js';
+import { HOST_RUN } from '../protocol.js';
 import { apiError, RECORD_METHOD } from '../api/writer.js';
 import { createdOf } from '../api/created.js';
 import { ensureJournalDir, forgetJournalFile, Journal, journalPath, readJournalFile } from '../api/journal.js';
 import { type HostWriterOptions, HostSessionWriter, scanJournals } from './session-writer.js';
 import { isSessionId } from '../session-ids.js';
-import { RUNNERS_DIR } from '../ipc.js';
+import { runnersDir as runnersDirOf } from '../ipc.js';
 import { log } from '../log.js';
 import { apiBridge, localPort, type WriterPort } from './api-bridge.js';
 import { mirrorAcks } from './mirror-acks.js';
@@ -106,7 +107,7 @@ export const apiStatus = (s: SessionStatus | undefined): ApiSessionStatus =>
 const ownerOf = (p: Person | undefined) => ({ id: p?.userId ?? p?.slackUserId ?? '', name: p?.name ?? p?.gitName ?? '', email: p?.email ?? null });
 
 export function apiHost(d: ApiHostDeps) {
-  const runnersDir = d.runnersDir ?? RUNNERS_DIR;
+  const runnersDir = d.runnersDir ?? runnersDirOf(HOST_RUN);
   const journals = path.join(d.dataDir, 'journals');
   const tokens = runnerApis(path.join(d.runDir, 'runners.json'));
   const acks = mirrorAcks(path.join(d.stateDir, 'mirror-acks.json'));
