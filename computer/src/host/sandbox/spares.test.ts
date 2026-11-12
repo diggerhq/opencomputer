@@ -10,6 +10,7 @@ import { containers } from './containers.js';
 import { type Exec, asRunner } from './podman.js';
 import { sandboxRecords } from './records.js';
 import { type SpareDeps, sandboxSpares } from './spares.js';
+import { threadLocks } from './thread-lock.js';
 
 const owner = { dir: 'pat', gitName: 'Pat', gitEmail: 'pat@example.com' };
 const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mode: 'default', sdkSessionId: 'old', forkPath: '/data/people/pat/sessions/C1-1.1' };
@@ -29,8 +30,9 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
     if (e) throw e;
     return v;
   };
+  const locks = threadLocks();
   const d: SpareDeps = {
-    tm, records, runRoot, version: 'v9',
+    tm, records, locks, runRoot, version: 'v9',
     deleteRun: async (id) => (rmSync(runRoot(id), { recursive: true, force: true }), step(`deleteRun ${id}`, true)),
     containers: {
       create: async (id) => (mkdirSync(runRoot(id), { recursive: true }), writeFileSync(path.join(runRoot(id), 'boot.env'), ''), step(`create ${id}`, 11)),
@@ -58,7 +60,7 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
     dial: o.dial ?? (async () => sock),
     settleMs: o.settleMs ?? 0,
   };
-  return { ...sandboxSpares(d), log, ups, records, runRoot, tm };
+  return { ...sandboxSpares(d), log, ups, records, locks, runRoot, tm };
 }
 
 describe('a spare container', () => {
@@ -117,6 +119,21 @@ describe('a spare container', () => {
     const other = await t.launch();
     await expect(t.bind(other.id, spec, {})).rejects.toThrow(/has a sandbox already/);
     expect(t.records.all().map((r) => r.id)).toEqual([id]);
+  });
+
+  it('is made a thread\'s in the thread\'s turn, the one a start and a prune take: it waits for whoever has it', async () => {
+    const t = rig();
+    const { id } = await t.launch();
+    t.log.length = 0;
+    let end!: () => void;
+    const prune = t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (end = r)));
+    const claim = t.turn(spec, () => t.bind(id, spec, {}));
+    await tick();
+    expect(t.log).toEqual([]);
+    expect(t.records.all()).toEqual([]);
+    end();
+    await prune;
+    expect((await claim).record.id).toBe(id);
   });
 
   it('the record is written before anything of the person is mounted', async () => {
@@ -190,7 +207,7 @@ describe('a spare container', () => {
     const all = containers({ as, runRoot: (id) => path.join(runs, id), dataDir: '/data', root: '/root', image: 'i:1', abi: '1', start: async () => {}, vars: () => ({}), definition: () => undefined,
       serveTokens: () => ({ close() {} }) });
     const t = rig();
-    const spares = sandboxSpares({ tm: t.tm, records: t.records, deleteRun: async () => true, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'] });
+    const spares = sandboxSpares({ tm: t.tm, records: t.records, locks: t.locks, deleteRun: async () => true, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'] });
     const p = spares.launch().catch((e) => e);
     await tick();
     expect(calls).toEqual([]); // provisioning holds the storage: nothing ran

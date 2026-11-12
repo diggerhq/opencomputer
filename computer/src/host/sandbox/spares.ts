@@ -13,6 +13,11 @@
 // - Bound once, to one thread: `bind` takes the id out of the spares before
 //   it writes the record, and refuses a thread that already has a record (a
 //   record hit resumes; it never takes a spare).
+// - A spare is made a thread's in that thread's turn (thread-lock.ts,
+//   `turn`), the one a start and a prune take, from before the record is
+//   looked for until the spare is claimed or discarded: nothing removes the
+//   thread's things under a bind, and the cold start after a failed claim
+//   takes the turn after it.
 // - The record is written before anything of the person is mounted, so a
 //   container that holds a person's files always has a record saying whose.
 // - The journal directory is among the mounts, so the API is minted before
@@ -23,7 +28,9 @@
 //   id (start.ts, the resume).
 // - Every Podman call here goes through containers.ts and so `as.podman`
 //   (podman.ts), which waits for the image lock: no spare is created while
-//   provisioning holds it.
+//   provisioning holds it. None of what makes or binds a spare is
+//   `repeatable` there: a Create, the mount helper or the worktrees' exec
+//   that ran out of time behind the lock fails, and the spare is discarded.
 // - Topping up never competes with a delivery it could wait for: one spare is
 //   made at a time, none while a thread's start is in flight (`during`), and
 //   none until SETTLE_MS after the last one ended, so that new threads coming
@@ -47,11 +54,14 @@ import type { Dimensions } from '../../telemetry/envelope.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
 import type { Containers } from './containers.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 import type { SandboxWorkspace } from './workspace.js';
 
 export interface SpareDeps {
   tm: Telemetry;
   records: Records;
+  /** The threads' turns, shared with the starts and prune. */
+  locks: ThreadLocks;
   containers: Pick<Containers, 'create' | 'up' | 'pid' | 'remove' | 'diagnose'>;
   /** Delete a run directory (sweep.ts); never rejects. */
   deleteRun(id: string): Promise<unknown>;
@@ -210,6 +220,8 @@ export function sandboxSpares(d: SpareDeps) {
     launch,
     bind,
     during,
+    /** `fn` in the thread's turn: a claim, from the look for its record to the spare claimed or discarded. */
+    turn: <T>(spec: SessionSpec, fn: () => Promise<T>): Promise<T> => d.locks.run(spec.owner.dir, spec.key, fn),
     /** True when the thread has a record: it resumes, and never takes a spare. */
     known: (spec: SessionSpec) => !!d.records.find(spec.owner.dir, spec.key),
     /** A spare's connection closed (it exited, was evicted, the host told it to go): Remove. Nothing for a container that is a thread's. */

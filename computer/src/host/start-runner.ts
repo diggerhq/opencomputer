@@ -23,7 +23,9 @@
 // - On a `podman` host a spare is a container (step 10, sandbox/spares.ts). It
 //   is made its thread's (record, mounts, worktrees) before `claim` is sent,
 //   and from then on it is held to that record like any sandboxed runner. One
-//   that reports a session while it is nobody's is stopped.
+//   that reports a session while it is nobody's is stopped, as any container's
+//   runner is: its socket destroyed, its container stopped. The claim is made
+//   in the thread's turn (sandbox/thread-lock.ts), as a start is.
 // - A spare taken and not claimed, for whatever reason, is told to exit and
 //   Removed, and the delivery starts cold under the record's id: a failed
 //   claim loses no delivery.
@@ -163,7 +165,7 @@ export function runnerStarts(d: StartDeps) {
       let refused = false;
       const stopped = (why: string) => {
         log.warn(`runner ${id}: ${why}; stopping it`);
-        if (!o.sandbox) return d.exit(sock);
+        if (!d.sandbox) return d.exit(sock);
         refused = true;
         sock.destroy();
         void d.stopSandbox?.(id).catch((e) => log.warn(`sandbox ${id} not stopped: ${e?.message ?? e}`));
@@ -255,7 +257,9 @@ export function runnerStarts(d: StartDeps) {
 
   /** Work 103: the thread's runner in its container; a new thread and a resume alike. A new thread may take a spare (step 10). */
   async function startSandboxed(sandbox: SandboxStarts, spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
-    const claimed = d.spares && (await claimSandboxed(d.spares, spec, f, first));
+    const { spares } = d;
+    // In the thread's turn, which the cold start below takes after it.
+    const claimed = spares && (await spares.turn(spec, () => claimSandboxed(spares, spec, f, first)));
     if (claimed) return claimed;
     const s = await sandbox.start(spec, f);
     try {

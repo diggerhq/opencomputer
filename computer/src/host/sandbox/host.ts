@@ -122,7 +122,7 @@ export function sandboxHost(d: SandboxHostDeps) {
     // A spare is this host's from before its Create, though its runner connects only seconds later: never swept meanwhile.
     running: (id) => d.running(id) || spares.has(id) });
   /** Step 10: spares are containers too (spares.ts); pool.ts decides how many. */
-  const spares = sandboxSpares({ tm: d.tm, records, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
+  const spares = sandboxSpares({ tm: d.tm, records, locks, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
   const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
     remove: all.remove, deleteRun: sweep.deleteRun });
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));

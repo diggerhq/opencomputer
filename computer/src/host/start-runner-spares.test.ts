@@ -63,6 +63,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<never>; answer?: P
     },
     discard: async (id) => void log.push(`removed ${id}`),
     during: (fn) => fn(),
+    turn: (_s, fn) => fn(),
   } as Partial<SandboxSpares> as SandboxSpares;
   const started: Started = { record, run: `/run/sp/sandbox/${ID}`, sock: cold.sock, session: spec, resumed: true, abandon: async () => void log.push('abandoned') };
   const sandbox: SandboxStarts = { start: async () => (log.push('cold start'), started) };
@@ -82,6 +83,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<never>; answer?: P
     creds: () => undefined, forRunner: () => undefined, routeMode: () => o.route ?? 'managed',
     register: (r: Runner) => void log.push(`registered ${r.key}`), closed: () => {}, exit: (s: net.Socket) => (send(s, { t: 'exit' }), log.push('exit sent'), s.end()),
     message: (r: Runner, m: RunnerToHost) => (m.t === 'reply' ? r.calls.get(m.id)?.(m) : m.t === 'report' ? void (r.report = m.report) : undefined),
+    stopSandbox: async (id: string) => void log.push(`stopped ${id}`),
     toGateway: (m: { t: string }) => void log.push(`gateway ${m.t}`), fillPool: () => void log.push('fill'),
   } as unknown as StartDeps;
   const starts = runnerStarts(d);
@@ -149,7 +151,8 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     t.spare.sock.emit('data', Buffer.from(`${JSON.stringify({ t: 'report', report: { key: 'C9:9.9', status: 'idle' } })}\n`));
     await new Promise((r) => setTimeout(r, 20));
-    expect(t.log[0]).toBe('exit sent');
+    expect(t.log[0]).toBe(`stopped ${ID}`); // not asked to go, which it could ignore
+    expect(t.spare.sock.destroyed).toBe(true);
     expect([...t.pool][0]?.report).toBeUndefined();
   });
 
@@ -159,6 +162,7 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     r.sock.emit('data', Buffer.from(`${JSON.stringify({ t: 'report', report: { key: 'C9:9.9', status: 'idle' } })}\n`));
     await new Promise((x) => setTimeout(x, 20));
-    expect(t.log[0]).toBe('exit sent');
+    expect(t.log[0]).toBe(`stopped ${ID}`);
+    expect(r.sock.destroyed).toBe(true);
   });
 });
