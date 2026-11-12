@@ -14,7 +14,7 @@
 //      that fails (the spares are paused): the delivery is answered by a cold
 //      start under the record's id. Killed, as a crash: its spares keep running.
 //   C  another SP_VERSION and another name for the image: the spares of B are
-//      removed and never claimed (and, where the image lock's file is there
+//      removed at its start and never claimed (and, where the image lock's file is there
 //      and the check may read it, not before the lock it holds for LOCK_S is
 //      free, nor is a spare made), a thread's container is left alone, the new
 //      spare is from the new release and image, and it stays through the idle
@@ -222,8 +222,8 @@ export async function spareChecks(k: SpareKit) {
   const first = await full(POOL, 120_000);
   check(first.length === POOL, `SP_POOL_SIZE=${POOL}: ${first.length} spares parked ${Date.now() - bootAt} ms after the host started (${first.join(', ')})`);
   if (first.length !== POOL) throw new Error('no spares: nothing more can be checked');
-  say(`TIMING a spare: ${started().map((e) => `create ${e.data?.['container.create_ms']} ms, start ${e.data?.['container.start_ms']} ms`).join('; ')}`);
   await until(() => (started().length >= POOL ? true : undefined), 10_000);
+  say(`TIMING a spare: ${started().map((e) => `create ${e.data?.['container.create_ms']} ms, start ${e.data?.['container.start_ms']} ms`).join('; ')}`);
   check(started().length === POOL && started().every((e) => e.data?.launch_mode === 'podman' && typeof e.data.image === 'string'), `pool.spare_started: ${JSON.stringify(started().map((e) => e.data))}`);
 
   // ---- what an unclaimed spare holds
@@ -347,14 +347,19 @@ export async function spareChecks(k: SpareKit) {
     const lock = lockable ? spawn('/usr/bin/flock', ['--exclusive', IMAGE_LOCK, '/usr/bin/sleep', String(LOCK_S)], { stdio: 'ignore' }) : undefined;
     const released = lock && new Promise((r) => lock.once('exit', r));
     if (lock) await sleep(300);
-    const dirs = () => readdirSync(path.join(k.run, 'sandbox')).sort().join();
-    const before = { dirs: dirs(), started: started().length };
-    await boot('C', { SP_POOL_SIZE: '1', SP_VERSION: NEXT_VERSION, SP_IMAGE: NEXT_IMAGE, SP_IDLE_MS: String(k.idleMs) });
+    // This check's own Podman calls wait for the lock as the host's do, so while it is held only files and frames are read.
+    const before = { events: k.events.length };
+    const madeByNext = () => started().filter((e) => e.service_version === NEXT_VERSION).length; // host B's last event may still be on its way
+    // A host takes its containers back before it says hello (sweep.ts `reconcile`), and that waits for the lock too.
+    const up = boot('C', { SP_POOL_SIZE: '1', SP_VERSION: NEXT_VERSION, SP_IMAGE: NEXT_IMAGE, SP_IDLE_MS: String(k.idleMs) });
+    up.catch(() => {});
     if (lock) {
       await sleep((LOCK_S - 2) * 1000);
-      check(lock.exitCode === null && dirs() === before.dirs && started().length === before.started, `the image lock held for ${LOCK_S - 2} s of host C: no spare was made and none removed`);
+      const seen = { held: lock.exitCode === null, hello: k.events.slice(before.events).some((e) => e.t === 'hello'), there: old.filter((id) => existsSync(sandboxRunFor(k.run, id))).length, made: madeByNext() };
+      check(seen.held && !seen.hello && seen.there === old.length && seen.made === 0, `the image lock held for ${LOCK_S - 2} s of host C: it has not said hello, no spare was made and none removed (${JSON.stringify(seen)})`);
       await released;
     } else say(`SKIP the image lock: no ${IMAGE_LOCK} this check may read (as root: install -m 640 -g <the host's group> /dev/null ${IMAGE_LOCK})`);
+    await up;
     const goneAt = Date.now();
     const vols = () => Promise.all(old.map((id) => podman(['volume', 'exists', volumeName(id)]).then(() => true, () => false)));
     const gone = await until(async () => ((await Promise.all(old.map(status))).every((s) => s === 'none') && !(await vols()).some(Boolean) && !old.some((id) => existsSync(sandboxRunFor(k.run, id))) ? true : undefined), 60_000);
