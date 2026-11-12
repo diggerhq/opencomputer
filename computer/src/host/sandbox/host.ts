@@ -10,8 +10,10 @@
 // directories without host git (artifacts.ts), then prunes the threads idle
 // beyond retention (prune.ts).
 //
-// Invariant: a sandbox that is removed, by whichever path, has its named
-// previews unpreviewed at the gateway before its virtual ports are freed.
+// Invariant: a sandbox whose container was removed, by whichever path, has
+// its named previews unpreviewed at the gateway before its virtual ports are
+// freed; a name the gateway did not hear of stays owed (previews.ts). While
+// Podman still has the container (a Remove that failed) it keeps both.
 //
 // Invariant: a `podman` host that cannot sandbox every session does not start.
 // Without a runners' user it would run sessions as itself, without SP_IMAGE

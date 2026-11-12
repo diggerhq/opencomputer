@@ -184,6 +184,10 @@ describe('containers', () => {
     const t = rig(() => '', { removed: (id) => void gone.push(id) });
     await t.c.remove(ID);
     expect(gone).toEqual([ID]);
+    // A container Podman did not remove is still there, with its previews: nothing is said. A home that stayed alone changes nothing.
+    await rig((a) => (a[1] === 'rm' ? fail('', true) : ''), { removed: (id) => void gone.push(`${id} while its container stays`) }).c.remove(ID);
+    await rig((a) => (a[1] === 'volume' ? fail('in use') : ''), { removed: (id) => void gone.push(`${id} home stays`) }).c.remove(ID);
+    expect(gone).toEqual([ID, `${ID} home stays`]);
   });
 
   it('only what changes nothing when made twice is repeatable after a wait for the image lock: stop, rm, the lists; never create, an exec, or what empties a run directory', async () => {

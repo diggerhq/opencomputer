@@ -303,7 +303,7 @@ async function onGateway(m: GatewayToHost) {
       org.welcome(m);
       if (m.definition !== undefined && applyGatewayDefinition(m.definition)) (sandbox?.definitionChanged([...runners.values()].flatMap((r) => (r.sandbox ? r.id : []))), housekeeper?.now());
       if (m.telemetryCredential) telemetry.renew(m.telemetryCredential, m.telemetryUrl);
-      previews.configure(m.preview);
+      (previews.configure(m.preview), previews.connected());
       return housekeeping();
     case 'previews': return previews.configure(m.preview);
     case 'previewed': return previews.answer(m);

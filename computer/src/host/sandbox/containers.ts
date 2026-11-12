@@ -84,7 +84,7 @@ export interface ContainersDeps {
   definition(): string | undefined;
   /** `tokens.serveRunner`. */
   serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
-  /** A sandbox was removed: what else the host keeps by its id goes too (its preview ports, C9). */
+  /** A sandbox's container was removed: what else the host keeps by its id goes too (its preview ports, C9). Not called while Podman still has the container. */
   removed?(id: string): void;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -224,13 +224,13 @@ export function containers(d: ContainersDeps) {
 
   /** Remove the container and its home (30 s each). Never rejects: what stays is logged and the sweep's. True when both went. */
   async function remove(id: string): Promise<boolean> {
-    let ok = true;
-    for (const args of removeArgs(id))
-      await as.podman(args, { timeoutMs: TIMEOUTS.remove, repeatable: true }).catch((e) => {
-        ok = false;
-        log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`);
-      });
-    d.removed?.(id);
+    const [container, ...rest] = removeArgs(id);
+    const rm = (args: string[]) => as.podman(args, { timeoutMs: TIMEOUTS.remove, repeatable: true }).then(() => true, (e) => (log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`), false));
+    const gone = await rm(container);
+    let ok = gone;
+    for (const args of rest) ok = (await rm(args)) && ok;
+    // A container that stayed still has its previews; whoever removes it later says so then.
+    if (gone) d.removed?.(id);
     return ok;
   }
 

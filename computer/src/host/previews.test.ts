@@ -102,12 +102,54 @@ describe('host previews', () => {
     });
 
     it('forget: a removed sandbox\'s name is unpreviewed at the gateway by the host itself, and a gateway that is away fails nothing', async () => {
-      const { p, asked } = rig(named);
+      const { p, asked, ports } = rig(named);
       p.forget('demo', 'C1:1.2');
       expect(asked).toMatchObject([{ t: 'unpreview', from: 'C1:1.2', req: { name: 'demo' } }]);
+      await new Promise((r) => setImmediate(r));
+      expect(ports.owed()).toEqual([]);
       const away = hostPreviews({ ask: () => false, tunnel: tunnel() });
       expect(() => away.forget('demo', '')).not.toThrow();
       await new Promise((r) => setImmediate(r));
+    });
+
+    it('forget with the gateway away: the name is owed, on disk, and asked again each time the gateway is back until it answers', async () => {
+      const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'sp-previews-')), 'previews.json');
+      const asked: HostToGateway[] = [];
+      let there = false;
+      let answer: { result?: { url: string; name: string; port: number }; error?: string } = { result: { url: '', name: 'demo', port: 0 } };
+      const make = () => {
+        const ports = previewPorts(file);
+        const p = hostPreviews({ ask: (m) => there && (asked.push(m), queueMicrotask(() => p.answer({ id: m.id, ...answer })), true), tunnel: tunnel(), sandbox: { ports, run: (id) => `/run/x/sandbox/${id}` } });
+        return { p, ports };
+      };
+      const a = make();
+      a.p.forget('demo', 'C1:1.2');
+      a.p.forget('shop', '');
+      await new Promise((r) => setImmediate(r));
+      expect(a.ports.owed()).toEqual([{ name: 'demo', from: 'C1:1.2' }, { name: 'shop', from: '' }]);
+      // A host restart keeps what is owed; the gateway's welcome sends it.
+      const b = make();
+      expect(b.ports.owed()).toHaveLength(2);
+      there = true;
+      b.p.connected();
+      b.p.connected(); // a second welcome while the first is unanswered asks nothing twice
+      expect(asked).toMatchObject([{ t: 'unpreview', from: 'C1:1.2', req: { name: 'demo' } }, { t: 'unpreview', from: '', req: { name: 'shop' } }]);
+      await new Promise((r) => setImmediate(r));
+      expect(b.ports.owed()).toEqual([]);
+      b.p.connected();
+      expect(asked).toHaveLength(2);
+      // A gateway that heard and said no is not asked again: its answer would be the same.
+      answer = { error: 'no preview named gone' };
+      b.p.forget('gone', '');
+      await new Promise((r) => setImmediate(r));
+      expect(b.ports.owed()).toEqual([]);
+    });
+
+    it('a name that is owed and is given to a preview again is not owed any more: the retry would take it from its new session', async () => {
+      const { p, ports } = rig(named);
+      ports.owe('demo', 'C1:1.2');
+      await p.request('C1:3.4', { t: 'preview', id: 'r1', req: { port: 5173 } }, 'bbbb');
+      expect(ports.owed()).toEqual([]);
     });
 
     it('preview: a name another sandbox holds, or is being given, is refused before the gateway is asked; its own name it may ask for again', async () => {
