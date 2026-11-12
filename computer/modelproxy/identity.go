@@ -13,7 +13,7 @@
 // every connection is the caller singleCaller, which the binder binds.
 //
 // Invariant: resolved once per connection, when it is accepted
-// (http.Server.ConnContext), never per request; an empty caller means "not a
+// (connlimit.go), never per request; an empty caller means "not a
 // session" and is refused at once.
 package main
 

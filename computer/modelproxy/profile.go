@@ -329,10 +329,11 @@ func (p *profile) route(r *http.Request, upgrade bool) *routeSpec {
 }
 
 // requireOK: every required header has a value, or a comma-separated item of
-// one (parameters after `;` ignored), matching its glob.
+// one (parameters after `;` ignored), matching its glob, and reaches the
+// upstream: not one the caller's Connection header has stripped on the way.
 func (rs *routeSpec) requireOK(h http.Header) bool {
 	for _, req := range rs.require {
-		if !headerMatches(h[req.name], req.value.parts[0]) {
+		if !headerMatches(h[req.name], req.value.parts[0]) || connectionLists(h, req.name) {
 			return false
 		}
 	}

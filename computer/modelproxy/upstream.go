@@ -7,7 +7,7 @@
 // Limits: 10 s to connect, 10 s more for the TLS handshake, 600 s for the
 // response headers (a request that does not stream answers only when the
 // model is done); none on a body once its headers are in. How long a request
-// may wait for a connection at all is the proxy's (proxy.go).
+// may queue for one of MaxConnsPerHost connections is the proxy's (proxy.go).
 package main
 
 import (

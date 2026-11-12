@@ -65,7 +65,7 @@ Per route:
 | Field | Meaning |
 |---|---|
 | `to` | The upstream path, when it differs from the route's. |
-| `require` | Header globs the request must match (a whole value, or one item of a comma-separated list, parameters ignored), else 403. |
+| `require` | Header globs the request must match (a whole value, or one item of a comma-separated list, parameters ignored), else 403. A header the request's `Connection` lists does not count: it would not reach the upstream. |
 | `set`, `default` | Headers for this route; `default` only where the request has none. |
 | `name` | Its name in telemetry; by default the path's last element (`messages`, `count_tokens`), `_ws` added for a WS route. |
 | `format` | `responses`: the route streams Responses events, which telemetry reads for the first output and the service tier. A WS route always does. |
@@ -95,13 +95,16 @@ Written by the proxy itself, never the upstream. One body on every route: `{"typ
 | 401 | `unbound` | No bind within `-hold-timeout` for a caller the binder did not name by `synced`. |
 | 401 | `refused` | The binder bound the caller with `mode: "refuse"`; its reason is the text. |
 | 404 | `route` | Not a route of the caller's profile. |
-| 426 | `websocket` | An upgrade that is not a WS route, or `websocket: false`, or the upstream refused the handshake. |
+| 426 | `websocket` | An upgrade that is not a WS route, or `websocket: false`. |
+| 426 | none (`model.request`) | The upstream refused the WebSocket handshake; the event and `observed` carry its status. |
 | 403 | `require` | The route's `require` does not match. |
 | 429 | `concurrency_cap` | The profile's `concurrency`. `Retry-After: 1`. |
-| 503 | `upstream_busy` | No upstream connection within `-hold-timeout`. `Retry-After: 1`. |
-| 502 | none (`model.request`) | The upstream could not be reached. |
+| 503 | `upstream_busy` | Still queued for one of the upstream's connections (`-max-conns-per-host`) after `-hold-timeout`. `Retry-After: 1`. |
+| 502 | none (`model.request`) | The upstream could not be reached (10 s to connect, 10 s for TLS); `observed` carries the error. |
 
-On a request to upgrade, every refusal is a 426 with `Use HTTP: ` before the text, so a client goes on over HTTP. Each refusal is an event; the journal gets one line per caller and reason every 10 s.
+On a request to upgrade, every refusal is a 426 with `Use HTTP: ` before the text, so a client goes on over HTTP. A refusal is reported, as a `model.denied` event and a journal line, at most once per caller and reason every 10 s; `suppressed` counts those since the last report.
+
+Before a request is admitted: its headers may be 32 KB (431 past it), and a caller may have `-max-conns-per-caller` connections open (more are closed as accepted).
 
 ## Control protocol
 
@@ -124,7 +127,7 @@ Rules that hold:
 
 - Every binder → proxy frame is idempotent: the same `bind` twice is answered `bound` twice and changes nothing.
 - A caller serves one `sessionKey` from its bind to its release; a bind naming another is `refused` (`caller_in_use`).
-- A bind applies to the caller's next request. Streams in flight finish on the credential they started with; a WebSocket is closed after the response in flight.
+- A bind applies to the caller's next request. Streams in flight finish on the credential they started with; a WebSocket is closed after the response in flight, or at once if the client starts another on it first.
 - Variables live only in memory. `-bindings-file` keeps caller, session, mode, profile and key, so a restarted proxy holds its callers' requests until the binder re-binds instead of refusing them.
 - Only `release` removes a binding. A closed control connection changes nothing; a binder that connects again gets every binding in its `hello`.
 
@@ -135,13 +138,13 @@ Rules that hold:
 | `name` | When | `data` |
 |---|---|---|
 | `model.request` | A request that reached the upstream, once it ends. | `route`, `stream`, `swapped`, `status`, `key`, `conn_wait_ms`, `conn_reused`, `overhead_us`, `ttfb_ms`; on a `responses` route `first_output_ms`, `service_tier`; over a WebSocket `transport`, `responses`, `closed`, `prewarm` |
-| `model.held` | A request that waited for its caller's bind. | `held_ms`, `released` (`bound`, `timeout`, `cancelled`) |
-| `model.denied` | A refusal. | `reason` (the table above), `route` |
+| `model.held` | A request that waited for its caller's bind. | `held_ms`, `released` (`bound`, `timeout`) |
+| `model.denied` | A refusal, at most one per caller and reason every 10 s. | `reason` (the table above), `route`, `suppressed` |
 | `model.binding` | A bind, a change of credential, a release, a refused bind. | `action` (`bind`, `swap`, `release`, `refused`), `caller`, `mode`, `key`; `code` when refused |
 | `model.pool` | Every minute, per profile with traffic. | `open_conns`, `idle_conns`, `active_streams`, `idle_pool_miss`, `dials`; on the first profile also `bindings`, `dropped_messages` |
 | `model.proxy_started` | At start. | `version`, `bindings` |
 
-`outcome` is `completed`, `failed`, `cancelled` or `timed_out`; `error_type` is `provider_error`, `provider_rate_limited`, `timeout`, `socket`, `websocket`, `concurrency` or `unknown`.
+`outcome` is `completed`, `failed`, `cancelled` or `timed_out`; `error_type` is `provider_error`, `provider_rate_limited`, `timeout`, `socket`, `websocket` or `concurrency`.
 
 ## Who is calling
 
@@ -160,9 +163,10 @@ Rules that hold:
 | `-placeholder` | `ssh-placeholder` | the only credential a caller may send |
 | `-identity` | `cgroup` | `cgroup` or `single` |
 | `-bindings-file` | `/run/oc-modelproxy/profile-bindings.json` | persisted bindings, without variables (empty: off) |
-| `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for an upstream connection |
+| `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for a free upstream connection |
 | `-drain-timeout` | `630s` | on SIGTERM, how long streams in flight may finish |
 | `-max-inflight-per-caller` | `32` | concurrent requests per caller, held ones included (0: no limit) |
+| `-max-conns-per-caller` | `128` | connections a caller may have open on the API socket (0: no limit) |
 | `-ws-idle-timeout` | `5m` | close a WebSocket idle this long between responses (0: never) |
 | `-max-idle-conns-per-host`, `-max-conns-per-host`, `-idle-conn-timeout` | `96`, `256`, `50s` | upstream connection pool, per profile |
 | `-debug`, `-version` | | |
@@ -199,4 +203,4 @@ curl --unix-socket /tmp/mp/api.sock http://localhost/v1/messages \
 
 ## Files
 
-One concept per file, each with a header comment that says what it is and what must stay true: `profile.go` and `template.go` (profiles), `bindings.go` and `lease.go` (the table, and a request's hold on it), `proxy.go` (a request's stages), `refuse.go` (refusals), `outbound.go` (the rewrite), `observed.go` and `request.go` (what the binder hears and asks), `control.go` and `frames.go` (the control protocol), `websocket.go`, `wsframe.go`, `wsmessages.go` (WebSocket tunnels), `responses.go` and `telemetry.go` (events), `upstream.go` (connections), `identity.go`, `inflight.go`, `persist.go`, `activation.go`.
+One concept per file, each with a header comment that says what it is and what must stay true: `profile.go` and `template.go` (profiles), `bindings.go` and `lease.go` (the table, and a request's hold on it), `proxy.go` (a request's stages), `refuse.go` (refusals), `outbound.go` (the rewrite), `observed.go` and `request.go` (what the binder hears and asks), `control.go` and `frames.go` (the control protocol), `websocket.go`, `wsframe.go`, `wsmessages.go` (WebSocket tunnels), `responses.go` and `telemetry.go` (events), `upstream.go` (connections), `identity.go` and `connlimit.go` (who is calling), `inflight.go`, `persist.go`, `activation.go`.

@@ -41,6 +41,7 @@ type config struct {
 	bindingsFile             string
 	hold, drain              time.Duration
 	maxInflightPerCaller     int
+	maxConnsPerCaller        int
 	wsIdle                   time.Duration
 	maxIdlePerHost           int
 	maxConnsPerHost          int
@@ -55,6 +56,10 @@ type config struct {
 // stream latency (p99 overhead about 1.5 ms at 64 streams, versus 0.15 ms
 // at 400; see BenchmarkProxyOverhead). 400 costs a few tens of MiB.
 const defaultGCPercent = 400
+
+// maxHeaderBytes bounds a request's headers; with -max-conns-per-caller it
+// bounds what a caller can make the proxy hold before a request is admitted.
+const maxHeaderBytes = 32 << 10
 
 // setGCPercent applies defaultGCPercent unless GOGC is set in the environment.
 func setGCPercent() {
@@ -117,9 +122,10 @@ func parseFlags(args []string) (config, runMode, error) {
 	fs.StringVar(&cfg.placeholder, "placeholder", "ssh-placeholder", "the only credential a caller may send: `Authorization: Bearer <it>` or `x-api-key: <it>`")
 	fs.StringVar(&cfg.identity, "identity", "cgroup", "how a caller is named: cgroup (<id> of its sp-runner-<id>.service unit) or single (every caller is "+singleCaller+")")
 	fs.StringVar(&cfg.bindingsFile, "bindings-file", "/run/oc-modelproxy/profile-bindings.json", "persisted bindings, without their variables (empty: do not persist)")
-	fs.DurationVar(&cfg.hold, "hold-timeout", 10*time.Second, "how long a request waits for its caller's credential, and then for an upstream connection")
+	fs.DurationVar(&cfg.hold, "hold-timeout", 10*time.Second, "how long a request waits for its caller's credential, and then for a free upstream connection")
 	fs.DurationVar(&cfg.drain, "drain-timeout", 630*time.Second, "on SIGTERM, how long in-flight streams may finish")
 	fs.IntVar(&cfg.maxInflightPerCaller, "max-inflight-per-caller", 32, "concurrent requests (held ones included) one caller may have; more get 429 (0: no limit)")
+	fs.IntVar(&cfg.maxConnsPerCaller, "max-conns-per-caller", 128, "connections one caller may have open on the API socket; more are closed as accepted (0: no limit)")
 	fs.DurationVar(&cfg.wsIdle, "ws-idle-timeout", 5*time.Minute, "close a WebSocket idle this long between responses; it holds a caller's in-flight slot while open (0: never)")
 	fs.IntVar(&cfg.maxIdlePerHost, "max-idle-conns-per-host", 96, "idle upstream connections kept")
 	fs.IntVar(&cfg.maxConnsPerHost, "max-conns-per-host", 256, "upstream connection ceiling; requests beyond it queue")
@@ -197,6 +203,7 @@ type server struct {
 	proxy    *Proxy
 	persist  *persister
 	http     *http.Server
+	resolve  Resolver
 	ctlL     net.Listener
 	stop     chan struct{}
 	done     chan struct{}
@@ -212,7 +219,10 @@ func newServer(cfg config, ps *profiles, resolve Resolver) (*server, error) {
 	if cfg.placeholder == "" || !validHeaderValue(cfg.placeholder) {
 		return nil, fmt.Errorf("-placeholder must be a header value")
 	}
-	s := &server{cfg: cfg, profiles: ps, stop: make(chan struct{}), done: make(chan struct{})}
+	if cfg.hold <= 0 {
+		return nil, fmt.Errorf("-hold-timeout must be positive")
+	}
+	s := &server{cfg: cfg, profiles: ps, resolve: resolve, stop: make(chan struct{}), done: make(chan struct{})}
 	s.control = NewControl(version, cfg.placeholder, ps)
 	s.bindings = NewBindings(ps, s.control, nil)
 	s.persist = newPersister(cfg.bindingsFile, s.bindings.Snapshot)
@@ -231,8 +241,9 @@ func newServer(cfg config, ps *profiles, resolve Resolver) (*server, error) {
 	}
 	s.http = &http.Server{
 		Handler:           s.proxy,
-		ConnContext:       ConnContext(resolve),
+		ConnContext:       connCaller,
 		ReadHeaderTimeout: 30 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
 		IdleTimeout:       5 * time.Minute,
 		ErrorLog:          discardLog,
 	}
@@ -244,7 +255,8 @@ func (s *server) start(apiL, ctlL net.Listener) {
 	s.ctlL = ctlL
 	go s.persist.run()
 	go func() {
-		if err := s.http.Serve(apiL); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		l := &callerListener{Listener: apiL, resolve: s.resolve, conns: newInflight(s.cfg.maxConnsPerCaller)}
+		if err := s.http.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logError("api socket", "error", err.Error())
 		}
 	}()

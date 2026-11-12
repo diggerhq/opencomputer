@@ -22,20 +22,22 @@
 //   - `observed` (observed.go): the handshake's headers, then each
 //     response.completed as an HTTP 200 and each `error` event's status and
 //     headers as an HTTP error's;
-//   - when to close: with no response in flight, once the lease is no longer
-//     current (a rebind, refuse or release applies to new requests at
-//     once, and the handshake carried the old variables), or after
-//     -ws-idle-timeout, or once the proxy is draining (http.Server.Shutdown
-//     does not wait for a hijacked connection; shutdown waits for tunnels
-//     itself, up to -drain-timeout). The client reconnects on its next
-//     request and sends it whole.
+//   - when to close: with no response in flight, once the tunnel is stale
+//     (the lease is no longer current: a rebind, refuse or release applies
+//     to new requests at once, and the handshake carried the old variables;
+//     or the proxy is draining: http.Server.Shutdown does not wait for a
+//     hijacked connection, so shutdown waits for tunnels itself, up to
+//     -drain-timeout), or after -ws-idle-timeout. And at once when a
+//     response.create arrives on a stale tunnel, before it is sent. The
+//     client reconnects on its next request and sends it whole.
 //
 // Invariants: a tunnel is one request for the caller's cap and the lease,
 // held for its whole life, and each response on it one for the profile's
 // concurrency cap (the handshake is refused at the cap; a response.create on
 // an open tunnel cannot be, so it counts past it); frames are never altered,
 // held back or read ahead of either side; the proxy never cuts a response in
-// flight (unless it has run wsStuck without an end this reader knows);
+// flight (unless it has run wsStuck without an end this reader knows, or the
+// client sends another on a stale tunnel while it runs);
 // nothing from a frame is kept but the facts above.
 package main
 
@@ -142,6 +144,7 @@ func (t *wsTunnel) Close() error {
 func (t *wsTunnel) watch() {
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
+	drain := t.p.wsDrain
 	for {
 		changed := t.p.bindings.changes()
 		why, wait := t.closeReason()
@@ -154,7 +157,8 @@ func (t *wsTunnel) watch() {
 		case <-t.done:
 			return
 		case <-changed:
-		case <-t.p.wsDrain:
+		case <-drain:
+			drain = nil // closed for good: wake for it once
 		case <-t.kick:
 		case <-timer.C:
 		}
@@ -173,32 +177,54 @@ func (t *wsTunnel) closeReason() (string, time.Duration) {
 			return "", wsStuck - age
 		}
 	}
-	switch {
-	case t.ended:
+	if t.ended {
 		return "", time.Hour
-	case t.p.draining():
-		t.closed = "drain"
-	case !t.st.lease.current():
-		t.closed = "rebind"
-	case t.p.wsIdle <= 0:
-		return "", time.Hour
-	default:
-		left := t.p.wsIdle - now.Sub(time.Unix(0, t.lastByte.Load()))
-		if left > 0 {
-			return "", left
-		}
-		t.closed = "idle"
 	}
+	if t.closed = t.stale(); t.closed != "" {
+		return t.closed, 0
+	}
+	if t.p.wsIdle <= 0 {
+		return "", time.Hour
+	}
+	if left := t.p.wsIdle - now.Sub(time.Unix(0, t.lastByte.Load())); left > 0 {
+		return "", left
+	}
+	t.closed = "idle"
 	return t.closed, 0
 }
 
+// stale: why the tunnel may start no further response: the proxy is
+// draining, or the lease is no longer current.
+func (t *wsTunnel) stale() string {
+	switch {
+	case t.p.draining():
+		return "drain"
+	case !t.st.lease.current():
+		return "rebind"
+	}
+	return ""
+}
+
+// created counts a response.create, read before its last bytes go upstream
+// (Write). On a stale tunnel it closes the tunnel instead, so that write
+// fails and no response starts on a credential the caller no longer has.
 func (t *wsTunnel) created(prewarm bool) {
 	now := t.p.now()
+	why := t.stale()
 	t.mu.Lock()
-	t.queue = append(t.queue, &wsResponse{start: now, prewarm: prewarm})
-	t.responses++
+	switch {
+	case t.ended:
+	case why != "":
+		t.closed = why
+	default:
+		t.queue = append(t.queue, &wsResponse{start: now, prewarm: prewarm})
+		t.responses++
+		t.st.prof.perKey.add(t.st.concKey) // under mu: end gives back exactly what is queued
+	}
 	t.mu.Unlock()
-	t.st.prof.perKey.add(t.st.concKey)
+	if why != "" {
+		t.Close()
+	}
 }
 
 // event is one upstream event: typ is its `type`, tier the service tier it
