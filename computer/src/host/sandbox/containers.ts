@@ -21,6 +21,9 @@
 //   ended between two looks.
 // - `stop` resolves only for a container that is down: one that outlived
 //   Podman's stop and the kill of its cgroup rejects.
+// - Stop, Remove and the lists are `repeatable` behind the image lock
+//   (podman.ts): each leaves the same behind made twice. Create, an exec, Pid
+//   (polled anyway) and what empties a run directory are made once.
 // - A container is this host's only when it is mounted on this host's run
 //   directory for its id (Create mounts it at its own path). The runners'
 //   user's Podman is one per computer, and another host of the computer (other
@@ -211,7 +214,7 @@ export function containers(d: ContainersDeps) {
    */
   async function stop(id: string, seconds = 10): Promise<void> {
     try {
-      await as.podman(stopArgs(id, seconds), { timeoutMs: TIMEOUTS.stop });
+      await as.podman(stopArgs(id, seconds), { timeoutMs: TIMEOUTS.stop, repeatable: true });
     } catch (e) {
       if (absent(e)) return;
       log.warn(`podman stop ${containerName(id)} failed (${(e as Error)?.message ?? e}); killing its cgroup`);
@@ -223,7 +226,7 @@ export function containers(d: ContainersDeps) {
   async function remove(id: string): Promise<boolean> {
     let ok = true;
     for (const args of removeArgs(id))
-      await as.podman(args, { timeoutMs: TIMEOUTS.remove }).catch((e) => {
+      await as.podman(args, { timeoutMs: TIMEOUTS.remove, repeatable: true }).catch((e) => {
         ok = false;
         log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`);
       });
@@ -234,7 +237,7 @@ export function containers(d: ContainersDeps) {
   /** Remove the container alone and create it again from the current image; the home volume stays. Resolves with the time taken. */
   async function recreate(id: string): Promise<number> {
     const t0 = Date.now();
-    await as.podman(recreateRemoveArgs(id), { timeoutMs: TIMEOUTS.remove });
+    await as.podman(recreateRemoveArgs(id), { timeoutMs: TIMEOUTS.remove, repeatable: true });
     await create(id);
     return Date.now() - t0;
   }
@@ -242,22 +245,23 @@ export function containers(d: ContainersDeps) {
   /** Every sandbox container and home volume Podman has (10 s each). */
   async function inventory(): Promise<Inventory> {
     const args = inventoryArgs();
-    const [cs, vs] = await Promise.all([as.podman(args.containers, { timeoutMs: TIMEOUTS.inventory }), as.podman(args.volumes, { timeoutMs: TIMEOUTS.inventory })]);
-    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: string[] }[] => {
+    const list = { timeoutMs: TIMEOUTS.inventory, repeatable: true };
+    const [cs, vs] = await Promise.all([as.podman(args.containers, list), as.podman(args.volumes, list)]);
+    const parse = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: string[] }[] => {
       const v = JSON.parse(text.trim() || '[]');
       if (!Array.isArray(v)) throw new Error('podman: not a list');
       return v;
     };
     const foreign: string[] = [];
     return {
-      containers: list(cs).flatMap((c) => {
+      containers: parse(cs).flatMap((c) => {
         const id = c?.Labels?.['sp.runner'];
         // The label and the name agree for every container the host made; anything else is not ours to touch.
         if (typeof id !== 'string' || !c.Names?.includes?.(containerName(id))) return [];
         if (!Array.isArray(c.Mounts) || !c.Mounts.includes(d.runRoot(id))) return (foreign.push(id), []);
         return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000 }];
       }),
-      volumes: list(vs).flatMap((v) => {
+      volumes: parse(vs).flatMap((v) => {
         const m = /^sp-home-(.+)$/.exec(String(v?.Name ?? ''));
         return m ? [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0 }] : [];
       }),

@@ -103,7 +103,7 @@ export function sandboxPrune(d: PruneDeps) {
       // A start had the turn since git was asked (it wrote the record), or the thread runs: what git said is old.
       if (inUse(r)) return undefined;
       if (why) {
-        await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS });
+        await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS, repeatable: true });
         return why;
       }
       if (!(await d.remove(r.id))) throw new Error('its container or its home was not removed');

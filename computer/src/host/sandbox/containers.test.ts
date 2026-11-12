@@ -12,10 +12,10 @@ const record = { id: ID, person: 'p', key: 'C1:1.1', createdAt: '', usedAt: '' }
 /** A fake runners' user: every command is recorded, `answer` says what it prints or throws. */
 function rig(answer: (argv: string[]) => string | Error = () => '', over: Partial<ContainersDeps> = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'containers-'));
-  const calls: { argv: string[]; timeoutMs: number }[] = [];
+  const calls: { argv: string[]; timeoutMs: number; repeatable?: boolean }[] = [];
   const log: string[] = [];
-  const run = async (argv: string[], o: { timeoutMs: number }) => {
-    calls.push({ argv, timeoutMs: o.timeoutMs });
+  const run = async (argv: string[], o: { timeoutMs: number; repeatable?: boolean }) => {
+    calls.push({ argv, timeoutMs: o.timeoutMs, ...(o.repeatable && { repeatable: true }) });
     log.push(argv.slice(0, 3).join(' '));
     const a = answer(argv);
     if (a instanceof Error) throw a;
@@ -129,7 +129,7 @@ describe('containers', () => {
   it('stop: 15 s for Podman; a container Podman does not know is down', async () => {
     const t = rig();
     await t.c.stop(ID);
-    expect(t.calls).toEqual([{ argv: ['podman', 'stop', '--time', '10', `sp-runner-${ID}`], timeoutMs: TIMEOUTS.stop }]);
+    expect(t.calls).toEqual([{ argv: ['podman', 'stop', '--time', '10', `sp-runner-${ID}`], timeoutMs: TIMEOUTS.stop, repeatable: true }]);
     const gone = rig(() => fail('Error: no container with name or ID "sp-runner-x" found: no such container'));
     await gone.c.stop(ID);
     expect(gone.calls).toHaveLength(1);
@@ -184,6 +184,20 @@ describe('containers', () => {
     const t = rig(() => '', { removed: (id) => void gone.push(id) });
     await t.c.remove(ID);
     expect(gone).toEqual([ID]);
+  });
+
+  it('only what changes nothing when made twice is repeatable after a wait for the image lock: stop, rm, the lists; never create, an exec, or what empties a run directory', async () => {
+    const t = rig((a) => (a[1] === 'inspect' ? '7\n' : a[1] === 'ps' || a[1] === 'volume' ? '[]' : ''));
+    await t.c.create(ID);
+    await t.c.up(ID, rs, record);
+    await t.c.execIn(ID, ['/bin/true'], { dir: '/', timeoutMs: 1000 });
+    await t.c.stop(ID);
+    await t.c.inventory();
+    await t.c.recreate(ID);
+    await t.c.remove(ID);
+    const verbs = (repeatable: boolean) => [...new Set(t.calls.filter((x) => x.argv[0] === 'podman' && !!x.repeatable === repeatable).map((x) => x.argv[1]))].sort();
+    expect(verbs(true)).toEqual(['ps', 'rm', 'stop', 'volume']);
+    expect(verbs(false)).toEqual(['create', 'exec', 'inspect', 'unshare']);
   });
 
   it('recreate: the container alone goes; its home stays for the new one', async () => {

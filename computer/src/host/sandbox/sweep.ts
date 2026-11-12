@@ -182,7 +182,7 @@ export function sandboxSweep(d: SweepDeps) {
       // no figure
     }
     try {
-      const rows = JSON.parse(await as.podman(['system', 'df', '--format', 'json'], { timeoutMs: TIMEOUTS.inventory })) as { RawSize?: number }[];
+      const rows = JSON.parse(await as.podman(['system', 'df', '--format', 'json'], { timeoutMs: TIMEOUTS.inventory, repeatable: true })) as { RawSize?: number }[];
       h.podman_bytes = rows.reduce((sum, r) => sum + (Number(r?.RawSize) || 0), 0);
     } catch (e) {
       log.warn(`sandbox: podman system df: ${msg(e)}`);

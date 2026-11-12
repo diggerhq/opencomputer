@@ -15,9 +15,15 @@
 //   user cannot enter, and the host's own may be one.
 // - A call that fails or runs out of time rejects with PodmanError, which
 //   carries the exit code and stderr. Nothing is retried here but a Podman
-//   call that ran out of time while provisioning holds the image lock: it was
-//   waiting inside Podman for the storage, so it is made once more after the
-//   wait (image-lock.ts).
+//   call its caller called `repeatable` that ran out of time while
+//   provisioning holds the image lock: it was waiting inside Podman for the
+//   storage, so it is made once more after the wait (image-lock.ts).
+// - `repeatable` is said where the call is made, never worked out from its
+//   words, and only of a call that leaves the same behind when it ran twice,
+//   or half and then whole: a stop, an `rm --force`, a list. Never of a
+//   script's `exec`, a `create`, the mount helper or an `unshare`: those may
+//   have got as far as they did, and a timeout while the lock is held fails
+//   them as any timeout does.
 // - `timedOut` is true only when the caller's time ran out: never for output
 //   past the limit or a command something else killed.
 // - A call that timed out rejects once its command is gone (SIGTERM, SIGKILL
@@ -50,6 +56,8 @@ export interface RunOptions {
   stdin?: string | Buffer;
   /** Variables for the command, added to the sudo prefix. */
   env?: Record<string, string>;
+  /** `podman()` only: making this call twice leaves what making it once does, so one that ran out of time behind the image lock is made once more. Absent: never. */
+  repeatable?: boolean;
 }
 
 /** `execFile` as this file uses it; tests pass their own. No `timeout` of its: its signal would stop at sudo. */
@@ -114,7 +122,7 @@ export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<voi
   return {
     run,
     podman: (args, o) => podman(args, o).catch(async (e) => {
-      if (!(e instanceof PodmanError && e.timedOut) || !(await busy())) throw e;
+      if (!o.repeatable || !(e instanceof PodmanError && e.timedOut) || !(await busy())) throw e;
       log.info(`podman ${words(args)}: ran out of time while provisioning holds the storage; once more after it`);
       return podman(args, o);
     }),

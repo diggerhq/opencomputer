@@ -90,7 +90,7 @@ describe('asRunner with the image lock', () => {
     expect(started).toEqual(['other', 'podman']);
   });
 
-  it('a Podman call that ran out of time while provisioning holds the lock is made once more, after the wait; never otherwise', async () => {
+  it('a Podman call that ran out of time while provisioning holds the lock is made once more, after the wait, only when its caller called it repeatable', async () => {
     const rig = (busy: boolean, fail: (n: number) => Error | null) => {
       const log: string[] = [];
       let n = 0;
@@ -104,7 +104,7 @@ describe('asRunner with the image lock', () => {
       return { log, as: asRunner(['/usr/bin/sudo'], exec, async () => void log.push('settled'), async () => (log.push('busy?'), busy)) };
     };
     const failed = rig(true, () => Object.assign(new Error('exit 125'), { code: 125 }));
-    await expect(failed.as.podman(['ps'], { timeoutMs: 1000 })).rejects.toThrow(PodmanError);
+    await expect(failed.as.podman(['ps'], { timeoutMs: 1000, repeatable: true })).rejects.toThrow(PodmanError);
     expect(failed.log).toEqual(['settled', 'podman']);
     // Timing out is the host's own timer: 20 ms, and a command that ends only when it is killed.
     const slow = (busy: boolean) => {
@@ -118,10 +118,16 @@ describe('asRunner with the image lock', () => {
       return { log, as: asRunner(['/usr/bin/sudo'], exec, async () => void log.push('settled'), async () => (log.push('busy?'), busy)) };
     };
     const held = slow(true);
-    expect(await held.as.podman(['ps'], { timeoutMs: 20 })).toBe('ok');
+    expect(await held.as.podman(['ps'], { timeoutMs: 20, repeatable: true })).toBe('ok');
     expect(held.log).toEqual(['settled', 'podman', 'busy?', 'settled', 'podman']);
     const free = slow(false);
-    await expect(free.as.podman(['ps'], { timeoutMs: 20 })).rejects.toMatchObject({ timedOut: true });
+    await expect(free.as.podman(['ps'], { timeoutMs: 20, repeatable: true })).rejects.toMatchObject({ timedOut: true });
     expect(free.log).toEqual(['settled', 'podman', 'busy?']);
+    // Whatever the verb: a call nobody called repeatable (a script's exec, a create, a mount) timed out, lock or no lock, and ran once.
+    for (const args of [['exec', 'sp-runner-x', '/bin/sh', 'ws-add.sh'], ['create', '--name', 'x'], ['unshare', 'rm', '-rf', '--', '/x'], ['ps']]) {
+      const once = slow(true);
+      await expect(once.as.podman(args, { timeoutMs: 20 })).rejects.toMatchObject({ timedOut: true });
+      expect(once.log).toEqual(['settled', 'podman']);
+    }
   });
 });

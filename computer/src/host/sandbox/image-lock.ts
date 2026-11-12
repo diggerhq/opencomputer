@@ -26,7 +26,8 @@
 //   within the one bound.
 // - A call already running when provisioning takes the lock waits inside
 //   Podman and may run out of its time: podman.ts asks `imageBusy` then, and
-//   tries the call once more after the wait.
+//   makes the call once more after the wait when its caller called it
+//   `repeatable`; any other fails as a timeout does.
 // - Not covered: what the host spawns outside `podman()` (a terminal's
 //   `podman exec`, the `/files` scripts).
 
