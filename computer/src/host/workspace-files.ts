@@ -25,6 +25,11 @@
 //   relied on, since the script may outlive the process the host started. A
 //   name that exists and was not uploaded is `path_exists`; uploads in one
 //   session are serialized.
+// - A script is ended before it is done (its time is up, it printed too
+//   much, its upload failed, the reader of its download went away) with
+//   SIGTERM, never SIGKILL: the place decides what that ends (on a `podman`
+//   host timeout(1) under sudo, and the limit inside the container or of the
+//   helper, sandbox/scripts.ts `filesPlace`).
 // - Which top-level names were uploaded, when and by whom, is kept in
 //   `<stateDir>/<sessionId>.json` (0600, the host's); losing it fails safe
 //   (a re-push of that name is refused until it is removed).
@@ -111,6 +116,8 @@ export interface WorkspaceFilesOptions {
   /** Where upload records live; should survive a reboot (HOST_DATA/state/uploads). Default `<dir>/state`. */
   stateDir?: string;
   user?: RunnerUser;
+  /** How long a script that answers with a few lines may take (30 s); tests pass less. */
+  scriptWaitMs?: number;
   /** Where a workspace's scripts run. Default: on this machine, as `user`, at the workspace's own path. */
   place?(ws: Workspace): Place;
 }
@@ -162,6 +169,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   const stateDir = o.stateDir ?? path.join(o.dir, 'state');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const chains = new Map<string, Promise<unknown>>();
+  const waitMs = o.scriptWaitMs ?? SCRIPT_WAIT_MS;
 
   const onHost = (ws: Workspace): Place => ({
     root: ws.forkPath,
@@ -198,14 +206,14 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   /** Run `script` to its end: its exit code and what it printed. Rejects when it cannot start, runs too long or prints too much. */
   function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
     return new Promise((resolve, reject) => {
-      const p = start(ws, script, args, { ...mode, seconds: SCRIPT_WAIT_MS / 1000 });
+      const p = start(ws, script, args, { ...mode, seconds: waitMs / 1000 });
       const out: Buffer[] = [];
       let bytes = 0;
       let err = '';
-      const timer = setTimeout(() => (p.kill('SIGKILL'), reject(new Error(`workspace script ran over ${SCRIPT_WAIT_MS} ms`))), SCRIPT_WAIT_MS);
+      const timer = setTimeout(() => (end(p), reject(new Error(`workspace script ran over ${waitMs} ms`))), waitMs);
       p.stdout?.on('data', (d: Buffer) => {
         out.push(d);
-        if ((bytes += d.length) > OUTPUT_MAX) p.kill('SIGKILL'), reject(new Error('workspace script printed too much'));
+        if ((bytes += d.length) > OUTPUT_MAX) end(p), reject(new Error('workspace script printed too much'));
       });
       p.stderr?.on('data', (d: Buffer) => (err = (err + d.toString('utf8')).slice(-2000)));
       p.once('error', (e) => (clearTimeout(timer), reject(e)));
@@ -231,7 +239,10 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
       p.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(err.trim() || `workspace script exited ${code}`))));
     });
     done.catch(() => {});
-    return { stream: p.stdout as Readable, done };
+    // Whoever read it went away before its end (the request was cut): nobody is left to end the script by closing it.
+    const stream = p.stdout as Readable;
+    stream.once('close', () => stream.readableEnded || end(p));
+    return { stream, done };
   };
 
   const statePath = (sessionId: string) => path.join(stateDir, `${sessionId}.json`);

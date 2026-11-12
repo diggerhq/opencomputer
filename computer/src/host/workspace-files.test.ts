@@ -199,6 +199,85 @@ describe('an upload that is cut (work 103, C13)', () => {
   });
 });
 
+describe('a script that is ended before it is done (work 103, "Timeouts and failures")', () => {
+  /**
+   * A place as a `podman` host's is: the script under timeout(1), under a stand-in for sudo that does with signals what
+   * sudo does (SIGTERM goes on to the command, SIGKILL ends sudo alone). `slow` are commands that never finish there.
+   * `alive()`: something of the script still runs (timeout(1) leads its process group).
+   */
+  function underSudo(slow: string[], o: { scriptWaitMs?: number } = {}) {
+    const bin = path.join(root, 'stuck-bin');
+    mkdirSync(bin);
+    for (const name of slow) writeFileSync(path.join(bin, name), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    const pidFile = path.join(root, 'pid');
+    const sudo = path.join(root, 'sudo');
+    writeFileSync(sudo, `#!/bin/sh\n"$@" <&0 &\npid=$!\ntrap 'kill -TERM "$pid" 2>/dev/null' TERM\necho "$pid" > ${pidFile}\nwhile :; do wait "$pid"; rc=$?; kill -0 "$pid" 2>/dev/null || exit "$rc"; done\n`, { mode: 0o755 });
+    const f = createWorkspaceFiles({
+      dir: path.join(root, 'scratch-sudo'),
+      ...o,
+      place: (w) => ({
+        root: w.forkPath,
+        spawn: (argv) => spawn(sudo, ['/usr/bin/timeout', '--kill-after=2', '60', ...argv], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }),
+      }),
+    });
+    const group = () => -Number(readFileSync(pidFile, 'utf8'));
+    const alive = () => {
+      try {
+        return process.kill(group(), 0);
+      } catch {
+        return false;
+      }
+    };
+    const gone = async () => {
+      for (const end = Date.now() + 1500; alive() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+      if (!alive()) return true;
+      process.kill(group(), 'SIGKILL');
+      return false;
+    };
+    return { f, gone, alive };
+  }
+
+  it('one that runs over its time is ended with all it started', async () => {
+    const t = underSudo(['find'], { scriptWaitMs: 200 });
+    await expect(t.f.list(ws, { path: 'repo' })).rejects.toThrow('ran over 200 ms');
+    expect(await t.gone()).toBe(true);
+  });
+
+  it('a download whose reader goes away is ended', async () => {
+    const t = underSudo(['cat']);
+    const file = await t.f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    const r = file.read();
+    await new Promise((res) => setTimeout(res, 100));
+    expect(t.alive()).toBe(true);
+    r.stream.destroy();
+    await expect(r.done).rejects.toThrow();
+    expect(await t.gone()).toBe(true);
+  });
+
+  it('a download read to its end is not', async () => {
+    const t = underSudo([]);
+    const file = await t.f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    const r = file.read();
+    expect((await collect(r.stream)).toString()).toBe('# hi\n');
+    await r.done;
+  });
+
+  it('an upload whose body stops is ended, and leaves no directory', async () => {
+    const t = underSudo(['tar']);
+    const cut = new Readable({ read() {} });
+    cut.push(Buffer.alloc(512));
+    const up = t.f.upload(ws, 'half', 'tar', actor, cut);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'))).toHaveLength(1);
+    cut.destroy(new Error('the request ended'));
+    expect(await up).toMatchObject({ error: { code: 'invalid_archive' } });
+    expect(await t.gone()).toBe(true);
+    expect(readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'))).toEqual([]);
+  });
+});
+
 describe('where the scripts run (work 103, C13)', () => {
   /** A place whose root is the fork under another name: what a container's /workspace is to the host's path. */
   function elsewhere() {
