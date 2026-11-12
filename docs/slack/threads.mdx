@@ -1,0 +1,53 @@
+---
+title: "Threads"
+description: "Each Slack thread is one session; its runner exits after 2 hours idle and resumes on the next message"
+---
+
+<Frame>
+  <img src="/images/slack/turn-finished.png" alt="A finished turn: two step cards that ended as Ran N steps, the text between them, and the footer with model, duration and context size" />
+</Frame>
+
+## Starting a session
+
+| Where | What starts a session | Later messages |
+| --- | --- | --- |
+| Channel | A message that mentions `@computer`. Its thread is the session. | Every reply is delivered; the agent answers the ones meant for it (see [Shared threads](/slack/shared-threads)). |
+| Existing thread | A reply that mentions `@computer`. The session also receives the replies above it. | Same. |
+| Direct message | Any message. No mention needed. | Every message in that DM thread is for the agent. |
+
+Only people on the [people list](/self-hosting/configure) get a session; anyone else gets an ephemeral "not enabled for you yet" reply. One-machine mode has no people list: anyone who can reach `@computer` can start a session.
+
+Edited messages and messages from bots are ignored.
+
+## Turn output
+
+1. **Status.** Slack shows "is thinking…" on the thread, or an :eyes: reaction if the status call fails.
+2. **Step cards.** Each tool call is a step with its arguments and an output tail. Consecutive steps share one card, which ends as "Ran N steps" with a count of failures.
+3. **Text.** The agent's text streams into the same message between the cards.
+4. **Footer.** Model, reasoning effort (once set with `!effort`), permission mode (when not `bypassPermissions`), duration and context size. A stopped turn's footer starts with the reason. Cost is in `!status`.
+
+<Frame>
+  <img src="/images/slack/turn-running.png" alt="A running turn: a finished step card, streamed text, a live step with its timer, and the thinking status under the composer" />
+</Frame>
+
+A long reply continues in a new message: Slack closes a stream after about 10 minutes and caps a message's length. A turn waiting on an answer does not open a new message, so it sends one notification.
+
+| What you see | Cause |
+| --- | --- |
+| ":warning: agent process ended: …" | The harness process died. The next message starts it again. |
+| ":warning: couldn't reach the session: …" | The gateway could not deliver the message to the runner. |
+| "The agent host is offline; your message will be delivered when it reconnects." | The host is not connected to the gateway. The message is queued for up to 24 hours. |
+
+## Commands
+
+A message that starts with `!` is a command to the session, not a message to the agent: `!status`, `!stop`, `!diff`, `!restart`. See Slack commands.
+
+## Idle exit
+
+The host stops a session's runner 2 hours after the last message (`SP_IDLE_MS`). It waits while a turn is running or waiting on an answer, a subagent is running, or an API terminal is open.
+
+The next message starts a new runner that resumes the same conversation in the same directory; the first reply is slower. See Session durability.
+
+One-machine mode has no idle exit.
+
+{/* Sources: computer/src/main.ts; computer/src/gateway/main.ts; computer/src/gateway/routing.ts (route, acknowledge, NOT_ENABLED); computer/src/gateway/hosts.ts; computer/src/runner/session.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/thinking.ts; computer/src/runner/format.ts (fmtStatus); computer/src/runner/thread.ts; computer/src/runner/commands.ts; computer/src/runner/harness/title.ts (TITLE_AFTER); computer/src/runner/harness/claude/title.ts; computer/src/runner/main.ts (idle exit, retitle); computer/src/host/main.ts (IDLE_MS, idle loop, deliver) */}

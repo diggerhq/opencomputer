@@ -1,0 +1,36 @@
+---
+title: "Mid-turn messages"
+description: "A message sent during a turn steers it after the current tool call returns; `!stop` or Slack's stop button ends the turn"
+---
+
+<Frame>
+  <img src="/images/slack/steer.png" alt="A message sent during a turn gets an eyes reaction; the running step is marked as continuing below and the output goes on in a new message under it" />
+</Frame>
+
+| You send | While | Result |
+| --- | --- | --- |
+| A message | A turn is running | Steer: the model sees the message after the tool call in progress returns. The turn continues. |
+| A message | An approval, question or plan is open | Answers or declines the prompt. See [Approvals, questions and plans](/slack/approvals-questions-plans). |
+| `!stop` or `!esc` | A turn is running | The turn stops. Open prompts are cancelled. |
+| `!! <text>` | Any time | Listed in `!help` as interrupt-and-redirect, but answers "unknown command `!!`, try `!help`" and interrupts nothing. Send `!stop`, then the new message. |
+| Slack's stop button on the agent status | A turn is running | Same as `!stop`. |
+| Another `!` command | Any time | Runs at once, outside the turn. |
+| A model tier alone (`+smart`, `+fast`, `+default`) | Any time | Switches the session's model; nothing is sent to the agent. |
+
+## Steering
+
+- The bot adds an :eyes: reaction to a message that arrives mid-turn.
+- The turn's output continues in a new message below yours.
+- In a [shared thread](/slack/shared-threads#who-can-steer), anyone whose messages are delivered can steer.
+
+## Stopping
+
+- Steps still running show "interrupted", and the turn's footer starts with the stop reason.
+- The next message continues the same conversation.
+- While the host is offline, Slack's stop button does nothing. A typed `!stop` is queued like any message.
+
+<Frame>
+  <img src="/images/slack/stop.png" alt="A stopped turn: the running step shows interrupted and the footer starts with the stop reason" />
+</Frame>
+
+{/* Sources: computer/src/runner/session.ts (send, steer, interrupt, footer); computer/src/runner/commands.ts (!stop, !esc, unknown command); computer/src/runner/help.ts; computer/src/runner/main.ts (deliver, `!` to command handler, eyes reaction); computer/src/main.ts; computer/src/gateway/routing.ts (stop); computer/src/gateway/hosts.ts (deliver is queued, stop is not); computer/src/runner/timeline.ts; computer/src/tiers.ts */}

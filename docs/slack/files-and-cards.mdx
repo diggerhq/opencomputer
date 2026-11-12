@@ -1,0 +1,60 @@
+---
+title: "Files and cards"
+description: "Attachments up to 1 GiB reach the session as file paths; the session posts files and cards back with `send_file` and `post_card`"
+---
+
+<Frame>
+  <img src="/images/slack/file-posted.png" alt="A PNG posted by the session into its thread, shown inline under its comment and file name" />
+</Frame>
+
+## Files into a session
+
+Attach files to a message addressed to `@computer`. The runner downloads each one to a temp directory on the computer, outside the repositories, and gives the model the path.
+
+| File | What happens |
+| --- | --- |
+| 5 MiB or smaller | Downloaded before the message reaches the model. PNG, JPEG, GIF and WebP are also given to the model inline. |
+| Larger than 5 MiB | The message is delivered at once; the file appears at the path when its background download completes. |
+| Larger than 1 GiB | Not downloaded. |
+| Download failed | The model gets `[attached <name>: could not be downloaded (<reason>)]`. |
+
+A reason that mentions an HTML page means the bot is missing the `files:read` scope; see [Connect Slack](/self-hosting/gateway).
+
+## Files out of a session
+
+The session posts a file into its thread with the `send_file` tool. PNG, JPEG, GIF and WebP images render inline; any other file is an attachment.
+
+A script running in the session can post without a tool call. It exits 0 when the file is posted; otherwise it prints the reason to stderr and exits 1.
+
+```bash
+calvin-send-file <path> [comment words...] [--title T] [--alt TEXT]
+```
+
+| Limit | Value |
+| --- | --- |
+| Location | Inside the session's working directory or the temp directory |
+| Type and size | A regular, non-empty file of at most 100 MiB |
+| Files per runner | 50. The count starts again when the runner does. |
+| Secrets | A file containing a session secret's value is refused; the refusal names the secret. See [Redaction](/slack/secrets-and-variables#redaction). |
+| Slack scope | `files:write` |
+
+## Cards
+
+The session posts a table, a chart or a set of labelled fields as a Slack card with the `post_card` tool.
+
+<Frame>
+  <img src="/images/slack/card.png" alt="A card in a thread: a title, four labelled fields, a table and a link button" />
+</Frame>
+
+| Limit | Value |
+| --- | --- |
+| Tables per card | 1, up to 100 rows and 20 columns |
+| Charts per card | 2, each up to 12 series and 20 points |
+| Fields per card | 10 |
+| Cards per runner | 50 |
+
+- A card over a limit is refused, never posted in a reduced form.
+- A card whose content includes a secret's value is not posted.
+- Buttons on a card are links only; none sends a click back to the session.
+
+{/* Sources: computer/src/runner/attachments.ts; computer/src/runner/send-file.ts; computer/src/runner/send-file-socket.ts; computer/bin/calvin-send-file; computer/src/runner/post-card.ts; computer/src/runner/main.ts (fetchAttachments, serveFiles) */}

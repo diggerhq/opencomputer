@@ -1,0 +1,45 @@
+---
+title: "Subagents"
+description: "Subagents of a Claude Code session appear in a panel in the thread; its buttons work in one-machine mode only"
+---
+
+A Claude Code session can start subagents, in the foreground or in the background. Codex sessions have no subagents.
+
+<Frame>
+  <img src="/images/slack/subagents.png" alt="The subagents panel: a header counting 3 subagents, a running row with a Stop button, a finished row with a Result button and a stopped row" />
+</Frame>
+
+## Panel
+
+The panel is one Slack message, updated in place; the turn's text continues in a new message under it. Its header counts the subagents running, done, failed and stopped. Each subagent has one row:
+
+| Part | Content |
+| --- | --- |
+| Icon | ⏳ running, ✅ done, ❌ failed, ⏹ stopped |
+| Name and type | The subagent's name and agent type; "background" if it runs in the background |
+| Activity | What it is doing now, or the first line of its result once finished |
+| Counters | Tool calls, tokens, elapsed time |
+
+The panel shows the latest 45 subagents. It keeps updating after its turn ends while background subagents run.
+
+## Buttons
+
+| Button | Shown on | Effect |
+| --- | --- | --- |
+| Stop | A running row | Stops that subagent. |
+| Result | A finished row with a result | Opens the result in a modal (first 11,900 characters). |
+
+<Frame>
+  <img src="/images/slack/subagent-result.png" alt="The Result modal: the subagent's name as title, its status and type, its result and a Close button" />
+</Frame>
+
+- The buttons work in one-machine mode only. In a team install a click does nothing: use `!stop` to stop the turn, and ask the agent in the thread for a subagent's result.
+- After the process restarts, the buttons on earlier panels do nothing.
+
+## Idle exit and the API
+
+The [idle exit](/slack/threads#idle-exit) waits while a subagent runs: the 2 hours count from the end of the last one.
+
+The same subagents are listed over the API; see Subagents.
+
+{/* Sources: computer/src/runner/agents.ts; computer/src/runner/session.ts (panel placement); computer/src/main.ts (a: actions, single-machine); computer/src/gateway/main.ts (no a: handler); computer/src/host/main.ts (idle loop); computer/src/runner/main.ts (exit waits for subagents); computer/src/runner/harness/codex/harness.ts (CODEX_CAPS.subagents) */}

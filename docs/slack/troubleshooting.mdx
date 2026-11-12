@@ -1,0 +1,64 @@
+---
+title: "Troubleshooting"
+description: "Symptoms seen in Slack, each with its cause and fix"
+---
+
+Gateway and host logs: [Logs and recovery](/self-hosting/operate).
+
+## No reply
+
+<Frame>
+  <img src="/images/slack/not-enabled.png" alt="In #eng, Lee mentions @computer and gets a message marked Only visible to you: Computer is not enabled for you yet. Ask the instance owner to add you." />
+</Frame>
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Only you see: `<bot> is not enabled for you yet. Ask the instance owner to add you.` | You are not in the [people list](/self-hosting/configure). | Ask the installer to add you. |
+| Nothing, in a channel | Only a mention starts a session. | Mention `@computer`. |
+| Nothing, in a session's thread, without a mention | You are not in the people list. Only a mention or a new DM gets the notice above. | Ask the installer to add you. |
+| Nothing, in a thread shared with other people | The session judged the message was for someone else; see [Shared threads](/slack/shared-threads). | Mention `@computer` in the message. |
+| Only you see: `The agent host is offline; your message will be delivered when it reconnects.` | The host is not connected to the gateway. The message is queued for 24 hours. | None if the host reconnects in time; see [Logs and recovery](/self-hosting/operate). |
+| "is thinking" or :eyes:, then nothing | The host did not answer the gateway within 30 seconds, for example because the runner was still starting. The gateway posts no error. | Wait; `!status` answers once the runner is up. |
+| The turn does not end | It is waiting on an [approval or question](/slack/approvals-questions-plans) posted earlier in the thread. These do not time out. | Answer it. |
+| "is thinking" or :eyes:, then nothing, self-hosted | The model provider account is out of credits. The self-hosted gateway posts nothing. | Check the account's balance; see [Model credentials](/self-hosting/configure). |
+
+## Errors in the thread
+
+<Frame>
+  <img src="/images/slack/session-unreachable.png" alt="computer replies in the thread with a warning sign and: couldn't reach the session: host disconnected" />
+</Frame>
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `:warning: couldn't reach the session: <error>` | The host could not start the runner or hand it the message; `<error>` is the host's reason. | Send the message again. |
+| `:warning: agent process ended: <reason>` | The harness process exited during the turn. | Send a message; the conversation resumes. |
+| `:warning: !<command> failed: <reason>` | A `!` command threw an error. | |
+| `unknown command !x, try !help` | The session has no such command. | `!help` lists them. |
+| `can't switch to <model>: <reason>; still on <current>` | The harness refused the model. | See [Models and harnesses](/slack/models-and-harnesses). |
+| `Secrets are not available: the gateway has no SP_STORE_KEY.` | The gateway has no key to encrypt secrets with. | See [Secrets and variables](/slack/secrets-and-variables). |
+| `[attached <name>: could not be downloaded (<reason>)]` | The runner could not fetch a Slack attachment. A reason mentioning an HTML page: the bot lacks `files:read`. | See [Connect Slack](/self-hosting/gateway). |
+| A file upload fails with `missing_scope` | The bot lacks `files:write`. | Add the scope and reinstall the Slack app; see [Connect Slack](/self-hosting/gateway). |
+| `preview URLs need an OpenComputer computer; this gateway does not offer them` | The self-hosted gateway refuses every `preview` call. | See [Preview URLs](/slack/preview-urls). |
+| `git push` or `gh` fails with `gateway not connected` | The host is not connected to the gateway, so it cannot get a GitHub token. | Retry when the host has reconnected; see [Logs and recovery](/self-hosting/operate). |
+| `git push` or `gh` fails with `GitHub App not set up: <name> missing (run /setup)` | The GitHub App is not set up. | See [Connect GitHub](/self-hosting/github). |
+| `!diff` answers `no changes` after edits | The session directory is not a git repository; see [Branches and pull requests](/slack/branches-and-pull-requests). | Ask the session for the diff of a repository. |
+| `!status` ends with `running <commit> · restart to load <commit>` | The process runs from a source checkout that has moved past the commit it started from. | Restart the process. |
+
+## Stuck turn
+
+| Send | Effect |
+| --- | --- |
+| `!status` | The runner answers during a turn with the session's status line. No answer: the runner is not reading the thread. |
+| `!stop`, or the stop button | Stops the turn. The next message continues the conversation. |
+| `!restart` | The runner restarts when the turn ends (`!stop` ends it now); the conversation carries over. In one-machine mode it answers "`!restart` works on a hosted runner; here, restart the process". |
+
+## Lost session state
+
+| Symptom | Cause |
+| --- | --- |
+| A dev server or other background process, and its [preview URL](/slack/preview-urls), is gone | The runner exited after 2 hours without a message; see [Idle exit](/slack/threads#idle-exit). The conversation and files are kept. |
+| `node_modules` or another dependency or cache directory is gone | Git-ignored build and dependency directories are deleted 24 hours after the session's last use, while it has no runner. Reinstall or rebuild. |
+| The session directory and its local branches are gone | A directory idle for 14 days is deleted if everything was committed and pushed; see [Branches and pull requests](/slack/branches-and-pull-requests#when-a-session-directory-is-deleted). The next message gets a new directory from the default branch. |
+| A secret set for "This session only" is gone | Session-scope secrets are deleted 30 days after the session was last active. |
+
+{/* Sources: computer/src/gateway/routing.ts; computer/src/gateway/hosts.ts; computer/src/gateway/db.ts (OUTBOX_TTL_MS); computer/src/runner/session.ts (silent turns, limit, agent process ended); computer/src/runner/main.ts (out-of-credits, restart); computer/src/host/main.ts (out-of-credits forwarded, SP_IDLE_MS); computer/src/runner/commands.ts; computer/src/runner/model-switch.ts; computer/src/runner/attachments.ts; computer/src/runner/send-file.ts; computer/src/gateway/secrets-ui.ts; computer/src/host/tokens.ts; computer/src/github/app.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/workspace.ts (gitDiff); computer/src/build.ts (staleNote); computer/src/runner/prompts.ts */}

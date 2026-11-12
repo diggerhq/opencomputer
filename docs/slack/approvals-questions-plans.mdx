@@ -1,0 +1,70 @@
+---
+title: "Approvals, questions and plans"
+description: "When the harness needs a decision, the runner posts a prompt in the thread and the turn waits; prompts never expire"
+---
+
+## Permission requests
+
+A permission request appears when the session's [permission mode](/slack/permission-modes) does not let a tool call through. In the default mode, `bypassPermissions`, none appear.
+
+The prompt names the tool and shows the command for Bash or the diff for an edit (up to 2,500 characters), or the content for a new file (up to 1,500).
+
+<Frame>
+  <img src="/images/slack/approval.png" alt="A permission request in a thread: Claude wants to use Bash, the command, and the buttons Allow, Allow Bash for this session and Deny" />
+</Frame>
+
+| Answer | Effect |
+| --- | --- |
+| Allow | This call runs. |
+| Allow `<tool>` for this session | This call runs, and the harness stops asking for the same kind of call in this session. Shown only when the harness offers it. |
+| Deny | The call is refused and the agent is told. |
+| Typed reply | Declines the request; the agent gets your text as what to do instead. |
+
+Once answered, the prompt message is deleted and the step card shows the outcome and who gave it.
+
+## Questions
+
+<Frame>
+  <img src="/images/slack/question.png" alt="A question prompt with two questions, each with a button per option, and the line: or reply here with your own answer" />
+</Frame>
+
+| Answer | Effect |
+| --- | --- |
+| Option button | Answers that question. |
+| Typed reply | An answer that is not among the options. |
+| Typed reply, more than one question still open | Closes the whole prompt: the agent gets your text with the answers already given by button. |
+
+## Plans
+
+In `plan` mode the agent presents its plan as a message titled "Plan ready for review".
+
+<Frame>
+  <img src="/images/slack/plan.png" alt="A plan titled Plan ready for review with the buttons Approve · auto-accept edits, Approve · ask before edits and Keep planning" />
+</Frame>
+
+| Answer | Effect |
+| --- | --- |
+| Approve · auto-accept edits | The plan is approved and the session's mode becomes `acceptEdits`. |
+| Approve · ask before edits | The plan is approved; edits ask for approval. The footer and `!status` still show `plan`. |
+| Keep planning | The plan is rejected and the agent continues planning. |
+| Typed reply | Declines the plan; the agent gets your text as the change you want. |
+
+The plan message stays, updated with the outcome and who decided.
+
+<Frame>
+  <img src="/images/slack/plan-approved.png" alt="The same plan after approval: the buttons are gone and a line reads plan approved · auto-accepting edits · Dana" />
+</Frame>
+
+## All prompts
+
+| Rule | Detail |
+| --- | --- |
+| Who can answer | Anyone whose messages are delivered to the session. See [Shared threads](/slack/shared-threads#who-can-steer). |
+| First answer wins | Later clicks do nothing. |
+| Typed messages | While a prompt is open, a delivered message answers or declines the latest open prompt; it starts no new turn. |
+| Expiry | None. The idle exit does not end a turn waiting on a prompt. |
+| Stop | `!stop` or Slack's stop button closes the open prompts and stops the turn. |
+| Runner restart | The buttons of an open prompt do nothing, and nothing in the thread says so. Send the request again. |
+| API | The same prompts; an answer from either side closes the prompt for both. See Asks. |
+
+{/* Sources: computer/src/runner/prompts.ts; computer/src/runner/prompt-replies.ts; computer/src/runner/api/asks.ts (asks never expire, first close wins); computer/src/runner/session.ts (replyToPrompts, interrupt); computer/src/runner/timeline.ts; computer/src/gateway/routing.ts (action); computer/src/gateway/main.ts (p: actions); computer/src/main.ts (p: actions) */}
