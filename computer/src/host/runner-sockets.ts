@@ -11,7 +11,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { type HostToRunner, type RunnerSpec } from '../protocol.js';
+import type { HostToRunner, RunnerSpec } from '../protocol.js';
 import { type RunRoot, pidFileFor, runnersDir, secretsFor, send } from '../ipc.js';
 import { log } from '../log.js';
 import type { Telemetry } from '../telemetry/emitter.js';
