@@ -64,6 +64,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: P
     },
     discard: async (id) => void log.push(`removed ${id}`),
     during: (fn) => fn(),
+    claimed: (id) => (log.push(`claimed ${id}`), record),
     turn: (_s, fn) => fn(),
   } as Partial<SandboxSpares> as SandboxSpares;
   const started: Started = { record, run: `/run/sp/sandbox/${ID}`, sock: cold.sock, session: spec, resumed: true, abandon: async () => void log.push('abandoned') };
@@ -108,7 +109,7 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     const r = await t.starts.startRunner(spec, {}, creds);
     expect(r).toMatchObject({ id: ID, key: 'C1:1.1', sandbox: { record }, cold: { resumed: false, prewarmed: true } });
-    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, 'registered C1:1.1', 'fill']);
+    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, `claimed ${ID}`, 'registered C1:1.1', 'fill']);
     const claim = t.spare.got.find((m) => m.t === 'claim') as Extract<HostToRunner, { t: 'claim' }>;
     expect(t.spare.got.map((m) => m.t)).toEqual(['credentials', 'claim']);
     expect(claim.session).toMatchObject({ key: 'C1:1.1', forkPath: '/workspace' });
@@ -208,7 +209,7 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     const r = await t.starts.startRunner(spec, {}, creds);
     expect(r.key).toBe('C1:1.1');
-    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, "token handled for 'C1:1.1'", "preview handled for 'C1:1.1'", 'registered C1:1.1', 'fill']);
+    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, "token handled for 'C1:1.1'", "preview handled for 'C1:1.1'", `claimed ${ID}`, 'registered C1:1.1', 'fill']);
   });
 
   it('a spare whose claim failed after it was bound is never registered, and is not a spare again', async () => {

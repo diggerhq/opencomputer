@@ -136,6 +136,8 @@ export function sandboxSweep(d: SweepDeps) {
       // C14: a spare of the host before this one (or a start that never got its record); its run directory serves nobody either.
       if (!record) return void ((await c.remove(id)) && (await deleteRun(id)), log.info(`sandbox ${id}: a container without a record, removed`));
       if (state !== 'running') return; // the next message resumes it (start.ts)
+      // A spare whose claim was not answered when the host before this one ended (spares.ts): never taken back; the next start makes it anew.
+      if (record.unclaimed) return void (await c.stop(id).catch((x) => log.warn(`sandbox ${id} not stopped: ${msg(x)}`)));
       const run = d.runRoot(id);
       const t0 = now();
       let tokens: { close(): void } | undefined;

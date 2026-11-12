@@ -69,6 +69,12 @@ describe('host restart', () => {
     expect(t.log).toEqual(['inventory', `tokens ${A} C1:${A}`, `dial ${A}/runners/${A}.sock`, `adopt ${A} C1:${A}`]);
   });
 
+  it('stops a running container whose record says its spare was never claimed: it is not taken back, whatever its runner would report', async () => {
+    const t = rig({ inventory: { containers: [box(A)] }, records: [{ ...record(A), unclaimed: true }], sockets: [A] });
+    expect((await t.s.reconcile()).size).toBe(0);
+    expect(t.log).toEqual(['inventory', `stop ${A}`]);
+  });
+
   it('stops a running container whose socket does not answer, or whose runner is not the record\'s; removes neither', async () => {
     const silent = rig({ inventory: { containers: [box(A)] }, records: [record(A)] });
     expect((await silent.s.reconcile()).size).toBe(0);

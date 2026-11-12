@@ -25,7 +25,13 @@
 // - A spare that leaves is Removed, container and home, and its run directory
 //   goes with it; one whose record was written keeps the record and the run
 //   directory, and the thread's next start creates a container under the same
-//   id (start.ts, the resume).
+//   id (start.ts, the resume). One that could not be Removed is stopped with
+//   no grace: nothing of a spare that left keeps running.
+// - The record `bind` writes says `unclaimed` until the claim was answered
+//   (`claimed`) or the spare was Removed. A container whose record says so is half-bound: it has the
+//   thread's files mounted and a runner that may or may not have taken the
+//   claim. It is never used: the thread's next start removes it and its home
+//   and creates anew (start.ts), a host restart stops it (sweep.ts).
 // - Every Podman call here goes through containers.ts and so `as.podman`
 //   (podman.ts), which waits for the image lock: no spare is created while
 //   provisioning holds it. None of what makes or binds a spare is
@@ -62,7 +68,7 @@ export interface SpareDeps {
   records: Records;
   /** The threads' turns, shared with the starts and prune. */
   locks: ThreadLocks;
-  containers: Pick<Containers, 'create' | 'up' | 'pid' | 'remove' | 'diagnose'>;
+  containers: Pick<Containers, 'create' | 'up' | 'pid' | 'stop' | 'remove' | 'diagnose'>;
   /** Delete a run directory (sweep.ts); never rejects. */
   deleteRun(id: string): Promise<unknown>;
   runRoot(id: string): RunRoot;
@@ -104,6 +110,10 @@ export type SandboxSpares = ReturnType<typeof sandboxSpares>;
 /** Measured on 2 vCPU: a spare made beside a new thread's claim takes it from 0.6 s to 1.1 s; a claim ends within 1 s. */
 export const SETTLE_MS = 2000;
 
+const fail = (why: string): never => {
+  throw new Error(why);
+};
+
 export function sandboxSpares(d: SpareDeps) {
   const { tm, containers: c } = d;
   const dial = d.dial ?? dialSocket;
@@ -135,18 +145,27 @@ export function sandboxSpares(d: SpareDeps) {
     }
   };
 
-  /** Remove (container and home); the run directory too unless a record says the id is a thread's. Once per id at a time; never rejects. */
+  /** Remove (container and home), or stop what stayed; the run directory too unless a record says the id is a thread's. Once per id at a time; never rejects. */
   function drop(id: string): Promise<void> {
     mine.delete(id);
     let p = leaving.get(id);
     if (!p) {
       p = (async () => {
-        await c.remove(id);
+        // What Podman would not remove does not keep running; the sweep removes it later, or the thread's next start (start.ts).
+        if (await c.remove(id)) d.records.get(id)?.unclaimed && claimed(id); // nothing half-bound is left under the id
+        else await c.stop(id, 0).catch((e) => log.warn(`spare ${id} neither removed nor stopped: ${e?.message ?? e}`));
         if (!d.records.get(id)) await d.deleteRun(id);
       })().finally(() => leaving.delete(id));
       leaving.set(id, p);
     }
     return p;
+  }
+
+  /** The claim of the spare bound under `id` was answered, or the spare is gone: its record is a thread's like any other. Returns the record. */
+  function claimed(id: string): SandboxRecord {
+    const { unclaimed: _, ...record } = d.records.get(id) ?? fail(`${id} has no record`);
+    d.records.write(record);
+    return record;
   }
 
   async function one(): Promise<Spare> {
@@ -194,7 +213,7 @@ export function sandboxSpares(d: SpareDeps) {
     if (d.records.find(spec.owner.dir, spec.key)) throw new Error(`${spec.key} has a sandbox already: it resumes, it takes no spare`);
     const { sdkSessionId: _transcript, forkPath: _fork, ...session } = spec; // a new home has no transcript; the runner's fork is /workspace
     const now = new Date().toISOString();
-    const record: SandboxRecord = { id, person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
+    const record: SandboxRecord = { id, person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now, unclaimed: true };
     const t00 = Date.now();
     d.records.write(record);
     const run = d.runRoot(id);
@@ -219,6 +238,7 @@ export function sandboxSpares(d: SpareDeps) {
   return {
     launch,
     bind,
+    claimed,
     during,
     /** `fn` in the thread's turn: a claim, from the look for its record to the spare claimed or discarded. */
     turn: <T>(spec: SessionSpec, fn: () => Promise<T>): Promise<T> => d.locks.run(spec.owner.dir, spec.key, fn),

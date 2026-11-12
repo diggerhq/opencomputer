@@ -17,7 +17,7 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean } = {}) {
+function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean } = {}) {
   const log: string[] = [];
   const ups: { rs: RunnerSpec; record: unknown; mount: unknown }[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
@@ -41,7 +41,8 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
         return step(`up ${id}`, { pid: 5, startMs: 33, tokens: { close: () => void log.push('tokens closed') } });
       },
       pid: (id) => step(`pid ${id}`, 7),
-      remove: (id) => step(`remove ${id}`, true),
+      remove: (id) => step(`remove ${id}`, !o.stays),
+      stop: (id, seconds) => step(`stop ${id} ${seconds}`, undefined),
       diagnose: async () => 'boom',
     },
     mint: async (s, id, run) => (await step(`mint ${id} ${run} sdk=${s.sdkSessionId ?? '-'} fork=${s.forkPath ?? '-'}`, 0), o.api ? ({ journal: '/data/journals/s1/journal.jsonl', token: 'tok' } as RunnerApi) : undefined),
@@ -109,7 +110,12 @@ describe('a spare container', () => {
       `mount ${id} 7 pat /workspace /clones/hello /data/journals/s1`,
       `prepare ${id} hello`,
     ]);
-    expect(t.records.find('pat', 'C1:1.1')).toMatchObject({ id, person: 'pat', key: 'C1:1.1', repos: { hello: {} } });
+    // Until its claim is answered the record says so: whatever is found under this id is not known to be the thread's runner.
+    expect(t.records.find('pat', 'C1:1.1')).toMatchObject({ id, person: 'pat', key: 'C1:1.1', repos: { hello: {} }, unclaimed: true });
+    expect(b.record.unclaimed).toBe(true);
+    expect(t.claimed(id)).not.toHaveProperty('unclaimed');
+    expect(t.records.get(id)).not.toHaveProperty('unclaimed');
+    expect(t.records.get(id)).toMatchObject({ id, key: 'C1:1.1', repos: { hello: {} } });
     expect(b).toMatchObject({ record: { id, key: 'C1:1.1' }, run: t.runRoot(id), api: { token: 'tok' }, addMs: 7 });
     expect(b.session).not.toHaveProperty('sdkSessionId');
     expect(b.session).not.toHaveProperty('forkPath');
@@ -152,7 +158,18 @@ describe('a spare container', () => {
     await t.discard(id);
     expect(t.log).toEqual([`remove ${id}`]);
     expect(t.records.find('pat', 'C1:1.1')?.id).toBe(id);
+    expect(t.records.get(id)).not.toHaveProperty('unclaimed'); // nothing half-bound is left under the id
     expect(existsSync(t.runRoot(id))).toBe(true);
+  });
+
+  it('that could not be removed is stopped with no grace: nothing of a half-bound spare keeps running, and its record says it was never claimed', async () => {
+    const t = rig({ fail: { prepare: new Error('no worktree') }, stays: true });
+    const { id } = await t.launch();
+    await expect(t.bind(id, spec, {})).rejects.toThrow('no worktree');
+    t.log.length = 0;
+    await t.discard(id);
+    expect(t.log).toEqual([`remove ${id}`, `stop ${id} 0`]);
+    expect(t.records.get(id)).toMatchObject({ key: 'C1:1.1', unclaimed: true });
   });
 
   it('whose connection closed is removed with its run directory; a bound one is its thread\'s and stays', async () => {

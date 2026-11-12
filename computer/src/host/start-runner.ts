@@ -244,7 +244,7 @@ export function runnerStarts(d: StartDeps) {
     });
     if ('runner' in got) {
       const r = got.runner;
-      r.key = spec.key;
+      r.sandbox = { record: spares.claimed(r.id), run: bound!.run }; // the record no longer says `unclaimed`
       r.harness = spec.harness;
       r.lastDelivery = Date.now();
       d.register(r);
