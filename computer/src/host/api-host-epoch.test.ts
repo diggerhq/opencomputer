@@ -10,8 +10,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ensureSessionJournalDir, Journal, journalPath, readJournalFile } from '../api/journal.js';
 import type { ApiClient } from '../api/socket.js';
 import type { SubscribeOptions } from '../api/writer.js';
+import { createTelemetry } from '../telemetry/emitter.js';
 import type { ApiActor, GatewayToHost, HostToGateway, JournalEvent, SessionSpec } from '../protocol.js';
 import { apiHost, type ApiHostDeps, type WireLinkLike } from './api-host.js';
+import { apiMeter } from './api-meter.js';
 import { scanJournals } from './session-writer.js';
 
 const S = 'cs_0000000000000002';
@@ -274,24 +276,33 @@ describe('epoch adoption (recovery-fix)', () => {
 
   it('a host whose adoption dies mid-tail reports the old epoch at hello, and the resent frame adopts (review r2 P1-2, P2-7)', async () => {
     const ref: { t?: Awaited<ReturnType<typeof outage>> } = {};
-    const t = (ref.t = await outage({ retire: (id) => cooperative(ref.t!)(id) }));
+    // What the host's meter hears of adoptions, and nothing else of it: an attempt is over when it is told.
+    const attempts: boolean[] = [];
+    const real = apiMeter(createTelemetry({ service: 'host', version: 't', region: 'local', send: () => {} }), { journals: path.join(os.tmpdir(), 'apiepoch-none'), intervalMs: 3_600_000 });
+    const meter = { ...real, adopted: (x: Parameters<typeof real.adopted>[0]) => (attempts.push(x.ok), real.adopted(x)) };
+    const t = (ref.t = await outage({ retire: (id) => cooperative(ref.t!)(id), meter }));
     const good = t.dO.recover(3);
     // The write of the tail's second event throws (the crash, a full disk) after its first is on file.
     const torn = { ...good, tail: [good.tail[0], { ...good.tail[1], data: { bad: 1n } }, ...good.tail.slice(2)] } as never;
     t.a.onGateway(torn);
     await until(() => t.moves.length > 0); // the runner's own `down`
+    // The attempt has failed, and its backoff is counted from before the clock moves below: on a slow machine it
+    // was still running after a fixed wait, the backoff then started at the later time and the resent frame was dropped.
+    await until(() => attempts.length === 1);
+    expect(attempts).toEqual([false]);
     await settle();
     const moves = t.moves.length;
     // The hello a restarted host would send: still epoch 1, so the gateway sends `epoch` again.
     expect(t.a.journals()).toEqual([{ sessionId: S, epoch: 1, startSeq: 1, lastSeq: 4 }]);
     t.clock.now += 60_000;
     t.a.onGateway(good);
-    await until(() => readJournalFile(t.file, 0).epoch === 2);
-    await settle();
+    await until(() => attempts.length === 2); // over, the relay told: the epoch on file comes some steps before that
+    expect(attempts).toEqual([false, true]);
     expect(readJournalFile(t.file, 0).events).toEqual(t.dO.log);
     expect(t.a.journals()).toEqual([{ sessionId: S, epoch: 2, startSeq: 4, lastSeq: 7 }]);
     expect(t.moves.length).toBe(moves + 1);
     await t.a.stop();
+    real.stop();
   });
 
   it('a journal whose epoch line is ahead of its events is left alone by the boot scan and repaired by the same-epoch frame (review r2 P1-2, P2-7)', async () => {
