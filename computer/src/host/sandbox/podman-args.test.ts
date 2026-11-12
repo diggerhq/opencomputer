@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createArgs, emptyRunArgs, execArgs, inventoryArgs, logsArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs, unshareRmArgs,
+  createArgs, emptyRunArgs, execArgs, filesHelperArgs, terminalArgs, terminalHangUpArgs, inventoryArgs, logsArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs, unshareRmArgs,
 } from './podman-args.js';
 
 const id = '0123456789abcdef';
@@ -93,5 +93,33 @@ ghcr.io/diggerhq/computer-session:abc`);
     expect(unshareRmArgs(['/a', '/b c'])).toEqual(['unshare', 'rm', '-rf', '--', '/a', '/b c']);
     expect(emptyRunArgs(run)).toEqual(['unshare', 'find', `${run}/runners`, `${run}/secrets`, '-mindepth', '1', '-delete']);
     expect(logsArgs(id)).toEqual(['logs', '--tail', '50', `sp-runner-${id}`]);
+  });
+
+  it('a terminal is the PTY helper in the container: as the session, in the workspace, TERM and nothing else', () => {
+    expect(terminalArgs(id, '/workspace', 'xterm-256color', ['python3', '/opt/slack-presence/releases/r1/src/host/terminal-pty.py', 'sp-term-ab12'])).toEqual([
+      'exec', '--interactive', '--user', '1500:1500', '--workdir', '/workspace', '--env', 'TERM=xterm-256color', `sp-runner-${id}`,
+      'python3', '/opt/slack-presence/releases/r1/src/host/terminal-pty.py', 'sp-term-ab12',
+    ]);
+  });
+
+  it('hanging a terminal up signals its own helper, not every terminal of the session', () => {
+    const args = terminalHangUpArgs(id, 'sp-term-ab12');
+    expect(args).toEqual(['exec', '--user', '1500:1500', `sp-runner-${id}`, 'pkill', '-HUP', '-f', 'terminal-pty\\.py sp-term-ab12$']);
+    const pattern = new RegExp(args.at(-1) as string);
+    expect(pattern.test('python3 /opt/slack-presence/releases/r1/src/host/terminal-pty.py sp-term-ab12')).toBe(true);
+    expect(pattern.test('python3 /opt/slack-presence/releases/r1/src/host/terminal-pty.py sp-term-ab123')).toBe(false);
+  });
+
+  it('a files helper mounts the workspace and nothing else, read-only unless it writes, without a network', () => {
+    const h = { person: 'U1', workspace: '/data/people/U1/sessions/C1-1-2', image: 'img:tag' };
+    expect(filesHelperArgs(h, '/workspace', ['/bin/sh', '-c', 'cat -- "$1"', 'sh', 'a b'])).toEqual([
+      'run', '--rm', '--label', 'sp.helper=U1', '--cgroups=split', '--userns=keep-id:uid=1500,gid=1500', '--user', '1500:1500',
+      '--network=none', '--pids-limit=1024', '--log-driver=none', '--env', 'HOME=/tmp', '--workdir', '/workspace',
+      '-v', '/data/people/U1/sessions/C1-1-2:/workspace:ro', '--entrypoint', '/bin/sh', 'img:tag', '-c', 'cat -- "$1"', 'sh', 'a b',
+    ]);
+    const w = filesHelperArgs({ ...h, write: true, interactive: true }, '/workspace', ['/bin/sh']);
+    expect(w).toContain('--interactive');
+    expect(w).toContain('/data/people/U1/sessions/C1-1-2:/workspace');
+    expect(w.filter((a) => a === '-v')).toHaveLength(1);
   });
 });

@@ -50,6 +50,7 @@ import { apiWake } from './api-wake.js';
 import { apiRelay, type WireHooks, type WireLinkLike } from './api-relay.js';
 import { type ApiMeter, apiMeter } from './api-meter.js';
 import type { Telemetry } from '../telemetry/emitter.js';
+import type { SandboxPlace } from './sandbox/workspace-exec.js';
 
 export interface StartOptions {
   /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
@@ -81,6 +82,8 @@ export interface ApiHostDeps {
   start(spec: SessionSpec, o: StartOptions): Promise<SessionStatus | undefined>;
   /** The fork of the session's runner, if it reported one. */
   forkPath?(key: string): string | undefined;
+  /** Present where sessions run in containers (work 103): the session's sandbox, undefined when it has none yet. Its terminal and files are reached only there. */
+  sandbox?(spec: SessionSpec): Promise<SandboxPlace | undefined>;
   /** Serve the relay's local socket (api-wire.ts); absent: no relay on this host. */
   wire?(hooks: WireHooks): Promise<WireLinkLike>;
   /** The host's emitter: the API side's telemetry (api-meter.ts: the relay's frames, the mirror's turns, adoptions, api.sample). */
@@ -272,6 +275,10 @@ export function apiHost(d: ApiHostDeps) {
       const spec = specs.get(sessionId);
       const forkPath = spec && (d.forkPath?.(spec.key) ?? spec.forkPath);
       const owner = spec?.owner.userId;
+      if (d.sandbox) {
+        const sandbox = spec && (await d.sandbox(spec));
+        return sandbox && owner ? { forkPath: sandbox.workspace, owner, sandbox } : undefined;
+      }
       return forkPath && owner ? { forkPath, owner } : undefined;
     },
     async record(sessionId, type, data, actor) {

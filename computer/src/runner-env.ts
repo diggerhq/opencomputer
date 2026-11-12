@@ -20,6 +20,8 @@ export const RUNNER_ENV = [
   'SP_COMMITTER_NAME', 'SP_COMMITTER_EMAIL', 'SP_REAL_GH', 'SP_REAL_OPENCOMPUTER', 'SP_FAKE_SLACK', 'SP_SLACK_API_URL', 'MODEL', 'FOLD_AT', 'WORKDIR',
   'PERMISSION_MODE', 'DISABLE_AUTOUPDATER', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'SP_REGION', 'SP_SUBSTRATE',
   'SP_PROMPT_CACHE_TTL', 'SP_CONTEXT_WINDOW', 'SP_COMPACT_AT', 'SP_PROMPT_GUARD', 'SP_MODEL_SOCKET', 'SP_CODEX_BIN', 'SP_CODEX_PEER_CHECK',
+  // Set by a container's Create (work 103); empty elsewhere, and then the runner serves no preview socket.
+  'SP_PREVIEW_SOCKET',
   // Unset on a computer's host, but inherited each would run a session's code in, or route the traffic of,
   // another session's runner. The host's own value when it has one (a laptop's proxy).
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'BASH_ENV',

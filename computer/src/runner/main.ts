@@ -71,6 +71,7 @@ import { TIERS, tierOf } from '../tiers.js';
 import { codexRoot } from '../codex-home.js';
 import { meteredClient } from './surface-meter.js';
 import { serveFiles } from './send-file-socket.js';
+import { servedPreviews } from './preview-socket.js';
 import { Waiters } from './waiters.js';
 import { TurnEvents } from './turn-events.js';
 import { sampleLoopLag } from './loop-lag.js';
@@ -267,10 +268,10 @@ const hooks: SessionHooks = {
   output: () => clearFeedback(),
   spawn,
   threads: { read: readThread, post: postThread },
-  previews: {
+  previews: servedPreviews(env.SP_PREVIEW_SOCKET, {
     preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
     unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
-  },
+  }),
   ...(workspacesEnabled() && { checkout }),
   restart: () => {
     restarting = true;

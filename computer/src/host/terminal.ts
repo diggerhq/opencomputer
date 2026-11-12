@@ -17,6 +17,14 @@
 // - `onExit` runs once, after every socket has been ended.
 // - One helper is kept started ahead (`prewarm`), so an open costs a frame,
 //   not a process start.
+// - On a host whose sessions run in containers (launch `podman`, work 103
+//   C13) the helper runs inside the session's container (`podman exec`, as
+//   the session's user, in `/workspace`), its shell gets the container's own
+//   environment plus TERM, and nothing is started ahead: a helper cannot
+//   start before its container is known. An open that names no sandbox is
+//   refused there; no shell ever starts outside a container. Stopping the
+//   unit ends only the `podman exec` client, so a helper that outlives it is
+//   hung up inside the container (terminal-pty.py takes SIGHUP as a hang-up).
 
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -28,6 +36,8 @@ import { apiError } from '../api/writer.js';
 import { mintId } from '../session-ids.js';
 import { log } from '../log.js';
 import type { RunnerUser } from './runner-user.js';
+import { PODMAN } from './sandbox/podman.js';
+import { terminalArgs, terminalHangUpArgs } from './sandbox/podman-args.js';
 
 export const TERMINALS_PER_SESSION = 8;
 const PENDING_MAX = 1 << 20;
@@ -42,6 +52,8 @@ export interface TerminalOpen {
   command?: string;
   tty: boolean;
   term?: string;
+  /** The session's sandbox id, on a `podman` host: the terminal opens inside its container, which the caller knows to be running. */
+  sandbox?: string;
 }
 
 export type TerminalExit = (terminalId: string, exitCode: number | null, signal: string | null) => void;
@@ -61,7 +73,7 @@ export interface Terminals {
 
 export interface TerminalsOptions {
   dir: string;
-  launch: 'systemd' | 'detached';
+  launch: 'systemd' | 'detached' | 'podman';
   user?: RunnerUser;
   /** The systemd-run prefix runners use (`SP_SYSTEMD_RUN`, else runner-limits.ts). */
   systemdRun?: string;
@@ -75,6 +87,8 @@ export interface TerminalsOptions {
 interface Helper {
   proc: ChildProcess;
   unit: string | undefined;
+  /** The sandbox it runs in, on a `podman` host. */
+  sandbox?: string;
   exited: Promise<void>;
 }
 
@@ -143,15 +157,16 @@ export function createTerminals(o: TerminalsOptions): Terminals {
     };
   };
 
-  function startHelper(): Helper {
+  function startHelper(inside?: { sandbox: string; cwd: string; term?: string }): Helper {
     const python = o.python ?? 'python3';
     let unit: string | undefined;
     let cmd: string;
     let args: string[];
-    if (o.launch === 'systemd') {
+    if (o.launch !== 'detached') {
       unit = `sp-term-${randomBytes(6).toString('hex')}`;
       const prefix = [...(o.user?.sudo ?? []), ...(o.systemdRun ?? 'systemd-run --user').trim().split(/\s+/)];
-      [cmd, ...args] = [...prefix, `--unit=${unit}`, '--collect', '--quiet', '--pipe', '--', python, HELPER];
+      const helper = inside ? [PODMAN, ...terminalArgs(inside.sandbox, inside.cwd, inside.term || 'xterm-256color', [python, HELPER, unit])] : [python, HELPER];
+      [cmd, ...args] = [...prefix, `--unit=${unit}`, '--collect', '--quiet', '--pipe', '--', ...helper];
     } else {
       [cmd, args] = [python, [HELPER]];
     }
@@ -159,10 +174,11 @@ export function createTerminals(o: TerminalsOptions): Terminals {
     proc.stderr?.on('data', (d: Buffer) => log.warn('terminal helper:', d.toString('utf8').trim().slice(0, 300)));
     proc.stdin?.on('error', () => {});
     const exited = new Promise<void>((r) => proc.once('exit', () => r()));
-    return { proc, unit, exited };
+    return { proc, unit, sandbox: inside?.sandbox, exited };
   }
 
-  const takeHelper = () => {
+  const takeHelper = (inside?: { sandbox: string; cwd: string; term?: string }) => {
+    if (inside) return startHelper(inside);
     const h = warm && warm.proc.exitCode === null && !warm.proc.killed ? warm : startHelper();
     warm = undefined;
     return h;
@@ -218,6 +234,8 @@ export function createTerminals(o: TerminalsOptions): Terminals {
       if (t.helper.unit) {
         const [cmd, ...pre] = [...(o.user?.sudo ?? []), 'systemctl', '--user', 'stop', t.helper.unit];
         execFile(cmd, pre, { env: { ...process.env, ...o.user?.env } }, () => {});
+        // The unit held the `podman exec` client only: the helper itself is in the container.
+        if (t.helper.sandbox && o.user) execFile(o.user.sudo[0], [...o.user.sudo.slice(1), '--', PODMAN, ...terminalHangUpArgs(t.helper.sandbox, t.helper.unit)], { cwd: '/' }, () => {});
       }
       t.helper.proc.kill('SIGKILL');
     }, STOP_AFTER_MS);
@@ -245,8 +263,13 @@ export function createTerminals(o: TerminalsOptions): Terminals {
       if (self.count(req.sessionId) >= TERMINALS_PER_SESSION) {
         return { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
       }
+      if (o.launch === 'podman' && !req.sandbox) {
+        log.warn(`terminal for ${req.sessionId} refused: no sandbox named on a podman host`);
+        return { error: apiError('unavailable', 'The terminal could not start.', 503, { retryable: false }) };
+      }
       const id = mintId('tm');
-      const helper = takeHelper();
+      const inside = o.launch === 'podman' && req.sandbox ? { sandbox: req.sandbox, cwd: req.cwd, term: req.term } : undefined;
+      const helper = takeHelper(inside);
       const t: Term = {
         id, sessionId: req.sessionId, helper, servers: [], onExit, done: false,
         out: { pending: [], pendingBytes: 0, ended: false },
@@ -275,7 +298,9 @@ export function createTerminals(o: TerminalsOptions): Terminals {
       );
       helper.proc.once('exit', (code) => finish(t, exit?.exitCode ?? (exit ? null : code), exit?.signal ?? null));
       helper.proc.stdin?.write(
-        frame('S', JSON.stringify({ cols: req.cols, rows: req.rows, command: req.command ?? null, tty: req.tty, term: req.term, env: shellEnv(req.term), cwd: req.cwd })),
+        // In a container the shell's environment is the container's own (`inherit`), plus TERM.
+        frame('S', JSON.stringify({ cols: req.cols, rows: req.rows, command: req.command ?? null, tty: req.tty, term: req.term, cwd: req.cwd,
+          ...(inside ? { env: { TERM: req.term || 'xterm-256color' }, inherit: true } : { env: shellEnv(req.term) }) })),
       );
       self.prewarm();
       return { terminalId: id, socket, stderrSocket };
@@ -310,6 +335,7 @@ export function createTerminals(o: TerminalsOptions): Terminals {
       await Promise.all(all.map((t) => t.helper.exited));
     },
     prewarm() {
+      if (o.launch === 'podman') return;
       if (!warm || warm.proc.exitCode !== null) warm = startHelper();
     },
   };

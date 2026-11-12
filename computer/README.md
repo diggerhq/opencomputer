@@ -427,6 +427,7 @@ environment, which any session can change.
 | `SP_CODEX_PEER_CHECK` | on | `off` lets any local process use a Codex session's model loopback; only where runners are not systemd units (a laptop). On, a connection is forwarded only when a process in the runner's own cgroup holds it, and refused if the cgroup cannot be read. Read from the host's own environment only: runners always get `on` unless the host runs with `off` |
 | `SP_IMAGE` / `SP_IMAGE_ABI` | unset | the session image of this release (`ghcr.io/diggerhq/computer-session:<git tree of deploy/image>`) and the integer in `deploy/image/ABI` (work 103). Never set by hand: `deploy/vm/provision.sh` writes both to the release's `.sp-version.env`, which the host unit loads, and pulls and warms the image before it switches to the release (`deploy/vm/sandbox.sh`). A host with `SP_LAUNCH=podman` refuses to start without both |
 | `SP_LAUNCH` | `systemd` on a hosted computer, `detached` elsewhere | how a runner is started (`host/launch.ts`): `systemd` (a user unit of the runner user), `detached` (a child process, on a laptop), or `podman` (work 103: each session in its own container `sp-runner-<id>` of `SP_IMAGE`, started by `podman start --attach` in a unit of the runner user; `host/sandbox/`). `podman` needs `SP_RUNNER_USER`, `SP_IMAGE`, `SP_IMAGE_ABI` and `SP_POOL_SIZE=0`, and a computer prepared by `deploy/vm/sandbox.sh`; until the work is finished it is for trying out only: a session's repositories are not mounted yet |
+| `SP_PREVIEW_SOCKET` | unset | set by the host for a runner in a container only (`host/sandbox/podman-args.ts`, work 103): the socket in the session's run directory (`runners/<id>.preview.sock`) where the runner pipes the host's preview proxy to the ports this session previewed (`runner/preview-socket.ts`). Without it nothing listens and the proxy dials `127.0.0.1` |
 
 **Telemetry** (work 054; runners always hand telemetry to their host, which sends it only if `SP_TELEMETRY_URL` is set)
 
@@ -465,7 +466,7 @@ of them need a real Slack workspace.
 | `npx tsx src/dev/fake-run.ts "<prompt>" ["<steer sent 8s later>"]` | A real agent session against a fake Slack client. Prints every Slack API call with a timestamp and approves prompts automatically. The fast loop for event mapping, batching and steering. |
 | `npx tsx src/dev/e2e-check.ts [--keep]` | The whole split deployment on one machine, with fake Slack and GitHub APIs served by the check itself: `/setup`, mention → fork → runner → turn, thread replies, mid-turn messages, a permission button, host and gateway restarts under a live runner, GitHub tokens through the credential helper and `gh` shim, a push webhook. Prints the latency rows it can measure. Scratch space is `/tmp/spe2e`. |
 | `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway: spawn, forwarding, token relay, restart with rediscovery, idle exit. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn, before and after a host restart. |
-| `sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE=… SP_IMAGE_ABI=… node --import tsx src/dev/sandbox-check.ts` (on a computer, from its release directory, with no host agent running) | The host with `SP_LAUNCH=podman` against an in-process fake gateway and a fake Slack (work 103): a session's runner is a container in a unit of the runners' slice, its record is written, its cwd is `/workspace`, its report names the host's path, its token socket is linked into its run directory, it exits when idle leaving its container, and the next message resumes the same container with its home intact. Needs podman, so it does not run in CI. |
+| `sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE=… SP_IMAGE_ABI=… node --import tsx src/dev/sandbox-check.ts` (on a computer, from its release directory, with no host agent running) | The host with `SP_LAUNCH=podman` against an in-process fake gateway and a fake Slack (work 103): a session's runner is a container in a unit of the runners' slice, its record is written, its cwd is `/workspace`, its report names the host's path, its token socket is linked into its run directory, it exits when idle leaving its container, and the next message resumes the same container with its home intact. Step 9: two threads, each with a server on the same port and the check's own on the host's; the real `preview` tool, called by a scripted stand-in for the model inside the container (`src/dev/fake-model.mjs`, no credential), reaches the gateway as a virtual port, and the proxy answers from inside the right container and never from the host's port; the probe; a terminal and `/files` over the wire socket (`src/dev/wire-client.ts`), running and stopped, each inside its own thread only (`src/dev/sandbox-check-reach.ts`). With `SP_RUN` / `SP_DATA` it runs on roots of its own, laid out as `deploy/vm/provision.sh` lays out the computer's. Needs podman, so it does not run in CI. |
 | `npx tsx src/dev/workspaces-check.ts [--real]` | Clones, forks, housekeeping and git auth against local bare repositories. |
 | `npx tsx src/dev/gateway-check.ts`, `setup-check.ts` | Gateway routing and `/setup`. |
 | `npx tsx src/dev/links-check.ts` | Linked threads against a fake workspace: public, private, DM, guest and Slack Connect cases, other workspaces, caps, and injected instructions in linked text. |
@@ -497,7 +498,8 @@ src/
                     vault.ts and secrets-ui.ts: secrets storage, !secret and the modal;
                     variables-ui.ts: !var; threads.ts: read_thread and post_thread
   host/             host agent: forks, runner lifecycle, token relay;
-                    previews.ts: preview URLs (cloudflared, preview-proxy.ts, preview-probe.ts)
+                    previews.ts: preview URLs (cloudflared, preview-proxy.ts, preview-probe.ts,
+                    preview-dial.ts and sandbox/preview-ports.ts for sessions in containers)
   runner/           one session per process:
     main.ts           the process: socket to the host, credentials, deliveries
     session.ts        one conversation: a long-lived Agent SDK query() mapped to Slack;
@@ -511,6 +513,7 @@ src/
     spawn.ts          the spawn_thread tool
     threads.ts        the read_thread and post_thread tools
     preview.ts        the preview and unpreview tools: public URLs for a session's servers
+    preview-socket.ts the socket that lets the host's preview proxy into a container's previewed ports
     send-file.ts      the send_file tool: workspace files → the thread
     post-card.ts      the post_card tool: json-render specs → Block Kit cards
     session-secrets.ts  a session's secrets: env file, redaction, the request_secret tool

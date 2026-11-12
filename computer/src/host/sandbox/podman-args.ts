@@ -72,6 +72,44 @@ export const pidArgs = (id: string) => ['inspect', '--format', '{{.State.Pid}}',
 export const execArgs = (id: string, argv: string[], o: { dir: string; interactive?: boolean }) =>
   ['exec', ...(o.interactive ? ['--interactive'] : []), '--user', SESSION_USER, '--workdir', o.dir, containerName(id), ...argv];
 
+/**
+ * A terminal's helper in the running container (terminal.ts): `helper` is `python3 <ROOT>/src/host/terminal-pty.py`
+ * and the terminal's unit name, which the helper ignores and `terminalHangUpArgs` matches.
+ */
+export const terminalArgs = (id: string, dir: string, term: string, helper: string[]) =>
+  ['exec', '--interactive', '--user', SESSION_USER, '--workdir', dir, '--env', `TERM=${term}`, containerName(id), ...helper];
+
+/** SIGHUP to the helper of one terminal (`unit`: `sp-term-<hex>`), whose `podman exec` is gone. */
+export const terminalHangUpArgs = (id: string, unit: string) =>
+  ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-HUP', '-f', `terminal-pty\\.py ${unit}$`];
+
+/** The scope a helper container runs in: Podman needs a delegated cgroup of the runners' user, and the host's own is not one. */
+export const HELPER_SCOPE = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--'];
+
+export interface FilesHelper {
+  /** `person.dir`, the helper's label. */
+  person: string;
+  /** The thread's workspace on the host. */
+  workspace: string;
+  image: string;
+  /** Mount the workspace writable; without it nothing the command does can change a file. */
+  write?: boolean;
+  /** Keep standard input open. */
+  interactive?: boolean;
+}
+
+/**
+ * A command over the workspace of a thread whose container is not running (workspace-exec.ts): a container that
+ * lives as long as the command, with the workspace at `dir` and nothing else of the host's, and no network.
+ */
+export const filesHelperArgs = (h: FilesHelper, dir: string, argv: string[]) => [
+  'run', '--rm', ...(h.interactive ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`,
+  '--cgroups=split', '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER,
+  '--network=none', '--pids-limit=1024', '--log-driver=none', '--env', 'HOME=/tmp', '--workdir', dir,
+  '-v', `${h.workspace}:${dir}${h.write ? '' : ':ro'}`,
+  '--entrypoint', argv[0], h.image, ...argv.slice(1),
+];
+
 /** `seconds`: how long the runner gets after SIGTERM before SIGKILL. */
 export const stopArgs = (id: string, seconds: number) => ['stop', '--time', String(seconds), containerName(id)];
 

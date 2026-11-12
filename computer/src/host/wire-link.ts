@@ -30,11 +30,13 @@ import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
 import { oneShotSocket } from './one-shot-socket.js';
 import type { Terminals } from './terminal.js';
+import { type SandboxPlace, WORKSPACE_DIR } from './sandbox/workspace-exec.js';
 import type { WorkspaceFiles } from './workspace-files.js';
 
 export const WIRE_DIR = path.join(HOST_RUN, 'wire');
 
-type Workspace = { forkPath: string; owner: string };
+/** `sandbox`: the session runs in a container (work 103); its terminal and its files are reached there. */
+type Workspace = { forkPath: string; owner: string; sandbox?: SandboxPlace };
 
 export interface WireLinkHooks {
   /** The session's writer, if this host runs the session. */
@@ -109,8 +111,10 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: sessionNotFound() };
         if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
+        // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
+        if (ws.sandbox && !ws.sandbox.running) return { error: apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' }) };
         const r = await o.terminals.open(
-          { sessionId: m.sessionId, cwd: ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
+          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE_DIR : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
           (terminalId, exitCode, signal) => {
             const t = terms.get(terminalId);
             terms.delete(terminalId);
@@ -138,7 +142,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       case 'files.list': {
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: sessionNotFound() };
-        const r = await o.files.list({ sessionId: m.sessionId, forkPath: ws.forkPath }, m);
+        const r = await o.files.list({ sessionId: m.sessionId, forkPath: ws.forkPath, sandbox: ws.sandbox }, m);
         return 'error' in r ? { error: r.error } : { result: r };
       }
       case 'files.get':
@@ -158,7 +162,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
     const fail = (error: ApiError) => send(peer, { t: 'result', id: m.id, error } satisfies HostToWire);
     const ws = await hooks.workspace(m.sessionId);
     if (!ws) return fail(sessionNotFound());
-    const where = { sessionId: m.sessionId, forkPath: ws.forkPath };
+    const where = { sessionId: m.sessionId, forkPath: ws.forkPath, sandbox: ws.sandbox };
     let out: (() => { stream: Readable; done: Promise<void> }) | undefined;
     let extra: Record<string, unknown> = {};
     if (m.t === 'files.get') {

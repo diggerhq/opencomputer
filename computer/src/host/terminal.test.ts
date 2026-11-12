@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -127,4 +128,30 @@ describe('terminals (real PTY)', () => {
     await terms.closeSession('cs_b');
     expect(terms.count('cs_b')).toBe(0);
   }, 20_000);
+});
+
+describe('terminals in containers (work 103, C13)', () => {
+  it('on a podman host, an open that names no sandbox starts nothing', async () => {
+    const podman = createTerminals({ dir: path.join(dir, 'p'), launch: 'podman' });
+    podman.prewarm(); // no helper ahead either: it would be a process outside every container
+    const r = await podman.open({ sessionId: 'cs_a', cwd: dir, cols: 80, rows: 24, tty: true }, onExit);
+    expect('error' in r && [r.error.code, r.error.status]).toEqual(['unavailable', 503]);
+    expect(podman.count('cs_a')).toBe(0);
+    await podman.closeAll();
+  });
+
+  it('the helper, as podman exec runs it: its own environment with TERM over it, never BASH_ENV, and SIGHUP hangs up', async () => {
+    const helper = path.resolve(import.meta.dirname, 'terminal-pty.py');
+    const p = spawn('python3', [helper, 'sp-term-test'], { stdio: ['pipe', 'pipe', 'inherit'], env: { PATH: env.PATH, HOME: '/home/agent', BASH_ENV: '/nonexistent', SP_INSIDE: 'yes' } });
+    let out = '';
+    let exit: { exitCode: number | null; signal: string | null } | undefined;
+    p.stdout.on('data', frames((k, payload) => (k === 'O' ? (out += payload.toString()) : k === 'Z' && (exit = JSON.parse(payload.toString())))));
+    p.stdin.write(frame('S', JSON.stringify({ cols: 80, rows: 24, tty: true, cwd: dir, env: { TERM: 'vt100' }, term: 'vt100', inherit: true,
+      command: 'echo "$SP_INSIDE $HOME $TERM ${BASH_ENV:-unset}"; sleep 60' })));
+    await until(() => out.includes('vt100'));
+    expect(out).toContain('yes /home/agent vt100 unset');
+    p.kill('SIGHUP');
+    await until(() => !!exit);
+    expect(exit).toEqual({ exitCode: null, signal: 'SIGHUP' });
+  });
 });

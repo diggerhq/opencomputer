@@ -136,6 +136,13 @@ describe('containers', () => {
     expect(bad.calls).toHaveLength(2); // the volume is tried all the same
   });
 
+  it('remove: says so, for what else the host keeps by the id (its preview ports)', async () => {
+    const gone: string[] = [];
+    const t = rig(() => '', { removed: (id) => void gone.push(id) });
+    await t.c.remove(ID);
+    expect(gone).toEqual([ID]);
+  });
+
   it('recreate: the container alone goes; its home stays for the new one', async () => {
     const t = rig();
     await t.c.recreate(ID);
