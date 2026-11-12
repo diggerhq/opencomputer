@@ -240,7 +240,6 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       );
     }
     case 'token':
-      if (sandbox && !r.sandbox) return send(r.sock, { t: 'token', id: m.id, error: 'this runner serves no thread' } satisfies HostToRunner); // a spare
       return tokens.request(r.key, m.repos).then(
         (result) => send(r.sock, { t: 'token', id: m.id, result } satisfies HostToRunner),
         (e) => send(r.sock, { t: 'token', id: m.id, error: String(e?.message ?? e) } satisfies HostToRunner),

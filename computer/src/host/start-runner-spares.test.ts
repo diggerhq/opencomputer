@@ -9,7 +9,7 @@ import { lines, send } from '../ipc.js';
 import type { HostToRunner, RunnerToHost, SessionSpec } from '../protocol.js';
 import { createTelemetry } from '../telemetry/emitter.js';
 import type { TelemetryEvent } from '../telemetry/envelope.js';
-import type { SandboxSpares } from './sandbox/spares.js';
+import type { Bound, SandboxSpares } from './sandbox/spares.js';
 import type { SandboxStarts, Started } from './sandbox/start.js';
 import { type Runner, type StartDeps, runnerStarts } from './start-runner.js';
 
@@ -26,15 +26,15 @@ afterEach(() => {
 });
 
 /** A connected pair: the host's end, and what the runner's end was sent; `answer` is the runner's reply to a call. */
-async function pair(answer: (m: HostToRunner & { id?: string }) => RunnerToHost | undefined) {
+async function pair(answer: (m: HostToRunner & { id?: string }) => RunnerToHost | RunnerToHost[] | undefined) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'sp-')), 'r.sock');
   const got: HostToRunner[] = [];
+  let runner!: net.Socket;
   const server = net.createServer((s) => {
-    open.push(s);
+    open.push((runner = s));
     lines(s, (m: HostToRunner) => {
       got.push(m);
-      const a = answer(m);
-      if (a) send(s, a);
+      for (const a of [answer(m) ?? []].flat()) send(s, a);
       if (m.t === 'exit') s.end();
     });
   });
@@ -42,10 +42,11 @@ async function pair(answer: (m: HostToRunner & { id?: string }) => RunnerToHost 
   const sock = net.createConnection(file);
   await new Promise((r) => sock.once('connect', r));
   open.push(sock, server);
-  return { sock, got };
+  await vi.waitFor(() => expect(runner).toBeDefined());
+  return { sock, got, say: (m: RunnerToHost) => send(runner, m) };
 }
 
-async function rig(o: { known?: boolean; bind?: () => Promise<never>; answer?: Parameters<typeof pair>[0]; route?: string } = {}) {
+async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: Parameters<typeof pair>[0]; route?: string } = {}) {
   const log: string[] = [];
   const sent: TelemetryEvent[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(...b.events) });
@@ -82,7 +83,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<never>; answer?: P
     serveTokens: (run: string, id: string) => (log.push(`tokens ${run} ${id}`), { close: () => void log.push('tokens closed') }),
     creds: () => undefined, forRunner: () => undefined, routeMode: () => o.route ?? 'managed',
     register: (r: Runner) => void log.push(`registered ${r.key}`), closed: () => {}, exit: (s: net.Socket) => (send(s, { t: 'exit' }), log.push('exit sent'), s.end()),
-    message: (r: Runner, m: RunnerToHost) => (m.t === 'reply' ? r.calls.get(m.id)?.(m) : m.t === 'report' ? void (r.report = m.report) : undefined),
+    message: (r: Runner, m: RunnerToHost) => (m.t === 'reply' ? r.calls.get(m.id)?.(m) : m.t === 'report' ? void (r.report = m.report) : void log.push(`${m.t} handled for '${r.key}'`)),
     stopSandbox: async (id: string) => void log.push(`stopped ${id}`),
     toGateway: (m: { t: string }) => void log.push(`gateway ${m.t}`), fillPool: () => void log.push('fill'),
   } as unknown as StartDeps;
@@ -164,5 +165,58 @@ describe('a new thread on a podman host with a spare', () => {
     await new Promise((x) => setTimeout(x, 20));
     expect(t.log[0]).toBe(`stopped ${ID}`);
     expect(r.sock.destroyed).toBe(true);
+  });
+
+  // A frame handled for the session '' would be asked of the gateway, the token broker and the previews under no thread's name.
+  const asks: RunnerToHost[] = [
+    { t: 'token', id: 'q1' },
+    { t: 'preview', id: 'q2', req: { port: 3000 } },
+    { t: 'unpreview', id: 'q3', req: { name: 'x' } },
+    { t: 'spawn', id: 'q4', req: {} as never },
+    { t: 'read', id: 'q5', req: {} as never },
+    { t: 'post', id: 'q6', req: {} as never },
+    { t: 'secret-request', id: 'q7', req: {} as never },
+    { t: 'checkout', id: 'q8', repos: ['a'] },
+    { t: 'out-of-credits' },
+    { t: 'model-denied', model: 'm', fallbackTo: 'n' },
+  ];
+  const refusals = ['token', 'previewed', 'previewed', 'spawned', 'thread', 'posted', 'secret-asked', 'checked-out'].map((t, i) => ({ t, id: `q${i + 1}`, error: 'this runner serves no thread' }));
+
+  it('what a parked spare asks for is refused, never handled: it serves no thread', async () => {
+    const t = await rig();
+    t.log.length = 0;
+    for (const m of asks) t.spare.say(m);
+    await vi.waitFor(() => expect(t.spare.got.filter((m) => m.t !== 'credentials')).toEqual(refusals));
+    expect(t.log).toEqual([]);
+  });
+
+  it('while it is being bound it is still nobody\'s: a token it asks for then is refused, and never asked for the session \'\'', async () => {
+    let bound!: (b: Bound) => void;
+    const t = await rig({ bind: () => new Promise<Bound>((r) => (bound = r)) });
+    t.log.length = 0;
+    const starting = t.starts.startRunner(spec, {}, creds);
+    await vi.waitFor(() => expect(t.log).toContain(`bind ${ID} C1:1.1`));
+    for (const m of asks) t.spare.say(m);
+    await vi.waitFor(() => expect(t.spare.got).toEqual(refusals));
+    bound({ record, run: `/run/sp/sandbox/${ID}`, session: spec, api: undefined, readyMs: 2, mountMs: 3, addMs: 4 });
+    await starting;
+    expect(t.log.filter((l) => l.includes('handled'))).toEqual([]);
+  });
+
+  it('once bound, before the claim is answered, what it asks for is its record\'s thread\'s', async () => {
+    const t = await rig({ answer: (m) => (m.t === 'claim' ? [{ t: 'token', id: 'q1' }, { t: 'preview', id: 'q2', req: { port: 3000 } }, { t: 'reply', id: m.id!, ok: true }] : undefined) });
+    t.log.length = 0;
+    const r = await t.starts.startRunner(spec, {}, creds);
+    expect(r.key).toBe('C1:1.1');
+    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, "token handled for 'C1:1.1'", "preview handled for 'C1:1.1'", 'registered C1:1.1', 'fill']);
+  });
+
+  it('a spare whose claim failed after it was bound is never registered, and is not a spare again', async () => {
+    const t = await rig({ answer: (m) => (m.t === 'claim' ? [{ t: 'token', id: 'q1' }, { t: 'reply', id: m.id!, ok: false, error: 'no' }] : undefined) });
+    t.log.length = 0;
+    const r = await t.starts.startRunner(spec, {}, creds);
+    expect(r.sock).toBe(t.cold.sock);
+    expect(t.log.filter((l) => l.includes('handled'))).toEqual(["token handled for 'C1:1.1'"]);
+    expect(t.pool.size).toBe(0);
   });
 });

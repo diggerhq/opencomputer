@@ -26,6 +26,10 @@
 //   that reports a session while it is nobody's is stopped, as any container's
 //   runner is: its socket destroyed, its container stopped. The claim is made
 //   in the thread's turn (sandbox/thread-lock.ts), as a start is.
+// - On a `podman` host a runner's key is '' exactly while it has no record:
+//   the two are set together when a spare is bound, before `claim` is sent.
+//   Until then nothing it asks for is handled (spare-frames.ts); after, it is
+//   asked for the record's thread, whether or not the claim was answered yet.
 // - A spare taken and not claimed, for whatever reason, is told to exit and
 //   Removed, and the delivery starts cold under the record's id: a failed
 //   claim loses no delivery.
@@ -59,6 +63,7 @@ import { coldStart, forkFor } from './cold-start.js';
 import type { Pool } from './pool.js';
 import { callRunner as call } from './runner-call.js';
 import { awaitRunner, launchProcess, launchRunner } from './runner-sockets.js';
+import { refusal, spareMay } from './spare-frames.js';
 import type { SandboxRecord } from './sandbox/records.js';
 import type { Bound, SandboxSpares } from './sandbox/spares.js';
 import { type SandboxStarts, WORKSPACE, imageTag } from './sandbox/start.js';
@@ -182,6 +187,11 @@ export function runnerStarts(d: StartDeps) {
         // Which thread a container serves is the record's word, never the runner's; a spare's container has none until it is bound.
         if (r.sandbox && m.t === 'report' && m.report.key !== r.sandbox.record.key) return stop(`it reports ${m.report.key}, not its record's ${r.sandbox.record.key}`);
         if (d.sandbox && !r.sandbox && m.t === 'report') return stop(`it reports ${m.report.key} and has no record`);
+        // With no record it serves no thread: nothing it asks for is handled, for the session '' or any other (spare-frames.ts).
+        if (d.sandbox && !r.sandbox && !spareMay(m)) {
+          const no = refusal(m);
+          return no && send(sock, no);
+        }
         // Found running after a restart, a record's container serves its thread or nothing: never taken on as a spare.
         if (o.sandbox && o.verify && m.t === 'spare' && a.state === 'pending') return stop(`it says it is a spare, not ${o.sandbox.record.key}'s runner`);
         return a.message(m) && void d.message(r, m);
@@ -211,7 +221,9 @@ export function runnerStarts(d: StartDeps) {
       },
       fork: async (r) => {
         const b = (bound = await spares.bind(r.id, spec, f));
-        r.sandbox = { record: b.record, run: b.run }; // from here on its reports are held to the record
+        // From here on it is the record's thread's: its reports are held to the record, and what it asks for is asked for that thread.
+        r.sandbox = { record: b.record, run: b.run };
+        r.key = b.record.key;
         data['container.mount_ms'] = b.mountMs;
         data['container.add_ms'] = b.addMs;
         return WORKSPACE;
