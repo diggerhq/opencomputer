@@ -8,7 +8,7 @@
 //                              A definition in the gateway's welcome replaces it (<SP_DATA>/definition.json).
 //   [SP_IDLE_MS=7200000]       tell a runner to exit after this long without deliveries
 //   [SP_LAUNCH=systemd|podman|detached]  default systemd on Linux, detached elsewhere. podman (work 103): every
-//                              thread in its own container (sandbox/); needs SP_RUNNER_USER and SP_POOL_SIZE=0
+//                              thread in its own container (sandbox/), spares too; needs SP_RUNNER_USER
 //   [SP_IMAGE] [SP_IMAGE_ABI]  the session image and its ABI, from the release's .sp-version.env; required by podman
 //   [SP_SYSTEMD_RUN="systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=12G -p MemoryMax=16G"]
 //                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
@@ -150,7 +150,7 @@ let stopping = false;
 
 /** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
 const sandbox = LAUNCH === 'podman'
-  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, spares: POOL_SIZE, tm,
+  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm,
       mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
       serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => [...runners.values()].some((r) => r.id === id) })
   : undefined;
@@ -160,7 +160,7 @@ const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
   mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-  sandbox: sandbox?.starts,
+  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE,
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -180,7 +180,9 @@ function runnerClosed(r: Runner) {
   if (!stopping) api.down(r.id);
   if (!r.key) {
     pool.gone(r);
-    fillPool();
+    // A spare that leaves a `podman` host is Removed (sandbox/spares.ts), whatever made it go; the next host removes what this one leaves.
+    if (stopping) return;
+    void (sandbox?.spares.gone(r.id) ?? Promise.resolve()).then(fillPool);
     return;
   }
   if (runners.get(r.key) !== r) return;
@@ -233,6 +235,7 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       );
     }
     case 'token':
+      if (sandbox && !r.sandbox) return send(r.sock, { t: 'token', id: m.id, error: 'this runner serves no thread' } satisfies HostToRunner); // a spare
       return tokens.request(r.key, m.repos).then(
         (result) => send(r.sock, { t: 'token', id: m.id, result } satisfies HostToRunner),
         (e) => send(r.sock, { t: 'token', id: m.id, error: String(e?.message ?? e) } satisfies HostToRunner),
@@ -454,6 +457,7 @@ mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
 const helperTokens = sandbox?.serveHelpers(); // workspace scripts in helper containers (sandbox/scripts.ts)
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
+void sandbox?.spares.clear(); // the spares of the host before this one (C14); a new spare waits for it, a thread's start does not
 api.rediscovered(await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
@@ -486,7 +490,8 @@ const shutdown = async () => {
   stopping = true;
   // Runners keep going; the next host finds them by their sockets.
   log.info('host stopping');
-  for (const r of allRunners()) r.sock.destroy();
+  // A spare's container serves nobody and no host finds it again: it is told to go (its container stops with it).
+  for (const r of allRunners()) sandbox && !r.key ? exitRunner(r.sock) : r.sock.destroy();
   tokenServer.close();
   helperTokens?.close();
   previews.stop();

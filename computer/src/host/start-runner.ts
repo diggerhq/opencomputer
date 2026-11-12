@@ -17,6 +17,15 @@
 //   the record's, and a report naming another stops the runner.
 // - A sandboxed runner that started and was not adopted (it exited meanwhile,
 //   or adoption refused it) leaves no container running and no token socket.
+// - On a `podman` host a spare is a container (step 10, sandbox/spares.ts). It
+//   is made its thread's (record, mounts, worktrees) before `claim` is sent,
+//   and from then on it is held to that record like any sandboxed runner. One
+//   that reports a session while it is nobody's is stopped.
+// - A spare taken and not claimed, for whatever reason, is told to exit and
+//   Removed, and the delivery starts cold under the record's id: a failed
+//   claim loses no delivery.
+// - On a `podman` host the pool is topped up once the start that took a spare
+//   has settled, never beside it.
 
 import type net from 'node:net';
 import { randomBytes } from 'node:crypto';
@@ -46,7 +55,8 @@ import type { Pool } from './pool.js';
 import { callRunner as call } from './runner-call.js';
 import { awaitRunner, launchProcess, launchRunner } from './runner-sockets.js';
 import type { SandboxRecord } from './sandbox/records.js';
-import type { SandboxStarts } from './sandbox/start.js';
+import type { Bound, SandboxSpares } from './sandbox/spares.js';
+import { type SandboxStarts, WORKSPACE, imageTag } from './sandbox/start.js';
 import type { ColdStart, Forwarded } from './trace.js';
 
 export interface Runner {
@@ -96,6 +106,9 @@ export interface StartDeps {
   serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
   /** Work 103: on a `podman` host, how a thread's runner starts; every session then starts through it. */
   sandbox?: SandboxStarts;
+  /** Step 10: its spares, and the image they are made from (for telemetry). */
+  spares?: SandboxSpares;
+  image?: string;
   fillPool(): void;
   /** Run a fork so its workspace events join the delivery's trace. */
   inFork<T>(f: Dimensions, fn: () => Promise<T>): Promise<T>;
@@ -121,10 +134,11 @@ export function runnerStarts(d: StartDeps) {
   /** Take a connected runner on (adoption.ts): register it as its session's, or as a spare, follow its messages, send it `credentials`.
    * `key`: the session it was launched for; a verified runner names it in its first report, and one with no session is a spare.
    * `first`: the delivery's credentials, sent instead of the welcome ones, since the runner starts its harness with the first it gets. */
-  function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName; sandbox?: Sandboxed } = {}): Promise<Runner> {
+  function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName; sandbox?: Sandboxed; run?: RunRoot } = {}): Promise<Runner> {
     const r: Runner = { id, key: o.sandbox?.record.key ?? o.key ?? '', sock, lastDelivery: Date.now(), connectedAt: Date.now(), calls: new Map(), harness: o.harness, sandbox: o.sandbox };
     // Its own token socket names the session it serves now (work 080). A container's is open since before its start (the same one: idempotent).
-    const tokens = d.serveTokens(o.sandbox?.run ?? d.run, id, () => r.key);
+    // `run`: the run root of a spare in a container, which has no record yet.
+    const tokens = d.serveTokens(o.sandbox?.run ?? o.run ?? d.run, id, () => r.key);
     sock.once('close', () => tokens.close()); // gone with the runner
     return new Promise((resolve, reject) => {
       const take = (m?: First) => {
@@ -152,16 +166,84 @@ export function runnerStarts(d: StartDeps) {
       const complete = o.sandbox ? () => !workspacesEnabled() || !!o.sandbox!.record.repos : forkComplete;
       const a = adoption({ verify: !!o.verify, complete, take, stop, gone: () => reject(new Error('runner gone')) });
       lines(sock, (m: RunnerToHost) => {
-        // Which thread a container serves is the record's word, never the runner's.
-        if (o.sandbox && m.t === 'report' && m.report.key !== o.sandbox.record.key) return stopped(`it reports ${m.report.key}, not its record's ${o.sandbox.record.key}`);
+        // Which thread a container serves is the record's word, never the runner's; a spare's container has none until it is bound.
+        if (r.sandbox && m.t === 'report' && m.report.key !== r.sandbox.record.key) return stopped(`it reports ${m.report.key}, not its record's ${r.sandbox.record.key}`);
+        if (d.sandbox && !r.sandbox && m.t === 'report') return stopped(`it reports ${m.report.key} and has no record`);
         return a.message(m) && void d.message(r, m);
       });
       sock.once('close', () => a.closed());
     });
   }
 
-  /** Work 103: the thread's runner in its container; a new thread and a resume alike. Never the pool (until spares are containers). */
+  /**
+   * Step 10: a new thread takes a spare container when today's pool rule lets it. Undefined when it took none, or took one and
+   * could not make it the thread's: that spare is gone by then (exit, Remove) and the caller starts cold, under the record's id
+   * when the record was written.
+   */
+  async function claimSandboxed(spares: SandboxSpares, spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner | undefined> {
+    const codex = spec.harness === 'codex';
+    if (!d.pool.enabled || spares.known(spec) || !workspacesEnabled() || !workspacePrepared(spec.owner)) return;
+    if (d.routeMode(spec.key) !== (codex ? 'subscription' : 'managed')) return;
+    const t0 = Date.now();
+    const data: Record<string, string | number | boolean> = { launch_mode: 'podman', ...(d.image && { image: imageTag(d.image) }) };
+    let taken: Runner | undefined;
+    let bound: Bound | undefined;
+    const got = await claimSpare<Runner>({
+      take: () => {
+        const t = d.pool.take(credentialFingerprint(first) ?? credentialFingerprint(d.creds()), codex);
+        if (typeof t !== 'string') taken = t;
+        return t;
+      },
+      fork: async (r) => {
+        const b = (bound = await spares.bind(r.id, spec, f));
+        r.sandbox = { record: b.record, run: b.run }; // from here on its reports are held to the record
+        data['container.mount_ms'] = b.mountMs;
+        data['container.add_ms'] = b.addMs;
+        return WORKSPACE;
+      },
+      claim: async (r, forkPath) => {
+        // In the order of a claim outside a container: Claude's credential first, Codex's after.
+        const c = codex ? (first ?? d.forRunner(spec.key, d.creds(), 'codex')) : first;
+        if (c && !codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
+        const t1 = Date.now();
+        await call(r, { t: 'claim', session: { ...bound!.session, forkPath }, api: bound!.api }, 5000);
+        data['container.claim_ms'] = Date.now() - t1;
+        if (c && codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
+      },
+      discard: (r) => d.exit(r.sock),
+    }).catch((e) => {
+      log.warn(`spare ${taken?.id} not made ${spec.key}'s: ${e?.message ?? e}`);
+      return { missed: 'bind' as const };
+    });
+    if ('runner' in got) {
+      const r = got.runner;
+      r.key = spec.key;
+      r.harness = spec.harness;
+      r.lastDelivery = Date.now();
+      d.register(r);
+      if (r.report) d.toGateway({ t: 'session', report: r.report });
+      r.cold = { resumed: false, prewarmed: true };
+      tm.emit('runner.claimed', { ...f, duration_ms: Date.now() - t0, data });
+      log.info(`spare ${r.id} claimed for ${spec.key} in ${Date.now() - t0} ms (record and directories ${bound?.readyMs} ms, mounts ${data['container.mount_ms']} ms, worktrees ${data['container.add_ms']} ms, claim ${data['container.claim_ms']} ms)`);
+      return r;
+    }
+    tm.emit('pool.spare_missed', { ...f, data: { reason: got.missed } });
+    if (!taken) return;
+    // A spare leaves: `exit` went with the discard; Remove, and its connection closed (its token socket with it) before the
+    // cold start opens the same paths again under the same id.
+    await spares.discard(taken.id);
+    const { sock } = taken;
+    await new Promise<void>((done) => {
+      if (sock.closed) return done();
+      sock.once('close', () => done()); // after adopt's own listeners, which close its token socket
+      sock.destroy();
+    });
+  }
+
+  /** Work 103: the thread's runner in its container; a new thread and a resume alike. A new thread may take a spare (step 10). */
   async function startSandboxed(sandbox: SandboxStarts, spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
+    const claimed = d.spares && (await claimSandboxed(d.spares, spec, f, first));
+    if (claimed) return claimed;
     const s = await sandbox.start(spec, f);
     try {
       if (s.sock.destroyed) throw new Error('runner exited while it started');
@@ -178,7 +260,12 @@ export function runnerStarts(d: StartDeps) {
   }
 
   async function startRunner(spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
-    if (d.sandbox) return startSandboxed(d.sandbox, spec, f, first);
+    if (d.sandbox) {
+      const sandbox = d.sandbox;
+      const go = () => startSandboxed(sandbox, spec, f, first);
+      // No spare is made beside a start; the pool is topped up once this one settled.
+      return d.spares ? d.spares.during(go).finally(() => d.fillPool()) : go();
+    }
     let existing = spec.forkPath && existsSync(spec.forkPath) && forkComplete(spec.forkPath) ? spec.forkPath : undefined;
     // A new session in a prepared workspace may take a spare (work 069); a resumed one starts cold, to resume.
     // Claude takes one on the managed route, whose credential spares park with; Codex (work 082) on its ChatGPT subscription.
@@ -250,6 +337,20 @@ export function runnerStarts(d: StartDeps) {
 
   /** Start a spare for the pool: a runner with no session, which parks a Claude Code once it has credentials (a Codex claim replaces it). */
   async function launchSpare() {
+    if (d.spares) {
+      // A container with no thread (sandbox/spares.ts): adopted as a spare under its own run root.
+      const s = await d.spares.launch();
+      try {
+        if (s.sock.destroyed) throw new Error('spare exited while it started');
+        await adopt(s.id, s.sock, { run: s.run });
+      } catch (e) {
+        s.sock.destroy();
+        await d.spares.discard(s.id);
+        throw e;
+      }
+      tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode, ...(d.image && { image: imageTag(d.image) }), 'container.create_ms': s.createMs, 'container.start_ms': s.startMs } });
+      return;
+    }
     const id = newRunnerId();
     await adopt(id, await launchRunner({ id, socket: socketFor(d.run, id), version: d.version }, d.launch));
     tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode } });

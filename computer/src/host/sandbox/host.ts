@@ -1,7 +1,7 @@
 // What a `podman` host is made of (work 103): the runners' user, the image of
 // its release, the records, the containers, the starts, the virtual preview
-// ports and where a session's terminal and files are, put together from
-// the host's environment. host/main.ts makes one when SP_LAUNCH=podman and
+// ports, the spares and where a session's terminal and files are, put together
+// from the host's environment. host/main.ts makes one when SP_LAUNCH=podman and
 // asks it for nothing else.
 //
 // It also turns the workspaces' two seams its way, once, when it is made: the
@@ -12,8 +12,13 @@
 //
 // Invariant: a `podman` host that cannot sandbox every session does not start.
 // Without a runners' user it would run sessions as itself, without SP_IMAGE
-// and SP_IMAGE_ABI it has nothing to run them in, and a spare is not a
-// container yet; each of these throws here, at boot, never at a first message.
+// and SP_IMAGE_ABI it has nothing to run them in; each of these throws here,
+// at boot, never at a first message.
+//
+// Invariant: a container's token socket asks for the thread of its record,
+// whatever the runner behind it is taken for, and a container with no record
+// (a spare, step 10) is refused: with no session named, the gateway would
+// answer with a token of the organization.
 //
 // Invariant: the helpers' token socket gives GitHub tokens for the
 // definition's repositories only, for no session (tokens.ts `serveHelper`).
@@ -37,6 +42,7 @@ import { asRunner } from './podman.js';
 import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { type SandboxPlace, sandboxScripts } from './scripts.js';
+import { sandboxSpares } from './spares.js';
 import { sandboxStarts } from './start.js';
 import { sandboxWorkspaces } from './workspace.js';
 
@@ -48,8 +54,6 @@ export interface SandboxHostDeps {
   /** The release the host runs from, and its version. */
   root: string;
   version: string;
-  /** SP_POOL_SIZE. */
-  spares: number;
   tm: Telemetry;
   /** Both are asked for at a start, not here: the host builds what answers them after this. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
@@ -70,7 +74,6 @@ export function sandboxHost(d: SandboxHostDeps) {
   if (!user) throw new Error('SP_LAUNCH=podman needs a runner user (SP_RUNNER_USER): this host would run sessions as itself. deploy/vm/sp-host.sh sets one up.');
   const { SP_IMAGE: image, SP_IMAGE_ABI: abi } = env;
   if (!image || !abi) throw new Error("SP_LAUNCH=podman needs SP_IMAGE and SP_IMAGE_ABI; the release's .sp-version.env sets both");
-  if (d.spares) throw new Error('SP_LAUNCH=podman: spares are not containers yet; set SP_POOL_SIZE=0');
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
@@ -78,7 +81,12 @@ export function sandboxHost(d: SandboxHostDeps) {
   const all = containers({
     as, runRoot, dataDir: d.data, root: d.root, image, abi,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
-    vars: () => runnerVars(env), definition: definitionFile, serveTokens: d.serveTokens,
+    vars: () => runnerVars(env), definition: definitionFile,
+    serveTokens: (run, id, session) => d.serveTokens(run, id, () => {
+      const key = session() || records.get(id)?.key;
+      if (!key) throw new Error('this runner serves no thread'); // a spare: nothing to ask a token for
+      return key;
+    }),
     removed: (id) => ports.releaseAll(id),
   });
   const helperRun = path.join(d.run, 'helper');
@@ -89,10 +97,12 @@ export function sandboxHost(d: SandboxHostDeps) {
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), []));
+  const dial = (socket: string) => dialSocket(socket, { uid: user.uid });
   return {
     stop: all.stop,
-    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled,
-      dial: (socket) => dialSocket(socket, { uid: user.uid }) }),
+    /** Step 10: spares are containers too (spares.ts); pool.ts decides how many. */
+    spares: sandboxSpares({ tm: d.tm, records, as, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial }),
+    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
     /** Where a session's terminal and files are (api-host `sandbox`): from its record, never from what a runner said. */
     async place(spec: SessionSpec): Promise<SandboxPlace | undefined> {
       const r = records.find(spec.owner.dir, spec.key);

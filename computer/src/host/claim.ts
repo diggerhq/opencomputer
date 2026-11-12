@@ -7,7 +7,9 @@
 // Claude Code reads the fork's AGENTS.md and skills when claimed. A spare that
 // refused or did not answer is discarded, never offered again: it may have
 // claimed late, so it is not known to be parked. One whose fork failed was
-// never spoken to, so it goes back to the pool.
+// never spoken to, so it goes back to the pool; a host that passes no
+// `release` (a `podman` one, whose fork step mounts a person's files into the
+// spare) discards it instead.
 
 import type { MissReason } from './pool.js';
 
@@ -16,8 +18,8 @@ export type ClaimMiss = MissReason | 'refused' | 'timeout' | 'gone';
 export interface ClaimSteps<R> {
   /** A parked spare, now ours; else why there is none. */
   take: () => R | MissReason;
-  /** Make the session's fork; resolves with its path. */
-  fork: () => Promise<string>;
+  /** Make the session's fork; resolves with its path. A container host makes the spare itself the thread's here (work 103). */
+  fork: (r: R) => Promise<string>;
   /** Claim the spare into the fork; rejects if it refused or did not answer in time. */
   claim: (r: R, forkPath: string) => Promise<void>;
   /** Tell a spare that was not claimed to exit. */
@@ -38,7 +40,7 @@ export async function claimSpare<R>(s: ClaimSteps<R>): Promise<ClaimOutcome<R>> 
   const r = taken as R;
   let forkPath: string;
   try {
-    forkPath = await s.fork();
+    forkPath = await s.fork(r);
   } catch (e) {
     (s.release ?? s.discard)(r);
     throw e;

@@ -195,13 +195,13 @@ describe('containers', () => {
 
   it('inventory: what Podman has under our label and names, 10 s each', async () => {
     const ps = JSON.stringify([
-      { Names: [`sp-runner-${ID}`], State: 'running', Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Image: 'img:tag', Created: 1_700_000_000 },
+      { Names: [`sp-runner-${ID}`], State: 'running', Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Image: 'img:tag', Created: 1_700_000_000, Mounts: ['/home/agent', '/run/sp/sandbox/x'] },
       { Names: ['other'], State: 'running', Labels: { 'sp.runner': ID } }, // the label alone does not make it ours
     ]);
     const vols = JSON.stringify([{ Name: `sp-home-${ID}`, CreatedAt: '2026-11-12T10:00:00Z' }, { Name: 'unrelated' }]);
     const t = rig((a) => (a[1] === 'ps' ? ps : a[1] === 'volume' ? vols : ''));
     expect(await t.c.inventory()).toEqual({
-      containers: [{ id: ID, state: 'running', abi: '1', image: 'img:tag', createdAt: 1_700_000_000_000 }],
+      containers: [{ id: ID, state: 'running', abi: '1', image: 'img:tag', createdAt: 1_700_000_000_000, mounts: ['/home/agent', '/run/sp/sandbox/x'] }],
       volumes: [{ id: ID, createdAt: Date.parse('2026-11-12T10:00:00Z') }],
     });
     expect(t.calls.every((x) => x.timeoutMs === TIMEOUTS.inventory)).toBe(true);

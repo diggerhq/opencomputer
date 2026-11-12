@@ -84,12 +84,14 @@ export const CATALOG = {
   'deliver.forwarded': host('credentials_sent', 'secrets_count'),
   'runner.exited': host('busy', 'exit_reason', 'last_status'),
   // The warm pool (work 069, host/pool.ts): spare runners, their Claude Code parked before any session.
-  'pool.spare_started': host('launch_mode'),
+  // A spare that is a container (work 103) says its image and what Create and Start took.
+  'pool.spare_started': host('launch_mode', 'image', 'container.create_ms', 'container.start_ms'),
   // `reason`: version (an older release), surplus (the pool was made smaller).
   'pool.spare_evicted': host('reason'),
   // A spare that exited before it was ever ready (its Claude Code did not start).
   'pool.spare_failed': host(),
-  // A delivery that could have taken a spare and started cold. `reason`: none, credential, refused, timeout, gone (the spare exited first).
+  // A delivery that could have taken a spare and started cold. `reason`: none, credential, refused, timeout, gone (the spare exited first),
+  // bind (a spare container could not be made the thread's: its record, mounts or worktrees).
   'pool.spare_missed': host('reason'),
   // Claude subscriptions (work 077): oc-modelproxy's events, relayed by the host from its control socket.
   // A ChatGPT Responses request adds `first_output_ms` (headers written → its first output item; `ttfb_ms` ends at
@@ -114,7 +116,8 @@ export const CATALOG = {
   // The runner stepped a subscription session's model down after the seat refused it.
   'model.downgraded': runner('from', 'to'),
   // A spare became this session's runner; `duration_ms` is the claim's round trip.
-  'runner.claimed': host(),
+  // A spare container (work 103) adds what making it the thread's took: the mounts and the worktrees.
+  'runner.claimed': host('launch_mode', 'image', 'container.mount_ms', 'container.add_ms', 'container.claim_ms'),
   'turn.abandoned': host('exit_reason'),
   'token.minted': host('cache_hit', 'repos', 'kind'),
   // `trigger`: 'periodic' (the housekeeping pass) or 'pushed' (a push to the branch forks start from).

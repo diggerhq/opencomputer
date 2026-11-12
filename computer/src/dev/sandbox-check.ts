@@ -29,6 +29,9 @@
 //     sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE="$SP_IMAGE" SP_IMAGE_ABI="$SP_IMAGE_ABI" \
 //       node --import tsx src/dev/sandbox-check.ts [--keep]
 //
+// With `--spares` it runs the checks and timings of step 10 instead (spare
+// containers: sandbox-check-spares.ts), on hosts it starts and stops itself.
+//
 // Invariants:
 // - It refuses to run beside a host agent: it is a host itself, on the
 //   computer's SP_RUN and SP_DATA (or the ones in its environment, set up the
@@ -42,10 +45,11 @@
 // - It removes what it made (containers, home volumes, records, run
 //   directories, the previews table, the person directories `sandbox-check`
 //   and `sandbox-check-b`, the journal directories, the upload records, the
-//   definition it saved), pass or fail, unless `--keep`.
+//   definition it saved, every container whose run directory is below its
+//   SP_RUN: the spares), pass or fail, unless `--keep`.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import type net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
@@ -66,10 +70,12 @@ import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
 import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
+import { spareChecks } from './sandbox-check-spares.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const KEEP = process.argv.includes('--keep');
+const SPARES = process.argv.includes('--spares');
 const RUN = process.env.SP_RUN ?? '/run/slack-presence';
 const DATA = process.env.SP_DATA ?? '/data';
 const IDLE_MS = 20_000;
@@ -77,12 +83,12 @@ const IDLE_MS = 20_000;
 const ARTIFACTS_IDLE_HOURS = 0.0025;
 const NOW = Date.now() / 1000;
 const SESSION_ID = `cs_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-const definition = (about: string): WorkspaceDefinition => ({
+const definition = (about: string, repos = true): WorkspaceDefinition => ({
   name: 'sandbox-check', about,
-  repos: [
+  repos: repos ? [
     { name: 'hello', remote: 'https://github.com/octocat/Hello-World' },
     { name: 'spoon', remote: 'https://github.com/octocat/Spoon-Knife', clone: 'lazy', description: 'checked out on demand' },
-  ],
+  ] : [],
 });
 
 const t0 = Date.now();
@@ -93,8 +99,8 @@ const check = (ok: boolean, what: string) => {
   if (!ok) failed++;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms = 30_000): Promise<T | undefined> {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms = 30_000, every = 100): Promise<T | undefined> {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(every)) {
     const v = await f();
     if (v) return v;
   }
@@ -152,9 +158,13 @@ const QUINN = person('sandbox-check-b', 'U_OTHER', 'usr_sandbox_check_b');
 const preview: PreviewConfig = { tunnelToken: '', key: randomBytes(32).toString('base64url'), ports: [APP_PORT] };
 const asked: { from: string; req: PreviewRequest }[] = [];
 const names = new Map<string, number>();
+/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
+const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
+/** What the gateway's welcome carries: with `--spares` the organization's Claude credential too (a spare parks a Claude Code with it), and repositories or none. */
+const gateway = { spares: SPARES, repos: true };
 /** Protocol 4: the host serves its wire socket, and a thread with a session id gets a journal (work 084), which its container must have mounted. */
 const welcome = (about: string) =>
-  toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about), preview, wire: { key: preview.key } });
+  toHost({ t: 'welcome', protocol: 4, credentials: gateway.spares ? credentials : { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about, gateway.repos), preview, wire: { key: preview.key } });
 wss.on('connection', (c) => {
   conn = c;
   c.on('message', (d) => {
@@ -181,8 +191,6 @@ wss.on('connection', (c) => {
     }
   });
 });
-/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
-const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
 let ts = 1;
 /** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
 async function known(session: SessionSpec): Promise<string> {
@@ -211,7 +219,7 @@ function thread(owner: Person, n: number, sessionId?: string) {
       const d = randomUUID();
       const at = Date.now();
       toHost({ t: 'deliver', id: d, session: spec, msg: { userId: owner.slackUserId ?? 'U_OWNER', text, ts: `3.${ts++}` }, credentials, trace });
-      const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000);
+      const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000, SPARES ? 5 : 100);
       return { reply, ms: Date.now() - at, trace };
     },
     reports: () => events.flatMap((e) => (e.t === 'session' && e.report.key === key ? [e.report] : [])),
@@ -241,13 +249,13 @@ const reached = (name: string, t: Thread, sessionId: string): Reached => ({ name
 
 // ---- the host, and the cleanup
 
-function startHost(): ChildProcess {
+function startHost(env: Record<string, string> = {}): ChildProcess {
   const { SP_DEFINITION, WORKDIR, SLACK_BOT_TOKEN, ...rest } = process.env;
   const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check',
       SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
-      SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm' },
+      SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   for (const s of [h.stdout!, h.stderr!]) s.on('data', (d) => process.stdout.write(String(d).replace(/^(?=.)/gm, '    host| ')));
@@ -260,8 +268,10 @@ async function cleanup() {
   rmSync(path.join(DATA, 'state', 'previews.json'), { force: true });
   for (const s of [...sessions, SESSION_ID]) rmSync(path.join(DATA, 'state', 'uploads', `${s}.json`), { force: true });
   for (const s of sessions) rmSync(path.join(DATA, 'journals', s), { recursive: true, force: true });
-  for (const t of all) {
-    const id = t.id();
+  // The threads', and what no record names below this check's SP_RUN: the spares.
+  const below = (() => { try { return readdirSync(path.join(RUN, 'sandbox')); } catch { return []; } })();
+  const spares = below.filter((id) => /^[0-9a-f]{16}$/.test(id) && !records().get(id));
+  for (const id of new Set([...all.map((t) => t.id()), ...spares])) {
     if (!id) continue;
     const run = sandboxRunFor(RUN, id);
     await quiet(podman(['rm', '--force', '--volumes', containerName(id)]));
@@ -361,6 +371,31 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   welcome('second');
   const def = () => { try { return JSON.parse(readFileSync(path.join(a2.run, 'definition.json'), 'utf8')).about; } catch { return undefined; } };
   check(!!(await until(() => (def() === 'second' ? true : undefined), 10_000)) && /"about": ?"second"/.test(await a2.inside('cat $SP_DEFINITION')), 'a definition the gateway sends is written again for a running container, which reads it');
+}
+
+async function finish(host?: ChildProcess): Promise<never> {
+  clearInterval(keeping);
+  wire?.close();
+  host?.kill('SIGTERM');
+  await sleep(1500);
+  host?.kill('SIGKILL');
+  await cleanup();
+  wss.close();
+  collector.close();
+  say(failed ? `${failed} check(s) FAILED` : 'all checks passed');
+  process.exit(failed ? 1 : 0);
+}
+
+if (SPARES) {
+  let host: ChildProcess | undefined;
+  await spareChecks({
+    run: RUN, data: DATA, image: IMAGE, idleMs: IDLE_MS, say, check, until, sleep, podman, events, tel, tokenSessions, mkTrace, people: [PAT, QUINN],
+    records, clone: (p, name) => mnt.clone(p.dir, name),
+    thread: (owner, n) => { const t = thread(owner, n); all.push(t); return t; },
+    welcome: (about, repos) => { gateway.repos = repos; welcome(about); },
+    start: (env) => (host = startHost(env)),
+  }).catch((e) => check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`));
+  await finish(host);
 }
 
 const host = startHost();
@@ -476,15 +511,5 @@ try {
   await reachResumed(kit, a, b);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
-} finally {
-  clearInterval(keeping);
-  wire?.close();
-  host.kill('SIGTERM');
-  await sleep(1500);
-  host.kill('SIGKILL');
-  await cleanup();
-  wss.close();
-  collector.close();
 }
-say(failed ? `${failed} check(s) FAILED` : 'all checks passed');
-process.exit(failed ? 1 : 0);
+await finish(host);

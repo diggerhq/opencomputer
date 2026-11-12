@@ -49,6 +49,8 @@ export interface ContainerInfo {
   image: string;
   /** Unix milliseconds. */
   createdAt: number;
+  /** Where its mounts are, inside it: its run directory (mounted at its host path) says which host made it. */
+  mounts?: string[];
 }
 
 export interface Inventory {
@@ -236,7 +238,7 @@ export function containers(d: ContainersDeps) {
   async function inventory(): Promise<Inventory> {
     const args = inventoryArgs();
     const [cs, vs] = await Promise.all([as.podman(args.containers, { timeoutMs: TIMEOUTS.inventory }), as.podman(args.volumes, { timeoutMs: TIMEOUTS.inventory })]);
-    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string }[] => {
+    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: unknown }[] => {
       const v = JSON.parse(text.trim() || '[]');
       if (!Array.isArray(v)) throw new Error('podman: not a list');
       return v;
@@ -246,7 +248,8 @@ export function containers(d: ContainersDeps) {
         const id = c?.Labels?.['sp.runner'];
         // The label and the name agree for every container the host made; anything else is not ours to touch.
         if (typeof id !== 'string' || !c.Names?.includes?.(containerName(id))) return [];
-        return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000 }];
+        return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000,
+          mounts: Array.isArray(c.Mounts) ? c.Mounts.map(String) : [] }];
       }),
       volumes: list(vs).flatMap((v) => {
         const m = /^sp-home-(.+)$/.exec(String(v?.Name ?? ''));
