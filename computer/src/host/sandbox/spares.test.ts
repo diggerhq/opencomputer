@@ -121,10 +121,10 @@ describe('a spare container', () => {
     expect(b.session).not.toHaveProperty('sdkSessionId');
     expect(b.session).not.toHaveProperty('forkPath');
     expect(t.ids()).toEqual([]);
-    // Bound once: neither to a second thread, nor a second spare to the same thread.
+    // Bound once: not to a second thread. And its thread is known from now on: it takes no second spare (start-runner.ts asks).
     await expect(t.bind(id, { ...spec, key: 'C1:2.2' }, {})).rejects.toThrow(/not a spare/);
-    const other = await t.launch();
-    await expect(t.bind(other.id, spec, {})).rejects.toThrow(/has a sandbox already/);
+    expect(t.known(spec)).toBe(true);
+    expect(t.known({ ...spec, key: 'C1:2.2' })).toBe(false);
     expect(t.records.all().map((r) => r.id)).toEqual([id]);
   });
 

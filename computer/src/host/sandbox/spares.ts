@@ -11,8 +11,9 @@
 //   session and no API, no journal, and a token socket that answers nobody
 //   (host.ts: a container with no record has no session to ask for).
 // - Bound once, to one thread: `bind` takes the id out of the spares before
-//   it writes the record, and refuses a thread that already has a record (a
-//   record hit resumes; it never takes a spare).
+//   it writes the record. A thread that has a record never takes a spare (a
+//   record hit resumes): the caller asks `known` in the thread's turn, before
+//   it takes one from the pool, and binds with no step in between.
 // - A spare is made a thread's in that thread's turn (thread-lock.ts,
 //   `turn`), the one a start and a prune take, from before the record is
 //   looked for until the spare is claimed or discarded: nothing removes the
@@ -252,7 +253,6 @@ export function sandboxSpares(d: SpareDeps) {
   async function bind(id: string, spec: SessionSpec, f: Dimensions): Promise<Bound> {
     if (!mine.delete(id)) throw new Error(`${id} is not a spare of this host`);
     wake(); // the pool has one fewer: a refill that waited for the settle may not have to
-    if (d.records.find(spec.owner.dir, spec.key)) throw new Error(`${spec.key} has a sandbox already: it resumes, it takes no spare`);
     const { sdkSessionId: _transcript, forkPath: _fork, ...session } = spec; // a new home has no transcript; the runner's fork is /workspace
     const now = new Date().toISOString();
     const record: SandboxRecord = { id, person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now, unclaimed: true };

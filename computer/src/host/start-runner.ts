@@ -371,15 +371,9 @@ export function runnerStarts(d: StartDeps) {
   async function launchSpare() {
     if (d.spares) {
       // A container with no thread (sandbox/spares.ts): adopted as a spare under its own run root.
+      // It is taken on at once (not verified), so this does not reject; when it goes, its close Removes it (`closed`).
       const s = await d.spares.launch();
-      try {
-        if (s.sock.destroyed) throw new Error('spare exited while it started');
-        await adopt(s.id, s.sock, { run: s.run });
-      } catch (e) {
-        s.sock.destroy();
-        await d.spares.discard(s.id);
-        throw e;
-      }
+      await adopt(s.id, s.sock, { run: s.run });
       tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode, ...(d.image && { image: imageTag(d.image) }), 'container.create_ms': s.createMs, 'container.start_ms': s.startMs } });
       return;
     }
