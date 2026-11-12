@@ -24,6 +24,7 @@
 // Split by concept (work 103): clones.ts (layout, git, locks, cloning),
 // fork.ts (a session's fork), housekeep.ts (the periodic pass and fetches
 // after a push), prune.ts (idle forks). This file is what others import.
+// The git sequences themselves are the scripts bin/ws-*.sh (script-runner.ts).
 
 export * from './definition.js';
 export { configureAsRunner, mkdir as mkdirAsRunner } from './as-runner.js';

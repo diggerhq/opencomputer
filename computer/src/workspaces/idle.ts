@@ -10,6 +10,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
 import { command, rm } from './as-runner.js';
+import { hostScripts, row } from './script-runner.js';
 
 const exec = promisify(execFile);
 
@@ -28,7 +29,11 @@ const ARTIFACTS = new Set(['node_modules', '.next', '.nuxt', '.svelte-kit', '.tu
 const isArtifact = (dir: string, name: string) =>
   ARTIFACTS.has(name) || (name === 'target' && existsSync(path.join(dir, 'Cargo.toml')));
 
+/** A person's clones directory, from one of their forks: <root>/sessions/<key> and <root>/ws (clones.ts). */
+export const clonesOf = (fork: string) => path.join(path.dirname(path.dirname(path.resolve(fork))), 'ws');
+
 // As the runner user, like clones.ts: the host's own user fails git's ownership check on these repos.
+// Only lastUsed runs git here; what pruneArtifacts asks goes through ws-inspect.sh.
 const git = async (cwd: string, args: string[]) => {
   const c = command('git', args, { GIT_TERMINAL_PROMPT: '0' });
   return (await exec(c.cmd, c.args, { cwd, env: c.env })).stdout.trim();
@@ -76,12 +81,22 @@ async function findArtifacts(dir: string, depth = ARTIFACT_DEPTH): Promise<strin
  * ones are kept. Returns the directories removed.
  */
 export async function pruneArtifacts(forkPath: string): Promise<string[]> {
-  const removed: string[] = [];
+  const found: { wt: string; dirs: string[] }[] = [];
   for (const wt of await allWorktrees(forkPath)) {
-    for (const dir of await findArtifacts(wt)) {
-      // check-ignore exits 0 only for an ignored path; tracked files are never ignored.
-      const ignored = await git(wt, ['check-ignore', '-q', path.relative(wt, dir)]).then(() => true, () => false);
-      if (!ignored) continue;
+    const dirs = await findArtifacts(wt);
+    if (dirs.length) found.push({ wt, dirs });
+  }
+  if (!found.length) return [];
+  // ws-inspect.sh says which git ignores; tracked files are never ignored.
+  const s = hostScripts(clonesOf(forkPath));
+  const name = (wt: string) => path.relative(forkPath, wt);
+  const asked = found.flatMap(({ wt, dirs }) => dirs.map((dir) => `${name(wt)}\t${path.relative(wt, dir)}\n`)).join('');
+  const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...found.map(({ wt }) => name(wt))], { stdin: asked, timeoutMs: 0 });
+  const removed: string[] = [];
+  for (const { wt, dirs } of found) {
+    const ignored = new Set(row(out, name(wt)).slice(4));
+    for (const dir of dirs) {
+      if (!ignored.has(path.relative(wt, dir))) continue;
       await rm(dir);
       removed.push(dir);
     }

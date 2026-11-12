@@ -12,18 +12,18 @@
 // - A repository that cannot be forked is left out, not fatal to the session.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '../log.js';
 import type { CheckoutResult, Person } from '../protocol.js';
 import { isLazy, loadDefinition, type RepoDef, repoSlug } from './definition.js';
 import { repoIndex } from './repo-index.js';
-import { appendFile, mkdir, rm, touch, writeFile } from './as-runner.js';
+import { appendFile, mkdir, touch, writeFile } from './as-runner.js';
 import {
   cloneRepo, copyRootFiles, defaultBranch, errText, fetchedAt, fetchErrorType, fetchLane, fetchTimeout, forkDir, forkFetchFresh, forkFetchTimeout,
-  freshness, git, isClone, observe, observed, ok, prepareInBackground, safeKey, serial, workspaceDir, workspacePrepared,
+  freshness, isClone, observe, observed, prepareInBackground, safeKey, scriptsFor, serial, workspaceDir, workspacePrepared,
 } from './clones.js';
 import { FORK_FILE } from './idle.js';
+import { row } from './script-runner.js';
 
 export interface ForkInfo {
   key: string;
@@ -87,23 +87,11 @@ async function forkRepo(clone: string, repo: RepoDef, dest: string, branch: stri
   const fetched = Date.now();
   return serial(clone, async () => {
     const locked = Date.now();
-    if (!existsSync(dest)) {
-      // A worktree whose directory the session deleted is still registered; forget it so it can be added again.
-      await git(clone, ['worktree', 'prune']);
-      const exists = await ok(git(clone, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]));
-      // --no-track: the session pushes its own branch (`git push -u origin HEAD`), not origin/<default>.
-      // On a partial clone this downloads the checkout's file contents, so it is bounded like a fetch.
-      await git(clone, ['worktree', 'add', '--quiet', ...(exists ? [dest, branch] : ['--no-track', '-b', branch, dest, `origin/${b}`])], fetchTimeout()).catch(
-        async (e) => {
-          await rm(dest);
-          await git(clone, ['worktree', 'prune']).catch(() => {});
-          throw e;
-        },
-      );
-    } else if (!(await isWorktreeOf(dest, clone))) {
-      throw new Error(`./${path.basename(dest)} exists but is not a worktree of this workspace's ${repo.name}; move it away and check out again`);
-    }
-    const base = await git(dest, ['rev-parse', 'HEAD']);
+    // ws-add.sh: the branch if the clone has it, else a new one from origin/<b>; a destination that is already this
+    // clone's worktree is left as it is. On a partial clone the checkout downloads file contents, so it is bounded like a fetch.
+    const { s, repo: name } = scriptsFor(clone);
+    const out = await s.run('ws-add.sh', [s.clones, s.workspace(path.dirname(dest)), branch, '0', `${name}=${b}`], { timeoutMs: fetchTimeout() });
+    const [, , base] = row(out, name);
     const end = Date.now();
     observe(() => observed().repoForked?.({ repo: repo.name, ms: end - queued, fetchMs: fetched - queued, worktreeMs: end - locked,
       lockWaitMs: locked - fetched, fetchSkipped: fetch.skipped, fetchError: fetch.kind }));
@@ -124,7 +112,8 @@ async function forkFetch(clone: string, b: string): Promise<{ skipped: boolean; 
     // A fetch that finished while this one waited (housekeeping's, another fork's) may be enough.
     if (freshness.fresh(clone, forkFetchFresh())) return { skipped: true };
     const started = Date.now();
-    await git(clone, ['fetch', '--quiet', '--no-tags', 'origin', b], timeout);
+    const { s, repo } = scriptsFor(clone);
+    row(await s.run('ws-fetch.sh', [s.clones, repo, b], { timeoutMs: timeout }), repo);
     fetchedAt.set(clone, new Date().toISOString());
     freshness.fetchedFrom(clone, started);
     return { skipped: false };
@@ -140,13 +129,6 @@ async function forkFetch(clone: string, b: string): Promise<{ skipped: boolean; 
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function isWorktreeOf(dir: string, clone: string) {
-  const common = await git(dir, ['rev-parse', '--git-common-dir']).catch(() => '');
-  if (!common) return false;
-  const real = (p: string) => realpath(p).catch(() => p);
-  return (await real(path.resolve(dir, common))) === (await real(path.join(clone, '.git')));
 }
 
 /**

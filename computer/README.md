@@ -519,7 +519,7 @@ src/
   workspace.ts      scratch workdirs and git diff (one-machine mode)
   dev/              fakes and checks
 scripts/            `npm run check` helpers: file-size ratchet, import boundaries
-bin/                git credential helper and gh shim for hosts
+bin/                git credential helper and gh shim for hosts; ws-*.sh, the git sequences of src/workspaces
 definitions/        workspace definitions (computer.json + its root AGENTS.md)
 deploy/             gateway image entrypoint, VM provisioning, runbook
 ```
