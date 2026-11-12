@@ -224,10 +224,7 @@ async function orgContext(db: D1Database, orgId: string): Promise<OrgContext | n
     .first<OrgContext>();
 }
 
-/**
- * The Slack line: `🟢 jane@acme.com signed up · Acme · Google Ads / launch-oct · …`.
- * A signup adds the rest of its attribution as quoted lines below.
- */
+/** The Slack line: `🟢 jane@acme.com signed up · Acme · Google Ads / launch-oct · …`. */
 export function alertText(alert: Alert, c: OrgContext): string {
   const parts: string[] = [];
   // A personal org keeps the signup default, which only repeats the email.
@@ -241,9 +238,7 @@ export function alertText(alert: Alert, c: OrgContext): string {
     if (c.plan_intent) parts.push(`clicked ${planLabel(c.plan_intent)}`);
   }
   parts.push(...(alert.extra ?? []));
-  const line = [`${EMOJI[alert.kind]} ${c.email} ${alert.what}`, ...parts].join(" · ");
-  if (alert.kind !== "trial_started") return line;
-  return [line, ...signupDetails(c).map((d) => `> ${d}`)].join("\n");
+  return [`${EMOJI[alert.kind]} ${c.email} ${alert.what}`, ...parts].join(" · ");
 }
 
 // Slack's escaping for text: a stored value cannot become a mention or link.
@@ -257,7 +252,10 @@ function ago(sec: number): string {
   return `${Math.round(sec / 86_400)} days`;
 }
 
-/** Everything signup_attribution knows beyond the headline, one fact per line. */
+/**
+ * Everything signup_attribution knows beyond the headline, one fact per line.
+ * Posted as a thread reply to the signup, so the channel stays one line each.
+ */
 export function signupDetails(c: OrgContext): string[] {
   const out: string[] = [];
   if (c.client === "cli") out.push("Signed up from the CLI (no first-touch cookie)");
@@ -317,20 +315,9 @@ export async function sendSlackAlert(
       .run();
     if (claimed.meta?.changes !== 1) return false;
 
-    let error: string | null = null;
-    try {
-      const res = await fetchImpl("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" },
-        body: JSON.stringify({ channel, text: alertText(alert, c), unfurl_links: false, unfurl_media: false }),
-        signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-      });
-      const body = res.ok ? ((await res.json()) as { ok?: boolean; error?: string }) : null;
-      if (!body?.ok) error = body?.error ?? `http_${res.status}`;
-    } catch (err) {
-      error = err instanceof Error ? err.name : "error";
-    }
-    if (error) {
+    const posted = await postMessage(fetchImpl, token, { channel, text: alertText(alert, c) });
+    if ("error" in posted) {
+      const { error } = posted;
       // Release the claim: the cron retries activation; a webhook-driven alert
       // is posted by a later replay, if any.
       await db
@@ -340,10 +327,36 @@ export async function sendSlackAlert(
       console.error(`slack-alerts: ${alert.kind} for ${alert.orgId} failed: ${error}`);
       return false;
     }
+    const details = alert.kind === "trial_started" ? signupDetails(c) : [];
+    if (details.length) {
+      // Best effort: the headline is out, so a failed reply is not retried.
+      const reply = await postMessage(fetchImpl, token, { channel, thread_ts: posted.ts, text: details.join("\n") });
+      if ("error" in reply) console.error(`slack-alerts: details for ${alert.orgId} failed: ${reply.error}`);
+    }
     return true;
   } catch {
     console.error(`slack-alerts: ${alert.kind} for ${alert.orgId} failed`);
     return false;
+  }
+}
+
+async function postMessage(
+  fetchImpl: typeof fetch,
+  token: string,
+  message: { channel: string; text: string; thread_ts?: string },
+): Promise<{ ts: string } | { error: string }> {
+  try {
+    const res = await fetchImpl("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ ...message, unfurl_links: false, unfurl_media: false }),
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+    });
+    const body = res.ok ? ((await res.json()) as { ok?: boolean; error?: string; ts?: string }) : null;
+    if (!body?.ok) return { error: body?.error ?? `http_${res.status}` };
+    return { ts: body.ts ?? "" };
+  } catch (err) {
+    return { error: err instanceof Error ? err.name : "error" };
   }
 }
 

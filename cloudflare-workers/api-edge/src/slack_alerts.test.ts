@@ -106,13 +106,15 @@ function addOrg(
 
 function slack(fail = false) {
   const posts: Array<{ channel: string; text: string }> = [];
+  const replies: Array<{ thread_ts: string; text: string }> = [];
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     if (fail) return new Response(JSON.stringify({ ok: false, error: "not_in_channel" }), { status: 200 });
-    posts.push({ channel: body.channel, text: body.text });
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (body.thread_ts) replies.push({ thread_ts: body.thread_ts, text: body.text });
+    else posts.push({ channel: body.channel, text: body.text });
+    return new Response(JSON.stringify({ ok: true, ts: `ts-${posts.length}` }), { status: 200 });
   }) as unknown as typeof fetch;
-  return { posts, fetchImpl };
+  return { posts, replies, fetchImpl };
 }
 
 function env(db: DatabaseSync, extra: Record<string, unknown> = {}) {
@@ -138,7 +140,7 @@ describe("billing-event alerts", () => {
         plan_intent: "pro",
       },
     });
-    const { posts, fetchImpl } = slack();
+    const { posts, replies, fetchImpl } = slack();
     const alert = alertForBillingEvent({}, "billing.trial_started", org, {}, NOW)!;
     expect(await sendSlackAlert(env(db), alert, fetchImpl, NOW)).toBe(true);
     // A replayed webhook or a concurrent projection posts nothing.
@@ -146,12 +148,18 @@ describe("billing-event alerts", () => {
     expect(posts).toEqual([
       {
         channel: "#signups",
+        text: "🟢 jane@acme.com signed up · Acme · Google Ads / launch-oct · GitHub login · clicked Pro",
+      },
+    ]);
+    // The rest of the attribution goes in the signup's thread.
+    expect(replies).toEqual([
+      {
+        thread_ts: "ts-1",
         text: [
-          "🟢 jane@acme.com signed up · Acme · Google Ads / launch-oct · GitHub login · clicked Pro",
-          "> UTM: source google, medium cpc, term ai &lt;agents&gt;",
-          "> Ad click: Google",
-          "> Landed on: /pricing",
-          "> First visit: 3 days before signup",
+          "UTM: source google, medium cpc, term ai &lt;agents&gt;",
+          "Ad click: Google",
+          "Landed on: /pricing",
+          "First visit: 3 days before signup",
         ].join("\n"),
       },
     ]);
@@ -246,7 +254,7 @@ describe("emitBillingEvent", () => {
     const { posts, fetchImpl } = slack();
     vi.stubGlobal("fetch", fetchImpl);
     await emitBillingEvent(env(db), "billing.trial_started", { orgId: org, userId: "u", data: { via: "web" } });
-    expect(posts.map((p) => p.text)).toEqual(["🟢 lee@hooli.com signed up · Hooli\n> No first-touch data (cookies blocked, or before attribution)"]);
+    expect(posts.map((p) => p.text)).toEqual(["🟢 lee@hooli.com signed up · Hooli"]);
   });
 });
 
