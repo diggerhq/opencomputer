@@ -236,7 +236,7 @@ export function containers(d: ContainersDeps) {
 
   /** For the error of a start that never became ready: the unit's status and the last 50 lines the container wrote. */
   const diagnose = (id: string) =>
-    as.run(['/bin/sh', '-c', `${SYSTEMCTL} --user status --no-pager --lines=0 "$1" 2>&1; echo '--- podman logs'; /usr/bin/podman ${logsArgs(id).slice(0, -1).join(' ')} "$2" 2>&1; true`,
+    as.run(['/bin/sh', '-c', `${SYSTEMCTL} --user status --no-pager --lines=0 "$1" 2>&1 | cut -c1-200; echo '--- podman logs'; /usr/bin/podman ${logsArgs(id).slice(0, -1).join(' ')} "$2" 2>&1; true`,
       'sh', unitName(id), containerName(id)], { timeoutMs: TIMEOUTS.inventory }).then((s) => s.trim(), (e) => `no diagnosis: ${e?.message ?? e}`);
 
   return { create, up, stop, remove, recreate, inventory, execIn, stale, unitActive, diagnose };

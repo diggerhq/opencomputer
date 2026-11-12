@@ -97,8 +97,14 @@ export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: Node
         await promisify(execFile)(c.cmd, c.args, { env: c.env, cwd: '/', timeout: timeoutMs, killSignal: 'SIGKILL' });
         return;
       } catch (e: any) {
-        if (i >= 10 || !/already/.test(String(e?.stderr ?? e?.message))) throw e;
-        await sleep(300);
+        if (i < 10 && /already/.test(String(e?.stderr ?? e?.message))) {
+          await sleep(300);
+          continue;
+        }
+        // execFile's own message is the whole command line; a container's start says why instead (it reaches the gateway's reply).
+        if (how !== 'podman') throw e;
+        const why = e?.killed ? `no answer in ${timeoutMs} ms` : String(e?.stderr ?? '').trim().split('\n').pop() || `exit ${e?.code ?? e?.signal}`;
+        throw new Error(`unit ${unitName(rs.id!)} did not start: ${why}`);
       }
   }
   // Own session and process group, output to a log file: survives the host.
