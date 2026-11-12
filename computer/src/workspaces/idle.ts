@@ -1,7 +1,7 @@
 // When a session fork was last used, and pruning the build and dependency
 // directories of idle ones (work 071): a Node worktree's node_modules is about
 // 1 GiB, the bulk of a fork on disk, and an install or build brings each back.
-// index.ts prunes whole forks.
+// prune.ts prunes whole forks.
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -28,7 +28,7 @@ const ARTIFACTS = new Set(['node_modules', '.next', '.nuxt', '.svelte-kit', '.tu
 const isArtifact = (dir: string, name: string) =>
   ARTIFACTS.has(name) || (name === 'target' && existsSync(path.join(dir, 'Cargo.toml')));
 
-// As the runner user, like index.ts: the host's own user fails git's ownership check on these repos.
+// As the runner user, like clones.ts: the host's own user fails git's ownership check on these repos.
 const git = async (cwd: string, args: string[]) => {
   const c = command('git', args, { GIT_TERMINAL_PROMPT: '0' });
   return (await exec(c.cmd, c.args, { cwd, env: c.env })).stdout.trim();

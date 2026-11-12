@@ -5,7 +5,7 @@
 // Invariant: the fork is complete (every worktree added, .fork.json written)
 // before `coldStart` resolves, and the host hands the runner its socket
 // connection, and with it `credentials` and the first `deliver`, only after
-// that (host/main.ts `adopt`). The runner process itself may boot inside the
+// that (host/start-runner.ts `adopt`). The runner process itself may boot inside the
 // still-empty fork directory: until it has credentials it only listens on its
 // socket and never reads its cwd, so Claude Code never starts, nor sees the
 // fork, before the worktrees exist. If the fork fails, a runner that already
