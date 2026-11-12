@@ -12,7 +12,8 @@
 # order given: a parent before what is mounted inside it.
 #
 # Exit: 0 done; 2 bad arguments, or a source outside the roots or through a
-# link; 3 the pid is gone or is not that container; 4 a system call failed.
+# link; 3 the pid is gone or is not that container; 4 a system call failed, or
+# anything this script did not foresee (never Python's own 1).
 # A failure prints one line on stderr, `<call> <path>: <reason>`.
 #
 # Invariants:
@@ -29,6 +30,9 @@
 #   from `/` one component at a time (RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS);
 # - a destination that is already a mount root is left alone, so a second run
 #   with the same arguments changes nothing;
+# - a mount arrives `nosuid,nodev` and private, as a `-v` of Podman's does:
+#   the copy is a slave of the host's mount otherwise, and takes what the
+#   host later mounts below the source;
 # - mounts made before a failure stay: the caller stops the container, which
 #   discards them;
 # - one thread, always: setns(CLONE_NEWUSER) refuses a process with more.
@@ -49,6 +53,7 @@ SYS_STATX = {'x86_64': 332, 'aarch64': 291}
 SYS_OPEN_TREE = 428
 SYS_MOVE_MOUNT = 429
 SYS_OPENAT2 = 437
+SYS_MOUNT_SETATTR = 442
 
 AT_EMPTY_PATH = 0x1000
 AT_RECURSIVE = 0x8000
@@ -56,6 +61,9 @@ OPEN_TREE_CLONE = 0x1
 OPEN_TREE_CLOEXEC = os.O_CLOEXEC
 MOVE_MOUNT_F_EMPTY_PATH = 0x4
 MOVE_MOUNT_T_EMPTY_PATH = 0x40
+MOUNT_ATTR_NOSUID = 0x2
+MOUNT_ATTR_NODEV = 0x4
+MS_PRIVATE = 1 << 18
 RESOLVE_NO_MAGICLINKS = 0x02
 RESOLVE_NO_SYMLINKS = 0x04
 RESOLVE_BENEATH = 0x08
@@ -148,6 +156,10 @@ def open_source(src, roots):
         tree = libc.syscall(ctypes.c_long(SYS_OPEN_TREE), ctypes.c_int(fd), ctypes.c_char_p(b''), ctypes.c_uint(flags))
         if tree < 0:
             raise failed('open_tree', src)
+        # struct mount_attr: attr_set, attr_clr, propagation, userns_fd.
+        attr = struct.pack('QQQQ', MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, 0, MS_PRIVATE, 0)
+        if libc.syscall(ctypes.c_long(SYS_MOUNT_SETATTR), ctypes.c_int(tree), ctypes.c_char_p(b''), ctypes.c_uint(AT_EMPTY_PATH | AT_RECURSIVE), ctypes.c_char_p(attr), ctypes.c_size_t(len(attr))) != 0:
+            raise failed('mount_setattr', src)
         os.close(fd)
         os.close(rootfd)
         return tree
@@ -215,8 +227,11 @@ def main(argv):
     # 1. The process, held, and that it is the container.
     try:
         pidfd = os.pidfd_open(int(pid))
+    except OverflowError:
+        raise Fail(3, 'pidfd_open', pid, 'no such process') from None
     except OSError as e:
-        raise Fail(3 if e.errno == errno.ESRCH else 4, 'pidfd_open', pid, e.strerror) from None
+        # EINVAL: a number no pid can have (above the kernel's limit).
+        raise Fail(3 if e.errno in (errno.ESRCH, errno.EINVAL) else 4, 'pidfd_open', pid, e.strerror) from None
     try:
         procfd = os.open(f'/proc/{pid}', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as e:
@@ -249,3 +264,6 @@ if __name__ == '__main__':
     except Fail as e:
         sys.stderr.write(f'{e}\n')
         sys.exit(e.code)
+    except Exception as e:  # noqa: BLE001 - the caller reads the exit code; 1 would mean nothing to it
+        sys.stderr.write(f"unexpected {type(e).__name__}: {' '.join(str(e).split())}\n")
+        sys.exit(4)

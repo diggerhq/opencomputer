@@ -15,7 +15,10 @@ function mount(args: string[], env: Record<string, string> = { SP_DATA: '/data' 
   return { code: r.status, stderr: r.stderr };
 }
 
-describe.skipIf(process.platform !== 'linux')('bin/sandbox-mount.py', () => {
+// Needs Linux (pidfd, /proc/<pid>/cgroup) and a python3 on PATH.
+const runnable = process.platform === 'linux' && spawnSync('python3', ['--version']).status === 0;
+
+describe.skipIf(!runnable)('bin/sandbox-mount.py', () => {
   it.each([
     ['too few arguments', [String(process.pid), ID, 'p']],
     ['a pid that is not a number', ['1x', ID, 'p', PAIR]],
@@ -40,6 +43,12 @@ describe.skipIf(process.platform !== 'linux')('bin/sandbox-mount.py', () => {
     const r = mount([String(gone), ID, 'p', PAIR]);
     expect(r.code).toBe(3);
     expect(r.stderr).toMatch(/^(pidfd_open|open) .+: .+\n$/);
+  });
+
+  it.each(['4194305', '4294967296', '9999999999'])('exits 3 on pid %s, which no process can have', (pid) => {
+    const r = mount([pid, ID, 'p', PAIR]);
+    expect(r.code).toBe(3);
+    expect(r.stderr).toMatch(/^pidfd_open \d+: .+\n$/);
   });
 
   it('exits 3 on a process that is not in that runner unit, before opening any source', () => {
