@@ -29,7 +29,7 @@ import type {
 } from '../protocol.js';
 import type { RunnerApi } from '../protocol-api.js';
 import { forkDir, forkInfo, mkdirAsRunner, workspacePrepared, workspacesEnabled } from '../workspaces/index.js';
-import { lines, send, socketFor } from '../ipc.js';
+import { type RunRoot, lines, send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 import type { Dimensions } from '../telemetry/envelope.js';
@@ -69,6 +69,8 @@ export interface StartDeps {
   tm: Telemetry;
   /** How runners are launched (launch.ts): the mode, the host's environment and its release. */
   launch: { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string };
+  /** The run root runners are started under (ipc.ts). */
+  run: RunRoot;
   version: string;
   pool: Pool<Runner>;
   /** The organization's credentials as the gateway last sent them. */
@@ -80,7 +82,7 @@ export interface StartDeps {
   /** Work 084: the session's journal, socket and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string): Promise<RunnerApi | undefined>;
   /** The runner's own token socket, naming the session it serves now (tokens.ts). */
-  serveTokens(id: string, sock: net.Socket, session: () => string | undefined): void;
+  serveTokens(id: string, session: () => string | undefined): { close(): void };
   fillPool(): void;
   /** Run a fork so its workspace events join the delivery's trace. */
   inFork<T>(f: Dimensions, fn: () => Promise<T>): Promise<T>;
@@ -108,7 +110,8 @@ export function runnerStarts(d: StartDeps) {
    * `first`: the delivery's credentials, sent instead of the welcome ones, since the runner starts its harness with the first it gets. */
   function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName } = {}): Promise<Runner> {
     const r: Runner = { id, key: o.key ?? '', sock, lastDelivery: Date.now(), connectedAt: Date.now(), calls: new Map(), harness: o.harness };
-    d.serveTokens(id, sock, () => r.key); // its own token socket names the session it serves now (work 080)
+    const tokens = d.serveTokens(id, () => r.key); // its own token socket names the session it serves now (work 080)
+    sock.once('close', () => tokens.close()); // gone with the runner
     return new Promise((resolve, reject) => {
       const take = (m?: First) => {
         if (m?.t === 'report') (r.key = m.report.key), (r.harness ??= m.report.harness);
@@ -179,7 +182,7 @@ export function runnerStarts(d: StartDeps) {
     const { ready: sock } = await coldStart({
       dir,
       fork: existing ? undefined : () => d.inFork(f, () => forkFor(tm, spec, f)),
-      start: (cwd) => launchRunner({ id, session: { ...spec, forkPath: cwd }, socket: socketFor(id), api: runnerApi && { ...runnerApi, token: '' }, version: d.version }, { ...d.launch, f }),
+      start: (cwd) => launchRunner({ id, session: { ...spec, forkPath: cwd }, socket: socketFor(d.run, id), api: runnerApi && { ...runnerApi, token: '' }, version: d.version }, { ...d.launch, f }),
       abandon: d.exit,
     });
     if (sock.destroyed) throw new Error('runner exited while its fork was made');
@@ -192,7 +195,7 @@ export function runnerStarts(d: StartDeps) {
   /** Start a spare for the pool: a runner with no session, which parks a Claude Code once it has credentials (a Codex claim replaces it). */
   async function launchSpare() {
     const id = newRunnerId();
-    await adopt(id, await launchRunner({ id, socket: socketFor(id), version: d.version }, d.launch));
+    await adopt(id, await launchRunner({ id, socket: socketFor(d.run, id), version: d.version }, d.launch));
     tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode } });
   }
 

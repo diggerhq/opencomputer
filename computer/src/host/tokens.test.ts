@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { createTelemetry } from '../telemetry/emitter.js';
 import type { HostToGateway } from '../protocol.js';
-import { tokenRelay } from './tokens.js';
+import { tokenSocketFor } from '../ipc.js';
+import { freshTokenDir, tokenRelay } from './tokens.js';
 
 const run = promisify(execFile);
 const helper = path.resolve('bin/git-credential-slack-presence');
@@ -75,15 +76,17 @@ describe('token relay', () => {
 
   it("gives each runner its own socket in a setgid directory it cannot write, gone when the runner goes", async () => {
     const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
-    const dir = path.join(mkdtempSync(path.join(tmpdir(), 'tokens-')), 'runners');
-    const relay = tokenRelay(() => false, tm, dir);
+    const root = mkdtempSync(path.join(tmpdir(), 'tokens-'));
+    const relay = tokenRelay(() => false, tm);
+    const dir = freshTokenDir(root);
     // 02750: the sockets made here keep SP_RUN's group, so runners running as another user still reach them (work 077).
     expect(statSync(dir).mode & 0o7777).toBe(0o2750);
-    const runner = new net.Socket();
-    relay.serveRunner('r1', runner, () => 'T1:C1:1.1');
+    const serving = relay.serveRunner(root, 'r1', () => 'T1:C1:1.1');
+    expect(relay.serveRunner(root, 'r1', () => 'T1:C2:2.2')).toBe(serving); // once per runner
     const sock = path.join(dir, 'r1.sock');
+    expect(sock).toBe(tokenSocketFor(root, 'r1'));
     await vi.waitFor(() => expect(existsSync(sock)).toBe(true));
-    runner.destroy();
+    serving.close();
     await vi.waitFor(() => expect(existsSync(sock)).toBe(false));
   });
 

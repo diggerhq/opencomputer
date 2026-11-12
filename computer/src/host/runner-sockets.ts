@@ -11,8 +11,8 @@
 import net from 'node:net';
 import path from 'node:path';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { HOST_RUN, type HostToRunner, type RunnerSpec } from '../protocol.js';
-import { RUNNERS_DIR, pidFileFor, send } from '../ipc.js';
+import { type HostToRunner, type RunnerSpec } from '../protocol.js';
+import { type RunRoot, pidFileFor, runnersDir, secretsFor, send } from '../ipc.js';
 import { log } from '../log.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 import type { Dimensions } from '../telemetry/envelope.js';
@@ -68,7 +68,8 @@ function drop(p: string) {
   }
 }
 
-export async function rediscover(adopt: (id: string, sock: net.Socket) => Promise<unknown>) {
+export async function rediscover(run: RunRoot, adopt: (id: string, sock: net.Socket) => Promise<unknown>) {
+  const RUNNERS_DIR = runnersDir(run);
   mkdirSync(RUNNERS_DIR, { recursive: true });
   const live = new Set<string>();
   const names = readdirSync(RUNNERS_DIR);
@@ -90,7 +91,7 @@ export async function rediscover(adopt: (id: string, sock: net.Socket) => Promis
   }
   // A runner that was killed outright left its secrets behind (session-secrets.ts), named as its socket.
   // They are the runners' user's (0700), so removed as that user; one left behind never stops the host.
-  const secretsDir = path.join(HOST_RUN, 'secrets');
+  const secretsDir = path.dirname(secretsFor(run, 'x'));
   let left: string[] = [];
   try {
     left = existsSync(secretsDir) ? readdirSync(secretsDir) : [];
@@ -98,7 +99,7 @@ export async function rediscover(adopt: (id: string, sock: net.Socket) => Promis
     log.warn(`cannot list ${secretsDir}: ${e?.message ?? e}`);
   }
   for (const d of left.filter((d) => !live.has(d)))
-    await rm(path.join(secretsDir, d)).catch((e) => log.warn(`secrets of ${d} not removed: ${e?.message ?? e}`));
+    await rm(secretsFor(run, d)).catch((e) => log.warn(`secrets of ${d} not removed: ${e?.message ?? e}`));
   return live;
 }
 
