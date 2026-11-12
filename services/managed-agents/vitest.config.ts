@@ -269,7 +269,7 @@ export default defineConfig({
         ],
         test: {
           name: "computer",
-          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-hosted-do.test.ts"],
+          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts"],
         },
       },
       {

@@ -89,14 +89,14 @@ import {
   sizeFor,
   sizeShape,
 } from "./config.js";
-import { computerHarnesses, takeHarnessPrefix } from "./harnesses.js";
+import { DEFAULT_HARNESS, computerHarnesses, harnessOnProfile, helloProfiles, profileHarnesses, takeHarnessPrefix } from "./harnesses.js";
 import { type SealPurpose, seal, sha256Hex, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
 import { type Linked, LINK_TIMEOUT_MS, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
-import { MANAGED_MODEL_PROVIDER, modelCredentials, requestManagedModelKey } from "./model-key.js";
+import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, modelCredentials, requestManagedModelKey } from "./model-key.js";
 import { mintOpenComputerKey } from "./opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./parking.js";
@@ -109,6 +109,7 @@ import { type ApiCaller, type ApiOp, type ApiReply, ComputerSessionsApi } from "
 import type { PreviewComputerState } from "../previews/worker.js";
 import {
   CALVIN_API_PROTOCOL,
+  CALVIN_MODEL_PROTOCOL,
   CALVIN_PROTOCOL_VERSION,
   type CalvinGatewayToHost,
   type CalvinTraceContext,
@@ -126,6 +127,8 @@ import {
   type CalvinReadThreadRequest,
   type CalvinSpawnRequest,
   type CalvinSpawnResult,
+  type ModelProfile,
+  type ModelRoute,
   type SecretRequest,
   type SessionSecret,
   type WorkspaceDefinition,
@@ -543,8 +546,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       accountId: () => this.accountId(),
       teamId: () => this.setting("slackTeamId") ?? "",
       slack: (method, body) => this.slack(method, body),
-      harnesses: () => computerHarnesses(this.hostFeatures()),
+      harnesses: () => this.harnesses(),
       host: () => this.liveHost(),
+      managedRoute: async () => (await this.managedModel((await this.organizationModelKey()).key)).route,
       send: (frame) => this.send(frame),
       schedule: (purpose) => this.purposeScheduler(purpose),
       liveSessions: () => this.liveSessions(),
@@ -724,30 +728,77 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return this.keptHostFeatures() ?? this.liveHost()?.features;
   }
 
+  /**
+   * The profiles a host at protocol 5 listed in its hello (work 097), kept as
+   * its features are and read once per object. A hello without any (its model
+   * proxy is down) leaves them; a hello below 5 forgets them.
+   */
+  private keptProfiles?: { value: ModelProfile[] | undefined };
+  private keptHostProfiles(): ModelProfile[] | undefined {
+    if (this.keptProfiles) return this.keptProfiles.value;
+    let value: ModelProfile[] | undefined;
+    try {
+      value = helloProfiles(JSON.parse(this.setting("hostProfiles") ?? "null"));
+    } catch {
+      // Unreadable: as if never recorded.
+    }
+    this.keptProfiles = { value };
+    return value;
+  }
+
+  private recordHostProfiles(profiles: ModelProfile[] | undefined): void {
+    if (JSON.stringify(profiles) === JSON.stringify(this.keptHostProfiles())) return;
+    if (profiles) this.put("hostProfiles", JSON.stringify(profiles));
+    else this.remove("hostProfiles");
+    this.keptProfiles = { value: profiles };
+    console.log(JSON.stringify({ level: "info", event: "computer.host_profiles_changed", profiles: profiles?.map((p) => p.name) ?? null }));
+  }
+
+  /** The harnesses this computer can run (harnesses.ts): by its host's profiles once it has listed them, by its features until then. */
+  private harnesses(): CalvinHarness[] {
+    const profiles = this.keptHostProfiles();
+    return profiles ? profileHarnesses(profiles) : computerHarnesses(this.hostFeatures());
+  }
+
   /** Work 084 rollout gate: whether this organization's host is spoken to at v4 (api-gate.ts). */
   private apiEnabled(): boolean {
     return computerApiEnabled(this.env.COMPUTER_API_ORGS, this.setting("accountId"));
   }
 
-  /** The protocol every `welcome` says: ours, or v3 for an organization the gate holds back. */
-  private welcomeProtocol(): number {
-    return this.apiEnabled() ? CALVIN_PROTOCOL_VERSION : GATED_PROTOCOL;
+  /**
+   * Whether a host that said `protocol` (the connected one's, by default) is
+   * spoken to at protocol 5 (work 097): the one test in this object that
+   * tells the two protocols apart, made on the host's hello and nothing else.
+   * It and what it guards go when no host says 4.
+   */
+  private speaksProfiles(protocol = this.liveHost()?.protocol ?? 0): boolean {
+    return protocol >= CALVIN_MODEL_PROTOCOL;
   }
 
-  /** The connected host's hello `protocol` (at most v3 when gated off, recorded at its hello) and `features`; undefined when none is connected. */
-  private liveHost(): { protocol: number; features: string[] } | undefined {
+  /** The protocol every `welcome` says: ours (5 to a host that said 5), or v3 for an organization the gate holds back. */
+  private welcomeProtocol(): number {
+    if (!this.apiEnabled()) return GATED_PROTOCOL;
+    return this.speaksProfiles() ? CALVIN_MODEL_PROTOCOL : CALVIN_PROTOCOL_VERSION;
+  }
+
+  /**
+   * The connected host's hello `protocol` (at most v3 when gated off, recorded at its hello) and `features`, and
+   * the `profiles` kept from a hello at protocol 5; undefined when none is connected.
+   */
+  private liveHost(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined {
     const socket = this.socket();
     if (!socket) return undefined;
+    const profiles = this.keptHostProfiles();
     try {
       const a = socket.deserializeAttachment() as HostAttachment | null;
-      return { protocol: a?.protocol ?? 1, features: a?.features ?? [] };
+      return { protocol: a?.protocol ?? 1, features: a?.features ?? [], ...(profiles ? { profiles } : {}) };
     } catch {
       return { protocol: 1, features: [] };
     }
   }
 
   /** The host the sessions API sees: below protocol 4 until its welcome is sent (review r3 P2). */
-  private apiHost(): { protocol: number; features: string[] } | undefined {
+  private apiHost(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined {
     const socket = this.socket();
     if (!socket) return undefined;
     let welcomed = true;
@@ -1748,7 +1799,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       "slackBotToken",
       await seal(link.botToken, this.env.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${accountId}\0${link.teamId}`),
     );
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
     // Work 081: the installer's token from the dashboard moves to their Slack id (never throws).
     if (link.installerUserId && link.dashboardUserId) await this.access.agents.rekey(link.dashboardUserId, link.installerUserId);
     return { previousTeamId: previous && previous !== link.teamId ? previous : null };
@@ -1766,7 +1817,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.ctx.storage.sql.exec("DELETE FROM join_requests");
     // Other threads' text read for that workspace goes with it.
     this.ctx.storage.sql.exec("UPDATE dispatches SET payload = json_remove(payload, '$.linked') WHERE json_extract(payload, '$.linked') IS NOT NULL");
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
     return { teamId };
   }
 
@@ -2708,7 +2759,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.send({
       t: "welcome",
       protocol: this.welcomeProtocol(),
-      credentials: await this.credentials(),
+      ...(await this.hostCredentials()),
       people: this.people(),
       definition,
       ...preview,
@@ -2868,6 +2919,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         ...(stored?.forkPath ? { forkPath: stored.forkPath } : {}),
         // Work 082: a ChatGPT route runs Codex (only ever sent to a host at protocol 3 with the feature).
         ...(model.mode === "subscription" && model.provider === "chatgpt" ? { harness: "codex" as const } : {}),
+        // Protocol 5: a session runs Codex when it asked to and its route's profile serves Codex.
+        ...(model.mode === "profile" && harnessOnProfile(this.liveHost()?.profiles, model.profile, this.access.models.harness(row.key)) === "codex"
+          ? { harness: "codex" as const }
+          : {}),
       },
       msg: {
         userId: dispatch.userId,
@@ -2879,7 +2934,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       },
       credentials,
       secrets,
-      ...(model.mode === "subscription" ? { model } : {}),
+      // `managed` is the absence of a route: the host uses `credentials` (protocol 4) or `models` (5). Every other route is sent.
+      ...(model.mode === "managed" ? {} : { model }),
       ...(api ? { epoch: api.epoch, lastSeq: api.lastSeq } : {}),
       ...this.telemetry.sentTrace(dispatch),
     };
@@ -2915,8 +2971,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     } catch {
       return;
     }
-    // A pool computer runs no sessions: only its hello, and answers to its own token checks (work 081).
-    if (event.t !== "hello" && event.t !== "probed" && isPoolId(this.setting("accountId") ?? "")) return;
+    // A pool computer runs no sessions: only its hello, and answers to its own token checks (work 081; `model-response` at protocol 5).
+    if (event.t !== "hello" && event.t !== "probed" && event.t !== "model-response" && isPoolId(this.setting("accountId") ?? "")) return;
     switch (event.t) {
       case "hello":
         return this.hello(ws, event);
@@ -2983,7 +3039,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       case "probed":
         return this.access.models.probed(event.id, event.result, event.error);
       case "model-bound":
-        return this.access.models.bound(event.sessionKey, event.mode, event.fingerprint);
+        return this.access.models.bound(event.sessionKey, event.mode, event.key ?? event.fingerprint, event.profile);
+      // Work 097, protocol 5: what an upstream answered on a session's credential, and the answer to a `model-request`.
+      case "model-observed":
+        return this.access.models.observed?.(event);
+      case "model-response":
+        return this.access.models.responded?.(event);
       case "model-health":
         return this.access.models.health(event);
       case "model-denied":
@@ -3059,6 +3120,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     } satisfies HostAttachment);
     // A pool slot's hello isn't the organization's computer's: its own hello as the organization comes after the claim.
     if (!isPoolId(this.setting("accountId") ?? "")) this.recordHostFeatures(features ?? []);
+    // Work 097: a host at protocol 5 lists its model proxy's profiles; without them (the proxy is down) the last list stands.
+    const profiles = helloProfiles(event.profiles);
+    if (!this.speaksProfiles(protocol)) this.recordHostProfiles(undefined);
+    else if (profiles) this.recordHostProfiles(profiles);
     this.telemetry.connected(event.version, previous);
     if ((event.protocol ?? 1) < CALVIN_PROTOCOL_VERSION) {
       // Expected of every host until calvin #129 ships protocol 3: a note, not a warning.
@@ -3082,7 +3147,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       JSON.stringify({
         t: "welcome",
         protocol: this.welcomeProtocol(),
-        credentials: await this.credentials(),
+        ...(await this.hostCredentials()),
         people: this.people(),
         ...(definition ? { definition } : {}),
         ...(await this.telemetry.credential(event.hostId)),
@@ -3331,28 +3396,49 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return true;
   }
 
-  /** The host's credentials; `credentials.resolved` on `t` (or its own emitter), with where the model key came from. */
+  /** The host's credentials, as a `deliver` carries them. */
   private async credentials(telemetry?: GatewayTelemetry): Promise<CalvinHostCredentials> {
+    return (await this.hostCredentials(telemetry)).credentials;
+  }
+
+  /**
+   * What a `welcome` or a `credentials` frame carries: the host's credentials
+   * and, at protocol 5, `models`, the route of a session whose delivery names
+   * none. `credentials.resolved` on `t` (or its own emitter), with where the
+   * model key came from.
+   */
+  private async hostCredentials(telemetry?: GatewayTelemetry): Promise<Pick<Extract<CalvinGatewayToHost, { t: "credentials" }>, "credentials" | "models">> {
     return this.telemetry.within(telemetry, async (t) => {
       const span = t.start("credentials.resolved");
       try {
         const teamId = this.setting("slackTeamId");
         const { key, source } = await this.organizationModelKey();
-        const { credentials: model, fallback } = modelCredentials(key, this.env);
-        if (fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
+        const model = await this.managedModel(key);
+        if (model.fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
         const credentials = {
           slackBotToken: await this.slackBotToken(),
           slackBotUserId: this.setting("slackBotUserId") ?? "",
           ...(teamId ? { teamId } : {}),
-          ...model,
+          ...model.credentials,
         };
         span.end({ outcome: "completed", data: { source } });
-        return credentials;
+        return { credentials, ...(model.route.mode === "managed" ? {} : { models: { [DEFAULT_HARNESS]: model.route } }) };
       } catch (error) {
         span.end({ outcome: "failed", error_type: "unknown" });
         throw error;
       }
     });
+  }
+
+  /**
+   * The organization's managed models as the connected host takes them
+   * (model-key.ts). Below protocol 5: the key in the host's credentials, and
+   * the route `managed`. At 5 (work 097): no key in the credentials, and the
+   * profile route that carries it, or a refusal.
+   */
+  private async managedModel(key: string | null): Promise<{ credentials: ModelCredentials; route: ModelRoute; fallback: boolean }> {
+    if (this.speaksProfiles()) return { credentials: {}, ...(await managedModelRoute(key, this.env, this.liveHost()?.profiles)) };
+    return { ...modelCredentials(key, this.env), route: { mode: "managed" } };
   }
 
   /**
@@ -3442,7 +3528,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (!accountId || isPoolId(accountId)) return;
     this.unsealed.clear();
     await this.refreshModelKey(accountId);
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
   }
 
   private provisionModelKey(accountId: string): void {
@@ -3456,7 +3542,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         return;
       }
       console.log(JSON.stringify({ level: "info", event: "computer.model_key_provisioned", accountId }));
-      this.send({ t: "credentials", credentials: await this.credentials() });
+      this.send({ t: "credentials", ...(await this.hostCredentials()) });
     })()
       .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "computer.model_key_provision_failed", accountId, message: errorText(error) })))
       .finally(() => {

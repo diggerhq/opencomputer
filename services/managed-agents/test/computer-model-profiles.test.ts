@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { harnessOnProfile, helloProfiles, profileHarnesses } from "../src/computer/harnesses.js";
+import { noModelAccess } from "../src/computer/model-access.js";
 import { NO_MODEL_CREDENTIAL, listsProfile, managedModelRoute, modelKey } from "../src/computer/model-key.js";
 import type { ModelProfile } from "../src/computer/protocol.js";
 
@@ -97,5 +98,15 @@ describe("a hello's profiles", () => {
     // A profile the host did not list, or a host that listed none: the wanted one.
     expect(harnessOnProfile(LISTED, "unknown", "codex")).toBe("codex");
     expect(harnessOnProfile(undefined, "openrouter", "codex")).toBe("codex");
+  });
+});
+
+describe("noModelAccess at protocol 5", () => {
+  it("gives no session a route of its own (each runs on the host's `models`), and ignores what the host observed", async () => {
+    const access = noModelAccess();
+    expect(await access.models.forDelivery({ key: "T:C:1", ownerId: "U1" }, "U1")).toEqual({ route: { mode: "managed" }, reason: "no_subscription" });
+    expect(await access.models.observed?.({ sessionKey: "T:C:1", key: "k", profile: "openrouter", status: 401 })).toBeUndefined();
+    expect(access.models.responded?.({ id: "r1", status: 200 })).toBeUndefined();
+    access.models.bound("T:C:1", "profile", "k", "openrouter");
   });
 });

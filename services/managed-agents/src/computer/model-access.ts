@@ -21,7 +21,7 @@ import { sha256Hex } from "./crypto.js";
 import { DEFAULT_HARNESS } from "./harnesses.js";
 import { MANAGED_MODEL_NAME } from "./model-key.js";
 import type { PoolProbeResult } from "./pool.js";
-import type { CalvinGatewayToHost, CalvinHarness, ModelProvider, ModelRoute, ModelUsage } from "./protocol.js";
+import type { CalvinGatewayToHost, CalvinHarness, ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "./protocol.js";
 import type { SlackResult } from "./slack.js";
 import type { SubscriptionEventName } from "./telemetry/catalog.js";
 import type { EventFields } from "./telemetry/emitter.js";
@@ -297,8 +297,13 @@ export interface ModelAccessModels {
   emit<N extends SubscriptionEventName>(name: N, fields: EventFields<N>): void;
   /** `model-denied` from the host: the seat lacks a model; new threads start on `fallbackTo`. */
   denied(owner: string | undefined, fallbackTo: string, provider?: ModelProvider): Promise<void>;
-  /** `model-bound` from the host: what the proxy says a session runs on now. */
-  bound(sessionKey: string, mode: string, fingerprint: string | undefined): void;
+  /** `model-bound` from the host: what the proxy says a session runs on now. At protocol 5 `fingerprint` is the frame's `key`, and `profile` its profile. */
+  bound(sessionKey: string, mode: string, fingerprint: string | undefined, profile?: string): void;
+  // Protocol 5 (work 097). Optional only while a build may still compose an implementation written for 4.
+  /** `model-observed` from the host: what an upstream answered on a session's credential. */
+  observed?(observed: ModelObserved): Promise<void>;
+  /** `model-response` from the host: the answer to a `model-request` of this implementation's. */
+  responded?(response: ModelResponse): void;
 }
 
 /** The person's agent from the dashboard (work 081) and the link between a dashboard user and their Slack identity. */
@@ -366,8 +371,17 @@ export interface ModelAccessDeps {
   slack(method: string, body: Record<string, unknown>): Promise<SlackResult>;
   /** The harnesses this computer can run (harnesses.ts `computerHarnesses`, from the host's latest recorded hello). */
   harnesses: () => readonly CalvinHarness[];
-  /** The connected host's hello `protocol` and `features`; undefined when no host is connected. */
-  host(): { protocol: number; features: string[] } | undefined;
+  /**
+   * The connected host's hello `protocol` and `features`, and for a host at protocol 5 the `profiles` its
+   * hello listed (undefined there: it never listed any); undefined when no host is connected.
+   */
+  host(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined;
+  /**
+   * The organization's managed models as a route the connected host takes: `managed` below protocol 5; at 5
+   * the profile route with the organization's key (model-key.ts `managedModelRoute`), which the host also has
+   * as `models`. For a session that must be told so, having been sent another route.
+   */
+  managedRoute(): Promise<ModelRoute>;
   /** A frame to the host; false when none is connected. */
   send(frame: CalvinGatewayToHost): boolean;
   /** The object's alarm for one purpose: `at` arms it, null disarms it. */
@@ -440,6 +454,8 @@ export function noModelAccess(deps?: Pick<ModelAccessDeps, "harnesses">): ModelA
       emit: () => undefined,
       denied: async () => undefined,
       bound: () => undefined,
+      observed: async () => undefined,
+      responded: () => undefined,
     },
     agents: {
       view,
