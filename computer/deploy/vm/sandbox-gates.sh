@@ -6,7 +6,8 @@
 # `slack-presence-runners.slice`). Never on a computer that serves threads: it
 # installs packages, loads and unloads an AppArmor profile, adds firewall
 # rules and starts containers. It refuses to start where the host's unit is
-# active or enabled, or a runner unit or container exists.
+# active, or a runner unit or container exists (enabled alone says nothing:
+# provisioning enables the unit on every computer, with or without a host.env).
 #
 #   sudo deploy/vm/sandbox-gates.sh [-i <image>] [-r <release>] [-k] [G1 ... G9]
 #
@@ -54,7 +55,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LOG=/var/log/sp-sandbox-gates-$(date -u +%Y%m%dT%H%M%SZ).log
 
 IMAGE='' RELEASE='' KEEP=0 FAILED=0 RESULT='' PID=0 FIRST_CREATE_MS='' IDS=()
-NETWORK=pasta CREATE_MORE=() PROFILE_OFF=0 BG=()
+NETWORK=pasta CREATE_MORE=() PROFILE_OFF=0 BG=() STANDIN_FIRST='' KILL_MS='' WRONG=''
 
 # --------------------------------------------------------------------------- small things
 note() { echo "# $*"; }
@@ -153,7 +154,8 @@ prepare_run() {
   if [[ -z ${2:-} ]]; then
     install -d -m 0755 "$root/dist"
     # Stands in for the runner: says that Node runs (G2 times it), then stays.
-    echo 'import { writeFileSync } from "node:fs"; writeFileSync(`${process.env.SP_RUN}/runners/up`, ""); setInterval(() => {}, 1 << 30);' > "$root/dist/runner-boot.mjs"
+    # $STANDIN_FIRST: what a gate has it do before that (G1: ignore SIGTERM).
+    echo "$STANDIN_FIRST"'import { writeFileSync } from "node:fs"; writeFileSync(`${process.env.SP_RUN}/runners/up`, ""); setInterval(() => {}, 1 << 30);' > "$root/dist/runner-boot.mjs"
   fi
   { echo "SP_ROOT=$(sq "$root")"; echo "RUNNER_SPEC=$(sq "$spec")"; echo "SP_VERSION='gates'"; } > "$run/boot.env.tmp"
   chmod 0640 "$run/boot.env.tmp"
@@ -307,7 +309,7 @@ setup() {
   as_agent systemctl --user cat "$SLICE" >/dev/null 2>&1 || die "$SLICE is not defined in $AGENT's user manager"
   # Never beside a host or its runners.
   local host=slack-presence-host.service
-  if systemctl is-active --quiet "$host" || systemctl is-enabled --quiet "$host" 2>/dev/null; then die "$host is active or enabled: this computer serves threads"; fi
+  if systemctl is-active --quiet "$host"; then die "$host is active: this computer serves threads"; fi
   [[ -z $(as_agent systemctl --user list-units --all --plain --no-legend 'sp-runner-*' 2>/dev/null) ]] || die "runner units exist in $AGENT's user manager (systemctl --user list-units 'sp-runner-*')"
   [[ -z $(pm ps --all --quiet --filter 'name=^sp-runner-' 2>/dev/null) ]] || die "containers named sp-runner-* exist (a run with -k? remove them: podman rm --force --volumes)"
   local d
@@ -428,24 +430,46 @@ cleanup() {
 
 # --------------------------------------------------------------------------- the gates
 
-# One `systemctl --user kill` of a running container's unit, as "Timeouts" has
-# it for a Stop that failed. Prints `clean` when Podman then says the
-# container is not running, `stale` when 5 s after the unit went it still does.
+# One `systemctl --user kill` of a running container's unit: what "Timeouts"
+# had for a Stop that failed, and what it now forbids. Measured, not judged.
+# Prints `clean` when Podman then says the container is neither running nor
+# stopping, `stale` when 5 s after the unit went it still does.
 unit_kill() {
   local id=$1 i
   shift
   q as_agent systemctl --user kill "$@" "sp-runner-$id"
   wait_unit_gone "$id" || { echo "unit-stays"; return; }
   for ((i = 0; i < 50; i++)); do
-    [[ $(state "$id") != running ]] && { echo clean; return; }
+    [[ $(state "$id") != @(running|stopping) ]] && { echo clean; return; }
     sleep 0.1
   done
   echo stale
 }
 
-# G1: Create and Start as written; the unit's memory limit is the container's; killing the unit stops the container.
+# Stop's fallback in "Timeouts": as agent, `1` to cgroup.kill of each
+# libpod-payload-* below the unit's cgroup. conmon is not in those, so it
+# lives, sees the exit and records it. Then what must hold: within 5 s the
+# container is `exited` and the unit gone (KILL_MS), and it starts again.
+# Sets WRONG to what did not hold, and returns 1 then.
+cgroup_kill() {
+  local id=$1 cg t i
+  KILL_MS='' WRONG=''
+  cg=$(unit_cgroup "$id") || { WRONG="the unit has no ControlGroup"; return 1; }
+  t=$(now_ms)
+  as_agent sh -c 'n=0; for d in "$1"/libpod-payload-*; do echo 1 > "$d/cgroup.kill" || exit 1; n=$((n + 1)); done; [ "$n" -gt 0 ]' sh "$cg" 2>>"$LOG" \
+    || { WRONG="agent could not write cgroup.kill of the libpod-payload-* below $cg"; return 1; }
+  for ((i = 0; i < 100; i++)); do
+    [[ $(state "$id") == exited ]] && ! unit_active "$id" && { KILL_MS=$(($(now_ms) - t)); break; }
+    sleep 0.05
+  done
+  [[ -n $KILL_MS ]] || { WRONG="5 s after it Podman says $(state "$id") and the unit is $(as_agent systemctl --user is-active "sp-runner-$id")"; return 1; }
+  up "$id" && unit_active "$id" && [[ $(state "$id") == running ]] || { WRONG="the container does not start after it (log: $LOG)"; return 1; }
+}
+
+# G1: Create and Start as written; the unit's memory limit is the container's;
+# Stop's fallback leaves no container marked running; a stale one is recovered.
 gate_G1() {
-  local id cg want got t events before after rc oom_ms i r stale=0 rounds=0 stale9='' how='' recreate_ms='' kill_ms='' payload
+  local id cg want got t events before after rc oom_ms r ok from='' stale=0 rounds=0 stale9='' how='' was recreate_ms kill_ms term_ms kept run
   new_container || return
   id=$ID
   cg=$(unit_cgroup "$id") || { fail "the unit sp-runner-$id has no ControlGroup"; return; }
@@ -468,41 +492,64 @@ gate_G1() {
   as_agent /usr/bin/timeout 60 /usr/bin/podman exec --user 1500:1500 "sp-runner-$id" python3 -c 'b = b"x" * (768 << 20)' >>"$LOG" 2>&1
   rc=$?
   oom_ms=$(($(now_ms) - t))
-  after=$(awk '$1 == "oom_kill" { print $2 }' "$cg/memory.events" 2>/dev/null)
-  events=$((${after:-0} - ${before:-0}))
+  # The kernel may kill the stand-in runner after the allocation (seen: two
+  # kills, python3 then node), and then the unit and its memory.events are
+  # gone before they can be read: the kernel's log has the same count.
+  if after=$(awk '$1 == "oom_kill" { print $2 }' "$cg/memory.events" 2>/dev/null) && [[ -n $after ]]; then
+    events=$((after - ${before:-0}))
+  else
+    sleep 1
+    events=$(journalctl -k --since "@$((t / 1000))" --no-pager 2>>"$LOG" | grep -cF "oom_memcg=${cg#/sys/fs/cgroup},")
+    from="(from the kernel's log: the unit went with its runner)"
+  fi
   ((events > 0)) || { fail "768 MiB allocated under MemoryMax=256M and nothing was OOM-killed in ${oom_ms} ms (exit $rc, swap $(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo) kB)"; return; }
 
-  # `systemctl --user kill`, three times as written and once with SIGKILL
-  # (what the unit itself does when TimeoutStopSec runs out). A stale container
-  # starts no more: it is removed and created again.
+  # Stop's fallback, on a payload that would have gone on SIGTERM and on one
+  # that ignores it (the case a Stop times out on).
+  [[ $(state "$id") == running ]] && unit_active "$id" || up "$id" || { fail "no running container for cgroup.kill (log: $LOG)"; return; }
+  cgroup_kill "$id" || { fail "cgroup.kill of the payload: $WRONG"; return; }
+  kill_ms=$KILL_MS
+  stop "$id" || { fail "the unit did not go after podman stop"; return; }
+  run=$(run_dir "$id")
+  STANDIN_FIRST='process.on("SIGTERM", () => {}); '
+  up "$id"; ok=$?
+  STANDIN_FIRST=''
+  ((ok == 0)) || { fail "no running container with a payload that ignores SIGTERM (log: $LOG)"; return; }
+  t=$(($(now_ms) + 10000))
+  while [[ ! -e $run/runners/up ]] && (($(now_ms) < t)); do sleep 0.05; done
+  q pm kill --signal TERM "sp-runner-$id"
+  sleep 2
+  [[ -e $run/runners/up && $(state "$id") == running ]] && unit_active "$id" \
+    || { fail "the payload meant to ignore SIGTERM did not: Podman says $(state "$id") 2 s after it"; return; }
+  cgroup_kill "$id" || { fail "cgroup.kill of a payload that ignores SIGTERM: $WRONG"; return; }
+  term_ms=$KILL_MS
+
+  # Informational, why "Timeouts" forbids it: `systemctl --user kill`, three
+  # times as it was written and once with SIGKILL (what the unit itself does
+  # when TimeoutStopSec runs out). conmon dies with the rest and records no exit.
   for how in '' '' '' --signal=SIGKILL; do
-    [[ $(state "$id") == running ]] && unit_active "$id" || up "$id" || { fail "no running container to kill (log: $LOG)"; return; }
-    r=$(unit_kill "$id" $how)
-    echo "unit_kill ${how:-SIGTERM}: $r, podman says $(state "$id")" >>"$LOG"
-    if [[ -n $how ]]; then stale9=$r; else rounds=$((rounds + 1)); [[ $r == clean ]] || stale=$((stale + 1)); fi
-    if [[ $r != clean ]]; then
-      q as_agent journalctl --user -u "sp-runner-$id" -n 12 --no-pager
-      t=$(now_ms)
-      remove "$id"; create "$id" || { fail "could not create again after a stale kill (log: $LOG)"; return; }
-      recreate_ms=$(($(now_ms) - t))
+    [[ $(state "$id") == running ]] && unit_active "$id" || up "$id" || { fail "no running container for systemctl --user kill (log: $LOG)"; return; }
+    if [[ -n $how ]]; then
+      q exec_in "$id" /home/agent sh -c 'echo kept > /home/agent/.g1-kept' || { fail "could not write to the home volume (log: $LOG)"; return; }
     fi
+    r=$(unit_kill "$id" $how)
+    was=$(state "$id")
+    echo "unit_kill ${how:-SIGTERM}: $r, podman says $was" >>"$LOG"
+    if [[ -n $how ]]; then stale9=$r; else rounds=$((rounds + 1)); [[ $r == clean ]] || stale=$((stale + 1)); fi
+    [[ $r == clean && -z $how ]] && continue
+    # The stale recovery of "Timeouts": `podman rm --force`, then Create. Done
+    # after the SIGKILL round whatever it left, and it must hold there.
+    q as_agent journalctl --user -u "sp-runner-$id" -n 12 --no-pager
+    t=$(now_ms)
+    q pm rm --force "sp-runner-$id" || { fail "podman rm --force of a container left '$was' by systemctl --user kill ${how:-} (log: $LOG)"; return; }
+    create "$id" || { fail "Create after rm --force of a container left '$was' (log: $LOG)"; return; }
+    recreate_ms=$(($(now_ms) - t))
   done
-
-  # What does leave Podman right: the kernel's kill of the container's own
-  # cgroup, which agent owns. conmon lives, sees the exit and records it.
-  up "$id" || { fail "no running container for cgroup.kill (log: $LOG)"; return; }
-  payload=$(echo "$(unit_cgroup "$id")"/libpod-payload-*)
-  t=$(now_ms)
-  as_agent sh -c 'echo 1 > "$1/cgroup.kill"' sh "$payload" 2>>"$LOG"
-  for ((i = 0; i < 100; i++)); do
-    [[ $(state "$id") == exited ]] && ! unit_active "$id" && { kill_ms=$(($(now_ms) - t)); break; }
-    sleep 0.05
-  done
-  [[ -n $kill_ms ]] && up "$id" || kill_ms="${kill_ms:-none}(no start after it)"
-
-  r="memory.max=$got (the unit's) oom_kill=$events exec_exit=$rc oom_ms=$oom_ms"
-  if ((stale == 0)) && [[ $stale9 == clean ]]; then pass "$r marked_running_after_unit_kill=0/$rounds, with SIGKILL: $stale9; payload_cgroup_kill_ms=$kill_ms"
-  else fail "$r; after systemctl --user kill the unit is gone and Podman still says running: $stale of $rounds, with --signal=SIGKILL: $stale9 (conmon dies with the rest and writes no exit); such a container only goes with rm --force (rm+create ${recreate_ms} ms). Writing 1 to the payload's cgroup.kill instead: exited and unit gone in $kill_ms ms, and it starts again"; fi
+  up "$id" && unit_active "$id" || { fail "the container created again after rm --force does not start (log: $LOG)"; return; }
+  kept=$(exec_in "$id" /home/agent cat /home/agent/.g1-kept 2>>"$LOG")
+  [[ $kept == kept ]] || { fail "the home volume did not survive rm --force and Create (the file written before reads '${kept:-nothing}')"; return; }
+  [[ $stale9 == stale ]] && was="stale($was, unit inactive)" || was="not stale($was): rm --force and Create tried all the same"
+  pass "memory.max=$got (the unit's) oom_kill=$events$from exec_exit=$rc oom_ms=$oom_ms; cgroup.kill: exited, unit gone and started again, in ${kill_ms} ms, ${term_ms} ms for a payload ignoring SIGTERM; stale recovery: after systemctl --user kill --signal=SIGKILL $was, rm --force + Create ${recreate_ms} ms, starts, home volume kept; informational, systemctl --user kill left Podman saying running: $stale of $rounds with SIGTERM, with SIGKILL: $stale9"
 }
 
 # n starts of a stopped container. Sets P50 and PMAX (Start to Pid) and U50
