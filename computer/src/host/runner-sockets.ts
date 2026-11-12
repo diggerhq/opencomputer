@@ -145,17 +145,22 @@ export async function rediscover(run: RunRoot, adopt: (id: string, sock: net.Soc
 
 /**
  * Stop a runner now: `stop` (its turn), `exit` with a deadline (the runner quits by itself after it, ending its own
- * harness: the host may not be allowed to signal it); SIGKILL from its pid file if its socket is still open after `ms`.
- * True when it went.
+ * harness: the host may not be allowed to signal it); if its socket is still open after `ms`, SIGKILL from its pid file,
+ * or `kill` for a runner in a container (work 103: Stop with no grace; its pid file is the session's to write and is
+ * never read). True when it went.
  */
-export async function retire(sock: net.Socket, socket: string, stop: () => void, ms = 10_000): Promise<boolean> {
+export async function retire(sock: net.Socket, socket: string, stop: () => void, o: { ms?: number; kill?: () => Promise<unknown> } = {}): Promise<boolean> {
+  const ms = o.ms ?? 10_000;
   stop();
   send(sock, { t: 'exit', ms: Math.max(0, ms - 2_000) } satisfies HostToRunner);
   await Promise.race([closed(sock), new Promise((t) => setTimeout(t, ms).unref())]);
   if (sock.destroyed) return true;
   try {
-    const pid = Number(readFileSync(pidFileFor(socket), 'utf8'));
-    if (pid > 1) process.kill(pid, 'SIGKILL');
+    if (o.kill) await o.kill();
+    else {
+      const pid = Number(readFileSync(pidFileFor(socket), 'utf8'));
+      if (pid > 1) process.kill(pid, 'SIGKILL');
+    }
   } catch (e) {
     log.warn(`runner ${path.basename(socket)} did not exit and could not be killed: ${(e as Error)?.message ?? e}`);
   }

@@ -146,9 +146,10 @@ function exitRunner(sock: net.Socket) {
   send(sock, { t: 'exit' } satisfies HostToRunner);
   sock.end();
 }
-/** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s. */
+/** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s (a container: stopped with no grace). */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
-  r && ((r.exiting = true), retire(r.sock, socketFor(HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {})));
+  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {}),
+    { kill: r.sandbox && (() => sandbox!.stop(r.id, 0)) }));
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
 const starting = new Map<string, Promise<Runner>>();
@@ -171,16 +172,18 @@ function sandboxHost() {
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: VERSION }, 'podman', env, ROOT, ms),
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
   });
-  return sandboxStarts({ tm, records, containers: all, runRoot, image, abi, version: VERSION,
-    mint: (spec, id, run) => api.mint(spec, id, run), workspace: sandboxWorkspace, mkdir: mkdirAsRunner, dial: (socket) => dialSocket(socket, { uid: user.uid }) });
+  return { stop: all.stop, starts: sandboxStarts({ tm, records, containers: all, runRoot, image, abi, version: VERSION,
+    mint: (spec, id, run) => api.mint(spec, id, run), workspace: sandboxWorkspace, mkdir: mkdirAsRunner, dial: (socket) => dialSocket(socket, { uid: user.uid }) }) };
 }
+
+const sandbox = LAUNCH === 'podman' ? sandboxHost() : undefined;
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
   mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-  sandbox: LAUNCH === 'podman' ? sandboxHost() : undefined,
+  sandbox: sandbox?.starts,
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
