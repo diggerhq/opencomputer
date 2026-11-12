@@ -83,8 +83,8 @@ export interface Kit {
 }
 
 type Got = { status: number; body: string; headers: http.IncomingHttpHeaders } | { refused: string };
-const show = (g: Got) => ('refused' in g ? `refused (${g.refused})` : `${g.status} ${JSON.stringify(g.body.slice(0, 60))}`);
-const said = (g: Got, body: string) => !('refused' in g) && g.status === 200 && g.body === body;
+export const show = (g: Got) => ('refused' in g ? `refused (${g.refused})` : `${g.status} ${JSON.stringify(g.body.slice(0, 60))}`);
+export const said = (g: Got, body: string) => !('refused' in g) && g.status === 200 && g.body === body;
 
 function get(o: http.RequestOptions): Promise<Got> {
   return new Promise((resolve) => {
@@ -96,18 +96,21 @@ function get(o: http.RequestOptions): Promise<Got> {
   });
 }
 /** A request through the host's preview proxy, signed as the previews Worker signs it. */
-const viaProxy = (k: Kit, port: number) =>
+export const viaProxy = (k: Kit, port: number) =>
   get({ host: '127.0.0.1', port: PREVIEW_PROXY_PORT, path: '/', headers: { 'x-preview-port': String(port), 'x-preview-auth': signPreview(k.key, port), 'x-preview-host': 'check.opencomputer.app' } });
 /** A request to a port of a thread through its runner's preview socket, as the proxy dials it. */
 const viaSocket = (t: Thread, port: number) => get({ host: '127.0.0.1', port, path: '/', createConnection: () => sandboxDialer(t.run, t.id)(port) as never });
 
-const serve = (k: Kit, t: Thread, port: number) =>
+export const serve = (k: Kit, t: Thread, port: number) =>
   k.detached(t.id, ['node', '-e', `require("http").createServer((q,s)=>s.end("inside ${t.name}")).listen(${port},"127.0.0.1")`]);
+
+/** The model stand-in, started inside a thread's container: it goes with the container's processes at every stop. */
+export const model = (k: Kit, t: Thread) => k.detached(t.id, ['node', path.join(k.root, 'src/dev/fake-model.mjs'), String(MODEL_PORT)]);
 
 interface Call { tool: string; input: unknown; result?: string }
 const calls = async (k: Kit, t: Thread): Promise<Call[]> => JSON.parse((await k.inside(t.id, `curl -s -m 5 ${MODEL_URL}/calls`).catch(() => '')) || '[]');
 /** One turn in which the (fake) model calls `tool` with `input`: the tool's result as the model got it, parsed when it is JSON. */
-async function toolCall(k: Kit, t: Thread, tool: string, input: object): Promise<{ text: string; json?: Record<string, unknown>; ms: number }> {
+export async function toolCall(k: Kit, t: Thread, tool: string, input: object): Promise<{ text: string; json?: Record<string, unknown>; ms: number }> {
   const before = (await calls(k, t)).length;
   const at = Date.now();
   await k.tell(t, `sandbox-check: call ${tool} ${JSON.stringify(input)}`);
@@ -195,7 +198,7 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
   try {
     await new Promise((r, j) => host.once('listening', r).once('error', j));
     for (const t of [a, b]) {
-      await k.detached(t.id, ['node', path.join(k.root, 'src/dev/fake-model.mjs'), String(MODEL_PORT)]);
+      await model(k, t);
       await serve(k, t, APP_PORT);
     }
     check((await k.until(async () => ((await k.inside(a.id, `curl -s -m 2 127.0.0.1:${APP_PORT}`).catch(() => '')) === 'inside A' ? true : undefined), 15_000)) === true

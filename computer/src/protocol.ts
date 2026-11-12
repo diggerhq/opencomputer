@@ -519,7 +519,9 @@ export type HostToRunner =
    */
   | { t: 'claim'; id: string; session: SessionSpec & { forkPath: string }; api?: RunnerApi }
   /** The session's owner changed (their name or email became known): commits from now on carry it. */
-  | { t: 'owner'; owner: Person } | HostToRunnerV4;
+  | { t: 'owner'; owner: Person }
+  /** Work 103: the previews a thread's container had before it stopped; once per start of the container, after `secrets` and before the first `deliver`. */
+  | { t: 'preview-ports'; ports: { port: number; name: string }[] } | HostToRunnerV4;
 
 /** A repository checked out into a running session's fork (`checkout_repo`), cloned first if needed. */
 export interface CheckoutResult {

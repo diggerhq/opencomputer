@@ -12,10 +12,10 @@ const record = { id: ID, person: 'p', key: 'C1:1.1', createdAt: '', usedAt: '' }
 /** A fake runners' user: every command is recorded, `answer` says what it prints or throws. */
 function rig(answer: (argv: string[]) => string | Error = () => '', over: Partial<ContainersDeps> = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'containers-'));
-  const calls: { argv: string[]; timeoutMs: number }[] = [];
+  const calls: { argv: string[]; timeoutMs: number; repeatable?: boolean }[] = [];
   const log: string[] = [];
-  const run = async (argv: string[], o: { timeoutMs: number }) => {
-    calls.push({ argv, timeoutMs: o.timeoutMs });
+  const run = async (argv: string[], o: { timeoutMs: number; repeatable?: boolean }) => {
+    calls.push({ argv, timeoutMs: o.timeoutMs, ...(o.repeatable && { repeatable: true }) });
     log.push(argv.slice(0, 3).join(' '));
     const a = answer(argv);
     if (a instanceof Error) throw a;
@@ -129,7 +129,7 @@ describe('containers', () => {
   it('stop: 15 s for Podman; a container Podman does not know is down', async () => {
     const t = rig();
     await t.c.stop(ID);
-    expect(t.calls).toEqual([{ argv: ['podman', 'stop', '--time', '10', `sp-runner-${ID}`], timeoutMs: TIMEOUTS.stop }]);
+    expect(t.calls).toEqual([{ argv: ['podman', 'stop', '--time', '10', `sp-runner-${ID}`], timeoutMs: TIMEOUTS.stop, repeatable: true }]);
     const gone = rig(() => fail('Error: no container with name or ID "sp-runner-x" found: no such container'));
     await gone.c.stop(ID);
     expect(gone.calls).toHaveLength(1);
@@ -184,6 +184,24 @@ describe('containers', () => {
     const t = rig(() => '', { removed: (id) => void gone.push(id) });
     await t.c.remove(ID);
     expect(gone).toEqual([ID]);
+    // A container Podman did not remove is still there, with its previews: nothing is said. A home that stayed alone changes nothing.
+    await rig((a) => (a[1] === 'rm' ? fail('', true) : ''), { removed: (id) => void gone.push(`${id} while its container stays`) }).c.remove(ID);
+    await rig((a) => (a[1] === 'volume' ? fail('in use') : ''), { removed: (id) => void gone.push(`${id} home stays`) }).c.remove(ID);
+    expect(gone).toEqual([ID, `${ID} home stays`]);
+  });
+
+  it('only what changes nothing when made twice is repeatable after a wait for the image lock: stop, rm, the lists; never create, an exec, or what empties a run directory', async () => {
+    const t = rig((a) => (a[1] === 'inspect' ? '7\n' : a[1] === 'ps' || a[1] === 'volume' ? '[]' : ''));
+    await t.c.create(ID);
+    await t.c.up(ID, rs, record);
+    await t.c.execIn(ID, ['/bin/true'], { dir: '/', timeoutMs: 1000 });
+    await t.c.stop(ID);
+    await t.c.inventory();
+    await t.c.recreate(ID);
+    await t.c.remove(ID);
+    const verbs = (repeatable: boolean) => [...new Set(t.calls.filter((x) => x.argv[0] === 'podman' && !!x.repeatable === repeatable).map((x) => x.argv[1]))].sort();
+    expect(verbs(true)).toEqual(['ps', 'rm', 'stop', 'volume']);
+    expect(verbs(false)).toEqual(['create', 'exec', 'inspect', 'unshare']);
   });
 
   it('recreate: the container alone goes; its home stays for the new one', async () => {
@@ -193,26 +211,42 @@ describe('containers', () => {
     expect(t.calls[0].argv).not.toContain('--volumes');
   });
 
-  it('inventory: what Podman has under our label and names, 10 s each', async () => {
-    const ps = JSON.stringify([
-      { Names: [`sp-runner-${ID}`], State: 'running', Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Image: 'img:tag', Created: 1_700_000_000 },
-      { Names: ['other'], State: 'running', Labels: { 'sp.runner': ID } }, // the label alone does not make it ours
+  it('inventory: what Podman has under our label and names and on our run directories, 10 s each', async () => {
+    const t = rig((a) => (a[1] === 'ps' ? ps() : a[1] === 'volume' ? vols : ''));
+    const OTHER = 'ffee11bb22cc33dd';
+    const ps = () => JSON.stringify([
+      { Names: [`sp-runner-${ID}`], State: 'running', Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Image: 'img:tag', Created: 1_700_000_000, Mounts: ['/home/agent', t.run] },
+      { Names: ['other'], State: 'running', Labels: { 'sp.runner': ID }, Mounts: [t.run] }, // the label alone does not make it ours
+      // Another host of this computer (another SP_RUN) made this one under the same Podman user: seen, never ours.
+      { Names: [`sp-runner-${OTHER}`], State: 'running', Labels: { 'sp.runner': OTHER, 'sp.abi': '1' }, Mounts: ['/home/agent', `/run/elsewhere/sandbox/${OTHER}`] },
     ]);
     const vols = JSON.stringify([{ Name: `sp-home-${ID}`, CreatedAt: '2026-11-12T10:00:00Z' }, { Name: 'unrelated' }]);
-    const t = rig((a) => (a[1] === 'ps' ? ps : a[1] === 'volume' ? vols : ''));
     expect(await t.c.inventory()).toEqual({
       containers: [{ id: ID, state: 'running', abi: '1', image: 'img:tag', createdAt: 1_700_000_000_000 }],
       volumes: [{ id: ID, createdAt: Date.parse('2026-11-12T10:00:00Z') }],
+      foreign: [OTHER],
     });
     expect(t.calls.every((x) => x.timeoutMs === TIMEOUTS.inventory)).toBe(true);
     await expect(rig(() => fail('', true)).c.inventory()).rejects.toThrow();
   });
 
+  it('inventory: an id is sixteen hex digits; a label or a volume name that is anything else is nobody\'s, and reaches no path and no argv', async () => {
+    const bad = ['../../etc', '--all', 'AAAAAAAAAAAAAAAA', `${ID}0`, `${ID}/..`, 'a b', ''];
+    const t = rig((a) => (a[1] === 'ps'
+      ? JSON.stringify(bad.flatMap((id) => [
+          { Names: [`sp-runner-${id}`], State: 'running', Labels: { 'sp.runner': id, 'sp.abi': '1' }, Mounts: [path.join(path.dirname(t.run), id)] },
+          { Names: [`sp-runner-${id}`], State: 'running', Labels: { 'sp.runner': id, 'sp.abi': '1' }, Mounts: ['/elsewhere'] },
+        ]))
+      : JSON.stringify(bad.map((id) => ({ Name: `sp-home-${id}`, CreatedAt: '2026-11-12T10:00:00Z' })))));
+    expect(await t.c.inventory()).toEqual({ containers: [], volumes: [], foreign: [] });
+  });
+
   const info = { id: ID, state: 'running', abi: '1', image: '', createdAt: 0 };
-  const ps = (state: string) => JSON.stringify([{ Names: [`sp-runner-${ID}`], State: state, Labels: { 'sp.runner': ID, 'sp.abi': '1' } }]);
+  const at = { runRoot: (id: string) => `/r/${id}` };
+  const ps = (state: string) => JSON.stringify([{ Names: [`sp-runner-${ID}`], State: state, Labels: { 'sp.runner': ID, 'sp.abi': '1' }, Mounts: [`/r/${ID}`] }]);
 
   it('stale: Podman says running while the unit is not active, and still says so when asked again', async () => {
-    const inactive = (state: string) => rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps(state) : ''));
+    const inactive = (state: string) => rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps(state) : ''), at);
     expect(await inactive('running').c.stale(info)).toBe(true);
     expect(await inactive('stopping').c.stale(info)).toBe(true);
     expect(await rig().c.stale(info)).toBe(false);
@@ -221,7 +255,7 @@ describe('containers', () => {
 
   it('stale: not a container that ended by itself since the inventory, nor one whose unit gave no answer', async () => {
     // Listed as running, then it exited (its idle exit, say): the unit is inactive and Podman says exited by now.
-    const ended = rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps('exited') : ''));
+    const ended = rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps('exited') : ''), at);
     expect(await ended.c.stale(info)).toBe(false);
     const gone = rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? '[]' : ''));
     expect(await gone.c.stale(info)).toBe(false);
