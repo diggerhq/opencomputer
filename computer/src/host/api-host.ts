@@ -35,7 +35,7 @@ import type {
 import { apiError, RECORD_METHOD } from '../api/writer.js';
 import { createdOf } from '../api/created.js';
 import { ensureJournalDir, ensureSessionJournalDir, forgetJournalFile, Journal, journalPath, readJournalFile } from '../api/journal.js';
-import { moveFlatJournals } from './journal-flat-move.js';
+import { moveFlatJournals, moveFlatSessionLogged } from './journal-flat-move.js';
 import { journalReports } from './journal-reports.js';
 import { type HostWriterOptions, HostSessionWriter, scanJournals } from './session-writer.js';
 import { isSessionId } from '../session-ids.js';
@@ -189,6 +189,7 @@ export function apiHost(d: ApiHostDeps) {
     const journal = journalPath(d.dataDir, sessionId);
     if (!spec && !existsSync(journal)) return undefined;
     ensureSessionJournalDir(d.dataDir, sessionId);
+    moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
     const { epoch, lastSeq } = logOf(sessionId);
     const h = { socket: apiSocketFor(sessionId, runnersDir), token: mintToken(), epoch, w: undefined as unknown as Promise<HostWriter> };
     h.w = openHostWriter({
@@ -322,6 +323,7 @@ export function apiHost(d: ApiHostDeps) {
       if (r && !retired.has(r.runnerId)) retired.add(r.runnerId), (retiredRunner = true), await d.retire?.(r.runnerId);
       await handOff(sessionId);
       ensureSessionJournalDir(d.dataDir, sessionId);
+      moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
       const j = await Journal.open(file, { sessionId, epoch: m.epoch, lastSeq: m.lastSeq, epochStartSeq: m.startSeq, tail: m.tail, waitMs: fail ? 0 : (d.lockWaitMs ?? 10_000) });
       await j.release();
       forgetJournalFile(file);
@@ -470,6 +472,7 @@ export function apiHost(d: ApiHostDeps) {
       relay.moved(sessionId);
       const { epoch, lastSeq } = logOf(sessionId);
       ensureSessionJournalDir(d.dataDir, sessionId); // the runner opens the journal there and cannot make the directory itself
+      moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
       const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, runnersDir), token: mintToken() };
       tokens.set(runnerId, api);
       return api;

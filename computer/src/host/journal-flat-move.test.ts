@@ -4,8 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { journalPath, readJournalFile } from '../api/journal.js';
 import { loadResult } from '../api/subagent-results.js';
+import { openLog, turn } from '../api/testing.js';
 import { mintId } from '../session-ids.js';
-import { moveFlatJournals } from './journal-flat-move.js';
+import { moveFlatJournals, moveFlatSession } from './journal-flat-move.js';
 
 let data: string;
 let journals: string;
@@ -122,5 +123,72 @@ describe('moveFlatJournals (work 103 C8)', () => {
     expect(fs.existsSync(path.join(journals, id))).toBe(false);
     expect(fs.existsSync(secret)).toBe(true);
     expect(readJournalFile(s.nested, 0).lastSeq).toBe(3);
+  });
+
+  describe('a runner that outlived the host (the previous release: it writes beside the flat name it was given)', () => {
+    /** saveResult as the release before work 103 wrote it: no link check, the directory made on the way. */
+    const oldSaveResult = (journal: string, sa: string, body: string) => {
+      const dir = `${journal}.results`;
+      fs.mkdirSync(dir, { recursive: true, mode: 0o770 });
+      fs.writeFileSync(path.join(dir, `${sa}.tmp`), body);
+      fs.renameSync(path.join(dir, `${sa}.tmp`), path.join(dir, sa));
+    };
+
+    it('what it writes after the move reaches the host: results at once, its checkpoint when the session is next opened', async () => {
+      const id = mintId('cs');
+      const file = path.join(journals, `${id}.jsonl`);
+      const nested = journalPath(data, id);
+      const [sa1, sa2] = [mintId('sa'), mintId('sa')];
+      const runner = await openLog(file, id); // holds the journal open, and its lock, across the host's restart
+      turn(runner);
+      runner.checkpoint();
+      oldSaveResult(file, sa1, 'before');
+
+      expect(moveFlatJournals(data)).toBe(3); // the new host starts
+      expect(fs.readdirSync(journals).sort()).toEqual([id, `${id}.jsonl.results`]);
+      expect(fs.readlinkSync(`${file}.results`)).toBe(path.join(id, `${id}.jsonl.results`));
+      const early = fs.readFileSync(`${nested}.ckpt`);
+
+      turn(runner);
+      runner.checkpoint();
+      oldSaveResult(file, sa2, 'after');
+      const lastSeq = runner.journal.lastSeq;
+
+      // The host, reading only the nested layout: the events, both results, and a checkpoint that is older but right.
+      expect(readJournalFile(nested, 0)).toMatchObject({ lastSeq });
+      expect(loadResult(nested, sa1)).toBe('before');
+      expect(loadResult(nested, sa2)).toBe('after');
+      expect(fs.readFileSync(`${nested}.ckpt`)).toEqual(early);
+      // Another host restart under the same runner changes nothing but takes the checkpoint so far.
+      const second = fs.readFileSync(`${file}.ckpt`);
+      expect(moveFlatJournals(data)).toBe(1);
+      expect(fs.readFileSync(`${nested}.ckpt`)).toEqual(second);
+      expect(fs.lstatSync(`${file}.results`).isSymbolicLink()).toBe(true);
+
+      turn(runner);
+      runner.checkpoint(); // its last, flat
+      await runner.release(); // the lock goes with it
+      const last = fs.readFileSync(`${file}.ckpt`);
+      expect(last).not.toEqual(second);
+      expect(moveFlatSession(data, id)).toBe(1); // the host, before it opens the session
+      expect(fs.readdirSync(journals)).toEqual([id]); // the link went with the runner
+      expect(fs.readFileSync(`${nested}.ckpt`)).toEqual(last);
+      const next = await openLog(nested, id);
+      expect(next.journal.lastSeq).toBe(runner.journal.lastSeq);
+      expect(loadResult(nested, sa2)).toBe('after');
+      await next.release();
+      expect(moveFlatSession(data, id)).toBe(0);
+    });
+
+    it('a nested checkpoint newer than the flat one is kept, and no link is left for a session nobody writes', async () => {
+      const s = flat();
+      moveFlatJournals(data);
+      expect(fs.readdirSync(journals)).toEqual([s.id]); // no writer: no link
+      fs.writeFileSync(`${s.file}.ckpt`, 'older');
+      fs.utimesSync(`${s.file}.ckpt`, 1, 1);
+      expect(moveFlatSession(data, s.id)).toBe(1);
+      expect(fs.readFileSync(`${s.nested}.ckpt`, 'utf8')).toBe('ckpt');
+      expect(fs.readdirSync(journals)).toEqual([s.id]);
+    });
   });
 });
