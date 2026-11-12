@@ -87,6 +87,16 @@ export const terminalArgs = (id: string, dir: string, term: string, helper: stri
 export const terminalHangUpArgs = (id: string, unit: string) =>
   ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-HUP', '-f', `terminal-pty\\.py ${unit}$`];
 
+/** What a `/files` script in the running container is started through, so that `filesEndArgs` finds it: `env` becomes the script's shell, and the tag stays in the command line of the `timeout` before it. */
+export const filesTagged = (tag: string) => ['/usr/bin/env', `OPC_FILES=${tag}`];
+
+/** SIGTERM to the `timeout` of one `/files` script, whose `podman exec` is gone: it ends its whole process group (and kills it, `--kill-after`). */
+export const filesEndArgs = (id: string, tag: string) =>
+  ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-TERM', '-f', `^/usr/bin/timeout .* OPC_FILES=${tag} `];
+
+/** A helper container by its name, whose `podman run` is gone: SIGTERM, which a script with a handler acts on, then SIGKILL. */
+export const helperStopArgs = (name: string) => ['stop', '--ignore', '--time', '2', name];
+
 /** `seconds`: how long the runner gets after SIGTERM before SIGKILL. */
 export const stopArgs = (id: string, seconds: number) => ['stop', '--time', String(seconds), containerName(id)];
 
@@ -143,6 +153,8 @@ export interface HelperSpec {
   stdin?: boolean;
   /** What a script on a stopped thread's files needs besides: its workspace, its worktree registries. */
   binds?: Bind[];
+  /** A name of its own, for a caller that may have to stop it (`helperStopArgs`). */
+  name?: string;
   /** What `/bin/sh` is given: a script by its path in the release and its arguments, or `-c`, a script's text and its arguments. */
   sh: string[];
 }
@@ -150,7 +162,7 @@ export interface HelperSpec {
 /** One run of a script on one person's clones, with no session. */
 export function helperArgs(h: HelperSpec): string[] {
   return [
-    'run', '--rm', ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
+    'run', '--rm', ...(h.name ? ['--name', h.name] : []), ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
     '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER, `--network=${h.network ? 'pasta' : 'none'}`, '--pids-limit=1024',
     // The script is the container's first process, which ignores a signal it has no handler for: Podman ends it.
     '--timeout', String(h.timeoutS),
