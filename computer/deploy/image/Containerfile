@@ -33,7 +33,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # host closes a terminal with pkill. python3: the host's terminal helper.
 RUN apt-get update -q \
  && apt-get install -y -q --no-install-recommends \
-      ca-certificates curl git git-lfs openssh-client \
+      ca-certificates curl gnupg git git-lfs openssh-client \
       build-essential pkg-config make \
       jq ripgrep fd-find tree unzip zip xz-utils rsync less file lsof procps \
       python3 python3-venv python3-pip sqlite3 \
