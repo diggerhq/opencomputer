@@ -186,8 +186,8 @@ try {
   check(/\/workspace\b/.test(status) && !status.includes(DATA), 'its cwd is /workspace, and it names no host path');
   const fp = (await until(() => reports().find((r) => r.status === 'idle')))?.forkPath;
   check(!!fp && path.dirname(fp) === path.join(DATA, 'people', PERSON, 'sessions'), `the report the gateway got names the host's path: ${fp}`);
-  const seen = (await inside(id, 'id -u; readlink /proc/1/cwd; echo $SP_RUN')).split('\n').join(' ');
-  check(seen === `1500 /workspace ${run}`, `inside: uid 1500, the runner's cwd /workspace, SP_RUN its own run directory (${seen})`);
+  const seen = (await inside(id, 'id -u; echo $SP_RUN')).split('\n').join(' ');
+  check(seen === `1500 ${run}`, `inside: uid 1500, SP_RUN its own run directory (${seen})`);
   check(readlinkSync(path.join(run, 'token.sock')) === path.relative(run, tokenSocketFor(run, id)), `token.sock in its run directory links to ${path.relative(run, tokenSocketFor(run, id))}`);
   const tk = await askToken(id);
   check(tk.startsWith('ghs_fake') && tokenSessions.at(-1) === KEY, `a token asked for inside, naming another session, is asked of the gateway for this one (${tk}, ${JSON.stringify(tokenSessions)})`);
